@@ -1,0 +1,77 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}{{ product.name }} · Stock{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <a href="/stock" class="text-sm text-slate-500 hover:underline">← All stock</a>
+  <h1 class="text-2xl font-semibold mt-1">{{ product.name }}</h1>
+  <p class="text-slate-500">{{ product.durationLabel }} · {{ available }} available</p>
+</div>
+{{ ui.flash(msg, kind) }}
+
+<section class="bg-white rounded-lg shadow p-5 mb-8">
+  <h2 class="font-semibold mb-2">Bulk add stock</h2>
+  <p class="text-xs text-slate-500 mb-3">One credential per line, e.g. <code>email:password</code> or <code>email|password|extra</code>.</p>
+  <form method="post" action="/stock/{{ product.id }}/add">
+    {{ ui.csrf_field(admin) }}
+    <textarea name="credentials" rows="6" required
+      class="w-full font-mono text-sm border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-400"
+      placeholder="user1@example.com:pass1&#10;user2@example.com:pass2"></textarea>
+    <button type="submit"
+      class="mt-3 bg-slate-900 text-white text-sm px-4 py-2 rounded hover:bg-slate-700">Add stock</button>
+  </form>
+</section>
+
+<section class="bg-white rounded-lg shadow overflow-x-auto">
+  <table class="min-w-full text-sm">
+    <thead class="bg-slate-100 text-slate-600 text-left">
+      <tr>
+        <th class="px-4 py-2">#</th>
+        <th class="px-4 py-2">Status</th>
+        <th class="px-4 py-2">Credentials</th>
+        <th class="px-4 py-2">Order</th>
+        <th class="px-4 py-2">Added</th>
+        <th class="px-4 py-2">Note</th>
+        <th class="px-4 py-2">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for it in items %}
+      <tr class="hover:bg-slate-50 align-top">
+        <td class="px-4 py-2 text-slate-400">{{ it.id }}</td>
+        <td class="px-4 py-2">{{ ui.status_badge(it.status) }}</td>
+        <td class="px-4 py-2 font-mono text-xs break-all max-w-xs">{{ it.credentials }}</td>
+        <td class="px-4 py-2 text-slate-500">{{ it.orderId or '—' }}</td>
+        <td class="px-4 py-2 text-slate-500" title="UTC stored">{{ it.addedAt | localdt }}</td>
+        <td class="px-4 py-2 text-slate-500">{{ it.note or '—' }}</td>
+        <td class="px-4 py-2">
+          <details>
+            <summary class="cursor-pointer text-slate-700 hover:underline">Edit</summary>
+            <div class="mt-2 space-y-2">
+              <form method="post" action="/stock/item/{{ it.id }}/note" class="flex gap-1">
+                {{ ui.csrf_field(admin) }}
+                <input type="text" name="note" value="{{ it.note or '' }}" placeholder="note"
+                  class="border rounded px-2 py-1 text-xs w-40">
+                <button class="text-xs px-2 py-1 rounded bg-slate-200 hover:bg-slate-300">Save note</button>
+              </form>
+              {% if (it.status | lower) not in ['sold', 'dead'] %}
+              <form method="post" action="/stock/item/{{ it.id }}/dead" class="flex gap-1"
+                    onsubmit="return confirm('Mark stock item #{{ it.id }} as dead?');">
+                {{ ui.csrf_field(admin) }}
+                <input type="text" name="note" placeholder="reason"
+                  class="border rounded px-2 py-1 text-xs w-40">
+                <button class="text-xs px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200">Mark dead</button>
+              </form>
+              {% endif %}
+            </div>
+          </details>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="px-4 py-6 text-center text-slate-400">No stock items yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

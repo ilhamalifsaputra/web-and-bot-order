@@ -1,0 +1,30 @@
+{# Reusable form/UI snippets. Import with:
+   {% import "_macros.njk" as ui %} #}
+
+{% macro csrf_field(admin) -%}
+<input type="hidden" name="csrf_token" value="{{ admin.csrf }}">
+{%- endmacro %}
+
+{% macro flash(message, kind="info") -%}
+{% if message %}
+<div class="rounded-md px-4 py-3 mb-4 text-sm
+  {% if kind == 'error' %}bg-red-50 text-red-700 border border-red-200
+  {% elif kind == 'success' %}bg-green-50 text-green-700 border border-green-200
+  {% else %}bg-slate-100 text-slate-700 border border-slate-200{% endif %}">
+  {{ message }}
+</div>
+{% endif %}
+{%- endmacro %}
+
+{# Enum values are stored UPPERCASE in the DB; lowercase for CSS + display. #}
+{% macro status_badge(value) -%}
+{% set v = (value | string | lower) %}
+<span class="inline-block rounded-full px-2 py-0.5 text-xs font-medium
+  {% if v in ['delivered', 'paid', 'available', 'active', 'closed'] %}bg-green-100 text-green-700
+  {% elif v in ['pending_verification', 'reserved', 'open', 'replied'] %}bg-amber-100 text-amber-700
+  {% elif v in ['pending_payment'] %}bg-blue-100 text-blue-700
+  {% elif v in ['cancelled', 'rejected', 'refunded', 'dead'] %}bg-red-100 text-red-700
+  {% else %}bg-slate-100 text-slate-600{% endif %}">
+  {{ v | replace('_', ' ') }}
+</span>
+{%- endmacro %}

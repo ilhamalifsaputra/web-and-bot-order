@@ -1,0 +1,272 @@
+/**
+ * Central callback-query router — port of callbacks.py.
+ *
+ * Every inline-button press whose data starts with `v1:` lands here (the proof
+ * and voucher conversations intercept their own taps first via the
+ * conversations plugin). We split `v1:<domain>:<action>[:args...]` and dispatch
+ * through a domain-keyed table. The `adm:` domain delegates to the admin
+ * sub-router (which applies its own admin-gate guard).
+ */
+import { config } from "@app/core/config";
+import { TicketStatus } from "@app/core/enums";
+import { logger } from "@app/core/logger";
+import {
+  prisma,
+  getOrder,
+  createTicket,
+  getTicket,
+  closeTicket,
+} from "@app/db";
+import type { MyContext } from "../context";
+import { smartEdit } from "../util/chat";
+import { t } from "../util/i18n";
+import * as ckb from "../keyboards/customer";
+import * as akb from "../keyboards/admin";
+import * as customer from "./customer";
+import * as checkout from "./checkout";
+import * as staticPages from "./static";
+import { handleAdminCallback } from "./admin";
+
+type Parts = string[];
+type DomainDispatcher = (ctx: MyContext, parts: Parts) => Promise<void>;
+
+// ---------------------------------------------------------------------------
+// Per-domain dispatchers
+// ---------------------------------------------------------------------------
+
+const dispatchNoop: DomainDispatcher = async () => {};
+
+const dispatchMenu: DomainDispatcher = async (ctx, parts) => {
+  if (parts[2] === "main") await customer.showMainMenu(ctx);
+};
+
+const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
+  const action = parts[2];
+  if (action === "prods") await customer.browseProductsFlat(ctx);
+  else if (action === "page") await customer.browseProductsFlat(ctx, parseInt(parts[3]!, 10));
+  else if (action === "prod") await customer.browseProduct(ctx, parseInt(parts[3]!, 10));
+};
+
+const dispatchQty: DomainDispatcher = async (ctx, parts) => {
+  // v1:qty:input:<pid> | v1:qty:cancel:<pid> | v1:qty:<pid>:<qty>:<inc|dec>
+  if (parts[2] === "input") await customer.qtyInputStart(ctx, parseInt(parts[3]!, 10));
+  else if (parts[2] === "cancel") await customer.qtyInputCancel(ctx, parseInt(parts[3]!, 10));
+  else await customer.qtyChange(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10), parts[4]!);
+};
+
+const dispatchBuy: DomainDispatcher = async (ctx, parts) => {
+  // v1:buy:<pid>:<qty> → confirmation screen
+  await checkout.showOrderConfirmation(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+};
+
+const dispatchPay: DomainDispatcher = async (ctx, parts) => {
+  // v1:pay:<pid>:<qty> → actual order creation
+  await checkout.buyNow(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+};
+
+const dispatchVoucher: DomainDispatcher = async (ctx, parts) => {
+  // v1:voucher:remove:<pid>:<qty>  (voucher:start is owned by the voucher conv)
+  if (parts[2] === "remove") {
+    delete ctx.session.scratch.appliedVoucherCode;
+    await checkout.showOrderConfirmation(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
+  }
+};
+
+const dispatchCheckout: DomainDispatcher = async (ctx, parts) => {
+  const action = parts[2];
+  if (action === "cancel") await checkout.cancelPendingOrder(ctx, parseInt(parts[3]!, 10));
+  // checkout:proof is the entry point for the proof conversation (handled by
+  // the conversations plugin). It only reaches here if the conversation didn't
+  // capture it — in that case re-entry is handled by the conversation itself.
+};
+
+const dispatchOrder: DomainDispatcher = async (ctx, parts) => {
+  const action = parts[2];
+  if (action === "list") await customer.listMyOrders(ctx, 0);
+  else if (action === "page") await customer.listMyOrders(ctx, parseInt(parts[3]!, 10));
+  else if (action === "view") await customer.viewOrder(ctx, parseInt(parts[3]!, 10));
+  else if (action === "review") await showReviewPrompt(ctx, parseInt(parts[3]!, 10));
+  else if (action === "replace") await requestReplacement(ctx, parseInt(parts[3]!, 10));
+  else if (action === "history") await customer.downloadHistory(ctx);
+};
+
+const dispatchRef: DomainDispatcher = async (ctx, parts) => {
+  if (parts[2] === "view") await customer.viewReferral(ctx);
+};
+
+const dispatchLang: DomainDispatcher = async (ctx, parts) => {
+  const action = parts[2];
+  if (action === "menu") await customer.showLanguageMenu(ctx);
+  else if (action === "set") await customer.setLanguage(ctx, parts[3]!);
+};
+
+const dispatchTicket: DomainDispatcher = async (ctx, parts) => {
+  // user-side ticket management; 'reply' is owned by the ticket-reply conv
+  const action = parts[2];
+  if (action === "list") await customer.listMyTickets(ctx);
+  else if (action === "view") await customer.viewMyTicket(ctx, parseInt(parts[3]!, 10));
+  else if (action === "close") await closeTicketUser(ctx, parseInt(parts[3]!, 10));
+};
+
+const dispatchRestock: DomainDispatcher = async (ctx, parts) => {
+  if (parts[2] === "sub") await customer.subscribeRestock(ctx, parseInt(parts[3]!, 10));
+};
+
+const dispatchPage: DomainDispatcher = async (ctx, parts) => {
+  const action = parts[2];
+  if (action === "faq") await staticPages.showFaq(ctx);
+  else if (action === "terms") await staticPages.showTerms(ctx);
+  else if (action === "howtopay") await staticPages.showHowtopay(ctx);
+};
+
+const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
+  browse: dispatchBrowse,
+  buy: dispatchBuy,
+  checkout: dispatchCheckout,
+  lang: dispatchLang,
+  menu: dispatchMenu,
+  noop: dispatchNoop,
+  order: dispatchOrder,
+  page: dispatchPage,
+  pay: dispatchPay,
+  qty: dispatchQty,
+  ref: dispatchRef,
+  restock: dispatchRestock,
+  ticket: dispatchTicket,
+  voucher: dispatchVoucher,
+};
+
+// ---------------------------------------------------------------------------
+// Top-level router
+// ---------------------------------------------------------------------------
+
+export async function routeCallback(ctx: MyContext): Promise<void> {
+  const cq = ctx.callbackQuery;
+  if (!cq || !cq.data) return;
+
+  const parts = cq.data.split(":");
+  if (parts.length < 2 || parts[0] !== "v1") {
+    logger.warn(`Unknown callback_data: ${cq.data}`);
+    await ctx.answerCallbackQuery();
+    return;
+  }
+
+  const domain = parts[1];
+
+  if (domain === "adm") {
+    try {
+      await ctx.answerCallbackQuery();
+    } catch {
+      /* already answered */
+    }
+    await handleAdminCallback(ctx, parts);
+    return;
+  }
+
+  const dispatcher = DOMAIN_ROUTES[domain!];
+  if (dispatcher === undefined) {
+    logger.warn(`Unhandled callback domain=${domain} data=${cq.data}`);
+    try {
+      await ctx.answerCallbackQuery();
+    } catch {
+      /* ignore */
+    }
+    return;
+  }
+
+  try {
+    await dispatcher(ctx, parts);
+    try {
+      await ctx.answerCallbackQuery();
+    } catch {
+      /* a dispatcher may have already answered */
+    }
+  } catch (err) {
+    logger.error({ err }, `Router error for callback_data=${cq.data}`);
+    try {
+      await ctx.answerCallbackQuery({ text: t(ctx, "error.generic"), show_alert: true });
+    } catch {
+      logger.error(`Failed to deliver error popup for callback_data=${cq.data}`);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Inline helpers used by the router
+// ---------------------------------------------------------------------------
+
+async function showReviewPrompt(ctx: MyContext, orderId: number): Promise<void> {
+  const info = ctx.session.dbUser!;
+  const order = await getOrder(prisma, orderId);
+  if (order === null || order.userId !== info.id) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_found"), show_alert: true });
+    return;
+  }
+  if (!order.items.length) return;
+  const productId = order.items[0]!.productId;
+  await smartEdit(ctx, t(ctx, "order.leave_review"), ckb.reviewRatingKb(orderId, productId));
+}
+
+async function requestReplacement(ctx: MyContext, orderId: number): Promise<void> {
+  const info = ctx.session.dbUser!;
+  const order = await getOrder(prisma, orderId);
+  if (order === null || order.userId !== info.id) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_found"), show_alert: true });
+    return;
+  }
+  const body = `[Replacement Request] Order ${order.orderCode}`;
+  const ticket = await createTicket(prisma, info.id, body);
+
+  await ctx.answerCallbackQuery({ text: "✅ Replacement request submitted to admin", show_alert: true });
+
+  const targets = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : config.ADMIN_IDS;
+  for (const chatId of targets) {
+    if (!chatId) continue;
+    try {
+      await ctx.api.sendMessage(
+        chatId,
+        `🛠 Replacement request — ticket #${ticket.id}\n` +
+          `User: <code>${ctx.from!.id}</code>\n` +
+          `Order: <code>${order.orderCode}</code>`,
+        { parse_mode: "HTML", reply_markup: akb.ticketReplyKb(ticket.id, "en") },
+      );
+    } catch (err) {
+      logger.error({ err }, "Failed to notify admin about replacement request");
+    }
+  }
+}
+
+async function closeTicketUser(ctx: MyContext, ticketId: number): Promise<void> {
+  const info = ctx.session.dbUser!;
+  const ticket = await getTicket(prisma, ticketId);
+  if (ticket === null || ticket.userId !== info.id) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_found"), show_alert: true });
+    return;
+  }
+  if (ticket.status === TicketStatus.CLOSED) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "support.already_closed"), show_alert: true });
+    return;
+  }
+  await closeTicket(prisma, ticketId);
+
+  await ctx.answerCallbackQuery({ text: t(ctx, "support.ticket_closed_user"), show_alert: true });
+  try {
+    await ctx.editMessageReplyMarkup();
+  } catch {
+    /* markup may already be gone */
+  }
+
+  const targets = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : config.ADMIN_IDS;
+  for (const chatId of targets) {
+    if (!chatId) continue;
+    try {
+      await ctx.api.sendMessage(
+        chatId,
+        `✅ Ticket #${ticketId} marked as resolved by user <code>${ctx.from!.id}</code>.`,
+        { parse_mode: "HTML" },
+      );
+    } catch (err) {
+      logger.error({ err }, "Failed to notify admin about ticket close");
+    }
+  }
+}

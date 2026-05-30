@@ -1,0 +1,31 @@
+{
+  "name": "project-bot-order",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "prisma:pull": "prisma db pull",
+    "prisma:generate": "prisma generate",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck && tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "dev:notifier": "pnpm --filter @app/notifier dev",
+    "dev:web": "pnpm --filter @app/web-admin dev",
+    "dev:bot": "pnpm --filter @app/order-bot dev"
+  },
+  "devDependencies": {
+    "@app/core": "workspace:*",
+    "@app/db": "workspace:*",
+    "@types/node": "^22.9.0",
+    "prisma": "^5.22.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0"
+  }
+}

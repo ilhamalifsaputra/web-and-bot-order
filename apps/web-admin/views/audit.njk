@@ -1,0 +1,49 @@
+{% extends "base.njk" %}
+{% block title %}Audit log · Stock Admin{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-semibold mb-6">Audit log</h1>
+
+<form method="get" action="/audit" class="bg-white rounded-lg shadow p-4 mb-6 flex flex-wrap gap-3 items-end text-sm">
+  <div><label class="block text-xs text-slate-500 mb-1">Action</label><input name="action" value="{{ f.action }}" class="border rounded px-2 py-1"></div>
+  <div><label class="block text-xs text-slate-500 mb-1">Target type</label><input name="target_type" value="{{ f.target_type }}" class="border rounded px-2 py-1"></div>
+  <div><label class="block text-xs text-slate-500 mb-1">Admin (user id)</label><input name="admin_id" value="{{ f.admin_id }}" class="border rounded px-2 py-1 w-24"></div>
+  <div><label class="block text-xs text-slate-500 mb-1">From (UTC)</label><input type="date" name="since" value="{{ f.since }}" class="border rounded px-2 py-1"></div>
+  <div><label class="block text-xs text-slate-500 mb-1">To (UTC)</label><input type="date" name="until" value="{{ f.until }}" class="border rounded px-2 py-1"></div>
+  <button class="bg-slate-900 text-white px-4 py-1.5 rounded hover:bg-slate-700">Filter</button>
+  <a href="/audit" class="text-slate-500 hover:underline px-2">Reset</a>
+</form>
+
+<div class="bg-white rounded-lg shadow overflow-x-auto">
+  <table class="min-w-full text-sm">
+    <thead class="bg-slate-100 text-slate-600 text-left">
+      <tr>
+        <th class="px-4 py-2">When</th><th class="px-4 py-2">Admin</th><th class="px-4 py-2">Action</th>
+        <th class="px-4 py-2">Target</th><th class="px-4 py-2">Details</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for l in logs %}
+      <tr class="hover:bg-slate-50 align-top">
+        <td class="px-4 py-2 text-slate-500 whitespace-nowrap" title="{{ tzname }}">{{ l.createdAt | localdt('yyyy-LL-dd HH:mm:ss') }}</td>
+        <td class="px-4 py-2">{{ l.adminId if l.adminId is not none else '—' }}</td>
+        <td class="px-4 py-2 font-medium">{{ l.action }}</td>
+        <td class="px-4 py-2 text-slate-500">{{ l.targetType or '' }}{% if l.targetId %} #{{ l.targetId }}{% endif %}</td>
+        <td class="px-4 py-2 text-slate-600 break-all">{{ l.details or '—' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="px-4 py-6 text-center text-slate-400">No audit entries match.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="flex items-center justify-between mt-4 text-sm text-slate-500">
+  <span>{{ total }} entr(ies) · page {{ page }}</span>
+  <span class="flex gap-3">
+    {% set qbase = '/audit?action=' + f.action + '&target_type=' + f.target_type + '&admin_id=' + (f.admin_id | string) + '&since=' + f.since + '&until=' + f.until %}
+    {% if page > 1 %}<a class="hover:underline" href="{{ qbase }}&page={{ page - 1 }}">← Prev</a>{% endif %}
+    {% if has_next %}<a class="hover:underline" href="{{ qbase }}&page={{ page + 1 }}">Next →</a>{% endif %}
+  </span>
+</div>
+{% endblock %}

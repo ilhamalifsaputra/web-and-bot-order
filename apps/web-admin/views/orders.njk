@@ -1,0 +1,75 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}Orders · Stock Admin{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-semibold mb-6">Orders</h1>
+{{ ui.flash(msg, kind) }}
+
+<form method="get" action="/orders" class="bg-white rounded-lg shadow p-4 mb-6 flex flex-wrap gap-3 items-end text-sm">
+  <div>
+    <label class="block text-xs text-slate-500 mb-1">Status</label>
+    <select name="status" class="border rounded px-2 py-1">
+      <option value="">All</option>
+      {% for s in statuses %}
+      <option value="{{ s }}" {% if f.status == s %}selected{% endif %}>{{ s | lower | replace('_', ' ') }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500 mb-1">Order code</label>
+    <input type="text" name="q" value="{{ f.q }}" placeholder="ORD-..." class="border rounded px-2 py-1">
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500 mb-1">From (UTC)</label>
+    <input type="date" name="since" value="{{ f.since }}" class="border rounded px-2 py-1">
+  </div>
+  <div>
+    <label class="block text-xs text-slate-500 mb-1">To (UTC)</label>
+    <input type="date" name="until" value="{{ f.until }}" class="border rounded px-2 py-1">
+  </div>
+  <button class="bg-slate-900 text-white px-4 py-1.5 rounded hover:bg-slate-700">Filter</button>
+  <a href="/orders" class="text-slate-500 hover:underline px-2">Reset</a>
+</form>
+
+<div class="bg-white rounded-lg shadow overflow-x-auto">
+  <table class="min-w-full text-sm">
+    <thead class="bg-slate-100 text-slate-600 text-left">
+      <tr>
+        <th class="px-4 py-2">Code</th>
+        <th class="px-4 py-2">Buyer</th>
+        <th class="px-4 py-2">Status</th>
+        <th class="px-4 py-2 text-right">Total</th>
+        <th class="px-4 py-2">Created</th>
+        <th class="px-4 py-2"></th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for o in orders %}
+      <tr class="hover:bg-slate-50">
+        <td class="px-4 py-2 font-mono text-xs">{{ o.orderCode }}</td>
+        <td class="px-4 py-2">
+          {{ o.user.fullName or o.user.username or '—' }}
+          <span class="text-slate-400 text-xs">tg:{{ o.user.telegramId }}</span>
+        </td>
+        <td class="px-4 py-2">{{ ui.status_badge(o.status) }}</td>
+        <td class="px-4 py-2 text-right">{{ o.totalAmount | money }} {{ currency }}</td>
+        <td class="px-4 py-2 text-slate-500" title="{{ tzname }}">{{ o.createdAt | localdt }}</td>
+        <td class="px-4 py-2 text-right"><a class="text-slate-700 hover:underline" href="/orders/{{ o.id }}">View →</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="px-4 py-6 text-center text-slate-400">No orders match.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="flex items-center justify-between mt-4 text-sm text-slate-500">
+  <span>{{ total }} order(s) · page {{ page }}</span>
+  <span class="flex gap-3">
+    {% set qbase = '/orders?status=' + f.status + '&q=' + f.q + '&since=' + f.since + '&until=' + f.until %}
+    {% if page > 1 %}<a class="hover:underline" href="{{ qbase }}&page={{ page - 1 }}">← Prev</a>{% endif %}
+    {% if has_next %}<a class="hover:underline" href="{{ qbase }}&page={{ page + 1 }}">Next →</a>{% endif %}
+  </span>
+</div>
+{% endblock %}

@@ -1,0 +1,52 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}Stock · Stock Admin{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-semibold mb-6">Stock</h1>
+{{ ui.flash(msg, kind) }}
+
+{% if not products %}
+<p class="text-slate-500">No products yet. Create one under <a class="text-slate-700 underline" href="/catalog">Catalog</a>.</p>
+{% endif %}
+
+{% for cat_name, items in groups %}
+<section class="mb-8">
+  <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-500 mb-2">{{ cat_name }}</h2>
+  <div class="bg-white rounded-lg shadow overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead class="bg-slate-100 text-slate-600 text-left">
+        <tr>
+          <th class="px-4 py-2">Product</th>
+          <th class="px-4 py-2 text-right">Available</th>
+          <th class="px-4 py-2 text-right">Reserved</th>
+          <th class="px-4 py-2 text-right">Sold</th>
+          <th class="px-4 py-2 text-right">Dead</th>
+          <th class="px-4 py-2"></th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        {% for p in items %}
+        {% set c = counts[p.id] %}
+        {% set avail = c.available if c else 0 %}
+        <tr class="hover:bg-slate-50">
+          <td class="px-4 py-2">
+            <span class="font-medium">{{ p.name }}</span>
+            <span class="text-slate-400">· {{ p.durationLabel }}</span>
+            {% if not p.isActive %}<span class="ml-1 text-xs text-red-500">(inactive)</span>{% endif %}
+          </td>
+          <td class="px-4 py-2 text-right {% if avail == 0 %}text-red-600 font-semibold{% endif %}">{{ avail }}</td>
+          <td class="px-4 py-2 text-right text-slate-500">{{ c.reserved if c else 0 }}</td>
+          <td class="px-4 py-2 text-right text-slate-500">{{ c.sold if c else 0 }}</td>
+          <td class="px-4 py-2 text-right text-slate-500">{{ c.dead if c else 0 }}</td>
+          <td class="px-4 py-2 text-right">
+            <a class="text-slate-700 hover:underline" href="/stock/{{ p.id }}">Manage →</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endfor %}
+{% endblock %}

@@ -1,0 +1,89 @@
+{% extends "base.njk" %}
+{% block title %}Dashboard · Stock Admin{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-semibold mb-6">Dashboard</h1>
+
+{% if pending_count > 0 %}
+<a href="/orders?status=PENDING_VERIFICATION" class="block mb-4 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-4 py-2 hover:bg-amber-100">
+  {{ pending_count }} order(s) awaiting verification →
+</a>
+{% endif %}
+
+<section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+  <div class="bg-white rounded-lg shadow p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Revenue (24h)</div>
+    <div class="text-2xl font-semibold mt-2">{{ rev_24h.revenue | money }} {{ currency }}</div>
+    <div class="text-xs text-slate-500 mt-1">{{ rev_24h.orders }} orders</div>
+  </div>
+  <div class="bg-white rounded-lg shadow p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Revenue (7d)</div>
+    <div class="text-2xl font-semibold mt-2">{{ rev_7d.revenue | money }} {{ currency }}</div>
+    <div class="text-xs text-slate-500 mt-1">{{ rev_7d.orders }} orders</div>
+  </div>
+  <div class="bg-white rounded-lg shadow p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Revenue (30d)</div>
+    <div class="text-2xl font-semibold mt-2">{{ rev_30d.revenue | money }} {{ currency }}</div>
+    <div class="text-xs text-slate-500 mt-1">{{ rev_30d.orders }} orders</div>
+  </div>
+  <div class="bg-white rounded-lg shadow p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Lifetime revenue</div>
+    <div class="text-2xl font-semibold mt-2">{{ overall.total_revenue | money }} {{ currency }}</div>
+    <div class="text-xs text-slate-500 mt-1">{{ overall.items_sold }} items sold</div>
+  </div>
+</section>
+
+<section class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+  <div class="bg-white rounded-lg shadow p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Pending verifications</div>
+    <div class="text-3xl font-semibold mt-2 {% if pending_count > 0 %}text-amber-600{% endif %}">
+      {{ pending_count }}
+    </div>
+    <div class="text-xs text-slate-500 mt-1">orders awaiting admin review</div>
+  </div>
+  <div class="bg-white rounded-lg shadow p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Low-stock products</div>
+    <div class="text-3xl font-semibold mt-2 {% if low_stock_count > 0 %}text-red-600{% endif %}">
+      {{ low_stock_count }}
+    </div>
+    <div class="text-xs text-slate-500 mt-1">at or below {{ low_stock_threshold }} available</div>
+  </div>
+  <div class="bg-white rounded-lg shadow p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">Total users</div>
+    <div class="text-3xl font-semibold mt-2">{{ overall.total_users }}</div>
+    <div class="text-xs text-slate-500 mt-1">customers + admins</div>
+  </div>
+</section>
+
+<section class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-8">
+  <div class="bg-white rounded-lg shadow p-5">
+    <h2 class="font-semibold mb-3">Low stock</h2>
+    <ul class="divide-y divide-slate-100 text-sm">
+      {% for row in low_stock %}
+      <li class="py-2 flex items-center justify-between">
+        <a class="text-slate-700 hover:underline" href="/stock/{{ row.product.id }}">{{ row.product.name }}</a>
+        <span class="{% if row.available == 0 %}text-red-600 font-semibold{% else %}text-amber-600{% endif %}">{{ row.available }} left</span>
+      </li>
+      {% else %}
+      <li class="py-2 text-slate-400">All products are above the threshold.</li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="bg-white rounded-lg shadow p-5">
+    <h2 class="font-semibold mb-3">Recent activity</h2>
+    <ul class="divide-y divide-slate-100 text-sm">
+      {% for l in recent_audit %}
+      <li class="py-2">
+        <span class="font-medium">{{ l.action }}</span>
+        <span class="text-slate-500">{{ l.targetType or '' }}{% if l.targetId %} #{{ l.targetId }}{% endif %}</span>
+        <span class="text-slate-400 text-xs float-right">{{ l.createdAt | localdt }}</span>
+      </li>
+      {% else %}
+      <li class="py-2 text-slate-400">No activity yet.</li>
+      {% endfor %}
+    </ul>
+    <a href="/audit" class="text-xs text-slate-500 hover:underline mt-2 inline-block">Full audit log →</a>
+  </div>
+</section>
+{% endblock %}

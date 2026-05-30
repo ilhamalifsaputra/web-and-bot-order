@@ -1,0 +1,27 @@
+{
+  "name": "@app/web-admin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@app/core": "workspace:*",
+    "@app/db": "workspace:*",
+    "@fastify/cookie": "^11.0.1",
+    "@fastify/formbody": "^8.0.1",
+    "@fastify/static": "^8.0.3",
+    "@fastify/view": "^10.0.1",
+    "bcryptjs": "^2.4.3",
+    "fastify": "^5.1.0",
+    "fastify-plugin": "^5.0.1",
+    "nunjucks": "^3.2.4"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/nunjucks": "^3.2.6"
+  }
+}

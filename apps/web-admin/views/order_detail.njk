@@ -1,0 +1,115 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}{{ order.orderCode }} · Orders{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <a href="/orders" class="text-sm text-slate-500 hover:underline">← All orders</a>
+  <h1 class="text-2xl font-semibold mt-1 flex items-center gap-3">
+    <span class="font-mono">{{ order.orderCode }}</span>
+    {{ ui.status_badge(order.status) }}
+  </h1>
+</div>
+{{ ui.flash(msg, kind) }}
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+  <section class="lg:col-span-2 space-y-6">
+    <div class="bg-white rounded-lg shadow p-5">
+      <h2 class="font-semibold mb-3">Items</h2>
+      <table class="min-w-full text-sm">
+        <thead class="text-slate-500 text-left">
+          <tr><th class="py-1">Product</th><th class="py-1 text-right">Qty</th><th class="py-1 text-right">Unit</th><th class="py-1">Warranty</th></tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for it in order.items %}
+          <tr>
+            <td class="py-1">{{ it.product.name }}</td>
+            <td class="py-1 text-right">{{ it.quantity }}</td>
+            <td class="py-1 text-right">{{ it.unitPrice | money }} {{ currency }}</td>
+            <td class="py-1 text-slate-500">{{ it.warrantyDaysSnapshot }}d</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if is_delivered %}
+    <div class="bg-white rounded-lg shadow p-5 border-l-4 border-green-500">
+      <h2 class="font-semibold mb-2">Delivered credentials</h2>
+      <p class="text-xs text-slate-500 mb-3">Visible to admins only. Do not paste into logs or chat history.</p>
+      <ul class="space-y-1 font-mono text-xs">
+        {% for it in order.items %}
+        {% if it.stockItem %}
+        <li class="bg-slate-50 rounded px-2 py-1 break-all">{{ it.stockItem.credentials }}</li>
+        {% endif %}
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    {% if can_act %}
+    <div class="bg-white rounded-lg shadow p-5">
+      <h2 class="font-semibold mb-3">Review payment</h2>
+      <div class="flex flex-wrap gap-4">
+        <form method="post" action="/orders/{{ order.id }}/approve"
+              onsubmit="return confirm('Approve and deliver this order?');">
+          {{ ui.csrf_field(admin) }}
+          <button class="bg-green-600 text-white px-4 py-2 rounded text-sm hover:bg-green-700">Approve & deliver</button>
+        </form>
+        <form method="post" action="/orders/{{ order.id }}/reject" class="flex gap-2 items-center">
+          {{ ui.csrf_field(admin) }}
+          <input type="text" name="reason" required placeholder="Rejection reason"
+                 class="border rounded px-2 py-2 text-sm w-64">
+          <button class="bg-red-100 text-red-700 px-4 py-2 rounded text-sm hover:bg-red-200">Reject</button>
+        </form>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if order.adminNote %}
+    <div class="bg-white rounded-lg shadow p-5">
+      <h2 class="font-semibold mb-2">Admin notes</h2>
+      <pre class="text-xs text-slate-600 whitespace-pre-wrap">{{ order.adminNote }}</pre>
+    </div>
+    {% endif %}
+  </section>
+
+  <aside class="space-y-6">
+    <div class="bg-white rounded-lg shadow p-5 text-sm">
+      <h2 class="font-semibold mb-3">Buyer</h2>
+      <dl class="space-y-1">
+        <div class="flex justify-between"><dt class="text-slate-500">Name</dt><dd>{{ order.user.fullName or '—' }}</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Username</dt><dd>{{ order.user.username or '—' }}</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Telegram</dt><dd>{{ order.user.telegramId }}</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Language</dt><dd>{{ order.user.language }}</dd></div>
+      </dl>
+      <a href="/users/{{ order.user.id }}" class="text-slate-700 hover:underline text-xs mt-2 inline-block">View user →</a>
+    </div>
+
+    <div class="bg-white rounded-lg shadow p-5 text-sm">
+      <h2 class="font-semibold mb-3">Totals</h2>
+      <dl class="space-y-1">
+        <div class="flex justify-between"><dt class="text-slate-500">Subtotal</dt><dd>{{ order.subtotalAmount | money }}</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Bulk discount</dt><dd>−{{ order.bulkDiscountAmount | money }}</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Voucher</dt><dd>−{{ order.discountAmount | money }}</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Wallet used</dt><dd>−{{ order.walletUsed | money }}</dd></div>
+        <div class="flex justify-between"><dt class="text-slate-500">Unique cents</dt><dd>{{ order.uniqueCents | money }}</dd></div>
+        <div class="flex justify-between font-semibold border-t pt-1 mt-1"><dt>Total</dt><dd>{{ order.totalAmount | money }} {{ currency }}</dd></div>
+      </dl>
+    </div>
+
+    <div class="bg-white rounded-lg shadow p-5 text-sm">
+      <h2 class="font-semibold mb-3">Payment</h2>
+      <dl class="space-y-1">
+        <div class="flex justify-between"><dt class="text-slate-500">TxID</dt><dd class="font-mono text-xs break-all">{{ order.binanceTxid or '—' }}</dd></div>
+        <div><dt class="text-slate-500">Proof file_id</dt><dd class="font-mono text-xs break-all">{{ order.paymentProofFileId or '—' }}</dd></div>
+      </dl>
+      <div class="text-slate-500 text-xs mt-3 space-y-1">
+        <div>Created: {{ order.createdAt | localdt }}</div>
+        <div>Paid: {{ order.paidAt | localdt }}</div>
+        <div>Delivered: {{ order.deliveredAt | localdt }}</div>
+      </div>
+    </div>
+  </aside>
+</div>
+{% endblock %}

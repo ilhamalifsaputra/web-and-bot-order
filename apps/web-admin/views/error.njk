@@ -1,0 +1,11 @@
+{% extends "base.njk" %}
+{% block title %}Error · Stock Admin{% endblock %}
+
+{% block content %}
+<div class="max-w-lg mx-auto mt-16 bg-white rounded-lg shadow p-8 text-center">
+  <div class="text-5xl font-semibold text-slate-300">{{ status_code }}</div>
+  <h1 class="text-xl font-semibold mt-4">{{ title or "Something went wrong" }}</h1>
+  <p class="text-slate-600 mt-2">{{ message or "An unexpected error occurred. The details have been logged." }}</p>
+  <a href="/" class="inline-block mt-6 text-sm text-slate-700 hover:underline">← Back to dashboard</a>
+</div>
+{% endblock %}

@@ -1,0 +1,30 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}Support · Stock Admin{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-semibold mb-6">Support tickets</h1>
+{{ ui.flash(msg, kind) }}
+
+<div class="bg-white rounded-lg shadow overflow-x-auto">
+  <table class="min-w-full text-sm">
+    <thead class="bg-slate-100 text-slate-600 text-left">
+      <tr><th class="px-4 py-2">#</th><th class="px-4 py-2">Message</th><th class="px-4 py-2">Status</th><th class="px-4 py-2">Created</th><th class="px-4 py-2"></th></tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for t in tickets %}
+      <tr class="hover:bg-slate-50">
+        <td class="px-4 py-2 text-slate-400">{{ t.id }}</td>
+        <td class="px-4 py-2">{{ t.message.substring(0, 80) }}{% if t.message | length > 80 %}…{% endif %}</td>
+        <td class="px-4 py-2">{{ ui.status_badge(t.status) }}</td>
+        <td class="px-4 py-2 text-slate-500">{{ t.createdAt | localdt }}</td>
+        <td class="px-4 py-2 text-right"><a class="text-slate-700 hover:underline" href="/support/{{ t.id }}">Open →</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="px-4 py-6 text-center text-slate-400">No open tickets.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+<p class="text-xs text-slate-400 mt-3">Showing open and replied tickets. Closed tickets are hidden.</p>
+{% endblock %}

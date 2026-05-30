@@ -167,10 +167,49 @@ pnpm dev:notifier     # or dev:web / dev:bot
 
 ---
 
-## 8. Not yet done / out of scope here
+## 8. Fase 6 — Post-cutover cleanup (DONE)
 
-- **Live behavioural test of the bot** against Telegram (needs a real
-  `BOT_TOKEN`). The wiring test only proves the bot *constructs*; conversation
-  replay-safety is by-construction, not yet runtime-verified.
-- **Fase 6 cleanup** (deleting the Python trees, the old `DATABASE_URL`): do this
-  only after a successful, monitored cutover — the Python stack is the rollback path.
+The production cutover is complete and the Python stack is retired. Cleanup applied:
+
+- Legacy Python `DATABASE_URL` removed from `.env` / `.env.example` (Node reads
+  only `DATABASE_URL_PRISMA`).
+- `AlembicVersion` model dropped from the Prisma schema. To remove the orphan
+  table from a database, apply the migration once (after a backup):
+  ```bash
+  pnpm exec prisma db execute --url "file:/app/data/bot.db" \
+    --file prisma/migrations/20260531120000_drop_alembic_version/migration.sql
+  ```
+  (Leaving the table is harmless — the schema no longer references it.)
+- Python service trees were already removed; only the Node monorepo remains.
+
+> ⚠ Rollback to Python is **no longer available** post-cleanup — the DateTime
+> conversion (§1) is one-way and the Python stack is gone. Keep DB backups.
+
+---
+
+## 9. Optional: SQLite → Postgres (migrate.md §5.4 / §6)
+
+SQLite is fine for a single writer. Move to Postgres only if you need higher
+write concurrency. What changes:
+
+- `prisma/schema.prisma`: `datasource db { provider = "postgresql" }`; `DATABASE_URL_PRISMA`
+  becomes a `postgresql://…` URL. Re-introspect or `prisma migrate` to recreate
+  the schema; **migrate the data** (datetimes become native `timestamptz`, so the
+  int-ms hack in §1 is no longer needed; `BigInt` is native).
+- **Stock allocation** can use real row locking: `SELECT … FOR UPDATE SKIP LOCKED`
+  (via `prisma.$queryRaw`) instead of SQLite's single-writer serialization —
+  see `allocateOneAvailableStock` and the `ProcessedBinanceTx` UNIQUE gate, which
+  stay correct either way.
+- Drop the `busy_timeout`/WAL PRAGMAs in `initDb()` (SQLite-only).
+- Re-run the full Vitest suite against a Postgres test DB before cutover.
+
+---
+
+## 10. Known follow-ups
+
+- **Live behavioural test of the bot** against Telegram exercises conversation
+  replay end-to-end (the test suite proves logic + DB effects, not the real
+  @grammyjs/conversations replay engine).
+- **Binance Internal Transfer** auto-confirm is keys-gated and its
+  `/sapi/v1/pay/transactions` note-matching assumption is unverified against a
+  live read-only key (see `payments/binanceInternal.ts`).

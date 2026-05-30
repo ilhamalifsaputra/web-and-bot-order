@@ -333,12 +333,6 @@ model NotificationOutbox {
   @@map("notification_outbox")
 }
 
-model AlembicVersion {
-  versionNum String @id @map("version_num")
-
-  @@map("alembic_version")
-}
-
 /// Idempotency ledger for Binance Internal Transfer auto-confirmation.
 /// Every Binance transaction the poller inspects is recorded here exactly once;
 /// the UNIQUE binance_tx_id is what prevents double-processing / double-delivery

@@ -4,12 +4,6 @@
 node_modules
 **/node_modules
 
-# The legacy Python services (incl. their .venv) are not part of the Node image.
-telegram-order-bot/
-telegram-stock-web/
-telegram-testimoni-bot/
-**/.venv
-
 # Runtime data is a mounted volume — never bake the dev DB / logs into the image.
 data/
 **/*.db

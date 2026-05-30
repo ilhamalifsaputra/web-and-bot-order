@@ -117,6 +117,10 @@ model Order {
   walletUsed         Decimal   @default(0) @map("wallet_used")
   bulkDiscountAmount Decimal   @default(0) @map("bulk_discount_amount")
   status             String    @default("PENDING_PAYMENT")
+  paymentMethod      String    @default("BINANCE_PAY") @map("payment_method")
+  paymentRef         String?   @unique(map: "ix_orders_payment_ref") @map("payment_ref")
+  paymentMsgChatId   BigInt?   @map("payment_msg_chat_id")
+  paymentMsgId       Int?      @map("payment_msg_id")
   paymentProofFileId String?   @map("payment_proof_file_id")
   binanceTxid        String?   @map("binance_txid")
   adminNote          String?   @map("admin_note")
@@ -333,4 +337,22 @@ model AlembicVersion {
   versionNum String @id @map("version_num")
 
   @@map("alembic_version")
+}
+
+/// Idempotency ledger for Binance Internal Transfer auto-confirmation.
+/// Every Binance transaction the poller inspects is recorded here exactly once;
+/// the UNIQUE binance_tx_id is what prevents double-processing / double-delivery
+/// (SQLite has no row locking, so the insert-first-on-unique pattern is the
+/// concurrency guard — see payments/binanceInternal.ts).
+model ProcessedBinanceTx {
+  id          Int      @id @default(autoincrement())
+  binanceTxId String   @unique(map: "ix_processed_binance_tx_txid") @map("binance_tx_id")
+  orderId     Int?     @map("order_id")
+  amount      Decimal?
+  // matched | underpaid | unmatched
+  outcome     String
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([orderId], map: "ix_processed_binance_tx_order_id")
+  @@map("processed_binance_tx")
 }

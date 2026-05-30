@@ -64,9 +64,23 @@ export const OrderStatus = {
   CANCELLED: "CANCELLED",
   REJECTED: "REJECTED",
   REFUNDED: "REFUNDED",
+  // Set by the Binance Internal Transfer poller when a transfer's note matches
+  // an order but the amount is short of the expected total (admin-reviewed,
+  // never auto-delivered).
+  UNDERPAID: "UNDERPAID",
 } as const;
 export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
 export const zOrderStatus = z.nativeEnum(OrderStatus);
+
+/** How the buyer pays. Stored on orders.payment_method. */
+export const PaymentMethod = {
+  /** Existing flow: Binance Pay ID + manual screenshot/TxID → admin approval. */
+  BINANCE_PAY: "BINANCE_PAY",
+  /** New flow: USDT to a Binance UID with the order ref as the note; auto-confirmed. */
+  BINANCE_INTERNAL: "BINANCE_INTERNAL",
+} as const;
+export type PaymentMethod = (typeof PaymentMethod)[keyof typeof PaymentMethod];
+export const zPaymentMethod = z.nativeEnum(PaymentMethod);
 
 export const VoucherType = {
   PERCENT: "PERCENT",

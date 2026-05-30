@@ -31,6 +31,7 @@ import * as staticPages from "./handlers/static";
 import * as admin from "./handlers/admin";
 import { routeCallback } from "./handlers/callbacks";
 import { scheduleJobs } from "./jobs";
+import { startPolling, stopPolling } from "./payments/binanceInternal";
 
 /** Build a fully-wired bot. Pure construction — no network/DB side effects. */
 export function buildBot(): Bot<MyContext> {
@@ -174,8 +175,12 @@ export async function start(): Promise<void> {
     },
   });
 
+  // Binance Internal Transfer auto-confirmation poller (no-op unless creds set).
+  startPolling(bot.api);
+
   const stop = async () => {
     logger.info("Shutting down…");
+    stopPolling();
     if (runner.isRunning()) await runner.stop();
   };
   process.once("SIGINT", stop);

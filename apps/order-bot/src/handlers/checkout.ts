@@ -14,9 +14,9 @@
 import { InputFile } from "grammy";
 import type { Api } from "grammy";
 import fs from "node:fs";
-import { config } from "@app/core/config";
+import { config, isBinanceInternalEnabled } from "@app/core/config";
 import { Decimal } from "@app/core/money";
-import { ensureUtc } from "@app/core/datetime";
+import { ensureUtc, localize } from "@app/core/datetime";
 import { OrderStatus, UserRole } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
@@ -32,6 +32,8 @@ import {
   getUser,
   countUserPendingOrders,
   createOrderDirect,
+  createInternalOrder,
+  setOrderPaymentMessage,
   cancelOrder,
 } from "@app/db";
 import type { MyContext } from "../context";
@@ -324,7 +326,7 @@ export async function showOrderConfirmation(
       voucher_line: r.voucherLine,
       total: price(r.subtotal),
     }),
-    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode),
+    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled()),
   );
 }
 
@@ -346,7 +348,7 @@ export async function renderOrderConfirmation(
       voucher_line: r.voucherLine,
       total: price(r.subtotal),
     }),
-    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode) },
+    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled()) },
   );
   ctx.session.menuMsgId = msg.message_id;
 }
@@ -386,6 +388,71 @@ export async function buyNow(ctx: MyContext, productId: number, quantity: number
   }
 
   if (order) await sendPaymentInstructions(ctx, order.id);
+}
+
+/**
+ * Binance Internal Transfer: create the order, show UID + note instructions
+ * (edited in place), and store the message anchor so the poller can edit it to
+ * a success message once the transfer is auto-confirmed.
+ */
+export async function buyNowInternal(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+  const info = requireUser(ctx);
+  const lang = ctx.session.lang;
+  if (!isBinanceInternalEnabled()) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+  const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+  delete ctx.session.scratch.appliedVoucherCode;
+
+  const user = await getUser(prisma, info.id);
+  if (user === null) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+  const pendingCount = await countUserPendingOrders(prisma, info.id);
+  if (pendingCount >= MAX_PENDING_ORDERS) {
+    await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
+    return;
+  }
+
+  let order: Awaited<ReturnType<typeof createInternalOrder>>;
+  try {
+    order = await prisma.$transaction((tx) =>
+      createInternalOrder(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode }),
+    );
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      return;
+    }
+    throw e;
+  }
+  if (!order || !order.paymentRef) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+
+  let idrLine = "";
+  if (config.USDT_IDR_RATE) {
+    const idr = new Decimal(order.totalAmount).times(config.USDT_IDR_RATE).toDecimalPlaces(0);
+    idrLine = ` (≈ Rp${Number(idr).toLocaleString("id-ID")})`;
+  }
+  const expiry = order.expiresAt
+    ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
+    : `${config.INTERNAL_PAYMENT_WINDOW_MINUTES}m`;
+
+  const text = t(ctx, "checkout.internal_instructions", {
+    code: order.paymentRef,
+    uid: esc(config.BINANCE_RECEIVE_UID ?? ""),
+    note: order.paymentRef,
+    amount: price(order.totalAmount, 4),
+    idr_line: idrLine,
+    expiry,
+  });
+  await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang));
+  // Anchor the instructions message so the poller can flip it to success.
+  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
 }
 
 // ---------------------------------------------------------------------------

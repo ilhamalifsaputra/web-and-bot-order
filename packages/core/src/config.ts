@@ -62,6 +62,18 @@ const Env = z.object({
   PAYMENT_WINDOW_MINUTES: z.coerce.number().default(30),
   USE_UNIQUE_CENTS: looseBool.default(true),
 
+  // ---- Binance Internal Transfer (UID-based, auto-confirmed) ----
+  // The Binance UID buyers send USDT to (the note must be the order's paymentRef).
+  BINANCE_RECEIVE_UID: z.string().optional(),
+  // READ-ONLY API key/secret used only to fetch incoming-transfer history.
+  BINANCE_API_KEY: z.string().optional(),
+  BINANCE_API_SECRET: z.string().optional(),
+  BINANCE_API_BASE: z.string().default("https://api.binance.com"),
+  POLL_INTERVAL_SECONDS: z.coerce.number().default(10),
+  INTERNAL_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(15),
+  // Optional USDT→IDR rate; if set, instructions show an IDR equivalent.
+  USDT_IDR_RATE: z.coerce.number().optional(),
+
   // ---- Database ----
   DATABASE_URL_PRISMA: z.string().default("file:../data/bot.db"),
 
@@ -112,3 +124,11 @@ export const config: Config = Env.parse(process.env);
 /** True if the given Telegram user ID is in the admin allow-list. */
 export const isAdmin = (telegramId: number | bigint): boolean =>
   config.ADMIN_IDS.includes(Number(telegramId));
+
+/**
+ * Binance Internal Transfer is offered + auto-confirmed only when the receive
+ * UID and read-only API credentials are all configured. Otherwise the option is
+ * hidden and the poller is a no-op (keeps existing deploys unaffected).
+ */
+export const isBinanceInternalEnabled = (): boolean =>
+  Boolean(config.BINANCE_RECEIVE_UID && config.BINANCE_API_KEY && config.BINANCE_API_SECRET);

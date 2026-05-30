@@ -60,8 +60,13 @@ const dispatchBuy: DomainDispatcher = async (ctx, parts) => {
 };
 
 const dispatchPay: DomainDispatcher = async (ctx, parts) => {
-  // v1:pay:<pid>:<qty> → actual order creation
+  // v1:pay:<pid>:<qty> → Binance Pay order (manual proof)
   await checkout.buyNow(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+};
+
+const dispatchPayInternal: DomainDispatcher = async (ctx, parts) => {
+  // v1:payx:<pid>:<qty> → Binance Internal Transfer (auto-confirmed)
+  await checkout.buyNowInternal(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
 };
 
 const dispatchVoucher: DomainDispatcher = async (ctx, parts) => {
@@ -129,6 +134,7 @@ const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
   order: dispatchOrder,
   page: dispatchPage,
   pay: dispatchPay,
+  payx: dispatchPayInternal,
   qty: dispatchQty,
   ref: dispatchRef,
   restock: dispatchRestock,

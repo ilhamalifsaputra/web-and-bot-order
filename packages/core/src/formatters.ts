@@ -4,7 +4,7 @@
  * helpers (status_badge, group_order_items, esc, redact) live with the
  * web/bot layers.
  */
-import { randomInt } from "node:crypto";
+import { randomInt, randomBytes } from "node:crypto";
 import { Decimal } from "./money";
 
 /** Round to `decimals` places, half-up (matches Python quantize_money). */
@@ -41,6 +41,16 @@ export function generateOrderCode(now: Date = new Date()): string {
 /** 8-char referral code, no ambiguous characters. */
 export function generateReferralCode(): string {
   return pick(REF_ALPHABET, 8);
+}
+
+/**
+ * 10-char uppercase hex payment reference (e.g. "BCC1BDDE6F") — the note a buyer
+ * includes on a Binance Internal Transfer so the poller can match it to an order.
+ * Short enough to type as a memo; ~1.1e12 space makes collisions negligible
+ * (the caller still retries on the UNIQUE constraint).
+ */
+export function generatePaymentRef(): string {
+  return randomBytes(5).toString("hex").toUpperCase();
 }
 
 /**

@@ -20,6 +20,7 @@ import {
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { t } from "../util/i18n";
+import { logErrorRef } from "../util/errors";
 import * as ckb from "../keyboards/customer";
 import * as akb from "../keyboards/admin";
 import * as customer from "./customer";
@@ -159,6 +160,17 @@ export async function routeCallback(ctx: MyContext): Promise<void> {
 
   const domain = parts[1];
 
+  // Quantity-input mode (awaitingQtyProductId) is a text-capture state: any
+  // inline-button tap means the user navigated away by button, so the mode must
+  // end here — otherwise a number typed later is misread as a quantity (§8.9).
+  // smartEdit already clears it on every screen render; this is the structural
+  // guarantee for callbacks that *don't* end on smartEdit (toasts, downloads).
+  // The one exception is the button that *starts* the mode (qty:input), which
+  // sets the flag itself just after rendering its prompt.
+  if (!(domain === "qty" && parts[2] === "input")) {
+    ctx.session.awaitingQtyProductId = undefined;
+  }
+
   if (domain === "adm") {
     try {
       await ctx.answerCallbackQuery();
@@ -188,11 +200,13 @@ export async function routeCallback(ctx: MyContext): Promise<void> {
       /* a dispatcher may have already answered */
     }
   } catch (err) {
-    logger.error({ err }, `Router error for callback_data=${cq.data}`);
+    // Catch-all for any dispatcher crash — log under a ref and quote it so a
+    // customer report maps straight to the stack trace (§8.6).
+    const ref = logErrorRef(err, `Router error for callback_data=${cq.data}`);
     try {
-      await ctx.answerCallbackQuery({ text: t(ctx, "error.generic"), show_alert: true });
+      await ctx.answerCallbackQuery({ text: t(ctx, "error.generic_ref", { ref }), show_alert: true });
     } catch {
-      logger.error(`Failed to deliver error popup for callback_data=${cq.data}`);
+      logger.error(`Failed to deliver error popup for callback_data=${cq.data} ref=${ref}`);
     }
   }
 }
@@ -223,7 +237,7 @@ async function requestReplacement(ctx: MyContext, orderId: number): Promise<void
   const body = `[Replacement Request] Order ${order.orderCode}`;
   const ticket = await createTicket(prisma, info.id, body);
 
-  await ctx.answerCallbackQuery({ text: "✅ Replacement request submitted to admin", show_alert: true });
+  await ctx.answerCallbackQuery({ text: t(ctx, "order.replacement_requested"), show_alert: true });
 
   const targets = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : config.ADMIN_IDS;
   for (const chatId of targets) {

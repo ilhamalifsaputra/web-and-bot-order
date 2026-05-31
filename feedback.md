@@ -6,9 +6,63 @@
 > Status date: 2026-05-31. Authored after the WEB.md Tier 1/Tier 2 build-out and
 > a Binance live-API probe.
 
-This document is the running backlog of observations and recommendations. Items
-marked **✅ DONE** were implemented in recent sessions; the rest are prioritized
-suggestions with enough detail to pick up cold.
+This document is the running backlog. **§0 is the consolidated board** (done vs
+remaining); §1–§9 keep the detail for each item, with a `✅ / ◑ / ⏸` marker.
+
+---
+
+## 0. Status board (consolidated)
+
+### ✅ Done
+- **Web roadmap** — Tier 1 (`/payments`, `/outbox`, dashboard SLA) · Tier 2 §4–§8
+  (wallet ledger, reviews moderation, restock waitlist, `/reports`, **bulk ops**:
+  activate/deactivate + mark-dead + bulk-price preview + **CSV import**) ·
+  Tier 3 **§9 RBAC** · **§10 2FA + force-logout** · **§12 broadcast** · **§13 global search**.
+- **Wallet ledger table** — authoritative, running balance, every move recorded (§5.1).
+- **Binance** — amount fallback + `normalizeTx` fix (§2.x) · poller watchdog +
+  dashboard alert (§5.3) · `normalizeTx` fixture test (§5.4) · self-verdict probe.
+- **Bot UX** — edit-in-place everywhere · `smartEdit` photo+caption · numbered
+  browse list **+ prices** · stale-catalog race fix · global error correlation ref
+  (§8.1–§8.3, §8.6).
+- **i18n** — admin strings localized · user-DM language · **EN/ID parity test** (§3.1–§3.3, §8.8).
+- **Docs/conventions** — `CLAUDE.md` · deploy/migration checklist (§2.3, §5.2).
+- **214 tests green**, `pnpm -r typecheck` clean.
+
+### ⏸ Remaining / to fix
+
+**🔴 Needs owner action (blocks a decision):**
+- **§2.1** Confirm the Binance `note` field — send **one memo'd test transfer**,
+  run `pnpm exec tsx scripts/binance-probe.ts`, read the `NOTE-FIELD VERDICT`.
+  Decides note-vs-amount-vs-UID matching. (Auto-confirm already works via the
+  amount fallback, so this is not blocking delivery — only the matching strategy.)
+- **§8.5** Sync the payment-screen copy with whatever §2.1 concludes (if the memo
+  isn't captured, drop "you must add the note" wording).
+
+**Polish (safe, low effort):**
+- ✅ **§8.6** Error ref now threaded through handler-level catches
+  (`util/errors.ts` → `error.generic_ref`); transient ("try again",
+  `error.try_again`) vs hard (ref + "contact support") copy split.
+- ✅ **§8.9** Quantity-input exits audited; `routeCallback` now clears
+  `awaitingQtyProductId` on every non-`qty:input` callback (structural guard).
+- ✅ **§8.7** Error/terminal screens that dropped their keyboard now carry a
+  forward action (`backToMain`).
+- **§8.4** Optional lighter browse layout if the ASCII art renders poorly anywhere
+  (deferred — operator prefers the branded ASCII; only a fallback if needed).
+
+**Deferred features (each its own focused PR):**
+- **§4.4** Multi-session "active sessions" list (per-device + selective revoke) —
+  needs a sessions table; force-logout covers the practical need for now.
+- **§4.5** Photo broadcasts + richer delivery analytics (web is text-only today).
+- **RBAC** fine-grained per-action capabilities (currently coarse by URL area).
+
+**Testing gaps (nice-to-have):**
+- End-to-end web `/reviews` hide → bot rating exclusion (crud-level already covered).
+- Extend the happy / auth / bad-CSRF trio to any future new route.
+
+**Ongoing (ops):**
+- Every deploy: migrate the DB (`db push` or apply migrations) **and restart
+  order-bot before new code** (§2.3). Pending migrations: `review_hidden`,
+  `wallet_transactions`, `broadcasts`.
 
 ---
 
@@ -345,20 +399,31 @@ works:
   second safety net. Either way, the instruction string and the matcher must
   tell the same story.
 
-### 8.6 ◑ PARTIAL — Error correlation id
-- ✅ The global `bot.catch` now generates a short **ref** (e.g. `AB12CD`),
-  attaches it to the log line (`ref=…`), and best-effort DMs the user
-  `error.generic_ref` ("⚠ Something went wrong (ref: AB12CD)…") so an uncaught
-  exception no longer leaves them on a dead screen and a customer report maps
-  straight to the stack trace. EN+ID key added (parity guard covers it).
-- ⏸ Optional next: thread the same ref through handler-level `error.generic`
-  catches, and split **transient** ("try again") vs **hard** ("contact support")
-  copy where the error type is known.
+### 8.6 ✅ DONE — Error correlation id
+- ✅ The global `bot.catch` generates a short **ref** (e.g. `AB12CD`), attaches
+  it to the log line (`ref=…`), and best-effort DMs the user `error.generic_ref`
+  ("⚠ Something went wrong (ref: AB12CD)…") so an uncaught exception no longer
+  leaves them on a dead screen and a customer report maps straight to the stack
+  trace. EN+ID key added (parity guard covers it).
+- ✅ Ref now threaded through **handler-level catches** too. A shared
+  `util/errors.ts` (`newErrorRef` / `logErrorRef`) is reused by `bot.catch` and
+  the catch blocks in `customer.browseProduct`, `routeCallback` (the catch-all),
+  and the voucher conversation — every hard failure logs under a ref and quotes
+  it via `error.generic_ref`.
+- ✅ Copy split by error type: **hard** failures (caught exceptions) → ref +
+  "contact support"; **transient** expected states (a product deleted between
+  render and tap) → lighter `error.try_again` ("⚠ Something went wrong. Please
+  try again.", no ref), in `browseProduct`/`qtyInputStart`/`handleQtyTextInput`/
+  `showOrderConfirmation`. EN+ID `error.try_again` added.
 
-### 8.7 Never strand the user
+### 8.7 ✅ DONE (principle, kept enforcing) — Never strand the user
 Every terminal screen should offer at least one forward action (Menu / My
-Orders / Back). The new confirmations include nav keyboards — keep that property
+Orders / Back). The confirmations include nav keyboards — keep that property
 for all future flows; a confirmation with no buttons is a dead end on mobile.
+Swept the error/empty screens that previously called `smartEdit` with **no
+keyboard** (browse not-found, browse DB error, qty-input not-found, empty/invalid
+browse number, `search.no_query`) — they now carry `backToMain` so none is a
+dead end.
 
 ### 8.8 ✅ DONE — Bilingual integrity guard
 `packages/core/src/locales.test.ts` now fails CI if `en.json` and `id.json`
@@ -366,11 +431,15 @@ drift apart in **keys** OR in their per-key `{placeholder}` sets. Any English
 leak from a one-sided key add is caught immediately. (Both files currently in
 full parity.)
 
-### 8.9 Quantity-input mode is stateful — guard the exits
+### 8.9 ✅ DONE — Quantity-input mode is stateful — guard the exits
 Manual qty entry uses `awaitingQtyProductId` and disambiguates typed numbers
-against `MENU_LABELS`. `smartEdit` clears the flag on navigation (good). Audit
-any new entry/exit path to ensure the flag is always cleared, or a stray number
-later gets misread as a quantity.
+against `MENU_LABELS`. `smartEdit` clears the flag on navigation, and the text
+path clears it on menu-label / Back / command exits. The remaining gap was
+callbacks that *don't* end on `smartEdit` (toasts, document downloads): a stale
+inline tap could leave the flag set so a later number was misread as a quantity.
+Closed structurally — `routeCallback` now clears `awaitingQtyProductId` on every
+callback **except** `qty:input` (the one that starts the mode). Covered by tests
+(clear-on-noop-callback, keep-on-qty:input, plus the existing text-path guard).
 
 ---
 

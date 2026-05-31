@@ -5,7 +5,7 @@
  */
 import { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
-export { esc, redactCredentials, quantizeMoney, formatPrice } from "@app/core/formatters";
+export { esc, redactCredentials, quantizeMoney, formatPrice, formatIdr } from "@app/core/formatters";
 
 /** Remaining time until expiry as "M:SS" (e.g. "4:32"). Port of _format_countdown. */
 export function formatCountdown(expiresAt: Date): string {

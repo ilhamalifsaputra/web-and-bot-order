@@ -381,4 +381,31 @@ describe("callback router", () => {
     await routeCallback(ctx);
     expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
   });
+
+  // §8.9 — quantity-input mode must end on any button tap, even one whose
+  // dispatcher never re-renders (so smartEdit's own clear doesn't run).
+  it("clears awaitingQtyProductId on a callback that never re-renders (§8.9)", async () => {
+    const { ctx } = customerCtx({ callbackData: "v1:noop:x" });
+    ctx.session.awaitingQtyProductId = sample.product.id;
+    await routeCallback(ctx);
+    expect(ctx.session.awaitingQtyProductId).toBeUndefined();
+  });
+
+  // …but the button that *starts* qty-input mode keeps it set.
+  it("keeps awaitingQtyProductId for the qty:input callback that starts it (§8.9)", async () => {
+    const { ctx } = customerCtx({ callbackData: `v1:qty:input:${sample.product.id}` });
+    await routeCallback(ctx);
+    expect(ctx.session.awaitingQtyProductId).toBe(sample.product.id);
+  });
+
+  // §8.6 — a dispatcher crash surfaces a quotable correlation ref to the user.
+  it("surfaces a correlation ref when a dispatcher throws (§8.6)", async () => {
+    // No dbUser in session → requireUser() throws inside the dispatcher.
+    const { ctx, sink } = makeCtx({ from: { id: 42 }, callbackData: "v1:order:list", session: { lang: "en", scratch: {} } });
+    await routeCallback(ctx);
+    const refAlert = calls(sink, "answerCallbackQuery").some((c) =>
+      /ref:/i.test((c.args[0] as { text?: string } | undefined)?.text ?? ""),
+    );
+    expect(refAlert).toBe(true);
+  });
 });

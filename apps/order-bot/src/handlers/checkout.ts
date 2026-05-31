@@ -39,7 +39,7 @@ import {
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
-import { esc, formatPrice } from "../util/format";
+import { esc, formatPrice, formatIdr } from "../util/format";
 import * as ckb from "../keyboards/customer";
 
 const MAX_PENDING_ORDERS = 10;
@@ -303,13 +303,25 @@ export async function showOrderConfirmation(
 
   const product = await getProduct(prisma, productId);
   if (product === null) {
-    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.generic"), show_alert: true });
+    // Product vanished between render and tap. Toast for immediacy, then edit
+    // the stale "Confirm & Pay" bubble into a recovery screen so the dead
+    // confirm button is replaced by a forward action (never strand the user).
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.try_again"), show_alert: true });
+    await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
     return;
   }
   const stock = await countAvailableStock(prisma, productId);
   if (stock < quantity) {
+    // Stock disappeared under the user. Toast, then replace the now-invalid
+    // confirmation bubble with an out-of-stock notice + a forward action so the
+    // dead "Confirm & Pay" button is gone (never strand the user).
     if (ctx.callbackQuery)
       await ctx.answerCallbackQuery({ text: t(ctx, "error.out_of_stock", { product: product.name }), show_alert: true });
+    await smartEdit(
+      ctx,
+      t(ctx, "error.out_of_stock", { product: esc(product.name) }),
+      ckb.backToMain(lang),
+    );
     return;
   }
 
@@ -434,8 +446,8 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
 
   let idrLine = "";
   if (config.USDT_IDR_RATE) {
-    const idr = new Decimal(order.totalAmount).times(config.USDT_IDR_RATE).toDecimalPlaces(0);
-    idrLine = ` (≈ Rp${Number(idr).toLocaleString("id-ID")})`;
+    const idr = new Decimal(order.totalAmount).times(config.USDT_IDR_RATE);
+    idrLine = ` (≈ ${formatIdr(idr)})`;
   }
   const expiry = order.expiresAt
     ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`

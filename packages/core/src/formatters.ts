@@ -21,6 +21,20 @@ export function formatPrice(
   return `${quantizeMoney(amount, decimals).toFixed(decimals)} ${currency}`;
 }
 
+/**
+ * Indonesian Rupiah display, e.g. "Rp123.456" (prefix symbol, dotted
+ * thousands, no decimals). formatPrice can't represent this layout (it emits a
+ * suffix currency with a decimal point), so IDR rendering routes through this
+ * single helper instead of ad-hoc `toLocaleString` calls. Decimal-based — the
+ * caller passes an already-converted IDR amount.
+ */
+export function formatIdr(amount: Decimal.Value): string {
+  const whole = new Decimal(amount).toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
+  const digits = whole.abs().toFixed(0);
+  const grouped = digits.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  return `${whole.isNegative() ? "-" : ""}Rp${grouped}`;
+}
+
 const ORD_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const REF_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous 0/O/1/I
 

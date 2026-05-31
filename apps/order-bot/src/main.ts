@@ -27,6 +27,7 @@ import { initialSession } from "./context";
 import { bindUpdateId, registeredUser, rateLimit } from "./middleware";
 import { CONVERSATIONS } from "./conversations";
 import { coreT } from "./util/i18n";
+import { newErrorRef } from "./util/errors";
 import * as customer from "./handlers/customer";
 import * as staticPages from "./handlers/static";
 import * as admin from "./handlers/admin";
@@ -96,7 +97,7 @@ export function buildBot(): Bot<MyContext> {
     const ctx = err.ctx;
     // Correlation id: shown to the user AND attached to the log line so a
     // customer report ("I got ref AB12CD") maps straight to the stack trace.
-    const ref = Math.random().toString(16).slice(2, 8).toUpperCase();
+    const ref = newErrorRef();
     const bits: string[] = [`ref=${ref}`];
     if (ctx.from) bits.push(`user=${ctx.from.id}`);
     if (ctx.callbackQuery?.data) bits.push(`cb=${ctx.callbackQuery.data}`);

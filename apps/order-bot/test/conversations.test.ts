@@ -143,6 +143,25 @@ describe("checkout conversations", () => {
     expect(calls(sink, "sendMessage").some((c) => c.args[0] === 999)).toBe(true); // admin notified
   });
 
+  it("proof: '🏠 Menu' escapes to the dashboard, answers the callback, leaves the order pending (§8.7)", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createOrderDirect(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1 }),
+    );
+    const before = (await getOrder(prisma, order!.id))!.status;
+    const sink: SentCall[] = [];
+    const entry = entryCust(sink, `v1:checkout:proof:${order!.id}`);
+    const conv = new FakeConversation([msg(sink, { callbackData: "v1:menu:main" })]);
+    await proofConversation(conv.asMyConversation(), entry);
+
+    // Escaped to the dashboard (a fresh reply carrying the persistent keyboard),
+    // and the callback was answered so no loading spinner hangs. Under the bug
+    // this fell through to a re-prompt → a 2nd wait() → "queue empty" throw.
+    expect(calls(sink, "reply").length).toBeGreaterThan(0);
+    expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
+    // Non-destructive: the order is untouched (still pending, under My Orders).
+    expect((await getOrder(prisma, order!.id))!.status).toBe(before);
+  });
+
   it("voucher: a valid code is applied and the confirmation re-renders with it", async () => {
     const sink: SentCall[] = [];
     const entry = entryCust(sink, `v1:voucher:start:${sample.product.id}:2`);

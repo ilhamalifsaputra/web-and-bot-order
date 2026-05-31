@@ -2,7 +2,9 @@
 import "./setup-db";
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser } from "@app/db";
+import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast } from "@app/db";
+import type { Api } from "grammy";
+import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, type SentCall } from "./helpers/ctx";
@@ -87,6 +89,15 @@ describe("customer handlers", () => {
     expect((ctx.session.scratch as { browseProductIds?: number[] }).browseProductIds).toEqual([sample.product.id]);
   });
 
+  it("browseProductsFlat shows a numbered list with prices on each line", async () => {
+    const { ctx, sink } = customerCtx();
+    await customer.browseProductsFlat(ctx);
+    const dump = JSON.stringify(sink);
+    expect(dump).toContain("[ 1 ]"); // numbered layout (compact for big catalogs)
+    expect(dump).toContain(sample.product.name.toUpperCase());
+    expect(dump).toMatch(/—\s*[^\s]+/); // a price follows the product name
+  });
+
   it("browseProduct shows detail and sets the viewing breadcrumb", async () => {
     const { ctx, sink } = customerCtx();
     await customer.browseProduct(ctx, sample.product.id);
@@ -98,6 +109,17 @@ describe("customer handlers", () => {
     const { ctx } = customerCtx({ text: "1", session: { ...userSession(), scratch: { browsePage: 0 } } });
     await customer.handleProductNumber(ctx);
     expect((ctx.session.scratch as { viewingProductId?: number }).viewingProductId).toBe(sample.product.id);
+  });
+
+  it("handleProductNumber honors the rendered snapshot over a fresh query (stale-catalog race)", async () => {
+    // A second product exists; the snapshot points only at it. Tapping "1" must
+    // open the snapshot's product, not whatever a fresh query would rank first.
+    const other = await prisma.product.create({
+      data: { categoryId: sample.product.categoryId, name: "Other", type: "SHARED", durationLabel: "1 Month", price: "9" },
+    });
+    const { ctx } = customerCtx({ text: "1", session: { ...userSession(), scratch: { browsePage: 0, browseProductIds: [other.id] } } });
+    await customer.handleProductNumber(ctx);
+    expect((ctx.session.scratch as { viewingProductId?: number }).viewingProductId).toBe(other.id);
   });
 
   it("setLanguage persists the choice and updates the session", async () => {
@@ -181,6 +203,44 @@ describe("checkout handlers", () => {
     await checkout.cancelPendingOrder(ctx, order!.id);
     const after = await getOrder(prisma, order!.id);
     expect(after!.status).toBe(OrderStatus.CANCELLED);
+  });
+});
+
+// ===========================================================================
+// Broadcast drainer (the bot half of the web /broadcast feature)
+// ===========================================================================
+
+describe("drainBroadcasts", () => {
+  function fakeApi() {
+    const sent: Array<{ chatId: number | string; text: string }> = [];
+    const api = {
+      sendMessage: async (chatId: number | string, text: string) => {
+        sent.push({ chatId, text });
+        return { message_id: 1 };
+      },
+    } as unknown as Api;
+    return { api, sent };
+  }
+
+  it("delivers a queued broadcast to the segment and marks it SENT", async () => {
+    // sample.user + the admin (999) are both non-banned ⇒ ALL = 2 recipients.
+    const total = await prisma.user.count({ where: { banned: false } });
+    const bc = await createBroadcast(prisma, { message: "Hello all", segment: "ALL", scheduledAt: null, createdById: null, total });
+    const { api, sent } = fakeApi();
+
+    await drainBroadcasts(api);
+
+    expect(sent.length).toBe(total);
+    expect(sent.every((m) => m.text === "Hello all")).toBe(true);
+    const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+    expect(done.status).toBe("SENT");
+    expect(done.sentCount).toBe(total);
+  });
+
+  it("is a no-op when nothing is queued", async () => {
+    const { api, sent } = fakeApi();
+    await drainBroadcasts(api);
+    expect(sent.length).toBe(0);
   });
 });
 

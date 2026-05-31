@@ -1,0 +1,86 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}Broadcast · Stock Admin{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-semibold mb-2">Broadcast</h1>
+<p class="text-slate-500 text-sm mb-6">Compose a message and queue it. The <b>bot</b> delivers it — the web never sends Telegram directly.</p>
+{{ ui.flash(msg, kind) }}
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+  <section class="bg-white rounded-lg shadow p-5 lg:col-span-2">
+    <form method="post" action="/broadcast" class="space-y-3 text-sm">
+      {{ ui.csrf_field(admin) }}
+      <div>
+        <label class="block text-xs text-slate-500 mb-1">Message (plain text)</label>
+        <textarea name="message" rows="6" required maxlength="4000"
+          class="w-full border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-400"
+          placeholder="Hi! New stock just dropped…"></textarea>
+      </div>
+      <div class="flex flex-wrap gap-4 items-end">
+        <div>
+          <label class="block text-xs text-slate-500 mb-1">Segment</label>
+          <select name="segment" class="border rounded px-2 py-1">
+            {% for s in segments %}<option value="{{ s }}">{{ s | lower | replace('_', ' ') }} ({{ counts[s] }})</option>{% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="block text-xs text-slate-500 mb-1">Schedule (optional)</label>
+          <input type="datetime-local" name="scheduled_at" class="border rounded px-2 py-1">
+        </div>
+        <button class="bg-slate-900 text-white px-4 py-2 rounded hover:bg-slate-700"
+          onclick="return confirm('Queue this broadcast?');">Queue broadcast</button>
+      </div>
+    </form>
+  </section>
+
+  <aside class="bg-white rounded-lg shadow p-5 text-sm">
+    <h2 class="font-semibold mb-3">Audience sizes</h2>
+    <ul class="space-y-1">
+      {% for s in segments %}
+      <li class="flex justify-between"><span class="text-slate-500">{{ s | lower | replace('_', ' ') }}</span><span class="font-medium">{{ counts[s] }}</span></li>
+      {% endfor %}
+    </ul>
+    <p class="text-xs text-slate-400 mt-3">“recent buyers” = a delivered order in the last 30 days. Banned users are always excluded.</p>
+  </aside>
+</div>
+
+<section class="bg-white rounded-lg shadow overflow-x-auto mt-6">
+  <div class="px-5 pt-4 font-semibold">Recent broadcasts</div>
+  <table class="min-w-full text-sm mt-2">
+    <thead class="bg-slate-100 text-slate-600 text-left">
+      <tr>
+        <th class="px-4 py-2">#</th>
+        <th class="px-4 py-2">Status</th>
+        <th class="px-4 py-2">Segment</th>
+        <th class="px-4 py-2">Message</th>
+        <th class="px-4 py-2 text-right">Sent / Total</th>
+        <th class="px-4 py-2">When</th>
+        <th class="px-4 py-2"></th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for b in history %}
+      <tr>
+        <td class="px-4 py-2 text-slate-400">{{ b.id }}</td>
+        <td class="px-4 py-2">{{ ui.status_badge(b.status) }}</td>
+        <td class="px-4 py-2 text-slate-500">{{ b.segment | lower | replace('_', ' ') }}</td>
+        <td class="px-4 py-2 max-w-xs truncate" title="{{ b.message }}">{{ b.message }}</td>
+        <td class="px-4 py-2 text-right">{{ b.sentCount }} / {{ b.totalCount }}{% if b.failedCount %} <span class="text-red-600 text-xs">({{ b.failedCount }} failed)</span>{% endif %}</td>
+        <td class="px-4 py-2 text-slate-500">{% if b.scheduledAt %}{{ b.scheduledAt | localdt }}{% else %}{{ b.createdAt | localdt }}{% endif %}</td>
+        <td class="px-4 py-2">
+          {% if b.status == 'PENDING' %}
+          <form method="post" action="/broadcast/{{ b.id }}/cancel" onsubmit="return confirm('Cancel broadcast #{{ b.id }}?');">
+            {{ ui.csrf_field(admin) }}
+            <button class="text-xs px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200">Cancel</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="px-4 py-6 text-center text-slate-400">No broadcasts yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -111,6 +111,23 @@ export function countReviews(db: Db, opts: ReviewFilter = {}) {
   return db.review.count({ where: reviewWhere(opts) });
 }
 
+/**
+ * Public rating for a product: average + count over VISIBLE reviews only
+ * (hidden reviews, suppressed by the web moderation panel, are excluded). This
+ * is the single source of truth for the rating the bot shows customers.
+ */
+export async function productRating(
+  db: Db,
+  productId: number,
+): Promise<{ avg: number | null; count: number }> {
+  const agg = await db.review.aggregate({
+    where: { productId, hidden: false },
+    _avg: { rating: true },
+    _count: { id: true },
+  });
+  return { avg: agg._avg.rating, count: agg._count.id };
+}
+
 /** Show/hide a single review. Hidden reviews are excluded from the bot's
  * public per-product rating average. Returns the updated row. */
 export function setReviewHidden(db: Db, reviewId: number, hidden: boolean) {

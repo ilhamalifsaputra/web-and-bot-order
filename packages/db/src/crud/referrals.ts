@@ -37,7 +37,7 @@ export async function maybePayReferralCommission(
       paid: true,
     },
   });
-  await adjustWallet(db, user.referredById, commission);
+  await adjustWallet(db, user.referredById, commission, { reason: "referral", orderId: order.id });
   logger.info(
     `Paid referral commission ${commission} to user_id=${user.referredById} for order=${order.orderCode}`,
   );

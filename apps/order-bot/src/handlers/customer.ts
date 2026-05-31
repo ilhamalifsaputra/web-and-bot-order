@@ -29,6 +29,7 @@ import {
   getUser,
   setUserLanguage,
   subscribeToRestock,
+  productRating,
   getSetting,
   searchProducts,
   listUserTickets,
@@ -149,6 +150,7 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
 
 export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void> {
   const lang = ctx.session.lang;
+  const info = ctx.session.dbUser;
   const tg = ctx.from!;
   const name = esc([tg.first_name, tg.last_name].filter(Boolean).join(" ") || tg.username || "");
 
@@ -165,8 +167,17 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
 
   sc(ctx).browsePage = page;
   sc(ctx).browseProductIds = pageProducts.map((p) => p.id);
+  delete sc(ctx).viewingProductId;
 
-  const itemLines = pageProducts.map((p, i) => `┊ [ ${i + 1} ] ${esc(p.name).toUpperCase()}`);
+  // Numbered list (compact for large catalogs — 5 number buttons per row) with
+  // the reseller-aware price on each line so buyers can compare without opening
+  // each one. Selection by number is resolved against the browseProductIds
+  // snapshot above (see handleProductNumber).
+  const isReseller = info?.role === UserRole.RESELLER;
+  const itemLines = pageProducts.map((p, i) => {
+    const unit = isReseller && p.resellerPrice != null ? p.resellerPrice : p.price;
+    return `┊ [ ${i + 1} ] ${esc(p.name).toUpperCase()} — ${price(unit)}`;
+  });
 
   const text = t(ctx, "browse.list_decorated", {
     name,
@@ -175,10 +186,8 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     items: itemLines.join("\n"),
   });
 
-  delete sc(ctx).viewingProductId;
-
-  // The persistent numbered keyboard is a reply keyboard; smartEdit detects
-  // that and sends a fresh message carrying it (an edit can't bear one).
+  // The numbered keyboard is a reply keyboard; smartEdit sends a fresh message
+  // carrying it (an edit can't bear a reply keyboard).
   await smartEdit(
     ctx,
     text,
@@ -238,12 +247,19 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   // Number buttons — product selection. Only short digit strings.
   if (!/^\d+$/.test(text) || text.length > 4) return;
 
-  const products = await listAllActiveProducts(prisma);
-  const page = sc(ctx).browsePage ?? 0;
-  const start = page * PAGE_SIZE;
-  const pageProducts = products.slice(start, start + PAGE_SIZE);
-  const productIds = pageProducts.map((p) => p.id);
-  sc(ctx).browseProductIds = productIds;
+  // Resolve the tapped number against the SNAPSHOT captured when the list was
+  // last rendered (browseProductIds), so a catalog change between render and tap
+  // can't shift the numbering and open the wrong product. Fall back to a fresh
+  // page slice only when there's no snapshot yet (e.g. a number typed before
+  // browsing this session).
+  let productIds = sc(ctx).browseProductIds ?? [];
+  if (!productIds.length) {
+    const products = await listAllActiveProducts(prisma);
+    const page = sc(ctx).browsePage ?? 0;
+    const start = page * PAGE_SIZE;
+    productIds = products.slice(start, start + PAGE_SIZE).map((p) => p.id);
+    sc(ctx).browseProductIds = productIds;
+  }
 
   if (!productIds.length) {
     await smartEdit(ctx, t(ctx, "browse.no_products"));
@@ -278,13 +294,8 @@ export async function browseProduct(ctx: MyContext, productId: number, qty = 1):
       return;
     }
     stock = await countAvailableStock(prisma, p.id);
-    const agg = await prisma.review.aggregate({
-      where: { productId: p.id, hidden: false },
-      _avg: { rating: true },
-      _count: { id: true },
-    });
-    const avg = agg._avg.rating;
-    ratingStr = avg ? `${avg.toFixed(1)}/5 (${agg._count.id})` : "—";
+    const { avg, count } = await productRating(prisma, p.id);
+    ratingStr = avg ? `${avg.toFixed(1)}/5 (${count})` : "—";
     bulkRule = await getBulkPricingForProduct(prisma, p.id);
   } catch (err) {
     logger.error({ err }, `browse_product: DB error for product_id=${productId}`);
@@ -529,9 +540,13 @@ export async function setLanguage(ctx: MyContext, code: string): Promise<void> {
 
 export async function subscribeRestock(ctx: MyContext, productId: number): Promise<void> {
   const info = requireUser(ctx);
+  const lang = ctx.session.lang;
   const isNew = await subscribeToRestock(prisma, info.id, productId);
   const msg = t(ctx, isNew ? "browse.subscribed_restock" : "browse.already_subscribed");
-  if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: msg, show_alert: true });
+  if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: msg });
+  // Edit the product bubble into a confirmation so the tap leaves a visible
+  // trace, instead of an ephemeral toast that vanishes on the next interaction.
+  await smartEdit(ctx, msg, ckb.restockSubscribedKb(productId, lang));
 }
 
 // ---------------------------------------------------------------------------

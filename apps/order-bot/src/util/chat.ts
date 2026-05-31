@@ -42,9 +42,16 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
   // Reply keyboards can't attach to an edit — only edit when the markup is
   // inline (or absent); otherwise fall through to a fresh send carrying it.
   if (ctx.callbackQuery && (replyMarkup === undefined || isInline(replyMarkup))) {
+    const cqMsg = ctx.callbackQuery.message;
     try {
-      await ctx.editMessageText(body, { parse_mode: "HTML", reply_markup: replyMarkup });
-      if (ctx.callbackQuery.message) ctx.session.menuMsgId = ctx.callbackQuery.message.message_id;
+      // A photo+caption bubble (e.g. the QR payment screen) can't take an
+      // editMessageText — edit its caption in place, like adminEdit does.
+      if (cqMsg && "photo" in cqMsg && cqMsg.photo) {
+        await ctx.editMessageCaption({ caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
+      } else {
+        await ctx.editMessageText(body, { parse_mode: "HTML", reply_markup: replyMarkup });
+      }
+      if (cqMsg) ctx.session.menuMsgId = cqMsg.message_id;
       return;
     } catch (err) {
       if (isNotModified(err)) return;

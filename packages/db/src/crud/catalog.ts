@@ -69,6 +69,12 @@ export function listAllProducts(db: Db) {
   });
 }
 
+/** Products for a set of ids (order not guaranteed). Used by bulk-edit previews. */
+export function getProductsByIds(db: Db, ids: number[]) {
+  if (!ids.length) return Promise.resolve([]);
+  return db.product.findMany({ where: { id: { in: ids } } });
+}
+
 export function getProduct(db: Db, productId: number) {
   return db.product.findUnique({ where: { id: productId } });
 }
@@ -110,6 +116,36 @@ export async function updateProduct(
 ) {
   if (Object.keys(fields).length === 0) return;
   await db.product.update({ where: { id: productId }, data: fields });
+}
+
+/** Bulk activate/deactivate products in one writer. Returns the count updated. */
+export async function bulkSetProductsActive(
+  db: Db,
+  ids: number[],
+  isActive: boolean,
+): Promise<number> {
+  if (!ids.length) return 0;
+  const res = await db.product.updateMany({
+    where: { id: { in: ids } },
+    data: { isActive },
+  });
+  return res.count;
+}
+
+/**
+ * Apply pre-computed new prices to products. Each item is {id, price} already
+ * validated by the caller. No commit here (per crud convention) — wrap in the
+ * caller's `prisma.$transaction(tx => bulkSetPrices(tx, items))` for atomicity.
+ * Returns the count updated. (Prices are money — the web flow previews first.)
+ */
+export async function bulkSetPrices(
+  db: Db,
+  items: Array<{ id: number; price: string }>,
+): Promise<number> {
+  for (const it of items) {
+    await db.product.update({ where: { id: it.id }, data: { price: it.price } });
+  }
+  return items.length;
 }
 
 /** Search active products by name/description (case-insensitive LIKE). */

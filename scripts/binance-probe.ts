@@ -45,7 +45,38 @@ async function main() {
       transactionType: r.transactionType ?? r.orderType,
     });
   }
-  if (!rows.length) console.log("(no transactions in window — try sending a small test transfer first)");
+  if (!rows.length) {
+    console.log("(no transactions in window — send a small memo'd test transfer first)");
+    return;
+  }
+
+  // ── Verdict: does the buyer memo actually surface in a usable field? ────────
+  // paymentRef is a 10-char uppercase hex string (generatePaymentRef()).
+  const REF = /^[0-9A-F]{10}$/;
+  const memoFields = ["note", "remark", "message"] as const;
+  const nonEmptyNote = rows.filter((r) => String(r.note ?? "").trim() !== "").length;
+  const refLike = rows.filter((r) =>
+    memoFields.some((f) => REF.test(String(r[f] ?? "").trim().toUpperCase())),
+  );
+
+  console.log("\n── NOTE-FIELD VERDICT ─────────────────────────────");
+  console.log(`rows with a non-empty 'note'        : ${nonEmptyNote}/${rows.length}`);
+  console.log(`rows whose memo looks like a paymentRef (10-hex): ${refLike.length}`);
+  if (refLike.length) {
+    console.log("→ PASS: a buyer memo IS captured. note-matching is viable.");
+    for (const r of refLike.slice(0, 3)) {
+      const carrier = memoFields.find((f) => REF.test(String(r[f] ?? "").trim().toUpperCase()));
+      console.log(`   tx=${r.transactionId} amount=${r.amount} ${carrier}=${r[carrier!]}`);
+    }
+  } else if (nonEmptyNote > 0) {
+    console.log("→ PARTIAL: some notes are populated but none match a paymentRef.");
+    console.log("   Re-run AFTER sending a transfer whose memo is the order's paymentRef.");
+  } else {
+    console.log("→ FAIL (so far): every memo field is empty in this window.");
+    console.log("   Either the payload doesn't carry the memo, or no memo'd transfer");
+    console.log("   has landed yet. Send one (memo = the order's paymentRef) and re-run.");
+    console.log("   If it stays empty, rely on the amount fallback + USE_UNIQUE_CENTS=1.");
+  }
 }
 
 main().catch((e) => {

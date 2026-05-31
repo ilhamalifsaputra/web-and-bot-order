@@ -5,7 +5,7 @@
  * at /partials/dashboard-sla so HTMX can poll-refresh it without a full reload.
  */
 import type { FastifyInstance } from "fastify";
-import { config } from "@app/core/config";
+import { config, isBinanceInternalEnabled } from "@app/core/config";
 import { addDays, addMinutes } from "@app/core/datetime";
 import {
   prisma,
@@ -18,6 +18,7 @@ import {
   listOrdersAgingInVerification,
   listExpiringPendingPayments,
   listOrderItemsExpiringWarranty,
+  processedTxOutcomeCounts,
 } from "@app/db";
 import { currentAdmin } from "../plugins/auth";
 
@@ -55,6 +56,13 @@ export default async function dashboardRoutes(app: FastifyInstance): Promise<voi
     const recentAudit = await listAuditLogs(prisma, { limit: 10 });
     const sla = await slaContext(prisma);
 
+    // Surface money that arrived but didn't deliver (unmatched / delivery_failed).
+    let binance: { unmatched: number; delivery_failed: number } | null = null;
+    if (isBinanceInternalEnabled()) {
+      const counts = await processedTxOutcomeCounts(prisma);
+      binance = { unmatched: counts.unmatched ?? 0, delivery_failed: counts.delivery_failed ?? 0 };
+    }
+
     return reply.view("dashboard.njk", {
       admin: req.admin,
       active_nav: "/",
@@ -68,6 +76,7 @@ export default async function dashboardRoutes(app: FastifyInstance): Promise<voi
       pending_count: pending.length,
       recent_audit: recentAudit,
       sla,
+      binance,
     });
   });
 

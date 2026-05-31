@@ -184,7 +184,9 @@ export async function createOrderFromCart(
   });
 
   // 9. Wallet debit (atomic)
-  if (walletUsed.greaterThan(0)) await adjustWallet(db, args.user.id, walletUsed.negated());
+  if (walletUsed.greaterThan(0)) {
+    await adjustWallet(db, args.user.id, walletUsed.negated(), { reason: "order_payment", orderId: order.id });
+  }
 
   // 10. Bump voucher usage
   if (voucher) {
@@ -398,7 +400,7 @@ async function releaseOrderHolds(
     }
   }
   if (new Decimal(order.walletUsed).greaterThan(0)) {
-    await adjustWallet(db, order.userId, order.walletUsed, { allowNegative: true });
+    await adjustWallet(db, order.userId, order.walletUsed, { allowNegative: true, reason: "order_refund", orderId: order.id });
   }
   if (order.voucherId) {
     const v = await db.voucher.findUnique({ where: { id: order.voucherId } });

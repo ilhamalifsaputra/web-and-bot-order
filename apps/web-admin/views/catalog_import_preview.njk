@@ -1,0 +1,58 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}Import preview · Catalog{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+  <a href="/catalog" class="text-sm text-slate-500 hover:underline">← Catalog</a>
+  <h1 class="text-2xl font-semibold mt-1">Product import — preview</h1>
+  <p class="text-slate-500 text-sm">
+    <span class="text-green-700 font-medium">{{ valid_count }} ready</span>
+    {% if invalid_count %}· <span class="text-red-600 font-medium">{{ invalid_count }} with errors (skipped)</span>{% endif %}.
+    Nothing has been written yet.
+  </p>
+</div>
+
+<div class="bg-white rounded-lg shadow overflow-x-auto mb-4">
+  <table class="min-w-full text-sm">
+    <thead class="bg-slate-100 text-slate-600 text-left">
+      <tr>
+        <th class="px-3 py-2">#</th>
+        <th class="px-3 py-2">Status</th>
+        <th class="px-3 py-2">Category</th>
+        <th class="px-3 py-2">Name</th>
+        <th class="px-3 py-2">Type</th>
+        <th class="px-3 py-2">Duration</th>
+        <th class="px-3 py-2 text-right">Price</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for r in rows %}
+      <tr class="{% if not r.ok %}bg-red-50{% endif %}">
+        <td class="px-3 py-2 text-slate-400">{{ r.line }}</td>
+        <td class="px-3 py-2">
+          {% if r.ok %}<span class="text-green-700">✓ ready</span>
+          {% else %}<span class="text-red-600">✗ {{ r.error }}</span>{% endif %}
+        </td>
+        <td class="px-3 py-2">{{ r.category or '—' }}</td>
+        <td class="px-3 py-2">{{ r.name or '—' }}</td>
+        <td class="px-3 py-2">{{ r.type or '—' }}</td>
+        <td class="px-3 py-2">{{ r.durationLabel or '—' }}</td>
+        <td class="px-3 py-2 text-right">{{ r.price or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="flex gap-3">
+  {% if valid_count %}
+  <form method="post" action="/catalog/products/import/apply">
+    {{ ui.csrf_field(admin) }}
+    <input type="hidden" name="csv" value="{{ csv }}">
+    <button class="bg-slate-900 text-white px-4 py-2 rounded hover:bg-slate-700">Import {{ valid_count }} product(s)</button>
+  </form>
+  {% endif %}
+  <a href="/catalog" class="px-4 py-2 rounded bg-slate-200 hover:bg-slate-300">Cancel</a>
+</div>
+{% endblock %}

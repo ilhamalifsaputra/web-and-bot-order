@@ -125,7 +125,11 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     }
     let newBalance: Decimal;
     try {
-      newBalance = await adjustWallet(prisma, userId, deltaDec);
+      newBalance = await adjustWallet(prisma, userId, deltaDec, {
+        reason: "admin_adjust",
+        note: note || null,
+        adminId: req.admin!.userId,
+      });
     } catch (e) {
       if (e instanceof ValidationError) {
         return redirectWithFlash(reply, `/users/${userId}`, humanizeValidationError(e), "error");

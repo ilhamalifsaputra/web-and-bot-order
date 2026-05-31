@@ -33,7 +33,14 @@ import {
   passwordHashKey,
   hashPassword,
   verifyPassword,
+  webRoleKey,
+  twoFaSecretKey,
+  twoFaPendingKey,
+  generateTotpSecret,
+  currentTotp,
+  verifyTotp,
 } from "../src/auth";
+import { canMutate } from "../src/plugins/auth";
 
 const COOKIE = config.WEB_COOKIE_NAME;
 const ADMIN_TG = 999;
@@ -648,11 +655,343 @@ describe("restock waitlist", () => {
   });
 });
 
+// ---- global search (Tier 3 §13) -------------------------------------------
+
+describe("global search", () => {
+  it("exact order code jumps straight to the order detail", async () => {
+    const orderId = await makePendingOrder();
+    const order = (await getOrder(prisma, orderId))!;
+    const res = await get(`/search?q=${encodeURIComponent(order.orderCode)}`, seed.cookie);
+    expect(res.statusCode).toBe(302);
+    expect(res.headers.location).toBe(`/orders/${orderId}`);
+  });
+
+  it("a free-text query renders a grouped results page", async () => {
+    const res = await get("/search?q=cust", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("Users");
+    expect(res.body).toContain("Products");
+  });
+
+  it("requires auth", async () => {
+    const res = await get("/search?q=x", null);
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+});
+
+// ---- bulk operations (Tier 2 §8) ------------------------------------------
+
+describe("bulk operations", () => {
+  it("bulk deactivate then activate products + audit", async () => {
+    const res = await post("/catalog/products/bulk", seed.cookie, { csrf_token: seed.csrf, ids: String(seed.productId), action: "deactivate" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect((await prisma.product.findUnique({ where: { id: seed.productId } }))!.isActive).toBe(false);
+    const audit = await prisma.auditLog.findMany({ where: { action: "product_bulk_active" } });
+    expect(audit.length).toBeGreaterThanOrEqual(1);
+
+    await post("/catalog/products/bulk", seed.cookie, { csrf_token: seed.csrf, ids: String(seed.productId), action: "activate" });
+    expect((await prisma.product.findUnique({ where: { id: seed.productId } }))!.isActive).toBe(true);
+  });
+
+  it("bulk mark stock dead (available only) + audit never logs credentials", async () => {
+    const items = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" } });
+    const ids = items.slice(0, 2).map((i) => i.id);
+    const res = await post(`/stock/${seed.productId}/bulk-dead`, seed.cookie, { csrf_token: seed.csrf, ids: ids.join(","), note: "leaked batch" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    for (const id of ids) expect((await prisma.stockItem.findUnique({ where: { id } }))!.status).toBe("DEAD");
+    const audit = await prisma.auditLog.findMany({ where: { action: "stock_bulk_dead", targetId: seed.productId } });
+    expect(audit.length).toBe(1);
+    expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
+  });
+
+  it("empty selection is rejected", async () => {
+    const res = await post("/catalog/products/bulk", seed.cookie, { csrf_token: seed.csrf, ids: "", action: "deactivate" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+  });
+
+  it("bulk price: preview is read-only, apply commits the new price", async () => {
+    // Step 1 — preview (set to 12.50): renders a page, writes nothing.
+    const preview = await post("/catalog/products/bulk-price", seed.cookie, {
+      csrf_token: seed.csrf, ids: String(seed.productId), mode: "set", value: "12.50",
+    });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.body).toContain("12.50");
+    expect(Number((await prisma.product.findUnique({ where: { id: seed.productId } }))!.price)).toBe(5);
+
+    // Step 2 — apply the previewed pair.
+    const apply = await post("/catalog/products/bulk-price/apply", seed.cookie, {
+      csrf_token: seed.csrf, pairs: `${seed.productId}:12.5`,
+    });
+    expect(apply.statusCode).toBe(303);
+    expect(apply.headers.location).toContain("kind=success");
+    expect(Number((await prisma.product.findUnique({ where: { id: seed.productId } }))!.price)).toBeCloseTo(12.5);
+    const audit = await prisma.auditLog.findMany({ where: { action: "product_bulk_price" } });
+    expect(audit.length).toBe(1);
+  });
+
+  it("bulk price: percent preview computes new price and skips ≤0", async () => {
+    const up = await post("/catalog/products/bulk-price", seed.cookie, {
+      csrf_token: seed.csrf, ids: String(seed.productId), mode: "percent", value: "10",
+    });
+    expect(up.statusCode).toBe(200);
+    expect(up.body).toContain("5.5000"); // 5.00 + 10%
+
+    const down = await post("/catalog/products/bulk-price", seed.cookie, {
+      csrf_token: seed.csrf, ids: String(seed.productId), mode: "percent", value: "-100",
+    });
+    expect(down.body).toContain("skipped");
+    // Price untouched by either preview.
+    expect(Number((await prisma.product.findUnique({ where: { id: seed.productId } }))!.price)).toBe(5);
+  });
+
+  it("CSV import: preview is read-only, apply creates the valid rows", async () => {
+    const product = (await prisma.product.findUnique({ where: { id: seed.productId } }))!;
+    const cat = (await prisma.category.findUnique({ where: { id: product.categoryId } }))!;
+    const csv =
+      `${cat.name} | Imported A | shared | 1 Month | 9.99\n` +
+      `NoSuchCat | Bad Row | shared | 1 Month | 5\n` +
+      `${cat.name} | Imported B | private | 12 Months | 19 | 15 | 60 | nice`;
+    const before = await prisma.product.count();
+
+    // Step 1 — preview: shows ready + the error, writes nothing.
+    const preview = await post("/catalog/products/import", seed.cookie, { csrf_token: seed.csrf, csv });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.body).toContain("Imported A");
+    expect(preview.body).toContain("unknown category");
+    expect(await prisma.product.count()).toBe(before);
+
+    // Step 2 — apply: only the 2 valid rows are created.
+    const apply = await post("/catalog/products/import/apply", seed.cookie, { csrf_token: seed.csrf, csv });
+    expect(apply.statusCode).toBe(303);
+    expect(apply.headers.location).toContain("kind=success");
+    expect(await prisma.product.count()).toBe(before + 2);
+    const b = await prisma.product.findFirst({ where: { name: "Imported B" } });
+    expect(b!.type).toBe("PRIVATE");
+    expect(Number(b!.resellerPrice)).toBeCloseTo(15);
+    expect(b!.warrantyDays).toBe(60);
+    const audit = await prisma.auditLog.findMany({ where: { action: "product_csv_import" } });
+    expect(audit.length).toBe(1);
+  });
+
+  it("CSV import: all-invalid is rejected on apply", async () => {
+    const before = await prisma.product.count();
+    const res = await post("/catalog/products/import/apply", seed.cookie, {
+      csrf_token: seed.csrf, csv: "NoSuchCat | X | shared | 1 Month | 5",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect(await prisma.product.count()).toBe(before);
+  });
+
+  it("CSV import apply requires auth and rejects bad CSRF", async () => {
+    const anon = await post("/catalog/products/import/apply", null, { csrf_token: "x", csv: "a|b|shared|1 Month|5" });
+    expect(anon.statusCode).toBe(303);
+    expect(anon.headers.location).toBe("/login");
+    const bad = await post("/catalog/products/import/apply", seed.cookie, { csrf_token: "bad", csv: "a|b|shared|1 Month|5" });
+    expect(bad.statusCode).toBe(403);
+  });
+
+  it("bulk price apply requires auth and rejects bad CSRF", async () => {
+    const anon = await post("/catalog/products/bulk-price/apply", null, { csrf_token: "x", pairs: `${seed.productId}:1` });
+    expect(anon.statusCode).toBe(303);
+    expect(anon.headers.location).toBe("/login");
+    const bad = await post("/catalog/products/bulk-price/apply", seed.cookie, { csrf_token: "bad", pairs: `${seed.productId}:1` });
+    expect(bad.statusCode).toBe(403);
+    expect(Number((await prisma.product.findUnique({ where: { id: seed.productId } }))!.price)).toBe(5);
+  });
+
+  it("bulk requires auth and rejects bad CSRF", async () => {
+    const anon = await post("/catalog/products/bulk", null, { csrf_token: "x", ids: String(seed.productId), action: "deactivate" });
+    expect(anon.statusCode).toBe(303);
+    expect(anon.headers.location).toBe("/login");
+    const bad = await post("/catalog/products/bulk", seed.cookie, { csrf_token: "bad", ids: String(seed.productId), action: "deactivate" });
+    expect(bad.statusCode).toBe(403);
+    expect((await prisma.product.findUnique({ where: { id: seed.productId } }))!.isActive).toBe(true);
+  });
+});
+
+// ---- RBAC / multi-admin (Tier 3 §9) ---------------------------------------
+
+describe("rbac", () => {
+  const setRole = (tg: number, role: string) => setSetting(prisma, webRoleKey(tg), role);
+
+  it("canMutate role/area matrix", () => {
+    expect(canMutate("super", "/settings/edit")).toBe(true);
+    expect(canMutate("readonly", "/orders/1/approve")).toBe(false);
+    expect(canMutate("readonly", "/settings/password")).toBe(true); // self-service
+    expect(canMutate("support", "/orders/1/approve")).toBe(true);
+    expect(canMutate("support", "/reviews/1/hide")).toBe(true);
+    expect(canMutate("support", "/catalog/category")).toBe(false);
+    expect(canMutate("support", "/settings/edit")).toBe(false);
+  });
+
+  it("readonly is blocked from mutations (403) but can still view", async () => {
+    await setRole(ADMIN_TG, "readonly");
+    const cat = await post("/catalog/category", seed.cookie, { csrf_token: seed.csrf, name: "Nope" });
+    expect(cat.statusCode).toBe(403);
+    const approveAttempt = await post(`/payments/match`, seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "x", order_code: "y" });
+    expect(approveAttempt.statusCode).toBe(403);
+    expect((await get("/catalog", seed.cookie)).statusCode).toBe(200); // reads OK
+  });
+
+  it("support can mutate ops but not config", async () => {
+    await setRole(ADMIN_TG, "support");
+    const orderId = await makePendingOrder();
+    const approve = await post(`/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(approve.statusCode).toBe(303); // ops allowed
+    expect((await getOrder(prisma, orderId))!.status).toBe("DELIVERED");
+    const cat = await post("/catalog/category", seed.cookie, { csrf_token: seed.csrf, name: "Denied" });
+    expect(cat.statusCode).toBe(403); // config denied
+  });
+
+  it("/admins is super-only, assigns roles, and blocks self-demotion", async () => {
+    expect((await get("/admins", seed.cookie)).statusCode).toBe(200); // super sees it
+
+    const set = await post("/admins/1000/role", seed.cookie, { csrf_token: seed.csrf, role: "support" });
+    expect(set.statusCode).toBe(303);
+    expect(set.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, webRoleKey(1000))).toBe("support");
+
+    const self = await post(`/admins/${ADMIN_TG}/role`, seed.cookie, { csrf_token: seed.csrf, role: "readonly" });
+    expect(self.headers.location).toContain("kind=error"); // can't demote yourself
+    expect(await getSetting(prisma, webRoleKey(ADMIN_TG))).not.toBe("readonly");
+
+    const notAdmin = await post("/admins/424242/role", seed.cookie, { csrf_token: seed.csrf, role: "support" });
+    expect(notAdmin.headers.location).toContain("kind=error"); // not in ADMIN_IDS
+
+    await setRole(ADMIN_TG, "support");
+    expect((await get("/admins", seed.cookie)).statusCode).toBe(403); // non-super blocked
+  });
+});
+
+// ---- 2FA (TOTP) + session management (Tier 3 §10) -------------------------
+
+describe("2fa", () => {
+  it("verifyTotp accepts the live code and rejects a wrong one", () => {
+    const secret = generateTotpSecret();
+    expect(verifyTotp(secret, currentTotp(secret))).toBe(true);
+    expect(verifyTotp(secret, "000000")).toBe(false);
+    expect(verifyTotp(secret, "notnum")).toBe(false);
+  });
+
+  it("enroll flow: begin → enable with a valid code (wrong code rejected)", async () => {
+    const begin = await post("/settings/2fa/begin", seed.cookie, { csrf_token: seed.csrf });
+    expect(begin.statusCode).toBe(303);
+    const pending = await getSetting(prisma, twoFaPendingKey(ADMIN_TG));
+    expect(pending).not.toBeNull();
+
+    const wrong = await post("/settings/2fa/enable", seed.cookie, { csrf_token: seed.csrf, totp_code: "000000" });
+    expect(wrong.headers.location).toContain("kind=error");
+    expect(await getSetting(prisma, twoFaSecretKey(ADMIN_TG))).toBeNull();
+
+    const ok = await post("/settings/2fa/enable", seed.cookie, { csrf_token: seed.csrf, totp_code: currentTotp(pending!) });
+    expect(ok.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, twoFaSecretKey(ADMIN_TG))).toBe(pending);
+    expect(await getSetting(prisma, twoFaPendingKey(ADMIN_TG))).toBeNull(); // pending consumed
+  });
+
+  it("login requires the 2FA code once enabled", async () => {
+    await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("supersecret"));
+    const secret = generateTotpSecret();
+    await setSetting(prisma, twoFaSecretKey(ADMIN_TG), secret);
+
+    const noCode = await post("/login", null, { telegram_id: String(ADMIN_TG), password: "supersecret" });
+    expect(noCode.statusCode).toBe(401);
+
+    const badCode = await post("/login", null, { telegram_id: String(ADMIN_TG), password: "supersecret", totp_code: "000000" });
+    expect(badCode.statusCode).toBe(401);
+
+    const ok = await post("/login", null, { telegram_id: String(ADMIN_TG), password: "supersecret", totp_code: currentTotp(secret) });
+    expect(ok.statusCode).toBe(303);
+    expect(ok.headers.location).toBe("/");
+  });
+
+  it("disable requires the current password AND a valid code", async () => {
+    await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("pw12345678"));
+    const secret = generateTotpSecret();
+    await setSetting(prisma, twoFaSecretKey(ADMIN_TG), secret);
+
+    const badPw = await post("/settings/2fa/disable", seed.cookie, { csrf_token: seed.csrf, current_password: "wrong", totp_code: currentTotp(secret) });
+    expect(badPw.headers.location).toContain("kind=error");
+    expect(await getSetting(prisma, twoFaSecretKey(ADMIN_TG))).toBe(secret);
+
+    const ok = await post("/settings/2fa/disable", seed.cookie, { csrf_token: seed.csrf, current_password: "pw12345678", totp_code: currentTotp(secret) });
+    expect(ok.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, twoFaSecretKey(ADMIN_TG))).toBeNull();
+  });
+
+  it("a readonly admin can still manage their own 2FA", async () => {
+    await setSetting(prisma, webRoleKey(ADMIN_TG), "readonly");
+    const begin = await post("/settings/2fa/begin", seed.cookie, { csrf_token: seed.csrf });
+    expect(begin.statusCode).toBe(303);
+    expect(begin.headers.location).not.toContain("kind=error"); // self-service allowed
+  });
+});
+
+describe("session management", () => {
+  it("super can force-logout another admin (rotates their jti); not self", async () => {
+    await setSetting(prisma, sessionJtiKey(1000), "jti-1000");
+    const res = await post("/admins/1000/logout", seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, sessionJtiKey(1000))).not.toBe("jti-1000"); // rotated
+
+    const self = await post(`/admins/${ADMIN_TG}/logout`, seed.cookie, { csrf_token: seed.csrf });
+    expect(self.headers.location).toContain("kind=error");
+  });
+});
+
+// ---- broadcast composer (Tier 3 §12) — web ENQUEUES, never sends ----------
+
+describe("broadcast", () => {
+  it("enqueues a PENDING broadcast + audit, and sends nothing itself", async () => {
+    const res = await post("/broadcast", seed.cookie, { csrf_token: seed.csrf, message: "New stock!", segment: "ALL" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    const rows = await prisma.broadcast.findMany();
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.status).toBe("PENDING");
+    expect(rows[0]!.segment).toBe("ALL");
+    // The web must NOT deliver — no outbox/Telegram side effect at enqueue.
+    expect(await prisma.notificationOutbox.count()).toBe(0);
+    const audit = await prisma.auditLog.findMany({ where: { action: "broadcast_enqueue" } });
+    expect(audit.length).toBe(1);
+  });
+
+  it("rejects empty message and bad segment", async () => {
+    expect((await post("/broadcast", seed.cookie, { csrf_token: seed.csrf, message: "   ", segment: "ALL" })).headers.location).toContain("kind=error");
+    expect((await post("/broadcast", seed.cookie, { csrf_token: seed.csrf, message: "hi", segment: "NOPE" })).headers.location).toContain("kind=error");
+    expect(await prisma.broadcast.count()).toBe(0);
+  });
+
+  it("cancels a PENDING broadcast but not one already sent", async () => {
+    await post("/broadcast", seed.cookie, { csrf_token: seed.csrf, message: "x", segment: "RESELLERS" });
+    const bc = (await prisma.broadcast.findFirst())!;
+    const ok = await post(`/broadcast/${bc.id}/cancel`, seed.cookie, { csrf_token: seed.csrf });
+    expect(ok.headers.location).toContain("kind=success");
+    expect((await prisma.broadcast.findUnique({ where: { id: bc.id } }))!.status).toBe("CANCELLED");
+    expect((await post(`/broadcast/${bc.id}/cancel`, seed.cookie, { csrf_token: seed.csrf })).headers.location).toContain("kind=error");
+  });
+
+  it("requires auth and rejects bad CSRF", async () => {
+    const anon = await post("/broadcast", null, { csrf_token: "x", message: "hi", segment: "ALL" });
+    expect(anon.statusCode).toBe(303);
+    expect(anon.headers.location).toBe("/login");
+    const bad = await post("/broadcast", seed.cookie, { csrf_token: "bad", message: "hi", segment: "ALL" });
+    expect(bad.statusCode).toBe(403);
+    expect(await prisma.broadcast.count()).toBe(0);
+  });
+});
+
 // ---- smoke: every GET page renders 200 for an admin -----------------------
 
 describe("page smoke tests", () => {
   it("all nav pages render 200", async () => {
-    for (const path of ["/", "/stock", "/orders", "/payments", "/outbox", "/catalog", "/vouchers", "/users", "/reviews", "/reports", "/support", "/settings", "/audit"]) {
+    for (const path of ["/", "/stock", "/orders", "/payments", "/outbox", "/catalog", "/vouchers", "/users", "/reviews", "/reports", "/support", "/settings", "/audit", "/search", "/admins", "/broadcast"]) {
       const res = await get(path, seed.cookie);
       expect(res.statusCode, `GET ${path}`).toBe(200);
     }

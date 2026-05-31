@@ -41,7 +41,6 @@ import { smartEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
 import { esc, formatPrice } from "../util/format";
 import * as ckb from "../keyboards/customer";
-import { browseProductsFlat } from "./customer";
 
 const MAX_PENDING_ORDERS = 10;
 const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, config.CURRENCY, decimals);
@@ -483,5 +482,13 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
   cancelPaymentJobs(orderId);
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.cancelled_toast") });
 
-  await browseProductsFlat(ctx);
+  // Edit the bubble that owned the Cancel button into a confirmation reply,
+  // instead of leaving the stale payment screen behind. smartEdit edits on a
+  // callback tap and gracefully falls back to a fresh send on the /cancel text
+  // path (or when the bubble can't be edited, e.g. a photo+caption QR screen).
+  await smartEdit(
+    ctx,
+    t(ctx, "checkout.order_cancelled", { code: order.orderCode }),
+    ckb.notificationKb(lang),
+  );
 }

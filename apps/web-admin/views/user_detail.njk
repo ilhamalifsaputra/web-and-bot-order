@@ -82,19 +82,26 @@
 
     <div class="bg-white rounded-lg shadow p-5">
       <h2 class="font-semibold mb-3">Wallet ledger</h2>
-      <p class="text-xs text-slate-400 mb-2">Manual top-ups / deductions made from the admin. Automated credits (refunds) appear under <a class="underline" href="/payments">Payments</a>.</p>
+      <p class="text-xs text-slate-400 mb-2">Complete money timeline — every wallet movement (top-ups, refunds, referral payouts, order payments) with its running balance.</p>
       <table class="min-w-full text-sm">
-        <thead class="text-slate-500 text-left"><tr><th class="py-1">When</th><th class="py-1 text-right">Delta</th><th class="py-1">Reason</th><th class="py-1">Admin</th></tr></thead>
+        <thead class="text-slate-500 text-left"><tr><th class="py-1">When</th><th class="py-1 text-right">Delta</th><th class="py-1 text-right">Balance</th><th class="py-1">Reason</th><th class="py-1">Ref</th></tr></thead>
         <tbody class="divide-y divide-slate-100">
           {% for e in ledger %}
           <tr>
             <td class="py-1 text-slate-500">{{ e.createdAt | localdt }}</td>
             <td class="py-1 text-right font-mono {% if e.delta[0] == '-' %}text-red-600{% else %}text-green-700{% endif %}">{{ e.delta }}</td>
-            <td class="py-1">{{ e.note or '—' }}</td>
-            <td class="py-1 text-slate-500 font-mono text-xs">{{ e.adminId or '—' }}</td>
+            <td class="py-1 text-right font-mono text-slate-600">{{ e.balanceAfter }}</td>
+            <td class="py-1">
+              <span class="text-xs px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">{{ e.reason | replace('_', ' ') }}</span>
+              {% if e.note %}<span class="text-slate-500">· {{ e.note }}</span>{% endif %}
+            </td>
+            <td class="py-1 text-xs text-slate-400">
+              {% if e.orderId %}<a class="hover:underline" href="/orders/{{ e.orderId }}">order #{{ e.orderId }}</a>{% endif %}
+              {% if e.adminId %}<span class="font-mono">adm:{{ e.adminId }}</span>{% endif %}
+            </td>
           </tr>
           {% else %}
-          <tr><td colspan="4" class="py-4 text-center text-slate-400">No manual wallet moves.</td></tr>
+          <tr><td colspan="5" class="py-4 text-center text-slate-400">No wallet movements.</td></tr>
           {% endfor %}
         </tbody>
       </table>

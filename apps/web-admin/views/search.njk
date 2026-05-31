@@ -1,0 +1,50 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}Search · Stock Admin{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-semibold mb-4">Search</h1>
+
+<form method="get" action="/search" class="mb-6 flex gap-2 max-w-xl">
+  <input type="text" name="q" value="{{ q }}" autofocus placeholder="Order code, TG id / username, or product name"
+    class="flex-1 border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-400">
+  <button class="bg-slate-900 text-white px-4 py-2 rounded hover:bg-slate-700">Search</button>
+</form>
+
+{% if q %}
+<p class="text-sm text-slate-500 mb-4">Results for <span class="font-mono">{{ q }}</span> — an exact order code jumps straight to its detail.</p>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  <section class="bg-white rounded-lg shadow p-5">
+    <h2 class="font-semibold mb-3">Users <span class="text-slate-400 text-sm">({{ users | length }})</span></h2>
+    <ul class="divide-y divide-slate-100 text-sm">
+      {% for u in users %}
+      <li class="py-2 flex items-center justify-between">
+        <a class="text-slate-700 hover:underline" href="/users/{{ u.id }}">
+          {{ u.fullName or u.username or ('tg:' + (u.telegramId | string)) }}
+          <span class="text-slate-400 font-mono text-xs">· {{ u.telegramId }}</span>
+        </a>
+        {{ ui.status_badge(u.role) }}
+      </li>
+      {% else %}
+      <li class="py-4 text-center text-slate-400">No users.</li>
+      {% endfor %}
+    </ul>
+  </section>
+
+  <section class="bg-white rounded-lg shadow p-5">
+    <h2 class="font-semibold mb-3">Products <span class="text-slate-400 text-sm">({{ products | length }})</span></h2>
+    <ul class="divide-y divide-slate-100 text-sm">
+      {% for p in products %}
+      <li class="py-2 flex items-center justify-between">
+        <a class="text-slate-700 hover:underline" href="/stock/{{ p.id }}">{{ p.name }}</a>
+        <span class="text-slate-500">{{ p.price | money }} {{ currency }}</span>
+      </li>
+      {% else %}
+      <li class="py-4 text-center text-slate-400">No products.</li>
+      {% endfor %}
+    </ul>
+  </section>
+</div>
+{% endif %}
+{% endblock %}

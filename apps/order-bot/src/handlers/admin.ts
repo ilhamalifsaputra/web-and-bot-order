@@ -94,7 +94,7 @@ async function showProducts(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   const allProducts = await prisma.product.findMany({ orderBy: { name: "asc" } });
   if (!allProducts.length) {
-    await adminEdit(ctx, "No products yet. Seed via DB or extend the admin panel.", akb.backToAdminKb(lang));
+    await adminEdit(ctx, t(ctx, "admin.empty_products"), akb.backToAdminKb(lang));
     return;
   }
   const stockMap = new Map<number, number>();
@@ -115,19 +115,19 @@ async function showProducts(ctx: MyContext): Promise<void> {
 async function showStockMenu(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   const products = await prisma.product.findMany({ where: { isActive: true }, orderBy: { name: "asc" } });
-  await adminEdit(ctx, "📦 <b>Stock — pick a product to add stock</b>", akb.stockProductsKb(products, lang));
+  await adminEdit(ctx, t(ctx, "admin.hdr_stock_pick"), akb.stockProductsKb(products, lang));
 }
 
 async function showVouchersMenu(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
-  await adminEdit(ctx, "🎟 <b>Vouchers</b>", akb.vouchersAdminKb(lang));
+  await adminEdit(ctx, t(ctx, "admin.hdr_vouchers"), akb.vouchersAdminKb(lang));
 }
 
 async function listVouchersView(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   const rows = await listVouchers(prisma);
   if (!rows.length) {
-    await adminEdit(ctx, "No vouchers yet.", akb.backToAdminKb(lang));
+    await adminEdit(ctx, t(ctx, "admin.empty_vouchers"), akb.backToAdminKb(lang));
     return;
   }
   const lines = ["🎟 <b>Vouchers</b>", ""];
@@ -146,7 +146,7 @@ async function listVouchersView(ctx: MyContext): Promise<void> {
 
 async function showUsersMenu(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
-  await adminEdit(ctx, "👥 <b>Users</b>", akb.usersAdminKb(lang));
+  await adminEdit(ctx, t(ctx, "admin.hdr_users"), akb.usersAdminKb(lang));
 }
 
 async function renderUserCard(ctx: MyContext, userId: number): Promise<void> {
@@ -179,7 +179,7 @@ async function userBan(ctx: MyContext, userId: number, banned: boolean): Promise
       targetId: userId,
     });
   });
-  await ctx.answerCallbackQuery({ text: banned ? "🚫 User banned" : "✅ User unbanned", show_alert: true });
+  await ctx.answerCallbackQuery({ text: t(ctx, banned ? "admin.toast.user_banned" : "admin.toast.user_unbanned"), show_alert: true });
   await renderUserCard(ctx, userId);
 }
 
@@ -197,7 +197,7 @@ async function userSetReseller(ctx: MyContext, userId: number, on: boolean): Pro
       details: `role=${newRole}`,
     });
   });
-  await ctx.answerCallbackQuery({ text: `Role set to ${newRole}`, show_alert: true });
+  await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.role_set", { role: newRole }), show_alert: true });
   await renderUserCard(ctx, userId);
 }
 
@@ -214,7 +214,7 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
   const args = (typeof ctx.match === "string" ? ctx.match : "").trim().split(/\s+/).filter(Boolean);
   logger.info(`admin_wallet_command: user=${ctx.from?.id} args=${args.join(" ")}`);
   if (args.length !== 2) {
-    await adminEdit(ctx, "Usage: /wallet &lt;user_db_id&gt; &lt;amount&gt;");
+    await adminEdit(ctx, t(ctx, "admin.wallet_usage"));
     return;
   }
   let uid: number;
@@ -224,7 +224,7 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     amt = new Decimal(args[1]!);
     if (Number.isNaN(uid)) throw new Error("bad uid");
   } catch {
-    await adminEdit(ctx, "Bad arguments.");
+    await adminEdit(ctx, t(ctx, "admin.wallet_bad_args"));
     return;
   }
 
@@ -232,10 +232,11 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
   let newBal: Decimal;
   try {
     newBal = await prisma.$transaction(async (tx) => {
-      const bal = await adjustWallet(tx, uid, amt, { allowNegative: true });
       const admin = await getUserByTelegramId(tx, adminTg);
+      const actingId = adminId(admin);
+      const bal = await adjustWallet(tx, uid, amt, { allowNegative: true, reason: "admin_adjust", adminId: actingId });
       await logAdminAction(tx, {
-        adminId: adminId(admin),
+        adminId: actingId,
         action: "wallet_adjust",
         targetType: "user",
         targetId: uid,
@@ -245,7 +246,7 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     });
   } catch (err) {
     logger.error({ err }, "wallet adjust failed");
-    await adminEdit(ctx, "Adjustment failed (user not found?).");
+    await adminEdit(ctx, t(ctx, "admin.wallet_failed"));
     return;
   }
   await adminEdit(ctx, `New balance for user ${uid}: ${price(newBal)}`);
@@ -257,7 +258,7 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
 
 async function showReports(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
-  await adminEdit(ctx, "📈 <b>Reports</b>", akb.reportsKb(lang));
+  await adminEdit(ctx, t(ctx, "admin.hdr_reports"), akb.reportsKb(lang));
 }
 
 async function exportReport(ctx: MyContext, period: string): Promise<void> {
@@ -267,7 +268,7 @@ async function exportReport(ctx: MyContext, period: string): Promise<void> {
   else if (period === "week") since = new Date(now.getTime() - 7 * 86_400_000);
   else if (period === "month") since = new Date(now.getTime() - 30 * 86_400_000);
   else {
-    await ctx.answerCallbackQuery({ text: "Unknown period", show_alert: true });
+    await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.unknown_period"), show_alert: true });
     return;
   }
 
@@ -337,7 +338,7 @@ async function viewProductAdmin(ctx: MyContext, productId: number): Promise<void
   const lang = ctx.session.lang;
   const p = await prisma.product.findUnique({ where: { id: productId } });
   if (p === null) {
-    await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
+    await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.not_found"), show_alert: true });
     return;
   }
   const stock = await countAvailableStock(prisma, p.id);
@@ -357,7 +358,7 @@ async function toggleProduct(ctx: MyContext, productId: number): Promise<void> {
   const adminTg = ctx.from!.id;
   const p = await prisma.product.findUnique({ where: { id: productId } });
   if (p === null) {
-    await ctx.answerCallbackQuery({ text: "Not found", show_alert: true });
+    await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.not_found"), show_alert: true });
     return;
   }
   const newState = !p.isActive;
@@ -372,7 +373,7 @@ async function toggleProduct(ctx: MyContext, productId: number): Promise<void> {
       details: `is_active=${newState}`,
     });
   });
-  await ctx.answerCallbackQuery({ text: newState ? "✅ Activated" : "⚪ Deactivated" });
+  await ctx.answerCallbackQuery({ text: t(ctx, newState ? "admin.toast.product_activated" : "admin.toast.product_deactivated") });
   await viewProductAdmin(ctx, productId);
 }
 
@@ -384,7 +385,7 @@ async function viewStockItems(ctx: MyContext, productId: number): Promise<void> 
   const lang = ctx.session.lang;
   const p = await prisma.product.findUnique({ where: { id: productId } });
   if (p === null) {
-    await ctx.answerCallbackQuery({ text: "Product not found", show_alert: true });
+    await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.product_not_found"), show_alert: true });
     return;
   }
   const items = await listStockItemsForProduct(prisma, productId);
@@ -403,13 +404,13 @@ async function viewStockItems(ctx: MyContext, productId: number): Promise<void> 
   const text =
     `📦 <b>Stock items for ${esc(p.name)}</b>\n` +
     `Total shown: ${items.length}\n\n` +
-    (lines.length ? lines.join("\n") : "No stock items.");
+    (lines.length ? lines.join("\n") : t(ctx, "admin.empty_stock_items"));
   await adminEdit(ctx, text, akb.stockItemsKb(items, productId, lang));
 }
 
 async function adminMarkStockDead(ctx: MyContext, stockId: number, productId: number): Promise<void> {
   await markStockDead(prisma, stockId, "marked dead by admin");
-  await ctx.answerCallbackQuery({ text: "💀 Marked as dead" });
+  await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.stock_marked_dead") });
   await viewStockItems(ctx, productId);
 }
 
@@ -421,7 +422,7 @@ async function showBulkPricing(ctx: MyContext, productId: number): Promise<void>
   const lang = ctx.session.lang;
   const p = await prisma.product.findUnique({ where: { id: productId } });
   if (p === null) {
-    await ctx.answerCallbackQuery({ text: "Product not found", show_alert: true });
+    await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.product_not_found"), show_alert: true });
     return;
   }
   const rule = await getBulkPricingForProduct(prisma, productId);
@@ -435,10 +436,7 @@ async function showBulkPricing(ctx: MyContext, productId: number): Promise<void>
       `Customers who buy ${rule.minQuantity}+ units of this product ` +
       `automatically receive ${rule.discountPercent}% off.`;
   } else {
-    text =
-      `💰 <b>Bulk Pricing — ${esc(p.name)}</b>\n\n` +
-      "No bulk pricing rule set for this product.\n\n" +
-      "Tap <b>➕ Add Rule</b> to set a minimum quantity and discount percentage.";
+    text = `💰 <b>Bulk Pricing — ${esc(p.name)}</b>\n\n` + t(ctx, "admin.bulk_none_set");
   }
   await adminEdit(ctx, text, akb.bulkPricingKb(productId, rule !== null, lang));
 }
@@ -459,7 +457,7 @@ async function deleteBulkPricingHandler(ctx: MyContext, productId: number): Prom
     return ok;
   });
   await ctx.answerCallbackQuery({
-    text: deleted ? "✅ Bulk pricing rule deleted." : "No rule found.",
+    text: t(ctx, deleted ? "admin.toast.bulk_deleted" : "admin.toast.bulk_none"),
     show_alert: true,
   });
   await showBulkPricing(ctx, productId);
@@ -473,7 +471,7 @@ async function showTicketsAdmin(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   const tickets = await listOpenTickets(prisma, 50);
   if (!tickets.length) {
-    await adminEdit(ctx, "📩 <b>Support Tickets</b>\n\nNo open tickets.", akb.backToAdminKb(lang));
+    await adminEdit(ctx, t(ctx, "admin.hdr_tickets_none"), akb.backToAdminKb(lang));
     return;
   }
   await adminEdit(ctx, `📩 <b>Support Tickets</b>\n\n${tickets.length} open ticket(s):`, akb.ticketsListKb(tickets, lang));
@@ -482,16 +480,19 @@ async function showTicketsAdmin(ctx: MyContext): Promise<void> {
 async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void> {
   const lang = ctx.session.lang;
   const customerTgId = await closeTicket(prisma, ticketId);
-  await ctx.answerCallbackQuery({ text: "🔒 Ticket closed." });
+  await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.ticket_closed") });
 
   if (customerTgId) {
     try {
-      await ctx.api.sendMessage(Number(customerTgId), coreT("support.ticket_closed", "en"), { parse_mode: "HTML" });
+      // DM the buyer in THEIR language, not a hardcoded "en".
+      const buyer = await getUserByTelegramId(prisma, customerTgId);
+      const buyerLang = buyer ? langCode(buyer.language) : "en";
+      await ctx.api.sendMessage(Number(customerTgId), coreT("support.ticket_closed", buyerLang), { parse_mode: "HTML" });
     } catch (err) {
       logger.error({ err }, "Failed to notify user about ticket close");
     }
   }
-  await adminEdit(ctx, `🔒 Ticket #${ticketId} has been closed.`, akb.backToAdminKb(lang));
+  await adminEdit(ctx, t(ctx, "admin.ticket_closed_body", { id: ticketId }), akb.backToAdminKb(lang));
 }
 
 // ===========================================================================

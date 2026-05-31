@@ -78,6 +78,26 @@ export function backToMain(lang: string): InlineKeyboard {
   return ik([[{ text: coreT("menu.main", lang), data: cb("menu", "main") }]]);
 }
 
+/** Confirmation footer after a restock subscription: back to the product + menu. */
+export function restockSubscribedKb(productId: number, lang: string): InlineKeyboard {
+  return ik([
+    [
+      { text: coreT("menu.back", lang), data: cb("browse", "prod", productId) },
+      { text: coreT("menu.main", lang), data: cb("menu", "main") },
+    ],
+  ]);
+}
+
+/** Confirmation footer after a user closes their own ticket. */
+export function ticketClosedKb(lang: string): InlineKeyboard {
+  return ik([
+    [
+      { text: coreT("menu.my_tickets", lang), data: cb("ticket", "list") },
+      { text: coreT("menu.main", lang), data: cb("menu", "main") },
+    ],
+  ]);
+}
+
 /** Keyboard attached to push notifications (delivery, rejection, auto-cancel, warranty). */
 export function notificationKb(lang: string): InlineKeyboard {
   return ik([

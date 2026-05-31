@@ -701,3 +701,10 @@ name. Pure quality-of-life for a busy operator.
 - Anything touching the **shared SQLite** must keep transactions short
   (single-writer); for genuinely concurrent multi-admin writes, that's the
   trigger to move to Postgres (see `RUN.md §9`).
+- **Schema changes on deploy** — when a feature adds a Prisma column/table
+  (e.g. `reviews.hidden`, migration `20260531140000_review_hidden`), the live DB
+  must be migrated **before** the new code runs, or the bot/web throw
+  `P2022 column … does not exist`. Procedure: stop services → `pnpm prisma db
+  push` (or apply the migration in `prisma/migrations/`) against `data/bot.db`
+  → restart **order-bot first** (its `initDb()` runs), then notifier + web.
+  Additive column adds (`NOT NULL DEFAULT …`) are safe and lossless.

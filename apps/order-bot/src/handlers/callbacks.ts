@@ -255,12 +255,10 @@ async function closeTicketUser(ctx: MyContext, ticketId: number): Promise<void> 
   }
   await closeTicket(prisma, ticketId);
 
-  await ctx.answerCallbackQuery({ text: t(ctx, "support.ticket_closed_user"), show_alert: true });
-  try {
-    await ctx.editMessageReplyMarkup();
-  } catch {
-    /* markup may already be gone */
-  }
+  await ctx.answerCallbackQuery({ text: t(ctx, "support.ticket_closed_user") });
+  // Edit the ticket bubble into a closed-confirmation (with navigation) rather
+  // than just stripping its buttons and relying on the ephemeral toast.
+  await smartEdit(ctx, t(ctx, "support.ticket_closed_user"), ckb.ticketClosedKb(ctx.session.lang));
 
   const targets = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : config.ADMIN_IDS;
   for (const chatId of targets) {

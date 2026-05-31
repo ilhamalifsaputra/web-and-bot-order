@@ -19,3 +19,8 @@ export async function setSetting(db: Db, key: string, value: string) {
 export function listAllSettings(db: Db) {
   return db.setting.findMany({ orderBy: { key: "asc" } });
 }
+
+/** Remove a setting if present (no-op if it doesn't exist). */
+export async function deleteSetting(db: Db, key: string): Promise<void> {
+  await db.setting.deleteMany({ where: { key } });
+}

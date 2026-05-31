@@ -253,7 +253,9 @@ export async function refundUnderpaidOrder(
       throw new ValidationError("error.order_not_underpaid");
     }
     const received = (await underpaidReceived(tx, args.orderId)) ?? new Decimal(0);
-    if (received.greaterThan(0)) await adjustWallet(tx, order.userId, received);
+    if (received.greaterThan(0)) {
+      await adjustWallet(tx, order.userId, received, { reason: "underpaid_refund", orderId: order.id, adminId: args.adminId });
+    }
     if (order.voucherId) {
       const v = await tx.voucher.findUnique({ where: { id: order.voucherId } });
       if (v && v.usedCount > 0) {

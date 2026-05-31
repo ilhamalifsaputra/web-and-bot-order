@@ -38,12 +38,34 @@ model User {
   restockSubscriptions RestockSubscription[]
   auditLogs            AuditLog[]
   ticketMessages       TicketMessage[]
+  walletTransactions   WalletTransaction[]
   referralsAsReferee   Referral?             @relation("ReferralReferee")
   referralsAsReferrer  Referral[]            @relation("ReferralReferrer")
   ticketsAsUser        SupportTicket[]       @relation("TicketUser")
   ticketsAsAdmin       SupportTicket[]       @relation("TicketAdmin")
 
   @@map("users")
+}
+
+/// Append-only per-user money timeline. One row per applied wallet movement,
+/// written by `adjustWallet` so NOTHING that touches a balance is missed:
+/// manual admin top-ups, underpaid refunds, referral payouts, order
+/// payments/refunds. `balanceAfter` is the running balance at the time.
+model WalletTransaction {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  delta        Decimal // signed: +credit / −debit (the amount actually applied)
+  balanceAfter Decimal  @map("balance_after")
+  reason       String // machine code: admin_adjust | underpaid_refund | referral | order_payment | order_refund | adjust
+  note         String?
+  adminId      Int?     @map("admin_id") // acting admin (null = system/customer)
+  orderId      Int?     @map("order_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId], map: "ix_wallet_transactions_user_id")
+  @@map("wallet_transactions")
 }
 
 model Category {
@@ -339,6 +361,25 @@ model NotificationOutbox {
 /// the UNIQUE binance_tx_id is what prevents double-processing / double-delivery
 /// (SQLite has no row locking, so the insert-first-on-unique pattern is the
 /// concurrency guard — see payments/binanceInternal.ts).
+/// Broadcast queue — the web ENQUEUES here; the order-bot drains and sends
+/// (the web never calls Telegram). One row = one broadcast to a segment.
+model Broadcast {
+  id          Int       @id @default(autoincrement())
+  message     String
+  segment     String // ALL | RESELLERS | RECENT_BUYERS
+  status      String    @default("PENDING") // PENDING | SENDING | SENT | CANCELLED
+  scheduledAt DateTime? @map("scheduled_at") // null = send asap
+  createdById Int?      @map("created_by_id") // acting web admin (user id)
+  totalCount  Int       @default(0) @map("total_count") // recipients at enqueue (display)
+  sentCount   Int       @default(0) @map("sent_count")
+  failedCount Int       @default(0) @map("failed_count")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  sentAt      DateTime? @map("sent_at")
+
+  @@index([status], map: "ix_broadcasts_status")
+  @@map("broadcasts")
+}
+
 model ProcessedBinanceTx {
   id          Int      @id @default(autoincrement())
   binanceTxId String   @unique(map: "ix_processed_binance_tx_txid") @map("binance_tx_id")

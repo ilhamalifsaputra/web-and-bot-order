@@ -26,6 +26,7 @@ import type { MyContext } from "./context";
 import { initialSession } from "./context";
 import { bindUpdateId, registeredUser, rateLimit } from "./middleware";
 import { CONVERSATIONS } from "./conversations";
+import { coreT } from "./util/i18n";
 import * as customer from "./handlers/customer";
 import * as staticPages from "./handlers/static";
 import * as admin from "./handlers/admin";
@@ -91,13 +92,32 @@ export function buildBot(): Bot<MyContext> {
   });
 
   // --- Global error handler ------------------------------------------------
-  bot.catch((err) => {
+  bot.catch(async (err) => {
     const ctx = err.ctx;
-    const bits: string[] = [];
+    // Correlation id: shown to the user AND attached to the log line so a
+    // customer report ("I got ref AB12CD") maps straight to the stack trace.
+    const ref = Math.random().toString(16).slice(2, 8).toUpperCase();
+    const bits: string[] = [`ref=${ref}`];
     if (ctx.from) bits.push(`user=${ctx.from.id}`);
     if (ctx.callbackQuery?.data) bits.push(`cb=${ctx.callbackQuery.data}`);
     else if (ctx.message?.text) bits.push(`text=${ctx.message.text.slice(0, 120)}`);
-    logger.error({ err: err.error }, `Unhandled error in grammY [${bits.join(" ") || "no-context"}]`);
+    logger.error({ err: err.error, ref }, `Unhandled error in grammY [${bits.join(" ")}]`);
+
+    // Best-effort: tell the user something broke (with the ref), so an uncaught
+    // exception doesn't leave them staring at a dead screen. Never rethrow here.
+    try {
+      let lang: string = config.DEFAULT_LANGUAGE;
+      try {
+        lang = (ctx.session as { lang?: string })?.lang ?? lang;
+      } catch {
+        /* session middleware may not have run for this update */
+      }
+      const text = coreT("error.generic_ref", lang, { ref });
+      if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text, show_alert: true });
+      else if (ctx.chat) await ctx.reply(text);
+    } catch {
+      /* user is unreachable / already responded — the log line is the record */
+    }
   });
 
   return bot;

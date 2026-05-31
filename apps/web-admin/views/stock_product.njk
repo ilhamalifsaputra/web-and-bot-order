@@ -28,10 +28,23 @@
   </form>
 </section>
 
+{% if items %}
+<form id="bulk-stock-form" method="post" action="/stock/{{ product.id }}/bulk-dead" class="bg-white rounded-lg shadow p-3 mb-3 flex flex-wrap items-center gap-2 text-sm"
+      onsubmit="return collectBulkStock();">
+  {{ ui.csrf_field(admin) }}
+  <input type="hidden" name="ids" id="bs-ids">
+  <label class="flex items-center gap-1 text-slate-500"><input type="checkbox" onclick="document.querySelectorAll('.bs-cb').forEach(c=>c.checked=this.checked)"> Select all (available/reserved)</label>
+  <input type="text" name="note" placeholder="reason (optional)" class="border rounded px-2 py-1">
+  <button type="submit" class="px-3 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200"
+          onclick="return confirm('Mark the selected stock items as dead?');">Mark selected dead</button>
+</form>
+{% endif %}
+
 <section class="bg-white rounded-lg shadow overflow-x-auto">
   <table class="min-w-full text-sm">
     <thead class="bg-slate-100 text-slate-600 text-left">
       <tr>
+        <th class="px-4 py-2"></th>
         <th class="px-4 py-2">#</th>
         <th class="px-4 py-2">Status</th>
         <th class="px-4 py-2">Credentials</th>
@@ -44,6 +57,7 @@
     <tbody class="divide-y divide-slate-100">
       {% for it in items %}
       <tr class="hover:bg-slate-50 align-top">
+        <td class="px-4 py-2">{% if (it.status | lower) in ['available', 'reserved'] %}<input type="checkbox" class="bs-cb" value="{{ it.id }}">{% endif %}</td>
         <td class="px-4 py-2 text-slate-400">{{ it.id }}</td>
         <td class="px-4 py-2">{{ ui.status_badge(it.status) }}</td>
         <td class="px-4 py-2 font-mono text-xs break-all max-w-xs">{{ it.credentials }}</td>
@@ -74,9 +88,18 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="7" class="px-4 py-6 text-center text-slate-400">No stock items yet.</td></tr>
+      <tr><td colspan="8" class="px-4 py-6 text-center text-slate-400">No stock items yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
 </section>
+
+<script>
+function collectBulkStock() {
+  const ids = [...document.querySelectorAll('.bs-cb:checked')].map(c => c.value);
+  if (!ids.length) { alert('Select at least one available/reserved item.'); return false; }
+  document.getElementById('bs-ids').value = ids.join(',');
+  return true;
+}
+</script>
 {% endblock %}

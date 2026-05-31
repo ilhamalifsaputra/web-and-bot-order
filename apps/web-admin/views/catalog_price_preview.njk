@@ -1,0 +1,50 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}Confirm price change · Catalog{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+  <a href="/catalog" class="text-sm text-slate-500 hover:underline">← Catalog</a>
+  <h1 class="text-2xl font-semibold mt-1">Confirm price change</h1>
+  <p class="text-slate-500 text-sm">
+    {% if mode == 'percent' %}Adjusting selected prices by <b>{{ value }}%</b>{% else %}Setting selected prices to <b>{{ value }} {{ currency }}</b>{% endif %}.
+    Review before applying — this changes live prices.
+  </p>
+</div>
+
+<div class="bg-white rounded-lg shadow overflow-x-auto mb-4">
+  <table class="min-w-full text-sm">
+    <thead class="bg-slate-100 text-slate-600 text-left">
+      <tr><th class="px-4 py-2">Product</th><th class="px-4 py-2 text-right">Current</th><th class="px-4 py-2 text-right">New</th></tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for r in rows %}
+      <tr class="{% if r.invalid %}bg-red-50{% endif %}">
+        <td class="px-4 py-2">{{ r.name }}</td>
+        <td class="px-4 py-2 text-right text-slate-500">{{ r.current | money }}</td>
+        <td class="px-4 py-2 text-right font-medium">
+          {% if r.invalid %}<span class="text-red-600">≤ 0 — skipped</span>{% else %}{{ r.next | money }}{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if any_invalid %}
+<p class="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-4">
+  Rows that would become ≤ 0 are skipped and won't be changed.
+</p>
+{% endif %}
+
+<div class="flex gap-3">
+  {% if pairs %}
+  <form method="post" action="/catalog/products/bulk-price/apply">
+    {{ ui.csrf_field(admin) }}
+    <input type="hidden" name="pairs" value="{{ pairs }}">
+    <button class="bg-slate-900 text-white px-4 py-2 rounded hover:bg-slate-700">Apply price change</button>
+  </form>
+  {% endif %}
+  <a href="/catalog" class="px-4 py-2 rounded bg-slate-200 hover:bg-slate-300">Cancel</a>
+</div>
+{% endblock %}

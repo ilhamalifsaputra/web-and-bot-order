@@ -97,29 +97,51 @@ export async function setUserLanguage(db: Db, userId: number, lang: string) {
   });
 }
 
+export interface WalletAdjustOpts {
+  allowNegative?: boolean;
+  /** Machine reason code for the ledger (e.g. admin_adjust, referral, refund). */
+  reason?: string;
+  note?: string | null;
+  adminId?: number | null;
+  orderId?: number | null;
+}
+
 /**
  * Atomically add `delta` (may be negative) to a wallet. Throws on overdraw
  * unless allowNegative. Returns the new balance. Run inside a $transaction
  * when paired with other money/stock mutations (SQLite serializes writers,
  * giving the same guarantee as the Python with_for_update lock).
+ *
+ * Every applied move also writes a `wallet_transactions` ledger row (running
+ * balance + reason + optional admin/order), so the per-user money timeline is
+ * complete — nothing that touches a balance is missed.
  */
 export async function adjustWallet(
   db: Db,
   userId: number,
   delta: Decimal.Value,
-  opts: { allowNegative?: boolean } = {},
+  opts: WalletAdjustOpts = {},
 ): Promise<Decimal> {
   const user = await db.user.findUniqueOrThrow({ where: { id: userId } });
-  const newBalance = quantizeMoney(
-    new Decimal(user.walletBalance).plus(delta),
-    4,
-  );
+  const oldBalance = new Decimal(user.walletBalance);
+  const newBalance = quantizeMoney(oldBalance.plus(delta), 4);
   if (newBalance.lessThan(0) && !opts.allowNegative) {
     throw new ValidationError("error.insufficient_wallet");
   }
   await db.user.update({
     where: { id: userId },
     data: { walletBalance: newBalance },
+  });
+  await db.walletTransaction.create({
+    data: {
+      userId,
+      delta: newBalance.minus(oldBalance), // the amount actually applied
+      balanceAfter: newBalance,
+      reason: opts.reason ?? "adjust",
+      note: opts.note ?? null,
+      adminId: opts.adminId ?? null,
+      orderId: opts.orderId ?? null,
+    },
   });
   return newBalance;
 }
@@ -164,32 +186,35 @@ export async function userTotalSpent(db: Db, userId: number): Promise<Decimal> {
 export interface WalletLedgerEntry {
   createdAt: Date;
   delta: string;
+  balanceAfter: string;
+  reason: string;
   note: string;
   adminId: number | null;
+  orderId: number | null;
 }
 
 /**
- * Per-user manual wallet ledger, derived from audit_logs (action `wallet_adjust`,
- * target_type `user`). There is no dedicated wallet_transactions table — manual
- * top-ups / deductions are the audited money moves an operator needs to see.
- * Automated credits (e.g. underpaid refunds) are audited against the order and
- * surface on /payments instead. The details string is written by the web route
- * as `delta=<n> note=<text>`; we parse it back here for display only.
+ * Complete per-user wallet timeline from the `wallet_transactions` ledger —
+ * every applied move (manual top-up, refund, referral payout, order
+ * payment/refund) with its running balance, newest first.
  */
 export async function listWalletLedger(
   db: Db,
   userId: number,
   limit = 50,
 ): Promise<WalletLedgerEntry[]> {
-  const rows = await db.auditLog.findMany({
-    where: { action: "wallet_adjust", targetType: "user", targetId: userId },
-    orderBy: { createdAt: "desc" },
+  const rows = await db.walletTransaction.findMany({
+    where: { userId },
+    orderBy: { id: "desc" },
     take: limit,
   });
-  return rows.map((r) => {
-    const details = r.details ?? "";
-    const delta = details.match(/delta=(-?[\d.]+)/)?.[1] ?? "?";
-    const note = details.match(/note=([\s\S]*)$/)?.[1]?.trim() ?? "";
-    return { createdAt: r.createdAt, delta, note, adminId: r.adminId };
-  });
+  return rows.map((r) => ({
+    createdAt: r.createdAt,
+    delta: new Decimal(r.delta).toString(),
+    balanceAfter: new Decimal(r.balanceAfter).toString(),
+    reason: r.reason,
+    note: r.note ?? "",
+    adminId: r.adminId,
+    orderId: r.orderId,
+  }));
 }

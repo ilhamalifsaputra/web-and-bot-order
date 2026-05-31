@@ -14,6 +14,7 @@ import {
   bulkAddStock,
   getStockItem,
   markStockDead,
+  bulkMarkStockDead,
   setStockNote,
   restockSubscriberCounts,
   countRestockSubscribers,
@@ -91,6 +92,31 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
     });
     logger.info(`Bulk-added ${added} stock rows to product ${productId}`);
     return redirectWithFlash(reply, `/stock/${productId}`, `Added ${added} stock item(s).`, "success");
+  });
+
+  // Bulk mark selected stock items dead (one writer, audited once). Never logs
+  // credentials — only the count and ids.
+  app.post("/stock/:productId/bulk-dead", { preHandler: csrfProtect }, async (req, reply) => {
+    const productId = Number((req.params as { productId: string }).productId);
+    const body = (req.body ?? {}) as Record<string, string>;
+    const ids = (body.ids ?? "")
+      .split(",")
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isInteger(n) && n > 0);
+    if (!ids.length) {
+      return redirectWithFlash(reply, `/stock/${productId}`, "Select at least one stock item.", "error");
+    }
+    const note = (body.note ?? "").trim() || "bulk marked dead via web";
+    const count = await bulkMarkStockDead(prisma, ids, note);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "stock_bulk_dead",
+      targetType: "product",
+      targetId: productId,
+      details: `count=${count} note=${note.slice(0, 160)}`, // never the credentials
+    });
+    logger.info(`Bulk-marked ${count} stock rows dead on product ${productId}`);
+    return redirectWithFlash(reply, `/stock/${productId}`, `${count} stock item(s) marked dead.`, "success");
   });
 
   app.post("/stock/item/:stockId/dead", { preHandler: csrfProtect }, async (req, reply) => {

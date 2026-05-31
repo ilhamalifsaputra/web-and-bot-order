@@ -37,6 +37,47 @@
       <button class="bg-slate-900 text-white px-4 py-2 rounded hover:bg-slate-700">Change password</button>
     </form>
   </section>
+
+  <section class="bg-white rounded-lg shadow p-5 lg:col-span-2">
+    <h2 class="font-semibold mb-3">Two-factor authentication (TOTP)
+      {% if two_fa_enabled %}<span class="ml-2 text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">enabled</span>
+      {% else %}<span class="ml-2 text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">off</span>{% endif %}
+    </h2>
+
+    {% if two_fa_enabled %}
+    <p class="text-sm text-slate-500 mb-3">A code from your authenticator is required at every login.</p>
+    <form method="post" action="/settings/2fa/disable" class="flex flex-wrap gap-2 items-end text-sm">
+      {{ ui.csrf_field(admin) }}
+      <div><label class="block text-xs text-slate-500 mb-1">Current password</label>
+        <input type="password" name="current_password" required class="border rounded px-2 py-1"></div>
+      <div><label class="block text-xs text-slate-500 mb-1">2FA code</label>
+        <input type="text" name="totp_code" inputmode="numeric" required placeholder="123456" class="border rounded px-2 py-1 w-28"></div>
+      <button class="bg-red-100 text-red-700 px-3 py-1.5 rounded hover:bg-red-200">Disable 2FA</button>
+    </form>
+
+    {% elif two_fa_pending %}
+    <p class="text-sm text-slate-600 mb-2">1. Add this secret to your authenticator app (Google Authenticator, Authy, …):</p>
+    <div class="font-mono text-sm bg-slate-100 rounded px-3 py-2 break-all mb-2">{{ two_fa_pending.secret }}</div>
+    <p class="text-xs text-slate-400 mb-3 break-all">Or use this otpauth URI: <span class="font-mono">{{ two_fa_pending.uri }}</span></p>
+    <p class="text-sm text-slate-600 mb-2">2. Enter the current 6-digit code to confirm:</p>
+    <form method="post" action="/settings/2fa/enable" class="flex gap-2 items-center text-sm">
+      {{ ui.csrf_field(admin) }}
+      <input type="text" name="totp_code" inputmode="numeric" required placeholder="123456" class="border rounded px-2 py-1 w-28">
+      <button class="bg-slate-900 text-white px-3 py-1.5 rounded hover:bg-slate-700">Enable 2FA</button>
+    </form>
+    <form method="post" action="/settings/2fa/cancel" class="mt-2">
+      {{ ui.csrf_field(admin) }}
+      <button class="text-xs text-slate-500 hover:underline">Cancel setup</button>
+    </form>
+
+    {% else %}
+    <p class="text-sm text-slate-500 mb-3">Add a one-time code on top of your password — recommended, since this dashboard can move money.</p>
+    <form method="post" action="/settings/2fa/begin">
+      {{ ui.csrf_field(admin) }}
+      <button class="bg-slate-900 text-white px-4 py-2 rounded hover:bg-slate-700">Enable 2FA</button>
+    </form>
+    {% endif %}
+  </section>
 </div>
 
 <section class="bg-white rounded-lg shadow overflow-x-auto mt-6">

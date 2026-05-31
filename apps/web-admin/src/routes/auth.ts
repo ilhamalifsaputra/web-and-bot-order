@@ -13,6 +13,8 @@ import {
   newJti,
   passwordHashKey,
   sessionJtiKey,
+  twoFaSecretKey,
+  verifyTotp,
   loginRateLimited,
   resetLoginAttempts,
 } from "../auth";
@@ -98,6 +100,12 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
     }
     if (!verifyPassword(password, storedHash)) {
       return reply.code(401).view("login.njk", { error: genericError });
+    }
+
+    // Second factor: if this admin has TOTP enabled, require a valid code.
+    const twoFaSecret = await getSetting(prisma, twoFaSecretKey(telegramId));
+    if (twoFaSecret && !verifyTotp(twoFaSecret, body.totp_code ?? "")) {
+      return reply.code(401).view("login.njk", { error: "Invalid credentials or 2FA code.", two_fa: true });
     }
 
     const jti = newJti();

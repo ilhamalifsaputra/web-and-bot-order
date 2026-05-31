@@ -26,7 +26,9 @@
   ['/reports', 'Reports'],
   ['/support', 'Support'],
   ['/settings', 'Settings'],
-  ['/audit', 'Audit']
+  ['/audit', 'Audit'],
+  ['/search', 'Search'],
+  ['/broadcast', 'Broadcast']
 ] %}
 <nav class="bg-slate-900 text-white">
   <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
@@ -38,9 +40,16 @@
         {{ item[1] }}
       </a>
       {% endfor %}
+      {% if admin.role == 'super' %}
+      <a href="/admins"
+         class="hover:text-white {% if active_nav == '/admins' %}text-white font-semibold border-b-2 border-white{% else %}text-slate-300{% endif %}">
+        Admins
+      </a>
+      {% endif %}
     </div>
     <div class="flex items-center gap-3 text-sm whitespace-nowrap">
       <span class="text-slate-400">tg:{{ admin.telegramId }}</span>
+      {% if admin.role %}<span class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-slate-200">{{ admin.role }}</span>{% endif %}
       <form method="post" action="/logout" class="inline">
         <input type="hidden" name="csrf_token" value="{{ admin.csrf }}">
         <button type="submit" class="hover:underline">Logout</button>

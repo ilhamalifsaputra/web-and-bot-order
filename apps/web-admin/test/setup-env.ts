@@ -20,7 +20,7 @@ export const TMP_DIR = dir;
 
 process.env.DATABASE_URL_PRISMA = DB_URL;
 process.env.WEB_COOKIE_SECRET = "test-secret-key-at-least-32-chars-long-xx";
-process.env.ADMIN_IDS = "999";
+process.env.ADMIN_IDS = "999,1000";
 process.env.BOT_TOKEN = "123:ABCDEFGHIJKLMNOPQRSTUVWXYZ-test";
 process.env.BOT_USERNAME = "TestBot";
 process.env.BINANCE_PAY_ID = "111222333";

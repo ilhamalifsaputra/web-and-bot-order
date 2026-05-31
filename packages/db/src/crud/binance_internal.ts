@@ -13,10 +13,13 @@ import { Decimal } from "@app/core/money";
 import { addMinutes } from "@app/core/datetime";
 import { generatePaymentRef } from "@app/core/formatters";
 import { logger } from "@app/core/logger";
+import { ValidationError } from "@app/core/errors";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, createOrderDirect, approveOrder } from "./orders";
+import { adjustWallet } from "./users";
+import { getSetting, setSetting } from "./settings";
 
 /** Create a direct order, then mark it BINANCE_INTERNAL with a unique note + 15-min expiry. */
 export async function createInternalOrder(
@@ -150,4 +153,203 @@ export async function recordUnmatchedTx(db: Db, args: { binanceTxId: string; amo
     if (isUniqueViolation(e)) return false;
     throw e;
   }
+}
+
+// ===========================================================================
+// Ops panel (web-admin /payments) — ledger, UNDERPAID resolution, manual match,
+// poller health. `processed_binance_tx` has no Prisma relation to `orders`
+// (orderId is a bare FK-less column), so order rows are stitched in by id here.
+// ===========================================================================
+
+/** Known ledger outcomes, in the order the ops panel lists them. */
+export const TX_OUTCOMES = ["matched", "underpaid", "unmatched", "delivery_failed"] as const;
+export type TxOutcome = (typeof TX_OUTCOMES)[number];
+
+type LinkedOrder = { id: number; orderCode: string; status: string; totalAmount: Decimal };
+
+/** Ledger rows (newest first), each enriched with its linked order (if any). */
+export async function listProcessedBinanceTx(
+  db: Db,
+  opts: { outcome?: string | null; limit?: number; offset?: number } = {},
+) {
+  const where = opts.outcome ? { outcome: opts.outcome } : {};
+  const rows = await db.processedBinanceTx.findMany({
+    where,
+    orderBy: { createdAt: "desc" },
+    skip: opts.offset ?? 0,
+    take: opts.limit ?? 50,
+  });
+  const orderIds = [...new Set(rows.map((r) => r.orderId).filter((id): id is number => id != null))];
+  const orders = orderIds.length
+    ? await db.order.findMany({
+        where: { id: { in: orderIds } },
+        select: { id: true, orderCode: true, status: true, totalAmount: true },
+      })
+    : [];
+  const byId = new Map(orders.map((o) => [o.id, o as LinkedOrder]));
+  return rows.map((r) => ({ ...r, order: r.orderId != null ? byId.get(r.orderId) ?? null : null }));
+}
+
+export function countProcessedBinanceTx(db: Db, opts: { outcome?: string | null } = {}) {
+  return db.processedBinanceTx.count({ where: opts.outcome ? { outcome: opts.outcome } : {} });
+}
+
+/** Count of ledger rows per outcome — drives the summary cards. */
+export async function processedTxOutcomeCounts(db: Db): Promise<Record<string, number>> {
+  const grouped = await db.processedBinanceTx.groupBy({ by: ["outcome"], _count: { _all: true } });
+  const counts: Record<string, number> = {};
+  for (const g of grouped) counts[g.outcome] = g._count._all;
+  return counts;
+}
+
+/** The amount actually received for an UNDERPAID order, from its ledger row. */
+async function underpaidReceived(db: Db, orderId: number): Promise<Decimal | null> {
+  const row = await db.processedBinanceTx.findFirst({
+    where: { orderId, outcome: "underpaid" },
+    orderBy: { createdAt: "desc" },
+  });
+  return row?.amount != null ? new Decimal(row.amount) : null;
+}
+
+/**
+ * Resolve UNDERPAID by delivering anyway (operator eats the shortfall).
+ * Flips UNDERPAID → PENDING_VERIFICATION then runs the normal approve/deliver
+ * path (allocates stock, enqueues the testimoni outbox row). Same shape as
+ * deliverPaidInternalOrder so the caller can show credentials.
+ */
+export async function deliverUnderpaidOrder(
+  db: PrismaClient,
+  args: { orderId: number; adminId: number },
+): Promise<{ order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }> {
+  return db.$transaction(async (tx: Tx) => {
+    const order = await getOrder(tx, args.orderId);
+    if (!order) throw new ValidationError("error.order_not_found");
+    if (order.status !== OrderStatus.UNDERPAID) {
+      throw new ValidationError("error.order_not_underpaid");
+    }
+    await tx.order.update({
+      where: { id: args.orderId },
+      data: { status: OrderStatus.PENDING_VERIFICATION, paidAt: new Date() },
+    });
+    const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: args.adminId });
+    logger.info(`Underpaid order ${delivered.orderCode} delivered anyway by admin=${args.adminId}`);
+    return { order: delivered, credentials };
+  });
+}
+
+/**
+ * Resolve UNDERPAID by refunding the received USDT to the buyer's wallet and
+ * marking the order REFUNDED. Rolls back voucher usage so reconciliation stays
+ * clean. (UNDERPAID orders never reserved stock, so there is nothing to release.)
+ */
+export async function refundUnderpaidOrder(
+  db: PrismaClient,
+  args: { orderId: number; adminId: number },
+): Promise<{ refunded: Decimal }> {
+  return db.$transaction(async (tx: Tx) => {
+    const order = await getOrder(tx, args.orderId);
+    if (!order) throw new ValidationError("error.order_not_found");
+    if (order.status !== OrderStatus.UNDERPAID) {
+      throw new ValidationError("error.order_not_underpaid");
+    }
+    const received = (await underpaidReceived(tx, args.orderId)) ?? new Decimal(0);
+    if (received.greaterThan(0)) await adjustWallet(tx, order.userId, received);
+    if (order.voucherId) {
+      const v = await tx.voucher.findUnique({ where: { id: order.voucherId } });
+      if (v && v.usedCount > 0) {
+        await tx.voucher.update({ where: { id: v.id }, data: { usedCount: { decrement: 1 } } });
+      }
+    }
+    await tx.order.update({
+      where: { id: args.orderId },
+      data: {
+        status: OrderStatus.REFUNDED,
+        adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} to wallet by admin_id=${args.adminId}`,
+      },
+    });
+    logger.info(`Refunded underpaid order ${order.orderCode} (${received.toString()}) by admin=${args.adminId}`);
+    return { refunded: received };
+  });
+}
+
+/**
+ * Manually attach an UNMATCHED transfer to a PENDING internal-transfer order
+ * (buyer forgot the note) and run the same deliver path. Updates the existing
+ * ledger row (it was already claimed as "unmatched") rather than inserting,
+ * so the binance_tx_id UNIQUE gate is never tripped.
+ */
+export async function manualMatchTx(
+  db: PrismaClient,
+  args: { binanceTxId: string; orderId: number; adminId: number },
+): Promise<{ order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }> {
+  return db.$transaction(async (tx: Tx) => {
+    const ledger = await tx.processedBinanceTx.findUnique({ where: { binanceTxId: args.binanceTxId } });
+    if (!ledger) throw new ValidationError("error.tx_not_found");
+    if (ledger.outcome !== "unmatched") throw new ValidationError("error.tx_not_unmatched");
+
+    const order = await getOrder(tx, args.orderId);
+    if (!order) throw new ValidationError("error.order_not_found");
+    if (order.status !== OrderStatus.PENDING_PAYMENT) {
+      throw new ValidationError("error.order_not_pending");
+    }
+
+    await tx.processedBinanceTx.update({
+      where: { binanceTxId: args.binanceTxId },
+      data: { orderId: args.orderId, outcome: "matched" },
+    });
+    await tx.order.update({
+      where: { id: args.orderId },
+      data: {
+        status: OrderStatus.PENDING_VERIFICATION,
+        binanceTxid: args.binanceTxId,
+        paidAt: new Date(),
+      },
+    });
+    const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: args.adminId });
+    logger.info(`Manual-matched tx ${args.binanceTxId} → order ${delivered.orderCode} by admin=${args.adminId}`);
+    return { order: delivered, credentials };
+  });
+}
+
+// ---- Poller heartbeat (written by the order-bot poller, read by the web) ----
+
+/** Single settings key holding the poller's last-cycle heartbeat as JSON. */
+export const BINANCE_POLL_HEALTH_KEY = "binance_poll_health";
+
+export interface BinancePollHealth {
+  lastRun: string | null;
+  lastTxCount: number | null;
+  backoffUntil: string | null;
+}
+
+/** Read the poller heartbeat; all-null when the poller has never run. */
+export async function getBinancePollHealth(db: Db): Promise<BinancePollHealth> {
+  const raw = await getSetting(db, BINANCE_POLL_HEALTH_KEY);
+  if (!raw) return { lastRun: null, lastTxCount: null, backoffUntil: null };
+  try {
+    const p = JSON.parse(raw) as Partial<BinancePollHealth>;
+    return {
+      lastRun: p.lastRun ?? null,
+      lastTxCount: typeof p.lastTxCount === "number" ? p.lastTxCount : null,
+      backoffUntil: p.backoffUntil ?? null,
+    };
+  } catch {
+    return { lastRun: null, lastTxCount: null, backoffUntil: null };
+  }
+}
+
+/** Record one poll cycle's heartbeat. Called by the poller each tick. */
+export async function recordBinancePollHealth(
+  db: Db,
+  args: { lastTxCount: number; backoffUntil?: number | null },
+): Promise<void> {
+  await setSetting(
+    db,
+    BINANCE_POLL_HEALTH_KEY,
+    JSON.stringify({
+      lastRun: new Date().toISOString(),
+      lastTxCount: args.lastTxCount,
+      backoffUntil: args.backoffUntil ? new Date(args.backoffUntil).toISOString() : null,
+    }),
+  );
 }

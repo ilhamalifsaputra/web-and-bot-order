@@ -570,3 +570,134 @@ file and template subdir.
 
 *End of prompt. Paste everything from "Goal" downward into your coding
 assistant to begin.*
+
+---
+
+# 📈 Post-MVP feature suggestions (roadmap)
+
+> **Status update:** the admin has since been **migrated to the Node/TS stack**
+> (`apps/web-admin` — Fastify 5 + Nunjucks + HTMX, shared `@app/db` Prisma layer).
+> The 9 MVP pages above are all built. The suggestions below target that Node
+> app. **Ground rules still apply:** the web **never** sends Telegram messages
+> (enqueue to `notification_outbox`, let the notifier deliver); every mutation
+> calls `logAdminAction`; money stays `Decimal`; settings edits are
+> whitelist-only; never log credentials / proof `file_id` / hashes.
+>
+> Each item is tagged with effort (S/M/L) and whether it reuses existing CRUD or
+> needs new `@app/db` helpers. Priorities are a suggestion, not gospel.
+
+## Tier 1 — highest leverage (do first)
+
+> **✅ All three Tier 1 items shipped.** `/payments` ops panel, `/outbox` monitor,
+> and the dashboard SLA widgets are live in `apps/web-admin` with Vitest coverage.
+> A poller heartbeat (`binance_poll_health` setting) was added to the order-bot
+> so the health card reflects real liveness.
+
+### 1. Binance Internal Transfer ops panel `/payments`  · M · new crud  — ✅ DONE
+We just added UID-based auto-confirm (`ProcessedBinanceTx` ledger, `UNDERPAID`
+status). Give the operator visibility + manual levers:
+- **Transfer ledger**: list `processed_binance_tx` (matched / underpaid /
+  unmatched / delivery_failed) with the linked order, amount, timestamp.
+- **Resolve UNDERPAID**: per order, one-click → top-up wallet for the diff,
+  deliver anyway, refund, or cancel (all audited).
+- **Manual match**: when a buyer forgot the note, attach an `UNMATCHED` tx to a
+  PENDING order → run the same `deliverPaidInternalOrder` path.
+- **Poller health card**: last poll time, last fetched-tx count, backoff state.
+*Why:* auto-confirm WILL have edge cases (wrong note, short pay); without this
+the operator is blind to money that arrived but didn't deliver.
+
+### 2. Outbox / notifications monitor `/outbox`  · S · reuse crud  — ✅ DONE
+Surface `notification_outbox`: PENDING / SENT / FAILED with `last_error` and
+`attempts`. Actions: **retry failed** (reset to PENDING), inspect payload.
+*Why:* delivery is fire-and-forget today; a stuck/failed testimoni or credential
+notice is currently invisible until a customer complains.
+
+### 3. Stale-order & SLA dashboard widgets  · S · reuse crud  — ✅ DONE
+On the dashboard: count + list of orders **aging in PENDING_VERIFICATION**
+(>N hours), pending-payment about to expire, and warranties expiring in 3 days
+(the bot already computes this for reminders — show it). HTMX-poll refresh.
+*Why:* turns the dashboard from vanity metrics into an action queue.
+
+## Tier 2 — operational depth
+
+> **✅ §4–§7 shipped** in `apps/web-admin` with Vitest coverage. §8 (bulk ops)
+> is the remaining Tier 2 item.
+
+### 4. Wallet ledger + manual top-up `/users/:id/wallet`  · M · new crud  — ✅ DONE
+A per-user wallet transaction history (every `adjustWallet` with reason + admin),
+not just the current balance. Top-up / deduct form with mandatory reason.
+*Why:* manual wallet moves are money; an audit trail per user is essential.
+*Shipped:* the ledger is derived from `audit_logs` (action `wallet_adjust`,
+`target_type=user`) via `listWalletLedger` — no new table — and rendered on the
+user detail page; the adjustment form now **requires** a reason. Automated
+credits (underpaid refunds) stay on `/payments` where they're audited.
+
+### 5. Reviews moderation `/reviews`  · S · new crud  — ✅ DONE
+List reviews (rating + comment + product + buyer), hide/flag abusive ones,
+per-product average + count. *Why:* reviews feed reputation; need a kill switch.
+*Shipped:* added a `reviews.hidden` column (migration
+`20260531140000_review_hidden`); the order bot now **excludes hidden reviews**
+from the per-product rating average it shows customers, so the kill switch is
+real, not cosmetic. New crud: `listReviews` / `countReviews` /
+`setReviewHidden` / `productRatingSummaries`.
+
+### 6. Restock waitlist view `/stock` enhancement  · S · reuse crud  — ✅ DONE
+Show `restock_subscriptions` per product ("12 waiting"). When bulk-adding stock,
+display how many will be notified (the bot enqueues the notify).
+*Shipped:* a "Waiting" column on `/stock` (via `restockSubscriberCounts`) and a
+banner on the per-product page (`countRestockSubscribers`) before bulk add.
+
+### 7. Reports & charts `/reports`  · M · new crud  — ✅ DONE
+Beyond the existing CSV: revenue by day/7d/30d (server-rendered SVG sparkline or
+Chart.js via CDN — a lib, not a framework, so it fits the "no build" rule),
+top products, voucher usage, referral payouts, orders-by-status funnel.
+*Shipped:* `/reports` with a **server-rendered SVG sparkline** (no JS lib) for
+30-day daily revenue, plus top products, orders-by-status funnel, and voucher
+usage. New crud: `revenueByDay` / `topProducts` / `ordersByStatus` /
+`voucherUsage`.
+
+### 8. Bulk operations  · M · new crud
+Bulk mark-dead stock, bulk activate/deactivate products, bulk price update,
+product CSV import with a dry-run preview (mirrors the stock CSV idea).
+
+## Tier 3 — platform / hardening
+
+### 9. Multi-admin + RBAC  · L · schema + new crud
+Today it's effectively single-operator. Add admin accounts with roles
+(super-admin / support-only / read-only); gate routes per role; the audit log
+already keys by admin so attribution is ready. Needs a small schema addition.
+
+### 10. Web login 2FA + session management  · M · new crud
+TOTP on top of the existing bcrypt + `jti` rotation; an "active sessions" list
+with force-logout. *Why:* this dashboard can approve orders and move wallet
+balances — it deserves more than a password.
+
+### 11. Admin-UI i18n (EN/ID)  · S · reuse `@app/core/i18n`
+The locale tables already exist; render the admin UI bilingually via the same
+`t()` loader. Low effort, nice for a non-English operator.
+
+### 12. Broadcast composer `/broadcast`  · M · needs a bot-side drainer
+Compose + preview + segment (all / resellers / recent buyers) + schedule.
+**Constraint:** the web must NOT send Telegram itself — it enqueues to a
+broadcast queue/outbox that the bot drains. Don't ship the web half without the
+bot half, or messages silently pile up.
+
+### 13. Global search / quick-jump  · S · reuse crud
+One box → jump to an order by code, a user by TG id/username, or a product by
+name. Pure quality-of-life for a busy operator.
+
+## Explicitly out of scope (still)
+- Sending Telegram messages directly from the web (always via outbox/bot).
+- Editing arbitrary `settings` keys (whitelist only — see §8 of the MVP).
+- Real-time push / WebSockets (HTMX polling is enough for one operator).
+
+## Implementation notes that bite
+- **No raw SQL in routes** — add helpers to `packages/db/src/crud/*`, mirror the
+  existing per-domain split, and cover them with the Vitest harness.
+- **Decimal everywhere** for money; the `money` Nunjucks filter already exists.
+- **UTC in DB, `TIMEZONE` on display** (the `localdt` filter handles this).
+- **Audit every state change** with the acting admin id (`logAdminAction`).
+- **CSRF**: reuse the existing `csrfProtect` preHandler on every new POST.
+- Anything touching the **shared SQLite** must keep transactions short
+  (single-writer); for genuinely concurrent multi-admin writes, that's the
+  trigger to move to Postgres (see `RUN.md §9`).

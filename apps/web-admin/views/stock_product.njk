@@ -12,6 +12,11 @@
 
 <section class="bg-white rounded-lg shadow p-5 mb-8">
   <h2 class="font-semibold mb-2">Bulk add stock</h2>
+  {% if waiting %}
+  <p class="text-sm mb-2 text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+    <strong>{{ waiting }}</strong> user{{ 's' if waiting != 1 }} waiting on restock — the bot will notify them when you add stock.
+  </p>
+  {% endif %}
   <p class="text-xs text-slate-500 mb-3">One credential per line, e.g. <code>email:password</code> or <code>email|password|extra</code>.</p>
   <form method="post" action="/stock/{{ product.id }}/add">
     {{ ui.csrf_field(admin) }}

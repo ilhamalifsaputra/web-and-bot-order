@@ -15,6 +15,8 @@ import {
   getStockItem,
   markStockDead,
   setStockNote,
+  restockSubscriberCounts,
+  countRestockSubscribers,
   logAdminAction,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../plugins/auth";
@@ -25,6 +27,7 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
     const q = req.query as Record<string, string | undefined>;
     const products = await listAllProducts(prisma);
     const counts = await stockStatusCounts(prisma);
+    const waiting = await restockSubscriberCounts(prisma);
 
     // Group products by category name for the table.
     const groups: Record<string, typeof products> = {};
@@ -38,6 +41,7 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
       active_nav: "/stock",
       groups,
       counts,
+      waiting,
       products,
       msg: q.msg ?? null,
       kind: q.kind ?? "info",
@@ -53,6 +57,7 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
     }
     const items = await listStockItemsForProduct(prisma, productId, 500);
     const available = await countAvailableStock(prisma, productId);
+    const waiting = await countRestockSubscribers(prisma, productId);
 
     return reply.view("stock_product.njk", {
       admin: req.admin,
@@ -60,6 +65,7 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
       product,
       items,
       available,
+      waiting,
       msg: q.msg ?? null,
       kind: q.kind ?? "info",
     });

@@ -160,3 +160,36 @@ export async function userTotalSpent(db: Db, userId: number): Promise<Decimal> {
   });
   return new Decimal(agg._sum.totalAmount ?? 0);
 }
+
+export interface WalletLedgerEntry {
+  createdAt: Date;
+  delta: string;
+  note: string;
+  adminId: number | null;
+}
+
+/**
+ * Per-user manual wallet ledger, derived from audit_logs (action `wallet_adjust`,
+ * target_type `user`). There is no dedicated wallet_transactions table — manual
+ * top-ups / deductions are the audited money moves an operator needs to see.
+ * Automated credits (e.g. underpaid refunds) are audited against the order and
+ * surface on /payments instead. The details string is written by the web route
+ * as `delta=<n> note=<text>`; we parse it back here for display only.
+ */
+export async function listWalletLedger(
+  db: Db,
+  userId: number,
+  limit = 50,
+): Promise<WalletLedgerEntry[]> {
+  const rows = await db.auditLog.findMany({
+    where: { action: "wallet_adjust", targetType: "user", targetId: userId },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
+  return rows.map((r) => {
+    const details = r.details ?? "";
+    const delta = details.match(/delta=(-?[\d.]+)/)?.[1] ?? "?";
+    const note = details.match(/note=([\s\S]*)$/)?.[1]?.trim() ?? "";
+    return { createdAt: r.createdAt, delta, note, adminId: r.adminId };
+  });
+}

@@ -28,6 +28,7 @@ import {
   deliverPaidInternalOrder,
   markUnderpaid,
   recordUnmatchedTx,
+  recordBinancePollHealth,
   type DeliverResult,
 } from "@app/db";
 import { coreT } from "../util/i18n";
@@ -221,12 +222,15 @@ export async function pollOnce(api: Api): Promise<void> {
     } else {
       logger.error({ err }, "Binance transfer fetch failed");
     }
+    // Heartbeat so the web ops panel shows the poller is alive (and backing off).
+    await recordBinancePollHealth(prisma, { lastTxCount: 0, backoffUntil: backoffUntil || null }).catch(() => undefined);
     return;
   }
 
   const now = new Date();
   const orders = await listPendingInternalOrders(prisma, now);
   if (txs.length) logger.info(`Binance poll: ${txs.length} tx fetched, ${orders.length} pending order(s)`);
+  await recordBinancePollHealth(prisma, { lastTxCount: txs.length, backoffUntil: null }).catch(() => undefined);
 
   const byRef = new Map<string, PendingOrder>();
   for (const o of orders) if (o.paymentRef) byRef.set(o.paymentRef.toLowerCase(), o);

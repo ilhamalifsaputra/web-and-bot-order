@@ -22,6 +22,7 @@
           <th class="px-4 py-2 text-right">Reserved</th>
           <th class="px-4 py-2 text-right">Sold</th>
           <th class="px-4 py-2 text-right">Dead</th>
+          <th class="px-4 py-2 text-right">Waiting</th>
           <th class="px-4 py-2"></th>
         </tr>
       </thead>
@@ -39,6 +40,8 @@
           <td class="px-4 py-2 text-right text-slate-500">{{ c.reserved if c else 0 }}</td>
           <td class="px-4 py-2 text-right text-slate-500">{{ c.sold if c else 0 }}</td>
           <td class="px-4 py-2 text-right text-slate-500">{{ c.dead if c else 0 }}</td>
+          {% set w = waiting[p.id] %}
+          <td class="px-4 py-2 text-right {% if w and avail == 0 %}text-amber-600 font-semibold{% else %}text-slate-500{% endif %}">{{ w or 0 }}</td>
           <td class="px-4 py-2 text-right">
             <a class="text-slate-700 hover:underline" href="/stock/{{ p.id }}">Manage →</a>
           </td>

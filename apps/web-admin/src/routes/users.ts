@@ -13,6 +13,7 @@ import {
   userTotalSpent,
   listUserOrders,
   listUserTickets,
+  listWalletLedger,
   setUserRole,
   setUserBanned,
   adjustWallet,
@@ -49,6 +50,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
     const totalSpent = await userTotalSpent(prisma, userId);
     const orders = await listUserOrders(prisma, userId, 20);
     const tickets = await listUserTickets(prisma, userId, 20);
+    const ledger = await listWalletLedger(prisma, userId, 50);
 
     return reply.view("user_detail.njk", {
       admin: req.admin,
@@ -57,6 +59,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       total_spent: totalSpent,
       orders,
       tickets,
+      ledger,
       roles: ROLES,
       msg: query.msg ?? null,
       kind: query.kind ?? "info",
@@ -104,6 +107,10 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
   app.post("/users/:userId/wallet", { preHandler: csrfProtect }, async (req, reply) => {
     const userId = Number((req.params as { userId: string }).userId);
     const body = (req.body ?? {}) as Record<string, string>;
+    const note = (body.note ?? "").trim();
+    if (!note) {
+      return redirectWithFlash(reply, `/users/${userId}`, "A reason is required for every wallet move.", "error");
+    }
     let deltaDec: Decimal;
     try {
       deltaDec = new Decimal((body.delta ?? "").trim());
@@ -130,7 +137,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       action: "wallet_adjust",
       targetType: "user",
       targetId: userId,
-      details: `delta=${deltaDec.toString()} note=${(body.note ?? "").trim().slice(0, 160)}`,
+      details: `delta=${deltaDec.toString()} note=${note.slice(0, 160)}`,
     });
     return redirectWithFlash(reply, `/users/${userId}`, `Wallet adjusted. New balance: ${newBalance.toString()}.`, "success");
   });

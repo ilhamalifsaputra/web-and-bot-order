@@ -359,6 +359,31 @@ export function listExpiredPendingOrders(db: Db, now: Date) {
   });
 }
 
+// ---- SLA widgets (web-admin dashboard) ------------------------------------
+
+/** Orders aging in PENDING_VERIFICATION beyond `cutoff` (oldest first). */
+export function listOrdersAgingInVerification(db: Db, cutoff: Date, limit = 50) {
+  return db.order.findMany({
+    where: { status: OrderStatus.PENDING_VERIFICATION, createdAt: { lt: cutoff } },
+    orderBy: { createdAt: "asc" },
+    take: limit,
+    include: { user: true },
+  });
+}
+
+/** PENDING_PAYMENT orders whose window expires within [now, until] (soonest first). */
+export function listExpiringPendingPayments(db: Db, now: Date, until: Date, limit = 50) {
+  return db.order.findMany({
+    where: {
+      status: OrderStatus.PENDING_PAYMENT,
+      expiresAt: { not: null, gte: now, lte: until },
+    },
+    orderBy: { expiresAt: "asc" },
+    take: limit,
+    include: { user: true },
+  });
+}
+
 /** Release any reserved stock + refund wallet + roll back voucher usage. */
 async function releaseOrderHolds(
   db: Db,

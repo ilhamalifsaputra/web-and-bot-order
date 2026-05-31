@@ -186,6 +186,7 @@ model Review {
   orderId   Int      @map("order_id")
   rating    Int
   comment   String?
+  hidden    Boolean  @default(false)
   createdAt DateTime @default(now()) @map("created_at")
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)

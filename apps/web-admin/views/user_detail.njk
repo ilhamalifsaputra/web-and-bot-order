@@ -53,8 +53,8 @@
       <form method="post" action="/users/{{ user.id }}/wallet" class="space-y-2">
         {{ ui.csrf_field(admin) }}
         <label class="block text-xs text-slate-500">Wallet adjustment (+/−)</label>
-        <input type="text" name="delta" placeholder="e.g. 5 or -2.5" class="border rounded px-2 py-1 w-full">
-        <input type="text" name="note" placeholder="note (optional)" class="border rounded px-2 py-1 w-full">
+        <input type="text" name="delta" placeholder="e.g. 5 or -2.5" class="border rounded px-2 py-1 w-full" required>
+        <input type="text" name="note" placeholder="reason (required)" class="border rounded px-2 py-1 w-full" required>
         <button class="bg-slate-200 px-3 py-1.5 rounded hover:bg-slate-300 w-full">Adjust wallet</button>
       </form>
     </div>
@@ -75,6 +75,26 @@
           </tr>
           {% else %}
           <tr><td colspan="4" class="py-4 text-center text-slate-400">No orders.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="bg-white rounded-lg shadow p-5">
+      <h2 class="font-semibold mb-3">Wallet ledger</h2>
+      <p class="text-xs text-slate-400 mb-2">Manual top-ups / deductions made from the admin. Automated credits (refunds) appear under <a class="underline" href="/payments">Payments</a>.</p>
+      <table class="min-w-full text-sm">
+        <thead class="text-slate-500 text-left"><tr><th class="py-1">When</th><th class="py-1 text-right">Delta</th><th class="py-1">Reason</th><th class="py-1">Admin</th></tr></thead>
+        <tbody class="divide-y divide-slate-100">
+          {% for e in ledger %}
+          <tr>
+            <td class="py-1 text-slate-500">{{ e.createdAt | localdt }}</td>
+            <td class="py-1 text-right font-mono {% if e.delta[0] == '-' %}text-red-600{% else %}text-green-700{% endif %}">{{ e.delta }}</td>
+            <td class="py-1">{{ e.note or '—' }}</td>
+            <td class="py-1 text-slate-500 font-mono text-xs">{{ e.adminId or '—' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="py-4 text-center text-slate-400">No manual wallet moves.</td></tr>
           {% endfor %}
         </tbody>
       </table>

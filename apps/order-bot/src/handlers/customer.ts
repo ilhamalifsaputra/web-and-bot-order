@@ -279,7 +279,7 @@ export async function browseProduct(ctx: MyContext, productId: number, qty = 1):
     }
     stock = await countAvailableStock(prisma, p.id);
     const agg = await prisma.review.aggregate({
-      where: { productId: p.id },
+      where: { productId: p.id, hidden: false },
       _avg: { rating: true },
       _count: { id: true },
     });

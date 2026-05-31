@@ -1,0 +1,80 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}Outbox · Stock Admin{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-semibold mb-2">Notification outbox</h1>
+<p class="text-sm text-slate-500 mb-6">Delivery is the notifier's job — retry only requeues a row. The web never sends Telegram.</p>
+
+{{ ui.flash(msg, kind) }}
+
+<section class="grid grid-cols-3 gap-4 mb-8">
+  {% set cards = [['PENDING','Pending','text-blue-600'], ['SENT','Sent','text-green-600'], ['FAILED','Failed','text-red-600']] %}
+  {% for c in cards %}
+  <div class="bg-white rounded-lg shadow p-4">
+    <div class="text-xs uppercase tracking-wide text-slate-500">{{ c[1] }}</div>
+    <div class="text-2xl font-semibold mt-2 {% if counts[c[0]] %}{{ c[2] }}{% endif %}">{{ counts[c[0]] or 0 }}</div>
+  </div>
+  {% endfor %}
+</section>
+
+<form method="get" action="/outbox" class="flex gap-2 items-center text-sm mb-3">
+  <select name="status" class="border rounded px-2 py-1" onchange="this.form.submit()">
+    <option value="">All statuses</option>
+    {% for s in statuses %}<option value="{{ s }}" {% if f.status == s %}selected{% endif %}>{{ s | lower }}</option>{% endfor %}
+  </select>
+  <noscript><button class="bg-slate-900 text-white px-3 py-1 rounded">Filter</button></noscript>
+</form>
+
+<div class="bg-white rounded-lg shadow overflow-x-auto">
+  <table class="min-w-full text-sm">
+    <thead class="bg-slate-100 text-slate-600 text-left">
+      <tr>
+        <th class="px-4 py-2">Created</th><th class="px-4 py-2">Event</th><th class="px-4 py-2">Order</th>
+        <th class="px-4 py-2">Status</th><th class="px-4 py-2">Attempts</th>
+        <th class="px-4 py-2">Last error / payload</th><th class="px-4 py-2 text-right">Action</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-slate-100">
+      {% for r in rows %}
+      <tr class="hover:bg-slate-50 align-top">
+        <td class="px-4 py-2 text-slate-500 whitespace-nowrap" title="{{ tzname }}">{{ r.createdAt | localdt('yyyy-LL-dd HH:mm:ss') }}</td>
+        <td class="px-4 py-2 font-medium">{{ r.event }}</td>
+        <td class="px-4 py-2">
+          {% if r.order %}<a class="font-mono hover:underline" href="/orders/{{ r.order.id }}">{{ r.order.orderCode }}</a>
+          {% else %}<span class="text-slate-400">—</span>{% endif %}
+        </td>
+        <td class="px-4 py-2">{{ ui.status_badge(r.status) }}</td>
+        <td class="px-4 py-2 {% if r.attempts > 0 %}text-amber-600{% endif %}">{{ r.attempts }}</td>
+        <td class="px-4 py-2 text-slate-600 max-w-md">
+          {% if r.lastError %}<div class="text-red-600 break-all mb-1">{{ r.lastError }}</div>{% endif %}
+          <details>
+            <summary class="cursor-pointer text-xs text-slate-400 hover:text-slate-600">payload</summary>
+            <pre class="text-xs bg-slate-50 rounded p-2 mt-1 overflow-x-auto whitespace-pre-wrap break-all">{{ r.payloadJson }}</pre>
+          </details>
+        </td>
+        <td class="px-4 py-2 text-right">
+          {% if r.status != 'SENT' %}
+          <form method="post" action="/outbox/{{ r.id }}/retry" class="inline">
+            {{ ui.csrf_field(admin) }}
+            <button class="px-2 py-1 rounded bg-slate-700 text-white text-xs hover:bg-slate-800">Retry</button>
+          </form>
+          {% else %}<span class="text-slate-300 text-xs">—</span>{% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="px-4 py-6 text-center text-slate-400">No outbox rows match.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="flex items-center justify-between mt-4 text-sm text-slate-500">
+  <span>{{ total }} row(s) · page {{ page }}</span>
+  <span class="flex gap-3">
+    {% set qbase = '/outbox?status=' + f.status %}
+    {% if page > 1 %}<a class="hover:underline" href="{{ qbase }}&page={{ page - 1 }}">← Prev</a>{% endif %}
+    {% if has_next %}<a class="hover:underline" href="{{ qbase }}&page={{ page + 1 }}">Next →</a>{% endif %}
+  </span>
+</div>
+{% endblock %}

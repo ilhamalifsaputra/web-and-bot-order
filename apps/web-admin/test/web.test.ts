@@ -21,6 +21,8 @@ import {
   getSetting,
   getVoucherByCode,
   countAvailableStock,
+  markUnderpaid,
+  recordUnmatchedTx,
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
@@ -458,11 +460,199 @@ describe("settings", () => {
   });
 });
 
+// ---- payments / Binance Internal ops (acceptance #5) ----------------------
+
+describe("payments", () => {
+  async function makeUnderpaidOrder(received = "3.00"): Promise<number> {
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    await markUnderpaid(prisma, { orderId: order.id, binanceTxId: `UTX-${order.id}`, amount: received });
+    return order.id;
+  }
+
+  it("deliver underpaid → DELIVERED + audit", async () => {
+    const id = await makeUnderpaidOrder();
+    const res = await post(`/payments/order/${id}/deliver`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect((await getOrder(prisma, id))!.status).toBe("DELIVERED");
+    const audit = await prisma.auditLog.findMany({ where: { action: "underpaid_deliver", targetId: id } });
+    expect(audit.length).toBe(1);
+  });
+
+  it("refund underpaid → REFUNDED + wallet credit", async () => {
+    const before = Number((await getUser(prisma, seed.customerId))!.walletBalance);
+    const id = await makeUnderpaidOrder("3.00");
+    const res = await post(`/payments/order/${id}/refund`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(303);
+    expect((await getOrder(prisma, id))!.status).toBe("REFUNDED");
+    const after = Number((await getUser(prisma, seed.customerId))!.walletBalance);
+    expect(after - before).toBeCloseTo(3);
+  });
+
+  it("cancel underpaid → CANCELLED", async () => {
+    const id = await makeUnderpaidOrder();
+    const res = await post(`/payments/order/${id}/cancel`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(303);
+    expect((await getOrder(prisma, id))!.status).toBe("CANCELLED");
+  });
+
+  it("manual match unmatched tx → delivered + ledger updated", async () => {
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    await recordUnmatchedTx(prisma, { binanceTxId: "MTX1", amount: "5.00" });
+    const res = await post("/payments/match", seed.cookie, {
+      csrf_token: seed.csrf,
+      binance_tx_id: "MTX1",
+      order_code: order.orderCode,
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect((await getOrder(prisma, order.id))!.status).toBe("DELIVERED");
+    const tx = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "MTX1" } });
+    expect(tx!.outcome).toBe("matched");
+    expect(tx!.orderId).toBe(order.id);
+    // approve path enqueues exactly one testimoni outbox row.
+    expect((await prisma.notificationOutbox.findMany({ where: { orderId: order.id } })).length).toBe(1);
+  });
+
+  it("deliver requires auth", async () => {
+    const id = await makeUnderpaidOrder();
+    const res = await post(`/payments/order/${id}/deliver`, null, { csrf_token: "x" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect((await getOrder(prisma, id))!.status).toBe("UNDERPAID");
+  });
+
+  it("deliver rejects bad CSRF", async () => {
+    const id = await makeUnderpaidOrder();
+    const res = await post(`/payments/order/${id}/deliver`, seed.cookie, { csrf_token: "bad" });
+    expect(res.statusCode).toBe(403);
+    expect((await getOrder(prisma, id))!.status).toBe("UNDERPAID");
+  });
+});
+
+// ---- outbox monitor (acceptance #5) ---------------------------------------
+
+describe("outbox", () => {
+  async function makeFailedNotif(): Promise<number> {
+    const row = await prisma.notificationOutbox.create({
+      data: { event: "ORDER_DELIVERED", payloadJson: JSON.stringify({ x: 1 }), status: "FAILED", attempts: 5, lastError: "boom" },
+    });
+    return row.id;
+  }
+
+  it("retry requeues a failed notification + audit", async () => {
+    const id = await makeFailedNotif();
+    const res = await post(`/outbox/${id}/retry`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    const row = await prisma.notificationOutbox.findUnique({ where: { id } });
+    expect(row!.status).toBe("PENDING");
+    expect(row!.attempts).toBe(0);
+    expect(row!.lastError).toBeNull();
+    const audit = await prisma.auditLog.findMany({ where: { action: "outbox_retry", targetId: id } });
+    expect(audit.length).toBe(1);
+  });
+
+  it("retry requires auth", async () => {
+    const id = await makeFailedNotif();
+    const res = await post(`/outbox/${id}/retry`, null, { csrf_token: "x" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect((await prisma.notificationOutbox.findUnique({ where: { id } }))!.status).toBe("FAILED");
+  });
+
+  it("retry rejects bad CSRF", async () => {
+    const id = await makeFailedNotif();
+    const res = await post(`/outbox/${id}/retry`, seed.cookie, { csrf_token: "bad" });
+    expect(res.statusCode).toBe(403);
+    expect((await prisma.notificationOutbox.findUnique({ where: { id } }))!.status).toBe("FAILED");
+  });
+});
+
+// ---- wallet ledger (Tier 2 §4) --------------------------------------------
+
+describe("wallet ledger", () => {
+  it("adjustment requires a reason", async () => {
+    const before = Number((await getUser(prisma, seed.customerId))!.walletBalance);
+    const res = await post(`/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "5.00" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect(Number((await getUser(prisma, seed.customerId))!.walletBalance)).toBe(before);
+  });
+
+  it("ledger lists a prior adjustment with its reason", async () => {
+    await post(`/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "7.50", note: "promo credit" });
+    const res = await get(`/users/${seed.customerId}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("promo credit");
+  });
+});
+
+// ---- reviews moderation (Tier 2 §5) ---------------------------------------
+
+describe("reviews moderation", () => {
+  async function makeReview(hidden = false): Promise<number> {
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    const r = await prisma.review.create({
+      data: { userId: seed.customerId, orderId: order.id, productId: seed.productId, rating: 5, comment: "great", hidden },
+    });
+    return r.id;
+  }
+
+  it("hide → hidden + audit", async () => {
+    const id = await makeReview();
+    const res = await post(`/reviews/${id}/hide`, seed.cookie, { csrf_token: seed.csrf, hidden: "true" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect((await prisma.review.findUnique({ where: { id } }))!.hidden).toBe(true);
+    const audit = await prisma.auditLog.findMany({ where: { action: "review_hide", targetId: id } });
+    expect(audit.length).toBe(1);
+  });
+
+  it("unhide restores the review", async () => {
+    const id = await makeReview(true);
+    const res = await post(`/reviews/${id}/hide`, seed.cookie, { csrf_token: seed.csrf, hidden: "false" });
+    expect(res.statusCode).toBe(303);
+    expect((await prisma.review.findUnique({ where: { id } }))!.hidden).toBe(false);
+  });
+
+  it("hide requires auth", async () => {
+    const id = await makeReview();
+    const res = await post(`/reviews/${id}/hide`, null, { csrf_token: "x", hidden: "true" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect((await prisma.review.findUnique({ where: { id } }))!.hidden).toBe(false);
+  });
+
+  it("hide rejects bad CSRF", async () => {
+    const id = await makeReview();
+    const res = await post(`/reviews/${id}/hide`, seed.cookie, { csrf_token: "bad", hidden: "true" });
+    expect(res.statusCode).toBe(403);
+    expect((await prisma.review.findUnique({ where: { id } }))!.hidden).toBe(false);
+  });
+});
+
+// ---- restock waitlist (Tier 2 §6) -----------------------------------------
+
+describe("restock waitlist", () => {
+  it("stock pages surface the waiting count", async () => {
+    await prisma.restockSubscription.create({ data: { userId: seed.customerId, productId: seed.productId } });
+    const list = await get("/stock", seed.cookie);
+    expect(list.statusCode).toBe(200);
+    const detail = await get(`/stock/${seed.productId}`, seed.cookie);
+    expect(detail.statusCode).toBe(200);
+    expect(detail.body).toContain("waiting on restock");
+  });
+});
+
 // ---- smoke: every GET page renders 200 for an admin -----------------------
 
 describe("page smoke tests", () => {
   it("all nav pages render 200", async () => {
-    for (const path of ["/", "/stock", "/orders", "/catalog", "/vouchers", "/users", "/support", "/settings", "/audit"]) {
+    for (const path of ["/", "/stock", "/orders", "/payments", "/outbox", "/catalog", "/vouchers", "/users", "/reviews", "/reports", "/support", "/settings", "/audit"]) {
       const res = await get(path, seed.cookie);
       expect(res.statusCode, `GET ${path}`).toBe(200);
     }

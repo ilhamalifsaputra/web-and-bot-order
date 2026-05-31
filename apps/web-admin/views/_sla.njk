@@ -1,0 +1,61 @@
+{# SLA action-queue widgets. Rendered inline on the dashboard and re-fetched on
+   its own at /partials/dashboard-sla — the outer element re-arms the HTMX poll
+   after every swap, so it keeps refreshing without a full page reload. #}
+<section id="sla-block"
+         hx-get="/partials/dashboard-sla" hx-trigger="every 30s" hx-swap="outerHTML"
+         class="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-8">
+
+  <div class="bg-white rounded-lg shadow p-5">
+    <h2 class="font-semibold mb-1 flex items-center justify-between">
+      <span>Stale verifications</span>
+      <span class="text-xs font-normal {% if sla.stale|length > 0 %}text-red-600{% else %}text-slate-400{% endif %}">{{ sla.stale|length }}</span>
+    </h2>
+    <p class="text-xs text-slate-400 mb-3">awaiting review &gt; {{ sla.stale_hours }}h</p>
+    <ul class="divide-y divide-slate-100 text-sm">
+      {% for o in sla.stale %}
+      <li class="py-2 flex items-center justify-between">
+        <a class="text-slate-700 hover:underline font-mono" href="/orders/{{ o.id }}">{{ o.orderCode }}</a>
+        <span class="text-slate-400 text-xs" title="{{ tzname }}">{{ o.createdAt | localdt }}</span>
+      </li>
+      {% else %}
+      <li class="py-2 text-slate-400">Nothing aging. 🎉</li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="bg-white rounded-lg shadow p-5">
+    <h2 class="font-semibold mb-1 flex items-center justify-between">
+      <span>Payment expiring soon</span>
+      <span class="text-xs font-normal {% if sla.expiring|length > 0 %}text-amber-600{% else %}text-slate-400{% endif %}">{{ sla.expiring|length }}</span>
+    </h2>
+    <p class="text-xs text-slate-400 mb-3">unpaid, expiring &lt; {{ sla.expiring_minutes }}m</p>
+    <ul class="divide-y divide-slate-100 text-sm">
+      {% for o in sla.expiring %}
+      <li class="py-2 flex items-center justify-between">
+        <a class="text-slate-700 hover:underline font-mono" href="/orders/{{ o.id }}">{{ o.orderCode }}</a>
+        <span class="text-amber-600 text-xs" title="{{ tzname }}">{{ o.expiresAt | localdt('HH:mm') }}</span>
+      </li>
+      {% else %}
+      <li class="py-2 text-slate-400">None close to expiry.</li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="bg-white rounded-lg shadow p-5">
+    <h2 class="font-semibold mb-1 flex items-center justify-between">
+      <span>Warranty expiring</span>
+      <span class="text-xs font-normal {% if sla.warranty|length > 0 %}text-amber-600{% else %}text-slate-400{% endif %}">{{ sla.warranty|length }}</span>
+    </h2>
+    <p class="text-xs text-slate-400 mb-3">within {{ sla.warranty_days }} days</p>
+    <ul class="divide-y divide-slate-100 text-sm">
+      {% for it in sla.warranty %}
+      <li class="py-2 flex items-center justify-between gap-2">
+        <a class="text-slate-700 hover:underline truncate" href="/orders/{{ it.order.id }}">{{ it.product.name }}</a>
+        <span class="text-slate-400 text-xs whitespace-nowrap" title="delivered {{ it.order.deliveredAt | localdt }}">+{{ it.warrantyDaysSnapshot }}d</span>
+      </li>
+      {% else %}
+      <li class="py-2 text-slate-400">No warranties lapsing soon.</li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>

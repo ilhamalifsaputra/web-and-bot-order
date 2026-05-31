@@ -240,8 +240,51 @@ Project conventions live in **`CLAUDE.md`**. Highlights:
   `locales/en.json` and `locales/id.json` key sets (and `{placeholders}`) identical.
 - `pnpm -r typecheck` and `pnpm test` must stay green; add tests with each behavior change.
 
+## Roadmap & status
+
+The live backlog is **`feedback.md`** (`§0` is the consolidated board); this is a
+snapshot.
+
+### ✅ Shipped
+- **Web admin** — Tier 1 (`/payments`, `/outbox`, dashboard SLA widgets) ·
+  Tier 2 (wallet ledger, reviews moderation, restock waitlist, `/reports`, bulk
+  ops: activate/deactivate + mark-dead + bulk-price preview + **CSV import**) ·
+  Tier 3 (**RBAC**, **2FA + force-logout**, **broadcast**, **global search**).
+- **Wallet ledger** — authoritative table, running balance, every move recorded.
+- **Payments (Binance)** — Internal Transfer auto-confirm, amount fallback +
+  `normalizeTx` fix, poller watchdog + dashboard alert, fixture test.
+- **Bot UX** — edit-in-place everywhere, `smartEdit` photo+caption, numbered
+  browse list with prices, stale-catalog race fix, global + handler-level error
+  correlation refs, never-strand sweep, quantity-input exit guard.
+- **i18n** — localized admin strings, per-user language, language-aware
+  persistent keyboards, EN/ID parity test, `formatIdr`.
+- **Docs/conventions** — `CLAUDE.md`, deploy/migration checklist, this README.
+- **218 tests green**, `pnpm -r typecheck` clean.
+
+### 🔴 Needs owner action (decision blocker, not a delivery blocker)
+- **Binance `note` field** — send one memo'd test transfer, run
+  `pnpm exec tsx scripts/binance-probe.ts`, read the `NOTE-FIELD VERDICT`. Decides
+  note-vs-amount-vs-UID matching, then sync the payment-screen copy. Auto-confirm
+  already works via the amount fallback, so this only refines the matching strategy.
+
+### 🗓 Planned / deferred (each its own focused PR)
+- **Multi-session "active sessions" list** (per-device + selective revoke) — needs
+  a sessions table; force-logout covers the practical need for now.
+- **Photo broadcasts + richer delivery analytics** — web broadcast is text-only today.
+- **Fine-grained RBAC** — per-action capabilities (currently coarse, by URL area).
+- **Lighter browse layout** — optional fallback if the branded ASCII renders poorly.
+
+### 🧪 Testing gaps (nice-to-have)
+- End-to-end web `/reviews` hide → bot rating exclusion (crud-level already covered).
+- Extend the happy / auth-fail / bad-CSRF route trio to every new web route.
+
+### 🔧 Ops (every deploy)
+Migrate the DB (`prisma db push` or apply migrations) **and restart order-bot
+before new code runs** (avoids `P2022`). Pending migrations to apply on the live
+DB: `review_hidden`, `wallet_transactions`, `broadcasts`.
+
 ## Project docs
 
 - `CLAUDE.md` — coding conventions and guardrails
 - `RUN.md` — running & cutover runbook (Docker)
-- `feedback.md` — live backlog
+- `feedback.md` — live backlog & roadmap (source of truth for the section above)

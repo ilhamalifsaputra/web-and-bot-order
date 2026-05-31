@@ -6,8 +6,8 @@ pnpm monorepo. Customers browse a catalog and check out (Buy Now → confirm →
 reports from a Fastify web panel. Three services share **one** SQLite database
 (WAL mode) over [Prisma](https://www.prisma.io).
 
-> Migrated from a legacy Python (SQLAlchemy/Alembic) stack — see `migrate.md` for the
-> migration history and `RUN.md` for the deploy/cutover runbook.
+> Migrated from a legacy Python (SQLAlchemy/Alembic) stack; see `RUN.md` for the
+> deploy/cutover runbook.
 
 ## Architecture
 
@@ -119,6 +119,4 @@ Project conventions live in **`CLAUDE.md`**. Highlights:
 
 - `CLAUDE.md` — coding conventions and guardrails
 - `RUN.md` — running & cutover runbook (Docker)
-- `WEB.md` — web-admin feature roadmap
-- `migrate.md` — Python → Node migration notes
 - `feedback.md` — live backlog

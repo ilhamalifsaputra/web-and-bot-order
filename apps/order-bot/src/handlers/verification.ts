@@ -80,7 +80,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
     .map((g) => `• ${esc(g.product.name)} × ${g.quantity} — ${formatIdr(g.lineTotal)}`)
     .join("\n");
   const userDisplay =
-    `<code>${order.user.telegramId}</code> ` +
+    `<code>${order.user.telegramId ?? "?"}</code> ` +
     `(@${esc(order.user.username ?? "")} — ${esc(order.user.fullName ?? "")})`;
   const text = t(ctx, "admin.verification_item", {
     code: order.orderCode,
@@ -131,7 +131,7 @@ export async function approve(ctx: MyContext, orderId: number): Promise<void> {
       });
       return order;
     });
-    buyerTgId = result.user.telegramId;
+    buyerTgId = result.user.telegramId ?? BigInt(0);
     buyerLang = langCode(result.user.language);
     orderCode = result.orderCode;
     warrantyDays = Math.max(...result.items.map((it) => it.warrantyDaysSnapshot), 30);

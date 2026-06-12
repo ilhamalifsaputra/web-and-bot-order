@@ -70,7 +70,7 @@ export async function rejectConversation(conversation: MyConversation, ctx: MyCo
       });
       return o!;
     });
-    buyerTgId = order.user.telegramId;
+    buyerTgId = order.user.telegramId ?? BigInt(0);
     buyerLang = langCode(order.user.language);
     orderCode = order.orderCode;
   } catch (e) {

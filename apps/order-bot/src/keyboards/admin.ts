@@ -44,7 +44,7 @@ interface UserLike {
   id: number;
   username: string | null;
   fullName: string | null;
-  telegramId: bigint | string | number;
+  telegramId: bigint | string | number | null;
 }
 
 // ---------------------------------------------------------------------------

@@ -159,7 +159,7 @@ export async function proofConversation(conversation: MyConversation, ctx: MyCon
       return;
     }
     orderCode = order.orderCode;
-    buyerTgId = order.user.telegramId;
+    buyerTgId = order.user.telegramId ?? BigInt(0);
     total = order.totalAmount;
   } catch (e) {
     if (e instanceof ValidationError) {

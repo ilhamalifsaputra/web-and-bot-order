@@ -168,7 +168,7 @@ export function usersSearchResultsKb(users: UserLike[], lang: string): InlineKey
   const rows: Btn[][] = users.map((u) => {
     const label = u.username ? `@${u.username}` : u.fullName || `#${u.id}`;
     return [
-      { text: `👤 ${label} (TG ${u.telegramId})`, data: cb("adm", "users", "view", u.id) },
+      { text: `👤 ${label} (TG ${u.telegramId ?? "web"})`, data: cb("adm", "users", "view", u.id) },
     ];
   });
   rows.push([{ text: coreT("menu.back", lang), data: cb("adm", "menu") }]);

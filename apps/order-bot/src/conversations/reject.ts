@@ -54,7 +54,7 @@ export async function rejectConversation(conversation: MyConversation, ctx: MyCo
   }
 
   const adminTg = ctx.from!.id;
-  let buyerTgId: bigint;
+  let buyerTgId: bigint | null;
   let buyerLang: string;
   let orderCode: string;
   try {
@@ -70,7 +70,7 @@ export async function rejectConversation(conversation: MyConversation, ctx: MyCo
       });
       return o!;
     });
-    buyerTgId = order.user.telegramId ?? BigInt(0);
+    buyerTgId = order.user.telegramId;
     buyerLang = langCode(order.user.language);
     orderCode = order.orderCode;
   } catch (e) {
@@ -81,14 +81,20 @@ export async function rejectConversation(conversation: MyConversation, ctx: MyCo
     throw e;
   }
 
-  try {
-    await ctx.api.sendMessage(
-      Number(buyerTgId),
-      coreT("order.rejected", buyerLang, { code: orderCode, reason: esc(reason) }),
-      { parse_mode: "HTML", reply_markup: notificationKb(buyerLang) },
-    );
-  } catch (err) {
-    logger.error({ err }, "Failed to notify buyer of rejection");
+  if (buyerTgId === null) {
+    // Web-registered buyer with no Telegram account — they see the rejected
+    // order on the website, so there is no DM to send.
+    logger.info(`Order ${orderCode} rejected; buyer is web-only (no Telegram id), skipping rejection DM`);
+  } else {
+    try {
+      await ctx.api.sendMessage(
+        Number(buyerTgId),
+        coreT("order.rejected", buyerLang, { code: orderCode, reason: esc(reason) }),
+        { parse_mode: "HTML", reply_markup: notificationKb(buyerLang) },
+      );
+    } catch (err) {
+      logger.error({ err }, "Failed to notify buyer of rejection");
+    }
   }
 
   await adminEdit(ctx, coreT("admin.rejected", adminLang, { code: orderCode }), akb.backToAdminKb(adminLang));

@@ -152,6 +152,14 @@ const Env = z.object({
   PUBLIC_CHANNEL_ID: z.coerce.number().optional(),
   NOTIF_POLL_INTERVAL_SECONDS: z.coerce.number().default(10),
   NOTIF_MAX_ATTEMPTS: z.coerce.number().default(5),
+
+  // ---- SMTP (storefront forgot-password email) ----
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().default(587),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().optional(),
+  SMTP_SECURE: looseBool.default(false),
 });
 
 export type Config = z.infer<typeof Env>;
@@ -169,3 +177,10 @@ export const isAdmin = (telegramId: number | bigint): boolean =>
  */
 export const isBinanceInternalEnabled = (): boolean =>
   Boolean(config.BINANCE_RECEIVE_UID && config.BINANCE_API_KEY && config.BINANCE_API_SECRET);
+
+/**
+ * SMTP is enabled for storefront password-reset emails only when the host and
+ * from-address are configured. Otherwise, the mailer is disabled and the
+ * password-reset feature is unavailable.
+ */
+export const isSmtpEnabled = (): boolean => Boolean(config.SMTP_HOST && config.SMTP_FROM);

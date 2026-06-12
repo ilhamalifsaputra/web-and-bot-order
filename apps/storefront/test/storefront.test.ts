@@ -253,3 +253,56 @@ describe("telegram login is lookup-only", () => {
     expect(await prisma.user.count()).toBe(before);
   });
 });
+
+describe("register", () => {
+  it("renders the form", async () => {
+    const res = await app.inject({ method: "GET", url: "/register" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("Create account");
+  });
+
+  it("creates an account, signs in, and attributes a referral", async () => {
+    await prisma.user.create({ data: { telegramId: 515151n, referralCode: "REFREG" } });
+    const res = await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: {
+        username: "Newbie_1",
+        email: "new@user.test",
+        password: "longenough",
+        password2: "longenough",
+        ref: "refreg",
+        next: "/account",
+      },
+    });
+    expect(res.statusCode).toBe(303);
+    const row = await prisma.user.findFirst({ where: { loginUsername: "newbie_1" } });
+    expect(row).not.toBeNull();
+    expect(row!.telegramId).toBeNull();
+    expect(row!.email).toBe("new@user.test");
+    const referrer = await prisma.user.findUnique({ where: { referralCode: "REFREG" } });
+    expect(row!.referredById).toBe(referrer!.id);
+  });
+
+  it("rejects bad input field by field", async () => {
+    const bad = async (payload: Record<string, string>, msg: string) => {
+      const res = await app.inject({ method: "POST", url: "/register", payload });
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toContain(msg);
+    };
+    await bad({ username: "x", email: "a@b.c", password: "longenough", password2: "longenough" }, "3");
+    await bad({ username: "okname", email: "not-an-email", password: "longenough", password2: "longenough" }, "valid email");
+    await bad({ username: "okname", email: "a@b.c", password: "short", password2: "short" }, "at least 8");
+    await bad({ username: "okname", email: "a@b.c", password: "longenough", password2: "different1" }, "don");
+  });
+
+  it("rejects a duplicate username with a 409-style field error", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { username: "newbie_1", email: "other@user.test", password: "longenough", password2: "longenough" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toContain("taken");
+  });
+});

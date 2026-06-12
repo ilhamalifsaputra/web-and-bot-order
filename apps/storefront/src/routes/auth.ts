@@ -14,7 +14,8 @@ import { config } from "@app/core/config";
 import { botUsername } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { t } from "@app/core/i18n";
-import { verifyPassword } from "@app/core/password";
+import { verifyPassword, hashPassword } from "@app/core/password";
+import { ValidationError } from "@app/core/errors";
 import {
   prisma,
   setSetting,
@@ -22,6 +23,8 @@ import {
   getProduct,
   getUserByTelegramId,
   findUserByLoginIdentifier,
+  LOGIN_USERNAME_RE,
+  createWebUser,
 } from "@app/db";
 import {
   makeCustomerSession,
@@ -153,6 +156,70 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     }
     void reply.clearCookie(SHOP_COOKIE_NAME, { path: "/" });
     return reply.code(303).redirect("/");
+  });
+
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+  interface RegisterBody {
+    username?: string;
+    email?: string;
+    password?: string;
+    password2?: string;
+    ref?: string;
+    next?: string;
+  }
+
+  async function renderRegister(
+    req: FastifyRequest,
+    reply: FastifyReply,
+    opts: { next?: string; ref?: string; error?: string; values?: Record<string, string>; code?: number } = {},
+  ) {
+    const ctx = await shopContext(req, "/login");
+    return reply.code(opts.code ?? 200).view("register.njk", {
+      ...ctx,
+      next: safeNext(opts.next),
+      ref: (opts.ref ?? "").slice(0, 16),
+      error: opts.error ?? null,
+      values: opts.values ?? {},
+    });
+  }
+
+  app.get<{ Querystring: { next?: string; ref?: string } }>("/register", async (req, reply) =>
+    renderRegister(req, reply, { next: req.query.next, ref: req.query.ref }),
+  );
+
+  app.post<{ Body: RegisterBody }>("/register", async (req, reply) => {
+    const ctx = await shopContext(req, "/login");
+    const username = (req.body.username ?? "").trim().toLowerCase();
+    const email = (req.body.email ?? "").trim().toLowerCase();
+    const password = req.body.password ?? "";
+    const back = (error: string) =>
+      renderRegister(req, reply, {
+        next: req.body.next,
+        ref: req.body.ref,
+        error,
+        values: { username, email },
+        code: 400,
+      });
+
+    if (!LOGIN_USERNAME_RE.test(username)) return back(t("web.register_username_invalid", ctx.lang));
+    if (!EMAIL_RE.test(email)) return back(t("web.register_email_invalid", ctx.lang));
+    if (password.length < 8) return back(t("web.register_password_short", ctx.lang));
+    if (password !== (req.body.password2 ?? "")) return back(t("web.register_password_mismatch", ctx.lang));
+
+    try {
+      const user = await createWebUser(prisma, {
+        loginUsername: username,
+        email,
+        passwordHash: hashPassword(password),
+        referredByCode: req.body.ref ? req.body.ref.toUpperCase() : null,
+      });
+      await establishSession(req, reply, user);
+      return reply.code(303).redirect(safeNext(req.body.next));
+    } catch (e) {
+      if (e instanceof ValidationError) return back(t(e.message, ctx.lang));
+      throw e;
+    }
   });
 };
 

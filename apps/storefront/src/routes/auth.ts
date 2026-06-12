@@ -109,18 +109,13 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       const identifier = (req.body.identifier ?? "").trim();
       const password = req.body.password ?? "";
       const user = identifier ? await findUserByLoginIdentifier(prisma, identifier) : null;
-      if (!user || !user.passwordHash || !verifyPassword(password, user.passwordHash)) {
+      // Generic failure for every miss — no enumeration. Banned accounts also
+      // get the generic error (don't reveal credential correctness).
+      if (!user || user.banned || !user.passwordHash || !verifyPassword(password, user.passwordHash)) {
         return renderLogin(req, reply, {
           next: req.body.next,
           error: t("web.login_failed", ctx.lang),
           identifier,
-          code: 403,
-        });
-      }
-      if (user.banned) {
-        return renderLogin(req, reply, {
-          next: req.body.next,
-          error: t("web.error_message", ctx.lang),
           code: 403,
         });
       }

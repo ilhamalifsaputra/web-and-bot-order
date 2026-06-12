@@ -103,10 +103,15 @@ export async function linkTelegram(
   const tid = BigInt(telegramId);
   const holder = await db.user.findUnique({ where: { telegramId: tid } });
   if (holder && holder.id !== userId) return { ok: false, reason: "taken" };
-  await db.user.update({
-    where: { id: userId },
-    data: { telegramId: tid, username: tgUsername, fullName },
-  });
+  try {
+    await db.user.update({
+      where: { id: userId },
+      data: { telegramId: tid, username: tgUsername, fullName },
+    });
+  } catch (e) {
+    if (isUniqueViolation(e)) return { ok: false, reason: "taken" };
+    throw e;
+  }
   return { ok: true };
 }
 
@@ -124,14 +129,18 @@ export async function createPasswordResetToken(
 }
 
 export async function consumePasswordResetToken(db: Db, token: string) {
+  const now = new Date();
+  const hash = sha256hex(token);
+  // Atomic: only one concurrent request can win the update (usedAt: null guard).
+  const { count } = await db.passwordResetToken.updateMany({
+    where: { tokenHash: hash, usedAt: null, expiresAt: { gt: now } },
+    data: { usedAt: now },
+  });
+  if (count === 0) return null;
+  // Fetch the user only after we've atomically claimed the token.
   const row = await db.passwordResetToken.findUnique({
-    where: { tokenHash: sha256hex(token) },
+    where: { tokenHash: hash },
     include: { user: true },
   });
-  if (!row || row.usedAt || row.expiresAt.getTime() < Date.now()) return null;
-  await db.passwordResetToken.update({
-    where: { id: row.id },
-    data: { usedAt: new Date() },
-  });
-  return row.user;
+  return row?.user ?? null;
 }

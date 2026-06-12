@@ -38,6 +38,7 @@ import {
   getTokopayCreds,
   createTransaction,
   verifyCallback,
+  type TokopayOrderInfo,
 } from "../payments/tokopay";
 import { usdtFromIdr } from "../pricing";
 import { shopContext, requestLang } from "../shop";
@@ -82,7 +83,7 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
       voucherError = "error.voucher_not_found";
     } else {
       try {
-        voucherDiscount = applyVoucherToSubtotal(voucher, subtotal.minus(bulkDiscount));
+        voucherDiscount = applyVoucherToSubtotal(voucher, subtotal);
       } catch (e) {
         if (e instanceof ValidationError) voucherError = e.key;
         else throw e;
@@ -117,6 +118,23 @@ async function checkoutView(
     usdt_enabled: usdtEnabled,
     idr_enabled: Boolean(tokopay),
   };
+}
+
+/**
+ * Parse a cached TokoPay gateway payload stored as JSON in order.paymentRef.
+ * Returns null when paymentRef is absent or not a JSON object (e.g. it holds a
+ * Binance payment note instead).
+ */
+function parseCachedGateway(paymentRef: string | null): TokopayOrderInfo | null {
+  if (!paymentRef || !paymentRef.startsWith("{")) return null;
+  try {
+    const d = JSON.parse(paymentRef) as Record<string, unknown>;
+    if (typeof d.trxId !== "string") return null;
+    const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+    return { trxId: d.trxId, payUrl: str(d.payUrl), qrLink: str(d.qrLink), qrString: str(d.qrString), totalBayar: str(d.totalBayar) };
+  } catch {
+    return null;
+  }
 }
 
 /** Status → step + i18n key for the pay page / polling partial. */
@@ -165,12 +183,11 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       if (!wantUsdt && method !== OrderCurrency.IDR) return rerender("web.pay_method_unavailable");
       if (!wantUsdt && !tokopay) return rerender("web.pay_method_unavailable");
 
-      if ((await countUserPendingOrders(prisma, customer.userId)) >= MAX_PENDING_ORDERS) {
-        return rerender("error.too_many_pending");
-      }
-
       try {
         const order = await prisma.$transaction(async (tx) => {
+          if ((await countUserPendingOrders(tx, customer.userId)) >= MAX_PENDING_ORDERS) {
+            throw new ValidationError("error.too_many_pending");
+          }
           const created = await createOrderFromCart(tx, {
             user: {
               id: customer.userId,
@@ -216,22 +233,31 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       const isUsdt = order.currency === OrderCurrency.USDT;
 
       // TokoPay transaction (QR / pay link) only while actually payable.
-      let gateway: Awaited<ReturnType<typeof createTransaction>> | null = null;
+      // The result is cached in order.paymentRef (JSON) after the first fetch so
+      // that page refreshes don't create extra transactions in TokoPay.
+      let gateway: TokopayOrderInfo | null = null;
       let gatewayError = false;
       if (!isUsdt && state === "waiting") {
-        const creds = await getTokopayCreds(prisma);
-        if (creds) {
-          try {
-            gateway = await createTransaction(creds, {
-              refId: order.orderCode,
-              amountIdr: order.totalAmount,
-            });
-          } catch (err) {
-            logger.error({ err }, `TokoPay create failed for ${order.orderCode}`);
+        gateway = parseCachedGateway(order.paymentRef);
+        if (!gateway) {
+          const creds = await getTokopayCreds(prisma);
+          if (creds) {
+            try {
+              gateway = await createTransaction(creds, {
+                refId: order.orderCode,
+                amountIdr: order.totalAmount,
+              });
+              await prisma.order.update({
+                where: { id: order.id },
+                data: { paymentRef: JSON.stringify(gateway) },
+              });
+            } catch (err) {
+              logger.error({ err }, `TokoPay create failed for ${order.orderCode}`);
+              gatewayError = true;
+            }
+          } else {
             gatewayError = true;
           }
-        } else {
-          gatewayError = true;
         }
       }
 

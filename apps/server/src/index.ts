@@ -145,12 +145,12 @@ async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal
     return;
   }
   const notifBot: Bot = dedicated ? new Bot(dedicated) : (mainBot as unknown as Bot);
-  if (dedicated) await notifBot.init();
-  logger.info(
-    `Notifier started -> channel ${config.PUBLIC_CHANNEL_ID} ` +
-      `(token=${dedicated ? "dedicated" : "main-bot"})`,
-  );
   try {
+    if (dedicated) await notifBot.init();
+    logger.info(
+      `Notifier started -> channel ${config.PUBLIC_CHANNEL_ID} ` +
+        `(token=${dedicated ? "dedicated" : "main-bot"})`,
+    );
     await runDispatcher(notifBot, signal);
   } catch (err) {
     logger.error({ err }, "Notifier dispatcher exited unexpectedly");

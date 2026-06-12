@@ -53,6 +53,10 @@ export async function deliverPaidTokopayOrder(
         order.status !== OrderStatus.PENDING_PAYMENT ||
         order.paymentMethod !== PaymentMethod.TOKOPAY
       ) {
+        // Correct the audit row: the trx matched an order that's no longer payable.
+        await db.processedTokopayTx
+          .update({ where: { trxId: args.trxId }, data: { outcome: "stale" } })
+          .catch(() => undefined);
         return { status: "stale" as const };
       }
       await tx.order.update({

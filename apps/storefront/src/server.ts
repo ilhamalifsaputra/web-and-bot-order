@@ -26,6 +26,8 @@ import { requestLang } from "./shop";
 const HERE = dirname(fileURLToPath(import.meta.url));
 // Overridable for the bundled deploy, same convention as web-admin.
 const STATIC_DIR = process.env.STOREFRONT_STATIC_DIR ?? join(HERE, "..", "static");
+// Shared with web-admin: product photos uploaded via the admin panel live here.
+const UPLOADS_DIR = process.env.UPLOADS_DIR ?? join(HERE, "..", "..", "..", "data", "uploads");
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
@@ -33,6 +35,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(cookie);
   await app.register(formbody);
   await app.register(fastifyStatic, { root: STATIC_DIR, prefix: "/static/" });
+  await app.register(fastifyStatic, { root: UPLOADS_DIR, prefix: "/uploads/", decorateReply: false });
   await app.register(viewsPlugin);
   await app.register(authPlugin);
 

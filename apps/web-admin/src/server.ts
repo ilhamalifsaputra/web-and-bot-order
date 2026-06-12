@@ -10,6 +10,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
 import formbody from "@fastify/formbody";
 import fastifyStatic from "@fastify/static";
+import multipart from "@fastify/multipart";
 import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import viewsPlugin from "./plugins/views";
@@ -36,13 +37,18 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // Overridable via env so the bundled deploy can point at the shipped static/
 // dir (import.meta.url moves to dist/ after bundling). See DEPLOY-HOSTINGER.md §3.
 const STATIC_DIR = process.env.STATIC_DIR ?? join(HERE, "..", "static");
+// Uploaded product photos land here; served at /uploads/ by both apps so the
+// storefront can also serve them with no cross-origin complexity.
+export const UPLOADS_DIR = process.env.UPLOADS_DIR ?? join(HERE, "..", "..", "..", "data", "uploads");
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
 
   await app.register(cookie);
   await app.register(formbody);
+  await app.register(multipart);
   await app.register(fastifyStatic, { root: STATIC_DIR, prefix: "/static/" });
+  await app.register(fastifyStatic, { root: UPLOADS_DIR, prefix: "/uploads/", decorateReply: false });
   await app.register(viewsPlugin);
   await app.register(authPlugin);
 

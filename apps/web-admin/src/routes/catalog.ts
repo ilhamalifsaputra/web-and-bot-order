@@ -2,6 +2,9 @@
  * Catalog — categories, products, per-product bulk pricing. Port of
  * routers/catalog.py.
  */
+import { mkdir, writeFile, unlink } from "node:fs/promises";
+import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { ProductType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -23,7 +26,7 @@ import {
   logAdminAction,
   getUsdIdrRate,
 } from "@app/db";
-import { currentAdmin, csrfProtect } from "../plugins/auth";
+import { currentAdmin, csrfProtect, canMutate } from "../plugins/auth";
 import { redirectWithFlash } from "../flash";
 
 function dec(value: string | undefined): Decimal | null {
@@ -372,6 +375,84 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
     });
     return redirectWithFlash(reply, "/catalog", "Product updated.", "success");
   });
+
+  // ---- Product photo upload ----
+  // Accepts multipart/form-data so CSRF is checked manually (formbody doesn't
+  // parse multipart); the role gate (catalog = super-only) is done inline.
+  app.post<{ Params: { productId: string } }>(
+    "/catalog/product/:productId/photo",
+    { preHandler: currentAdmin },
+    async (req, reply) => {
+      if (!canMutate(req.admin!.role, req.url)) {
+        return reply.code(403).type("text/plain").send("Insufficient permissions for this action.");
+      }
+
+      const productId = Number(req.params.productId);
+      if (!Number.isInteger(productId) || productId <= 0) {
+        return redirectWithFlash(reply, "/catalog", "Invalid product.", "error");
+      }
+
+      const ALLOWED_MIME: Record<string, string> = {
+        "image/jpeg": "jpg",
+        "image/png": "png",
+        "image/webp": "webp",
+      };
+
+      let csrfField: string | null = null;
+      let fileBuffer: Buffer | null = null;
+      let mimetype = "";
+
+      for await (const part of req.parts({ limits: { fileSize: 5 * 1024 * 1024 } })) {
+        if (part.type === "field" && part.fieldname === "csrf_token") {
+          csrfField = part.value as string;
+        } else if (part.type === "file" && part.fieldname === "photo") {
+          mimetype = part.mimetype;
+          const chunks: Buffer[] = [];
+          for await (const chunk of part.file) chunks.push(chunk);
+          if (chunks.length > 0) fileBuffer = Buffer.concat(chunks);
+        }
+      }
+
+      if (!csrfField || csrfField !== req.admin!.csrf) {
+        return reply.code(403).type("text/plain").send("CSRF check failed");
+      }
+      if (!fileBuffer || fileBuffer.length === 0) {
+        return redirectWithFlash(reply, "/catalog", "No file selected.", "error");
+      }
+      const ext = ALLOWED_MIME[mimetype];
+      if (!ext) {
+        return redirectWithFlash(reply, "/catalog", "Only JPG, PNG, or WebP images are allowed.", "error");
+      }
+
+      const product = await getProduct(prisma, productId);
+      if (!product) {
+        return redirectWithFlash(reply, "/catalog", "Product not found.", "error");
+      }
+
+      const filename = `${productId}-${randomBytes(8).toString("hex")}.${ext}`;
+      const uploadsDir = join(
+        process.env.UPLOADS_DIR ?? join(process.cwd(), "data", "uploads"),
+        "products",
+      );
+      await mkdir(uploadsDir, { recursive: true });
+      await writeFile(join(uploadsDir, filename), fileBuffer);
+
+      // Remove the old local upload when replacing it.
+      if (product.webImageUrl?.startsWith("/uploads/")) {
+        await unlink(join(process.cwd(), "data", product.webImageUrl.slice(1))).catch(() => undefined);
+      }
+
+      await updateProduct(prisma, productId, { webImageUrl: `/uploads/products/${filename}` });
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "product_photo_upload",
+        targetType: "product",
+        targetId: productId,
+        details: `filename=${filename}`,
+      });
+      return redirectWithFlash(reply, "/catalog", "Photo uploaded.", "success");
+    },
+  );
 
   // ---- Bulk pricing ----
   app.post("/catalog/product/:productId/bulk-pricing", { preHandler: csrfProtect }, async (req, reply) => {

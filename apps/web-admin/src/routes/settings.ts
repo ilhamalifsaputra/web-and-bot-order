@@ -50,9 +50,9 @@ const EDITABLE: Record<string, string> = {
   tokopay_secret: "TokoPay secret key",
   tokopay_enabled: "Rupiah payments on the website — true / false",
   // ---- Bot & notifications (plan.md §16.1) ----
-  bot_token: "Telegram bot token (from BotFather) — needs a restart to apply",
-  bot_username: "Bot username, without the @ — filled in for you when you save a token",
-  notif_bot_token: "Notifier bot token (optional — blank means the main bot posts)",
+  bot_token: "Order Bot token — the main @YourBot that receives customer orders (get from BotFather → /mybots → API Token); restart the app after saving",
+  bot_username: "Bot username without the @ — filled in automatically when you save the Order Bot token above",
+  notif_bot_token: "Channel Notifier Bot token — a SEPARATE bot used only to post announcements to your public channel (optional; leave blank and the Order Bot will post to the channel instead)",
 };
 
 // UI grouping (settings.njk tabs): every EDITABLE key belongs to exactly one

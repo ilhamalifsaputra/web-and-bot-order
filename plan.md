@@ -532,12 +532,7 @@ setelan pembayaran lain (`binance_pay_id`, `qr`). Pola yang sudah ada:
 ### 15.8 Sisa keputusan kecil (bisa diputuskan saat eksekusi)
 - **Arah pembulatan USDT**: 0,1 **terdekat** (default, sesuai contoh `2.453→2.5`)
   atau **ke atas** (agar tak pernah undercharge)? (usul: terdekat)
-- **Kurs**: ✅ **DIPUTUSKAN & DIBANGUN — auto dari kurs pasar asli + pembulatan.**
-  Job tiap jam (`scheduleFxRefresh`) menarik kurs USD→IDR dari open.er-api.com,
-  membulatkannya ke kelipatan `usd_idr_rate_rounding` (default Rp100), lalu
-  menyimpan `usd_idr_rate`. Matikan dengan `usd_idr_rate_auto=false` (kembali
-  manual); web-admin juga punya tombol "Update USDT rate from the market now".
-  Order lama aman — tiap order USDT menyimpan snapshot `fxRate`-nya.
+- **Kurs**: manual di Settings (default) — apakah perlu auto-update FX nanti?
 - Apakah perlu menyimpan **kurs referensi** untuk laporan admin (mencampur Rp & $
   di `/reports`)? Reports lintas-mata-uang perlu sikap: pisah per mata uang
   **atau** konversi ke satu mata uang pelaporan (butuh kurs). (usul: pisah per
@@ -562,7 +557,7 @@ redeploy.
 | `tokopay_secret` | Secret/private key TokoPay | ✅ secret |
 | `tokopay_enabled` | "true"/"false" jalur Rp | tidak |
 | `binance_pay_id` | (sudah ada) | tidak |
-| `usd_idr_rate` | Kurs Rupiah per 1 USDT (mis. `16000`) — basis konversi info harga USDT (§15.1) | tidak |
+| `usd_idr_rate` | Kurs Rupiah per 1 USD (mis. `16000`) — basis konversi harga USD (§15.1) | tidak |
 
 Semua key **secret** memakai penanganan yang **sama persis** dengan §15.9
 (write-only / "●●● tersimpan", `isSecret()` → `(hidden)` di tabel, audit
@@ -644,7 +639,7 @@ kode baru. Sisanya di bawah.
   - Tidak ada menu Saldo di web; **checkout web tidak memakai wallet** (tanpa
     "pakai saldo", tanpa potong saldo) — pembayaran murni lewat gateway.
   - Saldo tetap berfungsi di backend (referral/admin tetap mengkredit); pelanggan
-    mengelolanya **lewat bot**. Ini **membatalkan kerumitan §15.7 wallet-untuk-USDT
+    mengelolanya **lewat bot**. Ini **membatalkan kerumitan §15.7 wallet-untuk-USD
     di web** (tak relevan karena wallet tak tampil di web v1).
   - Menu **Referral tetap tampil** (kode + link) walau saldo komisi dilihat di bot.
 

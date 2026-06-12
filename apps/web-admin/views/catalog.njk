@@ -72,8 +72,8 @@
         <div class="text-xs text-ink-faint mt-1 js-usdt-preview"></div></div>
       <div><label class="field-label">Reseller price (Rupiah)</label><input name="reseller_price" class="field"></div>
       <div><label class="field-label">Warranty (days)</label><input name="warranty_days" type="number" class="field"></div>
-      <div><label class="field-label">Photo ID (optional)</label><input name="image_file_id" class="field"></div>
-      <div><label class="field-label">Web photo URL (optional)</label><input name="web_image_url" type="url" placeholder="https://…" class="field"></div>
+      <div><label class="field-label">Bot photo ID (optional)</label><input name="image_file_id" class="field" placeholder="Telegram file_id"></div>
+      <div><label class="field-label">Web photo URL (optional)</label><input name="web_image_url" type="url" placeholder="https://… (or upload after saving)" class="field"></div>
       <div class="sm:col-span-2"><label class="field-label">Description</label><textarea name="description" rows="2" class="field"></textarea></div>
       <div><button class="btn btn-primary">Add product</button></div>
     </form>
@@ -144,8 +144,27 @@
               <div class="text-xs text-ink-faint mt-1 js-usdt-preview"></div></div>
             <div><label class="field-label">Reseller price (Rupiah)</label><input name="reseller_price" value="{{ p.resellerPrice or '' }}" class="field"></div>
             <div><label class="field-label">Warranty (days)</label><input name="warranty_days" type="number" value="{{ p.warrantyDays }}" class="field"></div>
-            <div><label class="field-label">Photo ID</label><input name="image_file_id" value="{{ p.imageFileId or '' }}" class="field"></div>
-            <div><label class="field-label">Web photo URL</label><input name="web_image_url" type="url" value="{{ p.webImageUrl or '' }}" placeholder="https://…" class="field"></div>
+            <div><label class="field-label">Bot photo ID</label><input name="image_file_id" value="{{ p.imageFileId or '' }}" class="field" placeholder="Telegram file_id (set from bot)"></div>
+            <div>
+              <label class="field-label">Web photo URL</label>
+              <input name="web_image_url" type="url" value="{{ p.webImageUrl or '' }}" placeholder="https://… or upload below" class="field">
+              <p class="text-xs text-ink-faint mt-0.5">Paste an external URL, or use the upload button below.</p>
+            </div>
+            <div class="sm:col-span-2">
+              <label class="field-label">Upload photo from your device</label>
+              {% if p.webImageUrl %}
+              <div class="mb-2 flex items-center gap-3">
+                <img src="{{ p.webImageUrl }}" alt="" class="w-16 h-16 object-cover rounded border border-sand">
+                <span class="text-xs text-ink-soft">Current photo — uploading a new one will replace it.</span>
+              </div>
+              {% endif %}
+              <form method="post" action="/catalog/product/{{ p.id }}/photo" enctype="multipart/form-data" class="flex items-center gap-2">
+                <input type="hidden" name="csrf_token" value="{{ admin.csrf }}">
+                <input type="file" name="photo" accept="image/jpeg,image/png,image/webp" required class="field text-sm file:mr-2 file:btn file:btn-soft file:border-0 file:text-xs">
+                <button class="btn btn-soft btn-sm whitespace-nowrap">Upload</button>
+              </form>
+              <p class="text-xs text-ink-faint mt-1">JPG, PNG, or WebP · max 5 MB</p>
+            </div>
             <div class="sm:col-span-2"><label class="field-label">Description</label><textarea name="description" rows="2" class="field">{{ p.description or '' }}</textarea></div>
             <label class="flex items-center gap-2 text-xs"><input type="checkbox" name="is_active" value="true" {% if p.isActive %}checked{% endif %}> Shown to customers</label>
             <div class="sm:col-span-2"><button class="btn btn-primary">Save</button></div>

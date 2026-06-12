@@ -1,7 +1,10 @@
 // Storefront catalog smoke tests — drives the Fastify app with app.inject()
 // against an isolated temp DB (pattern: apps/web-admin/test/web.test.ts).
 import "./setup-env"; // FIRST import — sets env before @app/* load
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+vi.mock("@app/core/mailer", () => ({
+  sendMail: vi.fn().mockResolvedValue(undefined),
+}));
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
 import { prisma, initDb, setSetting } from "@app/db";
@@ -304,5 +307,74 @@ describe("register", () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.body).toContain("taken");
+  });
+});
+
+describe("forgot + reset password", () => {
+  it("always claims success, and mails only real accounts", async () => {
+    const { sendMail } = await import("@app/core/mailer");
+    const { hashPassword } = await import("@app/core/password");
+    vi.clearAllMocks();
+    await prisma.user.create({
+      data: {
+        loginUsername: "forgetful",
+        email: "forget@me.test",
+        passwordHash: hashPassword("oldpass-123"),
+        referralCode: "FORG01",
+      },
+    });
+
+    const real = await app.inject({ method: "POST", url: "/forgot", payload: { email: "forget@me.test" } });
+    expect(real.statusCode).toBe(200);
+    expect(real.body).toContain("on its way");
+
+    const fake = await app.inject({ method: "POST", url: "/forgot", payload: { email: "ghost@no.test" } });
+    expect(fake.statusCode).toBe(200);
+    expect(fake.body).toContain("on its way");
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    const text = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![0].text as string;
+    expect(text).toMatch(/\/reset\/[A-Za-z0-9_-]{40,}/);
+  });
+
+  it("resets the password with a valid token, once, and invalidates sessions", async () => {
+    const { createPasswordResetToken } = await import("@app/db");
+    const { verifyPassword } = await import("@app/core/password");
+    const user = (await prisma.user.findFirst({ where: { email: "forget@me.test" } }))!;
+    const { token } = await createPasswordResetToken(prisma, user.id);
+
+    const form = await app.inject({ method: "GET", url: `/reset/${token}` });
+    expect(form.statusCode).toBe(200);
+    expect(form.body).toContain("new password");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/reset/${token}`,
+      payload: { password: "brandnew-99", password2: "brandnew-99" },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login?reset=1");
+    const updated = (await prisma.user.findUnique({ where: { id: user.id } }))!;
+    expect(verifyPassword("brandnew-99", updated.passwordHash!)).toBe(true);
+
+    const again = await app.inject({
+      method: "POST",
+      url: `/reset/${token}`,
+      payload: { password: "another-99", password2: "another-99" },
+    });
+    expect(again.statusCode).toBe(400);
+    expect(again.body).toContain("invalid or has expired");
+  });
+
+  it("rejects an expired token", async () => {
+    const { createPasswordResetToken } = await import("@app/db");
+    const user = (await prisma.user.findFirst({ where: { email: "forget@me.test" } }))!;
+    const { token } = await createPasswordResetToken(prisma, user.id, -1);
+    const res = await app.inject({
+      method: "POST",
+      url: `/reset/${token}`,
+      payload: { password: "whatever-99", password2: "whatever-99" },
+    });
+    expect(res.statusCode).toBe(400);
   });
 });

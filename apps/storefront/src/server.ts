@@ -18,6 +18,7 @@ import authPlugin from "./plugins/auth";
 import homeRoutes from "./routes/home";
 import catalogRoutes from "./routes/catalog";
 import authRoutes from "./routes/auth";
+import forgotRoutes from "./routes/forgot";
 import accountRoutes from "./routes/account";
 import cartRoutes from "./routes/cart";
 import checkoutRoutes from "./routes/checkout";
@@ -69,6 +70,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(homeRoutes);
   await app.register(catalogRoutes);
   await app.register(authRoutes);
+  await app.register(forgotRoutes);
   await app.register(accountRoutes);
   await app.register(cartRoutes);
   await app.register(checkoutRoutes);

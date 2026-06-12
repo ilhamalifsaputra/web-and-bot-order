@@ -23,6 +23,8 @@ process.env.BOT_USERNAME = "TestBot";
 process.env.BINANCE_PAY_ID = "111222333";
 process.env.USE_UNIQUE_CENTS = "0";
 process.env.DEFAULT_LANGUAGE = "en";
+process.env.SMTP_HOST = "smtp.test.invalid";
+process.env.SMTP_FROM = "Shop <no-reply@test.invalid>";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 execSync("pnpm exec prisma db push --skip-generate --accept-data-loss", {

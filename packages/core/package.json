@@ -14,12 +14,15 @@
     "./logger": "./src/logger.ts",
     "./enums": "./src/enums.ts",
     "./runtime": "./src/runtime.ts",
-    "./fx": "./src/fx.ts"
+    "./fx": "./src/fx.ts",
+    "./password": "./src/password.ts",
+    "./mailer": "./src/mailer.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "bcryptjs": "^2.4.3",
     "decimal.js": "^10.4.3",
     "dotenv": "^16.4.5",
     "luxon": "^3.5.0",
@@ -28,6 +31,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/luxon": "^3.4.2"
   }
 }

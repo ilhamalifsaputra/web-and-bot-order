@@ -179,6 +179,9 @@ importers:
 
   packages/core:
     dependencies:
+      bcryptjs:
+        specifier: ^2.4.3
+        version: 2.4.3
       decimal.js:
         specifier: ^10.4.3
         version: 10.6.0
@@ -198,6 +201,9 @@ importers:
         specifier: ^3.23.8
         version: 3.25.76
     devDependencies:
+      '@types/bcryptjs':
+        specifier: ^2.4.6
+        version: 2.4.6
       '@types/luxon':
         specifier: ^3.4.2
         version: 3.7.1

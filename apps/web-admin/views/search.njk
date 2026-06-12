@@ -22,8 +22,8 @@
       {% for u in users %}
       <li class="py-2.5 flex items-center justify-between gap-3">
         <a class="link font-normal text-ink hover:text-pine" href="/users/{{ u.id }}">
-          {{ u.fullName or u.username or ('Telegram ' + (u.telegramId | string)) }}
-          <span class="text-ink-faint font-mono text-xs">· {{ u.telegramId }}</span>
+          {{ u.fullName or u.username or (u.telegramId and ('Telegram ' + (u.telegramId | string))) or u.email or '—' }}
+          <span class="text-ink-faint font-mono text-xs">· {{ u.telegramId or "—" }}</span>
         </a>
         {{ ui.status_badge(u.role) }}
       </li>

@@ -62,7 +62,7 @@
             </div>
             <p class="text-sm text-ink mt-1">{{ r.comment or '(no comment)' }}</p>
             <p class="text-xs text-ink-faint mt-1">
-              <a class="link font-normal" href="/users/{{ r.user.id }}">{{ r.user.fullName or r.user.username or ('Telegram ' + (r.user.telegramId | string)) }}</a>
+              <a class="link font-normal" href="/users/{{ r.user.id }}">{{ r.user.fullName or r.user.username or (r.user.telegramId and ('Telegram ' + (r.user.telegramId | string))) or r.user.email or '—' }}</a>
               · {{ r.createdAt | localdt }}
             </p>
           </div>

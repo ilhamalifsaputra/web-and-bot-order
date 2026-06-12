@@ -78,7 +78,7 @@
 
     <div class="flex items-center gap-3 text-sm whitespace-nowrap">
       {% if admin.role %}<span class="chip bg-pine-tint text-pine-dark"><i data-lucide="shield-check" class="w-3.5 h-3.5"></i> {{ role_label[admin.role] or admin.role }}</span>{% endif %}
-      <span class="hidden sm:inline text-ink-faint text-xs">Telegram {{ admin.telegramId }}</span>
+      {% if admin.telegramId %}<span class="hidden sm:inline text-ink-faint text-xs">Telegram {{ admin.telegramId }}</span>{% endif %}
       <form method="post" action="/logout" class="inline">
         <input type="hidden" name="csrf_token" value="{{ admin.csrf }}">
         <button type="submit" class="flex items-center gap-1.5 text-ink-soft hover:text-rust transition-colors"><i data-lucide="log-out" class="w-4 h-4"></i> Sign out</button>

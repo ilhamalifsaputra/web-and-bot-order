@@ -53,7 +53,7 @@
         <td class="font-mono text-xs">{{ o.orderCode }}</td>
         <td>
           <div class="text-ink">{{ o.user.fullName or o.user.username or '—' }}</div>
-          <div class="text-ink-faint text-xs">Telegram {{ o.user.telegramId }}</div>
+          <div class="text-ink-faint text-xs">{% if o.user.telegramId %}Telegram {{ o.user.telegramId }}{% else %}Web-only{% endif %}</div>
         </td>
         <td>{{ ui.status_badge(o.status) }}</td>
         <td class="text-right tabular">{{ o.totalAmount | money }} {{ currency }}</td>

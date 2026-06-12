@@ -8,7 +8,7 @@
   <h1 class="page-title mt-1 flex items-center gap-3"><i data-lucide="life-buoy" class="w-7 h-7 text-sky-500"></i> Ticket #{{ ticket.id }} {{ ui.status_badge(ticket.status) }}</h1>
   {% if ticket_user %}
   <p class="page-lead">from
-    <a class="link font-normal" href="/users/{{ ticket_user.id }}">{{ ticket_user.fullName or ticket_user.username or ('Telegram ' + (ticket_user.telegramId | string)) }}</a>
+    <a class="link font-normal" href="/users/{{ ticket_user.id }}">{{ ticket_user.fullName or ticket_user.username or (ticket_user.telegramId and ('Telegram ' + (ticket_user.telegramId | string))) or ticket_user.email or '—' }}</a>
   </p>
   {% endif %}
 </div>

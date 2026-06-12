@@ -29,7 +29,7 @@
     <tbody>
       {% for a in admins %}
       <tr>
-        <td class="font-mono">{{ a.telegramId }}{% if a.isSelf %}<span class="text-ink-faint text-xs"> (you)</span>{% endif %}</td>
+        <td class="font-mono">{{ a.telegramId or "—" }}{% if a.isSelf %}<span class="text-ink-faint text-xs"> (you)</span>{% endif %}</td>
         <td>{{ a.name or '—' }}</td>
         <td>{% if a.passwordSet %}<span class="chip bg-grass-tint text-grass-dark">Set</span>{% else %}<span class="text-ink-faint text-xs">Not set</span>{% endif %}</td>
         <td>{% if a.twoFa %}<span class="chip bg-grass-tint text-grass-dark">On</span>{% else %}<span class="text-ink-faint text-xs">Off</span>{% endif %}</td>

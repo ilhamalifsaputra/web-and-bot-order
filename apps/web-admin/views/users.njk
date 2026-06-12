@@ -28,7 +28,7 @@
       <tr>
         <td>{{ u.fullName or '—' }}</td>
         <td>{{ u.username or '—' }}</td>
-        <td class="font-mono text-xs">{{ u.telegramId }}</td>
+        <td class="font-mono text-xs">{{ u.telegramId or "—" }}</td>
         <td>{{ ui.status_badge(u.role) }}</td>
         <td>{% if u.banned %}<span class="chip bg-rust-tint text-rust-dark">Blocked</span>{% else %}<span class="text-ink-faint">—</span>{% endif %}</td>
         <td class="text-right"><a class="link" href="/users/{{ u.id }}">Open →</a></td>

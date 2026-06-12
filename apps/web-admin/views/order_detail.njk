@@ -80,7 +80,7 @@
       <dl class="space-y-1.5">
         <div class="flex justify-between gap-3"><dt class="text-ink-soft">Name</dt><dd>{{ order.user.fullName or '—' }}</dd></div>
         <div class="flex justify-between gap-3"><dt class="text-ink-soft">Username</dt><dd>{{ order.user.username or '—' }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Telegram</dt><dd>{{ order.user.telegramId }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Telegram</dt><dd>{{ order.user.telegramId or "—" }}</dd></div>
         <div class="flex justify-between gap-3"><dt class="text-ink-soft">Language</dt><dd>{{ order.user.language }}</dd></div>
       </dl>
       <a href="/users/{{ order.user.id }}" class="link text-xs mt-3 inline-block">View customer →</a>

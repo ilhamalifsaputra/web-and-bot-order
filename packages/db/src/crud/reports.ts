@@ -3,7 +3,7 @@
  * sections of crud.py. reconcile_finances detects drift WITHOUT mutating rows.
  */
 import { OrderStatus } from "@app/core/enums";
-import { quantizeMoney } from "@app/core/formatters";
+import { quantizeMoney, usdtFromIdr } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { addDays } from "@app/core/datetime";
 import type { Db } from "./_types";
@@ -33,7 +33,18 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
       .minus(o.discountAmount);
     let afterWallet = afterDisc.minus(o.walletUsed);
     if (afterWallet.lessThan(0)) afterWallet = new Decimal(0);
-    const expected = q4(afterWallet.plus(o.uniqueCents));
+    // Subtotals are stored in the central price unit (IDR post-cutover; the
+    // pre-cutover snapshot unit before). The CHARGED total depends on the
+    // pay-time choice (plan.md §15.1): a USDT order with an fxRate snapshot is
+    // round(base/rate, 0.1) + cents; an IDR order is the whole-Rupiah base.
+    let expected: Decimal;
+    if (o.currency === "USDT" && o.fxRate != null) {
+      expected = q4(usdtFromIdr(afterWallet, o.fxRate).plus(o.uniqueCents));
+    } else if (o.currency === "IDR") {
+      expected = quantizeMoney(afterWallet, 0);
+    } else {
+      expected = q4(afterWallet.plus(o.uniqueCents));
+    }
     if (expected.minus(o.totalAmount).abs().greaterThan("0.0001")) {
       findings.order_drift.push({
         order_id: o.id,
@@ -73,21 +84,47 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
   return findings;
 }
 
-export async function botOverallStats(
+/** Delivered-order totals split per transaction currency (plan.md §15.8 —
+ * reports keep currencies apart instead of pretending one unit). Orders
+ * predating the currency column count as USDT (their snapshot currency). */
+async function deliveredRevenueByCurrency(
   db: Db,
-): Promise<{ items_sold: number; total_revenue: Decimal; total_users: number }> {
+  extraWhere: Record<string, unknown> = {},
+): Promise<{ idr: Decimal; usdt: Decimal; orders: number }> {
+  const groups = await db.order.groupBy({
+    by: ["currency"],
+    where: { status: OrderStatus.DELIVERED, ...extraWhere },
+    _sum: { totalAmount: true },
+    _count: { _all: true },
+  });
+  let idr = new Decimal(0);
+  let usdt = new Decimal(0);
+  let orders = 0;
+  for (const g of groups) {
+    const sum = new Decimal(g._sum.totalAmount ?? 0);
+    if (g.currency === "IDR") idr = idr.plus(sum);
+    else usdt = usdt.plus(sum);
+    orders += g._count._all;
+  }
+  return { idr, usdt, orders };
+}
+
+export async function botOverallStats(db: Db): Promise<{
+  items_sold: number;
+  revenue_idr: Decimal;
+  revenue_usdt: Decimal;
+  total_users: number;
+}> {
   const itemsAgg = await db.orderItem.aggregate({
     where: { order: { status: OrderStatus.DELIVERED } },
     _sum: { quantity: true },
   });
-  const revenueAgg = await db.order.aggregate({
-    where: { status: OrderStatus.DELIVERED },
-    _sum: { totalAmount: true },
-  });
+  const rev = await deliveredRevenueByCurrency(db);
   const totalUsers = await db.user.count();
   return {
     items_sold: itemsAgg._sum.quantity ?? 0,
-    total_revenue: new Decimal(revenueAgg._sum.totalAmount ?? 0),
+    revenue_idr: rev.idr,
+    revenue_usdt: rev.usdt,
     total_users: totalUsers,
   };
 }
@@ -95,16 +132,9 @@ export async function botOverallStats(
 export async function revenueSummary(
   db: Db,
   since: Date,
-): Promise<{ revenue: Decimal; orders: number }> {
-  const agg = await db.order.aggregate({
-    where: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } },
-    _sum: { totalAmount: true },
-    _count: { _all: true },
-  });
-  return {
-    revenue: new Decimal(agg._sum.totalAmount ?? 0),
-    orders: agg._count._all,
-  };
+): Promise<{ revenue_idr: Decimal; revenue_usdt: Decimal; orders: number }> {
+  const rev = await deliveredRevenueByCurrency(db, { deliveredAt: { gte: since } });
+  return { revenue_idr: rev.idr, revenue_usdt: rev.usdt, orders: rev.orders };
 }
 
 // ---- Reports & charts (web admin) ----------------------------------------

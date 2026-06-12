@@ -17,7 +17,7 @@ import fs from "node:fs";
 import { config, isBinanceInternalEnabled } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { ensureUtc, localize } from "@app/core/datetime";
-import { OrderStatus, UserRole } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, PaymentMethod, UserRole } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import {
@@ -35,15 +35,19 @@ import {
   createInternalOrder,
   setOrderPaymentMessage,
   cancelOrder,
+  finalizeOrderPayment,
 } from "@app/db";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
-import { esc, formatPrice, formatIdr } from "../util/format";
+import { esc, formatPrice, formatIdr, priceIdr } from "../util/format";
+import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
 
 const MAX_PENDING_ORDERS = 10;
-const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, config.CURRENCY, decimals);
+// USDT figures only (the charged total of Binance orders). Catalog/confirmation
+// amounts are central Rupiah — use priceIdr(v, rate).
+const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimals);
 
 function requireUser(ctx: MyContext) {
   const u = ctx.session.dbUser;
@@ -278,7 +282,7 @@ async function computeConfirmation(
         const discount = applyVoucherToSubtotal(voucherObj, subtotal);
         voucherLine = coreT("checkout.confirm_voucher_line", lang, {
           code: voucherCode,
-          discount: price(discount),
+          discount: formatIdr(discount),
         });
         subtotal = subtotal.minus(discount);
       } else {
@@ -328,16 +332,17 @@ export async function showOrderConfirmation(
   const r = await computeConfirmation(ctx, productId, quantity);
   if (!r) return;
 
+  const rate = await currentUsdtRate();
   await smartEdit(
     ctx,
     t(ctx, "checkout.confirm_order", {
       product: esc(r.productName),
       qty: quantity,
-      unit_price: price(r.unitPrice),
+      unit_price: priceIdr(r.unitPrice, rate),
       voucher_line: r.voucherLine,
-      total: price(r.subtotal),
+      total: priceIdr(r.subtotal, rate),
     }),
-    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled()),
+    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null),
   );
 }
 
@@ -350,16 +355,17 @@ export async function renderOrderConfirmation(
   const lang = ctx.session.lang;
   const r = await computeConfirmation(ctx, productId, quantity);
   if (!r) return;
+  const rate = await currentUsdtRate();
   const msg = await ctx.api.sendMessage(
     ctx.chat!.id,
     t(ctx, "checkout.confirm_order", {
       product: esc(r.productName),
       qty: quantity,
-      unit_price: price(r.unitPrice),
+      unit_price: priceIdr(r.unitPrice, rate),
       voucher_line: r.voucherLine,
-      total: price(r.subtotal),
+      total: priceIdr(r.subtotal, rate),
     }),
-    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled()) },
+    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null) },
   );
   ctx.session.menuMsgId = msg.message_id;
 }
@@ -385,11 +391,25 @@ export async function buyNow(ctx: MyContext, productId: number, quantity: number
     return;
   }
 
+  // Binance Pay charges USDT — the central-IDR total converts once at the
+  // usd_idr_rate (plan.md §15.4). No rate ⇒ the USDT path is off.
+  const rate = await currentUsdtRate();
+  if (!rate) {
+    await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
+    return;
+  }
+
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
-    order = await prisma.$transaction((tx) =>
-      createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode }),
-    );
+    order = await prisma.$transaction(async (tx) => {
+      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode });
+      if (!created) return created;
+      return finalizeOrderPayment(tx, created.id, {
+        currency: OrderCurrency.USDT,
+        rate,
+        method: PaymentMethod.BINANCE_PAY,
+      });
+    });
   } catch (e) {
     if (e instanceof ValidationError) {
       await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
@@ -409,8 +429,9 @@ export async function buyNow(ctx: MyContext, productId: number, quantity: number
 export async function buyNowInternal(ctx: MyContext, productId: number, quantity: number): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
-  if (!isBinanceInternalEnabled()) {
-    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+  const rate = await currentUsdtRate();
+  if (!isBinanceInternalEnabled() || !rate) {
+    await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
     return;
   }
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
@@ -430,7 +451,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   let order: Awaited<ReturnType<typeof createInternalOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
-      createInternalOrder(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode }),
+      createInternalOrder(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode, rate }),
     );
   } catch (e) {
     if (e instanceof ValidationError) {
@@ -444,11 +465,10 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     return;
   }
 
-  let idrLine = "";
-  if (config.USDT_IDR_RATE) {
-    const idr = new Decimal(order.totalAmount).times(config.USDT_IDR_RATE);
-    idrLine = ` (≈ ${formatIdr(idr)})`;
-  }
+  // The charged amount is USDT; show the central-IDR equivalent beside it
+  // (totalAmount × the fxRate snapshot, which includes the unique cents).
+  const fxRate = order.fxRate != null ? new Decimal(order.fxRate) : rate;
+  const idrLine = ` (≈ ${formatIdr(new Decimal(order.totalAmount).times(fxRate))})`;
   const expiry = order.expiresAt
     ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
     : `${config.INTERNAL_PAYMENT_WINDOW_MINUTES}m`;

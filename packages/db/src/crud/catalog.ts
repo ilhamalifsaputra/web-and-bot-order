@@ -61,6 +61,50 @@ export function listAllActiveProducts(db: Db) {
   });
 }
 
+/** Newest active products with category — storefront home "Terbaru" grid. */
+export function listNewestActiveProducts(db: Db, limit = 12) {
+  return db.product.findMany({
+    where: { isActive: true },
+    include: { category: true },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
+}
+
+/** Active products in a category with the category joined (storefront list). */
+export function listActiveProductsWithCategory(db: Db, categoryId: number) {
+  return db.product.findMany({
+    where: { categoryId, isActive: true },
+    include: { category: true },
+    orderBy: { name: "asc" },
+  });
+}
+
+/** Active-product search with category joined (storefront /search). */
+export function searchProductsWithCategory(db: Db, query: string, limit = 24) {
+  const q = query.trim();
+  if (!q) return Promise.resolve([]);
+  return db.product.findMany({
+    where: {
+      isActive: true,
+      OR: [{ name: { contains: q } }, { description: { contains: q } }],
+    },
+    include: { category: true },
+    take: limit,
+  });
+}
+
+export function getCategory(db: Db, categoryId: number) {
+  return db.category.findUnique({ where: { id: categoryId } });
+}
+
+export function getProductWithCategory(db: Db, productId: number) {
+  return db.product.findUnique({
+    where: { id: productId },
+    include: { category: true },
+  });
+}
+
 /** Every product (active + inactive) with its category — admin views. */
 export function listAllProducts(db: Db) {
   return db.product.findMany({
@@ -91,6 +135,7 @@ export function createProduct(
     resellerPrice?: Decimal.Value | null;
     warrantyDays?: number | null;
     imageFileId?: string | null;
+    webImageUrl?: string | null;
   },
 ) {
   return db.product.create({
@@ -105,6 +150,7 @@ export function createProduct(
         args.resellerPrice != null ? quantizeMoney(args.resellerPrice, 4) : null,
       warrantyDays: args.warrantyDays || config.DEFAULT_WARRANTY_DAYS,
       imageFileId: args.imageFileId ?? null,
+      webImageUrl: args.webImageUrl ?? null,
     },
   });
 }

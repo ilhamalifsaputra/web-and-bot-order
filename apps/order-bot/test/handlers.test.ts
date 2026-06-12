@@ -2,13 +2,14 @@
 import "./setup-db";
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast } from "@app/db";
+import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast, setSetting } from "@app/db";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
+import { invalidateRateCache } from "../src/util/rate";
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
@@ -21,6 +22,7 @@ let adminDbId: number;
 
 beforeEach(async () => {
   await resetDb(prisma);
+  invalidateRateCache(); // settings were wiped — don't leak a cached rate across tests
   sample = await buildSampleData(prisma);
   const adminUser = await upsertUser(prisma, { telegramId: 999, username: "boss", fullName: "Admin Boss" });
   adminDbId = adminUser.id;
@@ -176,6 +178,9 @@ describe("checkout handlers", () => {
   });
 
   it("buyNow creates a PENDING_PAYMENT order and shows payment instructions", async () => {
+    // The USDT/Binance path needs the admin-set rate; 1 keeps the USDT total
+    // equal to the fixture's central-IDR price.
+    await setSetting(prisma, "usd_idr_rate", "1");
     const { ctx, sink } = customerCtx({ callbackData: "v1:pay:1:1" });
     await checkout.buyNow(ctx, sample.product.id, 1);
     const orders = await prisma.order.findMany();

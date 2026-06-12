@@ -20,7 +20,8 @@ import { Bot, session } from "grammy";
 import { conversations, createConversation } from "@grammyjs/conversations";
 import { run, sequentialize } from "@grammyjs/runner";
 import { config } from "@app/core/config";
-import { initDb } from "@app/db";
+import { botToken, setBotIdentity } from "@app/core/runtime";
+import { initDb, prisma, resolveBotCredentials } from "@app/db";
 import { logger } from "@app/core/logger";
 import type { MyContext } from "./context";
 import { initialSession } from "./context";
@@ -32,12 +33,20 @@ import * as customer from "./handlers/customer";
 import * as staticPages from "./handlers/static";
 import * as admin from "./handlers/admin";
 import { routeCallback } from "./handlers/callbacks";
-import { scheduleJobs } from "./jobs";
+import { scheduleJobs, scheduleFxRefresh } from "./jobs";
 import { startPolling, stopPolling } from "./payments/binanceInternal";
 
-/** Build a fully-wired bot. Pure construction — no network/DB side effects. */
-export function buildBot(): Bot<MyContext> {
-  const bot = new Bot<MyContext>(config.BOT_TOKEN);
+/**
+ * Build a fully-wired bot. Pure construction — no network/DB side effects.
+ * The token is the caller's (composition root resolves Setting→env, plan.md
+ * §16.3); without an argument it falls back to the runtime/env value.
+ */
+export function buildBot(token?: string): Bot<MyContext> {
+  const resolvedToken = token ?? botToken();
+  if (!resolvedToken) {
+    throw new Error("Bot token is not configured (set it in web-admin Settings or BOT_TOKEN env)");
+  }
+  const bot = new Bot<MyContext>(resolvedToken);
 
   // Global send defaults (replaces PTB Defaults(parse_mode=HTML, no link preview)).
   // Add parse_mode HTML only when neither parse_mode nor (caption_)entities is set.
@@ -173,10 +182,29 @@ export async function setupCommandMenu(bot: Bot<MyContext>): Promise<void> {
 
 // --- Startup ---------------------------------------------------------------
 export async function start(): Promise<void> {
-  const bot = buildBot();
   await initDb();
+  // Setting wins, env is the bootstrap/recovery fallback (plan.md §16.3).
+  const creds = await resolveBotCredentials(prisma);
+  if (!creds.botToken) {
+    logger.error("Bot token is not configured — set it in web-admin Settings or BOT_TOKEN env");
+    return;
+  }
+  setBotIdentity({
+    botToken: creds.botToken,
+    botUsername: creds.botUsername ?? undefined,
+    notifBotToken: creds.notifBotToken ?? undefined,
+  });
+  const bot = buildBot(creds.botToken);
+  // bot_username can stay unset in Settings — getMe fills it (referral links,
+  // Telegram Login widget). Best-effort: a blip here must not stop the boot.
+  try {
+    setBotIdentity({ botUsername: (await bot.api.getMe()).username });
+  } catch (err) {
+    logger.warn({ err }, "getMe failed; using configured bot_username if any");
+  }
   await setupCommandMenu(bot);
   scheduleJobs(bot.api);
+  scheduleFxRefresh();
   // drop_pending_updates: discard updates queued during downtime so stale
   // "Buy"/"Approve" taps aren't reprocessed against moved-on state. Best-effort:
   // a transient network blip here must not stop the bot from starting — the
@@ -208,8 +236,13 @@ export async function start(): Promise<void> {
   process.once("SIGTERM", stop);
 }
 
-// Only boot when run directly (not when imported by tests).
-const isEntry = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+// Only boot when run directly (not when imported by tests, nor when bundled
+// into the combined @app/server entry — esbuild defines APP_BUNDLED there so
+// this self-start is suppressed and only apps/server/src/main.ts drives boot).
+const isEntry =
+  process.env.APP_BUNDLED !== "1" &&
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isEntry) {
   start().catch((err) => {
     logger.error({ err }, "Fatal error during startup");

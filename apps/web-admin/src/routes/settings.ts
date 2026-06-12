@@ -5,7 +5,15 @@
  */
 import type { FastifyInstance } from "fastify";
 import { logger } from "@app/core/logger";
-import { prisma, listAllSettings, getSetting, setSetting, deleteSetting, logAdminAction } from "@app/db";
+import {
+  prisma,
+  listAllSettings,
+  getSetting,
+  setSetting,
+  deleteSetting,
+  logAdminAction,
+  refreshUsdIdrRate,
+} from "@app/db";
 import {
   hashPassword,
   verifyPassword,
@@ -25,15 +33,75 @@ const EDITABLE: Record<string, string> = {
   support_contact: "Support contact handle/text",
   welcome: "Welcome message",
   qr: "Payment QR image (Telegram file_id)",
+  // Banner shown on top of the bot's main menu + product list. Placeholder for
+  // now: paste a Telegram file_id, or (easier) set the image from the bot's
+  // Settings → Banner image. Clear this field to turn the banner off.
+  banner_image: "Banner image — Telegram file_id (set it from the bot for now; placeholder)",
+  // Shop identity shown in the storefront header/footer.
+  shop_name: "Shop name (shown on the website)",
+  shop_tagline: "Shop tagline (shown on the website)",
+  // WhatsApp contact button on the website's home page; empty hides the button.
+  support_whatsapp: "WhatsApp number for the website — international format without + (e.g. 62812…); leave empty to hide the button",
+  // ---- Payments (plan.md §15.9 / §16.1) ----
+  usd_idr_rate: "USDT rate — Rupiah per 1 USDT; updated from the market automatically (edit by hand only if auto-update is off)",
+  usd_idr_rate_auto: "Auto-update the USDT rate from the market — on unless set to false",
+  usd_idr_rate_rounding: "Round the market rate to the nearest … rupiah (e.g. 100)",
+  tokopay_merchant_id: "TokoPay merchant ID",
+  tokopay_secret: "TokoPay secret key",
+  tokopay_enabled: "Rupiah payments on the website — true / false",
+  // ---- Bot & notifications (plan.md §16.1) ----
+  bot_token: "Telegram bot token (from BotFather) — needs a restart to apply",
+  bot_username: "Bot username, without the @ — filled in for you when you save a token",
+  notif_bot_token: "Notifier bot token (optional — blank means the main bot posts)",
 };
+
+// UI grouping (settings.njk tabs): every EDITABLE key belongs to exactly one
+// group; anything left over falls back into the Website tab so a new key can
+// never silently disappear from the page.
+const WEBSITE_KEYS = new Set(["shop_name", "shop_tagline", "support_whatsapp"]);
+const BOT_MESSAGE_KEYS = new Set(["welcome", "banner_image", "support_contact"]);
+const BOT_TOKEN_FIELD_KEYS = new Set(["bot_token", "bot_username", "notif_bot_token"]);
+const PAY_BINANCE_KEYS = new Set(["binance_pay_id", "qr"]);
+const PAY_RATE_KEYS = new Set(["usd_idr_rate", "usd_idr_rate_auto", "usd_idr_rate_rounding"]);
+const PAY_QRIS_KEYS = new Set(["tokopay_merchant_id", "tokopay_secret", "tokopay_enabled"]);
+
+// Write-only editable secrets: never echoed back into the form, hidden in the
+// "All saved options" table, audited as "(updated)" without the value.
+const SECRET_KEYS = new Set(["tokopay_secret", "bot_token", "notif_bot_token"]);
+
+// Bot tokens get the §16.4 "don't brick the bot" treatment: owner-only, and
+// Telegram must accept the token (getMe) before anything is saved.
+const TOKEN_KEYS = new Set(["bot_token", "notif_bot_token"]);
+
+type TokenCheck = { ok: boolean; username?: string };
+/**
+ * Ask Telegram whether the token works. Plain fetch (no grammy dependency
+ * here); the token never appears in logs or error messages.
+ */
+async function checkTokenWithTelegram(token: string): Promise<TokenCheck> {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const data = (await res.json()) as { ok?: boolean; result?: { username?: string } };
+    return data.ok ? { ok: true, username: data.result?.username } : { ok: false };
+  } catch {
+    return { ok: false };
+  }
+}
+let tokenValidator: (token: string) => Promise<TokenCheck> = checkTokenWithTelegram;
+/** Test hook: stub the Telegram call. */
+export function setTokenValidator(fn: typeof tokenValidator): void {
+  tokenValidator = fn;
+}
 
 const SECRET_PREFIXES = [
   "web_admin_password_hash:",
   "web_session_jti:",
   "web_2fa_secret:",
   "web_2fa_pending:",
+  "shop_session_jti:", // storefront customer sessions
 ];
-const isSecret = (key: string) => SECRET_PREFIXES.some((p) => key.startsWith(p));
+const isSecret = (key: string) =>
+  SECRET_KEYS.has(key) || SECRET_PREFIXES.some((p) => key.startsWith(p));
 
 export default async function settingsRoutes(app: FastifyInstance): Promise<void> {
   app.get("/settings", { preHandler: currentAdmin }, async (req, reply) => {
@@ -48,11 +116,25 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     }));
     const currentValues: Record<string, string> = {};
     for (const r of rows) currentValues[r.key] = r.value;
-    const editableFields = Object.entries(EDITABLE).map(([key, label]) => ({
+    // Secrets are write-only: the form never carries the stored value, only a
+    // "saved" hint; leaving the field blank keeps the existing value.
+    const allFields = Object.entries(EDITABLE).map(([key, label]) => ({
       key,
       label,
-      value: currentValues[key] ?? "",
+      secret: SECRET_KEYS.has(key),
+      has_value: Boolean(currentValues[key]),
+      value: SECRET_KEYS.has(key) ? "" : currentValues[key] ?? "",
     }));
+    const pick = (keys: Set<string>) => allFields.filter((f) => keys.has(f.key));
+    const grouped = new Set([
+      ...WEBSITE_KEYS, ...BOT_MESSAGE_KEYS, ...BOT_TOKEN_FIELD_KEYS,
+      ...PAY_BINANCE_KEYS, ...PAY_RATE_KEYS, ...PAY_QRIS_KEYS,
+    ]);
+    // Leftover guard: an EDITABLE key missing from every group still shows up.
+    const websiteFields = [
+      ...pick(WEBSITE_KEYS),
+      ...allFields.filter((f) => !grouped.has(f.key)),
+    ];
 
     const tg = req.admin!.telegramId;
     const twoFaEnabled = (await getSetting(prisma, twoFaSecretKey(tg))) !== null;
@@ -65,7 +147,13 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       admin: req.admin,
       active_nav: "/settings",
       rows: displayRows,
-      editable_fields: editableFields,
+      website_fields: websiteFields,
+      bot_message_fields: pick(BOT_MESSAGE_KEYS),
+      bot_token_fields: pick(BOT_TOKEN_FIELD_KEYS),
+      pay_binance_fields: pick(PAY_BINANCE_KEYS),
+      pay_rate_fields: pick(PAY_RATE_KEYS),
+      pay_qris_fields: pick(PAY_QRIS_KEYS),
+      is_owner: req.admin!.role === "super",
       two_fa_enabled: twoFaEnabled,
       two_fa_pending: twoFaPending,
       msg: q.msg ?? null,
@@ -131,6 +219,44 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     return redirectWithFlash(reply, "/settings", "2FA disabled.", "success");
   });
 
+  // "Update the USDT rate now": pull the live market rate, round it, save it.
+  // Force-bypasses the auto switch — pressing the button is explicit intent.
+  app.post("/settings/fx/refresh", { preHandler: csrfProtect }, async (req, reply) => {
+    try {
+      const r = await refreshUsdIdrRate(prisma, { force: true });
+      if (r.status === "unchanged") {
+        return redirectWithFlash(
+          reply,
+          "/settings",
+          `Already up to date: Rp${r.rate.toString()} per 1 USDT (market ${r.market.toString()}).`,
+          "info",
+        );
+      }
+      if (r.status === "updated") {
+        await logAdminAction(prisma, {
+          adminId: req.admin!.userId,
+          action: "setting_set",
+          targetType: "setting",
+          details: `usd_idr_rate=${r.rate.toString()} (market refresh)`,
+        });
+        return redirectWithFlash(
+          reply,
+          "/settings",
+          `USDT rate updated to Rp${r.rate.toString()} per 1 USDT (market ${r.market.toString()}).`,
+          "success",
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, "Manual FX refresh failed");
+    }
+    return redirectWithFlash(
+      reply,
+      "/settings",
+      "Couldn't reach the exchange-rate service — the saved rate is unchanged. Try again in a bit.",
+      "error",
+    );
+  });
+
   app.post("/settings/edit", { preHandler: csrfProtect }, async (req, reply) => {
     const body = (req.body ?? {}) as Record<string, string>;
     const key = body.key ?? "";
@@ -138,7 +264,67 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       return redirectWithFlash(reply, "/settings", "That setting is not editable here.", "error");
     }
     const value = (body.value ?? "").trim();
-    const displayValue = value.slice(0, 80) + (value.length > 80 ? "…" : "");
+    // Write-only secrets: an empty submit means "keep what's saved", and the
+    // audit trail never records the value (CLAUDE.md: never log secrets).
+    if (SECRET_KEYS.has(key) && value === "") {
+      return redirectWithFlash(reply, "/settings", `'${key}' left unchanged.`, "info");
+    }
+
+    // §16.4 "don't brick the bot": tokens are owner-only and must pass a live
+    // getMe check before anything is stored. A bad token is rejected outright.
+    if (TOKEN_KEYS.has(key)) {
+      if (req.admin!.role !== "super") {
+        return redirectWithFlash(reply, "/settings", "Only the owner can change bot tokens.", "error");
+      }
+      // Escape hatch: a single "-" removes the saved token so the server's own
+      // config (env) is used again after a restart — the §16.4 recovery path.
+      if (value === "-") {
+        await deleteSetting(prisma, key);
+        await logAdminAction(prisma, {
+          adminId: req.admin!.userId,
+          action: "setting_clear",
+          targetType: "setting",
+          details: key,
+        });
+        return redirectWithFlash(
+          reply,
+          "/settings",
+          "Saved token removed. After a restart the server's own configuration is used again.",
+          "success",
+        );
+      }
+      const check = await tokenValidator(value);
+      if (!check.ok) {
+        return redirectWithFlash(
+          reply,
+          "/settings",
+          "Telegram rejected that token, so nothing was saved. Check it in BotFather and try again.",
+          "error",
+        );
+      }
+      await setSetting(prisma, key, value);
+      // The main token also refreshes the stored username (referral links and
+      // the website's Telegram login button use it).
+      if (key === "bot_token" && check.username) {
+        await setSetting(prisma, "bot_username", check.username);
+      }
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "setting_set",
+        targetType: "setting",
+        details: `${key}=(updated)`, // never the value
+      });
+      return redirectWithFlash(
+        reply,
+        "/settings",
+        "Token saved and checked with Telegram. Restart the app to start using it.",
+        "success",
+      );
+    }
+
+    const displayValue = SECRET_KEYS.has(key)
+      ? "(updated)"
+      : value.slice(0, 80) + (value.length > 80 ? "…" : "");
     await setSetting(prisma, key, value);
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,

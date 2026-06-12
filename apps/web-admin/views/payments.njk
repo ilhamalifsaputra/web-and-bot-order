@@ -1,79 +1,81 @@
 {% extends "base.njk" %}
 {% import "_macros.njk" as ui %}
-{% block title %}Payments · Stock Admin{% endblock %}
+{% block title %}Payments · Shop Admin{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-semibold mb-2">Binance Internal Transfer</h1>
-<p class="text-sm text-slate-500 mb-6">UID-based auto-confirm ledger &amp; manual levers.</p>
+<header class="mb-6">
+  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="wallet" class="w-7 h-7 text-emerald-500"></i> Automatic Payments</h1>
+  <p class="page-lead">Payments that come in through Binance are matched to orders and delivered for you.</p>
+</header>
 
 {{ ui.flash(msg, kind) }}
 
 {% if not enabled %}
-<div class="rounded-md px-4 py-3 mb-6 text-sm bg-slate-100 text-slate-600 border border-slate-200">
-  Binance Internal Transfer is <b>disabled</b> (missing UID / API credentials). The poller is a no-op;
-  the ledger below shows historical rows only.
+<div class="rounded-xl px-4 py-3 mb-6 text-sm bg-sand text-ink-soft border border-line">
+  Automatic payments are <b>turned off</b> (no Binance keys set). Nothing is being checked automatically —
+  the history below is just a record of the past.
 </div>
 {% endif %}
 
-{# ---- Poller health + outcome summary ---- #}
+{# ---- Auto-check status + result summary ---- #}
 <section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
-  <div class="bg-white rounded-lg shadow p-4 col-span-2">
-    <div class="text-xs uppercase tracking-wide text-slate-500">Poller health</div>
-    <div class="text-sm mt-2">
-      Last run:
+  <div class="card card-pad col-span-2">
+    <div class="stat-label">Auto-check status</div>
+    <div class="text-sm mt-2 text-ink">
+      Last checked:
       <span class="font-medium" title="{{ tzname }}">{{ health.lastRun | localdt('yyyy-LL-dd HH:mm:ss') if health.lastRun else 'never' }}</span>
     </div>
-    <div class="text-xs text-slate-500 mt-1">
-      {{ health.lastTxCount if health.lastTxCount is not none else '—' }} tx last cycle
-      {% if health.backoffUntil %}· <span class="text-amber-600">backoff until {{ health.backoffUntil | localdt('HH:mm:ss') }}</span>{% endif %}
+    <div class="text-xs text-ink-soft mt-1">
+      {{ health.lastTxCount if health.lastTxCount is not none else '—' }} payment(s) seen last check
+      {% if health.backoffUntil %}· <span class="text-amberx">paused until {{ health.backoffUntil | localdt('HH:mm:ss') }}</span>{% endif %}
     </div>
   </div>
-  {% set cards = [['matched','Matched','text-green-600'], ['underpaid','Underpaid','text-amber-600'], ['unmatched','Unmatched','text-blue-600'], ['delivery_failed','Failed','text-red-600']] %}
+  {% set cards = [['matched','Confirmed','text-grass'], ['underpaid','Paid too little','text-amberx'], ['unmatched','Couldn’t match','text-pine'], ['delivery_failed','Delivery failed','text-rust']] %}
   {% for c in cards %}
-  <div class="bg-white rounded-lg shadow p-4">
-    <div class="text-xs uppercase tracking-wide text-slate-500">{{ c[1] }}</div>
-    <div class="text-2xl font-semibold mt-2 {% if counts[c[0]] %}{{ c[2] }}{% endif %}">{{ counts[c[0]] or 0 }}</div>
+  <div class="card card-pad">
+    <div class="stat-label">{{ c[1] }}</div>
+    <div class="stat-value tabular {% if counts[c[0]] %}{{ c[2] }}{% endif %}">{{ counts[c[0]] or 0 }}</div>
   </div>
   {% endfor %}
 </section>
 
-{# ---- UNDERPAID resolution ---- #}
-<section class="bg-white rounded-lg shadow p-5 mb-8">
-  <h2 class="font-semibold mb-3">Underpaid orders <span class="text-slate-400 font-normal">({{ underpaid|length }})</span></h2>
+{# ---- Underpaid resolution ---- #}
+<section class="card card-pad mb-8">
+  <h2 class="section-title mb-3">Customers who paid too little <span class="text-ink-faint font-normal">({{ underpaid|length }})</span></h2>
   {% if underpaid|length == 0 %}
-  <p class="text-sm text-slate-400">No underpaid orders awaiting resolution.</p>
+  <p class="text-sm text-ink-faint">Nothing waiting here. 🎉</p>
   {% else %}
   <div class="overflow-x-auto">
-    <table class="min-w-full text-sm">
-      <thead class="bg-slate-100 text-slate-600 text-left">
+    <table class="data-table">
+      <thead>
         <tr>
-          <th class="px-3 py-2">Order</th><th class="px-3 py-2">Buyer</th>
-          <th class="px-3 py-2">Expected</th><th class="px-3 py-2">Note</th>
-          <th class="px-3 py-2 text-right">Resolve</th>
+          <th>Order</th><th>Customer</th>
+          <th>Should have paid</th><th>Note</th>
+          <th class="text-right">What to do</th>
         </tr>
       </thead>
-      <tbody class="divide-y divide-slate-100">
+      <tbody>
         {% for o in underpaid %}
         <tr class="align-top">
-          <td class="px-3 py-2"><a class="font-mono hover:underline" href="/orders/{{ o.id }}">{{ o.orderCode }}</a></td>
-          <td class="px-3 py-2 text-slate-500">{{ o.user.username or o.user.fullName or o.user.id }}</td>
-          <td class="px-3 py-2">{{ o.totalAmount | money }} {{ currency }}</td>
-          <td class="px-3 py-2 text-slate-500 break-all max-w-xs">{{ o.adminNote or '—' }}</td>
-          <td class="px-3 py-2">
+          <td><a class="link font-mono text-xs" href="/orders/{{ o.id }}">{{ o.orderCode }}</a></td>
+          <td class="text-ink-soft">{{ o.user.username or o.user.fullName or o.user.id }}</td>
+          <td class="tabular">{{ o.totalAmount | money }} {{ currency }}</td>
+          <td class="text-ink-soft break-all max-w-xs">{{ o.adminNote or '—' }}</td>
+          <td>
             <div class="flex gap-2 justify-end">
               <form method="post" action="/payments/order/{{ o.id }}/deliver">
                 {{ ui.csrf_field(admin) }}
-                <button class="px-2 py-1 rounded bg-green-600 text-white text-xs hover:bg-green-700"
-                        onclick="return confirm('Deliver {{ o.orderCode }} despite short payment?')">Deliver</button>
+                <button class="btn btn-primary btn-sm"
+                        onclick="return confirm('Send {{ o.orderCode }} to the customer even though they paid less?')">Deliver anyway</button>
               </form>
               <form method="post" action="/payments/order/{{ o.id }}/refund">
                 {{ ui.csrf_field(admin) }}
-                <button class="px-2 py-1 rounded bg-slate-700 text-white text-xs hover:bg-slate-800"
-                        onclick="return confirm('Refund the received amount to {{ o.orderCode }}\'s wallet and mark REFUNDED?')">Refund</button>
+                <button class="btn btn-soft btn-sm"
+                        onclick="return confirm('Put the amount they paid back into {{ o.orderCode }}\'s wallet and mark it refunded?')">Refund to wallet</button>
               </form>
               <form method="post" action="/payments/order/{{ o.id }}/cancel">
                 {{ ui.csrf_field(admin) }}
-                <button class="px-2 py-1 rounded bg-red-600 text-white text-xs hover:bg-red-700"
+                <button class="btn btn-danger btn-sm"
                         onclick="return confirm('Cancel {{ o.orderCode }} (no refund)?')">Cancel</button>
               </form>
             </div>
@@ -87,74 +89,74 @@
 </section>
 
 {# ---- Manual match of an unmatched transfer ---- #}
-<section class="bg-white rounded-lg shadow p-5 mb-8">
-  <h2 class="font-semibold mb-1">Manual match</h2>
-  <p class="text-xs text-slate-500 mb-3">Attach an <b>unmatched</b> transfer (buyer forgot the note) to a pending order, then deliver.</p>
-  <form method="post" action="/payments/match" class="flex flex-wrap gap-3 items-end text-sm">
+<section class="card card-pad mb-8">
+  <h2 class="section-title mb-1">Match a payment by hand</h2>
+  <p class="text-xs text-ink-soft mb-4">If a customer's payment couldn't be matched automatically (they forgot the order note), link it to their order here and we'll deliver it.</p>
+  <form method="post" action="/payments/match" class="flex flex-wrap gap-3 items-end">
     {{ ui.csrf_field(admin) }}
     <div>
-      <label class="block text-xs text-slate-500 mb-1">Transfer id</label>
-      <input name="binance_tx_id" required class="border rounded px-2 py-1 font-mono w-56" placeholder="binance_tx_id">
+      <label class="field-label">Payment reference</label>
+      <input name="binance_tx_id" required class="field font-mono w-56" placeholder="Payment reference">
     </div>
     <div>
-      <label class="block text-xs text-slate-500 mb-1">Order code</label>
-      <input name="order_code" required list="pending-internal" class="border rounded px-2 py-1 font-mono w-40" placeholder="ABC123">
+      <label class="field-label">Order code</label>
+      <input name="order_code" required list="pending-internal" class="field font-mono w-40" placeholder="ABC123">
       <datalist id="pending-internal">
         {% for o in pending_internal %}<option value="{{ o.orderCode }}">{{ o.totalAmount }} {{ currency }}</option>{% endfor %}
       </datalist>
     </div>
-    <button class="bg-slate-900 text-white px-4 py-1.5 rounded hover:bg-slate-700">Match &amp; deliver</button>
+    <button class="btn btn-primary">Match &amp; deliver</button>
   </form>
   {% if pending_internal|length %}
-  <p class="text-xs text-slate-400 mt-2">{{ pending_internal|length }} pending internal-transfer order(s) available to match.</p>
+  <p class="text-xs text-ink-faint mt-3">{{ pending_internal|length }} order(s) are waiting to be matched.</p>
   {% endif %}
 </section>
 
-{# ---- Ledger ---- #}
+{# ---- History ---- #}
 <div class="flex items-center justify-between mb-3">
-  <h2 class="font-semibold">Transfer ledger</h2>
+  <h2 class="section-title">Payment history</h2>
   <form method="get" action="/payments" class="flex gap-2 items-center text-sm">
-    <select name="outcome" class="border rounded px-2 py-1" onchange="this.form.submit()">
-      <option value="">All outcomes</option>
-      {% for o in outcomes %}<option value="{{ o }}" {% if f.outcome == o %}selected{% endif %}>{{ o | replace('_',' ') }}</option>{% endfor %}
+    <select name="outcome" class="field" onchange="this.form.submit()">
+      <option value="">All results</option>
+      {% for o in outcomes %}<option value="{{ o }}" {% if f.outcome == o %}selected{% endif %}>{{ o | replace('_',' ') | title }}</option>{% endfor %}
     </select>
-    <noscript><button class="bg-slate-900 text-white px-3 py-1 rounded">Filter</button></noscript>
+    <noscript><button class="btn btn-primary btn-sm">Filter</button></noscript>
   </form>
 </div>
 
-<div class="bg-white rounded-lg shadow overflow-x-auto">
-  <table class="min-w-full text-sm">
-    <thead class="bg-slate-100 text-slate-600 text-left">
+<div class="card overflow-x-auto">
+  <table class="data-table">
+    <thead>
       <tr>
-        <th class="px-4 py-2">When</th><th class="px-4 py-2">Tx id</th><th class="px-4 py-2">Outcome</th>
-        <th class="px-4 py-2">Amount</th><th class="px-4 py-2">Order</th>
+        <th>When</th><th>Reference</th><th>Result</th>
+        <th>Amount</th><th>Order</th>
       </tr>
     </thead>
-    <tbody class="divide-y divide-slate-100">
+    <tbody>
       {% for r in ledger %}
-      <tr class="hover:bg-slate-50">
-        <td class="px-4 py-2 text-slate-500 whitespace-nowrap" title="{{ tzname }}">{{ r.createdAt | localdt('yyyy-LL-dd HH:mm:ss') }}</td>
-        <td class="px-4 py-2 font-mono text-xs break-all max-w-xs">{{ r.binanceTxId }}</td>
-        <td class="px-4 py-2">{{ ui.status_badge(r.outcome) }}</td>
-        <td class="px-4 py-2">{{ r.amount | money }}{% if r.amount is not none %} {{ currency }}{% endif %}</td>
-        <td class="px-4 py-2">
-          {% if r.order %}<a class="font-mono hover:underline" href="/orders/{{ r.order.id }}">{{ r.order.orderCode }}</a>
-          {% else %}<span class="text-slate-400">—</span>{% endif %}
+      <tr>
+        <td class="text-ink-soft whitespace-nowrap" title="{{ tzname }}">{{ r.createdAt | localdt('yyyy-LL-dd HH:mm:ss') }}</td>
+        <td class="font-mono text-xs break-all max-w-xs">{{ r.binanceTxId }}</td>
+        <td>{{ ui.status_badge(r.outcome) }}</td>
+        <td class="tabular">{{ r.amount | money }}{% if r.amount is not none %} {{ currency }}{% endif %}</td>
+        <td>
+          {% if r.order %}<a class="link font-mono text-xs" href="/orders/{{ r.order.id }}">{{ r.order.orderCode }}</a>
+          {% else %}<span class="text-ink-faint">—</span>{% endif %}
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="5" class="px-4 py-6 text-center text-slate-400">No ledger rows match.</td></tr>
+      {{ ui.empty_row(5, 'No payments match.') }}
       {% endfor %}
     </tbody>
   </table>
 </div>
 
-<div class="flex items-center justify-between mt-4 text-sm text-slate-500">
-  <span>{{ total }} row(s) · page {{ page }}</span>
+<div class="flex items-center justify-between mt-4 text-sm text-ink-soft">
+  <span>{{ total }} payment(s) · page {{ page }}</span>
   <span class="flex gap-3">
     {% set qbase = '/payments?outcome=' + f.outcome %}
-    {% if page > 1 %}<a class="hover:underline" href="{{ qbase }}&page={{ page - 1 }}">← Prev</a>{% endif %}
-    {% if has_next %}<a class="hover:underline" href="{{ qbase }}&page={{ page + 1 }}">Next →</a>{% endif %}
+    {% if page > 1 %}<a class="link" href="{{ qbase }}&page={{ page - 1 }}">← Newer</a>{% endif %}
+    {% if has_next %}<a class="link" href="{{ qbase }}&page={{ page + 1 }}">Older →</a>{% endif %}
   </span>
 </div>
 {% endblock %}

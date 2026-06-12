@@ -1,0 +1,48 @@
+{% extends "base.njk" %}
+{% block title %}Forgot password · Shop Admin{% endblock %}
+{% block nav %}{% endblock %}
+
+{% block content %}
+<div class="min-h-[70vh] flex items-center justify-center">
+  <div class="w-full max-w-sm">
+    <div class="text-center mb-8">
+      <span class="inline-flex items-center gap-2 font-display text-2xl font-semibold text-pine">
+        <i data-lucide="store" class="w-6 h-6"></i>
+        Shop Admin
+      </span>
+      <p class="page-lead">We'll send a one-time code to your Telegram</p>
+    </div>
+
+    <div class="card card-pad">
+      {% if error %}
+        <div class="mb-4 rounded-xl border border-rust/30 bg-rust-tint px-4 py-3 text-sm text-rust-dark">{{ error }}</div>
+      {% endif %}
+
+      {% if sent %}
+        <div class="mb-4 rounded-xl border border-pine/30 bg-pine-tint px-4 py-3 text-sm text-pine-dark">
+          If that Telegram ID belongs to an admin, we've sent a one-time code there.
+          It expires in 10 minutes.
+        </div>
+        <a href="/reset{% if telegram_id %}?telegram_id={{ telegram_id }}{% endif %}" class="btn btn-primary w-full">
+          <i data-lucide="key-round" class="w-4 h-4"></i> I have my code → set a new password
+        </a>
+        <p class="mt-4 text-xs text-ink-faint">
+          No code after a minute? The bot may be offline — ask another admin to reset it for you on the server.
+        </p>
+      {% else %}
+        <form method="post" action="/forgot" class="space-y-4">
+          <div>
+            <label class="field-label" for="telegram_id">Your Telegram ID</label>
+            <input id="telegram_id" name="telegram_id" type="number" required class="field">
+          </div>
+          <button type="submit" class="btn btn-primary w-full"><i data-lucide="send" class="w-4 h-4"></i> Send me a code</button>
+        </form>
+      {% endif %}
+    </div>
+
+    <p class="mt-5 text-center text-sm">
+      <a href="/login" class="link">Back to sign in</a>
+    </p>
+  </div>
+</div>
+{% endblock %}

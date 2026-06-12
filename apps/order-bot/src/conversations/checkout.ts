@@ -28,7 +28,8 @@ import {
 } from "../handlers/checkout";
 import { startCommand, showMainMenu } from "../handlers/customer";
 
-const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, config.CURRENCY, decimals);
+// Bot orders are charged in USDT (Binance) — totals here are USDT figures.
+const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimals);
 
 function isCmd(ctx: MyContext, cmd: string): boolean {
   const text = ctx.message?.text ?? "";

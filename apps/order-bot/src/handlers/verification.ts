@@ -22,12 +22,9 @@ import {
 import type { MyContext } from "../context";
 import { adminEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
-import { esc, formatPrice, groupOrderItems, redactCredentials } from "../util/format";
+import { esc, formatIdr, orderAmount, groupOrderItems, redactCredentials } from "../util/format";
 import * as akb from "../keyboards/admin";
 import { notificationKb } from "../keyboards/customer";
-
-const price = (v: import("@app/core/money").Decimal.Value, decimals = 2) =>
-  formatPrice(v, config.CURRENCY, decimals);
 
 /** Build per-product credential sections for the buyer DM (one header + <pre>). */
 function buildCredSections(
@@ -80,7 +77,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
   }
 
   const itemLines = groupOrderItems(order.items)
-    .map((g) => `• ${esc(g.product.name)} × ${g.quantity} — ${price(g.lineTotal)}`)
+    .map((g) => `• ${esc(g.product.name)} × ${g.quantity} — ${formatIdr(g.lineTotal)}`)
     .join("\n");
   const userDisplay =
     `<code>${order.user.telegramId}</code> ` +
@@ -88,7 +85,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
   const text = t(ctx, "admin.verification_item", {
     code: order.orderCode,
     user: userDisplay,
-    total: price(order.totalAmount, 4),
+    total: orderAmount(order, 4),
     txid: esc(order.binanceTxid ?? "-"),
     lines: itemLines,
   });

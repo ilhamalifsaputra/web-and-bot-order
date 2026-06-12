@@ -23,9 +23,13 @@ import {
   countAvailableStock,
   markUnderpaid,
   recordUnmatchedTx,
+  listAuditLogs,
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
+import { setTokenValidator } from "../src/routes/settings";
+import { Decimal } from "@app/core/money";
+import { setFxRateFetcher } from "@app/db";
 import {
   makeSession,
   newJti,
@@ -39,6 +43,14 @@ import {
   generateTotpSecret,
   currentTotp,
   verifyTotp,
+  newResetCode,
+  consumeResetCode,
+  pwResetKey,
+  PW_RESET_MAX_ATTEMPTS,
+  resetLoginAttempts,
+  accountLockedOut,
+  recordAccountFailure,
+  resetAccountFailures,
 } from "../src/auth";
 import { canMutate } from "../src/plugins/auth";
 
@@ -70,6 +82,11 @@ afterAll(async () => {
 let counter = 0;
 beforeEach(async () => {
   await resetDb(prisma);
+  // Limiters are in-process Maps shared across tests; clear what the auth flows
+  // touch (app.inject's IP + the seeded admin ids) so attempts don't leak.
+  resetLoginAttempts("127.0.0.1");
+  resetAccountFailures(ADMIN_TG);
+  resetAccountFailures(1000);
   const admin = await upsertUser(prisma, { telegramId: ADMIN_TG, username: "admin", fullName: "Admin" });
   const customer = await upsertUser(prisma, { telegramId: CUSTOMER_TG, username: "cust", fullName: "Customer" });
   const cat = await createCategory(prisma, `Cat${counter++}`);
@@ -162,6 +179,91 @@ describe("auth", () => {
     const follow = await get("/", seed.cookie);
     expect(follow.statusCode).toBe(303);
     expect(follow.headers.location).toBe("/login");
+  });
+});
+
+// ---- forgot / reset password (suggestion 1) ------------------------------
+
+describe("forgot/reset password", () => {
+  it("consumeResetCode: ok / expired / locked / mismatch-then-lock", () => {
+    const { code, store } = newResetCode();
+    expect(consumeResetCode(store, code).ok).toBe(true);
+    expect(consumeResetCode(null, code)).toMatchObject({ ok: false, reason: "missing" });
+
+    const expired = newResetCode(-1).store; // already in the past
+    expect(consumeResetCode(expired, "000000")).toMatchObject({ ok: false, reason: "expired" });
+
+    // Wrong code burns attempts; the final wrong guess drops the record (store=null).
+    let cur: string | null = store;
+    for (let i = 1; i < PW_RESET_MAX_ATTEMPTS; i++) {
+      const out = consumeResetCode(cur, "999999"); // wrong (code is random 6-digit; collision negligible)
+      expect(out.ok).toBe(false);
+      cur = out.ok ? null : out.store;
+      expect(cur).not.toBeNull();
+    }
+    const last = consumeResetCode(cur, "999999");
+    expect(last).toMatchObject({ ok: false, reason: "mismatch", store: null });
+  });
+
+  it("forgot enqueues an ADMIN_PW_RESET DM for a real admin, then reset works", async () => {
+    await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("oldpassword"));
+
+    const forgot = await post("/forgot", null, { telegram_id: String(ADMIN_TG) });
+    expect(forgot.statusCode).toBe(200);
+
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: "ADMIN_PW_RESET" } });
+    expect(rows.length).toBe(1);
+    const payload = JSON.parse(rows[0]!.payloadJson);
+    expect(payload.chat_id).toBe(ADMIN_TG);
+    expect(rows[0]!.orderId).toBeNull();
+    expect(await getSetting(prisma, pwResetKey(ADMIN_TG))).not.toBeNull();
+
+    // Use the delivered code to set a new password.
+    const reset = await post("/reset", null, {
+      telegram_id: String(ADMIN_TG), code: payload.code, password: "brandnewpw", password_confirm: "brandnewpw",
+    });
+    expect(reset.statusCode).toBe(303);
+    expect(reset.headers.location).toBe("/login");
+    expect(verifyPassword("brandnewpw", (await getSetting(prisma, passwordHashKey(ADMIN_TG)))!)).toBe(true);
+    expect(await getSetting(prisma, pwResetKey(ADMIN_TG))).toBeNull(); // consumed
+  });
+
+  it("forgot for a non-admin / no-password id is neutral and enqueues nothing", async () => {
+    const res = await post("/forgot", null, { telegram_id: "424242" });
+    expect(res.statusCode).toBe(200); // same page, no enumeration
+    expect(await prisma.notificationOutbox.count({ where: { event: "ADMIN_PW_RESET" } })).toBe(0);
+
+    // Admin in ADMIN_IDS but with NO password set yet → must bootstrap, not reset.
+    const noPw = await post("/forgot", null, { telegram_id: String(ADMIN_TG) });
+    expect(noPw.statusCode).toBe(200);
+    expect(await prisma.notificationOutbox.count({ where: { event: "ADMIN_PW_RESET" } })).toBe(0);
+  });
+
+  it("reset rejects a wrong code without changing the password", async () => {
+    await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("oldpassword"));
+    await post("/forgot", null, { telegram_id: String(ADMIN_TG) });
+
+    const res = await post("/reset", null, {
+      telegram_id: String(ADMIN_TG), code: "000000", password: "brandnewpw", password_confirm: "brandnewpw",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(verifyPassword("oldpassword", (await getSetting(prisma, passwordHashKey(ADMIN_TG)))!)).toBe(true);
+  });
+});
+
+// ---- per-account login throttle (hardening) -------------------------------
+
+describe("account lockout", () => {
+  it("locks an account after the failure cap and clears on reset", () => {
+    const tg = 7777771; // dedicated id, untouched elsewhere
+    const max = config.WEB_LOGIN_RATE_LIMIT_MAX;
+    resetAccountFailures(tg);
+    for (let i = 0; i < max - 1; i++) recordAccountFailure(tg);
+    expect(accountLockedOut(tg)).toBe(false);
+    recordAccountFailure(tg); // now at the cap
+    expect(accountLockedOut(tg)).toBe(true);
+    resetAccountFailures(tg);
+    expect(accountLockedOut(tg)).toBe(false);
   });
 });
 
@@ -464,6 +566,102 @@ describe("settings", () => {
   it("edit rejects bad CSRF", async () => {
     const res = await post("/settings/edit", seed.cookie, { csrf_token: "bad", key: "support_contact", value: "pwned" });
     expect(res.statusCode).toBe(403);
+  });
+});
+
+// ---- market USDT rate refresh (plan.md §15.8 resolved) ----------------------
+
+describe("settings: USDT rate from the market", () => {
+  it("refresh button pulls, rounds and saves the rate", async () => {
+    setFxRateFetcher(async () => new Decimal("16243.7"));
+    const res = await post("/settings/fx/refresh", seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("16200");
+  });
+
+  it("a fetch failure flashes an error and keeps the saved rate", async () => {
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    setFxRateFetcher(async () => {
+      throw new Error("down");
+    });
+    const res = await post("/settings/fx/refresh", seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect(await getSetting(prisma, "usd_idr_rate")).toBe("16000");
+  });
+
+  it("refresh rejects bad CSRF", async () => {
+    const res = await post("/settings/fx/refresh", seed.cookie, { csrf_token: "bad" });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+// ---- bot credentials in Settings (plan.md §16) -----------------------------
+
+describe("settings: bot tokens (§16)", () => {
+  it("saves a Telegram-accepted token and auto-fills bot_username", async () => {
+    setTokenValidator(async () => ({ ok: true, username: "MyShopBot" }));
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "bot_token", value: "123456:goodtokenvalue",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "bot_token")).toBe("123456:goodtokenvalue");
+    expect(await getSetting(prisma, "bot_username")).toBe("MyShopBot");
+  });
+
+  it("rejects a token Telegram refuses — nothing is stored", async () => {
+    setTokenValidator(async () => ({ ok: false }));
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "bot_token", value: "123456:badtoken",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect(await getSetting(prisma, "bot_token")).toBeNull();
+  });
+
+  it("token edits are owner-only (support role refused)", async () => {
+    setTokenValidator(async () => ({ ok: true, username: "MyShopBot" }));
+    await setSetting(prisma, webRoleKey(ADMIN_TG), "support");
+    await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "bot_token", value: "123456:goodtokenvalue",
+    });
+    // The generic RBAC gate (support can't mutate /settings) or the explicit
+    // owner check — either way: not saved.
+    expect(await getSetting(prisma, "bot_token")).toBeNull();
+  });
+
+  it('a single "-" clears the saved token (recovery path back to env)', async () => {
+    setTokenValidator(async () => ({ ok: true, username: "MyShopBot" }));
+    await setSetting(prisma, "bot_token", "123456:oldtokenvalue");
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "bot_token", value: "-",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "bot_token")).toBeNull();
+  });
+
+  it("audit never records the token value", async () => {
+    setTokenValidator(async () => ({ ok: true, username: "MyShopBot" }));
+    await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "notif_bot_token", value: "999:notifsecrettoken",
+    });
+    const logs = await listAuditLogs(prisma, { limit: 5 });
+    const entry = logs.find((l) => l.action === "setting_set" && (l.details ?? "").includes("notif_bot_token"));
+    expect(entry).toBeTruthy();
+    expect(entry!.details).not.toContain("notifsecrettoken");
+  });
+
+  it("saved tokens stay hidden on the page", async () => {
+    setTokenValidator(async () => ({ ok: true, username: "MyShopBot" }));
+    await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "bot_token", value: "123456:goodtokenvalue",
+    });
+    const res = await get("/settings", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain("123456:goodtokenvalue");
   });
 });
 

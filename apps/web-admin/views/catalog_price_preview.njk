@@ -1,29 +1,29 @@
 {% extends "base.njk" %}
 {% import "_macros.njk" as ui %}
-{% block title %}Confirm price change · Catalog{% endblock %}
+{% block title %}Confirm price change · Products{% endblock %}
 
 {% block content %}
-<div class="mb-4">
-  <a href="/catalog" class="text-sm text-slate-500 hover:underline">← Catalog</a>
-  <h1 class="text-2xl font-semibold mt-1">Confirm price change</h1>
-  <p class="text-slate-500 text-sm">
-    {% if mode == 'percent' %}Adjusting selected prices by <b>{{ value }}%</b>{% else %}Setting selected prices to <b>{{ value }} {{ currency }}</b>{% endif %}.
-    Review before applying — this changes live prices.
+<div class="mb-5">
+  <a href="/catalog" class="link text-sm">← Products</a>
+  <h1 class="page-title mt-1 flex items-center gap-2.5"><i data-lucide="badge-dollar-sign" class="w-7 h-7 text-emerald-500"></i> Confirm the price change</h1>
+  <p class="page-lead">
+    {% if mode == 'percent' %}Changing the selected prices by <b>{{ value }}%</b>{% else %}Setting the selected prices to <b>{{ value }} {{ currency }}</b>{% endif %}.
+    Check the new prices below before you apply them.
   </p>
 </div>
 
-<div class="bg-white rounded-lg shadow overflow-x-auto mb-4">
-  <table class="min-w-full text-sm">
-    <thead class="bg-slate-100 text-slate-600 text-left">
-      <tr><th class="px-4 py-2">Product</th><th class="px-4 py-2 text-right">Current</th><th class="px-4 py-2 text-right">New</th></tr>
+<div class="card overflow-x-auto mb-4">
+  <table class="data-table">
+    <thead>
+      <tr><th>Product</th><th class="text-right">Now</th><th class="text-right">After</th></tr>
     </thead>
-    <tbody class="divide-y divide-slate-100">
+    <tbody>
       {% for r in rows %}
-      <tr class="{% if r.invalid %}bg-red-50{% endif %}">
-        <td class="px-4 py-2">{{ r.name }}</td>
-        <td class="px-4 py-2 text-right text-slate-500">{{ r.current | money }}</td>
-        <td class="px-4 py-2 text-right font-medium">
-          {% if r.invalid %}<span class="text-red-600">≤ 0 — skipped</span>{% else %}{{ r.next | money }}{% endif %}
+      <tr class="{% if r.invalid %}bg-rust-tint/50{% endif %}">
+        <td>{{ r.name }}</td>
+        <td class="text-right tabular text-ink-soft">{{ r.current | money }}</td>
+        <td class="text-right tabular font-medium">
+          {% if r.invalid %}<span class="text-rust">would be 0 or less — skipped</span>{% else %}{{ r.next | money }}{% endif %}
         </td>
       </tr>
       {% endfor %}
@@ -32,8 +32,8 @@
 </div>
 
 {% if any_invalid %}
-<p class="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2 mb-4">
-  Rows that would become ≤ 0 are skipped and won't be changed.
+<p class="text-sm text-amberx bg-amberx-tint border border-amberx/30 rounded-xl px-3 py-2 mb-4">
+  Any price that would drop to 0 or less is skipped and left unchanged.
 </p>
 {% endif %}
 
@@ -42,9 +42,9 @@
   <form method="post" action="/catalog/products/bulk-price/apply">
     {{ ui.csrf_field(admin) }}
     <input type="hidden" name="pairs" value="{{ pairs }}">
-    <button class="bg-slate-900 text-white px-4 py-2 rounded hover:bg-slate-700">Apply price change</button>
+    <button class="btn btn-primary">Apply price change</button>
   </form>
   {% endif %}
-  <a href="/catalog" class="px-4 py-2 rounded bg-slate-200 hover:bg-slate-300">Cancel</a>
+  <a href="/catalog" class="btn btn-ghost">Cancel</a>
 </div>
 {% endblock %}

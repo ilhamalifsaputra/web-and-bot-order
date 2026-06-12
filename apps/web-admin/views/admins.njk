@@ -1,50 +1,53 @@
 {% extends "base.njk" %}
 {% import "_macros.njk" as ui %}
-{% block title %}Admins · Stock Admin{% endblock %}
+{% block title %}Team · Shop Admin{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-semibold mb-2">Admins & roles</h1>
-<p class="text-slate-500 text-sm mb-6">
-  Web roles for the bot's <code>ADMIN_IDS</code>. <b>super</b> = full access ·
-  <b>support</b> = operational mutations (orders, support, payments, outbox,
-  reviews) · <b>readonly</b> = view only. Everyone can change their own password.
+{% set role_label = { 'super': 'Owner', 'support': 'Support', 'readonly': 'View only' } %}
+<header class="mb-2">
+  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="users-round" class="w-7 h-7 text-sky-500"></i> Team</h1>
+</header>
+<p class="text-ink-soft text-sm mb-6 max-w-2xl">
+  Who can sign in to this dashboard and what they're allowed to do.
+  <b>Owner</b> can do everything · <b>Support</b> can handle orders, payments, support and reviews ·
+  <b>View only</b> can look but not change anything. Everyone can change their own password.
 </p>
 {{ ui.flash(msg, kind) }}
 
-<div class="bg-white rounded-lg shadow overflow-x-auto">
-  <table class="min-w-full text-sm">
-    <thead class="bg-slate-100 text-slate-600 text-left">
+<div class="card overflow-x-auto">
+  <table class="data-table">
+    <thead>
       <tr>
-        <th class="px-4 py-2">Telegram ID</th>
-        <th class="px-4 py-2">Name</th>
-        <th class="px-4 py-2">Password</th>
-        <th class="px-4 py-2">2FA</th>
-        <th class="px-4 py-2">Role</th>
-        <th class="px-4 py-2">Session</th>
+        <th>Telegram ID</th>
+        <th>Name</th>
+        <th>Password</th>
+        <th>Two-step</th>
+        <th>Can do</th>
+        <th>Sign-in</th>
       </tr>
     </thead>
-    <tbody class="divide-y divide-slate-100">
+    <tbody>
       {% for a in admins %}
       <tr>
-        <td class="px-4 py-2 font-mono">{{ a.telegramId }}{% if a.isSelf %}<span class="text-slate-400 text-xs"> (you)</span>{% endif %}</td>
-        <td class="px-4 py-2">{{ a.name or '—' }}</td>
-        <td class="px-4 py-2">{% if a.passwordSet %}<span class="text-green-700 text-xs">set</span>{% else %}<span class="text-slate-400 text-xs">not set</span>{% endif %}</td>
-        <td class="px-4 py-2">{% if a.twoFa %}<span class="text-green-700 text-xs">on</span>{% else %}<span class="text-slate-400 text-xs">off</span>{% endif %}</td>
-        <td class="px-4 py-2">
+        <td class="font-mono">{{ a.telegramId }}{% if a.isSelf %}<span class="text-ink-faint text-xs"> (you)</span>{% endif %}</td>
+        <td>{{ a.name or '—' }}</td>
+        <td>{% if a.passwordSet %}<span class="chip bg-grass-tint text-grass-dark">Set</span>{% else %}<span class="text-ink-faint text-xs">Not set</span>{% endif %}</td>
+        <td>{% if a.twoFa %}<span class="chip bg-grass-tint text-grass-dark">On</span>{% else %}<span class="text-ink-faint text-xs">Off</span>{% endif %}</td>
+        <td>
           <form method="post" action="/admins/{{ a.telegramId }}/role" class="flex gap-2 items-center">
             {{ ui.csrf_field(admin) }}
-            <select name="role" class="border rounded px-2 py-1" {% if a.isSelf %}disabled title="Ask another super-admin to change your role"{% endif %}>
-              {% for r in roles %}<option value="{{ r }}" {% if a.role == r %}selected{% endif %}>{{ r }}</option>{% endfor %}
+            <select name="role" class="field w-auto py-1.5" {% if a.isSelf %}disabled title="Ask another owner to change your access"{% endif %}>
+              {% for r in roles %}<option value="{{ r }}" {% if a.role == r %}selected{% endif %}>{{ role_label[r] or r }}</option>{% endfor %}
             </select>
-            {% if not a.isSelf %}<button class="bg-slate-200 px-3 py-1 rounded hover:bg-slate-300">Set</button>{% endif %}
+            {% if not a.isSelf %}<button class="btn btn-soft btn-sm">Save</button>{% endif %}
           </form>
         </td>
-        <td class="px-4 py-2">
-          {% if a.isSelf %}<span class="text-slate-400 text-xs">—</span>
+        <td>
+          {% if a.isSelf %}<span class="text-ink-faint text-xs">—</span>
           {% else %}
-          <form method="post" action="/admins/{{ a.telegramId }}/logout" onsubmit="return confirm('Force logout {{ a.telegramId }}?');">
+          <form method="post" action="/admins/{{ a.telegramId }}/logout" onsubmit="return confirm('Sign out {{ a.telegramId }} from all devices?');">
             {{ ui.csrf_field(admin) }}
-            <button class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-700 hover:bg-amber-200">Force logout</button>
+            <button class="btn btn-sm bg-amberx-tint text-amberx hover:bg-amberx/15">Sign out everywhere</button>
           </form>
           {% endif %}
         </td>

@@ -39,11 +39,13 @@ import {
 import type { MyContext } from "../context";
 import { adminEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
-import { esc, formatPrice } from "../util/format";
+import { esc, formatPrice, formatIdr, mixedAmount } from "../util/format";
 import * as akb from "../keyboards/admin";
 import * as verification from "./verification";
 
-const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, config.CURRENCY, decimals);
+// USDT figures only (wallet balances). Catalog prices and voucher FIXED values
+// are central Rupiah → formatIdr; mixed revenue totals → mixedAmount.
+const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimals);
 const adminId = (admin: { id: number } | null) => (admin ? admin.id : 0);
 
 // ===========================================================================
@@ -72,7 +74,7 @@ async function showDashboard(ctx: MyContext): Promise<void> {
   const lowStock = await lowStockProducts(prisma, config.LOW_STOCK_THRESHOLD);
 
   let text = t(ctx, "admin.dashboard_text", {
-    today_revenue: price(today.revenue),
+    today_revenue: mixedAmount(today.revenue_idr, today.revenue_usdt),
     today_orders: today.orders,
     pending: pending.length,
     low_stock: lowStock.length,
@@ -103,7 +105,7 @@ async function showProducts(ctx: MyContext): Promise<void> {
   const lines = ["🛍 <b>Products</b>", ""];
   for (const p of allProducts) {
     const status = p.isActive ? "🟢" : "⚪";
-    lines.push(`${status} <b>${esc(p.name)}</b> — ${price(p.price)} • stock ${stockMap.get(p.id)}`);
+    lines.push(`${status} <b>${esc(p.name)}</b> — ${formatIdr(p.price)} • stock ${stockMap.get(p.id)}`);
   }
   await adminEdit(ctx, lines.join("\n"), akb.productsAdminKb(allProducts, lang));
 }
@@ -134,7 +136,7 @@ async function listVouchersView(ctx: MyContext): Promise<void> {
   for (const v of rows) {
     const active = v.isActive ? "🟢" : "🔴";
     const used = `${v.usedCount}/${v.usageLimit ?? "∞"}`;
-    const val = v.type === "PERCENT" ? `${v.value}%` : price(v.value);
+    const val = v.type === "PERCENT" ? `${v.value}%` : formatIdr(v.value);
     lines.push(`${active} <code>${esc(v.code)}</code> — ${val} — used ${used}`);
   }
   await adminEdit(ctx, lines.join("\n"), akb.backToAdminKb(lang));
@@ -319,12 +321,14 @@ async function showSettings(ctx: MyContext): Promise<void> {
   const binance = (await getSetting(prisma, "binance_pay_id")) || config.BINANCE_PAY_ID;
   const support = await getSetting(prisma, "support_contact");
   const qr = await getSetting(prisma, "qr");
+  const banner = await getSetting(prisma, "banner_image");
   const welcome = await getSetting(prisma, "welcome");
 
   const text =
     "⚙️ <b>Settings</b>\n\n" +
     `💳 Binance Pay ID: <code>${esc(binance)}</code>\n` +
     `🖼 QR image: ${qr ? "✅ uploaded" : "❌ not set"}\n` +
+    `📢 Banner: ${banner ? "✅ on" : "❌ off"}\n` +
     `👋 Welcome message: ${welcome ? "✏️ custom" : "⚙️ default"}\n` +
     `📞 Support contact: <code>${support ? esc(support) : "(not set)"}</code>\n`;
   await adminEdit(ctx, text, akb.settingsKb(lang));
@@ -346,8 +350,8 @@ async function viewProductAdmin(ctx: MyContext, productId: number): Promise<void
     `🛍 <b>${esc(p.name)}</b>\n\n` +
     `Type: ${p.type.toLowerCase()}\n` +
     `Duration: ${esc(p.durationLabel)}\n` +
-    `Price: ${price(p.price)}\n` +
-    `Reseller price: ${p.resellerPrice ? price(p.resellerPrice) : "-"}\n` +
+    `Price: ${formatIdr(p.price)}\n` +
+    `Reseller price: ${p.resellerPrice ? formatIdr(p.resellerPrice) : "-"}\n` +
     `Warranty: ${p.warrantyDays} days\n` +
     `Status: ${p.isActive ? "🟢 Active" : "⚪ Inactive"}\n` +
     `Available stock: ${stock}`;

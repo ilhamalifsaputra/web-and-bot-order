@@ -35,9 +35,11 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
+// rate 1 keeps the USDT totals numerically equal to the fixture's central-IDR
+// price ("5.00"), so the amount-matching assertions below stay exact.
 const makeInternalOrder = (qty = 1) =>
   prisma.$transaction((tx) =>
-    createInternalOrder(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: qty }),
+    createInternalOrder(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: qty, rate: 1 }),
   );
 
 // ===========================================================================

@@ -62,6 +62,54 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
   ctx.session.menuMsgId = msg.message_id;
 }
 
+// Telegram caption limit. A banner-as-photo render carries the menu text as the
+// photo caption, so anything longer than this can't ride along — we fall back to
+// a plain text render (no banner) for that screen.
+const MAX_CAPTION_LEN = 1024;
+
+/**
+ * Render a menu screen, optionally with a banner image on top. When `photoFileId`
+ * is set and the text fits in a caption, the screen becomes a single photo+caption
+ * bubble (image + menu text), so the banner reads as part of the chat. Otherwise
+ * (no banner, or text too long for a caption) it falls back to {@link smartEdit}.
+ *
+ * Only the main-menu and product-list renderers pass a banner — payment screens
+ * never do, so the banner is absent there by construction.
+ */
+export async function renderMenu(
+  ctx: MyContext,
+  text: string,
+  replyMarkup?: Markup,
+  photoFileId?: string,
+): Promise<void> {
+  ctx.session.awaitingQtyProductId = undefined;
+  const body = truncateText(text);
+
+  if (photoFileId && body.length <= MAX_CAPTION_LEN) {
+    // Editing in place only works when we're on a callback and the current
+    // bubble is already a photo (the menus here use reply keyboards, so this is
+    // rare — the common path is a fresh photo send below).
+    if (ctx.callbackQuery && (replyMarkup === undefined || isInline(replyMarkup))) {
+      const cqMsg = ctx.callbackQuery.message;
+      if (cqMsg && "photo" in cqMsg && cqMsg.photo) {
+        try {
+          await ctx.editMessageCaption({ caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
+          ctx.session.menuMsgId = cqMsg.message_id;
+          return;
+        } catch (err) {
+          if (isNotModified(err)) return;
+          // fall through to a fresh photo send
+        }
+      }
+    }
+    const msg = await ctx.replyWithPhoto(photoFileId, { caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
+    ctx.session.menuMsgId = msg.message_id;
+    return;
+  }
+
+  await smartEdit(ctx, text, replyMarkup);
+}
+
 /** Render the next admin screen. Photo+caption bubbles edit the caption. */
 export async function adminEdit(ctx: MyContext, text: string, replyMarkup?: Markup): Promise<void> {
   const body = truncateText(text);

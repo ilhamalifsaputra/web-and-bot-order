@@ -174,13 +174,25 @@ export function searchUsers(db: Db, query: string, limit = 20) {
   return db.user.findMany({ where: { OR: or }, take: limit });
 }
 
-/** Sum of total_amount for this user's DELIVERED orders. */
-export async function userTotalSpent(db: Db, userId: number): Promise<Decimal> {
-  const agg = await db.order.aggregate({
+/** This user's DELIVERED-order totals, split per transaction currency (orders
+ * predating the currency column count as USDT — their snapshot unit). */
+export async function userTotalSpent(
+  db: Db,
+  userId: number,
+): Promise<{ idr: Decimal; usdt: Decimal }> {
+  const groups = await db.order.groupBy({
+    by: ["currency"],
     where: { userId, status: "DELIVERED" },
     _sum: { totalAmount: true },
   });
-  return new Decimal(agg._sum.totalAmount ?? 0);
+  let idr = new Decimal(0);
+  let usdt = new Decimal(0);
+  for (const g of groups) {
+    const sum = new Decimal(g._sum.totalAmount ?? 0);
+    if (g.currency === "IDR") idr = idr.plus(sum);
+    else usdt = usdt.plus(sum);
+  }
+  return { idr, usdt };
 }
 
 export interface WalletLedgerEntry {

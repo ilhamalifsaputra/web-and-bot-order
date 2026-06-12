@@ -1,0 +1,48 @@
+{% extends "base.njk" %}
+{% block title %}Set a new password · Shop Admin{% endblock %}
+{% block nav %}{% endblock %}
+
+{% block content %}
+<div class="min-h-[70vh] flex items-center justify-center">
+  <div class="w-full max-w-sm">
+    <div class="text-center mb-8">
+      <span class="inline-flex items-center gap-2 font-display text-2xl font-semibold text-pine">
+        <i data-lucide="store" class="w-6 h-6"></i>
+        Shop Admin
+      </span>
+      <p class="page-lead">Enter the code from Telegram and pick a new password</p>
+    </div>
+
+    <div class="card card-pad">
+      {% if error %}
+        <div class="mb-4 rounded-xl border border-rust/30 bg-rust-tint px-4 py-3 text-sm text-rust-dark">{{ error }}</div>
+      {% endif %}
+
+      <form method="post" action="/reset" class="space-y-4">
+        <div>
+          <label class="field-label" for="telegram_id">Your Telegram ID</label>
+          <input id="telegram_id" name="telegram_id" type="number" required value="{{ telegram_id }}" class="field">
+        </div>
+        <div>
+          <label class="field-label" for="code">Code from Telegram</label>
+          <input id="code" name="code" type="text" inputmode="numeric" pattern="[0-9]*" required
+                 autocomplete="one-time-code" placeholder="6-digit code" class="field">
+        </div>
+        <div>
+          <label class="field-label" for="password">New password</label>
+          <input id="password" name="password" type="password" required minlength="8" autocomplete="new-password" class="field">
+        </div>
+        <div>
+          <label class="field-label" for="password_confirm">Type the new password again</label>
+          <input id="password_confirm" name="password_confirm" type="password" required minlength="8" autocomplete="new-password" class="field">
+        </div>
+        <button type="submit" class="btn btn-primary w-full"><i data-lucide="lock" class="w-4 h-4"></i> Save new password</button>
+      </form>
+    </div>
+
+    <p class="mt-5 text-center text-sm">
+      <a href="/login" class="link">Back to sign in</a>
+    </p>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,378 @@
+{% extends "base.njk" %}
+{% import "_shop.njk" as shop %}
+
+{% block title %}{{ shop_name }}{% endblock %}
+
+{% block meta %}
+<meta name="description" content="{{ t('web.hero_sub', lang) }}">
+<style>
+  /* FAQ open animation */
+  details[open] > .faq-body { animation: faq-in .18s ease; }
+  @keyframes faq-in {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Section reveal on scroll */
+  .reveal { opacity: 0; transform: translateY(20px); transition: opacity .5s ease, transform .5s ease; }
+  .reveal.visible { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity: 1; transform: none; transition: none; }
+  }
+
+  .counter { font-variant-numeric: tabular-nums; }
+
+  /* Dot-grid pattern for the stats band */
+  .dot-grid {
+    background-image: radial-gradient(circle, rgba(255,255,255,.18) 1px, transparent 1px);
+    background-size: 26px 26px;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+
+{# ── 1. Hero (design.md §4.8, diperluas: badge, 2 CTA, baris kepercayaan) ── #}
+<section class="relative rounded-2xl overflow-hidden mb-10 min-h-[20rem] sm:min-h-[28rem] flex items-center">
+  <img src="{{ hero_image }}" alt="" class="absolute inset-0 w-full h-full object-cover"
+       decoding="async" fetchpriority="high">
+  <div class="absolute inset-0 bg-gradient-to-br from-ink/90 via-ink/65 to-transparent"></div>
+
+  <div class="relative z-10 p-6 sm:p-12 w-full">
+    <div class="max-w-2xl">
+      <div class="inline-flex items-center gap-1.5 mb-5 px-3.5 py-1 rounded-full text-xs font-semibold
+                  tracking-widest uppercase text-white/90 border border-white/20 bg-white/10 backdrop-blur">
+        <i data-lucide="shield-check" class="w-3.5 h-3.5 text-grass"></i>
+        {{ t('web.hero_badge', lang) }}
+      </div>
+
+      <h1 class="font-display text-3xl sm:text-5xl font-bold text-white leading-tight tracking-tight">
+        {{ t('web.hero_title', lang) }}
+      </h1>
+      <p class="mt-3 text-sm sm:text-base text-white/80 leading-relaxed max-w-xl">
+        {{ t('web.hero_sub', lang) }}
+      </p>
+
+      <div class="flex flex-wrap gap-3 mt-6">
+        <a href="#produk" class="btn btn-primary !px-6 !py-2.5 text-sm font-semibold shadow-lift">
+          <i data-lucide="shopping-bag" class="w-4 h-4"></i> {{ t('web.hero_cta', lang) }}
+        </a>
+        <a href="#kontak"
+           class="inline-flex items-center gap-1.5 px-6 py-2.5 rounded-lg text-sm font-semibold
+                  text-white border border-white/30 transition-colors hover:bg-white/10">
+          <i data-lucide="message-circle" class="w-4 h-4"></i> {{ t('web.hero_cta2', lang) }}
+        </a>
+      </div>
+
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-2 mt-8 pt-6 border-t border-white/15 text-white/70 text-xs">
+        <span class="flex items-center gap-1.5"><i data-lucide="zap" class="w-3.5 h-3.5 text-amber-400"></i>{{ t('web.badge_instant', lang) }}</span>
+        <span class="flex items-center gap-1.5"><i data-lucide="shield" class="w-3.5 h-3.5 text-green-400"></i>{{ t('web.badge_secure', lang) }}</span>
+        <span class="flex items-center gap-1.5"><i data-lucide="users" class="w-3.5 h-3.5 text-blue-300"></i>{{ t('web.badge_customers', lang) }}</span>
+        <span class="flex items-center gap-1.5"><i data-lucide="headphones" class="w-3.5 h-3.5 text-violet-300"></i>{{ t('web.badge_support', lang) }}</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+{# ── 2. Fitur / keunggulan ── #}
+<section class="mb-12 reveal">
+  <div class="text-center mb-8">
+    <p class="text-xs font-semibold tracking-widest uppercase text-pine mb-2">{{ t('web.features_kicker', lang) }}</p>
+    <h2 class="font-display text-2xl sm:text-3xl font-bold text-ink tracking-tight">{{ t('web.features_title', lang) }}</h2>
+    <p class="mt-2 text-sm text-ink-soft max-w-sm mx-auto">{{ t('web.features_sub', lang) }}</p>
+  </div>
+
+  {% set features = [
+    { icon: "zap",           key: "instant",  tone: "pine"   },
+    { icon: "shield-check",  key: "secure",   tone: "grass"  },
+    { icon: "clock",         key: "warranty", tone: "grass"  },
+    { icon: "headphones",    key: "support",  tone: "pine"   },
+    { icon: "badge-check",   key: "trusted",  tone: "amberx" },
+    { icon: "package-check", key: "verified", tone: "amberx" }
+  ] %}
+
+  <div class="grid grid-cols-2 sm:grid-cols-3 gap-4">
+    {% for f in features %}
+    <div class="card card-pad flex flex-col gap-3 hover:shadow-lift hover:-translate-y-0.5 transition-all duration-200">
+      <div class="w-10 h-10 rounded-xl flex items-center justify-center
+                  {% if f.tone == 'pine' %}bg-pine-tint{% elif f.tone == 'grass' %}bg-grass-tint{% else %}bg-amberx-tint{% endif %}">
+        <i data-lucide="{{ f.icon }}"
+           class="w-5 h-5 {% if f.tone == 'pine' %}text-pine{% elif f.tone == 'grass' %}text-grass{% else %}text-amberx{% endif %}"></i>
+      </div>
+      <div>
+        <div class="font-display text-sm font-semibold text-ink">{{ t('web.feat_' + f.key, lang) }}</div>
+        <p class="text-xs text-ink-soft mt-0.5 leading-relaxed">{{ t('web.feat_' + f.key + '_d', lang) }}</p>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+{# ── 3. Kategori (design.md §4.9, kartu ikon bukan pill) ── #}
+{% if categories.length %}
+<section class="mb-12 reveal" id="kategori">
+  <div class="mb-5">
+    <p class="text-xs font-semibold tracking-widest uppercase text-pine mb-1">{{ t('web.categories', lang) }}</p>
+    <h2 class="section-title">{{ t('web.categories_title', lang) }}</h2>
+  </div>
+
+  <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+    {% for c in categories %}
+    <a href="/c/{{ c.id }}"
+       class="card card-pad flex flex-col items-center gap-2.5 text-center
+              hover:shadow-lift hover:-translate-y-0.5 transition-all duration-200 group">
+      <div class="w-12 h-12 rounded-2xl bg-pine-tint flex items-center justify-center
+                  text-2xl group-hover:scale-110 transition-transform duration-200">
+        {% if c.emoji %}{{ c.emoji }}{% else %}<i data-lucide="box" class="w-5 h-5 text-pine"></i>{% endif %}
+      </div>
+      <div>
+        <div class="font-display text-xs font-semibold text-ink leading-tight line-clamp-2">{{ c.name }}</div>
+        <div class="text-[0.65rem] text-pine font-medium mt-0.5 group-hover:underline">{{ t('web.view_products', lang) }} →</div>
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+{# ── 4. Produk unggulan ── #}
+<section id="produk" class="mb-12 reveal">
+  <div class="flex items-end justify-between mb-5">
+    <div>
+      <p class="text-xs font-semibold tracking-widest uppercase text-pine mb-1">{{ t('web.featured_kicker', lang) }}</p>
+      <h2 class="section-title">{{ t('web.new_arrivals', lang) }}</h2>
+    </div>
+    {% if categories.length %}
+    <a href="#kategori" class="btn btn-ghost btn-sm text-pine gap-1">
+      {{ t('web.view_by_category', lang) }} <i data-lucide="arrow-up" class="w-3.5 h-3.5"></i>
+    </a>
+    {% endif %}
+  </div>
+
+  {% if products.length %}
+  <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+    {% for p in products %}
+    {{ shop.product_card(p, fx, low_threshold, lang) }}
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="card card-pad text-center text-ink-faint py-14">{{ t('web.catalog_empty', lang) }}</div>
+  {% endif %}
+</section>
+
+{# ── 5. Statistik (counter animasi via IntersectionObserver) ── #}
+<section class="mb-12 rounded-2xl overflow-hidden relative reveal">
+  <div class="absolute inset-0 bg-gradient-to-br from-pine to-pine-dark"></div>
+  <div class="absolute inset-0 dot-grid"></div>
+
+  <div class="relative z-10 py-12 px-6 sm:px-12">
+    <div class="text-center mb-10">
+      <h2 class="font-display text-2xl sm:text-3xl font-bold text-white">{{ t('web.stats_title', lang) }}</h2>
+      <p class="text-white/60 text-sm mt-1">{{ t('web.stats_sub', lang) }}</p>
+    </div>
+
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-8">
+      <div class="text-center">
+        <div class="font-display text-4xl sm:text-5xl font-bold text-white counter" data-target="10000" data-suffix="+">0+</div>
+        <div class="flex items-center justify-center gap-1 text-white/60 text-xs font-medium mt-2">
+          <i data-lucide="users" class="w-3.5 h-3.5"></i> {{ t('web.stat_customers', lang) }}
+        </div>
+      </div>
+      <div class="text-center">
+        <div class="font-display text-4xl sm:text-5xl font-bold text-white counter" data-target="50000" data-suffix="+">0+</div>
+        <div class="flex items-center justify-center gap-1 text-white/60 text-xs font-medium mt-2">
+          <i data-lucide="package-check" class="w-3.5 h-3.5"></i> {{ t('web.stat_orders', lang) }}
+        </div>
+      </div>
+      <div class="text-center">
+        <div class="font-display text-4xl sm:text-5xl font-bold text-white counter" data-target="99" data-suffix="%">0%</div>
+        <div class="flex items-center justify-center gap-1 text-white/60 text-xs font-medium mt-2">
+          <i data-lucide="smile" class="w-3.5 h-3.5"></i> {{ t('web.stat_satisfaction', lang) }}
+        </div>
+      </div>
+      <div class="text-center">
+        <div class="font-display text-4xl sm:text-5xl font-bold text-white">24/7</div>
+        <div class="flex items-center justify-center gap-1 text-white/60 text-xs font-medium mt-2">
+          <i data-lucide="headphones" class="w-3.5 h-3.5"></i> {{ t('web.stat_support', lang) }}
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+{# ── 6. Testimoni ── #}
+<section class="mb-12 reveal">
+  <div class="text-center mb-8">
+    <p class="text-xs font-semibold tracking-widest uppercase text-pine mb-2">{{ t('web.testi_kicker', lang) }}</p>
+    <h2 class="font-display text-2xl sm:text-3xl font-bold text-ink tracking-tight">{{ t('web.testi_title', lang) }}</h2>
+    <p class="mt-2 text-sm text-ink-soft">{{ t('web.testi_sub', lang) }}</p>
+  </div>
+
+  {% set testimonials = [
+    { initial: "A", name: "Ahmad F.", product: "ChatGPT Plus", key: "web.testi_1" },
+    { initial: "S", name: "Siti R.",  product: "Canva Pro",    key: "web.testi_2" },
+    { initial: "R", name: "Rendi P.", product: "Midjourney",   key: "web.testi_3" },
+    { initial: "D", name: "Dewi L.",  product: "Notion AI",    key: "web.testi_4" }
+  ] %}
+
+  <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    {% for review in testimonials %}
+    <div class="card card-pad flex flex-col gap-3">
+      <div class="flex items-start gap-3">
+        <div class="w-10 h-10 rounded-full bg-pine flex items-center justify-center
+                    text-white font-display font-bold text-sm flex-shrink-0">{{ review.initial }}</div>
+        <div class="flex-1 min-w-0">
+          <div class="font-display text-sm font-semibold text-ink">{{ review.name }}</div>
+          <div class="text-xs text-ink-faint">{{ t('web.testi_buyer', lang) }} · {{ review.product }}</div>
+        </div>
+        <div class="flex-shrink-0">{{ shop.stars(5) }}</div>
+      </div>
+      <p class="text-sm text-ink-soft leading-relaxed border-t border-line pt-3 italic">
+        “{{ t(review.key, lang) }}”
+      </p>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+{# ── 7. FAQ (accordion details/summary, tanpa JS) ── #}
+<section class="mb-12 reveal">
+  <div class="text-center mb-8">
+    <p class="text-xs font-semibold tracking-widest uppercase text-pine mb-2">{{ t('web.faq_kicker', lang) }}</p>
+    <h2 class="font-display text-2xl sm:text-3xl font-bold text-ink tracking-tight">{{ t('web.faq_title', lang) }}</h2>
+    <p class="mt-2 text-sm text-ink-soft">{{ t('web.faq_sub', lang) }}</p>
+  </div>
+
+  <div class="max-w-2xl mx-auto flex flex-col gap-2">
+    {% for n in [1, 2, 3, 4, 5] %}
+    <details class="card group">
+      <summary class="card-pad flex items-center justify-between cursor-pointer select-none
+                      [&::-webkit-details-marker]:hidden list-none gap-3 py-4">
+        <span class="font-display text-sm font-semibold text-ink group-open:text-pine transition-colors duration-150">
+          {{ t('web.faq_q' + n, lang) }}
+        </span>
+        <i data-lucide="chevron-down"
+           class="w-4 h-4 text-ink-faint flex-shrink-0 transition-transform duration-200 group-open:rotate-180"></i>
+      </summary>
+      <div class="faq-body px-4 sm:px-5 pb-4 pt-0 text-sm text-ink-soft leading-relaxed border-t border-line">
+        <div class="pt-3">{{ t('web.faq_a' + n, lang) }}</div>
+      </div>
+    </details>
+    {% endfor %}
+  </div>
+</section>
+
+{# ── 8. Kontak ── #}
+<section class="mb-4 reveal" id="kontak">
+  <div class="text-center mb-8">
+    <p class="text-xs font-semibold tracking-widest uppercase text-pine mb-2">{{ t('web.contact_kicker', lang) }}</p>
+    <h2 class="font-display text-2xl sm:text-3xl font-bold text-ink tracking-tight">{{ t('web.contact_title', lang) }}</h2>
+    <p class="mt-2 text-sm text-ink-soft">{{ t('web.contact_sub', lang) }}</p>
+  </div>
+
+  <div class="grid grid-cols-1 {{ 'sm:grid-cols-3' if wa_number else 'sm:grid-cols-2' }} gap-4 max-w-2xl mx-auto">
+
+    {# WhatsApp — nomor diisi dari web-admin: Settings › Website ›
+       "WhatsApp number". Kosong = kartu ini disembunyikan. #}
+    {% if wa_number %}
+    <a href="https://wa.me/{{ wa_number }}" target="_blank" rel="noopener noreferrer"
+       class="card card-pad flex flex-col items-center gap-3 text-center
+              hover:shadow-lift hover:-translate-y-0.5 transition-all duration-200">
+      <div class="w-12 h-12 rounded-2xl bg-grass-tint flex items-center justify-center">
+        <svg class="w-6 h-6" viewBox="0 0 24 24" fill="#16a34a" aria-hidden="true">
+          <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/>
+        </svg>
+      </div>
+      <div>
+        <div class="font-display text-sm font-semibold text-ink">WhatsApp</div>
+        <div class="text-xs text-ink-faint mt-0.5">{{ t('web.contact_wa_sub', lang) }}</div>
+      </div>
+    </a>
+    {% endif %}
+
+    {# Telegram — otomatis ke bot toko (bot_username dari pengaturan). #}
+    <a href="https://t.me/{{ bot_username }}" target="_blank" rel="noopener noreferrer"
+       class="card card-pad flex flex-col items-center gap-3 text-center
+              hover:shadow-lift hover:-translate-y-0.5 transition-all duration-200">
+      <div class="w-12 h-12 rounded-2xl bg-pine-tint flex items-center justify-center">
+        <svg class="w-6 h-6" viewBox="0 0 24 24" fill="#2563eb" aria-hidden="true">
+          <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/>
+        </svg>
+      </div>
+      <div>
+        <div class="font-display text-sm font-semibold text-ink">Telegram</div>
+        <div class="text-xs text-ink-faint mt-0.5">{{ t('web.contact_tg_sub', lang) }}</div>
+      </div>
+    </a>
+
+    {# Tiket dukungan di website (perlu login — route /account/support). #}
+    <a href="/account/support"
+       class="card card-pad flex flex-col items-center gap-3 text-center
+              hover:shadow-lift hover:-translate-y-0.5 transition-all duration-200">
+      <div class="w-12 h-12 rounded-2xl bg-pine-tint flex items-center justify-center">
+        <i data-lucide="ticket" class="w-6 h-6 text-pine"></i>
+      </div>
+      <div>
+        <div class="font-display text-sm font-semibold text-ink">{{ t('web.contact_ticket', lang) }}</div>
+        <div class="text-xs text-ink-faint mt-0.5">{{ t('web.contact_ticket_sub', lang) }}</div>
+      </div>
+    </a>
+
+  </div>
+
+  <div class="mt-5 max-w-sm mx-auto">
+    <div class="card card-pad !bg-pine-tint flex items-start gap-2.5">
+      <i data-lucide="clock" class="w-4 h-4 text-pine flex-shrink-0 mt-0.5"></i>
+      <p class="text-xs text-ink-soft leading-relaxed">{{ t('web.contact_hours', lang) }}</p>
+    </div>
+  </div>
+</section>
+
+{# ── Skrip: counter + scroll reveal ── #}
+<script>
+(function () {
+  'use strict';
+
+  var numberLocale = '{{ "id-ID" if lang == "id" else "en-US" }}';
+
+  var counters = document.querySelectorAll('.counter[data-target]');
+  if (counters.length && 'IntersectionObserver' in window) {
+    function easeOut(t) { return 1 - Math.pow(1 - t, 3); }
+
+    function runCounter(el) {
+      var target = parseInt(el.dataset.target, 10);
+      var suffix = el.dataset.suffix || '';
+      var duration = 1600;
+      var start = null;
+      function tick(ts) {
+        if (!start) start = ts;
+        var progress = Math.min((ts - start) / duration, 1);
+        el.textContent = Math.round(easeOut(progress) * target).toLocaleString(numberLocale) + suffix;
+        if (progress < 1) requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    }
+
+    var cntObs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { runCounter(e.target); cntObs.unobserve(e.target); }
+      });
+    }, { threshold: 0.4 });
+    counters.forEach(function (c) { cntObs.observe(c); });
+  }
+
+  var reveals = document.querySelectorAll('.reveal');
+  if (reveals.length && 'IntersectionObserver' in window) {
+    var revObs = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add('visible'); revObs.unobserve(e.target); }
+      });
+    }, { threshold: 0.1 });
+    reveals.forEach(function (r) { revObs.observe(r); });
+  } else {
+    reveals.forEach(function (r) { r.classList.add('visible'); });
+  }
+}());
+</script>
+
+{% endblock %}

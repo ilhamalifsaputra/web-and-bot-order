@@ -92,6 +92,12 @@ export function getOrderByCode(db: Db, orderCode: string) {
   });
 }
 
+/** By code with the full include (items+stockItem+product, user, voucher) —
+ * storefront order detail needs stockItem.credentials for DELIVERED orders. */
+export function getOrderByCodeFull(db: Db, orderCode: string) {
+  return db.order.findUnique({ where: { orderCode }, include: fullInclude });
+}
+
 export async function createOrderFromCart(
   db: Db,
   args: { user: { id: number; role: string; walletBalance: Decimal.Value }; voucherCode?: string | null; walletAmount?: Decimal.Value },
@@ -518,12 +524,15 @@ export async function approveOrder(
     },
   });
 
-  // Referral commission (referee's first delivered order only).
+  // Referral commission (referee's first delivered order only). Currency +
+  // fxRate ride along so IDR orders convert to the USDT wallet basis.
   await maybePayReferralCommission(db, {
     id: order.id,
     userId: order.userId,
     orderCode: order.orderCode,
     totalAmount: order.totalAmount,
+    currency: order.currency,
+    fxRate: order.fxRate,
   });
 
   // Enqueue testimoni notification in the same transaction as the status flip.
@@ -539,7 +548,9 @@ export async function approveOrder(
     masked_buyer_id: maskedBuyerId,
     items: itemsSummary,
     total: String(order.totalAmount),
-    currency: config.CURRENCY,
+    // The order's own transaction currency (IDR via TokoPay / USDT via
+    // Binance), not the legacy global CURRENCY env.
+    currency: order.currency,
     delivered_at: utcStamp(now),
     buyer_language: langCode(order.user.language),
   });

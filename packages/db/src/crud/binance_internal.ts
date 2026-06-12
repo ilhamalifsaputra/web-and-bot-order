@@ -7,11 +7,8 @@
  * treated as "already processed". Combined with SQLite's single-writer
  * serialization + busy_timeout, this prevents double-delivery without locks.
  */
-import { config } from "@app/core/config";
-import { OrderStatus, PaymentMethod } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
-import { addMinutes } from "@app/core/datetime";
-import { generatePaymentRef } from "@app/core/formatters";
 import { logger } from "@app/core/logger";
 import { ValidationError } from "@app/core/errors";
 import type { PrismaClient, Tx } from "../client";
@@ -20,32 +17,31 @@ import { isUniqueViolation } from "./_types";
 import { getOrder, createOrderDirect, approveOrder } from "./orders";
 import { adjustWallet } from "./users";
 import { getSetting, setSetting } from "./settings";
+import { finalizeOrderPayment } from "./pricing";
 
-/** Create a direct order, then mark it BINANCE_INTERNAL with a unique note + 15-min expiry. */
+/**
+ * Create a direct order, then stamp it as a USDT/Binance-Internal payment:
+ * the central-IDR total converts once at `rate` (rounded 0.1) + unique cents,
+ * with a unique transfer note and the short auto-confirm window (plan.md §15.4).
+ */
 export async function createInternalOrder(
   db: Db,
-  args: { user: { id: number; role: string }; productId: number; quantity: number; voucherCode?: string | null },
+  args: {
+    user: { id: number; role: string };
+    productId: number;
+    quantity: number;
+    voucherCode?: string | null;
+    /** Rupiah per 1 USDT (usd_idr_rate) — required for the USDT path. */
+    rate: Decimal.Value;
+  },
 ) {
   const created = await createOrderDirect(db, args);
   if (!created) return null;
-
-  // Pick a payment ref free of (the astronomically unlikely) collision.
-  let ref = generatePaymentRef();
-  for (let i = 0; i < 5; i++) {
-    const clash = await db.order.findUnique({ where: { paymentRef: ref } });
-    if (!clash) break;
-    ref = generatePaymentRef();
-  }
-
-  await db.order.update({
-    where: { id: created.id },
-    data: {
-      paymentMethod: PaymentMethod.BINANCE_INTERNAL,
-      paymentRef: ref,
-      expiresAt: addMinutes(new Date(), config.INTERNAL_PAYMENT_WINDOW_MINUTES),
-    },
+  return finalizeOrderPayment(db, created.id, {
+    currency: OrderCurrency.USDT,
+    rate: args.rate,
+    method: PaymentMethod.BINANCE_INTERNAL,
   });
-  return getOrder(db, created.id);
 }
 
 /** Remember which message holds the payment instructions, so the poller can edit it. */

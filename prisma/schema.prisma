@@ -7,6 +7,10 @@
 
 generator client {
   provider = "prisma-client-js"
+  // No binaryTargets: the deploy runs `prisma generate` (postinstall) ON the
+  // Hostinger Linux host, so "native" already produces the correct Linux query
+  // engine there. Hardcoding Linux targets here would force every dev/CI machine
+  // to download extra engine binaries on each generate. See DEPLOY-HOSTINGER.md §5.
 }
 
 datasource db {
@@ -86,6 +90,10 @@ model Product {
   name          String
   description   String?
   imageFileId   String?  @map("image_file_id")
+  /// Web-facing product photo URL (admin-set, storefront only). Telegram
+  /// imageFileId can't be used as an <img src>; when this is null the
+  /// storefront falls back to its curated Unsplash map (plan.md §8).
+  webImageUrl   String?  @map("web_image_url")
   type          String
   durationLabel String   @map("duration_label")
   price         Decimal
@@ -139,6 +147,14 @@ model Order {
   walletUsed         Decimal   @default(0) @map("wallet_used")
   bulkDiscountAmount Decimal   @default(0) @map("bulk_discount_amount")
   status             String    @default("PENDING_PAYMENT")
+  /// Transaction currency, set when the buyer picks a payment method
+  /// (plan.md §15): "IDR" (TokoPay) or "USDT" (Binance). Catalog prices are
+  /// central IDR; rows created before this column existed are USDT-era
+  /// snapshots (see scripts/convert-prices-to-idr.ts).
+  currency           String    @default("IDR")
+  /// Rupiah-per-USDT snapshot taken when currency=USDT, so later rate edits
+  /// never change what historical orders were charged.
+  fxRate             Decimal?  @map("fx_rate")
   paymentMethod      String    @default("BINANCE_PAY") @map("payment_method")
   paymentRef         String?   @unique(map: "ix_orders_payment_ref") @map("payment_ref")
   paymentMsgChatId   BigInt?   @map("payment_msg_chat_id")
@@ -391,4 +407,21 @@ model ProcessedBinanceTx {
 
   @@index([orderId], map: "ix_processed_binance_tx_order_id")
   @@map("processed_binance_tx")
+}
+
+/// Idempotency ledger for TokoPay webhook callbacks (the IDR payment path) —
+/// same insert-first-on-unique pattern as ProcessedBinanceTx: a callback's
+/// reference id is claimed exactly once, so repeated callbacks can never
+/// double-deliver an order (plan.md §15.5).
+model ProcessedTokopayTx {
+  id        Int      @id @default(autoincrement())
+  trxId     String   @unique(map: "ix_processed_tokopay_tx_trxid") @map("trx_id")
+  orderId   Int?     @map("order_id")
+  amount    Decimal?
+  // matched | unmatched | delivery_failed
+  outcome   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([orderId], map: "ix_processed_tokopay_tx_order_id")
+  @@map("processed_tokopay_tx")
 }

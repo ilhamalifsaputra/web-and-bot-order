@@ -1,4 +1,4 @@
----
+/code---
 name: ux-antipatterns
 description: Customer-facing UX issues in the order-bot shopping flow — most resolved 2026-05-31; keep as a checklist of usual offenders
 metadata:

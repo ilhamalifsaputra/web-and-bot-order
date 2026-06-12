@@ -27,6 +27,7 @@ import {
   resolveSegmentRecipients,
   finishBroadcast,
   isBroadcastSegment,
+  refreshUsdIdrRate,
 } from "@app/db";
 import { coreT } from "../util/i18n";
 import { notificationKb } from "../keyboards/customer";
@@ -234,6 +235,23 @@ export async function drainBroadcasts(api: Api): Promise<void> {
 }
 
 /** Register all scheduled jobs against croner. Returns the Cron handles. */
+/**
+ * Keep `usd_idr_rate` tracking the live market rate (rounded — plan.md §15.8).
+ * Scheduled SEPARATELY from scheduleJobs because it needs no bot Api and must
+ * keep running even when the bot is off (web-only boot, §16.3). Kicks once
+ * immediately so a fresh install gets a rate without waiting for the hour.
+ */
+export function scheduleFxRefresh(): Cron {
+  const run = () =>
+    refreshUsdIdrRate(prisma)
+      .then((r) => {
+        if (r.status === "disabled") logger.debug("FX auto-update is off (usd_idr_rate_auto=false)");
+      })
+      .catch((err) => logger.error({ err }, "Job refreshUsdIdrRate failed (previous rate stays)"));
+  void run();
+  return new Cron("5 * * * *", { protect: true }, run);
+}
+
 export function scheduleJobs(api: Api): Cron[] {
   const wrap = (name: string, fn: (api: Api) => Promise<void>) => () =>
     fn(api).catch((err) => logger.error({ err }, `Job ${name} failed`));

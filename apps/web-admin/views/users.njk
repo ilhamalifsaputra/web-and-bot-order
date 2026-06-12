@@ -1,42 +1,45 @@
 {% extends "base.njk" %}
 {% import "_macros.njk" as ui %}
-{% block title %}Users · Stock Admin{% endblock %}
+{% block title %}Customers · Shop Admin{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-semibold mb-6">Users</h1>
+<header class="mb-6">
+  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="users" class="w-7 h-7 text-emerald-500"></i> Customers</h1>
+  <p class="page-lead">Find a customer to view their orders, wallet, and tickets.</p>
+</header>
 {{ ui.flash(msg, kind) }}
 
-<form method="get" action="/users" class="bg-white rounded-lg shadow p-4 mb-6 flex gap-3 items-end text-sm">
+<form method="get" action="/users" class="card card-pad mb-6 flex gap-3 items-end">
   <div class="flex-1">
-    <label class="block text-xs text-slate-500 mb-1">Search by Telegram ID, username, or name</label>
-    <input type="text" name="q" value="{{ q }}" class="border rounded px-3 py-2 w-full">
+    <label class="field-label">Search by Telegram ID, username, or name</label>
+    <input type="text" name="q" value="{{ q }}" class="field">
   </div>
-  <button class="bg-slate-900 text-white px-4 py-2 rounded hover:bg-slate-700">Search</button>
+  <button class="btn btn-primary"><i data-lucide="search" class="w-4 h-4"></i> Search</button>
 </form>
 
 {% if q %}
-<div class="bg-white rounded-lg shadow overflow-x-auto">
-  <table class="min-w-full text-sm">
-    <thead class="bg-slate-100 text-slate-600 text-left">
-      <tr><th class="px-4 py-2">Name</th><th class="px-4 py-2">Username</th><th class="px-4 py-2">Telegram</th><th class="px-4 py-2">Role</th><th class="px-4 py-2">Banned</th><th class="px-4 py-2"></th></tr>
+<div class="card overflow-x-auto">
+  <table class="data-table">
+    <thead>
+      <tr><th>Name</th><th>Username</th><th>Telegram</th><th>Type</th><th>Blocked</th><th></th></tr>
     </thead>
-    <tbody class="divide-y divide-slate-100">
+    <tbody>
       {% for u in results %}
-      <tr class="hover:bg-slate-50">
-        <td class="px-4 py-2">{{ u.fullName or '—' }}</td>
-        <td class="px-4 py-2">{{ u.username or '—' }}</td>
-        <td class="px-4 py-2 font-mono text-xs">{{ u.telegramId }}</td>
-        <td class="px-4 py-2">{{ ui.status_badge(u.role) }}</td>
-        <td class="px-4 py-2">{% if u.banned %}<span class="text-red-600 text-xs">banned</span>{% else %}—{% endif %}</td>
-        <td class="px-4 py-2 text-right"><a class="text-slate-700 hover:underline" href="/users/{{ u.id }}">View →</a></td>
+      <tr>
+        <td>{{ u.fullName or '—' }}</td>
+        <td>{{ u.username or '—' }}</td>
+        <td class="font-mono text-xs">{{ u.telegramId }}</td>
+        <td>{{ ui.status_badge(u.role) }}</td>
+        <td>{% if u.banned %}<span class="chip bg-rust-tint text-rust-dark">Blocked</span>{% else %}<span class="text-ink-faint">—</span>{% endif %}</td>
+        <td class="text-right"><a class="link" href="/users/{{ u.id }}">Open →</a></td>
       </tr>
       {% else %}
-      <tr><td colspan="6" class="px-4 py-6 text-center text-slate-400">No users match "{{ q }}".</td></tr>
+      {{ ui.empty_row(6, 'No customers match "' + q + '".') }}
       {% endfor %}
     </tbody>
   </table>
 </div>
 {% else %}
-<p class="text-slate-400">Enter a search term to find users.</p>
+<p class="text-ink-faint">Type something above to find a customer.</p>
 {% endif %}
 {% endblock %}

@@ -1,44 +1,44 @@
 {% extends "base.njk" %}
 {% import "_macros.njk" as ui %}
-{% block title %}Import preview · Catalog{% endblock %}
+{% block title %}Import preview · Products{% endblock %}
 
 {% block content %}
-<div class="mb-4">
-  <a href="/catalog" class="text-sm text-slate-500 hover:underline">← Catalog</a>
-  <h1 class="text-2xl font-semibold mt-1">Product import — preview</h1>
-  <p class="text-slate-500 text-sm">
-    <span class="text-green-700 font-medium">{{ valid_count }} ready</span>
-    {% if invalid_count %}· <span class="text-red-600 font-medium">{{ invalid_count }} with errors (skipped)</span>{% endif %}.
-    Nothing has been written yet.
+<div class="mb-5">
+  <a href="/catalog" class="link text-sm">← Products</a>
+  <h1 class="page-title mt-1 flex items-center gap-2.5"><i data-lucide="file-search" class="w-7 h-7 text-violet-500"></i> Preview before adding</h1>
+  <p class="page-lead">
+    <span class="text-grass font-medium">{{ valid_count }} ready to add</span>
+    {% if invalid_count %}· <span class="text-rust font-medium">{{ invalid_count }} have a problem (will be skipped)</span>{% endif %}.
+    Nothing has been saved yet.
   </p>
 </div>
 
-<div class="bg-white rounded-lg shadow overflow-x-auto mb-4">
-  <table class="min-w-full text-sm">
-    <thead class="bg-slate-100 text-slate-600 text-left">
+<div class="card overflow-x-auto mb-4">
+  <table class="data-table">
+    <thead>
       <tr>
-        <th class="px-3 py-2">#</th>
-        <th class="px-3 py-2">Status</th>
-        <th class="px-3 py-2">Category</th>
-        <th class="px-3 py-2">Name</th>
-        <th class="px-3 py-2">Type</th>
-        <th class="px-3 py-2">Duration</th>
-        <th class="px-3 py-2 text-right">Price</th>
+        <th>Line</th>
+        <th>Status</th>
+        <th>Category</th>
+        <th>Name</th>
+        <th>Kind</th>
+        <th>Duration</th>
+        <th class="text-right">Price</th>
       </tr>
     </thead>
-    <tbody class="divide-y divide-slate-100">
+    <tbody>
       {% for r in rows %}
-      <tr class="{% if not r.ok %}bg-red-50{% endif %}">
-        <td class="px-3 py-2 text-slate-400">{{ r.line }}</td>
-        <td class="px-3 py-2">
-          {% if r.ok %}<span class="text-green-700">✓ ready</span>
-          {% else %}<span class="text-red-600">✗ {{ r.error }}</span>{% endif %}
+      <tr class="{% if not r.ok %}bg-rust-tint/50{% endif %}">
+        <td class="text-ink-faint tabular">{{ r.line }}</td>
+        <td>
+          {% if r.ok %}<span class="text-grass">✓ ready</span>
+          {% else %}<span class="text-rust">✗ {{ r.error }}</span>{% endif %}
         </td>
-        <td class="px-3 py-2">{{ r.category or '—' }}</td>
-        <td class="px-3 py-2">{{ r.name or '—' }}</td>
-        <td class="px-3 py-2">{{ r.type or '—' }}</td>
-        <td class="px-3 py-2">{{ r.durationLabel or '—' }}</td>
-        <td class="px-3 py-2 text-right">{{ r.price or '—' }}</td>
+        <td>{{ r.category or '—' }}</td>
+        <td>{{ r.name or '—' }}</td>
+        <td>{{ r.type or '—' }}</td>
+        <td>{{ r.durationLabel or '—' }}</td>
+        <td class="text-right tabular">{{ r.price or '—' }}</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -50,9 +50,9 @@
   <form method="post" action="/catalog/products/import/apply">
     {{ ui.csrf_field(admin) }}
     <input type="hidden" name="csv" value="{{ csv }}">
-    <button class="bg-slate-900 text-white px-4 py-2 rounded hover:bg-slate-700">Import {{ valid_count }} product(s)</button>
+    <button class="btn btn-primary">Add {{ valid_count }} product(s)</button>
   </form>
   {% endif %}
-  <a href="/catalog" class="px-4 py-2 rounded bg-slate-200 hover:bg-slate-300">Cancel</a>
+  <a href="/catalog" class="btn btn-ghost">Cancel</a>
 </div>
 {% endblock %}

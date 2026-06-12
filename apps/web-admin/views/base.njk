@@ -3,56 +3,85 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}Stock Admin{% endblock %}</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>
-  <link rel="stylesheet" href="/static/app.css">
+  <title>{% block title %}Shop Admin{% endblock %}</title>
+
+  {# Design tokens + component classes live in the SHARED theme partial
+     (packages/web-ui/views/_theme.njk) so admin & storefront stay identical.
+     Change a token there → both webs change. #}
+  {% include "_theme.njk" %}
 </head>
-<body class="bg-slate-50 text-slate-800 min-h-screen"
+<body class="min-h-screen"
       {% if admin %}hx-headers='{"x-csrf-token": "{{ admin.csrf }}"}'{% endif %}>
 
 {% block nav %}
 {% if admin %}
-{% set nav_items = [
-  ['/', 'Dashboard'],
-  ['/stock', 'Stock'],
-  ['/orders', 'Orders'],
-  ['/payments', 'Payments'],
-  ['/outbox', 'Outbox'],
-  ['/catalog', 'Catalog'],
-  ['/vouchers', 'Vouchers'],
-  ['/users', 'Users'],
-  ['/reviews', 'Reviews'],
-  ['/reports', 'Reports'],
-  ['/support', 'Support'],
-  ['/settings', 'Settings'],
-  ['/audit', 'Audit'],
-  ['/search', 'Search'],
-  ['/broadcast', 'Broadcast']
+{# Plain-English nav. Each group's `match` lists the paths that light up its
+   label as active. Labels avoid jargon (Outbox→Notifications, Vouchers→Discount
+   Codes, Broadcast→Announcements, Audit→Activity Log, Admins→Team). #}
+{% set nav_groups = [
+  { label: 'Sales',     icon: 'shopping-cart', color: 'text-blue-500',    match: ['/orders', '/payments', '/outbox'],              items: [['/orders', 'Orders', 'shopping-cart'], ['/payments', 'Payments', 'wallet'], ['/outbox', 'Notifications', 'bell']] },
+  { label: 'Products',  icon: 'package',       color: 'text-violet-500',  match: ['/catalog', '/stock', '/vouchers'],              items: [['/catalog', 'Products', 'package'], ['/stock', 'Stock', 'boxes'], ['/vouchers', 'Discount Codes', 'ticket-percent']] },
+  { label: 'Customers', icon: 'users',         color: 'text-emerald-500', match: ['/users', '/reviews', '/support', '/broadcast'], items: [['/users', 'Customers', 'users'], ['/reviews', 'Reviews', 'star'], ['/support', 'Support', 'life-buoy'], ['/broadcast', 'Announcements', 'megaphone']] },
+  { label: 'Reports',   icon: 'bar-chart-3',   color: 'text-amber-500',   match: ['/reports', '/audit', '/search'],                items: [['/reports', 'Reports', 'trending-up'], ['/audit', 'Activity Log', 'history'], ['/search', 'Search', 'search']] }
 ] %}
-<nav class="bg-slate-900 text-white">
-  <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
-    <a href="/" class="font-semibold tracking-tight whitespace-nowrap">Stock Admin</a>
-    <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
-      {% for item in nav_items %}
-      <a href="{{ item[0] }}"
-         class="hover:text-white {% if active_nav == item[0] %}text-white font-semibold border-b-2 border-white{% else %}text-slate-300{% endif %}">
-        {{ item[1] }}
+{% set role_label = { 'super': 'Owner', 'support': 'Support', 'readonly': 'View only' } %}
+<nav class="sticky top-0 z-30 bg-card/85 backdrop-blur border-b border-line">
+  <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+    <a href="/" class="flex items-center gap-2 font-display text-lg font-semibold text-pine whitespace-nowrap">
+      <i data-lucide="store" class="w-5 h-5"></i>
+      Shop Admin
+    </a>
+
+    <div class="flex flex-wrap items-center gap-x-1 gap-y-1 text-sm">
+      <a href="/"
+         class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-colors hover:bg-sand {% if active_nav == '/' %}text-pine font-semibold bg-pine-tint{% else %}text-ink-soft{% endif %}">
+        <i data-lucide="layout-dashboard" class="w-4 h-4 text-rose-500"></i> Home
       </a>
+
+      {% for g in nav_groups %}
+      <details class="relative group">
+        <summary class="flex items-center gap-1.5 cursor-pointer select-none px-3 py-1.5 rounded-lg transition-colors hover:bg-sand {% if active_nav in g.match %}text-pine font-semibold bg-pine-tint{% else %}text-ink-soft{% endif %}">
+          <i data-lucide="{{ g.icon }}" class="w-4 h-4 {{ g.color }}"></i> {{ g.label }}
+          <span class="text-[0.6rem] opacity-60 group-open:rotate-180 transition-transform">▾</span>
+        </summary>
+        <div class="absolute left-0 mt-2 min-w-[12rem] rounded-xl bg-card py-1.5 shadow-lift border border-line z-40">
+          {% for it in g.items %}
+          <a href="{{ it[0] }}"
+             class="flex items-center gap-2.5 px-4 py-2 text-sm transition-colors hover:bg-sand {% if active_nav == it[0] %}text-pine font-semibold bg-pine-tint{% else %}text-ink-soft{% endif %}">
+            <i data-lucide="{{ it[2] }}" class="w-4 h-4 {% if active_nav == it[0] %}{% else %}{{ g.color }}{% endif %}"></i> {{ it[1] }}
+          </a>
+          {% endfor %}
+        </div>
+      </details>
       {% endfor %}
-      {% if admin.role == 'super' %}
-      <a href="/admins"
-         class="hover:text-white {% if active_nav == '/admins' %}text-white font-semibold border-b-2 border-white{% else %}text-slate-300{% endif %}">
-        Admins
-      </a>
-      {% endif %}
+
+      {% set settings_active = active_nav == '/settings' or active_nav == '/admins' %}
+      <details class="relative group">
+        <summary class="flex items-center gap-1.5 cursor-pointer select-none px-3 py-1.5 rounded-lg transition-colors hover:bg-sand {% if settings_active %}text-pine font-semibold bg-pine-tint{% else %}text-ink-soft{% endif %}">
+          <i data-lucide="settings" class="w-4 h-4 text-sky-500"></i> Settings
+          <span class="text-[0.6rem] opacity-60 group-open:rotate-180 transition-transform">▾</span>
+        </summary>
+        <div class="absolute right-0 mt-2 min-w-[12rem] rounded-xl bg-card py-1.5 shadow-lift border border-line z-40">
+          <a href="/settings"
+             class="flex items-center gap-2.5 px-4 py-2 text-sm transition-colors hover:bg-sand {% if active_nav == '/settings' %}text-pine font-semibold bg-pine-tint{% else %}text-ink-soft{% endif %}">
+            <i data-lucide="sliders-horizontal" class="w-4 h-4 {% if active_nav == '/settings' %}{% else %}text-sky-500{% endif %}"></i> Settings
+          </a>
+          {% if admin.role == 'super' %}
+          <a href="/admins"
+             class="flex items-center gap-2.5 px-4 py-2 text-sm transition-colors hover:bg-sand {% if active_nav == '/admins' %}text-pine font-semibold bg-pine-tint{% else %}text-ink-soft{% endif %}">
+            <i data-lucide="users-round" class="w-4 h-4 {% if active_nav == '/admins' %}{% else %}text-sky-500{% endif %}"></i> Team
+          </a>
+          {% endif %}
+        </div>
+      </details>
     </div>
+
     <div class="flex items-center gap-3 text-sm whitespace-nowrap">
-      <span class="text-slate-400">tg:{{ admin.telegramId }}</span>
-      {% if admin.role %}<span class="text-xs px-1.5 py-0.5 rounded bg-slate-700 text-slate-200">{{ admin.role }}</span>{% endif %}
+      {% if admin.role %}<span class="chip bg-pine-tint text-pine-dark"><i data-lucide="shield-check" class="w-3.5 h-3.5"></i> {{ role_label[admin.role] or admin.role }}</span>{% endif %}
+      <span class="hidden sm:inline text-ink-faint text-xs">Telegram {{ admin.telegramId }}</span>
       <form method="post" action="/logout" class="inline">
         <input type="hidden" name="csrf_token" value="{{ admin.csrf }}">
-        <button type="submit" class="hover:underline">Logout</button>
+        <button type="submit" class="flex items-center gap-1.5 text-ink-soft hover:text-rust transition-colors"><i data-lucide="log-out" class="w-4 h-4"></i> Sign out</button>
       </form>
     </div>
   </div>
@@ -60,9 +89,24 @@
 {% endif %}
 {% endblock %}
 
-<main class="max-w-6xl mx-auto px-4 py-8">
+<main class="max-w-6xl mx-auto px-4 py-8 sm:py-10">
   {% block content %}{% endblock %}
 </main>
+
+<script>
+  // Render Lucide icons on load, and again after HTMX swaps content (e.g. the
+  // dashboard "needs attention" widgets) so swapped-in <i> tags become SVGs.
+  function renderIcons() { if (window.lucide) window.lucide.createIcons(); }
+  renderIcons();
+  document.addEventListener('htmx:afterSettle', renderIcons);
+
+  // Close any open nav dropdown when clicking outside it.
+  document.addEventListener('click', function (e) {
+    document.querySelectorAll('nav details[open]').forEach(function (d) {
+      if (!d.contains(e.target)) d.removeAttribute('open');
+    });
+  });
+</script>
 
 </body>
 </html>

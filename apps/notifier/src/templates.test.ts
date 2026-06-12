@@ -44,6 +44,14 @@ describe("notifier templates.render", () => {
     expect(out).toContain("A &amp; B &lt;x&gt; x2");
   });
 
+  it("renders ADMIN_PW_RESET as a bilingual DM with the code and TTL", () => {
+    const out = render("ADMIN_PW_RESET", { code: "048273", ttl_minutes: 10 });
+    expect(out).toContain("<code>048273</code>");
+    expect(out).toContain("valid 10 min");
+    expect(out).toContain("Web admin password reset");
+    expect(out).toContain("Reset password admin web"); // Indonesian line
+  });
+
   it("returns empty string for unknown events", () => {
     expect(render("something.else", payload)).toBe("");
     // lowercase value form is NOT what is stored -> must not match

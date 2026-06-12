@@ -21,6 +21,7 @@ import {
   deleteBulkPricing,
   upsertBulkPricing,
   logAdminAction,
+  getUsdIdrRate,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../plugins/auth";
 import { redirectWithFlash } from "../flash";
@@ -135,6 +136,9 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
     const categories = await listAllCategories(prisma);
     const products = await listAllProducts(prisma);
     const rules = await listBulkPricingRules(prisma);
+    // Prices are central Rupiah; the rate powers the read-only USDT preview
+    // next to the price inputs (same figure buyers see — plan.md §15.6).
+    const fxRate = await getUsdIdrRate(prisma);
 
     const rulesByProduct: Record<number, (typeof rules)[number]> = {};
     for (const r of rules) rulesByProduct[r.productId] = r;
@@ -146,6 +150,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       products,
       rules_by_product: rulesByProduct,
       product_types: PRODUCT_TYPES,
+      usd_idr_rate: fxRate ? fxRate.toString() : null,
       msg: q.msg ?? null,
       kind: q.kind ?? "info",
     });
@@ -320,6 +325,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       resellerPrice: dec(body.reseller_price),
       warrantyDays: warranty,
       imageFileId: (body.image_file_id ?? "").trim() || null,
+      webImageUrl: (body.web_image_url ?? "").trim() || null,
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
@@ -346,6 +352,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       price: priceDec,
       resellerPrice: dec(body.reseller_price),
       imageFileId: (body.image_file_id ?? "").trim() || null,
+      webImageUrl: (body.web_image_url ?? "").trim() || null,
       isActive: truthy(body.is_active),
     };
     if ((body.warranty_days ?? "").trim()) {

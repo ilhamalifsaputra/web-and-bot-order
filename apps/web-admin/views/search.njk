@@ -1,47 +1,48 @@
 {% extends "base.njk" %}
 {% import "_macros.njk" as ui %}
-{% block title %}Search · Stock Admin{% endblock %}
+{% block title %}Search · Shop Admin{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-semibold mb-4">Search</h1>
+<header class="mb-4">
+  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="search" class="w-7 h-7 text-blue-500"></i> Search</h1>
+</header>
 
 <form method="get" action="/search" class="mb-6 flex gap-2 max-w-xl">
-  <input type="text" name="q" value="{{ q }}" autofocus placeholder="Order code, TG id / username, or product name"
-    class="flex-1 border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-400">
-  <button class="bg-slate-900 text-white px-4 py-2 rounded hover:bg-slate-700">Search</button>
+  <input type="text" name="q" value="{{ q }}" autofocus placeholder="Order code, Telegram ID / username, or product name" class="field flex-1">
+  <button class="btn btn-primary"><i data-lucide="search" class="w-4 h-4"></i> Search</button>
 </form>
 
 {% if q %}
-<p class="text-sm text-slate-500 mb-4">Results for <span class="font-mono">{{ q }}</span> — an exact order code jumps straight to its detail.</p>
+<p class="text-sm text-ink-soft mb-4">Results for <span class="font-mono">{{ q }}</span> — an exact order code opens that order straight away.</p>
 
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-  <section class="bg-white rounded-lg shadow p-5">
-    <h2 class="font-semibold mb-3">Users <span class="text-slate-400 text-sm">({{ users | length }})</span></h2>
-    <ul class="divide-y divide-slate-100 text-sm">
+  <section class="card card-pad">
+    <h2 class="section-title mb-3">Users <span class="text-ink-faint text-sm font-normal">({{ users | length }})</span></h2>
+    <ul class="divide-y divide-line text-sm">
       {% for u in users %}
-      <li class="py-2 flex items-center justify-between">
-        <a class="text-slate-700 hover:underline" href="/users/{{ u.id }}">
-          {{ u.fullName or u.username or ('tg:' + (u.telegramId | string)) }}
-          <span class="text-slate-400 font-mono text-xs">· {{ u.telegramId }}</span>
+      <li class="py-2.5 flex items-center justify-between gap-3">
+        <a class="link font-normal text-ink hover:text-pine" href="/users/{{ u.id }}">
+          {{ u.fullName or u.username or ('Telegram ' + (u.telegramId | string)) }}
+          <span class="text-ink-faint font-mono text-xs">· {{ u.telegramId }}</span>
         </a>
         {{ ui.status_badge(u.role) }}
       </li>
       {% else %}
-      <li class="py-4 text-center text-slate-400">No users.</li>
+      <li class="py-4 text-center text-ink-faint">No users.</li>
       {% endfor %}
     </ul>
   </section>
 
-  <section class="bg-white rounded-lg shadow p-5">
-    <h2 class="font-semibold mb-3">Products <span class="text-slate-400 text-sm">({{ products | length }})</span></h2>
-    <ul class="divide-y divide-slate-100 text-sm">
+  <section class="card card-pad">
+    <h2 class="section-title mb-3">Products <span class="text-ink-faint text-sm font-normal">({{ products | length }})</span></h2>
+    <ul class="divide-y divide-line text-sm">
       {% for p in products %}
-      <li class="py-2 flex items-center justify-between">
-        <a class="text-slate-700 hover:underline" href="/stock/{{ p.id }}">{{ p.name }}</a>
-        <span class="text-slate-500">{{ p.price | money }} {{ currency }}</span>
+      <li class="py-2.5 flex items-center justify-between gap-3">
+        <a class="link font-normal text-ink hover:text-pine" href="/stock/{{ p.id }}">{{ p.name }}</a>
+        <span class="text-ink-soft tabular">{{ p.price | money }} {{ currency }}</span>
       </li>
       {% else %}
-      <li class="py-4 text-center text-slate-400">No products.</li>
+      <li class="py-4 text-center text-ink-faint">No products.</li>
       {% endfor %}
     </ul>
   </section>

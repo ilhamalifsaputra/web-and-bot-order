@@ -1,57 +1,60 @@
 {% extends "base.njk" %}
 {% import "_macros.njk" as ui %}
-{% block title %}Vouchers · Stock Admin{% endblock %}
+{% block title %}Discount Codes · Shop Admin{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-semibold mb-6">Vouchers</h1>
+<header class="mb-6">
+  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="ticket-percent" class="w-7 h-7 text-pink-500"></i> Discount Codes</h1>
+  <p class="page-lead">Codes customers can type at checkout for money off.</p>
+</header>
 {{ ui.flash(msg, kind) }}
 
-<details class="bg-white rounded-lg shadow p-4 mb-6">
-  <summary class="cursor-pointer font-medium text-sm">+ New voucher</summary>
-  <form method="post" action="/vouchers" class="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+<details class="card card-pad mb-6">
+  <summary class="cursor-pointer font-medium text-sm text-pine">+ Create a discount code</summary>
+  <form method="post" action="/vouchers" class="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
     {{ ui.csrf_field(admin) }}
-    <div><label class="block text-xs text-slate-500 mb-1">Code</label><input name="code" required class="border rounded px-2 py-1 w-full uppercase"></div>
-    <div><label class="block text-xs text-slate-500 mb-1">Type</label>
-      <select name="type" class="border rounded px-2 py-1 w-full">
-        {% for t in types %}<option value="{{ t }}">{{ t | lower }}</option>{% endfor %}
+    <div><label class="field-label">Code</label><input name="code" required class="field uppercase"></div>
+    <div><label class="field-label">Type</label>
+      <select name="type" class="field">
+        {% for t in types %}<option value="{{ t }}">{{ t | lower | title }}</option>{% endfor %}
       </select></div>
-    <div><label class="block text-xs text-slate-500 mb-1">Value (% or amount)</label><input name="value" required class="border rounded px-2 py-1 w-full"></div>
-    <div><label class="block text-xs text-slate-500 mb-1">Usage limit</label><input name="usage_limit" type="number" placeholder="unlimited" class="border rounded px-2 py-1 w-full"></div>
-    <div><label class="block text-xs text-slate-500 mb-1">Min purchase</label><input name="min_purchase" value="0" class="border rounded px-2 py-1 w-full"></div>
-    <div><label class="block text-xs text-slate-500 mb-1">Expires (YYYY-MM-DD)</label><input name="expires_at" type="date" class="border rounded px-2 py-1 w-full"></div>
-    <div class="sm:col-span-3"><button class="bg-slate-900 text-white px-4 py-1.5 rounded hover:bg-slate-700">Create voucher</button></div>
+    <div><label class="field-label">Amount (% or fixed)</label><input name="value" required class="field"></div>
+    <div><label class="field-label">How many times it can be used</label><input name="usage_limit" type="number" placeholder="No limit" class="field"></div>
+    <div><label class="field-label">Minimum spend</label><input name="min_purchase" value="0" class="field"></div>
+    <div><label class="field-label">Expires on</label><input name="expires_at" type="date" class="field"></div>
+    <div class="sm:col-span-3"><button class="btn btn-primary">Create code</button></div>
   </form>
 </details>
 
-<div class="bg-white rounded-lg shadow overflow-x-auto">
-  <table class="min-w-full text-sm">
-    <thead class="bg-slate-100 text-slate-600 text-left">
+<div class="card overflow-x-auto">
+  <table class="data-table">
+    <thead>
       <tr>
-        <th class="px-4 py-2">Code</th><th class="px-4 py-2">Type</th><th class="px-4 py-2 text-right">Value</th>
-        <th class="px-4 py-2 text-right">Used</th><th class="px-4 py-2 text-right">Min</th>
-        <th class="px-4 py-2">Expires</th><th class="px-4 py-2">Active</th><th class="px-4 py-2"></th>
+        <th>Code</th><th>Type</th><th class="text-right">Amount</th>
+        <th class="text-right">Used</th><th class="text-right">Min spend</th>
+        <th>Expires</th><th>Status</th><th></th>
       </tr>
     </thead>
-    <tbody class="divide-y divide-slate-100">
+    <tbody>
       {% for v in vouchers %}
-      <tr class="hover:bg-slate-50">
-        <td class="px-4 py-2 font-mono">{{ v.code }}</td>
-        <td class="px-4 py-2">{{ v.type | lower }}</td>
-        <td class="px-4 py-2 text-right">{{ v.value }}{% if (v.type | lower) == 'percent' %}%{% endif %}</td>
-        <td class="px-4 py-2 text-right">{{ v.usedCount }}{% if v.usageLimit %}/{{ v.usageLimit }}{% endif %}</td>
-        <td class="px-4 py-2 text-right">{{ v.minPurchase | money }}</td>
-        <td class="px-4 py-2 text-slate-500">{{ v.expiresAt | localdt if v.expiresAt else '—' }}</td>
-        <td class="px-4 py-2">{{ ui.status_badge('active' if v.isActive else 'inactive') }}</td>
-        <td class="px-4 py-2 text-right">
+      <tr>
+        <td class="font-mono">{{ v.code }}</td>
+        <td>{{ v.type | lower | title }}</td>
+        <td class="text-right tabular">{{ v.value }}{% if (v.type | lower) == 'percent' %}%{% endif %}</td>
+        <td class="text-right tabular">{{ v.usedCount }}{% if v.usageLimit %}/{{ v.usageLimit }}{% endif %}</td>
+        <td class="text-right tabular">{{ v.minPurchase | money }}</td>
+        <td class="text-ink-soft">{{ v.expiresAt | localdt if v.expiresAt else '—' }}</td>
+        <td>{{ ui.status_badge('active' if v.isActive else 'inactive') }}</td>
+        <td class="text-right">
           <form method="post" action="/vouchers/{{ v.id }}/toggle" class="inline">
             {{ ui.csrf_field(admin) }}
             <input type="hidden" name="is_active" value="{{ 'false' if v.isActive else 'true' }}">
-            <button class="text-xs px-2 py-1 rounded bg-slate-200 hover:bg-slate-300">{{ 'Disable' if v.isActive else 'Enable' }}</button>
+            <button class="btn btn-soft btn-sm">{{ 'Turn off' if v.isActive else 'Turn on' }}</button>
           </form>
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="8" class="px-4 py-6 text-center text-slate-400">No vouchers yet.</td></tr>
+      {{ ui.empty_row(8, 'No discount codes yet.') }}
       {% endfor %}
     </tbody>
   </table>

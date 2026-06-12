@@ -1,0 +1,75 @@
+{# Storefront-only macros on top of the shared theme (design.md §4). Import:
+   {% import "_shop.njk" as shop %}
+   The shared admin macros (_macros.njk: ic, flash, status_badge, …) come from
+   packages/web-ui/views and are imported separately as `ui`. #}
+
+{# Price tag (design.md §4.4 + §8b): the central IDR price as the main figure
+   with the derived USDT (rounded, informational) BESIDE it — for every buyer.
+   `fx` = usd_idr_rate as a string, or null/empty to hide the USDT info. #}
+{% macro price(idr_value, fx, size="text-base") -%}
+<span class="inline-flex items-baseline gap-1.5 whitespace-nowrap">
+  <span class="font-display font-semibold text-pine {{ size }}">{{ idr_value | idr }}</span>
+  {%- if fx %}<span class="text-xs text-ink-soft">≈ {{ idr_value | usdt(fx) }}</span>{% endif -%}
+</span>
+{%- endmacro %}
+
+{# Stock badge (design.md §4.3): honest, real-time stock from the shared DB. #}
+{% macro stock_badge(count, low, lang) -%}
+{% if count > low %}
+<span class="chip bg-grass-tint text-grass-dark">{{ t('web.stock_available', lang) }}</span>
+{% elif count > 0 %}
+<span class="chip bg-amberx-tint text-amberx">{{ t('web.stock_left', lang, { count: count }) }}</span>
+{% else %}
+<span class="chip bg-rust-tint text-rust-dark">{{ t('web.stock_out', lang) }}</span>
+{% endif %}
+{%- endmacro %}
+
+{# Star rating (design.md §4.7): 5 lucide stars, filled = amber, empty = line. #}
+{% macro stars(rating, cls="w-3.5 h-3.5") -%}
+<span class="inline-flex items-center gap-0.5" aria-label="{{ rating | round(1) }}/5">
+  {%- for i in [1, 2, 3, 4, 5] -%}
+  <i data-lucide="star" class="{{ cls }} {% if rating >= i - 0.5 %}text-amber-400 fill-amber-400{% else %}text-line{% endif %}"></i>
+  {%- endfor -%}
+</span>
+{%- endmacro %}
+
+{# Product card (design.md §4.2) for the grid pages. Expects the shaped card
+   context from routes: {id, name, category_name, price, image, available,
+   rating, rating_count}. #}
+{% macro product_card(p, fx, low, lang) -%}
+<a href="/p/{{ p.id }}"
+   class="card overflow-hidden flex flex-col group transition-all duration-150 hover:shadow-lift hover:-translate-y-0.5">
+  <div class="aspect-[4/3] bg-sand overflow-hidden">
+    <img src="{{ p.image }}" alt="{{ p.name }}" loading="lazy" decoding="async"
+         class="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300">
+  </div>
+  <div class="p-3.5 flex flex-col gap-1.5 flex-1">
+    <div class="font-display text-sm font-semibold text-ink leading-snug line-clamp-2">{{ p.name }}</div>
+    <div class="text-xs text-ink-faint">{{ p.category_name }}</div>
+    {% if p.rating_count > 0 %}
+    <div class="flex items-center gap-1.5 text-xs text-ink-soft">
+      {{ stars(p.rating) }} <span>{{ p.rating | round(1) }}</span>
+      <span class="text-ink-faint">· {{ t('web.review_count', lang, { count: p.rating_count }) }}</span>
+    </div>
+    {% endif %}
+    <div class="mt-auto pt-2 flex items-center justify-between gap-2 flex-wrap">
+      {{ price(p.price, fx, "text-sm") }}
+      {{ stock_badge(p.available, low, lang) }}
+    </div>
+  </div>
+</a>
+{%- endmacro %}
+
+{# Checkout stepper (design.md §4.6): 1 Keranjang → 2 Pembayaran → 3 Selesai. #}
+{% macro stepper(step, lang) -%}
+{% set labels = [t('web.step_cart', lang), t('web.step_pay', lang), t('web.step_done', lang)] %}
+<ol class="flex items-center gap-2 text-xs font-semibold mb-6">
+  {% for label in labels %}
+  {% set n = loop.index %}
+  <li class="chip {% if n < step %}bg-grass-tint text-grass-dark{% elif n == step %}bg-pine text-white{% else %}bg-sand text-ink-soft{% endif %}">
+    {{ n }} · {{ label }}
+  </li>
+  {% if not loop.last %}<span class="text-ink-faint">→</span>{% endif %}
+  {% endfor %}
+</ol>
+{%- endmacro %}

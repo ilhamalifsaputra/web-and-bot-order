@@ -10,6 +10,7 @@ import { addDays, addMinutes } from "@app/core/datetime";
 import {
   prisma,
   type Db,
+  resolveBotCredentials,
   botOverallStats,
   revenueSummary,
   lowStockProducts,
@@ -55,6 +56,9 @@ export default async function dashboardRoutes(app: FastifyInstance): Promise<voi
     const pending = await listPendingVerifications(prisma);
     const recentAudit = await listAuditLogs(prisma, { limit: 10 });
     const sla = await slaContext(prisma);
+    // §16.3 bootstrap case: no bot token anywhere → the bot is off until an
+    // admin fills it in Settings and restarts. Surface that loudly here.
+    const creds = await resolveBotCredentials(prisma);
 
     // Surface money that arrived but didn't deliver (unmatched / delivery_failed).
     let binance: { unmatched: number; delivery_failed: number } | null = null;
@@ -77,6 +81,7 @@ export default async function dashboardRoutes(app: FastifyInstance): Promise<voi
       recent_audit: recentAudit,
       sla,
       binance,
+      bot_token_missing: creds.botToken === null,
     });
   });
 

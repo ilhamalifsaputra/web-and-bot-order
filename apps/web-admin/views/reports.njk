@@ -1,71 +1,74 @@
 {% extends "base.njk" %}
 {% import "_macros.njk" as ui %}
-{% block title %}Reports · Stock Admin{% endblock %}
+{% block title %}Reports · Shop Admin{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-semibold mb-6">Reports</h1>
+<header class="mb-6">
+  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="bar-chart-3" class="w-7 h-7 text-amber-500"></i> Reports</h1>
+  <p class="page-lead">How your shop has been doing lately.</p>
+</header>
 
-<section class="bg-white rounded-lg shadow p-5 mb-6">
+<section class="card card-pad mb-6">
   <div class="flex items-baseline justify-between mb-3">
-    <h2 class="font-semibold">Revenue — last 30 days</h2>
-    <span class="text-sm text-slate-500">{{ total_30d | money }} {{ currency }} total</span>
+    <h2 class="section-title">Sales — last 30 days</h2>
+    <span class="text-sm text-ink-soft tabular">{{ total_30d | money }} {{ currency }} total</span>
   </div>
-  <svg viewBox="0 0 {{ spark.width }} {{ spark.height }}" class="w-full h-32" preserveAspectRatio="none" role="img" aria-label="Daily revenue trend">
-    {% if spark.area %}<polygon points="{{ spark.area }}" fill="#0f172a" fill-opacity="0.06" />{% endif %}
-    <polyline points="{{ spark.line }}" fill="none" stroke="#0f172a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
+  <svg viewBox="0 0 {{ spark.width }} {{ spark.height }}" class="w-full h-32" preserveAspectRatio="none" role="img" aria-label="Daily sales trend">
+    {% if spark.area %}<polygon points="{{ spark.area }}" fill="#2563eb" fill-opacity="0.10" />{% endif %}
+    <polyline points="{{ spark.line }}" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
   </svg>
-  <p class="text-xs text-slate-400 mt-1">Peak day: {{ spark.max | round(2) }} {{ currency }} · buckets are UTC days.</p>
+  <p class="text-xs text-ink-faint mt-1">Best day: {{ spark.max | round(2) }} {{ currency }} · one bar per day.</p>
 </section>
 
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-  <section class="bg-white rounded-lg shadow p-5">
-    <h2 class="font-semibold mb-3">Top products</h2>
-    <table class="min-w-full text-sm">
-      <thead class="text-slate-500 text-left"><tr><th class="py-1">Product</th><th class="py-1 text-right">Sold</th><th class="py-1 text-right">Revenue</th></tr></thead>
-      <tbody class="divide-y divide-slate-100">
+  <section class="card card-pad">
+    <h2 class="section-title mb-3">Best sellers</h2>
+    <table class="data-table">
+      <thead><tr><th>Product</th><th class="text-right">Sold</th><th class="text-right">Sales</th></tr></thead>
+      <tbody>
         {% for p in products %}
         <tr>
-          <td class="py-1"><a class="hover:underline" href="/stock/{{ p.productId }}">{{ p.name }}</a></td>
-          <td class="py-1 text-right">{{ p.qty }}</td>
-          <td class="py-1 text-right">{{ p.revenue | money }} {{ currency }}</td>
+          <td><a class="link font-normal" href="/stock/{{ p.productId }}">{{ p.name }}</a></td>
+          <td class="text-right tabular">{{ p.qty }}</td>
+          <td class="text-right tabular">{{ p.revenue | money }} {{ currency }}</td>
         </tr>
         {% else %}
-        <tr><td colspan="3" class="py-4 text-center text-slate-400">No delivered sales yet.</td></tr>
+        {{ ui.empty_row(3, 'No sales yet.') }}
         {% endfor %}
       </tbody>
     </table>
   </section>
 
-  <section class="bg-white rounded-lg shadow p-5">
-    <h2 class="font-semibold mb-3">Orders by status</h2>
-    <table class="min-w-full text-sm">
-      <tbody class="divide-y divide-slate-100">
+  <section class="card card-pad">
+    <h2 class="section-title mb-3">Orders by status</h2>
+    <table class="data-table">
+      <tbody>
         {% for s in funnel %}
         <tr>
-          <td class="py-1">{{ ui.status_badge(s.status) }}</td>
-          <td class="py-1 text-right">{{ s.count }}</td>
+          <td>{{ ui.status_badge(s.status) }}</td>
+          <td class="text-right tabular">{{ s.count }}</td>
         </tr>
         {% else %}
-        <tr><td class="py-4 text-center text-slate-400">No orders yet.</td></tr>
+        <tr><td class="py-4 text-center text-ink-faint">No orders yet.</td></tr>
         {% endfor %}
       </tbody>
     </table>
   </section>
 
-  <section class="bg-white rounded-lg shadow p-5 lg:col-span-2">
-    <h2 class="font-semibold mb-3">Voucher usage</h2>
-    <table class="min-w-full text-sm">
-      <thead class="text-slate-500 text-left"><tr><th class="py-1">Code</th><th class="py-1 text-right">Used</th><th class="py-1 text-right">Limit</th><th class="py-1">Active</th></tr></thead>
-      <tbody class="divide-y divide-slate-100">
+  <section class="card card-pad lg:col-span-2">
+    <h2 class="section-title mb-3">Discount code usage</h2>
+    <table class="data-table">
+      <thead><tr><th>Code</th><th class="text-right">Used</th><th class="text-right">Limit</th><th>Status</th></tr></thead>
+      <tbody>
         {% for v in vouchers %}
         <tr>
-          <td class="py-1 font-mono">{{ v.code }}</td>
-          <td class="py-1 text-right">{{ v.usedCount }}</td>
-          <td class="py-1 text-right text-slate-500">{{ v.usageLimit if v.usageLimit != null else '∞' }}</td>
-          <td class="py-1">{% if v.isActive %}{{ ui.status_badge('active') }}{% else %}<span class="text-slate-400 text-xs">inactive</span>{% endif %}</td>
+          <td class="font-mono">{{ v.code }}</td>
+          <td class="text-right tabular">{{ v.usedCount }}</td>
+          <td class="text-right tabular text-ink-soft">{{ v.usageLimit if v.usageLimit != null else '∞' }}</td>
+          <td>{% if v.isActive %}{{ ui.status_badge('active') }}{% else %}<span class="text-ink-faint text-xs">Off</span>{% endif %}</td>
         </tr>
         {% else %}
-        <tr><td colspan="4" class="py-4 text-center text-slate-400">No vouchers.</td></tr>
+        {{ ui.empty_row(4, 'No discount codes.') }}
         {% endfor %}
       </tbody>
     </table>

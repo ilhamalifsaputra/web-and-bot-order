@@ -9,6 +9,7 @@
  */
 import { InputFile } from "grammy";
 import { config } from "@app/core/config";
+import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ensureUtc, localize } from "@app/core/datetime";
 import { UserRole, OrderStatus, TicketStatus, SenderType } from "@app/core/enums";
@@ -37,15 +38,18 @@ import {
   listTicketMessages,
 } from "@app/db";
 import type { MyContext } from "../context";
-import { smartEdit } from "../util/chat";
+import { smartEdit, renderMenu } from "../util/chat";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
-import { esc, formatPrice, statusBadge, groupOrderItems, formatCountdown } from "../util/format";
+import { esc, formatPrice, formatIdr, statusBadge, groupOrderItems, formatCountdown, priceIdr, orderAmount, mixedAmount } from "../util/format";
+import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
 import { showFaq, showTerms } from "./static";
 
 const PAGE_SIZE = 10;
-const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, config.CURRENCY, decimals);
+// USDT-denominated figures only (wallet balance, commissions). Catalog prices
+// are central Rupiah — use priceIdr(v, rate); order totals — orderAmount(o).
+const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimals);
 
 // --- session scratch accessors (mirror context.user_data keys) -------------
 interface BrowseScratch {
@@ -65,6 +69,15 @@ function requireUser(ctx: MyContext) {
 // /start + dashboard
 // ---------------------------------------------------------------------------
 
+// Optional banner image shown on top of the main menu and product list. Set
+// from the bot (Settings → Banner image) or the web admin; the screen renders
+// as a photo+caption when present. Absent/cleared → plain menu. Never shown on
+// payment screens (those renderers simply don't request it).
+const BANNER_IMAGE_KEY = "banner_image";
+async function bannerImage(): Promise<string | undefined> {
+  return (await getSetting(prisma, BANNER_IMAGE_KEY)) || undefined;
+}
+
 async function buildDashboardText(ctx: MyContext): Promise<string> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
@@ -81,9 +94,9 @@ async function buildDashboardText(ctx: MyContext): Promise<string> {
     now: nowStr,
     tg_id: tg.id,
     username: tg.username ? `@${tg.username}` : "—",
-    spent: price(spent),
+    spent: mixedAmount(spent.idr, spent.usdt),
     items_sold: stats.items_sold,
-    total_revenue: price(stats.total_revenue),
+    total_revenue: mixedAmount(stats.revenue_idr, stats.revenue_usdt),
     total_users: stats.total_users,
   });
 }
@@ -92,7 +105,7 @@ async function backToMainFromPersistent(ctx: MyContext): Promise<void> {
   delete sc(ctx).viewingProductId;
   ctx.session.awaitingQtyProductId = undefined;
   const text = await buildDashboardText(ctx);
-  await smartEdit(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
+  await renderMenu(ctx, text, ckb.mainPersistentKb(ctx.session.lang), await bannerImage());
 }
 
 async function handleBackButton(ctx: MyContext): Promise<void> {
@@ -128,13 +141,12 @@ export async function startCommand(ctx: MyContext): Promise<void> {
   delete sc(ctx).browsePage;
 
   const text = await buildDashboardText(ctx);
-  const msg = await ctx.reply(text, { parse_mode: "HTML", reply_markup: ckb.mainPersistentKb(ctx.session.lang) });
-  ctx.session.menuMsgId = msg.message_id;
+  await renderMenu(ctx, text, ckb.mainPersistentKb(ctx.session.lang), await bannerImage());
 }
 
 export async function showMainMenu(ctx: MyContext): Promise<void> {
   const text = await buildDashboardText(ctx);
-  await smartEdit(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
+  await renderMenu(ctx, text, ckb.mainPersistentKb(ctx.session.lang), await bannerImage());
 }
 
 // Universal /cancel when no conversation is active.
@@ -175,9 +187,10 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // each one. Selection by number is resolved against the browseProductIds
   // snapshot above (see handleProductNumber).
   const isReseller = info?.role === UserRole.RESELLER;
+  const rate = await currentUsdtRate();
   const itemLines = pageProducts.map((p, i) => {
     const unit = isReseller && p.resellerPrice != null ? p.resellerPrice : p.price;
-    return `┊ [ ${i + 1} ] ${esc(p.name).toUpperCase()} — ${price(unit)}`;
+    return `┊ [ ${i + 1} ] ${esc(p.name).toUpperCase()} — ${priceIdr(unit, rate)}`;
   });
 
   const text = t(ctx, "browse.list_decorated", {
@@ -187,9 +200,10 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     items: itemLines.join("\n"),
   });
 
-  // The numbered keyboard is a reply keyboard; smartEdit sends a fresh message
-  // carrying it (an edit can't bear a reply keyboard).
-  await smartEdit(
+  // The numbered keyboard is a reply keyboard; renderMenu sends a fresh message
+  // carrying it (an edit can't bear a reply keyboard). The banner (if set) rides
+  // on top as a photo+caption, unless the list is too long for a caption.
+  await renderMenu(
     ctx,
     text,
     ckb.productsPersistentKb(pageProducts.length, lang, {
@@ -197,6 +211,7 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
       showNext: page < totalPages - 1,
       showBack: false,
     }),
+    await bannerImage(),
   );
 }
 
@@ -327,7 +342,7 @@ export async function browseProduct(ctx: MyContext, productId: number, qty = 1):
 
   let text = t(ctx, "browse.product_detail", {
     name: esc(p.name),
-    price: price(unit),
+    price: priceIdr(unit, await currentUsdtRate()),
     duration: esc(p.durationLabel),
     type: p.type.toLowerCase(),
     warranty: p.warrantyDays,
@@ -433,7 +448,7 @@ export async function listMyOrders(ctx: MyContext, page = 0): Promise<void> {
       t(ctx, "order.list_line", {
         code: o.orderCode,
         status: statusBadge(o.status),
-        total: price(o.totalAmount),
+        total: orderAmount(o),
         date: ensureUtc(o.createdAt).toFormat("yyyy-LL-dd"),
       }),
     );
@@ -452,8 +467,11 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
     return;
   }
 
+  // Item lines show the central-IDR snapshot (+ USDT info); the charged total
+  // renders in the order's own transaction currency.
+  const rate = await currentUsdtRate();
   const itemLines = groupOrderItems(order.items).map(
-    (g) => `• ${esc(g.product.name)} × ${g.quantity} — ${price(g.lineTotal)}`,
+    (g) => `• ${esc(g.product.name)} × ${g.quantity} — ${priceIdr(g.lineTotal, rate)}`,
   );
 
   let text: string;
@@ -463,7 +481,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
     text = t(ctx, "order.pending_payment_detail", {
       code: order.orderCode,
       lines: itemLines.join("\n"),
-      total: price(order.totalAmount, 4),
+      total: orderAmount(order, 4),
       binance_id: esc(binanceId),
       countdown,
     });
@@ -471,7 +489,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
     text = t(ctx, "order.detail", {
       code: order.orderCode,
       status: statusBadge(order.status),
-      total: price(order.totalAmount),
+      total: orderAmount(order),
       created: ensureUtc(order.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'"),
       lines: itemLines.join("\n"),
     });
@@ -501,10 +519,10 @@ export async function downloadHistory(ctx: MyContext): Promise<void> {
   for (const o of orders) {
     lines.push(`${L.order}: ${o.orderCode}`);
     lines.push(`${L.date}: ${ensureUtc(o.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'")}`);
-    lines.push(`${L.amount}: ${price(o.totalAmount, 4)}`);
+    lines.push(`${L.amount}: ${orderAmount(o, 4)}`);
     lines.push(`${L.items}:`);
     for (const g of groupOrderItems(o.items)) {
-      lines.push(`  - ${g.product.name} x${g.quantity}  ${price(g.lineTotal)}`);
+      lines.push(`  - ${g.product.name} x${g.quantity}  ${formatIdr(g.lineTotal)}`);
     }
     lines.push("-".repeat(36));
   }
@@ -534,7 +552,7 @@ export async function viewReferral(ctx: MyContext): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const code = info.referralCode ?? "";
-  const link = `https://t.me/${config.BOT_USERNAME}?start=ref_${code}`;
+  const link = `https://t.me/${botUsername() ?? ""}?start=ref_${code}`;
 
   const agg = await prisma.referral.aggregate({
     where: { referrerId: info.id },

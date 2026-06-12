@@ -32,6 +32,29 @@ export async function enqueueNotification(
   });
 }
 
+/**
+ * Enqueue a one-time web-admin password-reset code as an admin DM (orderId is
+ * null — this is not tied to an order). The dispatcher routes ADMIN_PW_RESET
+ * rows to `payload.chat_id` instead of the public channel. The web NEVER sends
+ * Telegram itself; this just drops the row for the notifier/bot to deliver.
+ */
+export async function enqueueAdminPasswordReset(
+  db: Db,
+  args: { telegramId: number; code: string; ttlMinutes: number },
+): Promise<void> {
+  await db.notificationOutbox.create({
+    data: {
+      event: NotificationEvent.ADMIN_PW_RESET,
+      orderId: null,
+      payloadJson: JSON.stringify({
+        chat_id: args.telegramId,
+        code: args.code,
+        ttl_minutes: args.ttlMinutes,
+      }),
+    },
+  });
+}
+
 /** Oldest pending rows first, capped at `limit`. */
 export function fetchPendingNotifications(db: Db, limit = 50) {
   return db.notificationOutbox.findMany({

@@ -33,7 +33,9 @@ import settingsRoutes from "./routes/settings";
 import auditRoutes from "./routes/audit";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const STATIC_DIR = join(HERE, "..", "static");
+// Overridable via env so the bundled deploy can point at the shipped static/
+// dir (import.meta.url moves to dist/ after bundling). See DEPLOY-HOSTINGER.md §3.
+const STATIC_DIR = process.env.STATIC_DIR ?? join(HERE, "..", "static");
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });

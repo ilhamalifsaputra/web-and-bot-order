@@ -12,6 +12,7 @@
 import { InputMediaBuilder } from "grammy";
 import type { MessageEntity } from "grammy/types";
 import { config, isAdmin } from "@app/core/config";
+import { botToken } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ProductType, SenderType, VoucherType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -80,7 +81,7 @@ async function denyAdmin(ctx: MyContext): Promise<void> {
 
 async function downloadTgText(ctx: MyContext, fileId: string): Promise<string> {
   const file = await ctx.api.getFile(fileId);
-  const url = `https://api.telegram.org/file/bot${config.BOT_TOKEN}/${file.file_path}`;
+  const url = `https://api.telegram.org/file/bot${botToken()}/${file.file_path}`;
   const res = await fetch(url);
   return res.text();
 }
@@ -398,6 +399,8 @@ export async function settingConversation(conversation: MyConversation, ctx: MyC
   const prompts: Record<string, string> = {
     binance_pay_id: "💳 Send the new <b>Binance Pay ID</b> (the numeric ID buyers transfer USDT to).",
     qr: "🖼 Send the new <b>QR image</b> as a photo. It will be shown to buyers at checkout.",
+    banner_image:
+      "📢 Send the new <b>banner image</b> as a photo. It appears on top of the main menu and the product list (never on payment screens).\n\nSend <code>-</code> to remove the banner.",
     welcome:
       "👋 Send the new <b>welcome message</b>.\n\n• Use <code>{name}</code> as a placeholder for the user's name.\n• HTML tags allowed (e.g. <code>&lt;b&gt;bold&lt;/b&gt;</code>).\n• Send <code>-</code> to reset to the default message.",
     support_contact:
@@ -412,7 +415,13 @@ export async function settingConversation(conversation: MyConversation, ctx: MyC
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
 
-    if (key === "qr") {
+    if (key === "qr" || key === "banner_image") {
+      // banner_image can also be removed by sending "-".
+      if (key === "banner_image" && (u.message?.text ?? "").trim() === "-") {
+        await conversation.external(() => prisma.setting.deleteMany({ where: { key } }));
+        await adminEdit(u, "✅ Banner removed.", akb.backToAdminKb(lang));
+        return;
+      }
       if (!u.message?.photo) {
         await adminEdit(u, "⚠️ Please send a <b>photo</b>, not text.");
         continue;

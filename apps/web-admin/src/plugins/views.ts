@@ -11,10 +11,16 @@ import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import nunjucks from "nunjucks";
 import { config } from "@app/core/config";
 import { localize } from "@app/core/datetime";
+import { formatIdr, usdtFromIdr } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
+import { sharedViewsDir } from "@app/web-ui";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const VIEWS_DIR = join(HERE, "..", "..", "views");
+// VIEWS_DIR is resolved relative to this source file, which breaks once the app
+// is bundled into a single file (import.meta.url then points at dist/). Allow an
+// explicit override so the bundled deploy can point at the shipped views/ dir.
+// See DEPLOY-HOSTINGER.md §3.
+const VIEWS_DIR = process.env.VIEWS_DIR ?? join(HERE, "..", "..", "views");
 
 /** Money: 4dp string, "—" for null/empty. Mirrors deps._money_filter. */
 function moneyFilter(value: unknown): string {
@@ -23,6 +29,26 @@ function moneyFilter(value: unknown): string {
     return new Decimal(value as Decimal.Value).toFixed(4);
   } catch {
     return String(value);
+  }
+}
+
+/** Central Rupiah price: "Rp79.000" — same rendering the storefront uses. */
+function idrFilter(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "—";
+  try {
+    return formatIdr(value as Decimal.Value);
+  } catch {
+    return String(value);
+  }
+}
+
+/** Derived USDT info "$4.9" at the given rate; "" when the rate is unset. */
+function usdtFilter(value: unknown, rate: unknown): string {
+  if (value === null || value === undefined || value === "" || !rate) return "";
+  try {
+    return `$${usdtFromIdr(value as Decimal.Value, new Decimal(rate as Decimal.Value)).toString()}`;
+  } catch {
+    return "";
   }
 }
 
@@ -41,8 +67,12 @@ declare module "fastify" {
 }
 
 const viewsPlugin: FastifyPluginAsync = async (app) => {
-  const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: process.env.NODE_ENV !== "production" });
+  // Two-path loader: app views first, then the shared theme/macros partials
+  // (packages/web-ui/views) — app-local templates win, shared ones fall back.
+  const env = nunjucks.configure([VIEWS_DIR, sharedViewsDir], { autoescape: true, noCache: process.env.NODE_ENV !== "production" });
   env.addFilter("money", moneyFilter);
+  env.addFilter("idr", idrFilter);
+  env.addFilter("usdt", usdtFilter);
   env.addFilter("localdt", localdtFilter);
   env.addGlobal("currency", config.CURRENCY);
   env.addGlobal("tzname", config.TIMEZONE);

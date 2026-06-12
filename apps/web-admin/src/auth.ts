@@ -18,7 +18,7 @@
  * We use bcryptjs (pure-JS, hash-compatible with Python's bcrypt $2b$ hashes)
  * to stay buildless on Windows; rounds=12 matches the Python original.
  */
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { config } from "@app/core/config";
 
@@ -126,6 +126,68 @@ export function verifyTotp(secret: string, token: string, window = 1): boolean {
 export function otpauthUri(secret: string, label: string, issuer = "StockAdmin"): string {
   const e = encodeURIComponent;
   return `otpauth://totp/${e(issuer)}:${e(label)}?secret=${secret}&issuer=${e(issuer)}&digits=6&period=30`;
+}
+
+// ---------------------------------------------------------------------------
+// Forgot-password reset codes (settings-backed, like the 2FA secret — no
+// schema). The web NEVER sends Telegram itself: /forgot stores a one-time code
+// here and enqueues an ADMIN_PW_RESET outbox row; the notifier/bot DMs it. The
+// stored record holds only an HMAC of the code (never the code itself), an
+// expiry, and a guess counter, so a leaked settings dump can't be replayed.
+// ---------------------------------------------------------------------------
+
+export const PW_RESET_TTL_MS = 10 * 60 * 1000; // 10 minutes
+export const PW_RESET_MAX_ATTEMPTS = 5;
+export const pwResetKey = (telegramId: number | bigint) => `web_pwreset:${telegramId}`;
+
+interface ResetRecord {
+  h: string; // HMAC-SHA256(cookieSecret, code), hex
+  exp: number; // epoch ms after which the code is dead
+  n: number; // wrong-guess count so far
+}
+
+function hashResetCode(code: string): string {
+  return createHmac("sha256", cookieSecret()).update(`pwreset.${code}`).digest("hex");
+}
+
+/** Fresh 6-digit numeric code (uniform) + the settings value that stores it. */
+export function newResetCode(ttlMs = PW_RESET_TTL_MS, now = Date.now()): { code: string; store: string } {
+  const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
+  const rec: ResetRecord = { h: hashResetCode(code), exp: now + ttlMs, n: 0 };
+  return { code, store: JSON.stringify(rec) };
+}
+
+export type ResetOutcome =
+  | { ok: true }
+  | { ok: false; reason: "missing" | "expired" | "locked" | "mismatch"; store: string | null };
+
+/**
+ * Check a submitted `code` against the stored record. Pure: returns the outcome
+ * and the value the caller should persist next — `store: null` means delete the
+ * record (consumed / dead / locked), a string means overwrite (mismatch with
+ * guesses left). On `ok` the caller deletes the record and sets the new password.
+ */
+export function consumeResetCode(stored: string | null, code: string, now = Date.now()): ResetOutcome {
+  if (!stored) return { ok: false, reason: "missing", store: null };
+  let rec: ResetRecord;
+  try {
+    rec = JSON.parse(stored) as ResetRecord;
+  } catch {
+    return { ok: false, reason: "missing", store: null };
+  }
+  if (typeof rec.exp !== "number" || now > rec.exp) return { ok: false, reason: "expired", store: null };
+  if (rec.n >= PW_RESET_MAX_ATTEMPTS) return { ok: false, reason: "locked", store: null };
+
+  const expected = hashResetCode(code);
+  if (/^\d{6}$/.test(code) && constantTimeEqual(expected, rec.h)) return { ok: true };
+
+  // Wrong code: burn one attempt; drop the record entirely once attempts run out.
+  const next: ResetRecord = { ...rec, n: rec.n + 1 };
+  return {
+    ok: false,
+    reason: "mismatch",
+    store: next.n >= PW_RESET_MAX_ATTEMPTS ? null : JSON.stringify(next),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -249,4 +311,35 @@ export function loginRateLimited(ip: string): boolean {
 
 export function resetLoginAttempts(ip: string): void {
   attempts.delete(ip);
+}
+
+// Per-account failure throttle. The per-IP limiter above doesn't stop an
+// attacker rotating IPs against ONE admin, so we also lock a telegram_id after
+// too many *failed* logins in the window. Unlike the IP limiter this only counts
+// failures (recorded by the caller), so legitimate logins never trip it.
+const accountFailures = new Map<number, number[]>();
+
+function pruneFailures(tg: number, now: number): number[] {
+  const window = config.WEB_LOGIN_RATE_LIMIT_WINDOW_SECONDS;
+  const dq = accountFailures.get(tg) ?? [];
+  while (dq.length && now - dq[0]! > window) dq.shift();
+  accountFailures.set(tg, dq);
+  return dq;
+}
+
+/** True if `telegramId` has hit the failed-login cap within the window. */
+export function accountLockedOut(telegramId: number): boolean {
+  if (!Number.isInteger(telegramId)) return false;
+  return pruneFailures(telegramId, Date.now() / 1000).length >= config.WEB_LOGIN_RATE_LIMIT_MAX;
+}
+
+/** Record one failed login against `telegramId`. */
+export function recordAccountFailure(telegramId: number): void {
+  if (!Number.isInteger(telegramId)) return;
+  pruneFailures(telegramId, Date.now() / 1000).push(Date.now() / 1000);
+}
+
+/** Clear an account's failure count (call on a successful login). */
+export function resetAccountFailures(telegramId: number): void {
+  accountFailures.delete(telegramId);
 }

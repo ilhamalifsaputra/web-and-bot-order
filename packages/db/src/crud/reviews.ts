@@ -84,12 +84,14 @@ export function countRestockSubscribers(db: Db, productId: number): Promise<numb
 export interface ReviewFilter {
   productId?: number | null;
   hidden?: boolean | null;
+  userId?: number | null;
 }
 
 function reviewWhere(f: ReviewFilter) {
   const where: Record<string, unknown> = {};
   if (f.productId != null) where.productId = f.productId;
   if (f.hidden != null) where.hidden = f.hidden;
+  if (f.userId != null) where.userId = f.userId;
   return where;
 }
 

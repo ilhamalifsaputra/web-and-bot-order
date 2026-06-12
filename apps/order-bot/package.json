@@ -3,6 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./main": "./src/main.ts",
+    "./jobs": "./src/jobs/index.ts",
+    "./payments/binanceInternal": "./src/payments/binanceInternal.ts"
+  },
   "scripts": {
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",

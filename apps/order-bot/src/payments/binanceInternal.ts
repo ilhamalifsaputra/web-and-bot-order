@@ -10,11 +10,13 @@
  * (signed, read-only). It never touches trading or withdrawal endpoints. Use a
  * read-only API key.
  *
- * ⚠ UNVERIFIED ASSUMPTION: that incoming UID internal transfers appear in
- * /sapi/v1/pay/transactions with a buyer-supplied `note`. This is the linchpin
- * of auto-confirmation and must be confirmed against a live account — the row
- * mapping in `normalizeTx()` is intentionally isolated so the endpoint/fields
- * can be swapped without touching the matching/delivery logic.
+ * ⚠ NOTE FIELD: a live probe (scripts/binance-probe.ts) confirmed the endpoint
+ * returns C2C transfers but with an EMPTY `note` on historical rows — i.e. the
+ * buyer memo may not surface here. Matching therefore has two layers: (1) note →
+ * paymentRef (primary, once a memo'd test transfer confirms the field), and
+ * (2) a unique-amount fallback (matchByAmount) so auto-confirm still works when
+ * the note is absent. The row mapping in `normalizeTx()` stays isolated so the
+ * endpoint/fields can be swapped without touching matching/delivery.
  */
 import { createHmac } from "node:crypto";
 import type { Api } from "grammy";
@@ -28,6 +30,7 @@ import {
   deliverPaidInternalOrder,
   markUnderpaid,
   recordUnmatchedTx,
+  recordBinancePollHealth,
   type DeliverResult,
 } from "@app/db";
 import { coreT } from "../util/i18n";
@@ -75,6 +78,26 @@ export function classifyTx(
   return "underpaid";
 }
 
+/**
+ * Amount fallback for when the note is missing/garbled (the live probe showed
+ * `/sapi/v1/pay/transactions` returns an empty `note` for C2C transfers, so we
+ * cannot rely on the memo alone). A transfer maps to an order ONLY when exactly
+ * one pending order expects an amount within `tolerance` of the received amount.
+ * With unique-cents enabled every order has a distinct total, so this is exact;
+ * on a collision (≥2 candidates) we refuse and leave it for manual matching,
+ * never guessing whose money it is. Returns the sole candidate or null.
+ */
+export function matchByAmount<T extends { totalAmount: Decimal.Value }>(
+  tx: { amount: number },
+  orders: readonly T[],
+  tolerance = AMOUNT_TOLERANCE,
+): T | null {
+  const hits = orders.filter(
+    (o) => Math.abs(tx.amount - new Decimal(o.totalAmount).toNumber()) <= tolerance,
+  );
+  return hits.length === 1 ? hits[0]! : null;
+}
+
 // ---------------------------------------------------------------------------
 // Signed Binance REST (read-only)
 // ---------------------------------------------------------------------------
@@ -85,13 +108,25 @@ function sign(query: string): string {
 
 class RateLimitedError extends Error {}
 
-/** Map a raw pay/transactions row to our normalized shape (the swappable bit). */
-function normalizeTx(raw: Record<string, unknown>): BinanceTx | null {
+/** First value that is a non-empty string after trimming, else "". Used because
+ * `??` only skips null/undefined — an empty-string `note` must fall through. */
+function firstNonEmpty(...vals: unknown[]): string {
+  for (const v of vals) {
+    const s = (v == null ? "" : String(v)).trim();
+    if (s) return s;
+  }
+  return "";
+}
+
+/** Map a raw pay/transactions row to our normalized shape (the swappable bit).
+ * Exported for the fixture test that pins the real Binance payload shape. */
+export function normalizeTx(raw: Record<string, unknown>): BinanceTx | null {
   const txId = raw.transactionId ?? raw.transactionGroupId ?? raw.id;
   const amount = Number(raw.amount);
   const currency = String(raw.currency ?? raw.asset ?? "");
-  // Binance Pay puts the buyer memo in `note`; some payloads use `orderId`.
-  const note = String(raw.note ?? raw.orderId ?? raw.remark ?? "");
+  // Buyer memo: try the known memo-carrying fields, skipping empty strings.
+  // NB: `orderId` is Binance's OWN id (not our paymentRef) — never use it here.
+  const note = firstNonEmpty(raw.note, raw.remark, raw.message);
   if (txId == null || !Number.isFinite(amount) || amount <= 0) return null; // received only
   return { txId: String(txId), note, amount, currency };
 }
@@ -221,26 +256,44 @@ export async function pollOnce(api: Api): Promise<void> {
     } else {
       logger.error({ err }, "Binance transfer fetch failed");
     }
+    // Heartbeat so the web ops panel shows the poller is alive (and backing off).
+    await recordBinancePollHealth(prisma, { lastTxCount: 0, backoffUntil: backoffUntil || null }).catch(() => undefined);
     return;
   }
 
   const now = new Date();
   const orders = await listPendingInternalOrders(prisma, now);
   if (txs.length) logger.info(`Binance poll: ${txs.length} tx fetched, ${orders.length} pending order(s)`);
+  await recordBinancePollHealth(prisma, { lastTxCount: txs.length, backoffUntil: null }).catch(() => undefined);
 
+  await processTransfers(api, txs, orders);
+}
+
+/**
+ * Match a batch of fetched transfers against the pending orders and act on each
+ * (deliver / underpaid / unmatched). Pure-ish wiring extracted from `pollOnce`
+ * so it can be integration-tested against the real DB without the API/env gate.
+ */
+export async function processTransfers(api: Api, txs: BinanceTx[], orders: PendingOrder[]): Promise<void> {
   const byRef = new Map<string, PendingOrder>();
   for (const o of orders) if (o.paymentRef) byRef.set(o.paymentRef.toLowerCase(), o);
 
   for (const tx of txs) {
-    const order = byRef.get(tx.note.trim().toLowerCase());
+    // Primary: match the buyer's note to an order's paymentRef. Fallback: when
+    // the note is empty/garbled, match by a unique expected amount (see
+    // matchByAmount). The amount path only ever yields an exact-within-tolerance
+    // hit, so it's treated as a clean "match" (never auto-underpaid).
+    const byNote = tx.note ? byRef.get(tx.note.trim().toLowerCase()) : undefined;
+    const order = byNote ?? matchByAmount(tx, orders);
     if (!order) {
       if (await recordUnmatchedTx(prisma, { binanceTxId: tx.txId, amount: tx.amount })) {
         logger.info(`Unmatched transfer tx=${tx.txId} note=${tx.note} amount=${tx.amount}`);
       }
       continue;
     }
+    const matchedBy = byNote ? "note" : "amount";
 
-    const cls = classifyTx(tx, order);
+    const cls = byNote ? classifyTx(tx, order) : "match";
     if (cls === "underpaid") {
       if (await markUnderpaid(prisma, { orderId: order.id, binanceTxId: tx.txId, amount: tx.amount })) {
         logger.warn(`Underpaid order ${order.orderCode}: got ${tx.amount}, expected ${order.totalAmount}`);
@@ -256,7 +309,7 @@ export async function pollOnce(api: Api): Promise<void> {
       try {
         const r = await deliverPaidInternalOrder(prisma, { orderId: order.id, binanceTxId: tx.txId, amount: tx.amount });
         if (r.status === "delivered") {
-          logger.info(`Match → delivered order ${order.orderCode} (tx ${tx.txId})`);
+          logger.info(`Match(${matchedBy}) → delivered order ${order.orderCode} (tx ${tx.txId})`);
           await onDelivered(api, r.order);
         } else if (r.status === "stale") {
           logger.warn(`Matched tx ${tx.txId} but order ${order.orderCode} no longer PENDING`);
@@ -282,6 +335,17 @@ export function startPolling(api: Api): void {
   if (!isBinanceInternalEnabled()) {
     logger.info("Binance Internal Transfer disabled (no UID/API creds) — poller not started");
     return;
+  }
+  // The amount fallback (matchByAmount) can only disambiguate orders when their
+  // totals are distinct. With Binance Internal on but unique-cents off, two
+  // buyers owing the same amount become unmatchable (refused, not mis-delivered)
+  // — auto-confirm silently degrades. Warn loudly at boot.
+  if (!config.USE_UNIQUE_CENTS) {
+    logger.warn(
+      "⚠ Binance Internal is ENABLED but USE_UNIQUE_CENTS is OFF — equal-total " +
+        "orders cannot be matched by amount when the note is missing. Set " +
+        "USE_UNIQUE_CENTS=1 so every order has a distinct total.",
+    );
   }
   stopped = false;
   const intervalMs = config.POLL_INTERVAL_SECONDS * 1000;

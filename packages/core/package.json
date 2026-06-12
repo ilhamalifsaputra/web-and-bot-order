@@ -12,7 +12,9 @@
     "./formatters": "./src/formatters.ts",
     "./errors": "./src/errors.ts",
     "./logger": "./src/logger.ts",
-    "./enums": "./src/enums.ts"
+    "./enums": "./src/enums.ts",
+    "./runtime": "./src/runtime.ts",
+    "./fx": "./src/fx.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

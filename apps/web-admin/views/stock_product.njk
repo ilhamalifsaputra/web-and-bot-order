@@ -4,64 +4,79 @@
 
 {% block content %}
 <div class="mb-6">
-  <a href="/stock" class="text-sm text-slate-500 hover:underline">← All stock</a>
-  <h1 class="text-2xl font-semibold mt-1">{{ product.name }}</h1>
-  <p class="text-slate-500">{{ product.durationLabel }} · {{ available }} available</p>
+  <a href="/stock" class="link text-sm">← All stock</a>
+  <h1 class="page-title mt-1 flex items-center gap-2.5"><i data-lucide="boxes" class="w-7 h-7 text-violet-500"></i> {{ product.name }}</h1>
+  <p class="page-lead">{{ product.durationLabel }} · {{ available }} ready to sell</p>
 </div>
 {{ ui.flash(msg, kind) }}
 
-<section class="bg-white rounded-lg shadow p-5 mb-8">
-  <h2 class="font-semibold mb-2">Bulk add stock</h2>
-  <p class="text-xs text-slate-500 mb-3">One credential per line, e.g. <code>email:password</code> or <code>email|password|extra</code>.</p>
+<section class="card card-pad mb-8">
+  <h2 class="section-title mb-2">Add stock</h2>
+  {% if waiting %}
+  <p class="text-sm mb-3 text-amberx bg-amberx-tint border border-amberx/30 rounded-xl px-3 py-2">
+    <strong>{{ waiting }}</strong> customer{{ 's' if waiting != 1 }} waiting on restock — they'll be notified automatically once you add stock.
+  </p>
+  {% endif %}
+  <p class="text-xs text-ink-soft mb-3">One login per line, for example <code class="codeish">email:password</code> or <code class="codeish">email|password|extra</code>.</p>
   <form method="post" action="/stock/{{ product.id }}/add">
     {{ ui.csrf_field(admin) }}
-    <textarea name="credentials" rows="6" required
-      class="w-full font-mono text-sm border rounded px-3 py-2 focus:outline-none focus:ring-2 focus:ring-slate-400"
+    <textarea name="credentials" rows="6" required class="field font-mono text-sm"
       placeholder="user1@example.com:pass1&#10;user2@example.com:pass2"></textarea>
-    <button type="submit"
-      class="mt-3 bg-slate-900 text-white text-sm px-4 py-2 rounded hover:bg-slate-700">Add stock</button>
+    <button type="submit" class="btn btn-primary mt-3">Add stock</button>
   </form>
 </section>
 
-<section class="bg-white rounded-lg shadow overflow-x-auto">
-  <table class="min-w-full text-sm">
-    <thead class="bg-slate-100 text-slate-600 text-left">
+{% if items %}
+<form id="bulk-stock-form" method="post" action="/stock/{{ product.id }}/bulk-dead" class="card p-3 mb-3 flex flex-wrap items-center gap-2 text-sm"
+      onsubmit="return collectBulkStock();">
+  {{ ui.csrf_field(admin) }}
+  <input type="hidden" name="ids" id="bs-ids">
+  <label class="flex items-center gap-1 text-ink-soft"><input type="checkbox" onclick="document.querySelectorAll('.bs-cb').forEach(c=>c.checked=this.checked)"> Select all (ready/held)</label>
+  <input type="text" name="note" placeholder="reason (optional)" class="field w-auto py-1.5">
+  <button type="submit" class="btn btn-danger btn-sm"
+          onclick="return confirm('Mark the selected items as bad (no longer usable)?');">Mark selected as bad</button>
+</form>
+{% endif %}
+
+<section class="card overflow-x-auto">
+  <table class="data-table">
+    <thead>
       <tr>
-        <th class="px-4 py-2">#</th>
-        <th class="px-4 py-2">Status</th>
-        <th class="px-4 py-2">Credentials</th>
-        <th class="px-4 py-2">Order</th>
-        <th class="px-4 py-2">Added</th>
-        <th class="px-4 py-2">Note</th>
-        <th class="px-4 py-2">Actions</th>
+        <th></th>
+        <th>#</th>
+        <th>Status</th>
+        <th>Login</th>
+        <th>Order</th>
+        <th>Added</th>
+        <th>Note</th>
+        <th></th>
       </tr>
     </thead>
-    <tbody class="divide-y divide-slate-100">
+    <tbody>
       {% for it in items %}
-      <tr class="hover:bg-slate-50 align-top">
-        <td class="px-4 py-2 text-slate-400">{{ it.id }}</td>
-        <td class="px-4 py-2">{{ ui.status_badge(it.status) }}</td>
-        <td class="px-4 py-2 font-mono text-xs break-all max-w-xs">{{ it.credentials }}</td>
-        <td class="px-4 py-2 text-slate-500">{{ it.orderId or '—' }}</td>
-        <td class="px-4 py-2 text-slate-500" title="UTC stored">{{ it.addedAt | localdt }}</td>
-        <td class="px-4 py-2 text-slate-500">{{ it.note or '—' }}</td>
-        <td class="px-4 py-2">
+      <tr class="align-top">
+        <td>{% if (it.status | lower) in ['available', 'reserved'] %}<input type="checkbox" class="bs-cb" value="{{ it.id }}">{% endif %}</td>
+        <td class="text-ink-faint tabular">{{ it.id }}</td>
+        <td>{{ ui.status_badge(it.status) }}</td>
+        <td class="font-mono text-xs break-all max-w-xs">{{ it.credentials }}</td>
+        <td class="text-ink-soft">{{ it.orderId or '—' }}</td>
+        <td class="text-ink-soft" title="{{ tzname }}">{{ it.addedAt | localdt }}</td>
+        <td class="text-ink-soft">{{ it.note or '—' }}</td>
+        <td>
           <details>
-            <summary class="cursor-pointer text-slate-700 hover:underline">Edit</summary>
+            <summary class="cursor-pointer link font-normal">Edit</summary>
             <div class="mt-2 space-y-2">
               <form method="post" action="/stock/item/{{ it.id }}/note" class="flex gap-1">
                 {{ ui.csrf_field(admin) }}
-                <input type="text" name="note" value="{{ it.note or '' }}" placeholder="note"
-                  class="border rounded px-2 py-1 text-xs w-40">
-                <button class="text-xs px-2 py-1 rounded bg-slate-200 hover:bg-slate-300">Save note</button>
+                <input type="text" name="note" value="{{ it.note or '' }}" placeholder="note" class="field text-xs w-40 py-1">
+                <button class="btn btn-soft btn-sm">Save note</button>
               </form>
               {% if (it.status | lower) not in ['sold', 'dead'] %}
               <form method="post" action="/stock/item/{{ it.id }}/dead" class="flex gap-1"
-                    onsubmit="return confirm('Mark stock item #{{ it.id }} as dead?');">
+                    onsubmit="return confirm('Mark item #{{ it.id }} as bad?');">
                 {{ ui.csrf_field(admin) }}
-                <input type="text" name="note" placeholder="reason"
-                  class="border rounded px-2 py-1 text-xs w-40">
-                <button class="text-xs px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200">Mark dead</button>
+                <input type="text" name="note" placeholder="reason" class="field text-xs w-40 py-1">
+                <button class="btn btn-danger btn-sm">Mark as bad</button>
               </form>
               {% endif %}
             </div>
@@ -69,9 +84,18 @@
         </td>
       </tr>
       {% else %}
-      <tr><td colspan="7" class="px-4 py-6 text-center text-slate-400">No stock items yet.</td></tr>
+      {{ ui.empty_row(8, 'No stock added yet.') }}
       {% endfor %}
     </tbody>
   </table>
 </section>
+
+<script>
+function collectBulkStock() {
+  const ids = [...document.querySelectorAll('.bs-cb:checked')].map(c => c.value);
+  if (!ids.length) { alert('Select at least one ready/held item.'); return false; }
+  document.getElementById('bs-ids').value = ids.join(',');
+  return true;
+}
+</script>
 {% endblock %}

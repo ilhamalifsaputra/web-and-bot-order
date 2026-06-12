@@ -7,6 +7,10 @@
 
 generator client {
   provider = "prisma-client-js"
+  // No binaryTargets: the deploy runs `prisma generate` (postinstall) ON the
+  // Hostinger Linux host, so "native" already produces the correct Linux query
+  // engine there. Hardcoding Linux targets here would force every dev/CI machine
+  // to download extra engine binaries on each generate. See DEPLOY-HOSTINGER.md §5.
 }
 
 datasource db {
@@ -38,12 +42,34 @@ model User {
   restockSubscriptions RestockSubscription[]
   auditLogs            AuditLog[]
   ticketMessages       TicketMessage[]
+  walletTransactions   WalletTransaction[]
   referralsAsReferee   Referral?             @relation("ReferralReferee")
   referralsAsReferrer  Referral[]            @relation("ReferralReferrer")
   ticketsAsUser        SupportTicket[]       @relation("TicketUser")
   ticketsAsAdmin       SupportTicket[]       @relation("TicketAdmin")
 
   @@map("users")
+}
+
+/// Append-only per-user money timeline. One row per applied wallet movement,
+/// written by `adjustWallet` so NOTHING that touches a balance is missed:
+/// manual admin top-ups, underpaid refunds, referral payouts, order
+/// payments/refunds. `balanceAfter` is the running balance at the time.
+model WalletTransaction {
+  id           Int      @id @default(autoincrement())
+  userId       Int      @map("user_id")
+  delta        Decimal // signed: +credit / −debit (the amount actually applied)
+  balanceAfter Decimal  @map("balance_after")
+  reason       String // machine code: admin_adjust | underpaid_refund | referral | order_payment | order_refund | adjust
+  note         String?
+  adminId      Int?     @map("admin_id") // acting admin (null = system/customer)
+  orderId      Int?     @map("order_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId], map: "ix_wallet_transactions_user_id")
+  @@map("wallet_transactions")
 }
 
 model Category {
@@ -64,6 +90,10 @@ model Product {
   name          String
   description   String?
   imageFileId   String?  @map("image_file_id")
+  /// Web-facing product photo URL (admin-set, storefront only). Telegram
+  /// imageFileId can't be used as an <img src>; when this is null the
+  /// storefront falls back to its curated Unsplash map (plan.md §8).
+  webImageUrl   String?  @map("web_image_url")
   type          String
   durationLabel String   @map("duration_label")
   price         Decimal
@@ -117,6 +147,14 @@ model Order {
   walletUsed         Decimal   @default(0) @map("wallet_used")
   bulkDiscountAmount Decimal   @default(0) @map("bulk_discount_amount")
   status             String    @default("PENDING_PAYMENT")
+  /// Transaction currency, set when the buyer picks a payment method
+  /// (plan.md §15): "IDR" (TokoPay) or "USDT" (Binance). Catalog prices are
+  /// central IDR; rows created before this column existed are USDT-era
+  /// snapshots (see scripts/convert-prices-to-idr.ts).
+  currency           String    @default("IDR")
+  /// Rupiah-per-USDT snapshot taken when currency=USDT, so later rate edits
+  /// never change what historical orders were charged.
+  fxRate             Decimal?  @map("fx_rate")
   paymentMethod      String    @default("BINANCE_PAY") @map("payment_method")
   paymentRef         String?   @unique(map: "ix_orders_payment_ref") @map("payment_ref")
   paymentMsgChatId   BigInt?   @map("payment_msg_chat_id")
@@ -186,6 +224,7 @@ model Review {
   orderId   Int      @map("order_id")
   rating    Int
   comment   String?
+  hidden    Boolean  @default(false)
   createdAt DateTime @default(now()) @map("created_at")
 
   user    User    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
@@ -338,6 +377,25 @@ model NotificationOutbox {
 /// the UNIQUE binance_tx_id is what prevents double-processing / double-delivery
 /// (SQLite has no row locking, so the insert-first-on-unique pattern is the
 /// concurrency guard — see payments/binanceInternal.ts).
+/// Broadcast queue — the web ENQUEUES here; the order-bot drains and sends
+/// (the web never calls Telegram). One row = one broadcast to a segment.
+model Broadcast {
+  id          Int       @id @default(autoincrement())
+  message     String
+  segment     String // ALL | RESELLERS | RECENT_BUYERS
+  status      String    @default("PENDING") // PENDING | SENDING | SENT | CANCELLED
+  scheduledAt DateTime? @map("scheduled_at") // null = send asap
+  createdById Int?      @map("created_by_id") // acting web admin (user id)
+  totalCount  Int       @default(0) @map("total_count") // recipients at enqueue (display)
+  sentCount   Int       @default(0) @map("sent_count")
+  failedCount Int       @default(0) @map("failed_count")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  sentAt      DateTime? @map("sent_at")
+
+  @@index([status], map: "ix_broadcasts_status")
+  @@map("broadcasts")
+}
+
 model ProcessedBinanceTx {
   id          Int      @id @default(autoincrement())
   binanceTxId String   @unique(map: "ix_processed_binance_tx_txid") @map("binance_tx_id")
@@ -349,4 +407,21 @@ model ProcessedBinanceTx {
 
   @@index([orderId], map: "ix_processed_binance_tx_order_id")
   @@map("processed_binance_tx")
+}
+
+/// Idempotency ledger for TokoPay webhook callbacks (the IDR payment path) —
+/// same insert-first-on-unique pattern as ProcessedBinanceTx: a callback's
+/// reference id is claimed exactly once, so repeated callbacks can never
+/// double-deliver an order (plan.md §15.5).
+model ProcessedTokopayTx {
+  id        Int      @id @default(autoincrement())
+  trxId     String   @unique(map: "ix_processed_tokopay_tx_trxid") @map("trx_id")
+  orderId   Int?     @map("order_id")
+  amount    Decimal?
+  // matched | unmatched | delivery_failed
+  outcome   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([orderId], map: "ix_processed_tokopay_tx_order_id")
+  @@map("processed_tokopay_tx")
 }

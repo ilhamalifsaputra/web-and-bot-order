@@ -92,6 +92,12 @@ export function getOrderByCode(db: Db, orderCode: string) {
   });
 }
 
+/** By code with the full include (items+stockItem+product, user, voucher) —
+ * storefront order detail needs stockItem.credentials for DELIVERED orders. */
+export function getOrderByCodeFull(db: Db, orderCode: string) {
+  return db.order.findUnique({ where: { orderCode }, include: fullInclude });
+}
+
 export async function createOrderFromCart(
   db: Db,
   args: { user: { id: number; role: string; walletBalance: Decimal.Value }; voucherCode?: string | null; walletAmount?: Decimal.Value },
@@ -184,7 +190,9 @@ export async function createOrderFromCart(
   });
 
   // 9. Wallet debit (atomic)
-  if (walletUsed.greaterThan(0)) await adjustWallet(db, args.user.id, walletUsed.negated());
+  if (walletUsed.greaterThan(0)) {
+    await adjustWallet(db, args.user.id, walletUsed.negated(), { reason: "order_payment", orderId: order.id });
+  }
 
   // 10. Bump voucher usage
   if (voucher) {
@@ -359,6 +367,31 @@ export function listExpiredPendingOrders(db: Db, now: Date) {
   });
 }
 
+// ---- SLA widgets (web-admin dashboard) ------------------------------------
+
+/** Orders aging in PENDING_VERIFICATION beyond `cutoff` (oldest first). */
+export function listOrdersAgingInVerification(db: Db, cutoff: Date, limit = 50) {
+  return db.order.findMany({
+    where: { status: OrderStatus.PENDING_VERIFICATION, createdAt: { lt: cutoff } },
+    orderBy: { createdAt: "asc" },
+    take: limit,
+    include: { user: true },
+  });
+}
+
+/** PENDING_PAYMENT orders whose window expires within [now, until] (soonest first). */
+export function listExpiringPendingPayments(db: Db, now: Date, until: Date, limit = 50) {
+  return db.order.findMany({
+    where: {
+      status: OrderStatus.PENDING_PAYMENT,
+      expiresAt: { not: null, gte: now, lte: until },
+    },
+    orderBy: { expiresAt: "asc" },
+    take: limit,
+    include: { user: true },
+  });
+}
+
 /** Release any reserved stock + refund wallet + roll back voucher usage. */
 async function releaseOrderHolds(
   db: Db,
@@ -373,7 +406,7 @@ async function releaseOrderHolds(
     }
   }
   if (new Decimal(order.walletUsed).greaterThan(0)) {
-    await adjustWallet(db, order.userId, order.walletUsed, { allowNegative: true });
+    await adjustWallet(db, order.userId, order.walletUsed, { allowNegative: true, reason: "order_refund", orderId: order.id });
   }
   if (order.voucherId) {
     const v = await db.voucher.findUnique({ where: { id: order.voucherId } });
@@ -491,12 +524,15 @@ export async function approveOrder(
     },
   });
 
-  // Referral commission (referee's first delivered order only).
+  // Referral commission (referee's first delivered order only). Currency +
+  // fxRate ride along so IDR orders convert to the USDT wallet basis.
   await maybePayReferralCommission(db, {
     id: order.id,
     userId: order.userId,
     orderCode: order.orderCode,
     totalAmount: order.totalAmount,
+    currency: order.currency,
+    fxRate: order.fxRate,
   });
 
   // Enqueue testimoni notification in the same transaction as the status flip.
@@ -512,7 +548,9 @@ export async function approveOrder(
     masked_buyer_id: maskedBuyerId,
     items: itemsSummary,
     total: String(order.totalAmount),
-    currency: config.CURRENCY,
+    // The order's own transaction currency (IDR via TokoPay / USDT via
+    // Binance), not the legacy global CURRENCY env.
+    currency: order.currency,
     delivered_at: utcStamp(now),
     buyer_language: langCode(order.user.language),
   });

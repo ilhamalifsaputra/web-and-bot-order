@@ -1,49 +1,53 @@
 {% extends "base.njk" %}
-{% block title %}Audit log · Stock Admin{% endblock %}
+{% import "_macros.njk" as ui %}
+{% block title %}Activity Log · Shop Admin{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-semibold mb-6">Audit log</h1>
+<header class="mb-6">
+  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="history" class="w-7 h-7 text-blue-500"></i> Activity Log</h1>
+  <p class="page-lead">A record of everything you and your team have done.</p>
+</header>
 
-<form method="get" action="/audit" class="bg-white rounded-lg shadow p-4 mb-6 flex flex-wrap gap-3 items-end text-sm">
-  <div><label class="block text-xs text-slate-500 mb-1">Action</label><input name="action" value="{{ f.action }}" class="border rounded px-2 py-1"></div>
-  <div><label class="block text-xs text-slate-500 mb-1">Target type</label><input name="target_type" value="{{ f.target_type }}" class="border rounded px-2 py-1"></div>
-  <div><label class="block text-xs text-slate-500 mb-1">Admin (user id)</label><input name="admin_id" value="{{ f.admin_id }}" class="border rounded px-2 py-1 w-24"></div>
-  <div><label class="block text-xs text-slate-500 mb-1">From (UTC)</label><input type="date" name="since" value="{{ f.since }}" class="border rounded px-2 py-1"></div>
-  <div><label class="block text-xs text-slate-500 mb-1">To (UTC)</label><input type="date" name="until" value="{{ f.until }}" class="border rounded px-2 py-1"></div>
-  <button class="bg-slate-900 text-white px-4 py-1.5 rounded hover:bg-slate-700">Filter</button>
-  <a href="/audit" class="text-slate-500 hover:underline px-2">Reset</a>
+<form method="get" action="/audit" class="card card-pad mb-6 flex flex-wrap gap-3 items-end">
+  <div><label class="field-label">Action</label><input name="action" value="{{ f.action }}" class="field"></div>
+  <div><label class="field-label">Item type</label><input name="target_type" value="{{ f.target_type }}" class="field"></div>
+  <div><label class="field-label">Done by (id)</label><input name="admin_id" value="{{ f.admin_id }}" class="field w-24"></div>
+  <div><label class="field-label">From date</label><input type="date" name="since" value="{{ f.since }}" class="field"></div>
+  <div><label class="field-label">To date</label><input type="date" name="until" value="{{ f.until }}" class="field"></div>
+  <button class="btn btn-primary">Search</button>
+  <a href="/audit" class="btn btn-ghost">Clear</a>
 </form>
 
-<div class="bg-white rounded-lg shadow overflow-x-auto">
-  <table class="min-w-full text-sm">
-    <thead class="bg-slate-100 text-slate-600 text-left">
+<div class="card overflow-x-auto">
+  <table class="data-table">
+    <thead>
       <tr>
-        <th class="px-4 py-2">When</th><th class="px-4 py-2">Admin</th><th class="px-4 py-2">Action</th>
-        <th class="px-4 py-2">Target</th><th class="px-4 py-2">Details</th>
+        <th>When</th><th>Done by</th><th>Action</th>
+        <th>Item</th><th>Details</th>
       </tr>
     </thead>
-    <tbody class="divide-y divide-slate-100">
+    <tbody>
       {% for l in logs %}
-      <tr class="hover:bg-slate-50 align-top">
-        <td class="px-4 py-2 text-slate-500 whitespace-nowrap" title="{{ tzname }}">{{ l.createdAt | localdt('yyyy-LL-dd HH:mm:ss') }}</td>
-        <td class="px-4 py-2">{{ l.adminId if l.adminId is not none else '—' }}</td>
-        <td class="px-4 py-2 font-medium">{{ l.action }}</td>
-        <td class="px-4 py-2 text-slate-500">{{ l.targetType or '' }}{% if l.targetId %} #{{ l.targetId }}{% endif %}</td>
-        <td class="px-4 py-2 text-slate-600 break-all">{{ l.details or '—' }}</td>
+      <tr class="align-top">
+        <td class="text-ink-soft whitespace-nowrap" title="{{ tzname }}">{{ l.createdAt | localdt('yyyy-LL-dd HH:mm:ss') }}</td>
+        <td>{{ l.adminId if l.adminId is not none else '—' }}</td>
+        <td class="font-medium">{{ l.action | replace('_', ' ') | title }}</td>
+        <td class="text-ink-soft">{{ l.targetType or '' }}{% if l.targetId %} #{{ l.targetId }}{% endif %}</td>
+        <td class="text-ink-soft break-all">{{ l.details or '—' }}</td>
       </tr>
       {% else %}
-      <tr><td colspan="5" class="px-4 py-6 text-center text-slate-400">No audit entries match.</td></tr>
+      {{ ui.empty_row(5, 'No activity matches.') }}
       {% endfor %}
     </tbody>
   </table>
 </div>
 
-<div class="flex items-center justify-between mt-4 text-sm text-slate-500">
+<div class="flex items-center justify-between mt-4 text-sm text-ink-soft">
   <span>{{ total }} entr(ies) · page {{ page }}</span>
   <span class="flex gap-3">
     {% set qbase = '/audit?action=' + f.action + '&target_type=' + f.target_type + '&admin_id=' + (f.admin_id | string) + '&since=' + f.since + '&until=' + f.until %}
-    {% if page > 1 %}<a class="hover:underline" href="{{ qbase }}&page={{ page - 1 }}">← Prev</a>{% endif %}
-    {% if has_next %}<a class="hover:underline" href="{{ qbase }}&page={{ page + 1 }}">Next →</a>{% endif %}
+    {% if page > 1 %}<a class="link" href="{{ qbase }}&page={{ page - 1 }}">← Newer</a>{% endif %}
+    {% if has_next %}<a class="link" href="{{ qbase }}&page={{ page + 1 }}">Older →</a>{% endif %}
   </span>
 </div>
 {% endblock %}

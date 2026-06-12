@@ -16,17 +16,32 @@ import {
 } from "@app/db";
 import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
+import { NotificationEvent } from "@app/core/enums";
 import { render } from "./templates";
+
+// Events delivered as a direct message (payload.chat_id), not as a post to
+// PUBLIC_CHANNEL_ID. DMs only work from a bot the recipient has started —
+// i.e. the main order-bot — so keep NOTIF_BOT_TOKEN unset for these to arrive.
+const ADMIN_DM_EVENTS = new Set<string>([
+  NotificationEvent.ADMIN_PW_RESET,
+  NotificationEvent.ORDER_DELIVERED_DM, // buyer DM (web auto-delivery)
+]);
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-export async function runDispatcher(bot: Bot): Promise<void> {
-  for (;;) {
+/**
+ * Drain the outbox forever. Pass an `AbortSignal` to stop the loop gracefully
+ * (used by the combined single-process server on SIGTERM/SIGINT); the standalone
+ * notifier omits it and loops until the process exits.
+ */
+export async function runDispatcher(bot: Bot, signal?: AbortSignal): Promise<void> {
+  while (!signal?.aborted) {
     try {
       await drainBatch(bot);
     } catch (e) {
       logger.error({ err: e }, "Dispatcher tick error, continuing...");
     }
+    if (signal?.aborted) break;
     await sleep(config.NOTIF_POLL_INTERVAL_SECONDS * 1000);
   }
 }
@@ -58,10 +73,16 @@ async function drainBatch(bot: Bot): Promise<void> {
       continue;
     }
 
+    // Admin DMs target payload.chat_id; everything else posts to the channel.
+    const isDm = ADMIN_DM_EVENTS.has(row.event);
+    const chatId = isDm ? Number(payload.chat_id) : Number(config.PUBLIC_CHANNEL_ID);
+    if (!Number.isFinite(chatId)) {
+      await markNotificationFailed(prisma, row.id, isDm ? "missing chat_id" : "no PUBLIC_CHANNEL_ID", 1);
+      continue;
+    }
+
     try {
-      await bot.api.sendMessage(Number(config.PUBLIC_CHANNEL_ID), text, {
-        parse_mode: "HTML",
-      });
+      await bot.api.sendMessage(chatId, text, { parse_mode: "HTML" });
       await markNotificationSent(prisma, row.id);
       logger.info(`Sent notif id=${row.id} event=${row.event}`);
     } catch (e) {

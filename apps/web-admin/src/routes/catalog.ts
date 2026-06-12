@@ -14,10 +14,14 @@ import {
   updateCategory,
   createProduct,
   updateProduct,
+  bulkSetProductsActive,
+  bulkSetPrices,
+  getProductsByIds,
   getProduct,
   deleteBulkPricing,
   upsertBulkPricing,
   logAdminAction,
+  getUsdIdrRate,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../plugins/auth";
 import { redirectWithFlash } from "../flash";
@@ -33,7 +37,98 @@ function dec(value: string | undefined): Decimal | null {
 
 const truthy = (v: string | undefined) => ["1", "true", "on", "yes"].includes((v ?? "").toLowerCase());
 
+/** Parse a comma-separated id list (from the bulk-select hidden field). */
+const parseIds = (raw: string | undefined): number[] =>
+  (raw ?? "")
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+
 const PRODUCT_TYPES = Object.values(ProductType) as string[];
+
+interface ImportRow {
+  line: number;
+  ok: boolean;
+  error?: string;
+  category?: string;
+  name?: string;
+  type?: string;
+  durationLabel?: string;
+  price?: string;
+  data?: {
+    categoryId: number;
+    name: string;
+    description: string | null;
+    type: ProductType;
+    durationLabel: string;
+    price: string;
+    resellerPrice: string | null;
+    warrantyDays: number | null;
+  };
+}
+
+const isNum = (s: string) => /^\d+(\.\d+)?$/.test(s);
+
+/**
+ * Parse pipe-delimited product rows (one per line):
+ *   category | name | type | duration | price [| reseller | warranty_days | description]
+ * Validates each row against the known category names; returns per-row status
+ * so the operator sees a dry-run before any write. Re-run on apply (never trust
+ * a precomputed payload).
+ */
+function parseProductCsv(text: string, catByName: Map<string, number>): ImportRow[] {
+  return text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((raw, idx) => {
+      const line = idx + 1;
+      const cols = raw.split("|").map((c) => c.trim());
+      const [category, name, type, durationLabel, price, resellerPrice, warrantyDays, ...descParts] = cols;
+      const description = descParts.join("|").trim() || null;
+      const typeLower = (type ?? "").toLowerCase();
+      const base: ImportRow = { line, ok: false, category, name, type: typeLower, durationLabel, price };
+      const fail = (error: string): ImportRow => ({ ...base, error });
+
+      if (cols.length < 5) return fail("need: category|name|type|duration|price");
+      const categoryId = category ? catByName.get(category.toLowerCase()) : undefined;
+      if (!categoryId) return fail(`unknown category "${category ?? ""}"`);
+      if (!name) return fail("name is required");
+      const typeUpper = (type ?? "").toUpperCase();
+      if (typeUpper !== "SHARED" && typeUpper !== "PRIVATE") return fail("type must be shared or private");
+      if (!durationLabel) return fail("duration label is required");
+      if (!price || !isNum(price) || Number(price) <= 0) return fail("price must be a positive number");
+      let reseller: string | null = null;
+      if (resellerPrice) {
+        if (!isNum(resellerPrice)) return fail("reseller price must be a number");
+        reseller = resellerPrice;
+      }
+      let warranty: number | null = null;
+      if (warrantyDays) {
+        if (!/^\d+$/.test(warrantyDays)) return fail("warranty days must be a whole number");
+        warranty = Number(warrantyDays);
+      }
+      return {
+        ...base,
+        ok: true,
+        data: {
+          categoryId,
+          name,
+          description,
+          type: typeUpper as ProductType,
+          durationLabel,
+          price,
+          resellerPrice: reseller,
+          warrantyDays: warranty,
+        },
+      };
+    });
+}
+
+async function categoryNameMap(): Promise<Map<string, number>> {
+  const cats = await listAllCategories(prisma);
+  return new Map(cats.map((c) => [c.name.toLowerCase(), c.id]));
+}
 
 export default async function catalogRoutes(app: FastifyInstance): Promise<void> {
   app.get("/catalog", { preHandler: currentAdmin }, async (req, reply) => {
@@ -41,6 +136,9 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
     const categories = await listAllCategories(prisma);
     const products = await listAllProducts(prisma);
     const rules = await listBulkPricingRules(prisma);
+    // Prices are central Rupiah; the rate powers the read-only USDT preview
+    // next to the price inputs (same figure buyers see — plan.md §15.6).
+    const fxRate = await getUsdIdrRate(prisma);
 
     const rulesByProduct: Record<number, (typeof rules)[number]> = {};
     for (const r of rules) rulesByProduct[r.productId] = r;
@@ -52,6 +150,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       products,
       rules_by_product: rulesByProduct,
       product_types: PRODUCT_TYPES,
+      usd_idr_rate: fxRate ? fxRate.toString() : null,
       msg: q.msg ?? null,
       kind: q.kind ?? "info",
     });
@@ -88,6 +187,115 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
   });
 
   // ---- Products ----
+  // Bulk activate/deactivate selected products (one writer, audited once).
+  app.post("/catalog/products/bulk", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, string>;
+    const action = body.action;
+    const ids = parseIds(body.ids);
+    if (!ids.length || (action !== "activate" && action !== "deactivate")) {
+      return redirectWithFlash(reply, "/catalog", "Select at least one product and an action.", "error");
+    }
+    const isActive = action === "activate";
+    const count = await bulkSetProductsActive(prisma, ids, isActive);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "product_bulk_active",
+      targetType: "product",
+      targetId: null,
+      details: `is_active=${isActive} count=${count} ids=${ids.join("|").slice(0, 180)}`,
+    });
+    return redirectWithFlash(reply, "/catalog", `${count} product(s) ${isActive ? "activated" : "deactivated"}.`, "success");
+  });
+
+  // Bulk price change — STEP 1: preview old→new (no write). mode=set|percent.
+  app.post("/catalog/products/bulk-price", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, string>;
+    const ids = parseIds(body.ids);
+    const mode = body.mode === "percent" ? "percent" : "set";
+    const value = dec(body.value);
+    if (!ids.length || value === null) {
+      return redirectWithFlash(reply, "/catalog", "Select products and enter a value.", "error");
+    }
+    const products = await getProductsByIds(prisma, ids);
+    const rows = products.map((p) => {
+      const current = new Decimal(p.price);
+      let next = mode === "percent" ? current.plus(current.times(value).div(100)) : value;
+      next = new Decimal(next.toFixed(4));
+      return { id: p.id, name: p.name, current: current.toString(), next: next.toString(), invalid: next.lessThanOrEqualTo(0) };
+    });
+    return reply.view("catalog_price_preview.njk", {
+      admin: req.admin,
+      active_nav: "/catalog",
+      mode,
+      value: value.toString(),
+      rows,
+      any_invalid: rows.some((r) => r.invalid),
+      pairs: rows.filter((r) => !r.invalid).map((r) => `${r.id}:${r.next}`).join(","),
+    });
+  });
+
+  // Bulk price change — STEP 2: apply the previewed prices.
+  app.post("/catalog/products/bulk-price/apply", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, string>;
+    const items = (body.pairs ?? "")
+      .split(",")
+      .map((pair) => {
+        const [id, price] = pair.split(":");
+        return { id: Number(id), price: (price ?? "").trim() };
+      })
+      .filter((it) => Number.isInteger(it.id) && it.id > 0 && /^\d+(\.\d+)?$/.test(it.price) && Number(it.price) > 0);
+    if (!items.length) {
+      return redirectWithFlash(reply, "/catalog", "Nothing to apply.", "error");
+    }
+    const count = await prisma.$transaction((tx) => bulkSetPrices(tx, items));
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "product_bulk_price",
+      targetType: "product",
+      targetId: null,
+      details: `count=${count} pairs=${items.map((i) => `${i.id}=${i.price}`).join("|").slice(0, 200)}`,
+    });
+    return redirectWithFlash(reply, "/catalog", `Updated the price of ${count} product(s).`, "success");
+  });
+
+  // Product CSV import — STEP 1: dry-run preview (parse + validate, no write).
+  app.post("/catalog/products/import", { preHandler: csrfProtect }, async (req, reply) => {
+    const csv = ((req.body as Record<string, string>).csv ?? "").trim();
+    if (!csv) {
+      return redirectWithFlash(reply, "/catalog", "Paste at least one product row.", "error");
+    }
+    const rows = parseProductCsv(csv, await categoryNameMap());
+    const validCount = rows.filter((r) => r.ok).length;
+    return reply.view("catalog_import_preview.njk", {
+      admin: req.admin,
+      active_nav: "/catalog",
+      rows,
+      valid_count: validCount,
+      invalid_count: rows.length - validCount,
+      csv,
+    });
+  });
+
+  // Product CSV import — STEP 2: commit the valid rows in one transaction.
+  app.post("/catalog/products/import/apply", { preHandler: csrfProtect }, async (req, reply) => {
+    const csv = ((req.body as Record<string, string>).csv ?? "").trim();
+    const valid = parseProductCsv(csv, await categoryNameMap()).filter((r) => r.ok && r.data);
+    if (!valid.length) {
+      return redirectWithFlash(reply, "/catalog", "No valid rows to import.", "error");
+    }
+    await prisma.$transaction(async (tx) => {
+      for (const r of valid) await createProduct(tx, r.data!);
+    });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "product_csv_import",
+      targetType: "product",
+      targetId: null,
+      details: `count=${valid.length} names=${valid.map((r) => r.data!.name).join(",").slice(0, 200)}`,
+    });
+    return redirectWithFlash(reply, "/catalog", `Imported ${valid.length} product(s).`, "success");
+  });
+
   app.post("/catalog/product", { preHandler: csrfProtect }, async (req, reply) => {
     const body = (req.body ?? {}) as Record<string, string>;
     const name = (body.name ?? "").trim();
@@ -117,6 +325,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       resellerPrice: dec(body.reseller_price),
       warrantyDays: warranty,
       imageFileId: (body.image_file_id ?? "").trim() || null,
+      webImageUrl: (body.web_image_url ?? "").trim() || null,
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
@@ -143,6 +352,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       price: priceDec,
       resellerPrice: dec(body.reseller_price),
       imageFileId: (body.image_file_id ?? "").trim() || null,
+      webImageUrl: (body.web_image_url ?? "").trim() || null,
       isActive: truthy(body.is_active),
     };
     if ((body.warranty_days ?? "").trim()) {

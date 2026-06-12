@@ -9,6 +9,7 @@
  */
 import { InputFile } from "grammy";
 import { config } from "@app/core/config";
+import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ensureUtc, localize } from "@app/core/datetime";
 import { UserRole, OrderStatus, TicketStatus, SenderType } from "@app/core/enums";
@@ -29,6 +30,7 @@ import {
   getUser,
   setUserLanguage,
   subscribeToRestock,
+  productRating,
   getSetting,
   searchProducts,
   listUserTickets,
@@ -36,14 +38,18 @@ import {
   listTicketMessages,
 } from "@app/db";
 import type { MyContext } from "../context";
-import { smartEdit } from "../util/chat";
+import { smartEdit, renderMenu } from "../util/chat";
 import { t } from "../util/i18n";
-import { esc, formatPrice, statusBadge, groupOrderItems, formatCountdown } from "../util/format";
+import { logErrorRef } from "../util/errors";
+import { esc, formatPrice, formatIdr, statusBadge, groupOrderItems, formatCountdown, priceIdr, orderAmount, mixedAmount } from "../util/format";
+import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
 import { showFaq, showTerms } from "./static";
 
 const PAGE_SIZE = 10;
-const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, config.CURRENCY, decimals);
+// USDT-denominated figures only (wallet balance, commissions). Catalog prices
+// are central Rupiah — use priceIdr(v, rate); order totals — orderAmount(o).
+const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimals);
 
 // --- session scratch accessors (mirror context.user_data keys) -------------
 interface BrowseScratch {
@@ -63,6 +69,15 @@ function requireUser(ctx: MyContext) {
 // /start + dashboard
 // ---------------------------------------------------------------------------
 
+// Optional banner image shown on top of the main menu and product list. Set
+// from the bot (Settings → Banner image) or the web admin; the screen renders
+// as a photo+caption when present. Absent/cleared → plain menu. Never shown on
+// payment screens (those renderers simply don't request it).
+const BANNER_IMAGE_KEY = "banner_image";
+async function bannerImage(): Promise<string | undefined> {
+  return (await getSetting(prisma, BANNER_IMAGE_KEY)) || undefined;
+}
+
 async function buildDashboardText(ctx: MyContext): Promise<string> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
@@ -79,9 +94,9 @@ async function buildDashboardText(ctx: MyContext): Promise<string> {
     now: nowStr,
     tg_id: tg.id,
     username: tg.username ? `@${tg.username}` : "—",
-    spent: price(spent),
+    spent: mixedAmount(spent.idr, spent.usdt),
     items_sold: stats.items_sold,
-    total_revenue: price(stats.total_revenue),
+    total_revenue: mixedAmount(stats.revenue_idr, stats.revenue_usdt),
     total_users: stats.total_users,
   });
 }
@@ -90,7 +105,7 @@ async function backToMainFromPersistent(ctx: MyContext): Promise<void> {
   delete sc(ctx).viewingProductId;
   ctx.session.awaitingQtyProductId = undefined;
   const text = await buildDashboardText(ctx);
-  await smartEdit(ctx, text, ckb.mainPersistentKb());
+  await renderMenu(ctx, text, ckb.mainPersistentKb(ctx.session.lang), await bannerImage());
 }
 
 async function handleBackButton(ctx: MyContext): Promise<void> {
@@ -126,13 +141,12 @@ export async function startCommand(ctx: MyContext): Promise<void> {
   delete sc(ctx).browsePage;
 
   const text = await buildDashboardText(ctx);
-  const msg = await ctx.reply(text, { parse_mode: "HTML", reply_markup: ckb.mainPersistentKb() });
-  ctx.session.menuMsgId = msg.message_id;
+  await renderMenu(ctx, text, ckb.mainPersistentKb(ctx.session.lang), await bannerImage());
 }
 
 export async function showMainMenu(ctx: MyContext): Promise<void> {
   const text = await buildDashboardText(ctx);
-  await smartEdit(ctx, text, ckb.mainPersistentKb());
+  await renderMenu(ctx, text, ckb.mainPersistentKb(ctx.session.lang), await bannerImage());
 }
 
 // Universal /cancel when no conversation is active.
@@ -149,6 +163,7 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
 
 export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void> {
   const lang = ctx.session.lang;
+  const info = ctx.session.dbUser;
   const tg = ctx.from!;
   const name = esc([tg.first_name, tg.last_name].filter(Boolean).join(" ") || tg.username || "");
 
@@ -165,8 +180,18 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
 
   sc(ctx).browsePage = page;
   sc(ctx).browseProductIds = pageProducts.map((p) => p.id);
+  delete sc(ctx).viewingProductId;
 
-  const itemLines = pageProducts.map((p, i) => `┊ [ ${i + 1} ] ${esc(p.name).toUpperCase()}`);
+  // Numbered list (compact for large catalogs — 5 number buttons per row) with
+  // the reseller-aware price on each line so buyers can compare without opening
+  // each one. Selection by number is resolved against the browseProductIds
+  // snapshot above (see handleProductNumber).
+  const isReseller = info?.role === UserRole.RESELLER;
+  const rate = await currentUsdtRate();
+  const itemLines = pageProducts.map((p, i) => {
+    const unit = isReseller && p.resellerPrice != null ? p.resellerPrice : p.price;
+    return `┊ [ ${i + 1} ] ${esc(p.name).toUpperCase()} — ${priceIdr(unit, rate)}`;
+  });
 
   const text = t(ctx, "browse.list_decorated", {
     name,
@@ -175,18 +200,18 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     items: itemLines.join("\n"),
   });
 
-  delete sc(ctx).viewingProductId;
-
-  // The persistent numbered keyboard is a reply keyboard; smartEdit detects
-  // that and sends a fresh message carrying it (an edit can't bear one).
-  await smartEdit(
+  // The numbered keyboard is a reply keyboard; renderMenu sends a fresh message
+  // carrying it (an edit can't bear a reply keyboard). The banner (if set) rides
+  // on top as a photo+caption, unless the list is too long for a caption.
+  await renderMenu(
     ctx,
     text,
-    ckb.productsPersistentKb(pageProducts.length, {
+    ckb.productsPersistentKb(pageProducts.length, lang, {
       showPrev: page > 0,
       showNext: page < totalPages - 1,
       showBack: false,
     }),
+    await bannerImage(),
   );
 }
 
@@ -194,65 +219,82 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   const text = (ctx.message?.text ?? "").trim();
 
-  const MENU_LABELS = new Set([
-    ckb.BTN_BROWSE, ckb.BTN_ORDERS, ckb.BTN_WALLET, ckb.BTN_REFERRAL, ckb.BTN_LANGUAGE,
-    ckb.BTN_SUPPORT, ckb.BTN_FAQ, ckb.BTN_TERMS, ckb.BTN_TICKETS, ckb.BTN_MAIN, ckb.BTN_BACK,
-    ckb.BTN_PREV, ckb.BTN_NEXT,
-  ]);
+  // Resolve the tapped reply-keyboard label to a stable action, checking the
+  // label set of every supported language (the keyboard is localized, so a
+  // literal English compare would miss Indonesian labels). null → not a button.
+  const action = ckb.matchPersistentLabel(text);
 
-  // Manual quantity input mode.
+  // Manual quantity input mode — only divert free text, never a menu button.
   const qtyProductId = ctx.session.awaitingQtyProductId;
-  if (qtyProductId != null && !MENU_LABELS.has(text)) {
+  if (qtyProductId != null && action === null) {
     await handleQtyTextInput(ctx, qtyProductId, text);
     return;
   }
 
-  if (text === ckb.BTN_BACK) {
+  if (action === "back") {
     await handleBackButton(ctx);
     return;
   }
 
-  if (MENU_LABELS.has(text)) {
+  if (action !== null) {
     ctx.session.awaitingQtyProductId = undefined;
     delete sc(ctx).viewingProductId;
   }
 
-  if (text === ckb.BTN_PREV) {
-    await browseProductsFlat(ctx, Math.max(0, (sc(ctx).browsePage ?? 0) - 1));
-    return;
+  switch (action) {
+    case "prev":
+      return void (await browseProductsFlat(ctx, Math.max(0, (sc(ctx).browsePage ?? 0) - 1)));
+    case "next":
+      return void (await browseProductsFlat(ctx, (sc(ctx).browsePage ?? 0) + 1));
+    case "browse":
+      return void (await browseProductsFlat(ctx));
+    case "orders":
+      return void (await listMyOrders(ctx));
+    case "wallet":
+      return void (await viewWallet(ctx));
+    case "referral":
+      return void (await viewReferral(ctx));
+    case "language":
+      return void (await showLanguageMenu(ctx));
+    case "faq":
+      return void (await showFaq(ctx));
+    case "terms":
+      return void (await showTerms(ctx));
+    case "tickets":
+      return void (await listMyTickets(ctx));
+    case "main":
+      return void (await backToMainFromPersistent(ctx));
+    case "support":
+      // Support is entered via the conversation `hears` trigger in main.ts, not
+      // here; if it ever reaches this handler, ignore it (no number selection).
+      return;
   }
-  if (text === ckb.BTN_NEXT) {
-    await browseProductsFlat(ctx, (sc(ctx).browsePage ?? 0) + 1);
-    return;
-  }
-  if (text === ckb.BTN_BROWSE) return void (await browseProductsFlat(ctx));
-  if (text === ckb.BTN_ORDERS) return void (await listMyOrders(ctx));
-  if (text === ckb.BTN_WALLET) return void (await viewWallet(ctx));
-  if (text === ckb.BTN_REFERRAL) return void (await viewReferral(ctx));
-  if (text === ckb.BTN_LANGUAGE) return void (await showLanguageMenu(ctx));
-  if (text === ckb.BTN_FAQ) return void (await showFaq(ctx));
-  if (text === ckb.BTN_TERMS) return void (await showTerms(ctx));
-  if (text === ckb.BTN_TICKETS) return void (await listMyTickets(ctx));
-  if (text === ckb.BTN_MAIN) return void (await backToMainFromPersistent(ctx));
 
   // Number buttons — product selection. Only short digit strings.
   if (!/^\d+$/.test(text) || text.length > 4) return;
 
-  const products = await listAllActiveProducts(prisma);
-  const page = sc(ctx).browsePage ?? 0;
-  const start = page * PAGE_SIZE;
-  const pageProducts = products.slice(start, start + PAGE_SIZE);
-  const productIds = pageProducts.map((p) => p.id);
-  sc(ctx).browseProductIds = productIds;
+  // Resolve the tapped number against the SNAPSHOT captured when the list was
+  // last rendered (browseProductIds), so a catalog change between render and tap
+  // can't shift the numbering and open the wrong product. Fall back to a fresh
+  // page slice only when there's no snapshot yet (e.g. a number typed before
+  // browsing this session).
+  let productIds = sc(ctx).browseProductIds ?? [];
+  if (!productIds.length) {
+    const products = await listAllActiveProducts(prisma);
+    const page = sc(ctx).browsePage ?? 0;
+    const start = page * PAGE_SIZE;
+    productIds = products.slice(start, start + PAGE_SIZE).map((p) => p.id);
+    sc(ctx).browseProductIds = productIds;
+  }
 
   if (!productIds.length) {
-    await smartEdit(ctx, t(ctx, "browse.no_products"));
+    await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
     return;
   }
 
   const idx = parseInt(text, 10);
   if (idx < 1 || idx > productIds.length) {
-    await smartEdit(ctx, t(ctx, "browse.invalid_number", { max: productIds.length }));
+    await smartEdit(ctx, t(ctx, "browse.invalid_number", { max: productIds.length }), ckb.backToMain(lang));
     return;
   }
 
@@ -273,23 +315,25 @@ export async function browseProduct(ctx: MyContext, productId: number, qty = 1):
     p = await getProduct(prisma, productId);
     if (p === null) {
       logger.warn(`browse_product: product_id=${productId} not found`);
-      if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.generic"), show_alert: true });
-      else await smartEdit(ctx, t(ctx, "error.generic"));
+      // Expected-but-rare (product deleted/deactivated between render and tap) —
+      // transient copy, no ref. Leave a forward action so the screen isn't a
+      // dead end (§8.6/§8.7).
+      if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.try_again"), show_alert: true });
+      else await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
       return;
     }
     stock = await countAvailableStock(prisma, p.id);
-    const agg = await prisma.review.aggregate({
-      where: { productId: p.id },
-      _avg: { rating: true },
-      _count: { id: true },
-    });
-    const avg = agg._avg.rating;
-    ratingStr = avg ? `${avg.toFixed(1)}/5 (${agg._count.id})` : "—";
+    const { avg, count } = await productRating(prisma, p.id);
+    ratingStr = avg ? `${avg.toFixed(1)}/5 (${count})` : "—";
     bulkRule = await getBulkPricingForProduct(prisma, p.id);
   } catch (err) {
-    logger.error({ err }, `browse_product: DB error for product_id=${productId}`);
-    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.generic"), show_alert: true });
-    else await smartEdit(ctx, t(ctx, "error.generic"));
+    // Hard failure (unexpected DB error) — log under a ref and quote it so a
+    // customer report maps to the stack trace (§8.6). Forward action so the
+    // user isn't stranded (§8.7).
+    const ref = logErrorRef(err, `browse_product: DB error for product_id=${productId}`);
+    const text = t(ctx, "error.generic_ref", { ref });
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text, show_alert: true });
+    else await smartEdit(ctx, text, ckb.backToMain(lang));
     return;
   }
 
@@ -298,7 +342,7 @@ export async function browseProduct(ctx: MyContext, productId: number, qty = 1):
 
   let text = t(ctx, "browse.product_detail", {
     name: esc(p.name),
-    price: price(unit),
+    price: priceIdr(unit, await currentUsdtRate()),
     duration: esc(p.durationLabel),
     type: p.type.toLowerCase(),
     warranty: p.warrantyDays,
@@ -326,7 +370,7 @@ export async function qtyInputStart(ctx: MyContext, productId: number): Promise<
   const lang = ctx.session.lang;
   const p = await getProduct(prisma, productId);
   if (p === null) {
-    await smartEdit(ctx, t(ctx, "error.generic"));
+    await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
     return;
   }
   const stock = await countAvailableStock(prisma, p.id);
@@ -348,7 +392,7 @@ async function handleQtyTextInput(ctx: MyContext, productId: number, rawText: st
   const p = await getProduct(prisma, productId);
   if (p === null) {
     ctx.session.awaitingQtyProductId = undefined;
-    await smartEdit(ctx, t(ctx, "error.generic"));
+    await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
     return;
   }
   const stock = await countAvailableStock(prisma, p.id);
@@ -404,7 +448,7 @@ export async function listMyOrders(ctx: MyContext, page = 0): Promise<void> {
       t(ctx, "order.list_line", {
         code: o.orderCode,
         status: statusBadge(o.status),
-        total: price(o.totalAmount),
+        total: orderAmount(o),
         date: ensureUtc(o.createdAt).toFormat("yyyy-LL-dd"),
       }),
     );
@@ -423,8 +467,11 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
     return;
   }
 
+  // Item lines show the central-IDR snapshot (+ USDT info); the charged total
+  // renders in the order's own transaction currency.
+  const rate = await currentUsdtRate();
   const itemLines = groupOrderItems(order.items).map(
-    (g) => `• ${esc(g.product.name)} × ${g.quantity} — ${price(g.lineTotal)}`,
+    (g) => `• ${esc(g.product.name)} × ${g.quantity} — ${priceIdr(g.lineTotal, rate)}`,
   );
 
   let text: string;
@@ -434,7 +481,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
     text = t(ctx, "order.pending_payment_detail", {
       code: order.orderCode,
       lines: itemLines.join("\n"),
-      total: price(order.totalAmount, 4),
+      total: orderAmount(order, 4),
       binance_id: esc(binanceId),
       countdown,
     });
@@ -442,7 +489,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
     text = t(ctx, "order.detail", {
       code: order.orderCode,
       status: statusBadge(order.status),
-      total: price(order.totalAmount),
+      total: orderAmount(order),
       created: ensureUtc(order.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'"),
       lines: itemLines.join("\n"),
     });
@@ -460,14 +507,22 @@ export async function downloadHistory(ctx: MyContext): Promise<void> {
     return;
   }
 
-  const lines: string[] = ["=== Transaction History ===", `Total: ${orders.length} orders`, ""];
+  const L = {
+    header: t(ctx, "order.history_file_header"),
+    total: t(ctx, "order.history_file_count", { count: orders.length }),
+    order: t(ctx, "order.history_file_order"),
+    date: t(ctx, "order.history_file_date"),
+    amount: t(ctx, "order.history_file_amount"),
+    items: t(ctx, "order.history_file_items"),
+  };
+  const lines: string[] = [`=== ${L.header} ===`, L.total, ""];
   for (const o of orders) {
-    lines.push(`Order   : ${o.orderCode}`);
-    lines.push(`Date    : ${ensureUtc(o.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'")}`);
-    lines.push(`Total   : ${price(o.totalAmount, 4)}`);
-    lines.push("Items   :");
+    lines.push(`${L.order}: ${o.orderCode}`);
+    lines.push(`${L.date}: ${ensureUtc(o.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'")}`);
+    lines.push(`${L.amount}: ${orderAmount(o, 4)}`);
+    lines.push(`${L.items}:`);
     for (const g of groupOrderItems(o.items)) {
-      lines.push(`  - ${g.product.name} x${g.quantity}  ${price(g.lineTotal)}`);
+      lines.push(`  - ${g.product.name} x${g.quantity}  ${formatIdr(g.lineTotal)}`);
     }
     lines.push("-".repeat(36));
   }
@@ -475,7 +530,7 @@ export async function downloadHistory(ctx: MyContext): Promise<void> {
   const buf = Buffer.from(lines.join("\n"), "utf-8");
   if (ctx.callbackQuery) await ctx.answerCallbackQuery();
   await ctx.api.sendDocument(ctx.chat!.id, new InputFile(buf, "transaction_history.txt"), {
-    caption: `📥 ${orders.length} transaction(s)`,
+    caption: t(ctx, "order.history_file_caption", { count: orders.length }),
   });
 }
 
@@ -497,7 +552,7 @@ export async function viewReferral(ctx: MyContext): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const code = info.referralCode ?? "";
-  const link = `https://t.me/${config.BOT_USERNAME}?start=ref_${code}`;
+  const link = `https://t.me/${botUsername() ?? ""}?start=ref_${code}`;
 
   const agg = await prisma.referral.aggregate({
     where: { referrerId: info.id },
@@ -529,9 +584,13 @@ export async function setLanguage(ctx: MyContext, code: string): Promise<void> {
 
 export async function subscribeRestock(ctx: MyContext, productId: number): Promise<void> {
   const info = requireUser(ctx);
+  const lang = ctx.session.lang;
   const isNew = await subscribeToRestock(prisma, info.id, productId);
   const msg = t(ctx, isNew ? "browse.subscribed_restock" : "browse.already_subscribed");
-  if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: msg, show_alert: true });
+  if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: msg });
+  // Edit the product bubble into a confirmation so the tap leaves a visible
+  // trace, instead of an ephemeral toast that vanishes on the next interaction.
+  await smartEdit(ctx, msg, ckb.restockSubscribedKb(productId, lang));
 }
 
 // ---------------------------------------------------------------------------
@@ -612,7 +671,7 @@ export async function searchCommand(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   const query = (typeof ctx.match === "string" ? ctx.match : "").trim();
   if (!query) {
-    await smartEdit(ctx, t(ctx, "search.no_query"));
+    await smartEdit(ctx, t(ctx, "search.no_query"), ckb.backToMain(lang));
     return;
   }
   const products = await searchProducts(prisma, query);

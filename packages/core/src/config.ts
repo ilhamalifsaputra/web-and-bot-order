@@ -1,8 +1,9 @@
 /**
  * Application configuration — zod replacement for Python `config.py`.
- * Validated at startup; if BOT_TOKEN is missing or ADMIN_IDS malformed the
- * process refuses to start. One shared schema feeds all three services; per
- * service fields are optional here and checked where actually needed.
+ * Validated at startup; malformed values (e.g. ADMIN_IDS) refuse to start the
+ * process. One shared schema feeds all services; per-service fields are
+ * optional here and checked where actually needed. Bot credentials may also
+ * come from the Settings table (plan.md §16) — see @app/core/runtime.
  */
 import { config as loadEnv } from "dotenv";
 import { existsSync } from "node:fs";
@@ -50,8 +51,11 @@ const looseBool = z
 
 const Env = z.object({
   // ---- Telegram ----
-  BOT_TOKEN: z.string().min(20),
-  BOT_USERNAME: z.string().min(3),
+  // Optional since plan.md §16: the primary source is the `bot_token` /
+  // `bot_username` Settings rows (web-admin editable, DB wins when filled);
+  // env is the bootstrap / recovery fallback. See @app/core/runtime.
+  BOT_TOKEN: z.string().min(20).optional(),
+  BOT_USERNAME: z.string().min(3).optional(),
   ADMIN_IDS: csvNumbers,
   SUPPORT_GROUP_ID: z.coerce.number().optional(),
 
@@ -109,6 +113,39 @@ const Env = z.object({
   WEB_LOGIN_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().default(600),
   WEB_HOST: z.string().default("127.0.0.1"),
   WEB_PORT: z.coerce.number().default(8000),
+  // Mark the session cookie `Secure` (HTTPS-only). Keep false for local http on
+  // 127.0.0.1; set true in production behind TLS so the cookie can't leak over
+  // a plain-http hop.
+  WEB_COOKIE_SECURE: looseBool.default(false),
+
+  // ---- storefront (customer-facing shop) ----
+  // Dev/standalone port for the shop app. In the combined server, when
+  // SHOP_HOST is unset the shop listens here next to the admin port.
+  STOREFRONT_PORT: z.coerce.number().default(8100),
+  // Public host the SHOP answers on (e.g. "shop.example.com"). When set, the
+  // combined server serves BOTH apps from ONE port and dispatches by Host
+  // header: SHOP_HOST → storefront, anything else → web-admin (plan.md §2 F —
+  // the single-listener topology managed hosts like Passenger require).
+  SHOP_HOST: z.string().optional(),
+  // Public storefront origin (no trailing slash) for links in buyer DMs, e.g.
+  // https://shop.example.com. Falls back to PUBLIC_URL when unset.
+  SHOP_PUBLIC_URL: z.string().url().optional(),
+
+  // ---- Combined single-process server (apps/server) ----
+  // 'polling' (default) runs the grammY long-polling runner — used for local dev
+  // and the standalone order-bot. 'webhook' mounts the bot as a Fastify route
+  // (one HTTP process for web + bot) for managed hosting like Hostinger Business.
+  BOT_MODE: z
+    .string()
+    .default("polling")
+    .transform((s) => s.toLowerCase())
+    .pipe(z.enum(["polling", "webhook"])),
+  // Public HTTPS origin of the deployed app (no trailing slash), e.g.
+  // https://shop.example.com — required in webhook mode to register the webhook.
+  PUBLIC_URL: z.string().url().optional(),
+  // Secret path segment + Telegram secret_token header for the webhook route.
+  // Required in webhook mode; keep it long and random. Never log it.
+  WEBHOOK_SECRET: z.string().optional(),
 
   // ---- notifier ----
   NOTIF_BOT_TOKEN: z.string().optional(),

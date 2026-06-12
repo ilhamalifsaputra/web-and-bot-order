@@ -1,0 +1,23 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+
+{% block title %}{{ t('web.account_referral', lang) }} — {{ shop_name }}{% endblock %}
+
+{% block content %}
+<h1 class="page-title mb-2">{{ t('web.account_referral', lang) }}</h1>
+<p class="page-lead mb-6">{{ t('web.referral_hint', lang) }}</p>
+
+<div class="card card-pad max-w-lg">
+  <div class="stat-label">{{ t('web.account_referral', lang) }}</div>
+  <div class="stat-value font-mono !text-2xl select-all">{{ referral_code }}</div>
+
+  <div class="field-label mt-6">{{ t('web.referral_link', lang) }}</div>
+  <div class="flex items-center gap-2">
+    <input type="text" readonly value="{{ referral_link }}" id="ref-link" class="field font-mono !text-xs">
+    <button type="button" class="btn btn-soft btn-sm whitespace-nowrap"
+            onclick="navigator.clipboard.writeText(document.getElementById('ref-link').value)">
+      <i data-lucide="copy" class="w-3.5 h-3.5"></i> {{ t('web.copy', lang) }}
+    </button>
+  </div>
+</div>
+{% endblock %}

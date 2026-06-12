@@ -1,47 +1,48 @@
 {% extends "base.njk" %}
-{% block title %}Set up · Stock Admin{% endblock %}
+{% block title %}First-time setup · Shop Admin{% endblock %}
 {% block nav %}{% endblock %}
 
 {% block content %}
-<div class="max-w-md mx-auto mt-12 bg-white rounded-lg shadow p-6">
-  <h1 class="text-xl font-semibold mb-1">First-time setup</h1>
-  <p class="text-sm text-slate-500 mb-6">
-    Pick the Telegram ID of the admin who will hold this dashboard, and set a
-    password. Only the IDs in the bot's <code>ADMIN_IDS</code> may bootstrap.
-  </p>
+<div class="min-h-[70vh] flex items-center justify-center">
+  <div class="w-full max-w-md">
+    <div class="text-center mb-8">
+      <span class="inline-flex items-center gap-2 font-display text-2xl font-semibold text-pine">
+        <i data-lucide="store" class="w-6 h-6"></i>
+        Shop Admin
+      </span>
+      <p class="page-lead">Let's create your first sign-in</p>
+    </div>
 
-  {% if error %}
-    <div class="mb-4 p-3 rounded border border-red-200 bg-red-50 text-red-700 text-sm">
-      {{ error }}
-    </div>
-  {% endif %}
+    <div class="card card-pad">
+      <p class="text-sm text-ink-soft mb-6">
+        Choose the Telegram ID of the person who will run this dashboard and set a password.
+        Only the IDs already listed as admins of the bot can do this.
+      </p>
 
-  <form method="post" action="/bootstrap" class="space-y-4">
-    <div>
-      <label class="block text-sm font-medium text-slate-700 mb-1" for="telegram_id">
-        Telegram ID
-        <span class="font-normal text-xs text-slate-500">
-          (allowed: {{ admin_ids | join(", ") if admin_ids else "none — set ADMIN_IDS in the bot's .env first" }})
-        </span>
-      </label>
-      <input id="telegram_id" name="telegram_id" type="number" required
-             class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-slate-400">
+      {% if error %}
+        <div class="mb-4 rounded-xl border border-rust/30 bg-rust-tint px-4 py-3 text-sm text-rust-dark">{{ error }}</div>
+      {% endif %}
+
+      <form method="post" action="/bootstrap" class="space-y-4">
+        <div>
+          <label class="field-label" for="telegram_id">Telegram ID</label>
+          <input id="telegram_id" name="telegram_id" type="number" required class="field">
+          <p class="text-xs text-ink-faint mt-1">
+            Allowed: {{ admin_ids | join(", ") if admin_ids else "none yet — add admin IDs to the bot's settings first" }}
+          </p>
+        </div>
+        <div>
+          <label class="field-label" for="password">Password</label>
+          <input id="password" name="password" type="password" required minlength="8" autocomplete="new-password" class="field">
+          <p class="text-xs text-ink-faint mt-1">At least 8 characters.</p>
+        </div>
+        <div>
+          <label class="field-label" for="password_confirm">Type the password again</label>
+          <input id="password_confirm" name="password_confirm" type="password" required autocomplete="new-password" class="field">
+        </div>
+        <button type="submit" class="btn btn-primary w-full"><i data-lucide="user-plus" class="w-4 h-4"></i> Create my sign-in</button>
+      </form>
     </div>
-    <div>
-      <label class="block text-sm font-medium text-slate-700 mb-1" for="password">Password</label>
-      <input id="password" name="password" type="password" required minlength="8" autocomplete="new-password"
-             class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-slate-400">
-      <p class="text-xs text-slate-500 mt-1">Minimum 8 characters.</p>
-    </div>
-    <div>
-      <label class="block text-sm font-medium text-slate-700 mb-1" for="password_confirm">Confirm password</label>
-      <input id="password_confirm" name="password_confirm" type="password" required autocomplete="new-password"
-             class="w-full px-3 py-2 border rounded focus:outline-none focus:ring-2 focus:ring-slate-400">
-    </div>
-    <button type="submit"
-            class="w-full py-2 rounded bg-slate-900 text-white hover:bg-slate-800">
-      Create admin
-    </button>
-  </form>
+  </div>
 </div>
 {% endblock %}

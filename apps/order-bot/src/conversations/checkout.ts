@@ -26,9 +26,10 @@ import {
   cancelPaymentJobs,
   clearActivePayment,
 } from "../handlers/checkout";
-import { startCommand } from "../handlers/customer";
+import { startCommand, showMainMenu } from "../handlers/customer";
 
-const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, config.CURRENCY, decimals);
+// Bot orders are charged in USDT (Binance) — totals here are USDT figures.
+const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimals);
 
 function isCmd(ctx: MyContext, cmd: string): boolean {
   const text = ctx.message?.text ?? "";
@@ -79,6 +80,14 @@ export async function proofConversation(conversation: MyConversation, ctx: MyCon
       await cancelPendingOrder(u, orderId);
       return;
     }
+    if (data === "v1:menu:main") {
+      // Non-destructive escape: leave the order pending (reachable under My
+      // Orders) and exit to the dashboard. Must answer the callback here — the
+      // conversation owns this update, so the router never sees it (§8.7).
+      await u.answerCallbackQuery();
+      await showMainMenu(u);
+      return;
+    }
     if (data.startsWith("v1:checkout:proof:")) {
       await u.answerCallbackQuery();
       await editPrompt(t(u, "checkout.ask_screenshot"), ckb.proofCancelKb(orderId, lang));
@@ -109,6 +118,12 @@ export async function proofConversation(conversation: MyConversation, ctx: MyCon
     const data = u.callbackQuery?.data ?? "";
     if (data.startsWith("v1:checkout:cancel:")) {
       await cancelPendingOrder(u, orderId);
+      return;
+    }
+    if (data === "v1:menu:main") {
+      // Same non-destructive escape as the screenshot step (§8.7).
+      await u.answerCallbackQuery();
+      await showMainMenu(u);
       return;
     }
     if (isCmd(u, "start")) {

@@ -18,15 +18,24 @@ import authRoutes from "./routes/auth";
 import dashboardRoutes from "./routes/dashboard";
 import stockRoutes from "./routes/stock";
 import ordersRoutes from "./routes/orders";
+import paymentsRoutes from "./routes/payments";
+import outboxRoutes from "./routes/outbox";
 import catalogRoutes from "./routes/catalog";
 import vouchersRoutes from "./routes/vouchers";
 import usersRoutes from "./routes/users";
+import reviewsRoutes from "./routes/reviews";
+import reportsRoutes from "./routes/reports";
+import searchRoutes from "./routes/search";
+import adminsRoutes from "./routes/admins";
+import broadcastRoutes from "./routes/broadcast";
 import supportRoutes from "./routes/support";
 import settingsRoutes from "./routes/settings";
 import auditRoutes from "./routes/audit";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const STATIC_DIR = join(HERE, "..", "static");
+// Overridable via env so the bundled deploy can point at the shipped static/
+// dir (import.meta.url moves to dist/ after bundling). See DEPLOY-HOSTINGER.md §3.
+const STATIC_DIR = process.env.STATIC_DIR ?? join(HERE, "..", "static");
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
@@ -54,9 +63,16 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(dashboardRoutes);
   await app.register(stockRoutes);
   await app.register(ordersRoutes);
+  await app.register(paymentsRoutes);
+  await app.register(outboxRoutes);
   await app.register(catalogRoutes);
   await app.register(vouchersRoutes);
   await app.register(usersRoutes);
+  await app.register(reviewsRoutes);
+  await app.register(reportsRoutes);
+  await app.register(searchRoutes);
+  await app.register(adminsRoutes);
+  await app.register(broadcastRoutes);
   await app.register(supportRoutes);
   await app.register(settingsRoutes);
   await app.register(auditRoutes);

@@ -8,10 +8,20 @@ import {
   deliverPaidInternalOrder,
   markUnderpaid,
   recordUnmatchedTx,
+  listPendingInternalOrders,
 } from "@app/db";
+import type { Api } from "grammy";
 import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { classifyTx, noteMatches } from "../src/payments/binanceInternal";
+import {
+  classifyTx,
+  noteMatches,
+  matchByAmount,
+  normalizeTx,
+  processTransfers,
+  type BinanceTx,
+} from "../src/payments/binanceInternal";
+import { pollWatchdogDecision } from "../src/jobs";
 
 let sample: SampleData;
 
@@ -25,9 +35,11 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
+// rate 1 keeps the USDT totals numerically equal to the fixture's central-IDR
+// price ("5.00"), so the amount-matching assertions below stay exact.
 const makeInternalOrder = (qty = 1) =>
   prisma.$transaction((tx) =>
-    createInternalOrder(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: qty }),
+    createInternalOrder(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: qty, rate: 1 }),
   );
 
 // ===========================================================================
@@ -56,6 +68,89 @@ describe("classifyTx / noteMatches", () => {
 
   it("wrong note → none (regardless of amount)", () => {
     expect(classifyTx({ note: "NOPE", amount: 5.0 }, order)).toBe("none");
+  });
+});
+
+describe("normalizeTx (real pay/transactions payload shape)", () => {
+  // Captured (redacted) from scripts/binance-probe.ts against the live account:
+  // a real C2C transfer — note is EMPTY and orderId is Binance's OWN id.
+  const real = {
+    uid: "123", counterpartyId: "456", orderId: "434526121546129408",
+    note: "", orderType: "C2C", transactionId: "P_A226WCUE7FH71115",
+    transactionTime: 1780200000000, amount: "1", currency: "USDT",
+    walletType: 1, totalPaymentFee: "0",
+  };
+
+  it("maps id/amount/currency and keeps note empty (no orderId leak)", () => {
+    const tx = normalizeTx(real)!;
+    expect(tx.txId).toBe("P_A226WCUE7FH71115");
+    expect(tx.amount).toBe(1);
+    expect(tx.currency).toBe("USDT");
+    expect(tx.note).toBe(""); // Binance's orderId must NOT leak into note
+  });
+
+  it("uses a real memo when present (remark fallback, empty-string skipped)", () => {
+    expect(normalizeTx({ ...real, note: "BCC1BDDE6F" })!.note).toBe("BCC1BDDE6F");
+    expect(normalizeTx({ ...real, note: "  ", remark: "BCC1BDDE6F" })!.note).toBe("BCC1BDDE6F");
+  });
+
+  it("rejects non-received / malformed rows", () => {
+    expect(normalizeTx({ ...real, amount: "0" })).toBeNull();
+    expect(normalizeTx({ ...real, amount: "-5" })).toBeNull();
+    expect(normalizeTx({ transactionId: "X" })).toBeNull(); // no amount
+  });
+});
+
+describe("pollWatchdogDecision (poller stuck/recover logic)", () => {
+  const now = 1_000_000_000_000;
+  const ago = (ms: number) => new Date(now - ms).toISOString();
+  const FIVE_MIN = 5 * 60_000;
+
+  it("alerts when stale and not yet alerted", () => {
+    expect(pollWatchdogDecision({ lastRun: ago(10 * 60_000), backoffUntil: null }, false, now)).toBe("alert");
+  });
+
+  it("stays quiet when stale but already alerted (no spam)", () => {
+    expect(pollWatchdogDecision({ lastRun: ago(10 * 60_000), backoffUntil: null }, true, now)).toBe("none");
+  });
+
+  it("recovers (re-arms) when healthy again after an alert", () => {
+    expect(pollWatchdogDecision({ lastRun: ago(10_000), backoffUntil: null }, true, now)).toBe("recover");
+  });
+
+  it("stays quiet while intentionally backing off, even if stale", () => {
+    expect(pollWatchdogDecision({ lastRun: ago(30 * 60_000), backoffUntil: ago(-60_000) }, false, now)).toBe("none");
+  });
+
+  it("fresh cycle within the window is healthy", () => {
+    expect(pollWatchdogDecision({ lastRun: ago(FIVE_MIN - 1000), backoffUntil: null }, false, now)).toBe("none");
+  });
+
+  it("never-run poller (no lastRun) is treated as stale", () => {
+    expect(pollWatchdogDecision({ lastRun: null, backoffUntil: null }, false, now)).toBe("alert");
+  });
+});
+
+describe("matchByAmount (note-less fallback)", () => {
+  const orders = [
+    { id: 1, totalAmount: "5.0000" },
+    { id: 2, totalAmount: "7.5000" },
+    { id: 3, totalAmount: "12.3400" },
+  ];
+
+  it("returns the sole order within tolerance", () => {
+    expect(matchByAmount({ amount: 7.5 }, orders)?.id).toBe(2);
+    expect(matchByAmount({ amount: 12.345 }, orders)?.id).toBe(3); // within 0.01
+  });
+
+  it("refuses when no order matches", () => {
+    expect(matchByAmount({ amount: 99 }, orders)).toBeNull();
+    expect(matchByAmount({ amount: 4.5 }, orders)).toBeNull(); // underpaid → no amount match
+  });
+
+  it("refuses on a collision (≥2 candidates) rather than guessing", () => {
+    const dup = [{ id: 1, totalAmount: "5.0000" }, { id: 2, totalAmount: "5.0000" }];
+    expect(matchByAmount({ amount: 5.0 }, dup)).toBeNull();
   });
 });
 
@@ -103,6 +198,64 @@ describe("deliverPaidInternalOrder (idempotency + delivery)", () => {
     const res = await deliverPaidInternalOrder(prisma, { orderId: order!.id, binanceTxId: "TX-2", amount: order!.totalAmount });
     expect(res.status).toBe("stale");
     expect(await prisma.stockItem.count({ where: { status: StockStatus.SOLD } })).toBe(1); // not re-delivered
+  });
+});
+
+// ===========================================================================
+// processTransfers — the poll-loop wiring (note + amount + underpaid + unmatched)
+// ===========================================================================
+
+describe("processTransfers (poll-loop wiring)", () => {
+  // Fake grammY Api that records outbound messages instead of hitting Telegram.
+  function fakeApi() {
+    const sent: Array<{ chatId: number | string; text: string }> = [];
+    const api = {
+      sendMessage: async (chatId: number | string, text: string) => {
+        sent.push({ chatId, text });
+        return { message_id: 1 };
+      },
+      editMessageText: async () => ({}),
+    } as unknown as Api;
+    return { api, sent };
+  }
+
+  const pending = () => listPendingInternalOrders(prisma, new Date());
+  const txFor = (over: Partial<BinanceTx> & { txId: string; amount: number }): BinanceTx => ({
+    note: "", currency: "USDT", ...over,
+  });
+
+  it("delivers on a note match", async () => {
+    const order = (await makeInternalOrder())!;
+    const { api } = fakeApi();
+    await processTransfers(api, [txFor({ txId: "T1", note: order.paymentRef!, amount: Number(order.totalAmount) })], await pending());
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
+    expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "T1" } }))!.outcome).toBe("matched");
+  });
+
+  it("delivers on the amount fallback when the note is empty", async () => {
+    const order = (await makeInternalOrder())!;
+    const { api } = fakeApi();
+    await processTransfers(api, [txFor({ txId: "T2", note: "", amount: Number(order.totalAmount) })], await pending());
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
+  });
+
+  it("refuses the amount fallback on a collision (two equal-total orders) → unmatched", async () => {
+    const a = (await makeInternalOrder())!;
+    const b = (await makeInternalOrder())!; // unique-cents off in tests → equal totals
+    expect(a.totalAmount).toEqual(b.totalAmount);
+    const { api } = fakeApi();
+    await processTransfers(api, [txFor({ txId: "T3", note: "", amount: Number(a.totalAmount) })], await pending());
+    expect((await prisma.order.findUnique({ where: { id: a.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect((await prisma.order.findUnique({ where: { id: b.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "T3" } }))!.outcome).toBe("unmatched");
+  });
+
+  it("flags underpaid (note match, short amount) and alerts admins", async () => {
+    const order = (await makeInternalOrder())!;
+    const { api, sent } = fakeApi();
+    await processTransfers(api, [txFor({ txId: "T4", note: order.paymentRef!, amount: Number(order.totalAmount) - 1 })], await pending());
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.UNDERPAID);
+    expect(sent.some((m) => /[Uu]nderpaid/.test(m.text))).toBe(true);
   });
 });
 

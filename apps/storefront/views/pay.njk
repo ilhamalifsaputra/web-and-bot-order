@@ -1,0 +1,126 @@
+{% extends "base.njk" %}
+{% import "_shop.njk" as shop %}
+
+{% block title %}{{ t('web.pay_title', lang) }} — {{ shop_name }}{% endblock %}
+
+{% block content %}
+{{ shop.stepper(3 if state == "delivered" else 2, lang) }}
+<div class="max-w-2xl mx-auto">
+  <h1 class="page-title !text-2xl mb-1">{{ t('web.pay_title', lang) }}</h1>
+  <p class="text-sm text-ink-soft mb-5">
+    {{ t('web.order_code', lang) }}: <span class="codeish">{{ order.code }}</span>
+  </p>
+
+  {# Live status (HTMX polling, ~5s — plan.md §17.2 #2). On DELIVERED the
+     partial sends HX-Redirect to the credentials page. #}
+  <div hx-get="/checkout/{{ order.code }}/status" hx-trigger="every 5s" hx-swap="innerHTML"
+       id="pay-status" class="mb-5">
+    {% include "_pay_status.njk" %}
+  </div>
+
+  {% if state == "waiting" %}
+  <div class="card card-pad">
+    {% if is_usdt %}
+    {# ---- Binance Internal Transfer (UID) — auto-confirm ---- #}
+    <h2 class="section-title mb-3">{{ t('web.pay_usdt_title', lang) }}</h2>
+    <ol class="text-sm text-ink-soft space-y-3 list-decimal pl-4">
+      <li>{{ t('web.binance_step_open', lang) }}</li>
+      <li>
+        {{ t('web.binance_step_uid', lang) }}
+        <div class="codeish !text-base mt-1 select-all">{{ binance_uid }}</div>
+      </li>
+      <li>
+        {{ t('web.binance_step_amount', lang) }}
+        <div class="font-display font-semibold text-pine text-2xl mt-1">${{ order.total }}</div>
+      </li>
+      <li>
+        {{ t('web.binance_step_note', lang) }}
+        <div class="codeish !text-base mt-1 select-all">{{ order.payment_ref }}</div>
+      </li>
+    </ol>
+    <p class="text-xs text-ink-faint mt-4">{{ t('web.binance_auto_note', lang) }}</p>
+    {% else %}
+    {# ---- TokoPay (QRIS) ---- #}
+    <h2 class="section-title mb-3">{{ t('web.pay_idr_title', lang) }}</h2>
+    <div class="font-display font-semibold text-pine text-2xl">{{ order.total | idr }}</div>
+    {% if gateway %}
+      {% if gateway.qrLink %}
+      <div class="mt-4 flex justify-center">
+        <img src="{{ gateway.qrLink }}" alt="QRIS" class="w-56 h-56 rounded-xl border border-line bg-white p-2">
+      </div>
+      {% endif %}
+      {% if gateway.payUrl %}
+      <a href="{{ gateway.payUrl }}" target="_blank" rel="noopener" class="btn btn-primary w-full mt-4">
+        <i data-lucide="wallet" class="w-4 h-4"></i> {{ t('web.pay_open_gateway', lang) }}
+      </a>
+      {% endif %}
+      <p class="text-xs text-ink-faint mt-3">{{ t('web.tokopay_auto_note', lang) }}</p>
+    {% elif gateway_error %}
+      <div class="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mt-4">
+        {{ t('web.pay_idr_disabled', lang) }}
+      </div>
+    {% endif %}
+    {% endif %}
+
+    {% if order.expires_at_iso %}
+    <div class="flex items-center gap-2 mt-5 pt-4 border-t border-line text-sm text-ink-soft">
+      <i data-lucide="timer" class="w-4 h-4 text-amberx"></i>
+      {{ t('web.pay_countdown', lang) }}
+      <span id="countdown" class="font-mono font-semibold text-ink" data-expires="{{ order.expires_at_iso }}">--:--</span>
+    </div>
+    {% endif %}
+  </div>
+
+  <form method="post" action="/checkout/{{ order.code }}/cancel" class="mt-4 text-center">
+    <input type="hidden" name="csrf_token" value="{{ customer.csrf }}">
+    <button type="submit" class="btn btn-ghost text-rust">{{ t('web.cancel_order', lang) }}</button>
+  </form>
+
+  <script>
+    // Client-side countdown from expiresAt (plan.md §17.2 #2). The HTMX poll
+    // flips the page state server-side; this is just the ticking display.
+    (function () {
+      var el = document.getElementById('countdown');
+      if (!el) return;
+      var end = new Date(el.dataset.expires).getTime();
+      function tick() {
+        var left = Math.max(0, Math.floor((end - Date.now()) / 1000));
+        var m = Math.floor(left / 60), s = left % 60;
+        el.textContent = m + ':' + String(s).padStart(2, '0');
+        if (left > 0) setTimeout(tick, 1000);
+      }
+      tick();
+    })();
+  </script>
+
+  {% elif state == "delivered" %}
+  <div class="card card-pad text-center py-10">
+    <i data-lucide="badge-check" class="w-12 h-12 text-grass mx-auto mb-3"></i>
+    <h2 class="section-title">{{ t('web.pay_done_title', lang) }}</h2>
+    <p class="text-sm text-ink-soft mt-1">{{ t('web.pay_done_sub', lang) }}</p>
+    <a href="/account/orders/{{ order.code }}" class="btn btn-primary mt-5">
+      {{ t('web.view_credentials', lang) }} <i data-lucide="chevron-right" class="w-4 h-4"></i>
+    </a>
+  </div>
+
+  {% elif state == "confirming" %}
+  <div class="card card-pad text-center py-10">
+    <i data-lucide="loader" class="w-10 h-10 text-pine mx-auto mb-3 animate-spin"></i>
+    <p class="text-sm text-ink-soft">{{ t('web.pay_confirming', lang) }}</p>
+  </div>
+
+  {% elif state == "expired" %}
+  <div class="card card-pad text-center py-10">
+    <i data-lucide="timer-off" class="w-10 h-10 text-rust mx-auto mb-3"></i>
+    <p class="text-sm text-ink-soft">{{ t('web.pay_expired', lang) }}</p>
+    <a href="/cart" class="btn btn-primary mt-4">{{ t('web.back_to_cart', lang) }}</a>
+  </div>
+
+  {% else %}
+  <div class="card card-pad text-center py-10">
+    <p class="text-sm text-ink-soft">{{ t('web.pay_closed', lang) }}</p>
+    <a href="/account/orders" class="btn btn-soft mt-4">{{ t('web.account_orders', lang) }}</a>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

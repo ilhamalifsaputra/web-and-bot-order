@@ -1,0 +1,23 @@
+{% extends "base.njk" %}
+{% import "_shop.njk" as shop %}
+
+{% block title %}{{ t('web.search_results', lang, { q: q }) }} — {{ shop_name }}{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="page-title">{{ t('web.search_results', lang, { q: q }) }}</h1>
+</div>
+
+{% if products.length %}
+<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+  {% for p in products %}
+  {{ shop.product_card(p, fx, low_threshold, lang) }}
+  {% endfor %}
+</div>
+{% else %}
+<div class="card card-pad text-center py-14">
+  <div class="text-ink-faint">{{ t('web.search_empty', lang) }}</div>
+  <a href="/" class="btn btn-soft mt-4">{{ t('web.back_home', lang) }}</a>
+</div>
+{% endif %}
+{% endblock %}

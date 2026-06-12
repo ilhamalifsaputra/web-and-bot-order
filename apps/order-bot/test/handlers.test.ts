@@ -2,11 +2,14 @@
 import "./setup-db";
 
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
-import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser } from "@app/db";
+import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast, setSetting } from "@app/db";
+import type { Api } from "grammy";
+import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
+import { invalidateRateCache } from "../src/util/rate";
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
@@ -19,6 +22,7 @@ let adminDbId: number;
 
 beforeEach(async () => {
   await resetDb(prisma);
+  invalidateRateCache(); // settings were wiped — don't leak a cached rate across tests
   sample = await buildSampleData(prisma);
   const adminUser = await upsertUser(prisma, { telegramId: 999, username: "boss", fullName: "Admin Boss" });
   adminDbId = adminUser.id;
@@ -87,6 +91,15 @@ describe("customer handlers", () => {
     expect((ctx.session.scratch as { browseProductIds?: number[] }).browseProductIds).toEqual([sample.product.id]);
   });
 
+  it("browseProductsFlat shows a numbered list with prices on each line", async () => {
+    const { ctx, sink } = customerCtx();
+    await customer.browseProductsFlat(ctx);
+    const dump = JSON.stringify(sink);
+    expect(dump).toContain("[ 1 ]"); // numbered layout (compact for big catalogs)
+    expect(dump).toContain(sample.product.name.toUpperCase());
+    expect(dump).toMatch(/—\s*[^\s]+/); // a price follows the product name
+  });
+
   it("browseProduct shows detail and sets the viewing breadcrumb", async () => {
     const { ctx, sink } = customerCtx();
     await customer.browseProduct(ctx, sample.product.id);
@@ -98,6 +111,17 @@ describe("customer handlers", () => {
     const { ctx } = customerCtx({ text: "1", session: { ...userSession(), scratch: { browsePage: 0 } } });
     await customer.handleProductNumber(ctx);
     expect((ctx.session.scratch as { viewingProductId?: number }).viewingProductId).toBe(sample.product.id);
+  });
+
+  it("handleProductNumber honors the rendered snapshot over a fresh query (stale-catalog race)", async () => {
+    // A second product exists; the snapshot points only at it. Tapping "1" must
+    // open the snapshot's product, not whatever a fresh query would rank first.
+    const other = await prisma.product.create({
+      data: { categoryId: sample.product.categoryId, name: "Other", type: "SHARED", durationLabel: "1 Month", price: "9" },
+    });
+    const { ctx } = customerCtx({ text: "1", session: { ...userSession(), scratch: { browsePage: 0, browseProductIds: [other.id] } } });
+    await customer.handleProductNumber(ctx);
+    expect((ctx.session.scratch as { viewingProductId?: number }).viewingProductId).toBe(other.id);
   });
 
   it("setLanguage persists the choice and updates the session", async () => {
@@ -154,6 +178,9 @@ describe("checkout handlers", () => {
   });
 
   it("buyNow creates a PENDING_PAYMENT order and shows payment instructions", async () => {
+    // The USDT/Binance path needs the admin-set rate; 1 keeps the USDT total
+    // equal to the fixture's central-IDR price.
+    await setSetting(prisma, "usd_idr_rate", "1");
     const { ctx, sink } = customerCtx({ callbackData: "v1:pay:1:1" });
     await checkout.buyNow(ctx, sample.product.id, 1);
     const orders = await prisma.order.findMany();
@@ -181,6 +208,44 @@ describe("checkout handlers", () => {
     await checkout.cancelPendingOrder(ctx, order!.id);
     const after = await getOrder(prisma, order!.id);
     expect(after!.status).toBe(OrderStatus.CANCELLED);
+  });
+});
+
+// ===========================================================================
+// Broadcast drainer (the bot half of the web /broadcast feature)
+// ===========================================================================
+
+describe("drainBroadcasts", () => {
+  function fakeApi() {
+    const sent: Array<{ chatId: number | string; text: string }> = [];
+    const api = {
+      sendMessage: async (chatId: number | string, text: string) => {
+        sent.push({ chatId, text });
+        return { message_id: 1 };
+      },
+    } as unknown as Api;
+    return { api, sent };
+  }
+
+  it("delivers a queued broadcast to the segment and marks it SENT", async () => {
+    // sample.user + the admin (999) are both non-banned ⇒ ALL = 2 recipients.
+    const total = await prisma.user.count({ where: { banned: false } });
+    const bc = await createBroadcast(prisma, { message: "Hello all", segment: "ALL", scheduledAt: null, createdById: null, total });
+    const { api, sent } = fakeApi();
+
+    await drainBroadcasts(api);
+
+    expect(sent.length).toBe(total);
+    expect(sent.every((m) => m.text === "Hello all")).toBe(true);
+    const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+    expect(done.status).toBe("SENT");
+    expect(done.sentCount).toBe(total);
+  });
+
+  it("is a no-op when nothing is queued", async () => {
+    const { api, sent } = fakeApi();
+    await drainBroadcasts(api);
+    expect(sent.length).toBe(0);
   });
 });
 
@@ -320,5 +385,32 @@ describe("callback router", () => {
     const { ctx, sink } = customerCtx({ callbackData: "garbage" });
     await routeCallback(ctx);
     expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
+  });
+
+  // §8.9 — quantity-input mode must end on any button tap, even one whose
+  // dispatcher never re-renders (so smartEdit's own clear doesn't run).
+  it("clears awaitingQtyProductId on a callback that never re-renders (§8.9)", async () => {
+    const { ctx } = customerCtx({ callbackData: "v1:noop:x" });
+    ctx.session.awaitingQtyProductId = sample.product.id;
+    await routeCallback(ctx);
+    expect(ctx.session.awaitingQtyProductId).toBeUndefined();
+  });
+
+  // …but the button that *starts* qty-input mode keeps it set.
+  it("keeps awaitingQtyProductId for the qty:input callback that starts it (§8.9)", async () => {
+    const { ctx } = customerCtx({ callbackData: `v1:qty:input:${sample.product.id}` });
+    await routeCallback(ctx);
+    expect(ctx.session.awaitingQtyProductId).toBe(sample.product.id);
+  });
+
+  // §8.6 — a dispatcher crash surfaces a quotable correlation ref to the user.
+  it("surfaces a correlation ref when a dispatcher throws (§8.6)", async () => {
+    // No dbUser in session → requireUser() throws inside the dispatcher.
+    const { ctx, sink } = makeCtx({ from: { id: 42 }, callbackData: "v1:order:list", session: { lang: "en", scratch: {} } });
+    await routeCallback(ctx);
+    const refAlert = calls(sink, "answerCallbackQuery").some((c) =>
+      /ref:/i.test((c.args[0] as { text?: string } | undefined)?.text ?? ""),
+    );
+    expect(refAlert).toBe(true);
   });
 });

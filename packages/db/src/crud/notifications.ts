@@ -32,6 +32,29 @@ export async function enqueueNotification(
   });
 }
 
+/**
+ * Enqueue a one-time web-admin password-reset code as an admin DM (orderId is
+ * null — this is not tied to an order). The dispatcher routes ADMIN_PW_RESET
+ * rows to `payload.chat_id` instead of the public channel. The web NEVER sends
+ * Telegram itself; this just drops the row for the notifier/bot to deliver.
+ */
+export async function enqueueAdminPasswordReset(
+  db: Db,
+  args: { telegramId: number; code: string; ttlMinutes: number },
+): Promise<void> {
+  await db.notificationOutbox.create({
+    data: {
+      event: NotificationEvent.ADMIN_PW_RESET,
+      orderId: null,
+      payloadJson: JSON.stringify({
+        chat_id: args.telegramId,
+        code: args.code,
+        ttl_minutes: args.ttlMinutes,
+      }),
+    },
+  });
+}
+
 /** Oldest pending rows first, capped at `limit`. */
 export function fetchPendingNotifications(db: Db, limit = 50) {
   return db.notificationOutbox.findMany({
@@ -76,4 +99,47 @@ export async function markNotificationFailed(
         : {}),
     },
   });
+}
+
+// ---- Outbox monitor (web-admin /outbox) -----------------------------------
+
+/** Newest-first outbox rows, optionally filtered by status, with linked order code. */
+export function listNotifications(
+  db: Db,
+  opts: { status?: string | null; limit?: number; offset?: number } = {},
+) {
+  return db.notificationOutbox.findMany({
+    where: opts.status ? { status: opts.status } : {},
+    orderBy: { createdAt: "desc" },
+    skip: opts.offset ?? 0,
+    take: opts.limit ?? 50,
+    include: { order: { select: { id: true, orderCode: true } } },
+  });
+}
+
+export function countNotifications(db: Db, opts: { status?: string | null } = {}) {
+  return db.notificationOutbox.count({ where: opts.status ? { status: opts.status } : {} });
+}
+
+/** Count of outbox rows per status — drives the summary cards. */
+export async function outboxStatusCounts(db: Db): Promise<Record<string, number>> {
+  const grouped = await db.notificationOutbox.groupBy({ by: ["status"], _count: { _all: true } });
+  const counts: Record<string, number> = {};
+  for (const g of grouped) counts[g.status] = g._count._all;
+  return counts;
+}
+
+/**
+ * Requeue a FAILED (or stuck) notification: back to PENDING, attempts reset to
+ * 0, error/sent cleared, so the notifier drains it again on its next cycle.
+ * Returns false if the row is gone. The web NEVER sends Telegram itself.
+ */
+export async function retryNotification(db: Db, notifId: number): Promise<boolean> {
+  const row = await db.notificationOutbox.findUnique({ where: { id: notifId } });
+  if (!row) return false;
+  await db.notificationOutbox.update({
+    where: { id: notifId },
+    data: { status: NotificationStatus.PENDING, attempts: 0, lastError: null, sentAt: null },
+  });
+  return true;
 }

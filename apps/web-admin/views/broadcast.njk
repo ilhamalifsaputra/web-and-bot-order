@@ -1,0 +1,86 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}Announcements · Shop Admin{% endblock %}
+
+{% block content %}
+<header class="mb-6">
+  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="megaphone" class="w-7 h-7 text-rose-500"></i> Announcements</h1>
+  <p class="page-lead">Send a message to your customers on Telegram. You write it here; the bot delivers it.</p>
+</header>
+{{ ui.flash(msg, kind) }}
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+  <section class="card card-pad lg:col-span-2">
+    <form method="post" action="/broadcast" class="space-y-4 text-sm">
+      {{ ui.csrf_field(admin) }}
+      <div>
+        <label class="field-label">Your message</label>
+        <textarea name="message" rows="6" required maxlength="4000" class="field"
+          placeholder="Hi! New stock just dropped…"></textarea>
+      </div>
+      <div class="flex flex-wrap gap-4 items-end">
+        <div>
+          <label class="field-label">Who to send to</label>
+          <select name="segment" class="field">
+            {% for s in segments %}<option value="{{ s }}">{{ s | lower | replace('_', ' ') | title }} ({{ counts[s] }})</option>{% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="field-label">Send later (optional)</label>
+          <input type="datetime-local" name="scheduled_at" class="field">
+        </div>
+        <button class="btn btn-primary" onclick="return confirm('Send this announcement?');"><i data-lucide="send" class="w-4 h-4"></i> Send announcement</button>
+      </div>
+    </form>
+  </section>
+
+  <aside class="card card-pad text-sm">
+    <h2 class="section-title mb-3">How many people</h2>
+    <ul class="space-y-1.5">
+      {% for s in segments %}
+      <li class="flex justify-between gap-3"><span class="text-ink-soft">{{ s | lower | replace('_', ' ') | title }}</span><span class="font-medium tabular">{{ counts[s] }}</span></li>
+      {% endfor %}
+    </ul>
+    <p class="text-xs text-ink-faint mt-3">“Recent buyers” means anyone who received an order in the last 30 days. Blocked customers are never included.</p>
+  </aside>
+</div>
+
+<section class="card overflow-x-auto mt-6">
+  <div class="px-5 pt-4 section-title">Past announcements</div>
+  <table class="data-table mt-2">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Status</th>
+        <th>Sent to</th>
+        <th>Message</th>
+        <th class="text-right">Delivered</th>
+        <th>When</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for b in history %}
+      <tr>
+        <td class="text-ink-faint">{{ b.id }}</td>
+        <td>{{ ui.status_badge(b.status) }}</td>
+        <td class="text-ink-soft">{{ b.segment | lower | replace('_', ' ') | title }}</td>
+        <td class="max-w-xs truncate" title="{{ b.message }}">{{ b.message }}</td>
+        <td class="text-right tabular">{{ b.sentCount }} / {{ b.totalCount }}{% if b.failedCount %} <span class="text-rust text-xs">({{ b.failedCount }} failed)</span>{% endif %}</td>
+        <td class="text-ink-soft">{% if b.scheduledAt %}{{ b.scheduledAt | localdt }}{% else %}{{ b.createdAt | localdt }}{% endif %}</td>
+        <td>
+          {% if b.status == 'PENDING' %}
+          <form method="post" action="/broadcast/{{ b.id }}/cancel" onsubmit="return confirm('Cancel announcement #{{ b.id }}?');">
+            {{ ui.csrf_field(admin) }}
+            <button class="btn btn-danger btn-sm">Cancel</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      {{ ui.empty_row(7, 'No announcements yet.') }}
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -1,0 +1,56 @@
+{# Reusable form/UI snippets shared by web-admin AND the storefront (moved from
+   apps/web-admin/views/_macros.njk — plan.md §6 decision B). Import with:
+   {% import "_macros.njk" as ui %} #}
+
+{% macro csrf_field(admin) -%}
+<input type="hidden" name="csrf_token" value="{{ admin.csrf }}">
+{%- endmacro %}
+
+{# Lucide icon. Rendered to an <svg> by base.njk's init script. Size + colour
+   come from Tailwind classes (icons inherit currentColor). #}
+{% macro ic(name, cls="w-5 h-5") -%}
+<i data-lucide="{{ name }}" class="{{ cls }}"></i>
+{%- endmacro %}
+
+{% macro flash(message, kind="info") -%}
+{% if message %}
+<div class="flex items-start gap-2 rounded-xl px-4 py-3 mb-5 text-sm border
+  {% if kind == 'error' %}bg-rust-tint text-rust-dark border-rust/30
+  {% elif kind == 'success' %}bg-grass-tint text-grass-dark border-grass/30
+  {% else %}bg-sand text-ink border-line{% endif %}">
+  <span class="mt-px">
+    {%- if kind == 'error' %}✕{% elif kind == 'success' %}✓{% else %}•{% endif -%}
+  </span>
+  <span>{{ message }}</span>
+</div>
+{% endif %}
+{%- endmacro %}
+
+{# Enum values are stored UPPERCASE in the DB. We show a plain-English label and
+   a colour that reads at a glance — green=good/done, amber=needs attention,
+   blue=waiting, red=stopped/bad. Unknown values fall back to a tidied string. #}
+{% set _status_labels = {
+  'delivered': 'Delivered', 'paid': 'Paid', 'available': 'In stock',
+  'active': 'Active', 'closed': 'Closed', 'sent': 'Sent', 'matched': 'Matched',
+  'pending_verification': 'Awaiting check', 'reserved': 'Reserved',
+  'open': 'Open', 'replied': 'Replied', 'pending': 'Waiting',
+  'pending_payment': 'Awaiting payment', 'underpaid': 'Paid too little',
+  'cancelled': 'Cancelled', 'rejected': 'Rejected', 'refunded': 'Refunded',
+  'dead': 'Used up', 'failed': 'Failed', 'unmatched': 'Unmatched'
+} %}
+{% macro status_badge(value) -%}
+{% set v = (value | string | lower) %}
+<span class="chip
+  {% if v in ['delivered', 'paid', 'available', 'active', 'closed', 'sent', 'matched'] %}bg-grass-tint text-grass-dark
+  {% elif v in ['pending_verification', 'reserved', 'open', 'replied', 'pending', 'underpaid'] %}bg-amberx-tint text-amberx
+  {% elif v in ['pending_payment'] %}bg-pine-tint text-pine-dark
+  {% elif v in ['cancelled', 'rejected', 'refunded', 'dead', 'failed', 'unmatched'] %}bg-rust-tint text-rust-dark
+  {% else %}bg-sand text-ink-soft{% endif %}">
+  {{ _status_labels[v] or (v | replace('_', ' ') | title) }}
+</span>
+{%- endmacro %}
+
+{# Empty-state row for tables: a quiet, friendly "nothing here yet" line. #}
+{% macro empty_row(cols, message) -%}
+<tr><td colspan="{{ cols }}" class="px-4 py-10 text-center text-ink-faint">{{ message }}</td></tr>
+{%- endmacro %}

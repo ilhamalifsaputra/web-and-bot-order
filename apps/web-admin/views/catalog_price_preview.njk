@@ -1,0 +1,50 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}Confirm price change · Products{% endblock %}
+
+{% block content %}
+<div class="mb-5">
+  <a href="/catalog" class="link text-sm">← Products</a>
+  <h1 class="page-title mt-1 flex items-center gap-2.5"><i data-lucide="badge-dollar-sign" class="w-7 h-7 text-emerald-500"></i> Confirm the price change</h1>
+  <p class="page-lead">
+    {% if mode == 'percent' %}Changing the selected prices by <b>{{ value }}%</b>{% else %}Setting the selected prices to <b>{{ value }} {{ currency }}</b>{% endif %}.
+    Check the new prices below before you apply them.
+  </p>
+</div>
+
+<div class="card overflow-x-auto mb-4">
+  <table class="data-table">
+    <thead>
+      <tr><th>Product</th><th class="text-right">Now</th><th class="text-right">After</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr class="{% if r.invalid %}bg-rust-tint/50{% endif %}">
+        <td>{{ r.name }}</td>
+        <td class="text-right tabular text-ink-soft">{{ r.current | money }}</td>
+        <td class="text-right tabular font-medium">
+          {% if r.invalid %}<span class="text-rust">would be 0 or less — skipped</span>{% else %}{{ r.next | money }}{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% if any_invalid %}
+<p class="text-sm text-amberx bg-amberx-tint border border-amberx/30 rounded-xl px-3 py-2 mb-4">
+  Any price that would drop to 0 or less is skipped and left unchanged.
+</p>
+{% endif %}
+
+<div class="flex gap-3">
+  {% if pairs %}
+  <form method="post" action="/catalog/products/bulk-price/apply">
+    {{ ui.csrf_field(admin) }}
+    <input type="hidden" name="pairs" value="{{ pairs }}">
+    <button class="btn btn-primary">Apply price change</button>
+  </form>
+  {% endif %}
+  <a href="/catalog" class="btn btn-ghost">Cancel</a>
+</div>
+{% endblock %}

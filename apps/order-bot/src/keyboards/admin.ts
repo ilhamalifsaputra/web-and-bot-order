@@ -219,6 +219,7 @@ export function settingsKb(lang: string): InlineKeyboard {
   return ik([
     [{ text: "💳 Binance Pay ID", data: cb("adm", "settings", "set", "binance_pay_id") }],
     [{ text: "🖼 QR image", data: cb("adm", "settings", "set", "qr") }],
+    [{ text: "📢 Banner image", data: cb("adm", "settings", "set", "banner_image") }],
     [{ text: "👋 Welcome message", data: cb("adm", "settings", "set", "welcome") }],
     [{ text: "📞 Support contact", data: cb("adm", "settings", "set", "support_contact") }],
     [{ text: coreT("menu.back", lang), data: cb("adm", "menu") }],

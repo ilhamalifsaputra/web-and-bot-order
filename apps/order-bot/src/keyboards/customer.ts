@@ -78,6 +78,26 @@ export function backToMain(lang: string): InlineKeyboard {
   return ik([[{ text: coreT("menu.main", lang), data: cb("menu", "main") }]]);
 }
 
+/** Confirmation footer after a restock subscription: back to the product + menu. */
+export function restockSubscribedKb(productId: number, lang: string): InlineKeyboard {
+  return ik([
+    [
+      { text: coreT("menu.back", lang), data: cb("browse", "prod", productId) },
+      { text: coreT("menu.main", lang), data: cb("menu", "main") },
+    ],
+  ]);
+}
+
+/** Confirmation footer after a user closes their own ticket. */
+export function ticketClosedKb(lang: string): InlineKeyboard {
+  return ik([
+    [
+      { text: coreT("menu.my_tickets", lang), data: cb("ticket", "list") },
+      { text: coreT("menu.main", lang), data: cb("menu", "main") },
+    ],
+  ]);
+}
+
 /** Keyboard attached to push notifications (delivery, rejection, auto-cancel, warranty). */
 export function notificationKb(lang: string): InlineKeyboard {
   return ik([
@@ -92,30 +112,71 @@ export function notificationKb(lang: string): InlineKeyboard {
 // Browse — persistent numbered reply keyboard
 // ---------------------------------------------------------------------------
 
-// Fixed labels matched literally in handleProductNumber.
-export const BTN_BROWSE = "🛍 Products";
-export const BTN_ORDERS = "📦 Orders";
-export const BTN_WALLET = "💰 Wallet";
-export const BTN_REFERRAL = "🤝 Referral";
-export const BTN_LANGUAGE = "🌐 Language";
-export const BTN_SUPPORT = "💬 Support";
-export const BTN_FAQ = "❓ FAQ";
-export const BTN_TERMS = "📄 Terms";
-export const BTN_TICKETS = "📩 Tickets";
-// "← Back" is context-aware; "🏠 Menu" always returns to the main dashboard.
-export const BTN_BACK = "← Back";
-export const BTN_MAIN = "🏠 Menu";
-export const BTN_PREV = "◀️ Prev";
-export const BTN_NEXT = "Next ▶️";
-// Legacy alias kept for backward compatibility (download_history etc).
-export const BTN_HISTORY = BTN_ORDERS;
+/**
+ * Persistent reply-keyboard buttons. Each action has a STABLE key (used by the
+ * handler to decide what to do) mapped to a locale key (used to render the label
+ * in the user's language). Because the label is localized, the keyboard text
+ * differs per language — so matching typed input must go through
+ * `matchPersistentLabel` (which checks BOTH languages), never a literal compare.
+ */
+export type PersistentAction =
+  | "browse" | "orders" | "wallet" | "referral" | "language"
+  | "support" | "faq" | "terms" | "tickets"
+  | "back" | "main" | "prev" | "next";
+
+const PERSISTENT_LABEL_KEYS: Record<PersistentAction, string> = {
+  browse: "menu.browse",
+  orders: "menu.my_orders",
+  wallet: "menu.wallet",
+  referral: "menu.referral",
+  language: "menu.language",
+  support: "menu.support",
+  faq: "menu.faq",
+  terms: "menu.terms",
+  tickets: "menu.my_tickets",
+  // "← Back" is context-aware; "🏠 Menu" always returns to the main dashboard.
+  back: "menu.back",
+  main: "menu.main",
+  prev: "browse.nav_prev",
+  next: "browse.nav_next",
+};
+
+/** Languages whose labels we accept when matching typed reply-keyboard input. */
+const MATCH_LANGS = ["en", "id"] as const;
+
+/** Localized label for a persistent button. */
+export function persistentLabel(action: PersistentAction, lang: string): string {
+  return coreT(PERSISTENT_LABEL_KEYS[action], lang);
+}
+
+/**
+ * Resolve typed text back to a stable persistent-button action, checking the
+ * label set of every supported language. Returns null when the text is not a
+ * known button (e.g. a product number or free text). Language-aware so the
+ * handler keeps working whichever language the keyboard was rendered in.
+ */
+export function matchPersistentLabel(text: string): PersistentAction | null {
+  const trimmed = text.trim();
+  for (const action of Object.keys(PERSISTENT_LABEL_KEYS) as PersistentAction[]) {
+    for (const lang of MATCH_LANGS) {
+      if (persistentLabel(action, lang) === trimmed) return action;
+    }
+  }
+  return null;
+}
+
+/** True when the text is any persistent-keyboard label (in any language). */
+export function isPersistentLabel(text: string): boolean {
+  return matchPersistentLabel(text) !== null;
+}
 
 /** Compact persistent reply keyboard with all main-menu shortcuts. */
-export function mainPersistentKb(): Keyboard {
+export function mainPersistentKb(lang: string): Keyboard {
+  const L = (a: PersistentAction) => persistentLabel(a, lang);
   return new Keyboard()
-    .text(BTN_BROWSE).text(BTN_ORDERS).text(BTN_WALLET).row()
-    .text(BTN_REFERRAL).text(BTN_LANGUAGE).text(BTN_SUPPORT).row()
-    .text(BTN_FAQ).text(BTN_TERMS).text(BTN_TICKETS)
+    .text(L("browse")).text(L("orders")).text(L("wallet")).row()
+    .text(L("referral")).text(L("language")).text(L("support")).row()
+    .text(L("faq")).text(L("terms")).text(L("tickets"))
     .resized();
 }
 
@@ -126,6 +187,7 @@ export function mainPersistentKb(): Keyboard {
  */
 export function productsPersistentKb(
   count: number,
+  lang: string,
   opts: { showPrev?: boolean; showNext?: boolean; showBack?: boolean } = {},
 ): Keyboard {
   const kb = new Keyboard();
@@ -141,14 +203,19 @@ export function productsPersistentKb(
   if (inRow > 0) kb.row();
 
   if (opts.showPrev || opts.showNext) {
-    if (opts.showPrev) kb.text(BTN_PREV);
-    if (opts.showNext) kb.text(BTN_NEXT);
+    if (opts.showPrev) kb.text(persistentLabel("prev", lang));
+    if (opts.showNext) kb.text(persistentLabel("next", lang));
     kb.row();
   }
 
-  if (opts.showBack) kb.text(BTN_BACK).text(BTN_MAIN);
-  else kb.text(BTN_MAIN);
+  if (opts.showBack) kb.text(persistentLabel("back", lang)).text(persistentLabel("main", lang));
+  else kb.text(persistentLabel("main", lang));
   return kb.resized();
+}
+
+/** Support-button labels across all languages — for the startup `hears` trigger. */
+export function supportLabels(): string[] {
+  return MATCH_LANGS.map((lang) => persistentLabel("support", lang));
 }
 
 /** ReplyKeyboardRemove payload. */
@@ -306,10 +373,16 @@ export function voucherCancelKb(productId: number, qty: number, lang: string): I
   ]);
 }
 
-/** Single 'Cancel Order' button shown during the screenshot / TxID prompts. */
+/**
+ * Shown during the screenshot / TxID prompts. 'Cancel Order' is the only
+ * destructive action; '🏠 Menu' is a non-destructive escape that leaves the
+ * order pending (it stays reachable under My Orders), so the user is never
+ * stranded on a cancel-or-nothing screen.
+ */
 export function proofCancelKb(orderId: number, lang: string): InlineKeyboard {
   return ik([
     [{ text: coreT("checkout.cancel_order", lang), data: cb("checkout", "cancel", orderId) }],
+    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
   ]);
 }
 
@@ -317,6 +390,7 @@ export function paymentInstructionsKb(orderId: number, lang: string): InlineKeyb
   return ik([
     [{ text: coreT("checkout.i_paid", lang), data: cb("checkout", "proof", orderId) }],
     [{ text: coreT("checkout.cancel_order", lang), data: cb("checkout", "cancel", orderId) }],
+    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
   ]);
 }
 
@@ -337,8 +411,8 @@ export function reviewRatingKb(orderId: number, productId: number): InlineKeyboa
 // ---------------------------------------------------------------------------
 
 /** Shown to user under admin reply — lets them mark the issue as resolved. */
-export function ticketResolvedKb(ticketId: number): InlineKeyboard {
-  return ik([[{ text: "✅ Mark as Resolved", data: cb("ticket", "close", ticketId) }]]);
+export function ticketResolvedKb(ticketId: number, lang = "en"): InlineKeyboard {
+  return ik([[{ text: coreT("support.btn_resolve", lang), data: cb("ticket", "close", ticketId) }]]);
 }
 
 const TICKET_ICONS: Record<string, string> = {
@@ -363,8 +437,8 @@ export function ticketViewKb(ticketId: number, statusValue: string, lang: string
   const rows: Btn[][] = [];
   if (statusValue !== TicketStatus.CLOSED) {
     rows.push([
-      { text: "💬 Reply", data: cb("ticket", "reply", ticketId) },
-      { text: "🔒 Close", data: cb("ticket", "close", ticketId) },
+      { text: coreT("support.btn_reply", lang), data: cb("ticket", "reply", ticketId) },
+      { text: coreT("support.btn_close", lang), data: cb("ticket", "close", ticketId) },
     ]);
   }
   rows.push([
@@ -376,15 +450,10 @@ export function ticketViewKb(ticketId: number, statusValue: string, lang: string
 
 /** Shown while user is in AWAITING_PHOTOS state. */
 export function supportPhotoPromptKb(photoCount: number, lang = "en"): InlineKeyboard {
-  let label: string;
-  if (photoCount > 0) {
-    label =
-      lang === "id"
-        ? `✅ Submit (${photoCount}/3 foto)`
-        : `✅ Submit (${photoCount}/3 photos)`;
-  } else {
-    label = lang === "id" ? "✅ Submit tanpa foto" : "✅ Submit without photos";
-  }
+  const label =
+    photoCount > 0
+      ? coreT("support.btn_submit_photos", lang, { count: photoCount })
+      : coreT("support.btn_submit_no_photos", lang);
   return ik([[{ text: label, data: cb("support", "photos", "done") }]]);
 }
 

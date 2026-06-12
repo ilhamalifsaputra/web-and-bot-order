@@ -1,61 +1,262 @@
 {% extends "base.njk" %}
 {% import "_macros.njk" as ui %}
-{% block title %}Settings · Stock Admin{% endblock %}
+{% block title %}Settings · Shop Admin{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-semibold mb-6">Settings</h1>
+<header class="mb-6">
+  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="settings" class="w-7 h-7 text-sky-500"></i> Settings</h1>
+  <p class="page-lead">Your shop's options and your sign-in security — grouped by what they change.</p>
+</header>
 {{ ui.flash(msg, kind) }}
 
-<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-  <section class="bg-white rounded-lg shadow p-5">
-    <h2 class="font-semibold mb-3">Editable runtime settings</h2>
-    <div class="space-y-3">
-      {% for fld in editable_fields %}
-      <form method="post" action="/settings/edit" class="flex gap-2 items-end">
-        {{ ui.csrf_field(admin) }}
-        <input type="hidden" name="key" value="{{ fld.key }}">
-        <div class="flex-1">
-          <label class="block text-xs text-slate-500 mb-1">{{ fld.label }} <span class="font-mono">({{ fld.key }})</span></label>
-          <input type="text" name="value" value="{{ fld.value }}" class="border rounded px-2 py-1 w-full">
-        </div>
-        <button class="bg-slate-200 px-3 py-1.5 rounded hover:bg-slate-300 text-sm">Save</button>
-      </form>
-      {% endfor %}
-    </div>
-  </section>
+{% macro setting_form(fld) %}
+<form method="post" action="/settings/edit" class="flex gap-2 items-end">
+  {{ ui.csrf_field(admin) }}
+  <input type="hidden" name="key" value="{{ fld.key }}">
+  <div class="flex-1">
+    <label class="field-label">{{ fld.label }}</label>
+    {% if fld.secret %}
+    {# Write-only: the saved value is never echoed back; blank = keep it. #}
+    <input type="password" name="value" value="" autocomplete="new-password" class="field"
+           placeholder="{% if fld.has_value %}●●● saved — leave blank to keep{% else %}not set yet{% endif %}">
+    {% else %}
+    <input type="text" name="value" value="{{ fld.value }}" class="field">
+    {% endif %}
+  </div>
+  <button class="btn btn-soft">Save</button>
+</form>
+{% endmacro %}
 
-  <section class="bg-white rounded-lg shadow p-5">
-    <h2 class="font-semibold mb-3">Change web admin password</h2>
-    <form method="post" action="/settings/password" class="space-y-3 text-sm">
-      {{ ui.csrf_field(admin) }}
-      <div><label class="block text-xs text-slate-500 mb-1">Current password</label>
-        <input type="password" name="current_password" required autocomplete="current-password" class="border rounded px-2 py-1 w-full"></div>
-      <div><label class="block text-xs text-slate-500 mb-1">New password (min 8)</label>
-        <input type="password" name="new_password" required minlength="8" autocomplete="new-password" class="border rounded px-2 py-1 w-full"></div>
-      <div><label class="block text-xs text-slate-500 mb-1">Confirm new password</label>
-        <input type="password" name="confirm_password" required minlength="8" autocomplete="new-password" class="border rounded px-2 py-1 w-full"></div>
-      <button class="bg-slate-900 text-white px-4 py-2 rounded hover:bg-slate-700">Change password</button>
-    </form>
-  </section>
+{# ── Tab bar: one topic on screen at a time, nothing piled up. ── #}
+{% set tabs = [
+  { id: "website",  icon: "globe",     label: "Website" },
+  { id: "payments", icon: "wallet",    label: "Payments" },
+  { id: "bot",      icon: "bot",       label: "Telegram bot" },
+  { id: "security", icon: "lock",      label: "Security" },
+  { id: "all",      icon: "list",      label: "All saved data" }
+] %}
+<div id="settings-tabs" class="flex flex-wrap gap-2 mb-6" role="tablist">
+  {% for tab in tabs %}
+  <button type="button" role="tab" data-tab="{{ tab.id }}"
+          class="chip !px-3.5 !py-2 transition-colors bg-sand text-ink-soft hover:bg-pine-tint hover:text-pine-dark">
+    <i data-lucide="{{ tab.icon }}" class="w-4 h-4"></i> {{ tab.label }}
+  </button>
+  {% endfor %}
 </div>
 
-<section class="bg-white rounded-lg shadow overflow-x-auto mt-6">
-  <div class="px-5 pt-4 font-semibold">All settings (read-only)</div>
-  <table class="min-w-full text-sm mt-2">
-    <thead class="bg-slate-100 text-slate-600 text-left">
-      <tr><th class="px-4 py-2">Key</th><th class="px-4 py-2">Value</th><th class="px-4 py-2">Updated</th></tr>
-    </thead>
-    <tbody class="divide-y divide-slate-100">
-      {% for r in rows %}
-      <tr>
-        <td class="px-4 py-2 font-mono text-xs">{{ r.key }}{% if r.editable %}<span class="ml-1 text-green-600">✎</span>{% endif %}</td>
-        <td class="px-4 py-2 break-all">{{ r.value }}</td>
-        <td class="px-4 py-2 text-slate-500">{{ r.updated_at | localdt }}</td>
-      </tr>
-      {% else %}
-      <tr><td colspan="3" class="px-4 py-6 text-center text-slate-400">No settings stored.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+{# ════ Website — what customers see on the online store ════ #}
+<section data-panel="website" class="space-y-6">
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center gap-2">
+      <i data-lucide="globe" class="w-5 h-5 text-sky-500"></i> Your online store
+    </h2>
+    <p class="text-xs text-ink-soft mb-4">
+      These appear on the website your customers visit: the name in the header,
+      the tagline, and the WhatsApp button on the home page.
+    </p>
+    <div class="space-y-3">
+      {% for fld in website_fields %}{{ setting_form(fld) }}{% endfor %}
+    </div>
+  </div>
 </section>
+
+{# ════ Payments — split per method so nothing gets mixed up ════ #}
+<section data-panel="payments" class="space-y-6">
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center gap-2">
+      <i data-lucide="refresh-cw" class="w-5 h-5 text-sky-500"></i> USDT rate
+    </h2>
+    <p class="text-xs text-ink-soft mb-4">
+      Prices are set in Rupiah. The USDT rate follows the real market rate
+      (rounded, refreshed hourly) and is shown next to prices on the website.
+    </p>
+    <form method="post" action="/settings/fx/refresh" class="mb-4">
+      {{ ui.csrf_field(admin) }}
+      <button class="btn btn-soft btn-sm flex items-center gap-1.5">
+        <i data-lucide="refresh-cw" class="w-4 h-4"></i> Update USDT rate from the market now
+      </button>
+    </form>
+    <div class="space-y-3">
+      {% for fld in pay_rate_fields %}{{ setting_form(fld) }}{% endfor %}
+    </div>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="card card-pad">
+      <h2 class="section-title mb-1 flex items-center gap-2">
+        <i data-lucide="qr-code" class="w-5 h-5 text-sky-500"></i> Rupiah (QRIS) on the website
+      </h2>
+      <p class="text-xs text-ink-soft mb-4">
+        The TokoPay keys turn on Rupiah (QRIS) payments at checkout on the website.
+      </p>
+      <div class="space-y-3">
+        {% for fld in pay_qris_fields %}{{ setting_form(fld) }}{% endfor %}
+      </div>
+    </div>
+
+    <div class="card card-pad">
+      <h2 class="section-title mb-1 flex items-center gap-2">
+        <i data-lucide="coins" class="w-5 h-5 text-sky-500"></i> USDT via Binance
+      </h2>
+      <p class="text-xs text-ink-soft mb-4">
+        Shown to buyers who pay with USDT: your Binance Pay ID at checkout, and
+        the QR image the bot sends for payment.
+      </p>
+      <div class="space-y-3">
+        {% for fld in pay_binance_fields %}{{ setting_form(fld) }}{% endfor %}
+      </div>
+    </div>
+  </div>
+</section>
+
+{# ════ Telegram bot — messages the bot sends + its tokens ════ #}
+<section data-panel="bot" class="space-y-6">
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center gap-2">
+      <i data-lucide="message-square" class="w-5 h-5 text-sky-500"></i> Bot messages &amp; look
+    </h2>
+    <p class="text-xs text-ink-soft mb-4">
+      What the Telegram bot shows to buyers: the welcome message, the banner
+      image on its menu, and the support contact it hands out.
+    </p>
+    <div class="space-y-3">
+      {% for fld in bot_message_fields %}{{ setting_form(fld) }}{% endfor %}
+    </div>
+  </div>
+
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center gap-2">
+      <i data-lucide="key-round" class="w-5 h-5 text-sky-500"></i> Bot tokens
+    </h2>
+    <p class="text-xs text-ink-soft mb-4">
+      Tokens are checked with Telegram before they're saved, and a new token only
+      starts working after the app restarts.
+      {% if not is_owner %}Only the owner can change these.{% endif %}
+      Type a single <span class="codeish">-</span> to remove a saved token and go
+      back to the server's own configuration.
+    </p>
+    <div class="space-y-3">
+      {% for fld in bot_token_fields %}{{ setting_form(fld) }}{% endfor %}
+    </div>
+  </div>
+</section>
+
+{# ════ Security — your own sign-in ════ #}
+<section data-panel="security" class="space-y-6">
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <div class="card card-pad">
+      <h2 class="section-title mb-3 flex items-center gap-2">
+        <i data-lucide="key" class="w-5 h-5 text-sky-500"></i> Change your password
+      </h2>
+      <form method="post" action="/settings/password" class="space-y-3 text-sm">
+        {{ ui.csrf_field(admin) }}
+        <div><label class="field-label">Current password</label>
+          <input type="password" name="current_password" required autocomplete="current-password" class="field"></div>
+        <div><label class="field-label">New password (at least 8 characters)</label>
+          <input type="password" name="new_password" required minlength="8" autocomplete="new-password" class="field"></div>
+        <div><label class="field-label">Type the new password again</label>
+          <input type="password" name="confirm_password" required minlength="8" autocomplete="new-password" class="field"></div>
+        <button class="btn btn-primary">Change password</button>
+      </form>
+    </div>
+
+    <div class="card card-pad">
+      <h2 class="section-title mb-3 flex items-center gap-2">
+        <i data-lucide="shield-check" class="w-5 h-5 text-sky-500"></i> Two-step sign-in
+        {% if two_fa_enabled %}<span class="chip bg-grass-tint text-grass-dark">On</span>
+        {% else %}<span class="chip bg-sand text-ink-soft">Off</span>{% endif %}
+      </h2>
+
+      {% if two_fa_enabled %}
+      <p class="text-sm text-ink-soft mb-3">You'll be asked for a code from your authenticator app every time you sign in.</p>
+      <form method="post" action="/settings/2fa/disable" class="flex flex-wrap gap-2 items-end text-sm">
+        {{ ui.csrf_field(admin) }}
+        <div><label class="field-label">Current password</label>
+          <input type="password" name="current_password" required class="field"></div>
+        <div><label class="field-label">Code from your app</label>
+          <input type="text" name="totp_code" inputmode="numeric" required placeholder="6-digit code" class="field w-32"></div>
+        <button class="btn btn-danger">Turn off</button>
+      </form>
+
+      {% elif two_fa_pending %}
+      <p class="text-sm text-ink mb-2">1. Add this key to your authenticator app (Google Authenticator, Authy, and so on):</p>
+      <div class="font-mono text-sm bg-sand/60 rounded-xl px-3 py-2 break-all mb-2">{{ two_fa_pending.secret }}</div>
+      <p class="text-xs text-ink-faint mb-3 break-all">Or scan/paste this link: <span class="font-mono">{{ two_fa_pending.uri }}</span></p>
+      <p class="text-sm text-ink mb-2">2. Enter the current 6-digit code to confirm:</p>
+      <form method="post" action="/settings/2fa/enable" class="flex gap-2 items-center text-sm">
+        {{ ui.csrf_field(admin) }}
+        <input type="text" name="totp_code" inputmode="numeric" required placeholder="6-digit code" class="field w-32">
+        <button class="btn btn-primary">Turn on</button>
+      </form>
+      <form method="post" action="/settings/2fa/cancel" class="mt-2">
+        {{ ui.csrf_field(admin) }}
+        <button class="text-xs text-ink-soft hover:underline">Cancel</button>
+      </form>
+
+      {% else %}
+      <p class="text-sm text-ink-soft mb-3">Add a one-time code on top of your password. Strongly recommended — this dashboard can move money.</p>
+      <form method="post" action="/settings/2fa/begin">
+        {{ ui.csrf_field(admin) }}
+        <button class="btn btn-primary">Set up two-step sign-in</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{# ════ All saved data — the raw table, for checking what's stored ════ #}
+<section data-panel="all" class="space-y-6">
+  <div class="card overflow-x-auto">
+    <div class="px-5 pt-4 section-title">All saved options</div>
+    <p class="px-5 text-xs text-ink-soft mt-1">
+      Everything stored in the shop's settings, read-only. Rows marked
+      <span class="text-pine">✎</span> can be edited in the tabs above.
+    </p>
+    <table class="data-table mt-2">
+      <thead>
+        <tr><th>Name</th><th>Value</th><th>Updated</th></tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr>
+          <td class="font-mono text-xs">{{ r.key }}{% if r.editable %}<span class="ml-1 text-pine">✎</span>{% endif %}</td>
+          <td class="break-all">{{ r.value }}</td>
+          <td class="text-ink-soft">{{ r.updated_at | localdt }}</td>
+        </tr>
+        {% else %}
+        {{ ui.empty_row(3, 'No options saved.') }}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+(function () {
+  'use strict';
+  // Simple tabs: one panel visible at a time; the choice survives reloads
+  // (flash redirects) via the URL hash. Without JS all panels stay visible.
+  var tabs = document.querySelectorAll('#settings-tabs [data-tab]');
+  var panels = document.querySelectorAll('[data-panel]');
+  var ids = Array.prototype.map.call(tabs, function (b) { return b.dataset.tab; });
+
+  function show(id) {
+    panels.forEach(function (p) { p.hidden = p.dataset.panel !== id; });
+    tabs.forEach(function (b) {
+      var on = b.dataset.tab === id;
+      b.classList.toggle('!bg-pine', on);
+      b.classList.toggle('!text-white', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    if (history.replaceState) history.replaceState(null, '', '#' + id);
+  }
+
+  tabs.forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.tab); });
+  });
+
+  var initial = location.hash.slice(1);
+  show(ids.indexOf(initial) >= 0 ? initial : ids[0]);
+}());
+</script>
 {% endblock %}

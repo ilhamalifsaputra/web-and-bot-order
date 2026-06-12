@@ -1,0 +1,27 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+
+{% block title %}{{ t('web.login_title', lang) }} — {{ shop_name }}{% endblock %}
+
+{% block content %}
+<div class="card card-pad max-w-md mx-auto text-center py-12">
+  <i data-lucide="log-in" class="w-10 h-10 text-pine mx-auto"></i>
+  <h1 class="font-display text-2xl font-semibold mt-4">{{ t('web.login_title', lang) }}</h1>
+  <p class="text-sm text-ink-soft mt-2">{{ t('web.login_hint', lang) }}</p>
+
+  {% if error %}
+  <div class="mt-4">{{ ui.flash(t('web.error_message', lang), 'error') }}</div>
+  {% endif %}
+
+  <div class="mt-6 flex justify-center">
+    {# Official Telegram Login Widget — redirects to auth_url with signed params. #}
+    <script async src="https://telegram.org/js/telegram-widget.js?22"
+            data-telegram-login="{{ bot_username }}"
+            data-size="large"
+            data-radius="12"
+            data-auth-url="{{ auth_url }}"
+            data-request-access="write"></script>
+    <noscript class="text-xs text-ink-faint">{{ t('web.login_telegram', lang) }}</noscript>
+  </div>
+</div>
+{% endblock %}

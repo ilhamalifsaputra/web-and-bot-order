@@ -61,12 +61,62 @@ export function listAllActiveProducts(db: Db) {
   });
 }
 
+/** Newest active products with category — storefront home "Terbaru" grid. */
+export function listNewestActiveProducts(db: Db, limit = 12) {
+  return db.product.findMany({
+    where: { isActive: true },
+    include: { category: true },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
+}
+
+/** Active products in a category with the category joined (storefront list). */
+export function listActiveProductsWithCategory(db: Db, categoryId: number) {
+  return db.product.findMany({
+    where: { categoryId, isActive: true },
+    include: { category: true },
+    orderBy: { name: "asc" },
+  });
+}
+
+/** Active-product search with category joined (storefront /search). */
+export function searchProductsWithCategory(db: Db, query: string, limit = 24) {
+  const q = query.trim();
+  if (!q) return Promise.resolve([]);
+  return db.product.findMany({
+    where: {
+      isActive: true,
+      OR: [{ name: { contains: q } }, { description: { contains: q } }],
+    },
+    include: { category: true },
+    take: limit,
+  });
+}
+
+export function getCategory(db: Db, categoryId: number) {
+  return db.category.findUnique({ where: { id: categoryId } });
+}
+
+export function getProductWithCategory(db: Db, productId: number) {
+  return db.product.findUnique({
+    where: { id: productId },
+    include: { category: true },
+  });
+}
+
 /** Every product (active + inactive) with its category — admin views. */
 export function listAllProducts(db: Db) {
   return db.product.findMany({
     include: { category: true },
     orderBy: { name: "asc" },
   });
+}
+
+/** Products for a set of ids (order not guaranteed). Used by bulk-edit previews. */
+export function getProductsByIds(db: Db, ids: number[]) {
+  if (!ids.length) return Promise.resolve([]);
+  return db.product.findMany({ where: { id: { in: ids } } });
 }
 
 export function getProduct(db: Db, productId: number) {
@@ -85,6 +135,7 @@ export function createProduct(
     resellerPrice?: Decimal.Value | null;
     warrantyDays?: number | null;
     imageFileId?: string | null;
+    webImageUrl?: string | null;
   },
 ) {
   return db.product.create({
@@ -99,6 +150,7 @@ export function createProduct(
         args.resellerPrice != null ? quantizeMoney(args.resellerPrice, 4) : null,
       warrantyDays: args.warrantyDays || config.DEFAULT_WARRANTY_DAYS,
       imageFileId: args.imageFileId ?? null,
+      webImageUrl: args.webImageUrl ?? null,
     },
   });
 }
@@ -110,6 +162,36 @@ export async function updateProduct(
 ) {
   if (Object.keys(fields).length === 0) return;
   await db.product.update({ where: { id: productId }, data: fields });
+}
+
+/** Bulk activate/deactivate products in one writer. Returns the count updated. */
+export async function bulkSetProductsActive(
+  db: Db,
+  ids: number[],
+  isActive: boolean,
+): Promise<number> {
+  if (!ids.length) return 0;
+  const res = await db.product.updateMany({
+    where: { id: { in: ids } },
+    data: { isActive },
+  });
+  return res.count;
+}
+
+/**
+ * Apply pre-computed new prices to products. Each item is {id, price} already
+ * validated by the caller. No commit here (per crud convention) — wrap in the
+ * caller's `prisma.$transaction(tx => bulkSetPrices(tx, items))` for atomicity.
+ * Returns the count updated. (Prices are money — the web flow previews first.)
+ */
+export async function bulkSetPrices(
+  db: Db,
+  items: Array<{ id: number; price: string }>,
+): Promise<number> {
+  for (const it of items) {
+    await db.product.update({ where: { id: it.id }, data: { price: it.price } });
+  }
+  return items.length;
 }
 
 /** Search active products by name/description (case-insensitive LIKE). */

@@ -1,95 +1,123 @@
 {% extends "base.njk" %}
 {% import "_macros.njk" as ui %}
-{% block title %}{{ user.fullName or user.telegramId }} · Users{% endblock %}
+{% block title %}{{ user.fullName or user.telegramId }} · Customers{% endblock %}
 
 {% block content %}
 <div class="mb-6">
-  <a href="/users" class="text-sm text-slate-500 hover:underline">← Users</a>
-  <h1 class="text-2xl font-semibold mt-1">
-    {{ user.fullName or user.username or ('tg:' + (user.telegramId | string)) }}
+  <a href="/users" class="link text-sm">← Customers</a>
+  <h1 class="page-title mt-1 flex items-center gap-3 flex-wrap">
+    <i data-lucide="user-round" class="w-7 h-7 text-emerald-500"></i>
+    {{ user.fullName or user.username or ('Telegram ' + (user.telegramId | string)) }}
     {{ ui.status_badge(user.role) }}
-    {% if user.banned %}<span class="text-red-600 text-sm">banned</span>{% endif %}
+    {% if user.banned %}<span class="chip bg-rust-tint text-rust-dark">Blocked</span>{% endif %}
   </h1>
 </div>
 {{ ui.flash(msg, kind) }}
 
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
   <aside class="space-y-6">
-    <div class="bg-white rounded-lg shadow p-5 text-sm">
-      <h2 class="font-semibold mb-3">Profile</h2>
-      <dl class="space-y-1">
-        <div class="flex justify-between"><dt class="text-slate-500">Telegram</dt><dd class="font-mono">{{ user.telegramId }}</dd></div>
-        <div class="flex justify-between"><dt class="text-slate-500">Username</dt><dd>{{ user.username or '—' }}</dd></div>
-        <div class="flex justify-between"><dt class="text-slate-500">Wallet</dt><dd>{{ user.walletBalance | money }} {{ currency }}</dd></div>
-        <div class="flex justify-between"><dt class="text-slate-500">Total spent</dt><dd>{{ total_spent | money }} {{ currency }}</dd></div>
-        <div class="flex justify-between"><dt class="text-slate-500">Referral code</dt><dd class="font-mono">{{ user.referralCode }}</dd></div>
-        <div class="flex justify-between"><dt class="text-slate-500">Joined</dt><dd>{{ user.createdAt | localdt }}</dd></div>
-        {% if user.banned and user.bannedReason %}<div class="text-red-600 text-xs mt-2">Ban reason: {{ user.bannedReason }}</div>{% endif %}
+    <div class="card card-pad text-sm">
+      <h2 class="section-title mb-3">About</h2>
+      <dl class="space-y-1.5">
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Telegram</dt><dd class="font-mono">{{ user.telegramId }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Username</dt><dd>{{ user.username or '—' }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Wallet balance</dt><dd class="tabular">{{ user.walletBalance | money }} {{ currency }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Total spent</dt><dd class="tabular">{{ total_spent | money }} {{ currency }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Referral code</dt><dd class="font-mono">{{ user.referralCode }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Joined</dt><dd>{{ user.createdAt | localdt }}</dd></div>
+        {% if user.banned and user.bannedReason %}<div class="text-rust text-xs mt-2">Block reason: {{ user.bannedReason }}</div>{% endif %}
       </dl>
     </div>
 
-    <div class="bg-white rounded-lg shadow p-5 text-sm space-y-4">
-      <h2 class="font-semibold">Actions</h2>
+    <div class="card card-pad text-sm space-y-4">
+      <h2 class="section-title">Manage</h2>
       <form method="post" action="/users/{{ user.id }}/role" class="flex gap-2 items-end">
         {{ ui.csrf_field(admin) }}
-        <div class="flex-1"><label class="block text-xs text-slate-500 mb-1">Role</label>
-          <select name="role" class="border rounded px-2 py-1 w-full">
-            {% for r in roles %}<option value="{{ r }}" {% if user.role == r %}selected{% endif %}>{{ r | lower }}</option>{% endfor %}
+        <div class="flex-1"><label class="field-label">Customer type</label>
+          <select name="role" class="field">
+            {% for r in roles %}<option value="{{ r }}" {% if user.role == r %}selected{% endif %}>{{ r | lower | title }}</option>{% endfor %}
           </select></div>
-        <button class="bg-slate-200 px-3 py-1.5 rounded hover:bg-slate-300">Set</button>
+        <button class="btn btn-soft">Save</button>
       </form>
 
       <form method="post" action="/users/{{ user.id }}/ban" class="space-y-2">
         {{ ui.csrf_field(admin) }}
         <input type="hidden" name="banned" value="{{ 'false' if user.banned else 'true' }}">
         {% if not user.banned %}
-        <input type="text" name="reason" placeholder="Ban reason" class="border rounded px-2 py-1 w-full">
-        <button class="bg-red-100 text-red-700 px-3 py-1.5 rounded hover:bg-red-200 w-full">Ban user</button>
+        <input type="text" name="reason" placeholder="Why are you blocking them?" class="field">
+        <button class="btn btn-danger w-full">Block customer</button>
         {% else %}
-        <button class="bg-green-100 text-green-700 px-3 py-1.5 rounded hover:bg-green-200 w-full">Unban user</button>
+        <button class="btn btn-soft w-full">Unblock customer</button>
         {% endif %}
       </form>
 
       <form method="post" action="/users/{{ user.id }}/wallet" class="space-y-2">
         {{ ui.csrf_field(admin) }}
-        <label class="block text-xs text-slate-500">Wallet adjustment (+/−)</label>
-        <input type="text" name="delta" placeholder="e.g. 5 or -2.5" class="border rounded px-2 py-1 w-full">
-        <input type="text" name="note" placeholder="note (optional)" class="border rounded px-2 py-1 w-full">
-        <button class="bg-slate-200 px-3 py-1.5 rounded hover:bg-slate-300 w-full">Adjust wallet</button>
+        <label class="field-label">Add or remove wallet credit</label>
+        <input type="text" name="delta" placeholder="e.g. 5 or -2.5" class="field" required>
+        <input type="text" name="note" placeholder="reason (required)" class="field" required>
+        <button class="btn btn-soft w-full">Update wallet</button>
       </form>
     </div>
   </aside>
 
   <section class="lg:col-span-2 space-y-6">
-    <div class="bg-white rounded-lg shadow p-5">
-      <h2 class="font-semibold mb-3">Recent orders</h2>
-      <table class="min-w-full text-sm">
-        <thead class="text-slate-500 text-left"><tr><th class="py-1">Code</th><th class="py-1">Status</th><th class="py-1 text-right">Total</th><th class="py-1">Created</th></tr></thead>
-        <tbody class="divide-y divide-slate-100">
+    <div class="card card-pad">
+      <h2 class="section-title mb-3">Recent orders</h2>
+      <table class="data-table">
+        <thead><tr><th>Code</th><th>Status</th><th class="text-right">Total</th><th>Placed</th></tr></thead>
+        <tbody>
           {% for o in orders %}
           <tr>
-            <td class="py-1"><a class="font-mono text-xs text-slate-700 hover:underline" href="/orders/{{ o.id }}">{{ o.orderCode }}</a></td>
-            <td class="py-1">{{ ui.status_badge(o.status) }}</td>
-            <td class="py-1 text-right">{{ o.totalAmount | money }}</td>
-            <td class="py-1 text-slate-500">{{ o.createdAt | localdt }}</td>
+            <td><a class="link font-mono text-xs" href="/orders/{{ o.id }}">{{ o.orderCode }}</a></td>
+            <td>{{ ui.status_badge(o.status) }}</td>
+            <td class="text-right tabular">{{ o.totalAmount | money }}</td>
+            <td class="text-ink-soft">{{ o.createdAt | localdt }}</td>
           </tr>
           {% else %}
-          <tr><td colspan="4" class="py-4 text-center text-slate-400">No orders.</td></tr>
+          {{ ui.empty_row(4, 'No orders.') }}
           {% endfor %}
         </tbody>
       </table>
     </div>
 
-    <div class="bg-white rounded-lg shadow p-5">
-      <h2 class="font-semibold mb-3">Support tickets</h2>
-      <ul class="divide-y divide-slate-100 text-sm">
+    <div class="card card-pad">
+      <h2 class="section-title mb-3">Wallet history</h2>
+      <p class="text-xs text-ink-faint mb-2">Every change to their wallet — top-ups, refunds, referral rewards, and payments — with the balance after each one.</p>
+      <table class="data-table">
+        <thead><tr><th>When</th><th class="text-right">Change</th><th class="text-right">Balance</th><th>Reason</th><th>Link</th></tr></thead>
+        <tbody>
+          {% for e in ledger %}
+          <tr>
+            <td class="text-ink-soft">{{ e.createdAt | localdt }}</td>
+            <td class="text-right font-mono tabular {% if e.delta[0] == '-' %}text-rust{% else %}text-grass{% endif %}">{{ e.delta }}</td>
+            <td class="text-right font-mono tabular text-ink-soft">{{ e.balanceAfter }}</td>
+            <td>
+              <span class="chip bg-sand text-ink-soft">{{ e.reason | replace('_', ' ') | title }}</span>
+              {% if e.note %}<span class="text-ink-soft">· {{ e.note }}</span>{% endif %}
+            </td>
+            <td class="text-xs text-ink-faint">
+              {% if e.orderId %}<a class="link font-normal" href="/orders/{{ e.orderId }}">order #{{ e.orderId }}</a>{% endif %}
+              {% if e.adminId %}<span>by team #{{ e.adminId }}</span>{% endif %}
+            </td>
+          </tr>
+          {% else %}
+          {{ ui.empty_row(5, 'No wallet activity.') }}
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card card-pad">
+      <h2 class="section-title mb-3">Support tickets</h2>
+      <ul class="divide-y divide-line text-sm">
         {% for t in tickets %}
-        <li class="py-2 flex items-center justify-between">
-          <a class="text-slate-700 hover:underline" href="/support/{{ t.id }}">#{{ t.id }} · {{ t.message.substring(0, 60) }}</a>
+        <li class="py-2.5 flex items-center justify-between gap-3">
+          <a class="link font-normal text-ink hover:text-pine truncate" href="/support/{{ t.id }}">#{{ t.id }} · {{ t.message.substring(0, 60) }}</a>
           {{ ui.status_badge(t.status) }}
         </li>
         {% else %}
-        <li class="py-4 text-center text-slate-400">No tickets.</li>
+        <li class="py-4 text-center text-ink-faint">No tickets.</li>
         {% endfor %}
       </ul>
     </div>

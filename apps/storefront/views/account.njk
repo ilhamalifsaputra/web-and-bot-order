@@ -1,0 +1,46 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+
+{% block title %}{{ t('web.account_title', lang) }} — {{ shop_name }}{% endblock %}
+
+{% block content %}
+<div class="mb-6 flex items-start justify-between gap-4 flex-wrap">
+  <div>
+    <h1 class="page-title">{{ t('web.account_title', lang) }}</h1>
+    <p class="page-lead">{{ t('web.signed_in_as', lang) }}
+      <span class="font-semibold text-ink">{{ customer.user.fullName or customer.user.username or customer.telegramId }}</span>
+    </p>
+  </div>
+  <form method="post" action="/logout">
+    {{ ui.csrf_field(customer) }}
+    <button type="submit" class="btn btn-ghost"><i data-lucide="log-out" class="w-4 h-4"></i> {{ t('web.nav_logout', lang) }}</button>
+  </form>
+</div>
+
+<div class="grid sm:grid-cols-2 gap-4 mb-6">
+  <div class="card card-pad">
+    <div class="stat-label">{{ t('web.account_orders', lang) }}</div>
+    <div class="stat-value">{{ order_count }}</div>
+  </div>
+  <div class="card card-pad">
+    <div class="stat-label">{{ t('web.account_referral', lang) }}</div>
+    <div class="stat-value font-mono !text-2xl">{{ referral_code }}</div>
+  </div>
+</div>
+
+<div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+  {% set menu = [
+    ['/account/orders', 'shopping-bag', t('web.account_orders', lang)],
+    ['/account/referral', 'gift', t('web.account_referral', lang)],
+    ['/account/reviews', 'star', t('web.account_reviews', lang)],
+    ['/account/support', 'life-buoy', t('web.account_support', lang)]
+  ] %}
+  {% for m in menu %}
+  <a href="{{ m[0] }}" class="card card-pad flex items-center gap-3 hover:shadow-lift transition-shadow">
+    <i data-lucide="{{ m[1] }}" class="w-5 h-5 text-pine"></i>
+    <span class="font-semibold text-sm">{{ m[2] }}</span>
+    <i data-lucide="chevron-right" class="w-4 h-4 text-ink-faint ml-auto"></i>
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}

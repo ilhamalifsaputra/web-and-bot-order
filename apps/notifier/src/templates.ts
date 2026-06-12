@@ -83,8 +83,52 @@ interface DeliveredPayload {
   delivered_at?: unknown;
 }
 
-/** Return the channel message body for an outbox event, or "" to skip. */
-export function render(event: string, payload: DeliveredPayload): string {
+interface AdminResetPayload {
+  code?: unknown;
+  ttl_minutes?: unknown;
+}
+
+interface DeliveredDmPayload {
+  order_code?: unknown;
+  order_url?: unknown;
+}
+
+/** Return the message body for an outbox event, or "" to skip. */
+export function render(
+  event: string,
+  payload: DeliveredPayload & AdminResetPayload & DeliveredDmPayload,
+): string {
+  if (event === NotificationEvent.ADMIN_PW_RESET) {
+    // Admin DM (not a channel post). Bilingual + the code is escaped just in case.
+    const code = escape(String(payload.code ?? ""));
+    const ttl = Number.parseInt(String(payload.ttl_minutes ?? 10), 10) || 10;
+    return (
+      `🔐 <b>Web admin password reset</b>\n` +
+      `Your one-time code is <code>${code}</code> ` +
+      `(valid ${ttl} min). Enter it on the reset page.\n` +
+      `If you didn't request this, ignore this message — your password is unchanged.\n\n` +
+      `🔐 <b>Reset password admin web</b>\n` +
+      `Kode sekali pakai: <code>${code}</code> ` +
+      `(berlaku ${ttl} menit). Masukkan di halaman reset.\n` +
+      `Abaikan pesan ini jika kamu tidak memintanya.`
+    );
+  }
+  if (event === NotificationEvent.ORDER_DELIVERED_DM) {
+    // Buyer DM after a web order auto-delivers (TokoPay path). Bilingual; links
+    // to the storefront order page — credentials are NEVER carried in the
+    // outbox payload (the /outbox admin panel would show them).
+    const code = escape(String(payload.order_code ?? ""));
+    const rawUrl = typeof payload.order_url === "string" ? payload.order_url : "";
+    const url = /^https?:\/\//.test(rawUrl) ? rawUrl : "";
+    const linkEn = url ? `\nView it here: ${escape(url)}` : "";
+    const linkId = url ? `\nLihat di sini: ${escape(url)}` : "";
+    return (
+      `✅ <b>Order <code>${code}</code> delivered!</b>\n` +
+      `Your payment is confirmed and your credentials are ready on the website (My orders).${linkEn}\n\n` +
+      `✅ <b>Pesanan <code>${code}</code> terkirim!</b>\n` +
+      `Pembayaran dikonfirmasi — akunmu sudah siap di website (Pesananku).${linkId}`
+    );
+  }
   if (event === NotificationEvent.ORDER_DELIVERED) {
     const s = strings(payload.buyer_language);
     const itemsText = fmtItems(payload.items ?? []);

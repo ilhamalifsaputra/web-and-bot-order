@@ -78,9 +78,20 @@ export const PaymentMethod = {
   BINANCE_PAY: "BINANCE_PAY",
   /** New flow: USDT to a Binance UID with the order ref as the note; auto-confirmed. */
   BINANCE_INTERNAL: "BINANCE_INTERNAL",
+  /** Rupiah gateway (QRIS/VA/e-wallet) — confirmed by webhook callback (plan.md §15.5). */
+  TOKOPAY: "TOKOPAY",
 } as const;
 export type PaymentMethod = (typeof PaymentMethod)[keyof typeof PaymentMethod];
 export const zPaymentMethod = z.nativeEnum(PaymentMethod);
+
+/** Transaction currency on orders.currency — picked at PAY time (plan.md §15.2):
+ * the catalog price is always central IDR; USDT is a derived, rounded figure. */
+export const OrderCurrency = {
+  IDR: "IDR",
+  USDT: "USDT",
+} as const;
+export type OrderCurrency = (typeof OrderCurrency)[keyof typeof OrderCurrency];
+export const zOrderCurrency = z.nativeEnum(OrderCurrency);
 
 export const VoucherType = {
   PERCENT: "PERCENT",
@@ -106,6 +117,14 @@ export const zSenderType = z.nativeEnum(SenderType);
 
 export const NotificationEvent = {
   ORDER_DELIVERED: "ORDER_DELIVERED",
+  // Admin DM (not a channel post): a one-time web-admin password-reset code.
+  // payload carries `chat_id` (the admin's telegram id) so the dispatcher DMs
+  // them directly instead of posting to PUBLIC_CHANNEL_ID.
+  ADMIN_PW_RESET: "ADMIN_PW_RESET",
+  // Buyer DM after a WEB order auto-delivers (TokoPay webhook path): "your
+  // order is ready — view it on the site". Carries chat_id + order_code only,
+  // NEVER credentials (the outbox table is visible in the admin /outbox panel).
+  ORDER_DELIVERED_DM: "ORDER_DELIVERED_DM",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];

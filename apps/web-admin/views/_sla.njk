@@ -1,0 +1,61 @@
+{# "Needs attention" widgets. Rendered inline on the dashboard and re-fetched on
+   its own at /partials/dashboard-sla — the outer element re-arms the HTMX poll
+   after every swap, so it keeps refreshing without a full page reload. #}
+<section id="sla-block"
+         hx-get="/partials/dashboard-sla" hx-trigger="every 30s" hx-swap="outerHTML"
+         class="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-8">
+
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center justify-between">
+      <span class="flex items-center gap-2"><i data-lucide="alarm-clock" class="w-5 h-5 text-rose-500"></i> Waiting too long</span>
+      <span class="chip {% if sla.stale|length > 0 %}bg-rust-tint text-rust-dark{% else %}bg-sand text-ink-soft{% endif %}">{{ sla.stale|length }}</span>
+    </h2>
+    <p class="text-xs text-ink-faint mb-3">orders unchecked for more than {{ sla.stale_hours }}h</p>
+    <ul class="divide-y divide-line text-sm">
+      {% for o in sla.stale %}
+      <li class="py-2 flex items-center justify-between">
+        <a class="link font-mono text-xs" href="/orders/{{ o.id }}">{{ o.orderCode }}</a>
+        <span class="text-ink-faint text-xs" title="{{ tzname }}">{{ o.createdAt | localdt }}</span>
+      </li>
+      {% else %}
+      <li class="py-2 text-ink-faint">All caught up. 🎉</li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center justify-between">
+      <span class="flex items-center gap-2"><i data-lucide="hourglass" class="w-5 h-5 text-amber-500"></i> Payment about to expire</span>
+      <span class="chip {% if sla.expiring|length > 0 %}bg-amberx-tint text-amberx{% else %}bg-sand text-ink-soft{% endif %}">{{ sla.expiring|length }}</span>
+    </h2>
+    <p class="text-xs text-ink-faint mb-3">unpaid, expiring within {{ sla.expiring_minutes }} min</p>
+    <ul class="divide-y divide-line text-sm">
+      {% for o in sla.expiring %}
+      <li class="py-2 flex items-center justify-between">
+        <a class="link font-mono text-xs" href="/orders/{{ o.id }}">{{ o.orderCode }}</a>
+        <span class="text-amberx text-xs" title="{{ tzname }}">{{ o.expiresAt | localdt('HH:mm') }}</span>
+      </li>
+      {% else %}
+      <li class="py-2 text-ink-faint">None close to expiring.</li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center justify-between">
+      <span class="flex items-center gap-2"><i data-lucide="shield-alert" class="w-5 h-5 text-violet-500"></i> Warranty ending soon</span>
+      <span class="chip {% if sla.warranty|length > 0 %}bg-amberx-tint text-amberx{% else %}bg-sand text-ink-soft{% endif %}">{{ sla.warranty|length }}</span>
+    </h2>
+    <p class="text-xs text-ink-faint mb-3">within the next {{ sla.warranty_days }} days</p>
+    <ul class="divide-y divide-line text-sm">
+      {% for it in sla.warranty %}
+      <li class="py-2 flex items-center justify-between gap-2">
+        <a class="link font-normal text-ink hover:text-pine truncate" href="/orders/{{ it.order.id }}">{{ it.product.name }}</a>
+        <span class="text-ink-faint text-xs whitespace-nowrap" title="delivered {{ it.order.deliveredAt | localdt }}">+{{ it.warrantyDaysSnapshot }}d</span>
+      </li>
+      {% else %}
+      <li class="py-2 text-ink-faint">None ending soon.</li>
+      {% endfor %}
+    </ul>
+  </div>
+</section>

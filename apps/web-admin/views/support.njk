@@ -1,30 +1,33 @@
 {% extends "base.njk" %}
 {% import "_macros.njk" as ui %}
-{% block title %}Support · Stock Admin{% endblock %}
+{% block title %}Support · Shop Admin{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-semibold mb-6">Support tickets</h1>
+<header class="mb-6">
+  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="life-buoy" class="w-7 h-7 text-sky-500"></i> Support</h1>
+  <p class="page-lead">Questions and problems sent in by customers.</p>
+</header>
 {{ ui.flash(msg, kind) }}
 
-<div class="bg-white rounded-lg shadow overflow-x-auto">
-  <table class="min-w-full text-sm">
-    <thead class="bg-slate-100 text-slate-600 text-left">
-      <tr><th class="px-4 py-2">#</th><th class="px-4 py-2">Message</th><th class="px-4 py-2">Status</th><th class="px-4 py-2">Created</th><th class="px-4 py-2"></th></tr>
+<div class="card overflow-x-auto">
+  <table class="data-table">
+    <thead>
+      <tr><th>#</th><th>Message</th><th>Status</th><th>Sent</th><th></th></tr>
     </thead>
-    <tbody class="divide-y divide-slate-100">
+    <tbody>
       {% for t in tickets %}
-      <tr class="hover:bg-slate-50">
-        <td class="px-4 py-2 text-slate-400">{{ t.id }}</td>
-        <td class="px-4 py-2">{{ t.message.substring(0, 80) }}{% if t.message | length > 80 %}…{% endif %}</td>
-        <td class="px-4 py-2">{{ ui.status_badge(t.status) }}</td>
-        <td class="px-4 py-2 text-slate-500">{{ t.createdAt | localdt }}</td>
-        <td class="px-4 py-2 text-right"><a class="text-slate-700 hover:underline" href="/support/{{ t.id }}">Open →</a></td>
+      <tr>
+        <td class="text-ink-faint">{{ t.id }}</td>
+        <td>{{ t.message.substring(0, 80) }}{% if t.message | length > 80 %}…{% endif %}</td>
+        <td>{{ ui.status_badge(t.status) }}</td>
+        <td class="text-ink-soft">{{ t.createdAt | localdt }}</td>
+        <td class="text-right"><a class="link" href="/support/{{ t.id }}">Open →</a></td>
       </tr>
       {% else %}
-      <tr><td colspan="5" class="px-4 py-6 text-center text-slate-400">No open tickets.</td></tr>
+      {{ ui.empty_row(5, 'No open tickets. 🎉') }}
       {% endfor %}
     </tbody>
   </table>
 </div>
-<p class="text-xs text-slate-400 mt-3">Showing open and replied tickets. Closed tickets are hidden.</p>
+<p class="text-xs text-ink-faint mt-3">Showing open and replied tickets. Closed ones are hidden.</p>
 {% endblock %}

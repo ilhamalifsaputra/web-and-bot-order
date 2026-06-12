@@ -28,6 +28,24 @@ export async function markStockDead(db: Db, stockId: number, note: string) {
   });
 }
 
+/**
+ * Bulk mark stock items dead in one writer. Only items still AVAILABLE or
+ * RESERVED are touched — SOLD/already-DEAD rows are left alone so a delivered
+ * credential is never altered. Returns the number actually updated.
+ */
+export async function bulkMarkStockDead(
+  db: Db,
+  ids: number[],
+  note: string,
+): Promise<number> {
+  if (!ids.length) return 0;
+  const res = await db.stockItem.updateMany({
+    where: { id: { in: ids }, status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED] } },
+    data: { status: StockStatus.DEAD, note },
+  });
+  return res.count;
+}
+
 export function listStockItemsForProduct(db: Db, productId: number, limit = 30) {
   return db.stockItem.findMany({
     where: { productId },

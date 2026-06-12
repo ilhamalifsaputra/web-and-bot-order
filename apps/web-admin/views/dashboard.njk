@@ -1,89 +1,128 @@
 {% extends "base.njk" %}
-{% block title %}Dashboard · Stock Admin{% endblock %}
+{% block title %}Home · Shop Admin{% endblock %}
 
 {% block content %}
-<h1 class="text-2xl font-semibold mb-6">Dashboard</h1>
+<header class="mb-7">
+  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="sparkles" class="w-7 h-7 text-rose-500"></i> Welcome back</h1>
+  <p class="page-lead">Here's how your shop is doing right now.</p>
+</header>
 
-{% if pending_count > 0 %}
-<a href="/orders?status=PENDING_VERIFICATION" class="block mb-4 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-4 py-2 hover:bg-amber-100">
-  {{ pending_count }} order(s) awaiting verification →
+{% if bot_token_missing %}
+<a href="/settings"
+   class="flex items-center gap-3 mb-3 rounded-xl border border-rust/30 bg-rust-tint px-4 py-3 text-sm text-rust hover:bg-rust/15 transition-colors">
+  <i data-lucide="bot" class="w-5 h-5"></i>
+  <span class="flex-1">The Telegram bot isn't connected yet — add the bot token under <strong>Settings → Bot &amp; notifications</strong>, then restart the app.</span>
+  <i data-lucide="arrow-right" class="w-4 h-4"></i>
 </a>
 {% endif %}
 
-<section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-  <div class="bg-white rounded-lg shadow p-4">
-    <div class="text-xs uppercase tracking-wide text-slate-500">Revenue (24h)</div>
-    <div class="text-2xl font-semibold mt-2">{{ rev_24h.revenue | money }} {{ currency }}</div>
-    <div class="text-xs text-slate-500 mt-1">{{ rev_24h.orders }} orders</div>
+{% if pending_count > 0 %}
+<a href="/orders?status=PENDING_VERIFICATION"
+   class="flex items-center gap-3 mb-3 rounded-xl border border-amberx/30 bg-amberx-tint px-4 py-3 text-sm text-amberx hover:bg-amberx/15 transition-colors">
+  <i data-lucide="clock" class="w-5 h-5"></i>
+  <span class="flex-1"><strong>{{ pending_count }}</strong> {{ 'order is' if pending_count == 1 else 'orders are' }} waiting for you to check the payment.</span>
+  <i data-lucide="arrow-right" class="w-4 h-4"></i>
+</a>
+{% endif %}
+
+{% if binance and (binance.unmatched > 0 or binance.delivery_failed > 0) %}
+<a href="/payments?outcome=unmatched"
+   class="flex items-center gap-3 mb-3 rounded-xl border border-rust/30 bg-rust-tint px-4 py-3 text-sm text-rust-dark hover:bg-rust/10 transition-colors">
+  <i data-lucide="triangle-alert" class="w-5 h-5"></i>
+  <span class="flex-1">
+    <strong>Money may have arrived without an order being delivered.</strong>
+    {{ binance.unmatched }} payment(s) couldn't be matched{% if binance.delivery_failed > 0 %}, {{ binance.delivery_failed }} delivery(ies) failed{% endif %}.
+  </span>
+  <i data-lucide="arrow-right" class="w-4 h-4"></i>
+</a>
+{% endif %}
+
+{% set sales_cards = [
+  { label: 'Sales · last 24 hours', value: rev_24h.revenue, sub: rev_24h.orders, icon: 'trending-up',    tint: 'bg-blue-50 text-blue-600' },
+  { label: 'Sales · last 7 days',   value: rev_7d.revenue,  sub: rev_7d.orders,  icon: 'calendar-range', tint: 'bg-violet-50 text-violet-600' },
+  { label: 'Sales · last 30 days',  value: rev_30d.revenue, sub: rev_30d.orders, icon: 'calendar-days',  tint: 'bg-indigo-50 text-indigo-600' }
+] %}
+<section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5 mt-6">
+  {% for c in sales_cards %}
+  <div class="card card-pad">
+    <div class="flex items-start justify-between">
+      <div class="stat-label">{{ c.label }}</div>
+      <span class="grid place-items-center w-9 h-9 rounded-lg {{ c.tint }}"><i data-lucide="{{ c.icon }}" class="w-5 h-5"></i></span>
+    </div>
+    <div class="stat-value tabular">{{ c.value | money }} {{ currency }}</div>
+    <div class="stat-sub">{{ c.sub }} orders</div>
   </div>
-  <div class="bg-white rounded-lg shadow p-4">
-    <div class="text-xs uppercase tracking-wide text-slate-500">Revenue (7d)</div>
-    <div class="text-2xl font-semibold mt-2">{{ rev_7d.revenue | money }} {{ currency }}</div>
-    <div class="text-xs text-slate-500 mt-1">{{ rev_7d.orders }} orders</div>
-  </div>
-  <div class="bg-white rounded-lg shadow p-4">
-    <div class="text-xs uppercase tracking-wide text-slate-500">Revenue (30d)</div>
-    <div class="text-2xl font-semibold mt-2">{{ rev_30d.revenue | money }} {{ currency }}</div>
-    <div class="text-xs text-slate-500 mt-1">{{ rev_30d.orders }} orders</div>
-  </div>
-  <div class="bg-white rounded-lg shadow p-4">
-    <div class="text-xs uppercase tracking-wide text-slate-500">Lifetime revenue</div>
-    <div class="text-2xl font-semibold mt-2">{{ overall.total_revenue | money }} {{ currency }}</div>
-    <div class="text-xs text-slate-500 mt-1">{{ overall.items_sold }} items sold</div>
+  {% endfor %}
+  <div class="card card-pad">
+    <div class="flex items-start justify-between">
+      <div class="stat-label">All-time sales</div>
+      <span class="grid place-items-center w-9 h-9 rounded-lg bg-emerald-50 text-emerald-600"><i data-lucide="wallet" class="w-5 h-5"></i></span>
+    </div>
+    <div class="stat-value tabular">{{ overall.total_revenue | money }} {{ currency }}</div>
+    <div class="stat-sub">{{ overall.items_sold }} items sold</div>
   </div>
 </section>
 
 <section class="grid grid-cols-1 sm:grid-cols-3 gap-4">
-  <div class="bg-white rounded-lg shadow p-4">
-    <div class="text-xs uppercase tracking-wide text-slate-500">Pending verifications</div>
-    <div class="text-3xl font-semibold mt-2 {% if pending_count > 0 %}text-amber-600{% endif %}">
-      {{ pending_count }}
+  <div class="card card-pad">
+    <div class="flex items-start justify-between">
+      <div class="stat-label">Orders to check</div>
+      <span class="grid place-items-center w-9 h-9 rounded-lg bg-amber-50 text-amber-600"><i data-lucide="clipboard-check" class="w-5 h-5"></i></span>
     </div>
-    <div class="text-xs text-slate-500 mt-1">orders awaiting admin review</div>
+    <div class="stat-value tabular {% if pending_count > 0 %}text-amberx{% endif %}">{{ pending_count }}</div>
+    <div class="stat-sub">payments waiting for your review</div>
   </div>
-  <div class="bg-white rounded-lg shadow p-4">
-    <div class="text-xs uppercase tracking-wide text-slate-500">Low-stock products</div>
-    <div class="text-3xl font-semibold mt-2 {% if low_stock_count > 0 %}text-red-600{% endif %}">
-      {{ low_stock_count }}
+  <div class="card card-pad">
+    <div class="flex items-start justify-between">
+      <div class="stat-label">Running low</div>
+      <span class="grid place-items-center w-9 h-9 rounded-lg bg-rose-50 text-rose-600"><i data-lucide="package-x" class="w-5 h-5"></i></span>
     </div>
-    <div class="text-xs text-slate-500 mt-1">at or below {{ low_stock_threshold }} available</div>
+    <div class="stat-value tabular {% if low_stock_count > 0 %}text-rust{% endif %}">{{ low_stock_count }}</div>
+    <div class="stat-sub">products at or below {{ low_stock_threshold }} left</div>
   </div>
-  <div class="bg-white rounded-lg shadow p-4">
-    <div class="text-xs uppercase tracking-wide text-slate-500">Total users</div>
-    <div class="text-3xl font-semibold mt-2">{{ overall.total_users }}</div>
-    <div class="text-xs text-slate-500 mt-1">customers + admins</div>
+  <div class="card card-pad">
+    <div class="flex items-start justify-between">
+      <div class="stat-label">People</div>
+      <span class="grid place-items-center w-9 h-9 rounded-lg bg-sky-50 text-sky-600"><i data-lucide="users" class="w-5 h-5"></i></span>
+    </div>
+    <div class="stat-value tabular">{{ overall.total_users }}</div>
+    <div class="stat-sub">customers and team members</div>
   </div>
 </section>
 
+{% include "_sla.njk" %}
+
 <section class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-8">
-  <div class="bg-white rounded-lg shadow p-5">
-    <h2 class="font-semibold mb-3">Low stock</h2>
-    <ul class="divide-y divide-slate-100 text-sm">
+  <div class="card card-pad">
+    <h2 class="section-title mb-3 flex items-center gap-2"><i data-lucide="package-x" class="w-5 h-5 text-rose-500"></i> Running low on stock</h2>
+    <ul class="divide-y divide-line text-sm">
       {% for row in low_stock %}
-      <li class="py-2 flex items-center justify-between">
-        <a class="text-slate-700 hover:underline" href="/stock/{{ row.product.id }}">{{ row.product.name }}</a>
-        <span class="{% if row.available == 0 %}text-red-600 font-semibold{% else %}text-amber-600{% endif %}">{{ row.available }} left</span>
+      <li class="py-2.5 flex items-center justify-between gap-3">
+        <a class="link font-normal text-ink hover:text-pine truncate" href="/stock/{{ row.product.id }}">{{ row.product.name }}</a>
+        <span class="chip {% if row.available == 0 %}bg-rust-tint text-rust-dark{% else %}bg-amberx-tint text-amberx{% endif %} tabular">{{ row.available }} left</span>
       </li>
       {% else %}
-      <li class="py-2 text-slate-400">All products are above the threshold.</li>
+      <li class="py-3 text-ink-faint flex items-center gap-2"><i data-lucide="check-circle-2" class="w-4 h-4 text-grass"></i> Everything is well stocked.</li>
       {% endfor %}
     </ul>
   </div>
 
-  <div class="bg-white rounded-lg shadow p-5">
-    <h2 class="font-semibold mb-3">Recent activity</h2>
-    <ul class="divide-y divide-slate-100 text-sm">
+  <div class="card card-pad">
+    <h2 class="section-title mb-3 flex items-center gap-2"><i data-lucide="history" class="w-5 h-5 text-blue-500"></i> Recent activity</h2>
+    <ul class="divide-y divide-line text-sm">
       {% for l in recent_audit %}
-      <li class="py-2">
-        <span class="font-medium">{{ l.action }}</span>
-        <span class="text-slate-500">{{ l.targetType or '' }}{% if l.targetId %} #{{ l.targetId }}{% endif %}</span>
-        <span class="text-slate-400 text-xs float-right">{{ l.createdAt | localdt }}</span>
+      <li class="py-2.5 flex items-center justify-between gap-3">
+        <span class="text-ink">
+          <span class="font-medium">{{ l.action | replace('_', ' ') | title }}</span>
+          <span class="text-ink-soft">{{ l.targetType or '' }}{% if l.targetId %} #{{ l.targetId }}{% endif %}</span>
+        </span>
+        <span class="text-ink-faint text-xs whitespace-nowrap">{{ l.createdAt | localdt }}</span>
       </li>
       {% else %}
-      <li class="py-2 text-slate-400">No activity yet.</li>
+      <li class="py-3 text-ink-faint">Nothing has happened yet.</li>
       {% endfor %}
     </ul>
-    <a href="/audit" class="text-xs text-slate-500 hover:underline mt-2 inline-block">Full audit log →</a>
+    <a href="/audit" class="link text-xs mt-3 inline-block">See all activity →</a>
   </div>
 </section>
 {% endblock %}

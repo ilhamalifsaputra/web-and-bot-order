@@ -64,15 +64,18 @@ export async function deliverPaidTokopayOrder(
         data: { status: OrderStatus.PENDING_VERIFICATION, binanceTxid: null, paidAt: new Date() },
       });
       const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: 0 });
-      // Buyer DM via the outbox, same tx as the status flip. Link only — the
-      // outbox payload is visible in the admin /outbox panel, never put
-      // credentials in it.
-      await enqueueNotification(tx, NotificationEvent.ORDER_DELIVERED_DM, delivered.id, {
-        chat_id: Number(delivered.user.telegramId),
-        order_code: delivered.orderCode,
-        order_url: args.shopUrl ? `${args.shopUrl.replace(/\/+$/, "")}/account/orders/${delivered.orderCode}` : null,
-        buyer_language: langCode(delivered.user.language),
-      });
+      // Buyer DM via the outbox — only if the buyer has a Telegram account.
+      // Web-only buyers (telegramId=null) have no chat to DM; they see their
+      // order on the storefront instead. Link only — the outbox payload is
+      // visible in the admin /outbox panel, never put credentials in it.
+      if (delivered.user.telegramId != null) {
+        await enqueueNotification(tx, NotificationEvent.ORDER_DELIVERED_DM, delivered.id, {
+          chat_id: Number(delivered.user.telegramId),
+          order_code: delivered.orderCode,
+          order_url: args.shopUrl ? `${args.shopUrl.replace(/\/+$/, "")}/account/orders/${delivered.orderCode}` : null,
+          buyer_language: langCode(delivered.user.language),
+        });
+      }
       logger.info(`Auto-delivered TokoPay order ${delivered.orderCode} (trx ${args.trxId})`);
       return { status: "delivered" as const, order: delivered, credentials };
     });

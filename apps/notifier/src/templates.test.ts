@@ -57,4 +57,29 @@ describe("notifier templates.render", () => {
     // lowercase value form is NOT what is stored -> must not match
     expect(render("order.delivered", payload)).toBe("");
   });
+
+  it("appends a via-Website line when the payload flags it", () => {
+    const text = render("ORDER_DELIVERED", {
+      buyer_language: "en",
+      items: [{ name: "Netflix", qty: 1 }],
+      masked_buyer_id: "WEB-buXXX",
+      total: "40000",
+      currency: "IDR",
+      delivered_at: "2026-06-12 10:00 UTC",
+      via_website: true,
+    });
+    expect(text).toContain("via Website");
+  });
+
+  it("omits the marker when the flag is absent", () => {
+    const text = render("ORDER_DELIVERED", {
+      buyer_language: "en",
+      items: [],
+      masked_buyer_id: "1234XXXX",
+      total: "1",
+      currency: "IDR",
+      delivered_at: "x",
+    });
+    expect(text).not.toContain("via Website");
+  });
 });

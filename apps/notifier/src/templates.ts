@@ -81,6 +81,7 @@ interface DeliveredPayload {
   total?: unknown;
   currency?: unknown;
   delivered_at?: unknown;
+  via_website?: unknown;
 }
 
 interface AdminResetPayload {
@@ -136,13 +137,14 @@ export function render(
     const total = escape(String(payload.total ?? "0"));
     const currency = escape(String(payload.currency ?? "USDT"));
     const deliveredAt = escape(String(payload.delivered_at ?? ""));
+    const viaWeb = payload.via_website ? `\n🌐 via Website` : "";
     return (
       `📢 <b>${s.title}</b>\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
       `👤 ${s.buyer}: <code>${buyer}</code>\n` +
       `🛍️ ${s.products}:\n${itemsText}\n` +
       `💳 ${s.total}: <b>${total} ${currency}</b>\n` +
-      `📅 ${s.date}: ${deliveredAt}\n` +
+      `📅 ${s.date}: ${deliveredAt}${viaWeb}\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
       `${s.thanks}\n` +
       `━━━━━━━━━━━━━━━━━━`

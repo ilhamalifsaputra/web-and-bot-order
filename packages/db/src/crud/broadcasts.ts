@@ -18,7 +18,7 @@ const RECENT_BUYER_DAYS = 30;
 
 /** Prisma `where` selecting the (non-banned) users a segment targets. */
 function segmentWhere(segment: BroadcastSegment): Prisma.UserWhereInput {
-  const base: Prisma.UserWhereInput = { banned: false };
+  const base: Prisma.UserWhereInput = { banned: false, telegramId: { not: null } };
   if (segment === "RESELLERS") return { ...base, role: UserRole.RESELLER };
   if (segment === "RECENT_BUYERS") {
     return {

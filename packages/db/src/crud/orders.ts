@@ -536,8 +536,13 @@ export async function approveOrder(
   });
 
   // Enqueue testimoni notification in the same transaction as the status flip.
-  const rawId = String(order.user.telegramId);
-  const maskedBuyerId = rawId.slice(0, 4) + "X".repeat(Math.max(rawId.length - 4, 0));
+  // Web-only buyers (telegramId=null) get a "WEB-xx" masked id and the
+  // via_website flag so the admin channel post shows the origin.
+  const viaWebsite = order.user.telegramId == null;
+  const rawId = viaWebsite
+    ? `WEB-${(order.user.loginUsername ?? "user").slice(0, 2)}`
+    : String(order.user.telegramId);
+  const maskedBuyerId = rawId.slice(0, 4) + "X".repeat(Math.max(rawId.length - 4, 3));
   const itemsSummary = order.items.map((item) => ({
     name: item.product.name,
     duration: item.product.durationLabel,
@@ -553,6 +558,7 @@ export async function approveOrder(
     currency: order.currency,
     delivered_at: utcStamp(now),
     buyer_language: langCode(order.user.language),
+    via_website: viaWebsite,
   });
 
   logger.info(`Approved + delivered order ${order.orderCode} (admin=${args.adminId})`);

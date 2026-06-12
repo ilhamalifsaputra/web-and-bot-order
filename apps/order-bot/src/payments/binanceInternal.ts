@@ -184,6 +184,9 @@ function buildCredentialsBlob(
 type DeliveredOrder = Extract<DeliverResult, { status: "delivered" }>["order"];
 
 async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
+  // Web-only buyers have no Telegram chat — skip all DMs for them.
+  if (order.user.telegramId == null) return;
+
   const lang = langCode(order.user.language);
   const tgId = Number(order.user.telegramId);
 

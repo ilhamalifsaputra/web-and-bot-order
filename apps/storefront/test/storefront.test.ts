@@ -60,6 +60,16 @@ afterAll(async () => {
   cleanupTestDb();
 });
 
+async function loginAs(identifier: string, password: string): Promise<string> {
+  const res = await app.inject({ method: "POST", url: "/login", payload: { identifier, password } });
+  const c = res.headers["set-cookie"];
+  return Array.isArray(c) ? c.join("; ") : String(c);
+}
+
+function csrfFrom(html: string): string {
+  return /name="csrf_token" value="([^"]+)"/.exec(html)![1]!;
+}
+
 describe("home", () => {
   it("renders the catalog with IDR prices", async () => {
     const res = await app.inject({ method: "GET", url: "/" });
@@ -376,5 +386,123 @@ describe("forgot + reset password", () => {
       payload: { password: "whatever-99", password2: "whatever-99" },
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe("account settings", () => {
+  let cookie: string;
+  let csrf: string;
+  beforeAll(async () => {
+    const { hashPassword } = await import("@app/core/password");
+    await prisma.user.create({
+      data: {
+        loginUsername: "settingsuser",
+        email: "settings@u.test",
+        passwordHash: hashPassword("original-pw"),
+        referralCode: "SETT01",
+      },
+    });
+    cookie = await loginAs("settingsuser", "original-pw");
+    const page = await app.inject({ method: "GET", url: "/account/settings", headers: { cookie } });
+    expect(page.statusCode).toBe(200);
+    csrf = csrfFrom(page.body);
+  });
+
+  it("redirects anonymous visitors to /login", async () => {
+    const res = await app.inject({ method: "GET", url: "/account/settings" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("/login");
+  });
+
+  it("rejects a credentials change without CSRF", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/account/settings/credentials",
+      headers: { cookie },
+      payload: { email: "evil@u.test" },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("changes the password when the current password is right", async () => {
+    const { verifyPassword } = await import("@app/core/password");
+    const res = await app.inject({
+      method: "POST",
+      url: "/account/settings/credentials",
+      headers: { cookie },
+      payload: {
+        csrf_token: csrf,
+        username: "settingsuser",
+        email: "settings@u.test",
+        current_password: "original-pw",
+        new_password: "second-pw-99",
+      },
+    });
+    expect(res.statusCode).toBe(303);
+    const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
+    expect(verifyPassword("second-pw-99", row.passwordHash!)).toBe(true);
+  });
+
+  it("refuses a password change with the wrong current password", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/account/settings/credentials",
+      headers: { cookie },
+      payload: {
+        csrf_token: csrf,
+        username: "settingsuser",
+        email: "settings@u.test",
+        current_password: "WRONG",
+        new_password: "hacked-pw-99",
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toContain("Current password is wrong");
+  });
+
+  it("links a Telegram account via signed widget params", async () => {
+    const { createHash, createHmac } = await import("node:crypto");
+    const fields: Record<string, string> = {
+      id: "636363",
+      first_name: "Linked",
+      username: "linkedtg",
+      auth_date: String(Math.floor(Date.now() / 1000)),
+    };
+    const checkString = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join("\n");
+    const secretKey = createHash("sha256").update(process.env.BOT_TOKEN!).digest();
+    const hash = createHmac("sha256", secretKey).update(checkString).digest("hex");
+    const params = new URLSearchParams({ ...fields, hash });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/account/settings/link-telegram?${params}`,
+      headers: { cookie },
+    });
+    expect(res.statusCode).toBe(303);
+    const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
+    expect(row.telegramId).toBe(636363n);
+  });
+
+  it("refuses linking a telegramId owned by another account", async () => {
+    await prisma.user.create({ data: { telegramId: 737373n, referralCode: "TAKEN7" } });
+    const { createHash, createHmac } = await import("node:crypto");
+    const fields: Record<string, string> = {
+      id: "737373",
+      auth_date: String(Math.floor(Date.now() / 1000)),
+    };
+    const checkString = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join("\n");
+    const secretKey = createHash("sha256").update(process.env.BOT_TOKEN!).digest();
+    const hash = createHmac("sha256", secretKey).update(checkString).digest("hex");
+    const params = new URLSearchParams({ ...fields, hash });
+    const res = await app.inject({
+      method: "GET",
+      url: `/account/settings/link-telegram?${params}`,
+      headers: { cookie },
+    });
+    expect(res.statusCode).toBe(303);
+    const follow = await app.inject({ method: "GET", url: res.headers.location as string, headers: { cookie } });
+    expect(follow.body).toContain("already linked to another member");
+    const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
+    expect(row.telegramId).toBe(636363n); // unchanged
   });
 });

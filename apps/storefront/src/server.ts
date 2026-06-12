@@ -20,6 +20,7 @@ import catalogRoutes from "./routes/catalog";
 import authRoutes from "./routes/auth";
 import forgotRoutes from "./routes/forgot";
 import accountRoutes from "./routes/account";
+import settingsRoutes from "./routes/settings";
 import cartRoutes from "./routes/cart";
 import checkoutRoutes from "./routes/checkout";
 import { requestLang } from "./shop";
@@ -72,6 +73,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(authRoutes);
   await app.register(forgotRoutes);
   await app.register(accountRoutes);
+  await app.register(settingsRoutes);
   await app.register(cartRoutes);
   await app.register(checkoutRoutes);
 

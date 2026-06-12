@@ -153,3 +153,103 @@ describe("errors", () => {
     expect(res.body).toContain("404");
   });
 });
+
+describe("password login", () => {
+  let pwUserId: number;
+  beforeAll(async () => {
+    const { hashPassword } = await import("@app/core/password");
+    const u = await prisma.user.create({
+      data: {
+        telegramId: null,
+        loginUsername: "webbuyer",
+        email: "web@buyer.test",
+        passwordHash: hashPassword("hunter2-ok"),
+        referralCode: "WEBB01",
+      },
+    });
+    pwUserId = u.id;
+  });
+
+  it("signs in with username + password and reaches /account", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/login",
+      payload: { identifier: "WebBuyer", password: "hunter2-ok", next: "/account" },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/account");
+    const cookie = res.headers["set-cookie"];
+    const acc = await app.inject({
+      method: "GET",
+      url: "/account",
+      headers: { cookie: Array.isArray(cookie) ? cookie.join("; ") : String(cookie) },
+    });
+    expect(acc.statusCode).toBe(200);
+    expect(acc.body).toContain("WEBB01");
+  });
+
+  it("rejects a wrong password with the generic message", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/login",
+      payload: { identifier: "webbuyer", password: "nope" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toContain("Wrong username or password");
+  });
+
+  it("rejects an unknown identifier with the SAME generic message", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/login",
+      payload: { identifier: "ghost", password: "nope" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toContain("Wrong username or password");
+  });
+
+  it("rejects a banned user", async () => {
+    await prisma.user.update({ where: { id: pwUserId }, data: { banned: true } });
+    const res = await app.inject({
+      method: "POST",
+      url: "/login",
+      payload: { identifier: "webbuyer", password: "hunter2-ok" },
+    });
+    expect(res.statusCode).toBe(403);
+    await prisma.user.update({ where: { id: pwUserId }, data: { banned: false } });
+  });
+});
+
+describe("telegram login is lookup-only", () => {
+  function signedTgParams(id: number): Record<string, string> {
+    const { createHash, createHmac } = require("node:crypto") as typeof import("node:crypto");
+    const fields: Record<string, string> = {
+      id: String(id),
+      first_name: "Tg",
+      auth_date: String(Math.floor(Date.now() / 1000)),
+    };
+    const checkString = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join("\n");
+    const secretKey = createHash("sha256").update(process.env.BOT_TOKEN!).digest();
+    const hash = createHmac("sha256", secretKey).update(checkString).digest("hex");
+    return { ...fields, hash };
+  }
+
+  it("signs in an existing bot member", async () => {
+    await prisma.user.create({
+      data: { telegramId: 424242n, referralCode: "TGOK42" },
+    });
+    const params = new URLSearchParams({ ...signedTgParams(424242), next: "/account" });
+    const res = await app.inject({ method: "GET", url: `/auth/telegram?${params}` });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/account");
+  });
+
+  it("does NOT create an account for an unknown telegram id", async () => {
+    const before = await prisma.user.count();
+    const params = new URLSearchParams(signedTgParams(999999111));
+    const res = await app.inject({ method: "GET", url: `/auth/telegram?${params}` });
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toContain("isn&#39;t registered yet");
+    expect(await prisma.user.count()).toBe(before);
+  });
+});

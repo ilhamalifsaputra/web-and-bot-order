@@ -24,8 +24,7 @@ export const SHOP_SESSION_TTL_HOURS = 24 * 30;
 /** Reject Telegram auth payloads older than this (replay guard). */
 export const TG_AUTH_MAX_AGE_SECONDS = 15 * 60;
 
-export const shopSessionJtiKey = (telegramId: number | bigint) =>
-  `shop_session_jti:${telegramId}`;
+export const shopSessionJtiKey = (userId: number) => `shop_session_jti_user:${userId}`;
 
 // ---------------------------------------------------------------------------
 // Telegram Login Widget verification
@@ -84,7 +83,7 @@ export function verifyTelegramLogin(
 
 export interface CustomerSession {
   userId: number;
-  telegramId: number;
+  telegramId: number | null;
   jti: string;
   csrf: string;
 }
@@ -108,10 +107,11 @@ export const newJti = () => b64url(randomBytes(18));
 /** Mint a fresh signed cookie value + its parsed payload. */
 export function makeCustomerSession(
   userId: number,
-  telegramId: number,
+  telegramId: number | bigint | null,
   jti: string,
 ): { raw: string; data: CustomerSession } {
-  const data: CustomerSession = { userId, telegramId, jti, csrf: b64url(randomBytes(24)) };
+  const tid = telegramId == null ? null : Number(telegramId);
+  const data: CustomerSession = { userId, telegramId: tid, jti, csrf: b64url(randomBytes(24)) };
   const payload = b64url(
     Buffer.from(JSON.stringify({ u: data.userId, t: data.telegramId, j: data.jti, c: data.csrf })),
   );
@@ -137,7 +137,7 @@ export function readCustomerSession(raw: string | undefined): CustomerSession | 
     const obj = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
     return {
       userId: Number(obj.u),
-      telegramId: Number(obj.t),
+      telegramId: obj.t == null ? null : Number(obj.t),
       jti: String(obj.j),
       csrf: String(obj.c),
     };

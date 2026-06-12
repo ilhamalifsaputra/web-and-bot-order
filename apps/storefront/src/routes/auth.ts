@@ -1,19 +1,28 @@
 /**
- * Customer login/logout. /login renders the Telegram Login Widget; Telegram
- * redirects back to /auth/telegram with signed params; we verify the HMAC,
- * upsert the User (same crud the bot's /start uses), merge any guest-cart
- * cookie into CartItem rows (plan.md §5 decision D), set the session cookie,
- * and bounce to `next`.
+ * Customer login/logout/registration-adjacent auth routes.
  *
- * Onboarding parity (plan.md §17.2 #7): /login?ref=CODE carries a referral
- * code through the widget round-trip so first-time web users get attributed
- * exactly like bot users who tap a ref_ deep link.
+ * /login now has TWO doors (spec 2026-06-12):
+ *   1. username/email + password form (primary)
+ *   2. the Telegram Login Widget — LOOKUP-ONLY: it signs in existing accounts
+ *      (every bot member qualifies) but no longer auto-creates users; unknown
+ *      Telegram IDs are pointed to /register or the bot.
+ * Sessions are keyed per userId (web-only accounts have no telegramId).
+ * Guest-cart merge on every successful sign-in (plan.md §5 decision D).
  */
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 import { botUsername } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
-import { prisma, upsertUser, setSetting, addToCart, getProduct } from "@app/db";
+import { t } from "@app/core/i18n";
+import { verifyPassword } from "@app/core/password";
+import {
+  prisma,
+  setSetting,
+  addToCart,
+  getProduct,
+  getUserByTelegramId,
+  findUserByLoginIdentifier,
+} from "@app/db";
 import {
   makeCustomerSession,
   newJti,
@@ -25,83 +34,122 @@ import {
 import { shopContext, readGuestCart, writeGuestCart } from "../shop";
 
 /** Only ever redirect to a local path (open-redirect guard). */
-const safeNext = (raw: unknown): string => {
+export const safeNext = (raw: unknown): string => {
   const s = typeof raw === "string" ? raw : "";
   return s.startsWith("/") && !s.startsWith("//") ? s : "/";
 };
 
-const authRoutes: FastifyPluginAsync = async (app) => {
-  app.get<{ Querystring: { next?: string; ref?: string } }>("/login", async (req, reply) => {
-    const ctx = await shopContext(req, "/login");
-    // Telegram appends its auth params to this URL with & (it already has ?).
-    const params = new URLSearchParams();
-    params.set("next", safeNext(req.query.next));
-    if (req.query.ref) params.set("ref", req.query.ref.slice(0, 16));
-    return reply.view("login.njk", {
-      ...ctx,
-      bot_username: botUsername() ?? "",
-      auth_url: `/auth/telegram?${params.toString()}`,
-    });
+type SessionUser = { id: number; telegramId: bigint | null };
+
+/** Shared sign-in tail: merge guest cart, rotate jti, set the cookie. */
+export async function establishSession(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  user: SessionUser,
+): Promise<void> {
+  const guestCart = readGuestCart(req);
+  for (const line of guestCart) {
+    const product = await getProduct(prisma, line.p);
+    if (product?.isActive) await addToCart(prisma, user.id, line.p, line.q);
+  }
+  if (guestCart.length) writeGuestCart(reply, []);
+
+  const jti = newJti();
+  await setSetting(prisma, shopSessionJtiKey(user.id), jti);
+  const { raw } = makeCustomerSession(user.id, user.telegramId, jti);
+  void reply.setCookie(SHOP_COOKIE_NAME, raw, {
+    path: "/",
+    httpOnly: true,
+    sameSite: "lax",
+    secure: config.WEB_COOKIE_SECURE,
+    maxAge: SHOP_SESSION_TTL_HOURS * 3600,
   });
+}
+
+async function renderLogin(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  opts: { next?: string; ref?: string; error?: string; notice?: string; identifier?: string; code?: number } = {},
+) {
+  const ctx = await shopContext(req, "/login");
+  const params = new URLSearchParams();
+  params.set("next", safeNext(opts.next));
+  if (opts.ref) params.set("ref", opts.ref.slice(0, 16));
+  return reply.code(opts.code ?? 200).view("login.njk", {
+    ...ctx,
+    bot_username: botUsername() ?? "",
+    auth_url: `/auth/telegram?${params.toString()}`,
+    next: safeNext(opts.next),
+    error: opts.error ?? null,
+    notice: opts.notice ?? null,
+    identifier: opts.identifier ?? "",
+  });
+}
+
+const authRoutes: FastifyPluginAsync = async (app) => {
+  app.get<{ Querystring: { next?: string; ref?: string; reset?: string } }>(
+    "/login",
+    async (req, reply) => {
+      const ctx = await shopContext(req, "/login");
+      return renderLogin(req, reply, {
+        next: req.query.next,
+        ref: req.query.ref,
+        notice: req.query.reset ? t("web.login_reset_done", ctx.lang) : undefined,
+      });
+    },
+  );
+
+  app.post<{ Body: { identifier?: string; password?: string; next?: string } }>(
+    "/login",
+    async (req, reply) => {
+      const ctx = await shopContext(req, "/login");
+      const identifier = (req.body.identifier ?? "").trim();
+      const password = req.body.password ?? "";
+      const user = identifier ? await findUserByLoginIdentifier(prisma, identifier) : null;
+      if (!user || !user.passwordHash || !verifyPassword(password, user.passwordHash)) {
+        return renderLogin(req, reply, {
+          next: req.body.next,
+          error: t("web.login_failed", ctx.lang),
+          identifier,
+          code: 403,
+        });
+      }
+      if (user.banned) {
+        return renderLogin(req, reply, {
+          next: req.body.next,
+          error: t("web.error_message", ctx.lang),
+          code: 403,
+        });
+      }
+      await establishSession(req, reply, user);
+      return reply.code(303).redirect(safeNext(req.body.next));
+    },
+  );
 
   app.get<{ Querystring: Record<string, string> }>("/auth/telegram", async (req, reply) => {
     const { next, ref, ...tgParams } = req.query;
-    const auth = verifyTelegramLogin(tgParams);
     const ctx = await shopContext(req, "/login");
+    const auth = verifyTelegramLogin(tgParams);
     if (!auth) {
       logger.warn("Storefront: rejected Telegram login (bad hash or stale auth_date)");
-      return reply.code(403).view("login.njk", {
-        ...ctx,
-        bot_username: botUsername() ?? "",
-        auth_url: "/auth/telegram",
-        error: true,
-      });
+      return renderLogin(req, reply, { next, ref, error: t("web.error_message", ctx.lang), code: 403 });
     }
-
-    const fullName = [auth.first_name, auth.last_name].filter(Boolean).join(" ") || null;
-    const user = await upsertUser(prisma, {
-      telegramId: auth.id,
-      username: auth.username ?? null,
-      fullName,
-      referredByCode: ref ? ref.toUpperCase() : null,
-    });
+    const user = await getUserByTelegramId(prisma, auth.id);
+    if (!user) {
+      return renderLogin(req, reply, { next, ref, error: t("web.login_tg_unlinked", ctx.lang), code: 403 });
+    }
     if (user.banned) {
-      return reply.code(403).view("login.njk", {
-        ...ctx,
-        bot_username: botUsername() ?? "",
-        auth_url: "/auth/telegram",
-        error: true,
-      });
+      return renderLogin(req, reply, { next, ref, error: t("web.error_message", ctx.lang), code: 403 });
     }
-
-    // Merge the guest cart into CartItem rows, then clear the cookie (D).
-    const guestCart = readGuestCart(req);
-    for (const line of guestCart) {
-      const product = await getProduct(prisma, line.p);
-      if (product?.isActive) await addToCart(prisma, user.id, line.p, line.q);
-    }
-    if (guestCart.length) writeGuestCart(reply, []);
-
-    // Fresh jti per login; the settings row is what makes logout stick.
-    const jti = newJti();
-    await setSetting(prisma, shopSessionJtiKey(auth.id), jti);
-    const { raw } = makeCustomerSession(user.id, auth.id, jti);
-    void reply.setCookie(SHOP_COOKIE_NAME, raw, {
-      path: "/",
-      httpOnly: true,
-      sameSite: "lax",
-      secure: config.WEB_COOKIE_SECURE,
-      maxAge: SHOP_SESSION_TTL_HOURS * 3600,
-    });
+    await establishSession(req, reply, user);
     return reply.code(303).redirect(safeNext(next));
   });
 
-  // Logout — POST only (state change), rotates the server-side jti.
   app.post("/logout", async (req, reply) => {
     const { optionalCustomer } = await import("../plugins/auth");
     const customer = await optionalCustomer(req);
     if (customer) {
-      await setSetting(prisma, shopSessionJtiKey(customer.telegramId), newJti());
+      await setSetting(prisma, shopSessionJtiKey(customer.userId), newJti());
     }
     void reply.clearCookie(SHOP_COOKIE_NAME, { path: "/" });
     return reply.code(303).redirect("/");

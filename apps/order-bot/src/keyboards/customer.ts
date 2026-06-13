@@ -335,6 +335,7 @@ export function orderConfirmKb(
   lang: string,
   voucherCode = "",
   internalEnabled = false,
+  bybitEnabled = false,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   if (voucherCode) {
@@ -346,10 +347,12 @@ export function orderConfirmKb(
       { text: coreT("checkout.use_voucher", lang), data: cb("voucher", "start", productId, qty) },
     ]);
   }
-  if (internalEnabled) {
-    // Two explicit payment methods.
+  if (internalEnabled || bybitEnabled) {
+    // Explicit payment methods (Binance Pay is always available; the auto-confirm
+    // crypto methods appear only when configured).
     rows.push([{ text: coreT("checkout.pay_binance_pay_btn", lang), data: cb("pay", productId, qty) }]);
-    rows.push([{ text: coreT("checkout.pay_internal_btn", lang), data: cb("payx", productId, qty) }]);
+    if (internalEnabled) rows.push([{ text: coreT("checkout.pay_internal_btn", lang), data: cb("payx", productId, qty) }]);
+    if (bybitEnabled) rows.push([{ text: coreT("checkout.pay_bybit_btn", lang), data: cb("payb", productId, qty) }]);
   } else {
     rows.push([{ text: coreT("checkout.confirm_btn", lang), data: cb("pay", productId, qty) }]);
   }

@@ -104,6 +104,27 @@
       </div>
     </div>
   </div>
+
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center gap-2">
+      <i data-lucide="link" class="w-5 h-5 text-sky-500"></i> USDT on BSC via Bybit (auto-confirm)
+    </h2>
+    <div class="text-xs text-ink-soft mb-4 space-y-1.5">
+      <p>
+        Fill all three to turn on automatic USDT payments: buyers send to your
+        <strong class="text-ink">BEP20 (BNB Smart Chain)</strong> deposit address, and the bot
+        confirms &amp; delivers on its own. Leave any blank to hide this option.
+      </p>
+      <p>
+        The API key must be <strong class="text-ink">Wallet read-only</strong> (no Withdraw permission).
+        Saved keys are hidden — leave a field blank to keep the current value.
+        Takes effect within seconds, no restart needed.
+      </p>
+    </div>
+    <div class="space-y-3">
+      {% for fld in pay_bybit_fields %}{{ setting_form(fld) }}{% endfor %}
+    </div>
+  </div>
 </section>
 
 {# ════ Telegram bot — messages the bot sends + its tokens ════ #}

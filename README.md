@@ -361,6 +361,27 @@ All environment variables are validated at startup by Zod (`packages/core/src/co
 | `POLL_INTERVAL_SECONDS` | How often to check Binance for new transfers | `10` |
 | `INTERNAL_PAYMENT_WINDOW_MINUTES` | Minutes until auto-confirm order expires | `15` |
 
+### Payment — Bybit USDT-BSC Deposit (Auto-Confirmed)
+
+On-chain USDT deposit on the BNB Smart Chain (BEP20). BEP20 carries no memo, so a
+deposit is matched to a pending order by its **unique amount** — keep
+`USE_UNIQUE_CENTS=1`. The poller delivers only on deposits Bybit reports as
+credited (status 3, ~60 confirmations ≈ 1–2 min). Probe API access first with
+`pnpm bybit-probe`.
+
+The address + API key/secret below can also be managed in **web-admin → Settings
+→ Payments** (no restart needed), which **take precedence** over these env vars;
+env is the bootstrap/recovery fallback.
+
+| Variable | Description | Required |
+|---|---|---|
+| `BYBIT_DEPOSIT_ADDRESS` | Your Bybit BEP20 USDT deposit address. Leave blank to disable this method | |
+| `BYBIT_DEPOSIT_CHAIN` | Bybit chain id for the deposit network | `BSC` |
+| `BYBIT_API_KEY` | Wallet-**read-only** Bybit API key (no Withdraw) | |
+| `BYBIT_API_SECRET` | Bybit API secret | |
+| `BYBIT_API_BASE` | Bybit API base URL | `https://api.bybit.com` |
+| `BYBIT_PAYMENT_WINDOW_MINUTES` | Minutes until the deposit order expires | `30` |
+
 ### Web Admin
 
 | Variable | Description | Required | Default |

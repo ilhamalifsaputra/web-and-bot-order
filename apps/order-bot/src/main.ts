@@ -35,6 +35,7 @@ import * as admin from "./handlers/admin";
 import { routeCallback } from "./handlers/callbacks";
 import { scheduleJobs, scheduleFxRefresh } from "./jobs";
 import { startPolling, stopPolling } from "./payments/binanceInternal";
+import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "./payments/bybitDeposit";
 
 /**
  * Build a fully-wired bot. Pure construction — no network/DB side effects.
@@ -234,12 +235,14 @@ export async function start(): Promise<void> {
     },
   });
 
-  // Binance Internal Transfer auto-confirmation poller (no-op unless creds set).
-  startPolling(bot.api);
+  // Crypto auto-confirmation pollers (each a no-op unless its creds are set).
+  startPolling(bot.api); // Binance Internal Transfer
+  startBybitPolling(bot.api); // Bybit USDT-BSC deposits
 
   const stop = async () => {
     logger.info("Shutting down…");
     stopPolling();
+    stopBybitPolling();
     if (runner.isRunning()) await runner.stop();
   };
   process.once("SIGINT", stop);

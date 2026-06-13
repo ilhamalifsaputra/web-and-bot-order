@@ -12,6 +12,7 @@
     "build": "pnpm -r build",
     "build:bundle": "tsx scripts/build-bundle.ts",
     "reset-admin-password": "tsx scripts/reset-admin-password.ts",
+    "bybit-probe": "tsx scripts/bybit-probe.ts",
     "start": "tsx apps/server/src/index.ts",
     "typecheck": "pnpm -r typecheck && tsc -p tsconfig.test.json",
     "test": "vitest run",

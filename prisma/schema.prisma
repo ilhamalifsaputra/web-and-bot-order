@@ -183,6 +183,7 @@ model Order {
   paymentMsgId       Int?      @map("payment_msg_id")
   paymentProofFileId String?   @map("payment_proof_file_id")
   binanceTxid        String?   @map("binance_txid")
+  bybitTxid          String?   @map("bybit_txid")
   adminNote          String?   @map("admin_note")
   rejectionReason    String?   @map("rejection_reason")
   createdAt          DateTime  @default(now()) @map("created_at")
@@ -201,6 +202,7 @@ model Order {
   @@index([userId], map: "ix_orders_user_id")
   @@index([status], map: "ix_orders_status")
   @@index([binanceTxid], map: "ix_orders_binance_txid")
+  @@index([bybitTxid], map: "ix_orders_bybit_txid")
   @@index([status, createdAt], map: "ix_orders_status_created")
   @@map("orders")
 }
@@ -429,6 +431,23 @@ model ProcessedBinanceTx {
 
   @@index([orderId], map: "ix_processed_binance_tx_order_id")
   @@map("processed_binance_tx")
+}
+
+/// Idempotency ledger for Bybit USDT-BSC deposits — same insert-first-on-unique
+/// pattern as ProcessedBinanceTx. The on-chain txID (a 0x… hash) is claimed
+/// exactly once, so repeated poll cycles can never double-deliver. BEP20 carries
+/// no memo, so there is no underpaid auto-path (an amount that matches no order
+/// is simply "unmatched"); outcome is matched | unmatched | delivery_failed.
+model ProcessedBybitTx {
+  id        Int      @id @default(autoincrement())
+  bybitTxId String   @unique(map: "ix_processed_bybit_tx_txid") @map("bybit_tx_id")
+  orderId   Int?     @map("order_id")
+  amount    Decimal?
+  outcome   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([orderId], map: "ix_processed_bybit_tx_order_id")
+  @@map("processed_bybit_tx")
 }
 
 /// Idempotency ledger for TokoPay webhook callbacks (the IDR payment path) —

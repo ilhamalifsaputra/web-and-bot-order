@@ -20,6 +20,8 @@ import {
   reconcileFinances,
   logAdminAction,
   getBinancePollHealth,
+  getBybitPollHealth,
+  resolveBybitConfig,
   getSetting,
   setSetting,
   claimNextDueBroadcast,
@@ -177,6 +179,40 @@ export async function binancePollWatchdog(api: Api): Promise<void> {
   }
 }
 
+const BYBIT_POLL_ALERT_KEY = "bybit_poll_alert_sent";
+
+/** Bybit-deposit twin of binancePollWatchdog — same stale/recover logic on the
+ * Bybit poller heartbeat, with its own alert-state key so the two pollers'
+ * alerts never clobber each other. */
+export async function bybitPollWatchdog(api: Api): Promise<void> {
+  if (!(await resolveBybitConfig(prisma)).enabled) return;
+  const health = await getBybitPollHealth(prisma);
+  const alerted = (await getSetting(prisma, BYBIT_POLL_ALERT_KEY)) === "1";
+  const decision = pollWatchdogDecision(health, alerted);
+
+  if (decision === "alert") {
+    const lastRun = health.lastRun ? Date.parse(health.lastRun) : 0;
+    const mins = lastRun ? Math.round((Date.now() - lastRun) / 60_000) : "∞";
+    logger.error(`Bybit poller watchdog: no cycle in ${mins} min — alerting admins`);
+    for (const adminId of config.ADMIN_IDS) {
+      try {
+        await api.sendMessage(
+          adminId,
+          `⚠️ <b>Bybit deposit poller looks STUCK</b>\nNo completed cycle in <b>${mins}</b> min. ` +
+            `Auto-confirm is paused — check the order-bot process.`,
+          { parse_mode: "HTML" },
+        );
+      } catch (err) {
+        logger.error({ err }, `Failed to alert admin ${adminId} about stuck Bybit poller`);
+      }
+    }
+    await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "1");
+  } else if (decision === "recover") {
+    await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "0");
+    logger.info("Bybit poller watchdog: poller recovered");
+  }
+}
+
 // Throttle between broadcast DMs — stays under Telegram's ~30 msg/s bulk limit.
 const BROADCAST_THROTTLE_MS = 40;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -240,6 +276,7 @@ export function scheduleJobs(api: Api): Cron[] {
     new Cron("0 * * * *", wrap("autoCloseStaleTickets", autoCloseStaleTickets)),
     new Cron("0 */6 * * *", wrap("reconcileFinancesJob", reconcileFinancesJob)),
     new Cron("*/2 * * * *", wrap("binancePollWatchdog", binancePollWatchdog)),
+    new Cron("*/2 * * * *", wrap("bybitPollWatchdog", bybitPollWatchdog)),
     new Cron("*/1 * * * *", { protect: true }, wrap("drainBroadcasts", drainBroadcasts)),
   ];
 }

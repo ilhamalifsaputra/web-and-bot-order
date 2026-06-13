@@ -33,6 +33,8 @@ import {
   countUserPendingOrders,
   createOrderDirect,
   createInternalOrder,
+  createBybitOrder,
+  resolveBybitConfig,
   setOrderPaymentMessage,
   cancelOrder,
   finalizeOrderPayment,
@@ -347,6 +349,7 @@ export async function showOrderConfirmation(
   if (!r) return;
 
   const rate = await currentUsdtRate();
+  const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
   await smartEdit(
     ctx,
     t(ctx, "checkout.confirm_order", {
@@ -356,7 +359,7 @@ export async function showOrderConfirmation(
       voucher_line: r.voucherLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null),
+    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null, bybitEnabled && rate !== null),
   );
 }
 
@@ -370,6 +373,7 @@ export async function renderOrderConfirmation(
   const r = await computeConfirmation(ctx, productId, quantity);
   if (!r) return;
   const rate = await currentUsdtRate();
+  const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
   const msg = await ctx.api.sendMessage(
     ctx.chat!.id,
     t(ctx, "checkout.confirm_order", {
@@ -379,7 +383,7 @@ export async function renderOrderConfirmation(
       voucher_line: r.voucherLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null) },
+    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null, bybitEnabled && rate !== null) },
   );
   ctx.session.menuMsgId = msg.message_id;
 }
@@ -491,6 +495,71 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     code: order.paymentRef,
     uid: esc(config.BINANCE_RECEIVE_UID ?? ""),
     note: order.paymentRef,
+    amount: price(order.totalAmount, 4),
+    idr_line: idrLine,
+    expiry,
+  });
+  await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang));
+  // Anchor the instructions message so the poller can flip it to success.
+  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+}
+
+/**
+ * Bybit USDT-BSC deposit: create the order, show the BEP20 deposit address +
+ * the exact amount to send (no memo on BSC — matching is by amount), and anchor
+ * the message so the deposit poller can flip it to success on auto-confirm.
+ */
+export async function buyNowBybit(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+  const info = requireUser(ctx);
+  const lang = ctx.session.lang;
+  const rate = await currentUsdtRate();
+  const bybit = await resolveBybitConfig(prisma);
+  if (!bybit.enabled || !rate) {
+    await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
+    return;
+  }
+  const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+  delete ctx.session.scratch.appliedVoucherCode;
+
+  const user = await getUser(prisma, info.id);
+  if (user === null) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+  const pendingCount = await countUserPendingOrders(prisma, info.id);
+  if (pendingCount >= MAX_PENDING_ORDERS) {
+    await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
+    return;
+  }
+
+  let order: Awaited<ReturnType<typeof createBybitOrder>>;
+  try {
+    order = await prisma.$transaction((tx) =>
+      createBybitOrder(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode, rate }),
+    );
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      return;
+    }
+    throw e;
+  }
+  if (!order) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+
+  // The charged amount is USDT; show the central-IDR equivalent beside it
+  // (totalAmount × the fxRate snapshot, which includes the unique cents).
+  const fxRate = order.fxRate != null ? new Decimal(order.fxRate) : rate;
+  const idrLine = ` (≈ ${formatIdr(new Decimal(order.totalAmount).times(fxRate))})`;
+  const expiry = order.expiresAt
+    ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
+    : `${config.BYBIT_PAYMENT_WINDOW_MINUTES}m`;
+
+  const text = t(ctx, "checkout.bybit_instructions", {
+    code: order.orderCode,
+    address: esc(bybit.depositAddress),
     amount: price(order.totalAmount, 4),
     idr_line: idrLine,
     expiry,

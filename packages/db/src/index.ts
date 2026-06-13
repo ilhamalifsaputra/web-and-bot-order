@@ -17,6 +17,7 @@ export * from "./crud/audit";
 export * from "./crud/reports";
 export * from "./crud/notifications";
 export * from "./crud/binance_internal";
+export * from "./crud/bybit_deposit";
 export * from "./crud/broadcasts";
 export * from "./crud/pricing";
 export * from "./crud/tokopay";

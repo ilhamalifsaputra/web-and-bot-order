@@ -26,7 +26,7 @@
           <tr>
             <td>{{ it.product.name }}</td>
             <td class="text-right tabular">{{ it.quantity }}</td>
-            <td class="text-right tabular">{{ it.unitPrice | money }} {{ currency }}</td>
+            <td class="text-right tabular">{{ it.unitPrice | idr }}</td>
             <td class="text-ink-soft">{{ it.warrantyDaysSnapshot }} days</td>
           </tr>
           {% endfor %}
@@ -89,12 +89,12 @@
     <div class="card card-pad text-sm">
       <h2 class="section-title mb-3">Money</h2>
       <dl class="space-y-1.5 tabular">
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Items total</dt><dd>{{ order.subtotalAmount | money }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Quantity discount</dt><dd>−{{ order.bulkDiscountAmount | money }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Discount code</dt><dd>−{{ order.discountAmount | money }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Wallet credit used</dt><dd>−{{ order.walletUsed | money }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft" title="Tiny amount added so the transfer can be matched automatically">Amount marker</dt><dd>{{ order.uniqueCents | money }}</dd></div>
-        <div class="flex justify-between gap-3 font-semibold border-t border-line pt-1.5 mt-1.5"><dt>Total to pay</dt><dd>{{ order.totalAmount | money }} {{ currency }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Items total</dt><dd>{{ order.subtotalAmount | idr }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Quantity discount</dt><dd>−{{ order.bulkDiscountAmount | idr }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Discount code</dt><dd>−{{ order.discountAmount | idr }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Wallet credit used</dt><dd>−{{ order.walletUsed | idr }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft" title="Tiny amount added so the transfer can be matched automatically">Amount marker</dt><dd>{{ order.uniqueCents | idr }}</dd></div>
+        <div class="flex justify-between gap-3 font-semibold border-t border-line pt-1.5 mt-1.5"><dt>Total to pay</dt><dd>{{ order.totalAmount | idr }}</dd></div>
       </dl>
     </div>
 

@@ -4,9 +4,7 @@
 
 {% block content %}
 {% set role_label = { 'super': 'Owner', 'support': 'Support', 'readonly': 'View only' } %}
-<header class="mb-2">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="users-round" class="w-7 h-7 text-sky-500"></i> Team</h1>
-</header>
+{{ ui.page_header('Team', '', 'users-round', 'settings') }}
 <p class="text-ink-soft text-sm mb-6 max-w-2xl">
   Who can sign in to this dashboard and what they're allowed to do.
   <b>Owner</b> can do everything · <b>Support</b> can handle orders, payments, support and reviews ·

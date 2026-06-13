@@ -3,10 +3,7 @@
 {% block title %}Settings · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="settings" class="w-7 h-7 text-sky-500"></i> Settings</h1>
-  <p class="page-lead">Your shop's options and your sign-in security — grouped by what they change.</p>
-</header>
+{{ ui.page_header('Settings', "Your shop's options and your sign-in security — grouped by what they change.", 'settings', 'settings') }}
 {{ ui.flash(msg, kind) }}
 
 {% macro setting_form(fld) %}
@@ -142,7 +139,7 @@
       <p>
         Tokens are verified with Telegram before saving.
         The app must <strong class="text-ink">restart</strong> before a new token takes effect.
-        {% if not is_owner %}<span class="text-amber-600">Only the owner can change these.</span>{% endif %}
+        {% if not is_owner %}<span class="text-amberx">Only the owner can change these.</span>{% endif %}
         Type <span class="codeish">-</span> to remove a saved token and fall back to the server's own config.
       </p>
     </div>

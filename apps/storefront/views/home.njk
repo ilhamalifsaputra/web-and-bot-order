@@ -171,21 +171,27 @@
       <p class="text-white/60 text-sm mt-1">{{ t('web.stats_sub', lang) }}</p>
     </div>
 
+    {% if stats.has_data %}
+    {# ── Real figures, shown once enough orders have actually shipped ── #}
     <div class="grid grid-cols-2 sm:grid-cols-4 gap-8">
       <div class="text-center">
-        <div class="font-display text-4xl sm:text-5xl font-bold text-white counter" data-target="10000" data-suffix="+">0+</div>
+        <div class="font-display text-4xl sm:text-5xl font-bold text-white counter" data-target="{{ stats.customers }}" data-suffix="+">0+</div>
         <div class="flex items-center justify-center gap-1 text-white/60 text-xs font-medium mt-2">
           <i data-lucide="users" class="w-3.5 h-3.5"></i> {{ t('web.stat_customers', lang) }}
         </div>
       </div>
       <div class="text-center">
-        <div class="font-display text-4xl sm:text-5xl font-bold text-white counter" data-target="50000" data-suffix="+">0+</div>
+        <div class="font-display text-4xl sm:text-5xl font-bold text-white counter" data-target="{{ stats.orders }}" data-suffix="+">0+</div>
         <div class="flex items-center justify-center gap-1 text-white/60 text-xs font-medium mt-2">
           <i data-lucide="package-check" class="w-3.5 h-3.5"></i> {{ t('web.stat_orders', lang) }}
         </div>
       </div>
       <div class="text-center">
-        <div class="font-display text-4xl sm:text-5xl font-bold text-white counter" data-target="99" data-suffix="%">0%</div>
+        {% if stats.satisfaction %}
+        <div class="font-display text-4xl sm:text-5xl font-bold text-white counter" data-target="{{ stats.satisfaction }}" data-suffix="%">0%</div>
+        {% else %}
+        <div class="font-display text-4xl sm:text-5xl font-bold text-white">★</div>
+        {% endif %}
         <div class="flex items-center justify-center gap-1 text-white/60 text-xs font-medium mt-2">
           <i data-lucide="smile" class="w-3.5 h-3.5"></i> {{ t('web.stat_satisfaction', lang) }}
         </div>
@@ -197,23 +203,38 @@
         </div>
       </div>
     </div>
+    {% else %}
+    {# ── New shop: no invented numbers — show always-true value props instead ── #}
+    {% set props = [
+      { icon: "zap",          key: "badge_instant" },
+      { icon: "shield-check", key: "badge_secure"  },
+      { icon: "clock",        key: "feat_warranty" },
+      { icon: "headphones",   key: "stat_support"  }
+    ] %}
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-8">
+      {% for p in props %}
+      <div class="text-center">
+        <div class="w-12 h-12 mx-auto rounded-2xl bg-white/10 flex items-center justify-center mb-3">
+          <i data-lucide="{{ p.icon }}" class="w-6 h-6 text-white"></i>
+        </div>
+        <div class="text-white text-sm font-semibold">{{ t('web.' + p.key, lang) }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
   </div>
 </section>
 
-{# ── 6. Testimoni ── #}
+{# ── 6. Testimoni — ulasan ASLI dari pesanan yang sudah terkirim (≥4★ dengan
+      komentar). Section disembunyikan saat belum ada ulasan, supaya tidak ada
+      testimoni karangan di halaman. ── #}
+{% if testimonials.length %}
 <section class="mb-12 reveal">
   <div class="text-center mb-8">
     <p class="text-xs font-semibold tracking-widest uppercase text-pine mb-2">{{ t('web.testi_kicker', lang) }}</p>
     <h2 class="font-display text-2xl sm:text-3xl font-bold text-ink tracking-tight">{{ t('web.testi_title', lang) }}</h2>
     <p class="mt-2 text-sm text-ink-soft">{{ t('web.testi_sub', lang) }}</p>
   </div>
-
-  {% set testimonials = [
-    { initial: "A", name: "Ahmad F.", product: "ChatGPT Plus", key: "web.testi_1" },
-    { initial: "S", name: "Siti R.",  product: "Canva Pro",    key: "web.testi_2" },
-    { initial: "R", name: "Rendi P.", product: "Midjourney",   key: "web.testi_3" },
-    { initial: "D", name: "Dewi L.",  product: "Notion AI",    key: "web.testi_4" }
-  ] %}
 
   <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
     {% for review in testimonials %}
@@ -225,15 +246,16 @@
           <div class="font-display text-sm font-semibold text-ink">{{ review.name }}</div>
           <div class="text-xs text-ink-faint">{{ t('web.testi_buyer', lang) }} · {{ review.product }}</div>
         </div>
-        <div class="flex-shrink-0">{{ shop.stars(5) }}</div>
+        <div class="flex-shrink-0">{{ shop.stars(review.rating) }}</div>
       </div>
       <p class="text-sm text-ink-soft leading-relaxed border-t border-line pt-3 italic">
-        “{{ t(review.key, lang) }}”
+        “{{ review.comment }}”
       </p>
     </div>
     {% endfor %}
   </div>
 </section>
+{% endif %}
 
 {# ── 7. FAQ (accordion details/summary, tanpa JS) ── #}
 <section class="mb-12 reveal">

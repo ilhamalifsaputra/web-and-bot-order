@@ -61,6 +61,8 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
     sendMediaGroup: rec("sendMediaGroup"),
     editMessageText: rec("editMessageText"),
     editMessageCaption: rec("editMessageCaption"),
+    editMessageReplyMarkup: rec("editMessageReplyMarkup"),
+    deleteMessage: rec("deleteMessage"),
     setMyCommands: rec("setMyCommands"),
     deleteWebhook: rec("deleteWebhook"),
     getFile: (..._a: unknown[]) => Promise.resolve({ file_id: "f", file_path: "docs/file.txt" }),

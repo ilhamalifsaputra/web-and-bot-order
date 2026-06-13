@@ -11,6 +11,7 @@
  */
 import type { FastifyPluginAsync } from "fastify";
 import { config, isBinanceInternalEnabled } from "@app/core/config";
+import { botUsername } from "@app/core/runtime";
 import { OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { t } from "@app/core/i18n";
@@ -32,6 +33,7 @@ import {
   countUserPendingOrders,
   deliverPaidTokopayOrder,
   recordUnmatchedTokopayTx,
+  getSetting,
 } from "@app/db";
 import { currentCustomer, csrfProtect, type Customer } from "../plugins/auth";
 import {
@@ -261,6 +263,12 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         }
       }
 
+      // Contact fallbacks shown when the Rupiah gateway is temporarily down, so
+      // a stuck buyer always has a way to reach us instead of a dead red box.
+      const waNumber = gatewayError && !isUsdt
+        ? ((await getSetting(prisma, "support_whatsapp")) ?? "").replace(/[^0-9]/g, "")
+        : "";
+
       return reply.view("pay.njk", {
         ...ctx,
         order: {
@@ -276,6 +284,8 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         binance_uid: config.BINANCE_RECEIVE_UID ?? "",
         gateway,
         gateway_error: gatewayError,
+        wa_number: waNumber,
+        bot_username: botUsername() ?? "",
       });
     },
   );

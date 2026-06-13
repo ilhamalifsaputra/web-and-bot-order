@@ -6,6 +6,32 @@
 <input type="hidden" name="csrf_token" value="{{ admin.csrf }}">
 {%- endmacro %}
 
+{# ── Section accent tones ── ONE place mapping a nav section to its colour, so
+   every page header's icon matches the menu group the page lives under
+   (Sales=blue, Products=violet, Customers=green, Reports=amber, Settings=sky,
+   Home=rose). Keep in sync with the `nav_groups` colours in base.njk. #}
+{% set _section_tone = {
+  'home':      'text-rose-500',
+  'sales':     'text-blue-500',
+  'products':  'text-violet-500',
+  'customers': 'text-emerald-500',
+  'reports':   'text-amber-500',
+  'settings':  'text-sky-500'
+} %}
+
+{# Standard page header: a section-tinted icon + title, with an optional lead
+   line. Replaces the hand-copied <header> block that used to live on every
+   page (each with a different, arbitrary icon colour). `section` picks the
+   colour so the header always matches its nav group — see _section_tone. #}
+{% macro page_header(title, lead, icon, section='home') -%}
+<header class="mb-6">
+  <h1 class="page-title flex items-center gap-2.5">
+    <i data-lucide="{{ icon }}" class="w-7 h-7 {{ _section_tone[section] or 'text-pine' }}"></i> {{ title }}
+  </h1>
+  {% if lead %}<p class="page-lead">{{ lead }}</p>{% endif %}
+</header>
+{%- endmacro %}
+
 {# Lucide icon. Rendered to an <svg> by base.njk's init script. Size + colour
    come from Tailwind classes (icons inherit currentColor). #}
 {% macro ic(name, cls="w-5 h-5") -%}
@@ -53,4 +79,18 @@
 {# Empty-state row for tables: a quiet, friendly "nothing here yet" line. #}
 {% macro empty_row(cols, message) -%}
 <tr><td colspan="{{ cols }}" class="px-4 py-10 text-center text-ink-faint">{{ message }}</td></tr>
+{%- endmacro %}
+
+{# Pager: the count + Newer/Older nav under a list table. ONE place for the
+   layout so every paginated page reads the same. `qbase` is the page's query
+   string WITHOUT &page=…; `label` is the already-pluralised noun e.g.
+   "order(s)". Newer = lower page number (more recent), Older = higher. #}
+{% macro pager(qbase, page, has_next, total, label) -%}
+<div class="flex items-center justify-between mt-4 text-sm text-ink-soft">
+  <span>{{ total }} {{ label }} · page {{ page }}</span>
+  <span class="flex gap-3">
+    {% if page > 1 %}<a class="link" href="{{ qbase }}&page={{ page - 1 }}">← Newer</a>{% endif %}
+    {% if has_next %}<a class="link" href="{{ qbase }}&page={{ page + 1 }}">Older →</a>{% endif %}
+  </span>
+</div>
 {%- endmacro %}

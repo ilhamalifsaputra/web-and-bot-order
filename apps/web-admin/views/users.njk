@@ -3,10 +3,7 @@
 {% block title %}Customers · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="users" class="w-7 h-7 text-emerald-500"></i> Customers</h1>
-  <p class="page-lead">Find a customer to view their orders, wallet, and tickets.</p>
-</header>
+{{ ui.page_header('Customers', 'Find a customer to view their orders, wallet, and tickets.', 'users', 'customers') }}
 {{ ui.flash(msg, kind) }}
 
 <form method="get" action="/users" class="card card-pad mb-6 flex gap-3 items-end">

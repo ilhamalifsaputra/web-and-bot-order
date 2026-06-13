@@ -10,47 +10,15 @@ import { config } from "@app/core/config";
 import { SenderType, TicketStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
-import { prisma, createReview, getTicket, addTicketMessage } from "@app/db";
+import { prisma, getTicket, addTicketMessage } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { smartEdit } from "../util/chat";
 import { t } from "../util/i18n";
 import { esc } from "../util/format";
 import { validateText } from "../util/validators";
-import { backToMain } from "../keyboards/customer";
+import { backToMain, isPersistentLabel } from "../keyboards/customer";
 import * as akb from "../keyboards/admin";
-
-// ===========================================================================
-// Review: rate (entry carries the rating) → ask comment → save
-// ===========================================================================
-
-export async function reviewConversation(conversation: MyConversation, ctx: MyContext): Promise<void> {
-  const info = ctx.session.dbUser!;
-  const parts = (ctx.callbackQuery?.data ?? "").split(":");
-  const orderId = parseInt(parts[3]!, 10);
-  const productId = parseInt(parts[4]!, 10);
-  const rating = parseInt(parts[5]!, 10);
-
-  await ctx.answerCallbackQuery();
-  await smartEdit(ctx, t(ctx, "review.ask_comment", { rating }));
-
-  const msgCtx = await conversation.waitFor("message:text");
-  const raw = (msgCtx.message.text ?? "").trim();
-  const comment = raw === "-" ? null : raw;
-
-  try {
-    await conversation.external(() =>
-      createReview(prisma, { userId: info.id, orderId, productId, rating, comment }),
-    );
-  } catch (e) {
-    if (e instanceof ValidationError) {
-      await smartEdit(msgCtx, t(msgCtx, e.key));
-      return;
-    }
-    throw e;
-  }
-
-  await smartEdit(msgCtx, t(msgCtx, "review.submitted"), backToMain(msgCtx.session.lang));
-}
+import { handleProductNumber } from "../handlers/customer";
 
 // ===========================================================================
 // Ticket user reply: entry v1:ticket:reply:<id> → ask text → save → notify
@@ -76,8 +44,12 @@ export async function ticketUserReplyConversation(conversation: MyConversation, 
   let body: string;
   for (;;) {
     const msgCtx = await conversation.waitFor("message:text");
+    const replyText = msgCtx.message.text ?? "";
+    // A reply-keyboard menu tap (Terms, FAQ, …) must not be captured as the
+    // ticket reply. Exit the conversation and run the tapped action instead.
+    if (isPersistentLabel(replyText)) return void (await handleProductNumber(msgCtx));
     try {
-      body = validateText(msgCtx.message.text ?? "", 2000, 1);
+      body = validateText(replyText, 2000, 1);
       break;
     } catch (e) {
       if (e instanceof ValidationError) {

@@ -9,7 +9,7 @@ import type { Decimal } from "@app/core/money";
 import { StockStatus } from "@app/core/enums";
 import { t as coreT } from "@app/core/i18n";
 import { cb } from "./customer";
-import { formatPrice } from "../util/format";
+import { formatPrice, truncLabel } from "../util/format";
 
 interface Btn {
   text: string;
@@ -119,7 +119,7 @@ export function verificationActionsKb(orderId: number, lang: string): InlineKeyb
 
 export function stockProductsKb(products: ProductLike[], lang: string): InlineKeyboard {
   const rows: Btn[][] = products.map((p) => [
-    { text: `➕ ${p.name}`, data: cb("adm", "stock", "add", p.id) },
+    { text: `➕ ${truncLabel(p.name, 22)}`, data: cb("adm", "stock", "add", p.id) },
   ]);
   rows.push([{ text: coreT("menu.back", lang), data: cb("adm", "menu") }]);
   return ik(rows);
@@ -132,8 +132,10 @@ export function stockProductsKb(products: ProductLike[], lang: string): InlineKe
 export function productsAdminKb(products: ProductLike[], lang: string): InlineKeyboard {
   const rows: Btn[][] = [[{ text: "➕ New product", data: cb("adm", "prod", "new") }]];
   for (const p of products) {
+    const priceStr = formatPrice(p.price);
+    // Keep total label ≤ 32 chars: reserve space for " (Rp…)" suffix (~12 chars).
     rows.push([
-      { text: `${p.name} (${formatPrice(p.price)})`, data: cb("adm", "prod", "edit", p.id) },
+      { text: `${truncLabel(p.name, 20)} (${priceStr})`, data: cb("adm", "prod", "edit", p.id) },
     ]);
   }
   rows.push([{ text: coreT("menu.back", lang), data: cb("adm", "menu") }]);
@@ -235,6 +237,14 @@ export function cancelInputKb(): InlineKeyboard {
   return ik([[{ text: "❌ Cancel", data: cb("adm", "cancel") }]]);
 }
 
+/** Shown after banner is removed — one tap undoes it within 30 seconds. */
+export function bannerRemovedUndoKb(lang: string): InlineKeyboard {
+  return ik([
+    [{ text: "↩️ Undo", data: cb("adm", "settings", "undo", "banner_image") }],
+    [{ text: coreT("menu.back", lang), data: cb("adm", "menu") }],
+  ]);
+}
+
 /** Confirm/cancel keyboard shown after admin composes a broadcast. */
 export function broadcastConfirmKb(lang: string): InlineKeyboard {
   return ik([
@@ -248,6 +258,15 @@ export function broadcastConfirmKb(lang: string): InlineKeyboard {
 // ---------------------------------------------------------------------------
 // Product creation pickers
 // ---------------------------------------------------------------------------
+
+/** Shown at product-create entry when an unfinished draft exists. */
+export function productDraftResumeKb(): InlineKeyboard {
+  return ik([
+    [{ text: "▶️ Resume draft", data: cb("adm", "prod", "draft", "resume") }],
+    [{ text: "🆕 Start fresh", data: cb("adm", "prod", "draft", "fresh") }],
+    [{ text: "❌ Cancel", data: cb("adm", "cancel") }],
+  ]);
+}
 
 /** Used during product creation to pick shared vs private. */
 export function productTypePickerKb(): InlineKeyboard {

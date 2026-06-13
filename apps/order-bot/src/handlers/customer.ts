@@ -26,7 +26,6 @@ import {
   countUserOrders,
   listUserOrders,
   getOrder,
-  listUserDeliveredOrders,
   getUser,
   setUserLanguage,
   subscribeToRestock,
@@ -137,6 +136,15 @@ export async function startCommand(ctx: MyContext): Promise<void> {
     });
   }
 
+  // Deep-link: t.me/<bot>?start=prod_<id> → open product detail directly.
+  if (args.length && args[0]!.startsWith("prod_")) {
+    const productId = parseInt(args[0]!.slice(5), 10);
+    if (!isNaN(productId)) {
+      await browseProduct(ctx, productId);
+      return;
+    }
+  }
+
   delete sc(ctx).browseProductIds;
   delete sc(ctx).browsePage;
 
@@ -163,9 +171,6 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
 
 export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void> {
   const lang = ctx.session.lang;
-  const info = ctx.session.dbUser;
-  const tg = ctx.from!;
-  const name = esc([tg.first_name, tg.last_name].filter(Boolean).join(" ") || tg.username || "");
 
   const products = await listAllActiveProducts(prisma);
   if (!products.length) {
@@ -182,19 +187,10 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   sc(ctx).browseProductIds = pageProducts.map((p) => p.id);
   delete sc(ctx).viewingProductId;
 
-  // Numbered list (compact for large catalogs — 5 number buttons per row) with
-  // the reseller-aware price on each line so buyers can compare without opening
-  // each one. Selection by number is resolved against the browseProductIds
-  // snapshot above (see handleProductNumber).
-  const isReseller = info?.role === UserRole.RESELLER;
-  const rate = await currentUsdtRate();
-  const itemLines = pageProducts.map((p, i) => {
-    const unit = isReseller && p.resellerPrice != null ? p.resellerPrice : p.price;
-    return `┊ [ ${i + 1} ] ${esc(p.name).toUpperCase()} — ${priceIdr(unit, rate)}`;
-  });
+  // Selection is resolved against the browseProductIds snapshot (see handleProductNumber).
+  const itemLines = pageProducts.map((p, i) => `${i + 1}. ${esc(p.name)}`);
 
   const text = t(ctx, "browse.list_decorated", {
-    name,
     page: page + 1,
     total: totalPages,
     items: itemLines.join("\n"),
@@ -428,34 +424,67 @@ export async function qtyChange(
 // My orders
 // ---------------------------------------------------------------------------
 
-export async function listMyOrders(ctx: MyContext, page = 0): Promise<void> {
+export async function listMyOrders(ctx: MyContext): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
-  const perPage = 5;
 
-  const total = await countUserOrders(prisma, info.id);
-  const orders = await listUserOrders(prisma, info.id, perPage, page * perPage);
-  const totalPages = Math.max(1, Math.ceil(total / perPage));
+  const orders = await listUserOrders(prisma, info.id, 10, 0);
 
-  if (!orders.length && page === 0) {
+  if (!orders.length) {
     await smartEdit(ctx, t(ctx, "order.list_empty"), ckb.backToMain(lang));
     return;
   }
 
-  const lines = [t(ctx, "order.list_title"), ""];
-  for (const o of orders) {
+  const lines = [t(ctx, "order.list_title", { count: orders.length }), ""];
+  for (let i = 0; i < orders.length; i++) {
+    const o = orders[i]!;
+    const groups = groupOrderItems(o.items);
+    const g = groups[0];
     lines.push(
-      t(ctx, "order.list_line", {
+      t(ctx, "order.list_entry", {
+        n: i + 1,
         code: o.orderCode,
         status: statusBadge(o.status),
+        product: g ? esc(g.product.name) : "-",
+        duration: g ? esc(g.product.durationLabel) : "-",
+        type: g ? esc(g.product.type) : "-",
+        qty: g ? String(g.quantity) : "-",
         total: orderAmount(o),
-        date: ensureUtc(o.createdAt).toFormat("yyyy-LL-dd"),
+        time: ensureUtc(o.createdAt).toFormat("dd/LL/yyyy HH:mm"),
       }),
     );
+    lines.push("");
   }
-  lines.push("");
-  lines.push(t(ctx, "order.page_info", { page: page + 1, total: totalPages }));
-  await smartEdit(ctx, lines.join("\n"), ckb.ordersListKb(orders, lang, page, totalPages));
+  await smartEdit(ctx, lines.join("\n"), ckb.ordersListKb(orders, lang));
+}
+
+export async function allOrderHistory(ctx: MyContext): Promise<void> {
+  const info = requireUser(ctx);
+  const orders = await listUserOrders(prisma, info.id, 100, 0);
+
+  if (!orders.length) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "order.history_empty"), show_alert: true });
+    return;
+  }
+
+  const lines: string[] = [`=== ${t(ctx, "order.history_file_header")} ===`, t(ctx, "order.history_file_count", { count: orders.length }), ""];
+  for (const o of orders) {
+    lines.push(`${t(ctx, "order.history_file_order")}: ${o.orderCode}`);
+    lines.push(`Status: ${o.status}`);
+    lines.push(`${t(ctx, "order.history_file_date")}: ${ensureUtc(o.createdAt).toFormat("dd/LL/yyyy HH:mm")}`);
+    lines.push(`${t(ctx, "order.history_file_amount")}: ${orderAmount(o)}`);
+    lines.push(`${t(ctx, "order.history_file_items")}:`);
+    for (const g of groupOrderItems(o.items)) {
+      lines.push(`  - ${g.product.name} × ${g.quantity}  ${formatIdr(g.lineTotal)}`);
+    }
+    lines.push("-".repeat(36));
+  }
+
+  const buf = Buffer.from(lines.join("\n"), "utf-8");
+  if (ctx.callbackQuery) await ctx.answerCallbackQuery();
+  await ctx.api.sendDocument(ctx.chat!.id, new InputFile(buf, "riwayat_order.txt"), {
+    caption: t(ctx, "order.all_history_caption", { count: orders.length }),
+  });
 }
 
 export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> {
@@ -497,42 +526,8 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
   await smartEdit(ctx, text, ckb.orderDetailKb(order, lang));
 }
 
-export async function downloadHistory(ctx: MyContext): Promise<void> {
-  const info = requireUser(ctx);
-  const lang = ctx.session.lang;
-  const orders = await listUserDeliveredOrders(prisma, info.id, 50);
-
-  if (!orders.length) {
-    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "order.history_empty"), show_alert: true });
-    return;
-  }
-
-  const L = {
-    header: t(ctx, "order.history_file_header"),
-    total: t(ctx, "order.history_file_count", { count: orders.length }),
-    order: t(ctx, "order.history_file_order"),
-    date: t(ctx, "order.history_file_date"),
-    amount: t(ctx, "order.history_file_amount"),
-    items: t(ctx, "order.history_file_items"),
-  };
-  const lines: string[] = [`=== ${L.header} ===`, L.total, ""];
-  for (const o of orders) {
-    lines.push(`${L.order}: ${o.orderCode}`);
-    lines.push(`${L.date}: ${ensureUtc(o.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'")}`);
-    lines.push(`${L.amount}: ${orderAmount(o, 4)}`);
-    lines.push(`${L.items}:`);
-    for (const g of groupOrderItems(o.items)) {
-      lines.push(`  - ${g.product.name} x${g.quantity}  ${formatIdr(g.lineTotal)}`);
-    }
-    lines.push("-".repeat(36));
-  }
-
-  const buf = Buffer.from(lines.join("\n"), "utf-8");
-  if (ctx.callbackQuery) await ctx.answerCallbackQuery();
-  await ctx.api.sendDocument(ctx.chat!.id, new InputFile(buf, "transaction_history.txt"), {
-    caption: t(ctx, "order.history_file_caption", { count: orders.length }),
-  });
-}
+// Removed: per-order review, replacement, and the old delivered-only history
+// download. The single "Lihat Semua Riwayat" button now drives allOrderHistory.
 
 // ---------------------------------------------------------------------------
 // Wallet / Referral / Language / Restock

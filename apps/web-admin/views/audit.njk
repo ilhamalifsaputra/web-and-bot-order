@@ -3,10 +3,7 @@
 {% block title %}Activity Log · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="history" class="w-7 h-7 text-blue-500"></i> Activity Log</h1>
-  <p class="page-lead">A record of everything you and your team have done.</p>
-</header>
+{{ ui.page_header('Activity Log', 'A record of everything you and your team have done.', 'history', 'reports') }}
 
 <form method="get" action="/audit" class="card card-pad mb-6 flex flex-wrap gap-3 items-end">
   <div><label class="field-label">Action</label><input name="action" value="{{ f.action }}" class="field"></div>
@@ -42,12 +39,6 @@
   </table>
 </div>
 
-<div class="flex items-center justify-between mt-4 text-sm text-ink-soft">
-  <span>{{ total }} entr(ies) · page {{ page }}</span>
-  <span class="flex gap-3">
-    {% set qbase = '/audit?action=' + f.action + '&target_type=' + f.target_type + '&admin_id=' + (f.admin_id | string) + '&since=' + f.since + '&until=' + f.until %}
-    {% if page > 1 %}<a class="link" href="{{ qbase }}&page={{ page - 1 }}">← Newer</a>{% endif %}
-    {% if has_next %}<a class="link" href="{{ qbase }}&page={{ page + 1 }}">Older →</a>{% endif %}
-  </span>
-</div>
+{% set qbase = '/audit?action=' + f.action + '&target_type=' + f.target_type + '&admin_id=' + (f.admin_id | string) + '&since=' + f.since + '&until=' + f.until %}
+{{ ui.pager(qbase, page, has_next, total, 'entr(ies)') }}
 {% endblock %}

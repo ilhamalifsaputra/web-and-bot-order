@@ -312,6 +312,21 @@ export function countUserOrders(db: Db, userId: number) {
   return db.order.count({ where: { userId } });
 }
 
+/**
+ * Site-wide fulfilment figures for the storefront home: how many orders have
+ * actually been delivered and how many distinct customers have bought. Real
+ * numbers replace the old hard-coded "10.000+" stats so the page stays honest.
+ */
+export async function shopFulfilmentStats(
+  db: Db,
+): Promise<{ deliveredOrders: number; customers: number }> {
+  const [deliveredOrders, buyers] = await Promise.all([
+    db.order.count({ where: { status: OrderStatus.DELIVERED } }),
+    db.order.groupBy({ by: ["userId"], where: { status: OrderStatus.DELIVERED } }),
+  ]);
+  return { deliveredOrders, customers: buyers.length };
+}
+
 export function countUserPendingOrders(db: Db, userId: number) {
   return db.order.count({
     where: { userId, status: OrderStatus.PENDING_PAYMENT },

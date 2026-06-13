@@ -917,7 +917,7 @@ describe("bulk operations", () => {
       csrf_token: seed.csrf, ids: String(seed.productId), mode: "set", value: "12.50",
     });
     expect(preview.statusCode).toBe(200);
-    expect(preview.body).toContain("12.50");
+    expect(preview.body).toContain("Rp13"); // 12.50 rendered as whole-Rupiah (ROUND_HALF_UP)
     expect(Number((await prisma.product.findUnique({ where: { id: seed.productId } }))!.price)).toBe(5);
 
     // Step 2 — apply the previewed pair.
@@ -936,7 +936,7 @@ describe("bulk operations", () => {
       csrf_token: seed.csrf, ids: String(seed.productId), mode: "percent", value: "10",
     });
     expect(up.statusCode).toBe(200);
-    expect(up.body).toContain("5.5000"); // 5.00 + 10%
+    expect(up.body).toContain("Rp6"); // 5.00 + 10% = 5.5, rendered as whole-Rupiah
 
     const down = await post("/catalog/products/bulk-price", seed.cookie, {
       csrf_token: seed.csrf, ids: String(seed.productId), mode: "percent", value: "-100",

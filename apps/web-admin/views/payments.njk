@@ -3,10 +3,7 @@
 {% block title %}Payments · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="wallet" class="w-7 h-7 text-emerald-500"></i> Automatic Payments</h1>
-  <p class="page-lead">Payments that come in through Binance are matched to orders and delivered for you.</p>
-</header>
+{{ ui.page_header('Automatic Payments', 'Payments that come in through Binance are matched to orders and delivered for you.', 'wallet', 'sales') }}
 
 {{ ui.flash(msg, kind) }}
 
@@ -59,7 +56,7 @@
         <tr class="align-top">
           <td><a class="link font-mono text-xs" href="/orders/{{ o.id }}">{{ o.orderCode }}</a></td>
           <td class="text-ink-soft">{{ o.user.username or o.user.fullName or o.user.id }}</td>
-          <td class="tabular">{{ o.totalAmount | money }} {{ currency }}</td>
+          <td class="tabular">{{ o.totalAmount | idr }}</td>
           <td class="text-ink-soft break-all max-w-xs">{{ o.adminNote or '—' }}</td>
           <td>
             <div class="flex gap-2 justify-end">
@@ -102,7 +99,7 @@
       <label class="field-label">Order code</label>
       <input name="order_code" required list="pending-internal" class="field font-mono w-40" placeholder="ABC123">
       <datalist id="pending-internal">
-        {% for o in pending_internal %}<option value="{{ o.orderCode }}">{{ o.totalAmount }} {{ currency }}</option>{% endfor %}
+        {% for o in pending_internal %}<option value="{{ o.orderCode }}">{{ o.totalAmount | idr }}</option>{% endfor %}
       </datalist>
     </div>
     <button class="btn btn-primary">Match &amp; deliver</button>
@@ -129,7 +126,7 @@
     <thead>
       <tr>
         <th>When</th><th>Reference</th><th>Result</th>
-        <th>Amount</th><th>Order</th>
+        <th>Amount received (USDT)</th><th>Order</th>
       </tr>
     </thead>
     <tbody>
@@ -138,7 +135,9 @@
         <td class="text-ink-soft whitespace-nowrap" title="{{ tzname }}">{{ r.createdAt | localdt('yyyy-LL-dd HH:mm:ss') }}</td>
         <td class="font-mono text-xs break-all max-w-xs">{{ r.binanceTxId }}</td>
         <td>{{ ui.status_badge(r.outcome) }}</td>
-        <td class="tabular">{{ r.amount | money }}{% if r.amount is not none %} {{ currency }}{% endif %}</td>
+        {# Binance transfers are a genuine USDT crypto rail — labelled explicitly,
+           independent of the IDR shop money shown elsewhere. #}
+        <td class="tabular">{{ r.amount | money }}{% if r.amount is not none %} USDT{% endif %}</td>
         <td>
           {% if r.order %}<a class="link font-mono text-xs" href="/orders/{{ r.order.id }}">{{ r.order.orderCode }}</a>
           {% else %}<span class="text-ink-faint">—</span>{% endif %}
@@ -151,12 +150,6 @@
   </table>
 </div>
 
-<div class="flex items-center justify-between mt-4 text-sm text-ink-soft">
-  <span>{{ total }} payment(s) · page {{ page }}</span>
-  <span class="flex gap-3">
-    {% set qbase = '/payments?outcome=' + f.outcome %}
-    {% if page > 1 %}<a class="link" href="{{ qbase }}&page={{ page - 1 }}">← Newer</a>{% endif %}
-    {% if has_next %}<a class="link" href="{{ qbase }}&page={{ page + 1 }}">Older →</a>{% endif %}
-  </span>
-</div>
+{% set qbase = '/payments?outcome=' + f.outcome %}
+{{ ui.pager(qbase, page, has_next, total, 'payment(s)') }}
 {% endblock %}

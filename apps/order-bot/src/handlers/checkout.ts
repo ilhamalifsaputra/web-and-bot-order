@@ -159,18 +159,28 @@ async function paymentReminder(base: PaymentJobBase, level: number): Promise<voi
   const order = await getOrder(prisma, base.orderId);
   if (order === null || order.status !== OrderStatus.PENDING_PAYMENT) return;
   const key = level === 2 ? "checkout.reminder_1min" : "checkout.reminder_2min";
+  const text = coreT(key, base.lang, {
+    code: order.orderCode,
+    total: price(order.totalAmount, 4),
+    binance_id: esc(base.binanceId),
+  });
+  const kb = ckb.paymentInstructionsKb(base.orderId, base.lang);
+  // Edit the existing payment-instructions bubble instead of flooding the chat
+  // with a new reminder message — consistent with the single-anchor pattern.
   try {
-    await base.api.sendMessage(
-      base.chatId,
-      coreT(key, base.lang, {
-        code: order.orderCode,
-        total: price(order.totalAmount, 4),
-        binance_id: esc(base.binanceId),
-      }),
-      { parse_mode: "HTML", reply_markup: ckb.paymentInstructionsKb(base.orderId, base.lang) },
-    );
+    await base.api.editMessageText(base.chatId, base.menuMsgId, text, {
+      parse_mode: "HTML",
+      reply_markup: kb,
+    });
+    return;
+  } catch (err) {
+    if (/message is not modified/i.test(String(err))) return;
+    // Bubble gone or a photo (QR) — fall back to a fresh message.
+  }
+  try {
+    await base.api.sendMessage(base.chatId, text, { parse_mode: "HTML", reply_markup: kb });
   } catch {
-    logger.warn(`Could not send payment reminder for order ${base.orderId}`);
+    logger.warn(`Could not deliver payment reminder for order ${base.orderId}`);
   }
 }
 
@@ -209,6 +219,8 @@ export async function sendPaymentInstructions(ctx: MyContext, orderId: number): 
   });
 
   cancelPaymentJobs(orderId);
+  // Clear any stale QR tracking from a previous payment screen before sending a fresh one.
+  ctx.session.qrMsgId = undefined;
 
   // 1) Edit the confirmation bubble in place into the payment instructions
   //    (reuse the message the "Confirm" button sits on). smartEdit falls back
@@ -216,17 +228,19 @@ export async function sendPaymentInstructions(ctx: MyContext, orderId: number): 
   await smartEdit(ctx, text, ckb.paymentInstructionsKb(orderId, lang));
   const menuMsgId = ctx.session.menuMsgId;
 
-  // 2) A QR image can't live inside an edited text message — if one is
-  //    configured, send it as a separate photo just below. Best-effort.
+  // 2) A QR image can't live inside an edited text message — send it as a
+  //    separate photo just below and track its message_id so cancel can delete it.
   if (qrFileId) {
     try {
-      await ctx.api.sendPhoto(chatId, qrFileId);
+      const qrMsg = await ctx.api.sendPhoto(chatId, qrFileId);
+      ctx.session.qrMsgId = qrMsg.message_id;
     } catch (err) {
       logger.error({ err }, "Failed to send QR photo");
     }
   } else if (config.BINANCE_QR_PATH && fs.existsSync(config.BINANCE_QR_PATH)) {
     try {
-      await ctx.api.sendPhoto(chatId, new InputFile(config.BINANCE_QR_PATH));
+      const qrMsg = await ctx.api.sendPhoto(chatId, new InputFile(config.BINANCE_QR_PATH));
+      ctx.session.qrMsgId = qrMsg.message_id;
     } catch (err) {
       logger.error({ err }, "Failed to send QR image");
     }
@@ -512,6 +526,14 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
   const chatId = ctx.chat!.id;
   clearActivePayment(chatId);
   cancelPaymentJobs(orderId);
+
+  // Delete the QR code photo that was sent alongside payment instructions.
+  const qrMsgId = ctx.session.qrMsgId;
+  if (qrMsgId) {
+    ctx.session.qrMsgId = undefined;
+    try { await ctx.api.deleteMessage(chatId, qrMsgId); } catch { /* already gone or too old */ }
+  }
+
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.cancelled_toast") });
 
   // Edit the bubble that owned the Cancel button into a confirmation reply,

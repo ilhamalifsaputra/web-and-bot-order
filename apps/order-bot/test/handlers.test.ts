@@ -91,13 +91,14 @@ describe("customer handlers", () => {
     expect((ctx.session.scratch as { browseProductIds?: number[] }).browseProductIds).toEqual([sample.product.id]);
   });
 
-  it("browseProductsFlat shows a numbered list with prices on each line", async () => {
+  it("browseProductsFlat shows a numbered list of products", async () => {
     const { ctx, sink } = customerCtx();
     await customer.browseProductsFlat(ctx);
     const dump = JSON.stringify(sink);
-    expect(dump).toContain("[ 1 ]"); // numbered layout (compact for big catalogs)
-    expect(dump).toContain(sample.product.name.toUpperCase());
-    expect(dump).toMatch(/—\s*[^\s]+/); // a price follows the product name
+    // Compact numbered layout: "1. <name>" per line. The price is not on the
+    // list line — it lives on the product detail screen ("Enter a number to
+    // view details").
+    expect(dump).toContain(`1. ${sample.product.name}`);
   });
 
   it("browseProduct shows detail and sets the viewing breadcrumb", async () => {

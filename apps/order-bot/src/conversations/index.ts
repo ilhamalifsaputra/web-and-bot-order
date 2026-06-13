@@ -5,7 +5,7 @@
  * trigger (callback pattern / command / reply-keyboard text).
  */
 import type { MyContext, MyConversation } from "../context";
-import { reviewConversation, ticketUserReplyConversation } from "./customer";
+import { ticketUserReplyConversation } from "./customer";
 import { proofConversation, voucherConversation } from "./checkout";
 import { supportConversation } from "./support";
 import { rejectConversation } from "./reject";
@@ -38,7 +38,6 @@ import { supportLabels } from "../keyboards/customer";
 
 export const CONVERSATIONS: ConvSpec[] = [
   // customer
-  { name: "review", fn: reviewConversation, callback: /^v1:review:rate:\d+:\d+:[1-5]$/ },
   { name: "ticketUserReply", fn: ticketUserReplyConversation, callback: /^v1:ticket:reply:\d+$/ },
   // checkout
   { name: "proof", fn: proofConversation, callback: /^v1:checkout:proof:\d+$/ },

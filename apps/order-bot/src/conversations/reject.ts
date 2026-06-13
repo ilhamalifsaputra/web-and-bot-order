@@ -9,7 +9,7 @@ import { logger } from "@app/core/logger";
 import { prisma, getUserByTelegramId, rejectOrder, logAdminAction } from "@app/db";
 import { isAdmin } from "@app/core/config";
 import type { MyContext, MyConversation } from "../context";
-import { adminEdit } from "../util/chat";
+import { adminEdit, adminAnchor, consumeInput } from "../util/chat";
 import { coreT, t } from "../util/i18n";
 import { esc } from "../util/format";
 import { validateText } from "../util/validators";
@@ -32,21 +32,27 @@ export async function rejectConversation(conversation: MyConversation, ctx: MyCo
   const orderId = parseInt((ctx.callbackQuery?.data ?? "").split(":").at(-1)!, 10);
 
   await ctx.answerCallbackQuery();
-  await adminEdit(ctx, t(ctx, "admin.ask_reject_reason"));
+  await adminEdit(ctx, t(ctx, "admin.ask_reject_reason"), akb.cancelInputKb());
 
   let reason: string;
   for (;;) {
     const u = await conversation.wait();
+    if ((u.callbackQuery?.data ?? "") === "v1:adm:cancel") {
+      await u.answerCallbackQuery();
+      await adminCommand(u);
+      return;
+    }
     if (isCmd(u, "cancel")) return void (await adminCommand(u));
     if (isCmd(u, "start")) return void (await startCommand(u));
     const text = u.message?.text;
     if (!text) continue;
+    await consumeInput(u);
     try {
       reason = validateText(text, 512, 3);
       break;
     } catch (e) {
       if (e instanceof ValidationError) {
-        await adminEdit(u, t(u, e.key, e.formatArgs));
+        await adminAnchor(u, t(u, e.key, e.formatArgs), akb.cancelInputKb());
         continue;
       }
       throw e;

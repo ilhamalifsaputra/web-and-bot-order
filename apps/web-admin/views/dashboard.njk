@@ -1,11 +1,9 @@
 {% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
 {% block title %}Home · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-7">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="sparkles" class="w-7 h-7 text-rose-500"></i> Welcome back</h1>
-  <p class="page-lead">Here's how your shop is doing right now.</p>
-</header>
+{{ ui.page_header('Welcome back', "Here's how your shop is doing right now.", 'sparkles', 'home') }}
 
 {% if bot_token_missing %}
 <a href="/settings"
@@ -37,10 +35,13 @@
 </a>
 {% endif %}
 
+{# Brand tokens, mapped by meaning: all "sales period" cards share pine (the
+   primary), so the eye reads them as one family; the cumulative all-time card
+   below uses grass. #}
 {% set sales_cards = [
-  { label: 'Sales · last 24 hours', value: rev_24h.revenue, sub: rev_24h.orders, icon: 'trending-up',    tint: 'bg-blue-50 text-blue-600' },
-  { label: 'Sales · last 7 days',   value: rev_7d.revenue,  sub: rev_7d.orders,  icon: 'calendar-range', tint: 'bg-violet-50 text-violet-600' },
-  { label: 'Sales · last 30 days',  value: rev_30d.revenue, sub: rev_30d.orders, icon: 'calendar-days',  tint: 'bg-indigo-50 text-indigo-600' }
+  { label: 'Sales · last 24 hours', value: rev_24h.revenue, sub: rev_24h.orders, icon: 'trending-up',    tint: 'bg-pine-tint text-pine' },
+  { label: 'Sales · last 7 days',   value: rev_7d.revenue,  sub: rev_7d.orders,  icon: 'calendar-range', tint: 'bg-pine-tint text-pine' },
+  { label: 'Sales · last 30 days',  value: rev_30d.revenue, sub: rev_30d.orders, icon: 'calendar-days',  tint: 'bg-pine-tint text-pine' }
 ] %}
 <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5 mt-6">
   {% for c in sales_cards %}
@@ -49,16 +50,16 @@
       <div class="stat-label">{{ c.label }}</div>
       <span class="grid place-items-center w-9 h-9 rounded-lg {{ c.tint }}"><i data-lucide="{{ c.icon }}" class="w-5 h-5"></i></span>
     </div>
-    <div class="stat-value tabular">{{ c.value | money }} {{ currency }}</div>
+    <div class="stat-value tabular">{{ c.value | idr }}</div>
     <div class="stat-sub">{{ c.sub }} orders</div>
   </div>
   {% endfor %}
   <div class="card card-pad">
     <div class="flex items-start justify-between">
       <div class="stat-label">All-time sales</div>
-      <span class="grid place-items-center w-9 h-9 rounded-lg bg-emerald-50 text-emerald-600"><i data-lucide="wallet" class="w-5 h-5"></i></span>
+      <span class="grid place-items-center w-9 h-9 rounded-lg bg-grass-tint text-grass-dark"><i data-lucide="wallet" class="w-5 h-5"></i></span>
     </div>
-    <div class="stat-value tabular">{{ overall.total_revenue | money }} {{ currency }}</div>
+    <div class="stat-value tabular">{{ overall.total_revenue | idr }}</div>
     <div class="stat-sub">{{ overall.items_sold }} items sold</div>
   </div>
 </section>
@@ -67,7 +68,7 @@
   <div class="card card-pad">
     <div class="flex items-start justify-between">
       <div class="stat-label">Orders to check</div>
-      <span class="grid place-items-center w-9 h-9 rounded-lg bg-amber-50 text-amber-600"><i data-lucide="clipboard-check" class="w-5 h-5"></i></span>
+      <span class="grid place-items-center w-9 h-9 rounded-lg bg-amberx-tint text-amberx"><i data-lucide="clipboard-check" class="w-5 h-5"></i></span>
     </div>
     <div class="stat-value tabular {% if pending_count > 0 %}text-amberx{% endif %}">{{ pending_count }}</div>
     <div class="stat-sub">payments waiting for your review</div>
@@ -75,7 +76,7 @@
   <div class="card card-pad">
     <div class="flex items-start justify-between">
       <div class="stat-label">Running low</div>
-      <span class="grid place-items-center w-9 h-9 rounded-lg bg-rose-50 text-rose-600"><i data-lucide="package-x" class="w-5 h-5"></i></span>
+      <span class="grid place-items-center w-9 h-9 rounded-lg bg-rust-tint text-rust"><i data-lucide="package-x" class="w-5 h-5"></i></span>
     </div>
     <div class="stat-value tabular {% if low_stock_count > 0 %}text-rust{% endif %}">{{ low_stock_count }}</div>
     <div class="stat-sub">products at or below {{ low_stock_threshold }} left</div>
@@ -83,7 +84,7 @@
   <div class="card card-pad">
     <div class="flex items-start justify-between">
       <div class="stat-label">People</div>
-      <span class="grid place-items-center w-9 h-9 rounded-lg bg-sky-50 text-sky-600"><i data-lucide="users" class="w-5 h-5"></i></span>
+      <span class="grid place-items-center w-9 h-9 rounded-lg bg-pine-tint text-pine"><i data-lucide="users" class="w-5 h-5"></i></span>
     </div>
     <div class="stat-value tabular">{{ overall.total_users }}</div>
     <div class="stat-sub">customers and team members</div>
@@ -94,7 +95,7 @@
 
 <section class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-8">
   <div class="card card-pad">
-    <h2 class="section-title mb-3 flex items-center gap-2"><i data-lucide="package-x" class="w-5 h-5 text-rose-500"></i> Running low on stock</h2>
+    <h2 class="section-title mb-3 flex items-center gap-2"><i data-lucide="package-x" class="w-5 h-5 text-rust"></i> Running low on stock</h2>
     <ul class="divide-y divide-line text-sm">
       {% for row in low_stock %}
       <li class="py-2.5 flex items-center justify-between gap-3">
@@ -108,7 +109,7 @@
   </div>
 
   <div class="card card-pad">
-    <h2 class="section-title mb-3 flex items-center gap-2"><i data-lucide="history" class="w-5 h-5 text-blue-500"></i> Recent activity</h2>
+    <h2 class="section-title mb-3 flex items-center gap-2"><i data-lucide="history" class="w-5 h-5 text-pine"></i> Recent activity</h2>
     <ul class="divide-y divide-line text-sm">
       {% for l in recent_audit %}
       <li class="py-2.5 flex items-center justify-between gap-3">

@@ -26,6 +26,7 @@ import {
   setUserRole,
   adjustWallet,
   getSetting,
+  setSetting,
   updateProduct,
   listStockItemsForProduct,
   markStockDead,
@@ -528,6 +529,37 @@ export async function notifyRestockSubscribers(ctx: MyContext, productId: number
 }
 
 // ===========================================================================
+// Undo banner removal (30-second window, expiry stored in session.scratch)
+// ===========================================================================
+
+async function undoBannerRemoval(ctx: MyContext): Promise<void> {
+  const lang = ctx.session.lang;
+  const undoState = ctx.session.scratch.undoBanner as
+    | { fileId: string; expiresAt: number }
+    | undefined;
+
+  if (!undoState || Date.now() > undoState.expiresAt) {
+    ctx.session.scratch.undoBanner = undefined;
+    await ctx.answerCallbackQuery({ text: t(ctx, "admin.undo_expired"), show_alert: true });
+    return;
+  }
+
+  ctx.session.scratch.undoBanner = undefined;
+  await prisma.$transaction(async (tx) => {
+    await setSetting(tx, "banner_image", undoState.fileId);
+    const admin = await getUserByTelegramId(tx, ctx.from!.id);
+    await logAdminAction(tx, {
+      adminId: adminId(admin),
+      action: "setting_set",
+      targetType: "setting",
+      details: "banner_image=restored_via_undo",
+    });
+  });
+  await ctx.answerCallbackQuery({ text: t(ctx, "admin.banner_restored") });
+  await adminEdit(ctx, t(ctx, "admin.banner_restored"), akb.backToAdminKb(lang));
+}
+
+// ===========================================================================
 // Callback router entry (called by callbacks.ts for any v1:adm:*)
 // ===========================================================================
 
@@ -589,6 +621,7 @@ export async function handleAdminCallback(ctx: MyContext, parts: string[]): Prom
       break;
     case "settings":
       if (action === "menu") await showSettings(ctx);
+      else if (action === "undo" && parts[4] === "banner_image") await undoBannerRemoval(ctx);
       // 'set' handled by setting conversation.
       break;
     case "broadcast":

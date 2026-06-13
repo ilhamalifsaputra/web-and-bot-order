@@ -96,6 +96,16 @@ export function buildBot(token?: string): Bot<MyContext> {
 
   // --- Callback router + persistent-keyboard number input (PTB group 2) ----
   bot.callbackQuery(/^v1:/, routeCallback);
+  // Buttons from pre-migration bubbles (non-v1 data) would otherwise hang the
+  // tap spinner forever — answer them with a "screen expired" toast.
+  bot.on("callback_query", async (ctx) => {
+    logger.warn({ event: "dead_tap", callbackData: ctx.callbackQuery.data, userId: ctx.from?.id }, "stale callback (pre-migration)");
+    try {
+      await ctx.answerCallbackQuery({ text: coreT("error.stale_screen", ctx.session.lang) });
+    } catch {
+      /* best-effort */
+    }
+  });
   bot.on("message:text", async (ctx, next) => {
     if ((ctx.message.text ?? "").startsWith("/")) return next();
     await customer.handleProductNumber(ctx);

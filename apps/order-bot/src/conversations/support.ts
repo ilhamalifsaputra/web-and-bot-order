@@ -16,7 +16,7 @@ import { esc } from "../util/format";
 import { validateText } from "../util/validators";
 import * as ckb from "../keyboards/customer";
 import * as akb from "../keyboards/admin";
-import { startCommand } from "../handlers/customer";
+import { startCommand, handleProductNumber } from "../handlers/customer";
 
 function isCmd(ctx: MyContext, cmd: string): boolean {
   const text = ctx.message?.text ?? "";
@@ -42,6 +42,10 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
     if (isCmd(u, "cancel")) return void (await smartEdit(u, t(u, "menu.main"), ckb.backToMain(lang)));
     const text = u.message?.text;
     if (!text) continue;
+    // A reply-keyboard menu tap (Terms, FAQ, My Orders, …) must not be captured
+    // as the ticket text. Exit the conversation and run the tapped action so the
+    // button behaves normally instead of silently filing a ticket.
+    if (ckb.isPersistentLabel(text)) return void (await handleProductNumber(u));
     try {
       body = validateText(text, 2000, 3);
       break;
@@ -70,6 +74,8 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
     }
     if (isCmd(u, "start")) return void (await startCommand(u));
     if (isCmd(u, "cancel")) return void (await smartEdit(u, t(u, "menu.main"), ckb.backToMain(lang)));
+    const labelText = u.message?.text;
+    if (labelText && ckb.isPersistentLabel(labelText)) return void (await handleProductNumber(u));
     const ph = u.message?.photo;
     if (ph && ph.length) {
       photos.push(ph.at(-1)!.file_id);

@@ -3,10 +3,7 @@
 {% block title %}Reviews · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="star" class="w-7 h-7 text-amber-500"></i> Reviews</h1>
-  <p class="page-lead">What customers say about your products. Hide anything unfair or inappropriate.</p>
-</header>
+{{ ui.page_header('Reviews', 'What customers say about your products. Hide anything unfair or inappropriate.', 'star', 'customers') }}
 {{ ui.flash(msg, kind) }}
 
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">

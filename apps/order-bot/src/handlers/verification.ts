@@ -153,15 +153,8 @@ export async function approve(ctx: MyContext, orderId: number): Promise<void> {
     dmOk = true;
     logger.info(`Order ${orderCode} approved; buyer is web-only (no Telegram id) — skipping DMs, order visible on the website`);
   } else {
-    try {
-      await ctx.api.sendMessage(Number(buyerTgId), coreT("order.payment_verified", buyerLang, { code: orderCode }), {
-        parse_mode: "HTML",
-        reply_markup: notificationKb(buyerLang),
-      });
-    } catch (err) {
-      logger.error({ err }, `Failed to send payment_verified notification to ${buyerTgId}`);
-    }
-
+    // Delivery is instant: no interim "payment verified / being prepared" DM —
+    // the credentials message below is the single delivery notification.
     const credsBlob = credGroups
       .map(([pname, creds]) => {
         const header = coreT("order.delivered_group_header", buyerLang, { product: esc(pname), count: creds.length });

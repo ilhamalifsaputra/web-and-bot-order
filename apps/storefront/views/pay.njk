@@ -56,11 +56,40 @@
       {% endif %}
       <p class="text-xs text-ink-faint mt-3">{{ t('web.tokopay_auto_note', lang) }}</p>
     {% elif gateway_error %}
-      <div class="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mt-4">
-        {{ t('web.pay_idr_disabled', lang) }}
+      {# Friendly, recoverable error instead of a dead red box: explain, let them
+         retry (TokoPay outages are usually transient), and offer a way to reach us. #}
+      <div class="mt-4 rounded-xl border border-amberx/30 bg-amberx-tint/60 p-4">
+        <div class="flex items-start gap-3">
+          <i data-lucide="alert-triangle" class="w-5 h-5 text-amberx flex-shrink-0 mt-0.5"></i>
+          <div class="text-sm">
+            <p class="font-semibold text-ink">{{ t('web.pay_idr_down_title', lang) }}</p>
+            <p class="text-ink-soft mt-0.5 leading-relaxed">{{ t('web.pay_idr_down_body', lang) }}</p>
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-2 mt-4">
+          <a href="/checkout/{{ order.code }}/pay" class="btn btn-soft btn-sm">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> {{ t('web.pay_retry', lang) }}
+          </a>
+          {% if wa_number %}
+          <a href="https://wa.me/{{ wa_number }}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">
+            <i data-lucide="message-circle" class="w-3.5 h-3.5"></i> WhatsApp
+          </a>
+          {% elif bot_username %}
+          <a href="https://t.me/{{ bot_username }}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">
+            <i data-lucide="send" class="w-3.5 h-3.5"></i> Telegram
+          </a>
+          {% endif %}
+        </div>
       </div>
     {% endif %}
     {% endif %}
+
+    {# Trust line: reassure exactly where buyers hesitate (design.md §4.6).
+       Shown for both USDT & IDR — both are auto-confirmed, no proof needed. #}
+    <div class="flex items-center gap-2 mt-4 text-xs text-ink-faint">
+      <i data-lucide="shield-check" class="w-3.5 h-3.5 text-grass"></i>
+      {{ t('web.pay_trust', lang) }}
+    </div>
 
     {% if order.expires_at_iso %}
     <div class="flex items-center gap-2 mt-5 pt-4 border-t border-line text-sm text-ink-soft">

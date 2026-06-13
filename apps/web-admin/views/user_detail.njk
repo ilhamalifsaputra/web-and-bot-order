@@ -21,8 +21,8 @@
       <dl class="space-y-1.5">
         <div class="flex justify-between gap-3"><dt class="text-ink-soft">Telegram</dt><dd class="font-mono">{{ user.telegramId or "—" }}</dd></div>
         <div class="flex justify-between gap-3"><dt class="text-ink-soft">Username</dt><dd>{{ user.username or '—' }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Wallet balance</dt><dd class="tabular">{{ user.walletBalance | money }} {{ currency }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Total spent</dt><dd class="tabular">{{ total_spent | money }} {{ currency }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Wallet balance</dt><dd class="tabular">{{ user.walletBalance | idr }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Total spent</dt><dd class="tabular">{{ total_spent | idr }}</dd></div>
         <div class="flex justify-between gap-3"><dt class="text-ink-soft">Referral code</dt><dd class="font-mono">{{ user.referralCode }}</dd></div>
         <div class="flex justify-between gap-3"><dt class="text-ink-soft">Joined</dt><dd>{{ user.createdAt | localdt }}</dd></div>
         {% if user.banned and user.bannedReason %}<div class="text-rust text-xs mt-2">Block reason: {{ user.bannedReason }}</div>{% endif %}
@@ -54,7 +54,7 @@
       <form method="post" action="/users/{{ user.id }}/wallet" class="space-y-2">
         {{ ui.csrf_field(admin) }}
         <label class="field-label">Add or remove wallet credit</label>
-        <input type="text" name="delta" placeholder="e.g. 5 or -2.5" class="field" required>
+        <input type="text" name="delta" placeholder="e.g. 50000 or -25000" class="field" required>
         <input type="text" name="note" placeholder="reason (required)" class="field" required>
         <button class="btn btn-soft w-full">Update wallet</button>
       </form>
@@ -71,7 +71,7 @@
           <tr>
             <td><a class="link font-mono text-xs" href="/orders/{{ o.id }}">{{ o.orderCode }}</a></td>
             <td>{{ ui.status_badge(o.status) }}</td>
-            <td class="text-right tabular">{{ o.totalAmount | money }}</td>
+            <td class="text-right tabular">{{ o.totalAmount | idr }}</td>
             <td class="text-ink-soft">{{ o.createdAt | localdt }}</td>
           </tr>
           {% else %}

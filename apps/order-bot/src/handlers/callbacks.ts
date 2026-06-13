@@ -12,8 +12,6 @@ import { TicketStatus } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
   prisma,
-  getOrder,
-  createTicket,
   getTicket,
   closeTicket,
 } from "@app/db";
@@ -22,7 +20,6 @@ import { smartEdit } from "../util/chat";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import * as ckb from "../keyboards/customer";
-import * as akb from "../keyboards/admin";
 import * as customer from "./customer";
 import * as checkout from "./checkout";
 import * as staticPages from "./static";
@@ -88,12 +85,10 @@ const dispatchCheckout: DomainDispatcher = async (ctx, parts) => {
 
 const dispatchOrder: DomainDispatcher = async (ctx, parts) => {
   const action = parts[2];
-  if (action === "list") await customer.listMyOrders(ctx, 0);
-  else if (action === "page") await customer.listMyOrders(ctx, parseInt(parts[3]!, 10));
+  if (action === "list") await customer.listMyOrders(ctx);
+  else if (action === "page") await customer.listMyOrders(ctx);
   else if (action === "view") await customer.viewOrder(ctx, parseInt(parts[3]!, 10));
-  else if (action === "review") await showReviewPrompt(ctx, parseInt(parts[3]!, 10));
-  else if (action === "replace") await requestReplacement(ctx, parseInt(parts[3]!, 10));
-  else if (action === "history") await customer.downloadHistory(ctx);
+  else if (action === "allhistory") await customer.allOrderHistory(ctx);
 };
 
 const dispatchRef: DomainDispatcher = async (ctx, parts) => {
@@ -153,8 +148,10 @@ export async function routeCallback(ctx: MyContext): Promise<void> {
 
   const parts = cq.data.split(":");
   if (parts.length < 2 || parts[0] !== "v1") {
-    logger.warn(`Unknown callback_data: ${cq.data}`);
-    await ctx.answerCallbackQuery();
+    // A button from an old bubble whose format we no longer speak — tell the
+    // user the screen expired instead of silently swallowing the tap.
+    logger.warn({ event: "dead_tap", callbackData: cq.data, userId: ctx.from?.id }, "stale callback (non-v1 format)");
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
     return;
   }
 
@@ -183,9 +180,9 @@ export async function routeCallback(ctx: MyContext): Promise<void> {
 
   const dispatcher = DOMAIN_ROUTES[domain!];
   if (dispatcher === undefined) {
-    logger.warn(`Unhandled callback domain=${domain} data=${cq.data}`);
+    logger.warn({ event: "dead_tap", domain, callbackData: cq.data, userId: ctx.from?.id }, "stale callback (unknown domain)");
     try {
-      await ctx.answerCallbackQuery();
+      await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
     } catch {
       /* ignore */
     }
@@ -214,47 +211,6 @@ export async function routeCallback(ctx: MyContext): Promise<void> {
 // ---------------------------------------------------------------------------
 // Inline helpers used by the router
 // ---------------------------------------------------------------------------
-
-async function showReviewPrompt(ctx: MyContext, orderId: number): Promise<void> {
-  const info = ctx.session.dbUser!;
-  const order = await getOrder(prisma, orderId);
-  if (order === null || order.userId !== info.id) {
-    await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_found"), show_alert: true });
-    return;
-  }
-  if (!order.items.length) return;
-  const productId = order.items[0]!.productId;
-  await smartEdit(ctx, t(ctx, "order.leave_review"), ckb.reviewRatingKb(orderId, productId));
-}
-
-async function requestReplacement(ctx: MyContext, orderId: number): Promise<void> {
-  const info = ctx.session.dbUser!;
-  const order = await getOrder(prisma, orderId);
-  if (order === null || order.userId !== info.id) {
-    await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_found"), show_alert: true });
-    return;
-  }
-  const body = `[Replacement Request] Order ${order.orderCode}`;
-  const ticket = await createTicket(prisma, info.id, body);
-
-  await ctx.answerCallbackQuery({ text: t(ctx, "order.replacement_requested"), show_alert: true });
-
-  const targets = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : config.ADMIN_IDS;
-  for (const chatId of targets) {
-    if (!chatId) continue;
-    try {
-      await ctx.api.sendMessage(
-        chatId,
-        `🛠 Replacement request — ticket #${ticket.id}\n` +
-          `User: <code>${ctx.from!.id}</code>\n` +
-          `Order: <code>${order.orderCode}</code>`,
-        { parse_mode: "HTML", reply_markup: akb.ticketReplyKb(ticket.id, "en") },
-      );
-    } catch (err) {
-      logger.error({ err }, "Failed to notify admin about replacement request");
-    }
-  }
-}
 
 async function closeTicketUser(ctx: MyContext, ticketId: number): Promise<void> {
   const info = ctx.session.dbUser!;

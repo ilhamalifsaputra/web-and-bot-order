@@ -15,7 +15,7 @@ import { OrderStatus, SenderType, TicketStatus, UserRole } from "@app/core/enums
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, FakeConversation, calls, sentIncludes, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
-import { reviewConversation, ticketUserReplyConversation } from "../src/conversations/customer";
+import { ticketUserReplyConversation } from "../src/conversations/customer";
 import { proofConversation, voucherConversation } from "../src/conversations/checkout";
 import { supportConversation } from "../src/conversations/support";
 import { rejectConversation } from "../src/conversations/reject";
@@ -92,20 +92,6 @@ async function pendingVerificationOrder() {
 // ===========================================================================
 
 describe("customer conversations", () => {
-  it("review: rating + comment creates a review on a delivered order", async () => {
-    const order = await pendingVerificationOrder();
-    await approveOrder(prisma, order.id, { adminId: adminDbId }); // → DELIVERED
-    const sink: SentCall[] = [];
-    const entry = entryCust(sink, `v1:review:rate:${order.id}:${sample.product.id}:5`);
-    const conv = new FakeConversation([msg(sink, { text: "Great service" })]);
-    await reviewConversation(conv.asMyConversation(), entry);
-
-    const review = await prisma.review.findFirst({ where: { orderId: order.id } });
-    expect(review).toBeTruthy();
-    expect(review!.rating).toBe(5);
-    expect(review!.comment).toBe("Great service");
-  });
-
   it("ticketUserReply: adds a USER message to an open ticket + notifies admins", async () => {
     const ticket = await prisma.supportTicket.create({ data: { userId: sample.user.id, message: "broken", status: TicketStatus.OPEN } });
     const sink: SentCall[] = [];

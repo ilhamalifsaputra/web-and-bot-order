@@ -4,7 +4,7 @@
  * it can DM users/admins directly.
  *
  * Schedule (scheduleJobs): auto-cancel every minute, stale-ticket close hourly,
- * finance reconcile every 6h, warranty reminders daily at 09:00 config.TIMEZONE.
+ * finance reconcile every 6h.
  */
 import { Cron } from "croner";
 import type { Api } from "grammy";
@@ -18,7 +18,6 @@ import {
   listStaleRepliedTickets,
   closeTicket,
   reconcileFinances,
-  listOrderItemsExpiringWarranty,
   logAdminAction,
   getBinancePollHealth,
   getSetting,
@@ -114,25 +113,6 @@ export async function reconcileFinancesJob(api: Api): Promise<void> {
       );
     } catch (err) {
       logger.error({ err }, "Failed to alert admin about reconciliation drift");
-    }
-  }
-}
-
-export async function sendWarrantyReminders(api: Api): Promise<void> {
-  const now = Date.now();
-  const start = new Date(now + (2 * 24 * 60 + 23 * 60) * 60_000); // +2d23h
-  const end = new Date(now + (3 * 24 * 60 + 60) * 60_000); // +3d1h
-  const items = await listOrderItemsExpiringWarranty(prisma, start, end);
-  for (const item of items) {
-    const lang = langCode(item.order.user.language);
-    try {
-      await api.sendMessage(
-        Number(item.order.user.telegramId),
-        coreT("order.warranty_reminder", lang, { product: item.product.name, code: item.order.orderCode }),
-        { parse_mode: "HTML", reply_markup: notificationKb(lang) },
-      );
-    } catch (err) {
-      logger.error({ err }, `Failed to send warranty reminder for item ${item.id}`);
     }
   }
 }
@@ -259,7 +239,6 @@ export function scheduleJobs(api: Api): Cron[] {
     new Cron("*/1 * * * *", wrap("autoCancelExpiredOrders", autoCancelExpiredOrders)),
     new Cron("0 * * * *", wrap("autoCloseStaleTickets", autoCloseStaleTickets)),
     new Cron("0 */6 * * *", wrap("reconcileFinancesJob", reconcileFinancesJob)),
-    new Cron("0 9 * * *", { timezone: config.TIMEZONE }, wrap("sendWarrantyReminders", sendWarrantyReminders)),
     new Cron("*/2 * * * *", wrap("binancePollWatchdog", binancePollWatchdog)),
     new Cron("*/1 * * * *", { protect: true }, wrap("drainBroadcasts", drainBroadcasts)),
   ];

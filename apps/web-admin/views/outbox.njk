@@ -3,10 +3,7 @@
 {% block title %}Notifications · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="bell" class="w-7 h-7 text-amber-500"></i> Customer Notifications</h1>
-  <p class="page-lead">Messages your shop sends to customers (order ready, payment confirmed, and so on). If one didn't send, you can try again here.</p>
-</header>
+{{ ui.page_header('Customer Notifications', "Messages your shop sends to customers (order ready, payment confirmed, and so on). If one didn't send, you can try again here.", 'bell', 'sales') }}
 
 {{ ui.flash(msg, kind) }}
 
@@ -71,12 +68,6 @@
   </table>
 </div>
 
-<div class="flex items-center justify-between mt-4 text-sm text-ink-soft">
-  <span>{{ total }} message(s) · page {{ page }}</span>
-  <span class="flex gap-3">
-    {% set qbase = '/outbox?status=' + f.status %}
-    {% if page > 1 %}<a class="link" href="{{ qbase }}&page={{ page - 1 }}">← Newer</a>{% endif %}
-    {% if has_next %}<a class="link" href="{{ qbase }}&page={{ page + 1 }}">Older →</a>{% endif %}
-  </span>
-</div>
+{% set qbase = '/outbox?status=' + f.status %}
+{{ ui.pager(qbase, page, has_next, total, 'message(s)') }}
 {% endblock %}

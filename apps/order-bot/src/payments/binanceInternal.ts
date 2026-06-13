@@ -190,15 +190,8 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   const lang = langCode(order.user.language);
   const tgId = Number(order.user.telegramId);
 
-  try {
-    await api.sendMessage(tgId, coreT("order.payment_verified", lang, { code: order.orderCode }), {
-      parse_mode: "HTML",
-      reply_markup: notificationKb(lang),
-    });
-  } catch (err) {
-    logger.error({ err }, `payment_verified DM failed for ${tgId}`);
-  }
-
+  // Delivery is instant: skip the interim "payment verified / being prepared"
+  // notice and go straight to the credentials below.
   const warranty = Math.max(...order.items.map((i) => i.warrantyDaysSnapshot), 30);
   try {
     await api.sendMessage(

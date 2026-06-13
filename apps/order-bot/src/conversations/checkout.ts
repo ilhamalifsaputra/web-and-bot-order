@@ -13,7 +13,7 @@ import { logger } from "@app/core/logger";
 import { prisma, attachPaymentProof, getVoucherByCode, applyVoucherToSubtotal } from "@app/db";
 import type { InlineKeyboard } from "grammy";
 import type { MyContext, MyConversation } from "../context";
-import { smartEdit } from "../util/chat";
+import { smartEdit, menuAnchor, consumeInput, retireKeyboard } from "../util/chat";
 import { coreT, t } from "../util/i18n";
 import { esc, formatPrice } from "../util/format";
 import { validateTxid } from "../util/validators";
@@ -26,7 +26,7 @@ import {
   cancelPaymentJobs,
   clearActivePayment,
 } from "../handlers/checkout";
-import { startCommand, showMainMenu } from "../handlers/customer";
+import { startCommand, showMainMenu, handleProductNumber } from "../handlers/customer";
 
 // Bot orders are charged in USDT (Binance) — totals here are USDT figures.
 const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimals);
@@ -61,13 +61,25 @@ export async function proofConversation(conversation: MyConversation, ctx: MyCon
         // fall through to a fresh send
       }
     }
+    const old = promptMsgId;
     const m = await ctx.api.sendMessage(chatId, text, { parse_mode: "HTML", reply_markup: kb });
+    // Retire the buttons on the bubble we failed to edit so two live
+    // payment screens never coexist.
+    if (old !== undefined && old !== m.message_id) await retireKeyboard(ctx, old);
     promptMsgId = m.message_id;
   };
 
   // User is actively uploading proof — stop the countdown/reminders.
   clearActivePayment(chatId);
   cancelPaymentJobs(orderId);
+
+  // Delete the QR code photo — it's no longer relevant once the user is uploading proof.
+  const qrMsgId = ctx.session.qrMsgId;
+  if (qrMsgId) {
+    ctx.session.qrMsgId = undefined;
+    try { await ctx.api.deleteMessage(chatId, qrMsgId); } catch { /* already gone */ }
+  }
+
   await ctx.answerCallbackQuery();
   await editPrompt(t(ctx, "checkout.ask_screenshot"), ckb.proofCancelKb(orderId, lang));
 
@@ -99,6 +111,14 @@ export async function proofConversation(conversation: MyConversation, ctx: MyCon
     }
     if (isCmd(u, "cancel")) {
       await sendPaymentInstructions(u, orderId);
+      return;
+    }
+    // A reply-keyboard menu tap (Terms, FAQ, …) must not be swallowed by the
+    // proof flow. Exit (order stays pending, like the 🏠 Menu escape) and run
+    // the tapped action.
+    const labelText = u.message?.text;
+    if (labelText && ckb.isPersistentLabel(labelText)) {
+      await handleProductNumber(u);
       return;
     }
     const photos = u.message?.photo;
@@ -136,6 +156,10 @@ export async function proofConversation(conversation: MyConversation, ctx: MyCon
     }
     const text = u.message?.text;
     if (!text) continue;
+    if (ckb.isPersistentLabel(text)) {
+      await handleProductNumber(u);
+      return;
+    }
     try {
       txid = validateTxid(text);
       break;
@@ -220,25 +244,26 @@ export async function voucherConversation(conversation: MyConversation, ctx: MyC
     }
     const text = u.message?.text;
     if (!text) continue;
+    if (ckb.isPersistentLabel(text)) {
+      await handleProductNumber(u);
+      return;
+    }
 
     const rawCode = text.trim().toUpperCase();
+    // Anchor pattern: the typed code is deleted and every retry edits the
+    // voucher-prompt bubble instead of stacking error replies.
+    await consumeInput(u);
     const promptAgain = (errKey: string, args: Record<string, unknown> = {}) =>
       `${coreT(errKey, lang, args)}\n\n${coreT("checkout.enter_voucher", lang)}`;
 
     if (!rawCode || rawCode.length > 32) {
-      await u.reply(promptAgain("error.invalid_voucher_code"), {
-        parse_mode: "HTML",
-        reply_markup: ckb.voucherCancelKb(productId, qty, lang),
-      });
+      await menuAnchor(u, promptAgain("error.invalid_voucher_code"), ckb.voucherCancelKb(productId, qty, lang));
       continue;
     }
 
     const voucher = await conversation.external(() => getVoucherByCode(prisma, rawCode));
     if (voucher === null) {
-      await u.reply(promptAgain("error.voucher_not_found"), {
-        parse_mode: "HTML",
-        reply_markup: ckb.voucherCancelKb(productId, qty, lang),
-      });
+      await menuAnchor(u, promptAgain("error.voucher_not_found"), ckb.voucherCancelKb(productId, qty, lang));
       continue;
     }
     try {
@@ -246,10 +271,7 @@ export async function voucherConversation(conversation: MyConversation, ctx: MyC
       applyVoucherToSubtotal(voucher, new Decimal("999999"));
     } catch (e) {
       if (e instanceof ValidationError) {
-        await u.reply(promptAgain(e.key, e.formatArgs), {
-          parse_mode: "HTML",
-          reply_markup: ckb.voucherCancelKb(productId, qty, lang),
-        });
+        await menuAnchor(u, promptAgain(e.key, e.formatArgs), ckb.voucherCancelKb(productId, qty, lang));
         continue;
       }
       throw e;

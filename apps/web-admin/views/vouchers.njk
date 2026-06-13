@@ -3,10 +3,7 @@
 {% block title %}Discount Codes · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="ticket-percent" class="w-7 h-7 text-pink-500"></i> Discount Codes</h1>
-  <p class="page-lead">Codes customers can type at checkout for money off.</p>
-</header>
+{{ ui.page_header('Discount Codes', 'Codes customers can type at checkout for money off.', 'ticket-percent', 'products') }}
 {{ ui.flash(msg, kind) }}
 
 <details class="card card-pad mb-6">
@@ -42,7 +39,7 @@
         <td>{{ v.type | lower | title }}</td>
         <td class="text-right tabular">{{ v.value }}{% if (v.type | lower) == 'percent' %}%{% endif %}</td>
         <td class="text-right tabular">{{ v.usedCount }}{% if v.usageLimit %}/{{ v.usageLimit }}{% endif %}</td>
-        <td class="text-right tabular">{{ v.minPurchase | money }}</td>
+        <td class="text-right tabular">{{ v.minPurchase | idr }}</td>
         <td class="text-ink-soft">{{ v.expiresAt | localdt if v.expiresAt else '—' }}</td>
         <td>{{ ui.status_badge('active' if v.isActive else 'inactive') }}</td>
         <td class="text-right">

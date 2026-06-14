@@ -3,9 +3,10 @@
  * Connects to the shared DB via @app/db and runs the dispatcher polling loop.
  */
 import { Bot } from "grammy";
-import { initDb, prisma, resolveBotCredentials } from "@app/db";
+import { initDb, prisma, resolveBotCredentials, resolveAdminIds } from "@app/db";
 import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
+import { setAdminIds } from "@app/core/runtime";
 import { runDispatcher } from "./dispatcher";
 
 async function main(): Promise<void> {
@@ -14,6 +15,7 @@ async function main(): Promise<void> {
   }
 
   await initDb();
+  setAdminIds(await resolveAdminIds(prisma));
 
   // Setting wins, env is the fallback (plan.md §16). The standalone notifier
   // needs a dedicated token — it has no main bot instance to share.

@@ -87,8 +87,11 @@ export async function buildApp(): Promise<FastifyInstance> {
 }
 
 export async function start(): Promise<void> {
-  const { initDb } = await import("@app/db");
+  const { initDb, prisma, resolveAdminIds, resolveWebCookieSecret } = await import("@app/db");
+  const { setAdminIds, setWebSecret } = await import("@app/core/runtime");
   await initDb();
+  setAdminIds(await resolveAdminIds(prisma));
+  setWebSecret(await resolveWebCookieSecret(prisma));
   const app = await buildApp();
   await app.listen({ host: config.WEB_HOST, port: config.WEB_PORT });
   logger.info(`Web admin listening on http://${config.WEB_HOST}:${config.WEB_PORT}`);

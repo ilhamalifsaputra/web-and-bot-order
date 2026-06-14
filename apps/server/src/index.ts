@@ -20,9 +20,9 @@ import { pathToFileURL } from "node:url";
 import { Bot, webhookCallback } from "grammy";
 import { run } from "@grammyjs/runner";
 import { config } from "@app/core/config";
-import { botToken as runtimeBotToken, notifBotToken, setBotIdentity } from "@app/core/runtime";
+import { botToken as runtimeBotToken, notifBotToken, setBotIdentity, setAdminIds, setWebSecret } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
-import { initDb, prisma, resolveBotCredentials } from "@app/db";
+import { initDb, prisma, resolveBotCredentials, resolveAdminIds, resolveWebCookieSecret } from "@app/db";
 import { buildBot, setupCommandMenu } from "@app/order-bot/main";
 import { scheduleJobs, scheduleFxRefresh } from "@app/order-bot/jobs";
 import { startPolling, stopPolling } from "@app/order-bot/payments/binanceInternal";
@@ -160,6 +160,9 @@ async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal
 /** Side-effectful boot: DB, command menu, workers, transport, listen, shutdown. */
 export async function start(): Promise<void> {
   await initDb(); // single PrismaClient, sets WAL + busy_timeout PRAGMAs
+
+  setAdminIds(await resolveAdminIds(prisma));
+  setWebSecret(await resolveWebCookieSecret(prisma));
 
   // Resolve bot credentials ONCE (Setting wins, env fallback — plan.md §16.3)
   // and stamp them for the synchronous consumers (referral links, Telegram

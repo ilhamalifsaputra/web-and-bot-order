@@ -88,8 +88,11 @@ export async function buildApp(): Promise<FastifyInstance> {
 }
 
 export async function start(): Promise<void> {
-  const { initDb } = await import("@app/db");
+  const { initDb, prisma, resolveAdminIds, resolveWebCookieSecret } = await import("@app/db");
+  const { setAdminIds, setWebSecret } = await import("@app/core/runtime");
   await initDb();
+  setAdminIds(await resolveAdminIds(prisma));
+  setWebSecret(await resolveWebCookieSecret(prisma));
   const app = await buildApp();
   const port = Number(process.env.STOREFRONT_PORT ?? 8100);
   await app.listen({ host: config.WEB_HOST, port });

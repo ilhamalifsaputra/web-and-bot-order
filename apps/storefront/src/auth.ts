@@ -14,8 +14,7 @@
  * match `shop_session_jti:<telegramId>` in settings; logout rotates the jti.
  */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { config } from "@app/core/config";
-import { botToken as botToken_ } from "@app/core/runtime";
+import { botToken as botToken_, webCookieSecret } from "@app/core/runtime";
 
 export const SHOP_COOKIE_NAME = "shop_session";
 const SIGN_SALT = "storefront-session";
@@ -93,7 +92,7 @@ function b64url(buf: Buffer): string {
 }
 
 function cookieSecret(): string {
-  const s = config.WEB_COOKIE_SECRET;
+  const s = webCookieSecret();
   if (!s) throw new Error("WEB_COOKIE_SECRET is required for the storefront");
   return s;
 }

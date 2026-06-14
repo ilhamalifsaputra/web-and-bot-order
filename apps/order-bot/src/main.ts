@@ -20,8 +20,8 @@ import { Bot, session } from "grammy";
 import { conversations, createConversation } from "@grammyjs/conversations";
 import { run, sequentialize } from "@grammyjs/runner";
 import { config } from "@app/core/config";
-import { botToken, setBotIdentity, adminIds } from "@app/core/runtime";
-import { initDb, prisma, resolveBotCredentials } from "@app/db";
+import { botToken, setBotIdentity, adminIds, setAdminIds } from "@app/core/runtime";
+import { initDb, prisma, resolveBotCredentials, resolveAdminIds } from "@app/db";
 import { logger } from "@app/core/logger";
 import type { MyContext } from "./context";
 import { initialSession } from "./context";
@@ -194,6 +194,7 @@ export async function setupCommandMenu(bot: Bot<MyContext>): Promise<void> {
 // --- Startup ---------------------------------------------------------------
 export async function start(): Promise<void> {
   await initDb();
+  setAdminIds(await resolveAdminIds(prisma));
   // Setting wins, env is the bootstrap/recovery fallback (plan.md §16.3).
   const creds = await resolveBotCredentials(prisma);
   if (!creds.botToken) {

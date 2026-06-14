@@ -22,16 +22,18 @@
         <th>Two-step</th>
         <th>Can do</th>
         <th>Sign-in</th>
+        <th></th>
       </tr>
     </thead>
     <tbody>
       {% for a in admins %}
       <tr>
-        <td class="font-mono">{{ a.telegramId or "—" }}{% if a.isSelf %}<span class="text-ink-faint text-xs"> (you)</span>{% endif %}</td>
+        <td class="font-mono">{{ a.telegramId or "—" }}{% if a.isSelf %}<span class="text-ink-faint text-xs"> (you)</span>{% endif %}{% if a.from_env %}<span class="text-ink-faint text-xs"> (env)</span>{% endif %}</td>
         <td>{{ a.name or '—' }}</td>
         <td>{% if a.passwordSet %}<span class="chip bg-grass-tint text-grass-dark">Set</span>{% else %}<span class="text-ink-faint text-xs">Not set</span>{% endif %}</td>
         <td>{% if a.twoFa %}<span class="chip bg-grass-tint text-grass-dark">On</span>{% else %}<span class="text-ink-faint text-xs">Off</span>{% endif %}</td>
         <td>
+          {% if a.from_env %}
           <form method="post" action="/admins/{{ a.telegramId }}/role" class="flex gap-2 items-center">
             {{ ui.csrf_field(admin) }}
             <select name="role" class="field w-auto py-1.5" {% if a.isSelf %}disabled title="Ask another owner to change your access"{% endif %}>
@@ -39,13 +41,27 @@
             </select>
             {% if not a.isSelf %}<button class="btn btn-soft btn-sm">Save</button>{% endif %}
           </form>
+          {% else %}
+          <span class="text-ink-faint text-xs">—</span>
+          {% endif %}
         </td>
         <td>
           {% if a.isSelf %}<span class="text-ink-faint text-xs">—</span>
-          {% else %}
+          {% elif a.from_env %}
           <form method="post" action="/admins/{{ a.telegramId }}/logout" onsubmit="return confirm('Sign out {{ a.telegramId }} from all devices?');">
             {{ ui.csrf_field(admin) }}
             <button class="btn btn-sm bg-amberx-tint text-amberx hover:bg-amberx/15">Sign out everywhere</button>
+          </form>
+          {% else %}
+          <span class="text-ink-faint text-xs">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if not a.from_env and not a.isSelf %}
+          <form method="post" action="/admins/remove" onsubmit="return confirm('Remove {{ a.telegramId }} from the admin list?');">
+            {{ ui.csrf_field(admin) }}
+            <input type="hidden" name="telegram_id" value="{{ a.telegramId }}">
+            <button class="btn btn-sm bg-red-50 text-red-600 hover:bg-red-100">Remove</button>
           </form>
           {% endif %}
         </td>
@@ -53,5 +69,18 @@
       {% endfor %}
     </tbody>
   </table>
+</div>
+
+<div class="card mt-6">
+  <h2 class="text-base font-semibold mb-4">Add admin by Telegram ID</h2>
+  <form method="post" action="/admins/add" class="flex gap-2 items-end">
+    {{ ui.csrf_field(admin) }}
+    <div>
+      <label class="label" for="new_tg_id">Telegram ID</label>
+      <input id="new_tg_id" name="telegram_id" type="number" class="field" placeholder="e.g. 123456789" required>
+    </div>
+    <button class="btn btn-primary">Add admin</button>
+  </form>
+  <p class="text-ink-faint text-xs mt-2">The person must also set a password before they can sign in.</p>
 </div>
 {% endblock %}

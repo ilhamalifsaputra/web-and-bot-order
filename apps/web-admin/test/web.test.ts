@@ -53,6 +53,7 @@ import {
   resetAccountFailures,
 } from "../src/auth";
 import { canMutate } from "../src/plugins/auth";
+import { isAdmin, adminIds, setAdminIds } from "@app/core/runtime";
 
 const COOKIE = config.WEB_COOKIE_NAME;
 const ADMIN_TG = 999;
@@ -1140,6 +1141,74 @@ describe("session management", () => {
 
     const self = await post(`/admins/${ADMIN_TG}/logout`, seed.cookie, { csrf_token: seed.csrf });
     expect(self.headers.location).toContain("kind=error");
+  });
+});
+
+// ---- manage DB admins (Unit 6) --------------------------------------------
+
+describe("manage DB admins", () => {
+  const NEW_ADMIN_TG = 777999;
+
+  beforeEach(() => {
+    // Reset runtime to env-only list so tests are isolated.
+    setAdminIds([...config.ADMIN_IDS]);
+  });
+
+  it("add: happy path — id appears in adminIds() and GET /admins renders it", async () => {
+    const res = await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    // Live runtime updated without restart.
+    expect(isAdmin(NEW_ADMIN_TG)).toBe(true);
+    // Page lists the new id.
+    const page = await get("/admins", seed.cookie);
+    expect(page.statusCode).toBe(200);
+    expect(page.body).toContain(String(NEW_ADMIN_TG));
+  });
+
+  it("add: rejects a non-integer telegram_id", async () => {
+    const res = await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: "notanumber" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect(isAdmin(NaN)).toBe(false);
+  });
+
+  it("add: requires auth (anon → 303 /login)", async () => {
+    const res = await post("/admins/add", null, { csrf_token: "x", telegram_id: String(NEW_ADMIN_TG) });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect(isAdmin(NEW_ADMIN_TG)).toBe(false);
+  });
+
+  it("add: rejects bad CSRF (403)", async () => {
+    const res = await post("/admins/add", seed.cookie, { csrf_token: "wrong", telegram_id: String(NEW_ADMIN_TG) });
+    expect(res.statusCode).toBe(403);
+    expect(isAdmin(NEW_ADMIN_TG)).toBe(false);
+  });
+
+  it("remove: removes a DB admin from runtime and DB", async () => {
+    // First add it.
+    await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+    expect(isAdmin(NEW_ADMIN_TG)).toBe(true);
+
+    const res = await post("/admins/remove", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(isAdmin(NEW_ADMIN_TG)).toBe(false);
+  });
+
+  it("remove: cannot remove an env-based admin", async () => {
+    const envAdmin = config.ADMIN_IDS[0]!;
+    const res = await post("/admins/remove", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(envAdmin) });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect(isAdmin(envAdmin)).toBe(true);
+  });
+
+  it("remove: cannot remove self", async () => {
+    const res = await post("/admins/remove", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(ADMIN_TG) });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
   });
 });
 

@@ -23,3 +23,4 @@ export * from "./crud/pricing";
 export * from "./crud/tokopay";
 export * from "./crud/credentials";
 export * from "./crud/webauth";
+export * from "./crud/admins";

@@ -8,10 +8,117 @@
 
 ## Daftar isi
 
+- [Status & implementasi nyata (Juni 2026)](#status--implementasi-nyata-juni-2026)
 - [Bagian 1 — Rencana Storefront (Arsitektur & Rencana)](#bagian-1--rencana-storefront-arsitektur--rencana)
 - [Bagian 2 — Desain Storefront (Spesifikasi Visual)](#bagian-2--desain-storefront-spesifikasi-visual)
 - [Bagian 3 — Cutover Harga USDT → IDR (Runbook)](#bagian-3--cutover-harga-usdt--idr-runbook)
 - [Bagian 4 — Deploy ke Hostinger Node App Manager](#bagian-4--deploy-ke-hostinger-node-app-manager)
+- [Bagian 5 — Setup & konfigurasi env lengkap (untuk pembeli)](#bagian-5--setup--konfigurasi-env-lengkap-untuk-pembeli)
+
+---
+
+## Status & implementasi nyata (Juni 2026)
+
+> **Bagian 1–4 di bawah ini adalah dokumen perencanaan asli** (ditulis sebelum
+> kode dibuat) — disimpan sebagai catatan keputusan & rasional. **Storefront kini
+> SUDAH dibangun penuh** dan berjalan di `apps/storefront`, jadi beberapa "how"
+> berbeda dari rencana. Bagian ini adalah **sumber kebenaran terkini**; bila
+> bertentangan dengan Bagian 1–4, **ikuti bagian ini**.
+
+### Peta aplikasi (kondisi sekarang)
+Monorepo pnpm, lima workspace `apps/*` + tiga `packages/*`:
+
+| Workspace | Peran |
+|---|---|
+| `apps/order-bot` | Bot Telegram grammY (pelanggan + admin) |
+| `apps/web-admin` | Panel admin Fastify+Nunjucks+HTMX |
+| `apps/storefront` | **Toko web pelanggan** (sudah jadi — rencana di Bagian 1–2) |
+| `apps/notifier` | Drain `notification_outbox` → channel publik |
+| `apps/server` | **Composition root satu-proses**: gabung admin + storefront + bot + worker dengan **satu PrismaClient** (`apps/server/src/index.ts`) |
+| `packages/core` | Config (zod), money (Decimal), datetime (luxon), i18n, **password**, **mailer**, **fx** |
+| `packages/db` | Prisma + semua crud (`packages/db/src/crud/*`) |
+| `packages/web-ui` | Tema bersama (`_theme.njk`, `_macros.njk`) yang di-include admin & storefront |
+
+### Apa yang berubah dari rencana — "how" yang sebenarnya
+
+**1. Auth pelanggan = username/email + password (BUKAN hanya Telegram Login Widget).**
+Rencana Bagian 1 §5 menyebut Telegram Login Widget sebagai satu-satunya pintu.
+Implementasi nyata punya **dua pintu** di `/login`:
+- **Username/email + password (utama)** — registrasi mandiri di `/register`
+  (`loginUsername` 3–32 char `[a-z0-9_]`, `email` unik, `passwordHash`), login
+  memverifikasi hash, gagal selalu pesan generik (anti-enumerasi).
+- **Telegram Login Widget = lookup-only** — hanya **masuk** ke akun yang sudah
+  ada by `telegramId`; tidak lagi auto-membuat user. Telegram ID asing diarahkan
+  ke `/register` atau bot.
+- **Lupa password** (`/forgot` → email token reset → `/reset`), token di tabel
+  `PasswordResetToken`, email dikirim via `@app/core/mailer`.
+- Sesi di-key per `userId` (akun web murni tak punya `telegramId`); cookie HMAC
+  `httpOnly`+`SameSite=Lax`, jti rotasi disimpan di `Setting`. Guest-cart digabung
+  saat login (rencana §5 keputusan D — tetap berlaku).
+- Kolom DB baru: `User.loginUsername`, `User.email`, `User.passwordHash`,
+  tabel `PasswordResetToken`. Crud: `packages/db/src/crud/webauth.ts`.
+- File terkait: `apps/storefront/src/routes/auth.ts`, `routes/forgot.ts`,
+  `src/auth.ts`, view `login/register/forgot/reset.njk`,
+  `packages/core/src/{password,mailer}.ts`.
+
+**2. Gambar produk = upload admin → `data/uploads/` (Unsplash hanya fallback).**
+Rencana Bagian 1 §8 / Bagian 2 §6 mengutamakan Unsplash. Nyatanya:
+- Admin meng-upload foto produk lewat web-admin; file disimpan di
+  **`data/uploads/`** dan path-nya di kolom **`Product.webImageUrl`**.
+- Storefront menyajikan folder itu sebagai statis: `GET /uploads/*`
+  (`apps/storefront/src/server.ts`, env `UPLOADS_DIR`, default `data/uploads`).
+- Urutan resolusi gambar: `webImageUrl` (upload admin) → peta Unsplash per
+  kategori (`apps/storefront/src/images.ts`) → placeholder.
+
+**3. Pembayaran = TIGA metode auto-confirm (rencana hanya sebut 2).**
+| Metode | Mata uang order | Front | Mekanisme | Kelola |
+|---|---|---|---|---|
+| **Binance Internal Transfer** (UID + nominal unik) | USDT | bot **&** storefront | poller auto-confirm (`payments/binanceInternal`) | env / Settings |
+| **TokoPay (QRIS)** | IDR | bot **&** storefront | webhook `POST /pay/tokopay/callback` (verifikasi signature + idempotensi `ProcessedTokopayTx`) | web-admin Settings |
+| **Bybit USDT-BEP20 (on-chain)** | USDT | **bot saja** | poller cocokkan **nominal unik** (BEP20 tanpa memo); tak cocok = "unmatched" untuk review; idempoten via `processed_bybit_tx` UNIQUE | web-admin Settings |
+- Di **storefront** pembeli memilih metode **saat bayar**: USDT→Binance,
+  IDR→TokoPay (`apps/storefront/src/routes/checkout.ts`). Status di halaman bayar
+  via **HTMX polling** `/checkout/:code/status` tiap ~5 dtk; saat `DELIVERED`
+  redirect ke kredensial. Web **tanpa upload bukti** & **tanpa wallet** (§17.1).
+- `Order.currency` ("IDR"/"USDT") + `Order.fxRate` (snapshot kurs saat USDT) +
+  `Order.paymentMethod` + `Order.paymentRef` sudah ada di skema.
+
+**4. Kurs USDT auto-update dari pasar (bukan manual-only).**
+- `usd_idr_rate` di-refresh otomatis dari pasar (`scheduleFxRefresh`,
+  `packages/core/src/fx.ts`), dibulatkan ke kelipatan `usd_idr_rate_rounding`
+  (default Rp100). Matikan dengan `usd_idr_rate_auto=false` → baru edit manual.
+- USDT turunan: `idrPrice / usd_idr_rate`, dibulatkan ke 0,1. Tampil bersisian
+  dengan IDR di storefront **dan** bot (sesuai rencana §15).
+
+**5. Kredensial terpusat di web-admin Settings (`apps/web-admin/src/routes/settings.ts`).**
+Whitelist `EDITABLE`, dikelompokkan jadi tab di `settings.njk`:
+- **Bot & notifications**: `bot_token`, `bot_username`, `notif_bot_token`
+  (token → **perlu restart**; divalidasi `getMe` sebelum simpan).
+- **Pembayaran — kurs**: `usd_idr_rate`, `usd_idr_rate_auto`, `usd_idr_rate_rounding`.
+- **Pembayaran — QRIS/TokoPay**: `tokopay_merchant_id`, `tokopay_secret`,
+  `tokopay_enabled`.
+- **Pembayaran — Bybit**: `bybit_deposit_address`, `bybit_api_key`, `bybit_api_secret`.
+- Key rahasia (`SECRET_KEYS`: `tokopay_secret`, `bot_token`, `notif_bot_token`,
+  `bybit_api_key`, `bybit_api_secret`) ditangani **write-only**: tak di-echo,
+  `(hidden)` di tabel, audit `key=(updated)` tanpa nilai.
+- Prioritas: **DB (Setting) menang, env = bootstrap/pemulihan**. `tokopay_*` &
+  `bybit_*` dibaca per-request/per-poll (hot, tanpa restart); token bot dibaca
+  saat boot (perlu restart).
+
+**6. Deploy = composition root satu-proses (`apps/server`).**
+- Dua topologi listen (`apps/server/src/index.ts`): bila `SHOP_PUBLIC_URL` di-set
+  → **satu listener publik**, request host toko → storefront, sisanya (admin,
+  webhook `/tg`, health ping) → admin. Bila tidak → admin di `WEB_PORT`,
+  storefront di `STOREFRONT_PORT` (default 8100).
+- `BOT_MODE` (polling | webhook) memilih transport bot. Web tetap jalan walau
+  token bot kosong (bot OFF sampai diisi + restart). Build & langkah Hostinger:
+  Bagian 4.
+
+### Status fase (rencana Bagian 1 §12)
+Fase 0–6 (scaffold, katalog, akun+auth, keranjang+checkout, harga IDR+TokoPay,
+wiring deploy, poles) **sudah diimplementasikan**. Selain itu ditambahkan di luar
+rencana awal: **auth password/email + lupa-password**, **upload foto produk
+admin**, **pembayaran Bybit USDT-BEP20**, dan **auto-update kurs pasar**.
 
 ---
 
@@ -19,8 +126,10 @@
 
 > Rencana implementasi **toko online pelanggan (storefront)** yang:
 > - bergaya **sama persis** dengan web-admin (lihat [Bagian 2 — Desain Storefront](#bagian-2--desain-storefront-spesifikasi-visual)),
-> - **terhubung ke DB & stok yang sama** dengan bot order Telegram,
-> - belum dieksekusi — ini cetak biru untuk disetujui dulu.
+> - **terhubung ke DB & stok yang sama** dengan bot order Telegram.
+>
+> ⚠️ **Dokumen perencanaan asli (historis).** Storefront kini **sudah dibangun**;
+> untuk kondisi & "how" terkini lihat [Status & implementasi nyata](#status--implementasi-nyata-juni-2026).
 >
 > Konteks proyek: monorepo Node/TS (pnpm) hasil migrasi dari Python. Ada
 > `apps/order-bot` (grammY), `apps/web-admin` (Fastify+Nunjucks+HTMX),
@@ -366,8 +475,10 @@ sampingnya sebagai info** (tanpa deteksi IP); pembeli memilih mata uang **saat
 bayar** — **USDT via Binance**, **IDR via TokoPay** — lihat §15. Lihat
 [Bagian 2 — Desain Storefront](#bagian-2--desain-storefront-spesifikasi-visual) untuk detail visual.
 
-> **Status: rancangan — belum dieksekusi.** Menunggu keputusan §10 (sisa B/D/F/G)
-> sebelum mulai.
+> **Status: SUDAH diimplementasikan** (dokumen ini historis). Semua keputusan §10
+> sudah final & dieksekusi. Kondisi & "how" terkini —termasuk yang berbeda dari
+> rencana (auth password, upload foto, Bybit, auto-kurs)— ada di
+> [Status & implementasi nyata](#status--implementasi-nyata-juni-2026).
 
 ---
 
@@ -689,8 +800,11 @@ kode baru. Sisanya di bawah.
 > checkout). Storefront berbagi database & stok yang sama dengan bot Telegram,
 > jadi yang berubah hanya **tampilan**, bukan datanya.
 >
-> Implementasi belum dikerjakan. Lihat [Bagian 1 — Rencana Storefront](#bagian-1--rencana-storefront-arsitektur--rencana) untuk arsitektur &
-> tahapan. Dokumen ini hanya **spesifikasi desain**.
+> **Sudah diimplementasikan** (dokumen ini = spesifikasi desain historis). Catatan
+> penting: imagery memakai **upload foto admin (`webImageUrl` → `data/uploads/`)**
+> sebagai sumber utama, Unsplash hanya fallback — lihat
+> [Status & implementasi nyata](#status--implementasi-nyata-juni-2026). Lihat
+> [Bagian 1 — Rencana Storefront](#bagian-1--rencana-storefront-arsitektur--rencana) untuk arsitektur & tahapan.
 
 ---
 
@@ -1441,3 +1555,87 @@ proses worker sejati, dan tuning terbatas. Pertimbangkan **Hostinger VPS** bila:
       (3.5mb), smoke-test `node dist/server.cjs` load bersih (semua `@app/*`
       ter-inline, eksternal tetap `require`, `import.meta.url` ter-shim).
 - [ ] Deploy ke Hostinger + UptimeRobot — **langkah manual kamu** (Jalur A/B §4–5).
+
+---
+
+## Bagian 5 — Setup & konfigurasi env lengkap (untuk pembeli)
+
+> Panduan ini untuk **pembeli script** yang memasang sendiri dengan **bot Telegram
+> miliknya** (dibuat di BotFather). Semua konfigurasi lewat file **`.env`** (salin
+> dari [`.env.example`](.env.example)) + sebagian lewat **web-admin → Settings**.
+> Tujuannya: **semua fitur menyala maksimal**. Acuan kebenaran: `packages/core/src/config.ts`.
+
+### 5.1 Konsep: `.env` vs web-admin Settings
+- **`.env`** dibaca **saat boot** — ganti nilai = **harus restart** aplikasi.
+- **Settings (web-admin)** dibaca **runtime** — kebanyakan **langsung berlaku
+  tanpa restart** (kecuali token bot). Bila sebuah nilai ada di **dua** tempat,
+  **Settings (DB) menang**, `.env` jadi cadangan/pemulihan.
+
+### 5.2 Cara mendapatkan nilai penting
+| Nilai | Cara dapat |
+|---|---|
+| `BOT_TOKEN` | BotFather → `/newbot` (atau `/mybots` → API Token). |
+| `BOT_USERNAME` | Username bot (mis. `TokoSaya_bot`). Opsional — terisi otomatis via `getMe`. |
+| `ADMIN_IDS` | **Angka** Telegram ID-mu (bukan username). Kirim pesan ke **@userinfobot** untuk melihatnya. Banyak admin → pisah koma: `111,222`. |
+| `WEB_COOKIE_SECRET` | Minimal 32 karakter acak. `openssl rand -hex 32`, atau ketik asal ≥32 huruf/angka. **Rahasia.** |
+| `BINANCE_PAY_ID` | **Wajib ada** agar app mau boot. Kalau tak pakai Binance Pay manual, isi placeholder (mis. `0`). |
+
+### 5.3 Env minimum agar app + login admin jalan
+```
+BOT_TOKEN=123456:token-dari-botfather
+BOT_USERNAME=TokoSaya_bot
+ADMIN_IDS=123456789
+BINANCE_PAY_ID=0
+WEB_COOKIE_SECRET=ganti-jadi-acak-minimal-32-karakter-xxxxxx
+TIMEZONE=Asia/Jakarta
+DEFAULT_LANGUAGE=id
+```
+`DATABASE_URL_PRISMA` sudah punya default (`file:../data/bot.db`) — tak perlu diisi
+kecuali kamu pindah lokasi DB (di Hostinger pakai path absolut — Bagian 4 §6).
+
+### 5.4 Urutan boot & LOGIN PERTAMA (paling sering bikin bingung)
+1. Isi `.env` minimum (§5.3) dan siapkan DB (`prisma db push`, atau upload
+   `data/bot.db` kosong yang sudah dibuat — Bagian 4 §5).
+2. **Jalankan app** → bot menyala (mode polling).
+3. **Buka bot-mu di Telegram, ketik `/start`.** Ini **membuat baris admin** di DB
+   dan otomatis menaikkan role ke **ADMIN** karena ID-mu ada di `ADMIN_IDS`.
+   **Langkah ini wajib** — login web butuh baris admin ini.
+4. Buka web **`/bootstrap`** → set **password** untuk Telegram ID itu (halaman ini
+   terbuka selama belum ada admin yang punya password).
+5. Buka **`/login`** → masuk dengan Telegram ID + password.
+6. *(Opsional)* Pindahkan token bot ke **Settings → Bot & notifications** (DB
+   menang atas env), lalu **restart** agar berlaku.
+
+> **Lupa `/start` dulu?** Login akan gagal `no_account`. Jalan darurat tanpa bot:
+> `pnpm reset-admin-password <telegram_id> --set <password>` (tetap butuh ID ada
+> di `ADMIN_IDS`).
+
+### 5.5 Menyalakan tiap fitur (checklist)
+| Fitur | Yang diisi | Catatan |
+|---|---|---|
+| **Bot order (inti)** | `BOT_TOKEN`, `ADMIN_IDS` | Ganti token → restart. |
+| **Toko web (storefront)** | `SHOP_HOST` (1 port, host toko) **atau** `STOREFRONT_PORT` (port terpisah); `SHOP_PUBLIC_URL` untuk link di DM | Lihat Bagian 4 / §5.1. |
+| **Transport bot** | `BOT_MODE=polling` (default) **atau** `webhook` + `PUBLIC_URL` + `WEBHOOK_SECRET` | Webhook butuh domain HTTPS. |
+| **Channel testimoni** | `PUBLIC_CHANNEL_ID` (+ `NOTIF_BOT_TOKEN` opsional) | Bot harus jadi **admin** di channel. Kosongkan ID = fitur mati. |
+| **Bayar Binance Pay (manual + bukti)** | `BINANCE_PAY_ID` (+ `BINANCE_QR_PATH` opsional) | Admin approve manual di bot. |
+| **Bayar Binance Internal (USDT, auto)** | `BINANCE_RECEIVE_UID` + `BINANCE_API_KEY` + `BINANCE_API_SECRET` | Aktif **hanya bila ketiganya terisi**. API key **READ-ONLY**. Tes: `pnpm binance-probe`. |
+| **Bayar Bybit USDT-BEP20 (auto)** | `bybit_deposit_address` + `bybit_api_key` + `bybit_api_secret` di **Settings** (atau `BYBIT_*` di env) | BEP20 tanpa memo → cocok via **nominal unik**, jaga `USE_UNIQUE_CENTS=1`. API key Wallet **read-only**. Tes: `pnpm bybit-probe`. |
+| **Bayar QRIS Rupiah (TokoPay)** | `tokopay_merchant_id` + `tokopay_secret` + `tokopay_enabled=true` di **Settings** | Hanya di web-admin Settings (bukan env). |
+| **Kurs USDT↔IDR** | `usd_idr_rate` di **Settings** (auto-update pasar ON secara default) | Matikan auto: `usd_idr_rate_auto=false`. |
+| **Lupa password toko (email)** | `SMTP_HOST` + `SMTP_FROM` (+ `SMTP_USER`/`SMTP_PASS`) | Aktif hanya bila host & from terisi. |
+
+### 5.6 Mana yang butuh restart vs langsung berlaku
+- **Perlu restart**: semua nilai `.env`, dan **token bot/notifier** (walau diubah
+  di Settings).
+- **Langsung (hot, tanpa restart)**: `tokopay_*`, `bybit_*`, `usd_idr_rate`, dan
+  setelan web-admin lain.
+
+### 5.7 Checklist "semua fitur maksimal"
+- [ ] `.env` minimum terisi (§5.3) + DB siap.
+- [ ] `/start` bot → `/bootstrap` → bisa `/login` (§5.4).
+- [ ] Storefront tampil (host/port benar) + `SHOP_PUBLIC_URL` di-set.
+- [ ] Channel testimoni jalan (`PUBLIC_CHANNEL_ID`, bot admin channel).
+- [ ] Minimal satu metode bayar otomatis aktif (Binance Internal / Bybit / TokoPay).
+- [ ] Kurs `usd_idr_rate` terisi (harga IDR + USDT tampil bersisian).
+- [ ] (Opsional) SMTP untuk lupa-password toko.
+- [ ] Produksi: `WEB_COOKIE_SECURE=true` di balik HTTPS + UptimeRobot (Bagian 4 §0).

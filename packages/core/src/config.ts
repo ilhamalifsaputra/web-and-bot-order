@@ -49,7 +49,7 @@ const looseBool = z
   .transform((s) => ["1", "true", "yes", "on"].includes(s.trim().toLowerCase()))
   .or(z.boolean());
 
-const Env = z.object({
+export const Env = z.object({
   // ---- Telegram ----
   // Optional since plan.md §16: the primary source is the `bot_token` /
   // `bot_username` Settings rows (web-admin editable, DB wins when filled);
@@ -60,7 +60,8 @@ const Env = z.object({
   SUPPORT_GROUP_ID: z.coerce.number().optional(),
 
   // ---- Payment ----
-  BINANCE_PAY_ID: z.string(),
+  // Optional: kosong = Binance Pay manual tidak dikonfigurasi (boot tetap jalan).
+  BINANCE_PAY_ID: z.string().default(""),
   BINANCE_QR_PATH: z.string().optional(),
   CURRENCY: z.string().default("USDT"),
   PAYMENT_WINDOW_MINUTES: z.coerce.number().default(30),

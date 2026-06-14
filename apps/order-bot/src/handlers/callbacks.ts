@@ -8,6 +8,7 @@
  * sub-router (which applies its own admin-gate guard).
  */
 import { config } from "@app/core/config";
+import { adminIds } from "@app/core/runtime";
 import { TicketStatus } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
@@ -236,7 +237,7 @@ async function closeTicketUser(ctx: MyContext, ticketId: number): Promise<void> 
   // than just stripping its buttons and relying on the ephemeral toast.
   await smartEdit(ctx, t(ctx, "support.ticket_closed_user"), ckb.ticketClosedKb(ctx.session.lang));
 
-  const targets = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : config.ADMIN_IDS;
+  const targets = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : adminIds();
   for (const chatId of targets) {
     if (!chatId) continue;
     try {

@@ -182,10 +182,6 @@ export type Config = z.infer<typeof Env>;
 
 export const config: Config = Env.parse(process.env);
 
-/** True if the given Telegram user ID is in the admin allow-list. */
-export const isAdmin = (telegramId: number | bigint): boolean =>
-  config.ADMIN_IDS.includes(Number(telegramId));
-
 /**
  * Binance Internal Transfer is offered + auto-confirmed only when the receive
  * UID and read-only API credentials are all configured. Otherwise the option is

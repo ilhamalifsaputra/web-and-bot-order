@@ -2,7 +2,8 @@
  * Login, logout, first-admin bootstrap, healthcheck — port of routers/auth.py.
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { config, isAdmin } from "@app/core/config";
+import { config } from "@app/core/config";
+import { isAdmin } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { UserRole } from "@app/core/enums";
 import {

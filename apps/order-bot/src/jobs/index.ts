@@ -8,7 +8,8 @@
  */
 import { Cron } from "croner";
 import type { Api } from "grammy";
-import { config, isBinanceInternalEnabled } from "@app/core/config";
+import { isBinanceInternalEnabled } from "@app/core/config";
+import { adminIds } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
@@ -103,10 +104,10 @@ export async function reconcileFinancesJob(api: Api): Promise<void> {
     details: JSON.stringify(findings).slice(0, 4000),
   });
 
-  if (config.ADMIN_IDS.length) {
+  if (adminIds().length) {
     try {
       await api.sendMessage(
-        config.ADMIN_IDS[0]!,
+        adminIds()[0]!,
         "⚠ Reconciliation drift detected\n" +
           `orders: ${findings.order_drift.length}\n` +
           `vouchers: ${findings.voucher_drift.length}\n` +
@@ -160,7 +161,7 @@ export async function binancePollWatchdog(api: Api): Promise<void> {
     const lastRun = health.lastRun ? Date.parse(health.lastRun) : 0;
     const mins = lastRun ? Math.round((Date.now() - lastRun) / 60_000) : "∞";
     logger.error(`Binance poller watchdog: no cycle in ${mins} min — alerting admins`);
-    for (const adminId of config.ADMIN_IDS) {
+    for (const adminId of adminIds()) {
       try {
         await api.sendMessage(
           adminId,
@@ -194,7 +195,7 @@ export async function bybitPollWatchdog(api: Api): Promise<void> {
     const lastRun = health.lastRun ? Date.parse(health.lastRun) : 0;
     const mins = lastRun ? Math.round((Date.now() - lastRun) / 60_000) : "∞";
     logger.error(`Bybit poller watchdog: no cycle in ${mins} min — alerting admins`);
-    for (const adminId of config.ADMIN_IDS) {
+    for (const adminId of adminIds()) {
       try {
         await api.sendMessage(
           adminId,

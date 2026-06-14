@@ -16,7 +16,8 @@
  * NEVER prints the password hash. The action is audited with adminId=null so
  * it's distinguishable from an in-app change in /audit.
  */
-import { config, isAdmin } from "@app/core/config";
+import { config } from "@app/core/config";
+import { isAdmin } from "@app/core/runtime";
 import {
   prisma,
   initDb,

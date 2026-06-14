@@ -11,8 +11,8 @@
  */
 import { InputMediaBuilder } from "grammy";
 import type { MessageEntity } from "grammy/types";
-import { config, isAdmin } from "@app/core/config";
-import { botToken } from "@app/core/runtime";
+import { config } from "@app/core/config";
+import { botToken, isAdmin } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ProductType, SenderType, VoucherType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";

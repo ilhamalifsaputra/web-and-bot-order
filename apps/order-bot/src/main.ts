@@ -20,7 +20,7 @@ import { Bot, session } from "grammy";
 import { conversations, createConversation } from "@grammyjs/conversations";
 import { run, sequentialize } from "@grammyjs/runner";
 import { config } from "@app/core/config";
-import { botToken, setBotIdentity } from "@app/core/runtime";
+import { botToken, setBotIdentity, adminIds } from "@app/core/runtime";
 import { initDb, prisma, resolveBotCredentials } from "@app/db";
 import { logger } from "@app/core/logger";
 import type { MyContext } from "./context";
@@ -178,7 +178,7 @@ export async function setupCommandMenu(bot: Bot<MyContext>): Promise<void> {
   try {
     await bot.api.setMyCommands(generalEn);
     await bot.api.setMyCommands(generalId, { language_code: "id" });
-    for (const adminId of config.ADMIN_IDS) {
+    for (const adminId of adminIds()) {
       try {
         await bot.api.setMyCommands(adminCommands, { scope: { type: "chat", chat_id: adminId } });
       } catch {

@@ -7,7 +7,7 @@ import { langCode } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { prisma, getUserByTelegramId, rejectOrder, logAdminAction } from "@app/db";
-import { isAdmin } from "@app/core/config";
+import { isAdmin } from "@app/core/runtime";
 import type { MyContext, MyConversation } from "../context";
 import { adminEdit, adminAnchor, consumeInput } from "../util/chat";
 import { coreT, t } from "../util/i18n";

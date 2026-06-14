@@ -8,6 +8,7 @@
  * DELIVERED and show the admin a one-tap resend button.
  */
 import { config } from "@app/core/config";
+import { adminIds } from "@app/core/runtime";
 import { OrderStatus, StockStatus, langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
@@ -254,7 +255,7 @@ async function maybeAlertLowStock(ctx: MyContext, _userId: number): Promise<void
   if (!rows.length) return;
   for (const { product, available } of rows) {
     if (!product) continue;
-    for (const adminId of config.ADMIN_IDS) {
+    for (const adminId of adminIds()) {
       try {
         await ctx.api.sendMessage(
           adminId,

@@ -7,6 +7,7 @@
  * the conversations plugin, so they are not duplicated across replays.
  */
 import { config } from "@app/core/config";
+import { adminIds } from "@app/core/runtime";
 import { SenderType, TicketStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
@@ -66,7 +67,7 @@ export async function ticketUserReplyConversation(conversation: MyConversation, 
 
   await smartEdit(ctx, t(ctx, "ticket.reply_sent"), backToMain(ctx.session.lang));
 
-  const targets = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : config.ADMIN_IDS;
+  const targets = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : adminIds();
   await conversation.external(async () => {
     for (const chatId of targets) {
       if (!chatId) continue;

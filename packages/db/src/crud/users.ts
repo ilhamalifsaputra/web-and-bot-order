@@ -2,7 +2,8 @@
  * Users domain — port of the "Users" section of Python crud.py.
  * No function commits; the caller controls the transaction.
  */
-import { config, isAdmin } from "@app/core/config";
+import { config } from "@app/core/config";
+import { isAdmin } from "@app/core/runtime";
 import { UserRole, Language } from "@app/core/enums";
 import { quantizeMoney, generateReferralCode } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";

@@ -6,7 +6,7 @@
  * conversation.external(); terminal mutations (followed by return, no more
  * waits) run once and may call handler helpers directly.
  */
-import { config } from "@app/core/config";
+import { adminIds } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
@@ -195,7 +195,7 @@ export async function proofConversation(conversation: MyConversation, ctx: MyCon
 
   await editPrompt(t(ctx, "checkout.proof_submitted", { code: orderCode }), ckb.backToMain(lang));
 
-  for (const adminId of config.ADMIN_IDS) {
+  for (const adminId of adminIds()) {
     try {
       await ctx.api.sendMessage(
         adminId,

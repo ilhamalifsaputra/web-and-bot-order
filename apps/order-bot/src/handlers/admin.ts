@@ -8,7 +8,8 @@
  * handleAdminCallback (called by the central router in callbacks.ts).
  */
 import { InputFile } from "grammy";
-import { config, isAdmin } from "@app/core/config";
+import { config } from "@app/core/config";
+import { isAdmin } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { UserRole, langCode } from "@app/core/enums";

@@ -5,6 +5,7 @@
  */
 import { InputMediaBuilder } from "grammy";
 import { config } from "@app/core/config";
+import { adminIds } from "@app/core/runtime";
 import { SenderType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
@@ -109,7 +110,7 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
     `From: <code>${ctx.from!.id}</code> (@${esc(ctx.from!.username ?? "")})${photoNote}\n\n` +
     `${esc(body)}`;
 
-  const targets = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : config.ADMIN_IDS;
+  const targets = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : adminIds();
   for (const chatId of targets) {
     if (!chatId) continue;
     try {

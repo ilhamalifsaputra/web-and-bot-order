@@ -20,6 +20,7 @@
 import { createHmac } from "node:crypto";
 import type { Api } from "grammy";
 import { config } from "@app/core/config";
+import { adminIds } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
@@ -181,7 +182,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
 }
 
 async function alertAdmins(api: Api, text: string): Promise<void> {
-  for (const adminId of config.ADMIN_IDS) {
+  for (const adminId of adminIds()) {
     try {
       await api.sendMessage(adminId, text, { parse_mode: "HTML" });
     } catch (err) {

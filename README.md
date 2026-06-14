@@ -249,7 +249,7 @@ Kalau kamu **tidak** punya VPS, tapi punya hosting Hostinger dengan fitur
 **"Setup Node.js App"** (berbasis Passenger). Jalur ini sedikit lebih rumit
 karena kode harus di-*bundle* jadi satu file dulu.
 
-**Panduan lengkap langkah-demi-langkah ada di file [`DEPLOY-HOSTINGER.md`](DEPLOY-HOSTINGER.md).**
+**Panduan lengkap langkah-demi-langkah ada di [`DOCS.md` → Bagian 4 (Deploy Hostinger)](DOCS.md#bagian-4--deploy-ke-hostinger-node-app-manager).**
 Ringkasannya:
 
 1. **Di komputermu**, bangun bundle satu file:
@@ -263,12 +263,12 @@ Ringkasannya:
    `data/bot.db` (database — buat dulu di lokal dengan `pnpm exec prisma db push`).
 3. **Di panel Node App Hostinger**: set *startup file* = `dist/server.cjs`,
    pilih Node 20/22, klik **Run NPM Install**, isi Environment Variables
-   (lihat bagian 7 di `DEPLOY-HOSTINGER.md`), lalu **Restart**.
+   (lihat bagian 7 di `DOCS.md` Bagian 4), lalu **Restart**.
 4. **Wajib:** pasang **UptimeRobot** yang nge-ping URL webmu tiap 1–5 menit.
    Tanpa ini, Hostinger menidurkan aplikasi saat sepi dan **bot ikut mati**.
 
 > Karena keterbatasan idle-shutdown ini, **VPS (Jalur A) lebih disarankan** kalau
-> botmu harus selalu responsif. Detail trade-off ada di `DEPLOY-HOSTINGER.md` §0 & §10.
+> botmu harus selalu responsif. Detail trade-off ada di `DOCS.md` Bagian 4 §0 & §10.
 
 ---
 
@@ -499,12 +499,11 @@ data/bot.db            Database (di-gitignore)
 
 | File | Isi |
 |---|---|
-| `DEPLOY-HOSTINGER.md` | Panduan lengkap deploy ke Hostinger Node App Manager |
+| `DOCS.md` | Dokumentasi gabungan: rencana & desain storefront, cutover IDR, deploy Hostinger |
 | `CLAUDE.md` | Konvensi & aturan koding (Decimal untuk uang, audit, dll.) |
-| `CUTOVER-IDR.md` | Migrasi harga USDT → IDR (sekali jalan) |
 | `.env.example` | Daftar semua variabel lingkungan |
 
 ---
 
-Butuh bantuan lebih detail untuk Hostinger? Buka **`DEPLOY-HOSTINGER.md`**.
+Butuh bantuan lebih detail untuk Hostinger? Buka **`DOCS.md` Bagian 4**.
 Selamat berjualan! 🚀

@@ -515,13 +515,33 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
       countdown,
     });
   } else {
-    text = t(ctx, "order.detail", {
-      code: order.orderCode,
-      status: statusBadge(order.status),
-      total: orderAmount(order),
-      created: ensureUtc(order.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'"),
-      lines: itemLines.join("\n"),
-    });
+    let credentialsBlock = "";
+    if (order.status === OrderStatus.DELIVERED) {
+      const groups: Array<[string, string[]]> = [];
+      const idx = new Map<number, number>();
+      for (const it of order.items) {
+        if (!it.stockItem) continue;
+        if (!idx.has(it.productId)) {
+          idx.set(it.productId, groups.length);
+          groups.push([it.product.name, []]);
+        }
+        groups[idx.get(it.productId)!]![1].push(it.stockItem.credentials);
+      }
+      if (groups.length) {
+        const blocks = groups
+          .map(([name, creds]) => `${esc(name)}\n<pre>${esc(creds.join("\n"))}</pre>`)
+          .join("\n\n");
+        credentialsBlock = `\n\n${t(ctx, "order.detail_credentials", { credentials: blocks })}`;
+      }
+    }
+    text =
+      t(ctx, "order.detail", {
+        code: order.orderCode,
+        status: statusBadge(order.status),
+        total: orderAmount(order),
+        created: ensureUtc(order.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'"),
+        lines: itemLines.join("\n"),
+      }) + credentialsBlock;
   }
   await smartEdit(ctx, text, ckb.orderDetailKb(order, lang));
 }

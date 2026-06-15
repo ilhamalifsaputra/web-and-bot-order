@@ -168,6 +168,7 @@
   "order.delivered_credentials": "✅ <b>Pesanan Berhasil Dikirim</b>\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Kode Order</b>\n<code>{code}</code>\n\n🔑 <b>Kredensial Kamu</b>\n\n{credentials}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n🛡 <b>Garansi</b> · {warranty} hari\n💬 Hubungi support jika ada masalah.\n⭐ Jangan lupa berikan review!",
   "order.delivered_group_header": "📦 <b>{product}</b> × {count}",
   "order.detail": "<b>Pesanan {code}</b>\n\nStatus: {status}\nTotal: {total}\nDibuat: {created}\n\n{lines}",
+  "order.detail_credentials": "🔑 <b>Akun kamu:</b>\n{credentials}",
   "order.history_empty": "Belum ada pesanan selesai.",
   "order.history_file_amount": "Total",
   "order.history_file_count": "Total: {count} pesanan",

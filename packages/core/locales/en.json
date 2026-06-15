@@ -168,6 +168,7 @@
   "order.delivered_credentials": "✅ <b>Order Delivered Successfully</b>\n━━━━━━━━━━━━━━━━━━━━━━━━\n\n🧾 <b>Order Code</b>\n<code>{code}</code>\n\n🔑 <b>Your Credentials</b>\n\n{credentials}\n\n━━━━━━━━━━━━━━━━━━━━━━━━\n🛡 <b>Warranty</b> · {warranty} days\n💬 Contact support if anything stops working.\n⭐ Don't forget to leave a review!",
   "order.delivered_group_header": "📦 <b>{product}</b> × {count}",
   "order.detail": "<b>Order {code}</b>\n\nStatus: {status}\nTotal: {total}\nCreated: {created}\n\n{lines}",
+  "order.detail_credentials": "🔑 <b>Your account(s):</b>\n{credentials}",
   "order.history_empty": "No completed orders yet.",
   "order.history_file_amount": "Total",
   "order.history_file_count": "Total: {count} order(s)",

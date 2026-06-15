@@ -19,7 +19,7 @@ import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { makeCtx, calls, type SentCall } from "./helpers/ctx";
+import { makeCtx, calls, sentIncludes, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import * as customer from "../src/handlers/customer";
@@ -175,6 +175,20 @@ describe("customer handlers", () => {
     await customer.viewOrder(stranger.ctx, order!.id);
     // not_found path → still sends something, but never leaks the code
     expect(JSON.stringify(stranger.sink)).not.toContain(order!.orderCode);
+  });
+
+  it("viewOrder shows credentials for a delivered order owned by the buyer", async () => {
+    // Approve a pending-verification order so it becomes DELIVERED with assigned stock.
+    const order = await makeOrder();
+    await attachPaymentProof(prisma, order!.id, { fileId: "proof-file", txid: "TX1234567890" });
+    await verification.approve(adminCtx({ callbackData: `v1:adm:verif:approve:${order!.id}` }).ctx, order!.id);
+
+    const sold = await prisma.stockItem.findFirst({ where: { orderItems: { some: { orderId: order!.id } }, status: StockStatus.SOLD } });
+    expect(sold).toBeTruthy();
+
+    const { ctx, sink } = customerCtx();
+    await customer.viewOrder(ctx, order!.id);
+    expect(sentIncludes(sink, sold!.credentials)).toBe(true);
   });
 });
 

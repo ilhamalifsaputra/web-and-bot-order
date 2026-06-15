@@ -52,6 +52,20 @@ describe("notifier templates.render", () => {
     expect(out).toContain("Reset password admin web"); // Indonesian line
   });
 
+  it("points ORDER_DELIVERED_DM to the bot's My Orders, with an optional web link", () => {
+    const out = render("ORDER_DELIVERED_DM", { order_code: "ORD-1", order_url: "https://shop.example/orders/ORD-1" });
+    expect(out).toContain("<code>ORD-1</code>");
+    expect(out).toContain("My Orders"); // English line points to the bot
+    expect(out).toContain("Pesananku"); // Indonesian line points to the bot
+    expect(out).toContain("Or view on the website: https://shop.example/orders/ORD-1");
+  });
+
+  it("omits the website link when no valid order_url is given", () => {
+    const out = render("ORDER_DELIVERED_DM", { order_code: "ORD-2", order_url: "javascript:alert(1)" });
+    expect(out).not.toContain("javascript:");
+    expect(out).not.toContain("view on the website");
+  });
+
   it("returns empty string for unknown events", () => {
     expect(render("something.else", payload)).toBe("");
     // lowercase value form is NOT what is stored -> must not match

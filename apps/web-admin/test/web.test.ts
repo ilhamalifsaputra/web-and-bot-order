@@ -738,6 +738,51 @@ describe("payments", () => {
     expect((await prisma.notificationOutbox.findMany({ where: { orderId: order.id } })).length).toBe(1);
   });
 
+  it("GET /payments renders the history with the explainer + a Dismiss action for unmatched rows", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "RENDTX", amount: "1.00" });
+    const res = await get("/payments", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("we match it to an order"); // Option A explainer
+    expect(res.body).toContain("/payments/dismiss"); // Option B dismiss form
+    expect(res.body).toContain("RENDTX");
+  });
+
+  it("dismiss unmatched tx → outcome dismissed + audit", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "DTX1", amount: "1.00" });
+    const res = await post("/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "DTX1" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    const tx = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "DTX1" } });
+    expect(tx!.outcome).toBe("dismissed");
+    const logs = await listAuditLogs(prisma, { limit: 5 });
+    expect(logs.some((l) => l.action === "tx_dismiss")).toBe(true);
+  });
+
+  it("dismiss an already-dismissed (non-unmatched) tx → error flash, row unchanged", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "DTX3", amount: "1.00" });
+    await post("/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "DTX3" });
+    // second dismiss: the row is no longer "unmatched" → rejected
+    const res = await post("/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "DTX3" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "DTX3" } }))!.outcome).toBe("dismissed");
+  });
+
+  it("dismiss requires auth (anon → /login)", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "DTX4", amount: "1.00" });
+    const res = await post("/payments/dismiss", null, { csrf_token: "x", binance_tx_id: "DTX4" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "DTX4" } }))!.outcome).toBe("unmatched");
+  });
+
+  it("dismiss rejects bad CSRF", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "DTX5", amount: "1.00" });
+    const res = await post("/payments/dismiss", seed.cookie, { csrf_token: "bad", binance_tx_id: "DTX5" });
+    expect(res.statusCode).toBe(403);
+    expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "DTX5" } }))!.outcome).toBe("unmatched");
+  });
+
   it("deliver requires auth", async () => {
     const id = await makeUnderpaidOrder();
     const res = await post(`/payments/order/${id}/deliver`, null, { csrf_token: "x" });

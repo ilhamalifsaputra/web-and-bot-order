@@ -158,7 +158,7 @@ export async function recordUnmatchedTx(db: Db, args: { binanceTxId: string; amo
 // ===========================================================================
 
 /** Known ledger outcomes, in the order the ops panel lists them. */
-export const TX_OUTCOMES = ["matched", "underpaid", "unmatched", "delivery_failed"] as const;
+export const TX_OUTCOMES = ["matched", "underpaid", "unmatched", "delivery_failed", "dismissed"] as const;
 export type TxOutcome = (typeof TX_OUTCOMES)[number];
 
 type LinkedOrder = { id: number; orderCode: string; status: string; totalAmount: Decimal };
@@ -306,6 +306,23 @@ export async function manualMatchTx(
     const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: args.adminId });
     logger.info(`Manual-matched tx ${args.binanceTxId} → order ${delivered.orderCode} by admin=${args.adminId}`);
     return { order: delivered, credentials };
+  });
+}
+
+/**
+ * Acknowledge an UNMATCHED transfer that belongs to no order (e.g. a test
+ * deposit, or money sent with no order behind it): flip its ledger row
+ * unmatched → dismissed so it stops showing up as an open problem. The row is
+ * kept (auditable, still listable under the "dismissed" filter); only rows that
+ * are currently `unmatched` can be dismissed.
+ */
+export async function dismissUnmatchedTx(db: Db, binanceTxId: string): Promise<void> {
+  const ledger = await db.processedBinanceTx.findUnique({ where: { binanceTxId } });
+  if (!ledger) throw new ValidationError("error.tx_not_found");
+  if (ledger.outcome !== "unmatched") throw new ValidationError("error.tx_not_unmatched");
+  await db.processedBinanceTx.update({
+    where: { binanceTxId },
+    data: { outcome: "dismissed" },
   });
 }
 

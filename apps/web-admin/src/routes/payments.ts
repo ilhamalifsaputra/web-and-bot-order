@@ -26,6 +26,7 @@ import {
   deliverUnderpaidOrder,
   refundUnderpaidOrder,
   manualMatchTx,
+  dismissUnmatchedTx,
   listOrders,
   listPendingInternalOrders,
   getOrderByCode,
@@ -167,5 +168,30 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
     }
     logger.info(`Tx ${binanceTxId} manually matched to ${orderCode} via web by admin_id=${req.admin!.userId}`);
     return redirectWithFlash(reply, "/payments", "Transfer matched and order delivered.", "success");
+  });
+
+  // ---- Dismiss an UNMATCHED transfer that has no order (e.g. a test deposit) ----
+
+  app.post("/payments/dismiss", { preHandler: csrfProtect }, async (req, reply) => {
+    const binanceTxId = ((req.body as Record<string, string>).binance_tx_id ?? "").trim();
+    if (!binanceTxId) {
+      return redirectWithFlash(reply, "/payments", "A payment reference is required.", "error");
+    }
+    try {
+      await dismissUnmatchedTx(prisma, binanceTxId);
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "tx_dismiss",
+        targetType: "payment",
+        details: `tx=${binanceTxId}`,
+      });
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return redirectWithFlash(reply, "/payments", humanizeValidationError(e), "error");
+      }
+      throw e;
+    }
+    logger.info(`Unmatched tx ${binanceTxId} dismissed via web by admin_id=${req.admin!.userId}`);
+    return redirectWithFlash(reply, "/payments", "Payment dismissed.", "success");
   });
 }

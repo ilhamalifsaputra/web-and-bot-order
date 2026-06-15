@@ -15,7 +15,7 @@
 {% endif %}
 
 {# ---- Auto-check status + result summary ---- #}
-<section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+<section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-4 mb-8">
   <div class="card card-pad col-span-2">
     <div class="stat-label">Auto-check status</div>
     <div class="text-sm mt-2 text-ink">
@@ -27,7 +27,7 @@
       {% if health.backoffUntil %}· <span class="text-amberx">paused until {{ health.backoffUntil | localdt('HH:mm:ss') }}</span>{% endif %}
     </div>
   </div>
-  {% set cards = [['matched','Confirmed','text-grass'], ['underpaid','Paid too little','text-amberx'], ['unmatched','Couldn’t match','text-pine'], ['delivery_failed','Delivery failed','text-rust']] %}
+  {% set cards = [['matched','Confirmed','text-grass'], ['underpaid','Paid too little','text-amberx'], ['unmatched','Couldn’t match','text-pine'], ['delivery_failed','Delivery failed','text-rust'], ['dismissed','Dismissed','text-ink-soft']] %}
   {% for c in cards %}
   <div class="card card-pad">
     <div class="stat-label">{{ c[1] }}</div>
@@ -110,6 +110,16 @@
 </section>
 
 {# ---- History ---- #}
+<div class="rounded-xl px-4 py-3 mb-4 text-xs bg-sand/60 text-ink-soft border border-line leading-relaxed">
+  <b>Reference</b> is the payment's ID at Binance — we match it to an order
+  automatically by the <b>exact amount received</b>, so it is <b>not</b> an order
+  code and won't be found in your sales orders.
+  <b>“Couldn’t match”</b> means money arrived that didn’t line up with any waiting
+  order. If a customer simply forgot the order note, link it with
+  <a href="#" onclick="document.querySelector('input[name=binance_tx_id]').focus();return false" class="link">Match a payment by hand</a> above.
+  If it belongs to no order at all (e.g. a <b>test deposit</b>), use
+  <b>Dismiss</b> to clear it from the list.
+</div>
 <div class="flex items-center justify-between mb-3">
   <h2 class="section-title">Payment history</h2>
   <form method="get" action="/payments" class="flex gap-2 items-center text-sm">
@@ -140,6 +150,13 @@
         <td class="tabular">{{ r.amount | money }}{% if r.amount is not none %} USDT{% endif %}</td>
         <td>
           {% if r.order %}<a class="link font-mono text-xs" href="/orders/{{ r.order.id }}">{{ r.order.orderCode }}</a>
+          {% elif r.outcome == 'unmatched' %}
+          <form method="post" action="/payments/dismiss" class="inline">
+            {{ ui.csrf_field(admin) }}
+            <input type="hidden" name="binance_tx_id" value="{{ r.binanceTxId }}">
+            <button class="btn btn-ghost btn-sm"
+                    onclick="return confirm('Dismiss this payment? Use this only when it belongs to no order (e.g. a test deposit). It will be marked “dismissed” and kept in the history.')">Dismiss</button>
+          </form>
           {% else %}<span class="text-ink-faint">—</span>{% endif %}
         </td>
       </tr>

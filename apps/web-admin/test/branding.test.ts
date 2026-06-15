@@ -107,4 +107,54 @@ describe("branding page", () => {
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
   });
+
+  it("hero upload (PNG) sets web_hero_url and replaces the old file", async () => {
+    const mp1 = multipart({ csrf_token: csrf }, { field: "hero", filename: "h.png", contentType: "image/png", content: PNG });
+    await postMultipart("/branding/hero", cookie, mp1);
+    const first = await getSetting(prisma, "web_hero_url");
+    const mp2 = multipart({ csrf_token: csrf }, { field: "hero", filename: "h2.png", contentType: "image/png", content: PNG });
+    await postMultipart("/branding/hero", cookie, mp2);
+    const second = await getSetting(prisma, "web_hero_url");
+    expect(second).toMatch(/^\/uploads\/branding\/hero-[0-9a-f]+\.png$/);
+    expect(second).not.toBe(first);
+  });
+
+  it("banner upload sets banner_image and clears banner_image_fileid", async () => {
+    await setSetting(prisma, "banner_image_fileid", "STALE");
+    const mp = multipart({ csrf_token: csrf }, { field: "banner", filename: "b.png", contentType: "image/png", content: PNG });
+    await postMultipart("/branding/banner", cookie, mp);
+    expect(await getSetting(prisma, "banner_image")).toMatch(/^\/uploads\/branding\/banner-/);
+    expect(await getSetting(prisma, "banner_image_fileid")).toBeNull();
+  });
+
+  it("banner clear removes both keys", async () => {
+    await setSetting(prisma, "banner_image", "/uploads/branding/banner-x.png");
+    await setSetting(prisma, "banner_image_fileid", "ID");
+    const res = await app.inject({
+      method: "POST", url: "/branding/banner/clear",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      cookies: { [COOKIE]: cookie }, payload: new URLSearchParams({ csrf_token: csrf }).toString(),
+    });
+    expect(res.statusCode).toBe(303);
+    expect(await getSetting(prisma, "banner_image")).toBeNull();
+    expect(await getSetting(prisma, "banner_image_fileid")).toBeNull();
+  });
+
+  it("text edit updates a whitelisted key and rejects others", async () => {
+    const ok = await app.inject({
+      method: "POST", url: "/branding/text",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      cookies: { [COOKIE]: cookie }, payload: new URLSearchParams({ csrf_token: csrf, key: "shop_name", value: "My Shop" }).toString(),
+    });
+    expect(ok.statusCode).toBe(303);
+    expect(await getSetting(prisma, "shop_name")).toBe("My Shop");
+
+    const bad = await app.inject({
+      method: "POST", url: "/branding/text",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      cookies: { [COOKIE]: cookie }, payload: new URLSearchParams({ csrf_token: csrf, key: "bot_token", value: "x" }).toString(),
+    });
+    expect(bad.statusCode).toBe(303);
+    expect(await getSetting(prisma, "bot_token")).toBeNull();
+  });
 });

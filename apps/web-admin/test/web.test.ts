@@ -1366,6 +1366,7 @@ describe("setup wizard — step 2/3/finish", () => {
     await deleteSetting(prisma, "setup_completed");
     await deleteSetting(prisma, "setup_owner_tg");
     resetAccountFailures(OWNER_TG);
+    setAdminIds([...config.ADMIN_IDS]);
   });
 
   async function createOwner() {
@@ -1405,7 +1406,7 @@ describe("setup wizard — step 2/3/finish", () => {
     const res = await app.inject({
       method: "POST",
       url: "/setup/shop",
-      payload: form({ shop_name: "Toko Demo", skip: "" }),
+      payload: form({ shop_name: "Toko Demo" }),
       headers: { "content-type": "application/x-www-form-urlencoded" },
     });
     expect(res.statusCode).toBe(303);

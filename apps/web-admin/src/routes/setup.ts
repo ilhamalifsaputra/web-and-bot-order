@@ -8,7 +8,7 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { logger } from "@app/core/logger";
 import { config } from "@app/core/config";
-import { addAdminId } from "@app/core/runtime";
+import { addAdminId, setAdminIds } from "@app/core/runtime";
 import {
   prisma,
   getSetting,
@@ -20,6 +20,7 @@ import {
   isSetupCompleted,
   markSetupComplete,
   logAdminAction,
+  resolveAdminIds,
 } from "@app/db";
 import { hashPassword, makeSession, newJti, passwordHashKey, sessionJtiKey } from "../auth";
 import { setTokenValidator, getTokenValidator } from "../lib/telegramCheck";
@@ -90,12 +91,19 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
 
     // Make the id an admin in the runtime FIRST so upsertUser resolves role=ADMIN,
     // then persist everything in one short transaction (CLAUDE.md: single-writer).
-    addAdminId(telegramId);
-    await prisma.$transaction(async (tx) => {
-      await addAdminIdToDb(tx, telegramId);
-      await upsertUser(tx, { telegramId, username, fullName: null });
-      await setSetting(tx, passwordHashKey(telegramId), hashPassword(password));
-    });
+    addAdminId(telegramId); // runtime first so upsertUser resolves role=ADMIN
+    try {
+      await prisma.$transaction(async (tx) => {
+        await addAdminIdToDb(tx, telegramId);
+        await upsertUser(tx, { telegramId, username, fullName: null });
+        await setSetting(tx, passwordHashKey(telegramId), hashPassword(password));
+      });
+    } catch (err) {
+      // Transaction failed — undo the in-memory promotion so isAdmin() stays
+      // consistent with the DB (re-derive the canonical env ∪ DB list).
+      setAdminIds(await resolveAdminIds(prisma));
+      throw err;
+    }
     await setSetting(prisma, OWNER_TG_KEY, String(telegramId));
     logger.info(`Setup: owner admin created telegram_id=${telegramId}`); // never log the password
     return reply.code(303).redirect("/setup/shop");
@@ -117,7 +125,7 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(303).redirect("/setup/owner");
     }
 
-    if (!body.skip) {
+    if (body.skip !== "1") {
       const shopName = (body.shop_name ?? "").trim();
       const tagline = (body.shop_tagline ?? "").trim();
       if (shopName) await setSetting(prisma, "shop_name", shopName);
@@ -145,6 +153,8 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
         targetId: null,
         details: `owner_telegram_id=${ownerTg}`,
       });
+    } else {
+      logger.error(`Setup finish: owner user row missing for telegram_id=${ownerTg}; auto-login skipped`);
     }
     await deleteSetting(prisma, OWNER_TG_KEY);
     logger.info(`Setup completed; owner auto-logged-in telegram_id=${ownerTg}`);

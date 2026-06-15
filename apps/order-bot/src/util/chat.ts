@@ -6,7 +6,7 @@
  * failure (e.g. editing a photo+caption bubble, or "message is not modified")
  * we fall through to a fresh send so the user always gets a response.
  */
-import type { InlineKeyboard, Keyboard } from "grammy";
+import { InputFile, type InlineKeyboard, type Keyboard } from "grammy";
 import { GrammyError } from "grammy";
 import type { MyContext } from "../context";
 
@@ -122,12 +122,13 @@ export async function renderMenu(
   ctx: MyContext,
   text: string,
   replyMarkup?: Markup,
-  photoFileId?: string,
+  photo?: string | InputFile,
+  onPhotoSent?: (fileId: string) => void | Promise<void>,
 ): Promise<void> {
   ctx.session.awaitingQtyProductId = undefined;
   const body = truncateText(text);
 
-  if (photoFileId && body.length <= MAX_CAPTION_LEN) {
+  if (photo && body.length <= MAX_CAPTION_LEN) {
     // Editing in place only works when we're on a callback and the current
     // bubble is already a photo (the menus here use reply keyboards, so this is
     // rare — the common path is a fresh photo send below).
@@ -147,9 +148,10 @@ export async function renderMenu(
       }
     }
     const prev = ctx.session.menuMsgId ?? ctx.callbackQuery?.message?.message_id;
-    const msg = await ctx.replyWithPhoto(photoFileId, { caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
+    const msg = await ctx.replyWithPhoto(photo, { caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
     if (prev !== undefined && prev !== msg.message_id) await retireKeyboard(ctx, prev);
     ctx.session.menuMsgId = msg.message_id;
+    if (onPhotoSent && msg.photo?.length) await onPhotoSent(msg.photo[msg.photo.length - 1]!.file_id);
     return;
   }
 

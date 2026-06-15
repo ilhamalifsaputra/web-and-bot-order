@@ -29,6 +29,7 @@ import {
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
 import { setTokenValidator } from "../src/routes/settings";
+import { setTokenValidator as setSetupTokenValidator } from "../src/routes/setup";
 import { Decimal } from "@app/core/money";
 import { setFxRateFetcher } from "@app/db";
 import {
@@ -1294,5 +1295,55 @@ describe("first-run setup gate", () => {
     await deleteSetting(prisma, "setup_completed");
     const res = await app.inject({ method: "GET", url: "/healthz" });
     expect(res.statusCode).toBe(200);
+  });
+});
+
+describe("setup wizard — step 1 (connect bot)", () => {
+  beforeEach(async () => {
+    await deleteSetting(prisma, "setup_completed"); // open the wizard
+  });
+
+  it("renders the connect-bot form at GET /setup", async () => {
+    const res = await app.inject({ method: "GET", url: "/setup" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("Bot token");
+  });
+
+  it("rejects a bad token (getMe fails) and saves nothing", async () => {
+    setSetupTokenValidator(async () => ({ ok: false }));
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/bot",
+      payload: form({ bot_token: "garbage" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(await getSetting(prisma, "bot_token")).toBeNull();
+  });
+
+  it("saves token + username on a valid token and advances to step 2", async () => {
+    setSetupTokenValidator(async () => ({ ok: true, username: "ShopBot" }));
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/bot",
+      payload: form({ bot_token: "123:VALID" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/setup/owner");
+    expect(await getSetting(prisma, "bot_token")).toBe("123:VALID");
+    expect(await getSetting(prisma, "bot_username")).toBe("ShopBot");
+  });
+
+  it("can skip step 1 (Atur nanti) without saving a token", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/bot",
+      payload: form({ skip: "1" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/setup/owner");
+    expect(await getSetting(prisma, "bot_token")).toBeNull();
   });
 });

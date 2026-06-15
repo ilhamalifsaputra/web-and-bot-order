@@ -512,16 +512,22 @@ describe("account settings", () => {
 describe("storefront setup gate", () => {
   it("shows a 'shop not active yet' page while setup is pending", async () => {
     await deleteSetting(prisma, "setup_completed"); // no admin password in this DB
-    const res = await app.inject({ method: "GET", url: "/" });
-    expect(res.statusCode).toBe(503);
-    expect(res.body).toContain("belum aktif");
-    await setSetting(prisma, "setup_completed", "true"); // restore for other tests
+    try {
+      const res = await app.inject({ method: "GET", url: "/" });
+      expect(res.statusCode).toBe(503);
+      expect(res.body).toContain("belum aktif");
+    } finally {
+      await setSetting(prisma, "setup_completed", "true"); // restore for other tests
+    }
   });
 
   it("still serves /healthz while setup is pending", async () => {
     await deleteSetting(prisma, "setup_completed");
-    const res = await app.inject({ method: "GET", url: "/healthz" });
-    expect(res.statusCode).toBe(200);
-    await setSetting(prisma, "setup_completed", "true");
+    try {
+      const res = await app.inject({ method: "GET", url: "/healthz" });
+      expect(res.statusCode).toBe(200);
+    } finally {
+      await setSetting(prisma, "setup_completed", "true");
+    }
   });
 });

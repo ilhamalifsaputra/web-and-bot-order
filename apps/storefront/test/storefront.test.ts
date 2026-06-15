@@ -606,6 +606,20 @@ describe("checkout — Bybit option", () => {
   });
 });
 
+describe("hero image", () => {
+  it("uses the configured hero when web_hero_url is set", async () => {
+    await setSetting(prisma, "web_hero_url", "/uploads/branding/hero-cafe01.jpg");
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.body).toContain("/uploads/branding/hero-cafe01.jpg");
+    await deleteSetting(prisma, "web_hero_url");
+  });
+
+  it("falls back to the default hero when unset", async () => {
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.body).toContain("images.unsplash.com");
+  });
+});
+
 describe("storefront setup gate", () => {
   it("shows a 'shop not active yet' page while setup is pending", async () => {
     await deleteSetting(prisma, "setup_completed"); // no admin password in this DB

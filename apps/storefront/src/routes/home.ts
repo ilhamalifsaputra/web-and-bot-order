@@ -38,7 +38,7 @@ function reviewerName(user: { fullName: string | null; loginUsername: string | n
 const homeRoutes: FastifyPluginAsync = async (app) => {
   app.get("/", async (req, reply) => {
     const ctx = await shopContext(req, "/");
-    const [categories, products, stock, ratings, bulk, reviews, rating, fulfil, waNumber] =
+    const [categories, products, stock, ratings, bulk, reviews, rating, fulfil, waNumber, heroUrl] =
       await Promise.all([
         listActiveCategories(prisma),
         listNewestActiveProducts(prisma, 12),
@@ -51,6 +51,8 @@ const homeRoutes: FastifyPluginAsync = async (app) => {
         // WhatsApp button on the contact section — set in web-admin Settings ›
         // Website; empty/unset hides the button.
         getSetting(prisma, "support_whatsapp"),
+        // Hero banner — admin-uploaded image overrides the Unsplash default.
+        getSetting(prisma, "web_hero_url"),
       ]);
     const ratingByProduct = new Map(ratings.map((r) => [r.productId, r]));
 
@@ -80,7 +82,7 @@ const homeRoutes: FastifyPluginAsync = async (app) => {
 
     return reply.view("home.njk", {
       ...ctx,
-      hero_image: HERO_IMAGE,
+      hero_image: heroUrl || HERO_IMAGE,
       categories: categories.map((c) => ({ ...c, image: categoryImage(c.name) })),
       products: products.map((p) => ({
         id: p.id,

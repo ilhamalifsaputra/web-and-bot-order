@@ -55,7 +55,7 @@
       </details>
       {% endfor %}
 
-      {% set settings_active = active_nav == '/settings' or active_nav == '/admins' %}
+      {% set settings_active = active_nav == '/settings' or active_nav == '/admins' or active_nav == '/branding' %}
       <details class="relative group">
         <summary class="flex items-center gap-1.5 cursor-pointer select-none px-3 py-1.5 rounded-lg transition-colors hover:bg-sand {% if settings_active %}text-pine font-semibold bg-pine-tint{% else %}text-ink-soft{% endif %}">
           <i data-lucide="settings" class="w-4 h-4 text-sky-500"></i> Settings
@@ -65,6 +65,10 @@
           <a href="/settings"
              class="flex items-center gap-2.5 px-4 py-2 text-sm transition-colors hover:bg-sand {% if active_nav == '/settings' %}text-pine font-semibold bg-pine-tint{% else %}text-ink-soft{% endif %}">
             <i data-lucide="sliders-horizontal" class="w-4 h-4 {% if active_nav == '/settings' %}{% else %}text-sky-500{% endif %}"></i> Settings
+          </a>
+          <a href="/branding"
+             class="flex items-center gap-2.5 px-4 py-2 text-sm transition-colors hover:bg-sand {% if active_nav == '/branding' %}text-pine font-semibold bg-pine-tint{% else %}text-ink-soft{% endif %}">
+            <i data-lucide="image" class="w-4 h-4 {% if active_nav == '/branding' %}{% else %}text-sky-500{% endif %}"></i> Branding
           </a>
           {% if admin.role == 'super' %}
           <a href="/admins"

@@ -157,4 +157,14 @@ describe("branding page", () => {
     expect(bad.statusCode).toBe(303);
     expect(await getSetting(prisma, "bot_token")).toBeNull();
   });
+
+  it("uploaded files are served with CSP + nosniff headers", async () => {
+    const mp = multipart({ csrf_token: csrf }, { field: "favicon", filename: "f.png", contentType: "image/png", content: PNG });
+    await postMultipart("/branding/favicon", cookie, mp);
+    const url = await getSetting(prisma, "web_favicon_url");
+    const res = await app.inject({ method: "GET", url: url! });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+    expect(String(res.headers["content-security-policy"])).toContain("default-src 'none'");
+  });
 });

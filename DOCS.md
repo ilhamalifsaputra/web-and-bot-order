@@ -70,16 +70,27 @@ Rencana Bagian 1 §8 / Bagian 2 §6 mengutamakan Unsplash. Nyatanya:
 - Urutan resolusi gambar: `webImageUrl` (upload admin) → peta Unsplash per
   kategori (`apps/storefront/src/images.ts`) → placeholder.
 
-**3. Pembayaran = TIGA metode auto-confirm (rencana hanya sebut 2).**
+**3. Pembayaran = TIGA metode auto-confirm, kini SIMETRIS di kedua front.**
 | Metode | Mata uang order | Front | Mekanisme | Kelola |
 |---|---|---|---|---|
 | **Binance Internal Transfer** (UID + nominal unik) | USDT | bot **&** storefront | poller auto-confirm (`payments/binanceInternal`) | env / Settings |
 | **TokoPay (QRIS)** | IDR | bot **&** storefront | webhook `POST /pay/tokopay/callback` (verifikasi signature + idempotensi `ProcessedTokopayTx`) | web-admin Settings |
-| **Bybit USDT-BEP20 (on-chain)** | USDT | **bot saja** | poller cocokkan **nominal unik** (BEP20 tanpa memo); tak cocok = "unmatched" untuk review; idempoten via `processed_bybit_tx` UNIQUE | web-admin Settings |
-- Di **storefront** pembeli memilih metode **saat bayar**: USDT→Binance,
-  IDR→TokoPay (`apps/storefront/src/routes/checkout.ts`). Status di halaman bayar
-  via **HTMX polling** `/checkout/:code/status` tiap ~5 dtk; saat `DELIVERED`
-  redirect ke kredensial. Web **tanpa upload bukti** & **tanpa wallet** (§17.1).
+| **Bybit USDT-BEP20 (on-chain)** | USDT | bot **&** storefront | poller cocokkan **nominal unik** (BEP20 tanpa memo); tak cocok = "unmatched" untuk review; idempoten via `processed_bybit_tx` UNIQUE | web-admin Settings |
+- **Simetri metode (Juni 2026):** storefront = QRIS + Binance + **Bybit**; bot =
+  Binance Pay/Internal + Bybit + **QRIS**. Klien TokoPay kini di rumah bersama
+  `@app/core/payments/tokopay` (resolver `getTokopayCreds` di `@app/db`), dipakai
+  storefront **dan** bot. Bot QRIS menggambar QR di dalam Telegram
+  (`buyNowTokopay`, callback `payq`); pembeli QRIS Telegram dikonfirmasi via
+  webhook (bukan poller) lalu mengambil kredensial dari **My Orders** di bot.
+- **Dependensi QRIS (web & bot):** auto-confirm hanya jalan bila **Callback URL
+  TokoPay** publik diset (`https://<host>/pay/tokopay/callback`, §15.5). Tanpa itu
+  order QRIS mentok sampai jendela bayar habis lalu auto-cancel. Binance & Bybit
+  (poller) tak terpengaruh.
+- Di **storefront** pembeli memilih metode **saat bayar**: USDT→**Binance atau
+  Bybit**, IDR→TokoPay (`apps/storefront/src/routes/checkout.ts`). Status di
+  halaman bayar via **HTMX polling** `/checkout/:code/status` tiap ~5 dtk; saat
+  `DELIVERED` redirect ke kredensial. Web **tanpa upload bukti** & **tanpa
+  wallet** (§17.1).
 - `Order.currency` ("IDR"/"USDT") + `Order.fxRate` (snapshot kurs saat USDT) +
   `Order.paymentMethod` + `Order.paymentRef` sudah ada di skema.
 
@@ -570,11 +581,12 @@ web:
 #### 15.4 Routing pembayaran (dipilih pembeli saat bayar)
 | Metode dipilih → `Order.currency` | Jumlah ditagih | Gateway | Mekanisme konfirmasi |
 |---|---|---|---|
-| Rupiah → `IDR` | harga pusat (eksak) | **TokoPay** (baru) | QRIS / VA / e-wallet; konfirmasi via **callback webhook** |
-| USDT → `USDT` | nilai USDT **dibulatkan** (§15.1) | **Binance** (existing) | Binance Internal (UID) + nominal unik; auto-confirm poller |
-- **USDT hanya bisa dibayar via Binance**; semua metode lain (QRIS/VA/e-wallet)
-  lewat **TokoPay** dalam Rupiah. Tidak ada gateway USDT selain Binance.
-- `uniqueCents` (pencocokan nominal) hanya relevan untuk jalur USDT/Binance.
+| Rupiah → `IDR` | harga pusat (eksak) | **TokoPay** (QRIS) | QRIS / VA / e-wallet; konfirmasi via **callback webhook** |
+| USDT → `USDT` | nilai USDT **dibulatkan** (§15.1) | **Binance** atau **Bybit** | Binance Internal (UID) / Bybit deposit BEP20 + nominal unik; auto-confirm poller |
+- **USDT** kini bisa via **Binance Internal atau Bybit** (keduanya poller, nominal
+  unik); semua metode Rupiah (QRIS/VA/e-wallet) lewat **TokoPay**. Pemilihan
+  metode kini **simetris** di storefront & bot (lihat §status #3).
+- `uniqueCents` (pencocokan nominal) hanya relevan untuk jalur USDT (Binance/Bybit).
 - Web = **auto-confirm saja** (tanpa upload bukti — §17.1 #1).
 - Halaman bayar berbeda tampilan per gateway (design.md §8b).
 

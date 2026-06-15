@@ -34,6 +34,7 @@ import broadcastRoutes from "./routes/broadcast";
 import supportRoutes from "./routes/support";
 import settingsRoutes from "./routes/settings";
 import auditRoutes from "./routes/audit";
+import brandingRoutes from "./routes/branding";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // Overridable via env so the bundled deploy can point at the shipped static/
@@ -86,6 +87,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(supportRoutes);
   await app.register(settingsRoutes);
   await app.register(auditRoutes);
+  await app.register(brandingRoutes);
 
   return app;
 }

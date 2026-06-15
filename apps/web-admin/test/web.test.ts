@@ -1321,6 +1321,17 @@ describe("setup wizard — step 1 (connect bot)", () => {
     expect(await getSetting(prisma, "bot_token")).toBeNull();
   });
 
+  it("rejects a whitespace-only token (trims to empty) and saves nothing", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/bot",
+      payload: form({ bot_token: "   " }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(await getSetting(prisma, "bot_token")).toBeNull();
+  });
+
   it("saves token + username on a valid token and advances to step 2", async () => {
     setSetupTokenValidator(async () => ({ ok: true, username: "ShopBot" }));
     const res = await app.inject({

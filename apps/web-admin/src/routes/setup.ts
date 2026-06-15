@@ -8,31 +8,16 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { logger } from "@app/core/logger";
 import { prisma, getSetting, setSetting, isSetupCompleted } from "@app/db";
+import { setTokenValidator, getTokenValidator } from "../lib/telegramCheck";
 
-// ---- Injectable Telegram token check (mirrors routes/settings.ts) ----------
-type TokenCheck = { ok: boolean; username?: string };
-
-async function checkTokenWithTelegram(token: string): Promise<TokenCheck> {
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-    const data = (await res.json()) as { ok?: boolean; result?: { username?: string } };
-    return data.ok ? { ok: true, username: data.result?.username } : { ok: false };
-  } catch {
-    return { ok: false };
-  }
-}
-
-let tokenValidator: (token: string) => Promise<TokenCheck> = checkTokenWithTelegram;
-/** Test hook: stub the Telegram call so tests never hit the network. */
-export function setTokenValidator(fn: typeof tokenValidator): void {
-  tokenValidator = fn;
-}
+// Re-exported for tests that import setTokenValidator from this module.
+export { setTokenValidator };
 
 export default async function setupRoutes(app: FastifyInstance): Promise<void> {
   /** Once setup is locked, the wizard is gone — send to the normal login. */
   async function lockedRedirect(reply: FastifyReply): Promise<FastifyReply | null> {
     if (await isSetupCompleted(prisma)) {
-      void reply.code(303).redirect("/login");
+      reply.code(303).redirect("/login");
       return reply;
     }
     return null;
@@ -53,7 +38,7 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
     if (!token) {
       return reply.code(400).view("setup_bot.njk", { error: "Tempel token bot dari BotFather, atau pilih 'Atur nanti'." });
     }
-    const check = await tokenValidator(token);
+    const check = await getTokenValidator()(token);
     if (!check.ok) {
       return reply.code(400).view("setup_bot.njk", { error: "Token salah atau bot tidak ditemukan. Cek lagi dari BotFather." });
     }

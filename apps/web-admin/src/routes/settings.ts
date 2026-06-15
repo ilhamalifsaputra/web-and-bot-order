@@ -26,6 +26,10 @@ import {
 } from "../auth";
 import { currentAdmin, csrfProtect } from "../plugins/auth";
 import { redirectWithFlash } from "../flash";
+import { setTokenValidator, getTokenValidator } from "../lib/telegramCheck";
+
+// Re-exported for tests that import setTokenValidator from this module.
+export { setTokenValidator };
 
 // Whitelisted runtime keys the web may edit, with human labels.
 const EDITABLE: Record<string, string> = {
@@ -77,26 +81,6 @@ const SECRET_KEYS = new Set(["tokopay_secret", "bot_token", "notif_bot_token", "
 // Bot tokens get the §16.4 "don't brick the bot" treatment: owner-only, and
 // Telegram must accept the token (getMe) before anything is saved.
 const TOKEN_KEYS = new Set(["bot_token", "notif_bot_token"]);
-
-type TokenCheck = { ok: boolean; username?: string };
-/**
- * Ask Telegram whether the token works. Plain fetch (no grammy dependency
- * here); the token never appears in logs or error messages.
- */
-async function checkTokenWithTelegram(token: string): Promise<TokenCheck> {
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-    const data = (await res.json()) as { ok?: boolean; result?: { username?: string } };
-    return data.ok ? { ok: true, username: data.result?.username } : { ok: false };
-  } catch {
-    return { ok: false };
-  }
-}
-let tokenValidator: (token: string) => Promise<TokenCheck> = checkTokenWithTelegram;
-/** Test hook: stub the Telegram call. */
-export function setTokenValidator(fn: typeof tokenValidator): void {
-  tokenValidator = fn;
-}
 
 const SECRET_PREFIXES = [
   "web_admin_password_hash:",
@@ -299,7 +283,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
           "success",
         );
       }
-      const check = await tokenValidator(value);
+      const check = await getTokenValidator()(value);
       if (!check.ok) {
         return redirectWithFlash(
           reply,

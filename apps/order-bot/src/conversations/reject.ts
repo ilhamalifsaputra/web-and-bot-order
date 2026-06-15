@@ -81,7 +81,7 @@ export async function rejectConversation(conversation: MyConversation, ctx: MyCo
     orderCode = order.orderCode;
   } catch (e) {
     if (e instanceof ValidationError) {
-      await adminEdit(ctx, t(ctx, e.key, e.formatArgs));
+      await adminEdit(ctx, t(ctx, e.key, e.formatArgs), akb.backToAdminKb(adminLang));
       return;
     }
     throw e;

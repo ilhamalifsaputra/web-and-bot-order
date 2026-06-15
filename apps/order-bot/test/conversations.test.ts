@@ -13,7 +13,7 @@ import {
 } from "@app/db";
 import { OrderStatus, SenderType, TicketStatus, UserRole } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { makeCtx, FakeConversation, calls, sentIncludes, type SentCall } from "./helpers/ctx";
+import { makeCtx, FakeConversation, calls, sentIncludes, offersForwardAction, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { ticketUserReplyConversation } from "../src/conversations/customer";
 import { proofConversation, voucherConversation } from "../src/conversations/checkout";
@@ -103,6 +103,29 @@ describe("customer conversations", () => {
     expect(msgs.some((m) => m.content === "Still not working")).toBe(true);
     expect(calls(sink, "sendMessage").some((c) => c.args[0] === 999)).toBe(true); // admin notified
   });
+
+  it("ticketUserReply: the reply prompt offers a Back action (never strands)", async () => {
+    const ticket = await prisma.supportTicket.create({ data: { userId: sample.user.id, message: "x", status: TicketStatus.OPEN } });
+    const sink: SentCall[] = [];
+    const entry = entryCust(sink, `v1:ticket:reply:${ticket.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "hello" })]);
+    await ticketUserReplyConversation(conv.asMyConversation(), entry);
+    // The very first screen (the ask-reply prompt) must carry an inline keyboard.
+    const firstEdit = calls(sink, "editMessageText")[0];
+    expect(firstEdit).toBeTruthy();
+    const opts = firstEdit!.args[firstEdit!.args.length - 1] as { reply_markup?: { inline_keyboard?: unknown[][] } };
+    expect(opts.reply_markup?.inline_keyboard?.length).toBeGreaterThan(0);
+  });
+
+  it("ticketUserReply: '🏠 Menu' escapes to the dashboard without saving a reply", async () => {
+    const ticket = await prisma.supportTicket.create({ data: { userId: sample.user.id, message: "x", status: TicketStatus.OPEN } });
+    const sink: SentCall[] = [];
+    const entry = entryCust(sink, `v1:ticket:reply:${ticket.id}`);
+    const conv = new FakeConversation([msg(sink, { callbackData: "v1:menu:main" })]);
+    await ticketUserReplyConversation(conv.asMyConversation(), entry);
+    expect(await prisma.ticketMessage.count({ where: { ticketId: ticket.id, senderType: SenderType.USER } })).toBe(0);
+    expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
+  });
 });
 
 // ===========================================================================
@@ -188,6 +211,20 @@ describe("support + reject conversations", () => {
     expect(after!.status).toBe(OrderStatus.REJECTED);
     expect(await prisma.auditLog.count({ where: { action: "reject_order" } })).toBe(1);
     expect(calls(sink, "sendMessage").some((c) => c.args[0] === 42)).toBe(true); // buyer DM
+  });
+
+  it("reject: a non-pending order ends on a screen with a back action (never strands)", async () => {
+    // PENDING_PAYMENT (not PENDING_VERIFICATION) → rejectOrder throws a ValidationError.
+    const order = await prisma.$transaction((tx) =>
+      createOrderDirect(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1 }),
+    );
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:verif:reject:${order!.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "wrong state reason" })]);
+    await rejectConversation(conv.asMyConversation(), entry);
+
+    expect((await getOrder(prisma, order!.id))!.status).toBe(OrderStatus.PENDING_PAYMENT); // unchanged
+    expect(offersForwardAction(sink)).toBe(true);
   });
 });
 

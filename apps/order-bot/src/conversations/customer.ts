@@ -19,7 +19,7 @@ import { esc } from "../util/format";
 import { validateText } from "../util/validators";
 import { backToMain, isPersistentLabel } from "../keyboards/customer";
 import * as akb from "../keyboards/admin";
-import { handleProductNumber } from "../handlers/customer";
+import { handleProductNumber, showMainMenu } from "../handlers/customer";
 
 // ===========================================================================
 // Ticket user reply: entry v1:ticket:reply:<id> → ask text → save → notify
@@ -39,22 +39,31 @@ export async function ticketUserReplyConversation(conversation: MyConversation, 
     return;
   }
 
+  const lang = ctx.session.lang;
   await ctx.answerCallbackQuery();
-  await smartEdit(ctx, t(ctx, "ticket.ask_reply"));
+  await smartEdit(ctx, t(ctx, "ticket.ask_reply"), backToMain(lang));
 
   let body: string;
   for (;;) {
-    const msgCtx = await conversation.waitFor("message:text");
-    const replyText = msgCtx.message.text ?? "";
+    const u = await conversation.wait();
+    // 🏠 Menu — non-destructive escape to the dashboard. The conversation owns
+    // this update, so the router never sees it: answer + render here, then exit.
+    if ((u.callbackQuery?.data ?? "") === "v1:menu:main") {
+      await u.answerCallbackQuery();
+      await showMainMenu(u);
+      return;
+    }
+    const replyText = u.message?.text;
+    if (!replyText) continue;
     // A reply-keyboard menu tap (Terms, FAQ, …) must not be captured as the
     // ticket reply. Exit the conversation and run the tapped action instead.
-    if (isPersistentLabel(replyText)) return void (await handleProductNumber(msgCtx));
+    if (isPersistentLabel(replyText)) return void (await handleProductNumber(u));
     try {
       body = validateText(replyText, 2000, 1);
       break;
     } catch (e) {
       if (e instanceof ValidationError) {
-        await smartEdit(msgCtx, t(msgCtx, e.key, e.formatArgs));
+        await smartEdit(u, t(u, e.key, e.formatArgs), backToMain(lang));
         continue;
       }
       throw e;

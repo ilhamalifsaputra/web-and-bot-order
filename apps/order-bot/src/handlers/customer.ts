@@ -492,7 +492,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
   const lang = ctx.session.lang;
   const order = await getOrder(prisma, orderId);
   if (order === null || order.userId !== info.id) {
-    await smartEdit(ctx, t(ctx, "error.order_not_found"));
+    await smartEdit(ctx, t(ctx, "error.order_not_found"), ckb.backToMain(lang));
     return;
   }
 
@@ -629,7 +629,7 @@ export async function viewMyTicket(ctx: MyContext, ticketId: number): Promise<vo
 
   const ticket = await getTicket(prisma, ticketId);
   if (ticket === null || ticket.userId !== info.id) {
-    await smartEdit(ctx, t(ctx, "error.order_not_found"));
+    await smartEdit(ctx, t(ctx, "error.ticket_not_found"), ckb.backToMain(lang));
     return;
   }
   const messages = await listTicketMessages(prisma, ticketId, 10);

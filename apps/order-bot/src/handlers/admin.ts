@@ -215,10 +215,11 @@ async function userWalletPrompt(ctx: MyContext, userId: number): Promise<void> {
 /** `/wallet <user_db_id> <amount>` — manual wallet adjustment by admin. */
 export async function adminWalletCommand(ctx: MyContext): Promise<void> {
   ctx.session.adminMsgId = undefined;
+  const lang = ctx.session.lang;
   const args = (typeof ctx.match === "string" ? ctx.match : "").trim().split(/\s+/).filter(Boolean);
   logger.info(`admin_wallet_command: user=${ctx.from?.id} args=${args.join(" ")}`);
   if (args.length !== 2) {
-    await adminEdit(ctx, t(ctx, "admin.wallet_usage"));
+    await adminEdit(ctx, t(ctx, "admin.wallet_usage"), akb.backToAdminKb(lang));
     return;
   }
   let uid: number;
@@ -228,7 +229,7 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     amt = new Decimal(args[1]!);
     if (Number.isNaN(uid)) throw new Error("bad uid");
   } catch {
-    await adminEdit(ctx, t(ctx, "admin.wallet_bad_args"));
+    await adminEdit(ctx, t(ctx, "admin.wallet_bad_args"), akb.backToAdminKb(lang));
     return;
   }
 
@@ -250,10 +251,10 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     });
   } catch (err) {
     logger.error({ err }, "wallet adjust failed");
-    await adminEdit(ctx, t(ctx, "admin.wallet_failed"));
+    await adminEdit(ctx, t(ctx, "admin.wallet_failed"), akb.backToAdminKb(lang));
     return;
   }
-  await adminEdit(ctx, `New balance for user ${uid}: ${price(newBal)}`);
+  await adminEdit(ctx, t(ctx, "admin.wallet_adjusted", { uid, balance: price(newBal) }), akb.backToAdminKb(lang));
 }
 
 // ===========================================================================

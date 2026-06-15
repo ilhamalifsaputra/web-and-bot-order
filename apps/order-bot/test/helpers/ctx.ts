@@ -151,3 +151,22 @@ export function calls(sink: SentCall[], method: string): SentCall[] {
 export function sentIncludes(sink: SentCall[], needle: string): boolean {
   return sink.some((c) => JSON.stringify(c.args).includes(needle));
 }
+
+/** The reply_markup of the most recent screen-producing call, if any. */
+export function lastMarkup(sink: SentCall[]): { inline_keyboard?: unknown[][] } | undefined {
+  const screens = ["editMessageText", "editMessageCaption", "reply", "sendMessage", "replyWithPhoto"];
+  for (let i = sink.length - 1; i >= 0; i--) {
+    const c = sink[i]!;
+    if (screens.includes(c.method)) {
+      const opts = c.args[c.args.length - 1] as { reply_markup?: { inline_keyboard?: unknown[][] } } | undefined;
+      if (opts && typeof opts === "object" && "reply_markup" in opts) return opts.reply_markup;
+    }
+  }
+  return undefined;
+}
+
+/** True if the latest screen offers ≥1 inline button (a forward action, never stranding the user). */
+export function offersForwardAction(sink: SentCall[]): boolean {
+  const m = lastMarkup(sink);
+  return !!m && Array.isArray(m.inline_keyboard) && m.inline_keyboard.flat().length > 0;
+}

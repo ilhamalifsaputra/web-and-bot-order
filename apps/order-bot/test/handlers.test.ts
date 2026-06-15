@@ -19,13 +19,13 @@ import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { makeCtx, calls, sentIncludes, type SentCall } from "./helpers/ctx";
+import { makeCtx, calls, sentIncludes, offersForwardAction, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
-import { handleAdminCallback, adminCommand } from "../src/handlers/admin";
+import { handleAdminCallback, adminCommand, adminWalletCommand } from "../src/handlers/admin";
 import { routeCallback } from "../src/handlers/callbacks";
 import { upsertUser } from "@app/db";
 
@@ -190,6 +190,22 @@ describe("customer handlers", () => {
     await customer.viewOrder(ctx, order!.id);
     expect(sentIncludes(sink, sold!.credentials)).toBe(true);
   });
+
+  it("viewOrder never strands the user when the order isn't found", async () => {
+    const order = await makeOrder();
+    const stranger = makeCtx({
+      from: { id: 777 },
+      session: { lang: "en", scratch: {}, dbUser: { id: 99999, telegramId: "777", role: "CUSTOMER", language: "EN", referralCode: "X", walletBalance: "0" } },
+    });
+    await customer.viewOrder(stranger.ctx, order!.id);
+    expect(offersForwardAction(stranger.sink)).toBe(true);
+  });
+
+  it("viewMyTicket never strands the user when the ticket isn't found", async () => {
+    const { ctx, sink } = customerCtx();
+    await customer.viewMyTicket(ctx, 999999);
+    expect(offersForwardAction(sink)).toBe(true);
+  });
 });
 
 // ===========================================================================
@@ -346,6 +362,25 @@ describe("admin handlers", () => {
     await handleAdminCallback(ctx, "v1:adm:dash".split(":"));
     // answered with an alert, no dashboard content
     expect(calls(sink, "answerCallbackQuery").length).toBe(1);
+  });
+
+  it("adminWalletCommand offers a back action on bad args (never strands)", async () => {
+    const { ctx, sink } = adminCtx({ match: "only-one-arg" });
+    await adminWalletCommand(ctx);
+    expect(offersForwardAction(sink)).toBe(true);
+  });
+
+  it("adminWalletCommand credits the wallet, localizes the result, and offers a back action", async () => {
+    // An Indonesian-speaking admin must see the result in Indonesian (not a
+    // hardcoded English line) — proves the success screen goes through i18n.
+    const { ctx, sink } = makeCtx({
+      from: { id: 999, username: "boss" },
+      match: `${sample.user.id} 5`,
+      session: { lang: "id", scratch: {}, dbUser: { id: adminDbId, telegramId: "999", role: UserRole.ADMIN, language: "ID", referralCode: "A", walletBalance: "0" } },
+    });
+    await adminWalletCommand(ctx);
+    expect(sentIncludes(sink, "Saldo baru")).toBe(true); // localized to the admin's language
+    expect(offersForwardAction(sink)).toBe(true);
   });
 
   it("user ban toggles the flag and writes an audit row", async () => {

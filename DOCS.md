@@ -1589,7 +1589,8 @@ Catatan:
   aktif"** (503). Setelah Selesai, **wizard terkunci permanen** dan tak bisa
   diakses lagi.
 - **`WEB_COOKIE_SECRET` boleh dikosongkan** — kalau kosong, di-generate otomatis
-  & disimpan (Fase 1). **`BINANCE_PAY_ID` juga boleh kosong**.
+  & disimpan saat boot. **`BINANCE_PAY_ID` juga boleh kosong** (= Binance Pay
+  manual tidak aktif).
 - **Deploy lama / jalur manual**: `/bootstrap` (§5.4) tetap ada sebagai cara
   kompatibel. Wizard hanya muncul pada instalasi baru (belum ada admin
   berpassword).
@@ -1607,7 +1608,7 @@ Catatan:
 | `BOT_USERNAME` | Username bot (mis. `TokoSaya_bot`). Opsional — terisi otomatis via `getMe`. |
 | `ADMIN_IDS` | **Angka** Telegram ID-mu (bukan username). Kirim pesan ke **@userinfobot** untuk melihatnya. Banyak admin → pisah koma: `111,222`. |
 | `WEB_COOKIE_SECRET` | Minimal 32 karakter acak. `openssl rand -hex 32`, atau ketik asal ≥32 huruf/angka. **Rahasia.** |
-| `BINANCE_PAY_ID` | **Wajib ada** agar app mau boot. Kalau tak pakai Binance Pay manual, isi placeholder (mis. `0`). |
+| `BINANCE_PAY_ID` | **Opsional** — boleh dikosongkan (= Binance Pay manual tidak aktif). App tetap boot. |
 
 ### 5.3 Env minimum agar app + login admin jalan
 ```

@@ -34,14 +34,10 @@ import {
   deliverPaidTokopayOrder,
   recordUnmatchedTokopayTx,
   getSetting,
+  getTokopayCreds,
 } from "@app/db";
 import { currentCustomer, csrfProtect, type Customer } from "../plugins/auth";
-import {
-  getTokopayCreds,
-  createTransaction,
-  verifyCallback,
-  type TokopayOrderInfo,
-} from "../payments/tokopay";
+import { createTransaction, verifyCallback, type TokopayOrderInfo } from "@app/core/payments/tokopay";
 import { usdtFromIdr } from "../pricing";
 import { shopContext, requestLang } from "../shop";
 import { loadCartLines } from "./cart";

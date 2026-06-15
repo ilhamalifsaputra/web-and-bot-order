@@ -6,9 +6,16 @@
  * TokoPay retries callbacks; claiming the trx id is an atomic insert and a
  * duplicate insert means "already handled" — an order can never double-deliver.
  *
- * The HTTP/webhook side (signature check, API calls) lives in the storefront
- * (apps/storefront/src/payments/tokopay.ts); this module only mutates the DB.
+ * The HTTP/webhook side (signature check, API calls) lives in
+ * packages/core/src/payments/tokopay.ts; this module only mutates the DB.
  */
+import {
+  TOKOPAY_MERCHANT_KEY,
+  TOKOPAY_SECRET_KEY,
+  TOKOPAY_ENABLED_KEY,
+  TOKOPAY_CHANNEL_KEY,
+  type TokopayCreds,
+} from "@app/core/payments/tokopay";
 import { OrderStatus, PaymentMethod, NotificationEvent, langCode } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
@@ -17,6 +24,20 @@ import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, approveOrder } from "./orders";
 import { enqueueNotification } from "./notifications";
+import { getSetting } from "./settings";
+
+/** Read TokoPay gateway credentials from Settings; null = the IDR/QRIS path is off. */
+export async function getTokopayCreds(db: Db): Promise<TokopayCreds | null> {
+  const [merchantId, secret, enabled, channel] = await Promise.all([
+    getSetting(db, TOKOPAY_MERCHANT_KEY),
+    getSetting(db, TOKOPAY_SECRET_KEY),
+    getSetting(db, TOKOPAY_ENABLED_KEY),
+    getSetting(db, TOKOPAY_CHANNEL_KEY),
+  ]);
+  if (!merchantId || !secret) return null;
+  if ((enabled ?? "").trim().toLowerCase() === "false") return null;
+  return { merchantId, secret, channel: (channel ?? "QRIS").trim() || "QRIS" };
+}
 
 export type TokopayDeliverResult =
   | { status: "delivered"; order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }

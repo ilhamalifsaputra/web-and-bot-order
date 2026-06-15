@@ -16,7 +16,8 @@
     "./runtime": "./src/runtime.ts",
     "./fx": "./src/fx.ts",
     "./password": "./src/password.ts",
-    "./mailer": "./src/mailer.ts"
+    "./mailer": "./src/mailer.ts",
+    "./payments/tokopay": "./src/payments/tokopay.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

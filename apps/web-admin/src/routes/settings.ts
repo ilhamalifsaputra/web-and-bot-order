@@ -66,8 +66,13 @@ const EDITABLE: Record<string, string> = {
 // UI grouping (settings.njk tabs): every EDITABLE key belongs to exactly one
 // group; anything left over falls back into the Website tab so a new key can
 // never silently disappear from the page.
-const WEBSITE_KEYS = new Set(["shop_name", "shop_tagline", "support_whatsapp"]);
-const BOT_MESSAGE_KEYS = new Set(["welcome", "banner_image", "support_contact"]);
+// shop_name / shop_tagline / welcome / banner_image now live on the Branding
+// page; only support_whatsapp (contact) stays here. They remain in EDITABLE so
+// the read-only "all options" table and the generic /settings/edit fallback
+// still work, but BRANDING_KEYS keeps them out of the editable Settings form.
+const WEBSITE_KEYS = new Set(["support_whatsapp"]);
+const BOT_MESSAGE_KEYS = new Set(["support_contact"]);
+const BRANDING_KEYS = new Set(["shop_name", "shop_tagline", "welcome", "banner_image"]);
 const BOT_TOKEN_FIELD_KEYS = new Set(["bot_token", "bot_username", "notif_bot_token"]);
 const PAY_BINANCE_KEYS = new Set(["binance_pay_id", "qr"]);
 const PAY_RATE_KEYS = new Set(["usd_idr_rate", "usd_idr_rate_auto", "usd_idr_rate_rounding"]);
@@ -118,6 +123,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     const grouped = new Set([
       ...WEBSITE_KEYS, ...BOT_MESSAGE_KEYS, ...BOT_TOKEN_FIELD_KEYS,
       ...PAY_BINANCE_KEYS, ...PAY_RATE_KEYS, ...PAY_QRIS_KEYS, ...PAY_BYBIT_KEYS,
+      ...BRANDING_KEYS,
     ]);
     // Leftover guard: an EDITABLE key missing from every group still shows up.
     const websiteFields = [

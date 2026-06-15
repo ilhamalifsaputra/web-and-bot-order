@@ -576,6 +576,14 @@ describe("settings", () => {
     const res = await post("/settings/edit", seed.cookie, { csrf_token: "bad", key: "support_contact", value: "pwned" });
     expect(res.statusCode).toBe(403);
   });
+
+  it("shop identity + banner fields no longer render an editable input on /settings", async () => {
+    const res = await get("/settings", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain('value="shop_name"');
+    expect(res.body).not.toContain('value="banner_image"');
+    expect(res.body).toContain('value="support_whatsapp"');
+  });
 });
 
 // ---- market USDT rate refresh (plan.md §15.8 resolved) ----------------------

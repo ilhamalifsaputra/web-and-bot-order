@@ -182,6 +182,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       ]);
 
       // Map the chosen method token → (currency, paymentMethod), each gated.
+      // Stricter than PaymentChoice: method is required and BINANCE_PAY is excluded (web-only constraint).
       type Choice =
         | {
             currency: typeof OrderCurrency.USDT;

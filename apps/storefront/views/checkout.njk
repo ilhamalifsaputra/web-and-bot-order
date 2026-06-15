@@ -38,7 +38,7 @@
           </span>
         </label>
         <label class="flex items-start gap-3 p-3 rounded-xl border {% if bybit_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
-          <input type="radio" name="method" value="bybit" class="mt-1" {% if not bybit_enabled %}disabled{% endif %}>
+          <input type="radio" name="method" value="bybit" class="mt-1" {% if not bybit_enabled %}disabled{% elif not idr_enabled and not binance_enabled %}checked{% endif %}>
           <span>
             <span class="font-semibold text-sm block">{{ t('web.pay_bybit_title', lang) }}</span>
             <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_bybit_sub', lang) }}</span>

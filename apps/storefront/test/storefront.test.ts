@@ -534,6 +534,7 @@ describe("checkout — Bybit option", () => {
     await deleteSetting(prisma, "bybit_deposit_address");
     await deleteSetting(prisma, "bybit_api_key");
     await deleteSetting(prisma, "bybit_api_secret");
+    await deleteSetting(prisma, "usd_idr_rate");
   }
 
   // Mirrors the storefront checkout flow: login → seed the cart → read CSRF from

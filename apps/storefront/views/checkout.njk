@@ -22,19 +22,27 @@
       <h2 class="section-title mb-3">{{ t('web.pay_method', lang) }}</h2>
       <div class="space-y-3">
         <label class="flex items-start gap-3 p-3 rounded-xl border {% if idr_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
-          <input type="radio" name="method" value="IDR" class="mt-1" {% if not idr_enabled %}disabled{% else %}checked{% endif %}>
+          <input type="radio" name="method" value="qris" class="mt-1" {% if not idr_enabled %}disabled{% else %}checked{% endif %}>
           <span>
             <span class="font-semibold text-sm block">{{ t('web.pay_idr_title', lang) }}</span>
             <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_idr_sub', lang) }}</span>
             {% if not idr_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_idr_disabled', lang) }}</span>{% endif %}
           </span>
         </label>
-        <label class="flex items-start gap-3 p-3 rounded-xl border {% if usdt_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
-          <input type="radio" name="method" value="USDT" class="mt-1" {% if not usdt_enabled %}disabled{% elif not idr_enabled %}checked{% endif %}>
+        <label class="flex items-start gap-3 p-3 rounded-xl border {% if binance_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
+          <input type="radio" name="method" value="binance" class="mt-1" {% if not binance_enabled %}disabled{% elif not idr_enabled %}checked{% endif %}>
           <span>
             <span class="font-semibold text-sm block">{{ t('web.pay_usdt_title', lang) }}</span>
             <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_usdt_sub', lang) }}</span>
-            {% if not usdt_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_usdt_disabled', lang) }}</span>{% endif %}
+            {% if not binance_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_usdt_disabled', lang) }}</span>{% endif %}
+          </span>
+        </label>
+        <label class="flex items-start gap-3 p-3 rounded-xl border {% if bybit_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
+          <input type="radio" name="method" value="bybit" class="mt-1" {% if not bybit_enabled %}disabled{% endif %}>
+          <span>
+            <span class="font-semibold text-sm block">{{ t('web.pay_bybit_title', lang) }}</span>
+            <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_bybit_sub', lang) }}</span>
+            {% if not bybit_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_bybit_disabled', lang) }}</span>{% endif %}
           </span>
         </label>
       </div>

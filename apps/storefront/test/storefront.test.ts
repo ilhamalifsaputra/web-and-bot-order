@@ -7,7 +7,7 @@ vi.mock("@app/core/mailer", () => ({
 }));
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
-import { prisma, initDb, setSetting, deleteSetting } from "@app/db";
+import { prisma, initDb, setSetting, deleteSetting, addToCart, getOrderByCode } from "@app/db";
 import { buildApp } from "../src/server";
 
 let app: FastifyInstance;
@@ -506,6 +506,71 @@ describe("account settings", () => {
     expect(follow.body).toContain("already linked to another member");
     const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
     expect(row.telegramId).toBe(636363n); // unchanged
+  });
+});
+
+describe("checkout — Bybit option", () => {
+  let buyerId: number;
+  beforeAll(async () => {
+    const { hashPassword } = await import("@app/core/password");
+    const u = await prisma.user.create({
+      data: {
+        loginUsername: "bybitbuyer",
+        email: "bybit@buyer.test",
+        passwordHash: hashPassword("bybit-pass-99"),
+        referralCode: "BYBT01",
+      },
+    });
+    buyerId = u.id;
+  });
+
+  async function enableBybit() {
+    await setSetting(prisma, "bybit_deposit_address", "0xDEADBEEF00000000000000000000000000000000");
+    await setSetting(prisma, "bybit_api_key", "k");
+    await setSetting(prisma, "bybit_api_secret", "s");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+  }
+  async function disableBybit() {
+    await deleteSetting(prisma, "bybit_deposit_address");
+    await deleteSetting(prisma, "bybit_api_key");
+    await deleteSetting(prisma, "bybit_api_secret");
+  }
+
+  // Mirrors the storefront checkout flow: login → seed the cart → read CSRF from
+  // the checkout page. Returns { cookie, csrf } with a non-empty cart.
+  async function checkoutSession() {
+    const cookie = await loginAs("bybitbuyer", "bybit-pass-99");
+    await addToCart(prisma, buyerId, productId, 1);
+    const page = await app.inject({ method: "GET", url: "/checkout", headers: { cookie } });
+    return { cookie, csrf: csrfFrom(page.body) };
+  }
+
+  it("creates a BYBIT/USDT order when method=bybit and Bybit is enabled", async () => {
+    await enableBybit();
+    const { cookie, csrf } = await checkoutSession();
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ method: "bybit", csrf_token: csrf }).toString(),
+    });
+    expect([302, 303]).toContain(res.statusCode);
+    const code = res.headers.location!.split("/")[2]!; // /checkout/<code>/pay
+    const order = await getOrderByCode(prisma, code);
+    expect(order!.paymentMethod).toBe("BYBIT");
+    expect(order!.currency).toBe("USDT");
+  });
+
+  it("rejects method=bybit when Bybit is disabled", async () => {
+    await disableBybit();
+    const { cookie, csrf } = await checkoutSession(); // Bybit NOT enabled here
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ method: "bybit", csrf_token: csrf }).toString(),
+    });
+    expect(res.statusCode).toBe(400);
   });
 });
 

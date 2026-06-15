@@ -35,6 +35,7 @@ import {
   recordUnmatchedTokopayTx,
   getSetting,
   getTokopayCreds,
+  resolveBybitConfig,
 } from "@app/db";
 import { currentCustomer, csrfProtect, type Customer } from "../plugins/auth";
 import { createTransaction, verifyCallback, type TokopayOrderInfo } from "@app/core/payments/tokopay";
@@ -98,12 +99,13 @@ async function checkoutView(
   voucherCode: string | null,
   errorKey: string | null,
 ) {
-  const [totals, fxRate, tokopay] = await Promise.all([
+  const [totals, fxRate, tokopay, bybit] = await Promise.all([
     computeTotals(customer, voucherCode),
     getUsdIdrRate(prisma),
     getTokopayCreds(prisma),
+    resolveBybitConfig(prisma),
   ]);
-  const usdtEnabled = Boolean(fxRate) && isBinanceInternalEnabled();
+  const haveRate = Boolean(fxRate);
   return {
     items_empty: totals.empty,
     subtotal: totals.subtotal.toString(),
@@ -113,7 +115,8 @@ async function checkoutView(
     total_usdt: fxRate ? usdtFromIdr(totals.total, fxRate).toString() : null,
     voucher_code: voucherCode ?? "",
     error_key: errorKey ?? totals.voucherError,
-    usdt_enabled: usdtEnabled,
+    binance_enabled: haveRate && isBinanceInternalEnabled(),
+    bybit_enabled: haveRate && bybit.enabled,
     idr_enabled: Boolean(tokopay),
   };
 }
@@ -163,7 +166,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     { preHandler: csrfProtect },
     async (req, reply) => {
       const customer = req.customer!;
-      const method = (req.body.method ?? "").toUpperCase();
+      const method = (req.body.method ?? "").toLowerCase();
       const voucherCode = (req.body.voucher_code ?? "").trim().toUpperCase() || null;
 
       const rerender = async (errorKey: string) => {
@@ -172,14 +175,33 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).view("checkout.njk", { ...ctx, ...view });
       };
 
-      const [fxRate, tokopay] = await Promise.all([
+      const [fxRate, tokopay, bybit] = await Promise.all([
         getUsdIdrRate(prisma),
         getTokopayCreds(prisma),
+        resolveBybitConfig(prisma),
       ]);
-      const wantUsdt = method === OrderCurrency.USDT;
-      if (wantUsdt && (!fxRate || !isBinanceInternalEnabled())) return rerender("web.pay_method_unavailable");
-      if (!wantUsdt && method !== OrderCurrency.IDR) return rerender("web.pay_method_unavailable");
-      if (!wantUsdt && !tokopay) return rerender("web.pay_method_unavailable");
+
+      // Map the chosen method token → (currency, paymentMethod), each gated.
+      type Choice =
+        | {
+            currency: typeof OrderCurrency.USDT;
+            rate: NonNullable<typeof fxRate>;
+            method: typeof PaymentMethod.BINANCE_INTERNAL | typeof PaymentMethod.BYBIT;
+          }
+        | { currency: typeof OrderCurrency.IDR };
+      let choice: Choice;
+      if (method === "binance") {
+        if (!fxRate || !isBinanceInternalEnabled()) return rerender("web.pay_method_unavailable");
+        choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BINANCE_INTERNAL };
+      } else if (method === "bybit") {
+        if (!fxRate || !bybit.enabled) return rerender("web.pay_method_unavailable");
+        choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BYBIT };
+      } else if (method === "qris") {
+        if (!tokopay) return rerender("web.pay_method_unavailable");
+        choice = { currency: OrderCurrency.IDR };
+      } else {
+        return rerender("web.pay_method_unavailable");
+      }
 
       try {
         const order = await prisma.$transaction(async (tx) => {
@@ -196,13 +218,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
             walletAmount: 0, // wallet is hidden on the web (plan.md §17.1 #5)
           });
           if (!created) throw new ValidationError("error.generic");
-          return finalizeOrderPayment(
-            tx,
-            created.id,
-            wantUsdt
-              ? { currency: OrderCurrency.USDT, rate: fxRate! }
-              : { currency: OrderCurrency.IDR },
-          );
+          return finalizeOrderPayment(tx, created.id, choice);
         });
         return reply.code(303).redirect(`/checkout/${order!.orderCode}/pay`);
       } catch (e) {

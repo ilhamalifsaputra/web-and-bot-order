@@ -69,6 +69,16 @@ Rencana Bagian 1 §8 / Bagian 2 §6 mengutamakan Unsplash. Nyatanya:
   (`apps/storefront/src/server.ts`, env `UPLOADS_DIR`, default `data/uploads`).
 - Urutan resolusi gambar: `webImageUrl` (upload admin) → peta Unsplash per
   kategori (`apps/storefront/src/images.ts`) → placeholder.
+- **Branding bisa di-upload (Juni 2026):** halaman **web-admin › Settings ›
+  Branding** (`apps/web-admin/src/routes/branding.ts`, view `branding.njk`)
+  meng-upload **favicon** (PNG/ICO/SVG), **hero** storefront, dan **banner bot**
+  (JPG/PNG/WebP) ke **`data/uploads/branding/`** (nama file di-hash, anti
+  traversal). Setting: `web_favicon_url`, `web_hero_url`, `banner_image`.
+  Storefront memakai favicon di tiap halaman (`shopContext` → `favicon_url`,
+  fallback `/static/favicon.svg`) dan hero di home (`web_hero_url` →
+  fallback `HERO_IMAGE`). Folder `/uploads/` di **kedua** app kini menyajikan
+  header `X-Content-Type-Options: nosniff` + CSP ketat agar SVG yang di-upload
+  inert (tak bisa eksekusi script bila dibuka langsung).
 
 **3. Pembayaran = TIGA metode auto-confirm, kini SIMETRIS di kedua front.**
 | Metode | Mata uang order | Front | Mekanisme | Kelola |
@@ -109,6 +119,14 @@ Whitelist `EDITABLE`, dikelompokkan jadi tab di `settings.njk`:
 - **Pembayaran — QRIS/TokoPay**: `tokopay_merchant_id`, `tokopay_secret`,
   `tokopay_enabled`.
 - **Pembayaran — Bybit**: `bybit_deposit_address`, `bybit_api_key`, `bybit_api_secret`.
+- **Branding** (halaman terpisah `/branding`, bukan tab Settings): identitas toko
+  `shop_name`, `shop_tagline`, `welcome` dan **banner bot** `banner_image` kini
+  diedit di sini bersama upload favicon/hero (lihat poin 2). Key-key itu **keluar
+  dari form Settings** (tetap di whitelist `EDITABLE` sbg fallback + tabel
+  read-only). Banner bot: bot mengirim file upload via `InputFile` lalu meng-cache
+  file_id Telegram-nya (`banner_image_fileid`); file_id legacy (di-set dari bot)
+  tetap jalan, dan cache di-invalidasi saat banner di-set/hapus/undo dari bot.
+  `support_whatsapp` tetap di tab Website.
 - Key rahasia (`SECRET_KEYS`: `tokopay_secret`, `bot_token`, `notif_bot_token`,
   `bybit_api_key`, `bybit_api_secret`) ditangani **write-only**: tak di-echo,
   `(hidden)` di tabel, audit `key=(updated)` tanpa nilai.
@@ -129,7 +147,8 @@ Whitelist `EDITABLE`, dikelompokkan jadi tab di `settings.njk`:
 Fase 0–6 (scaffold, katalog, akun+auth, keranjang+checkout, harga IDR+TokoPay,
 wiring deploy, poles) **sudah diimplementasikan**. Selain itu ditambahkan di luar
 rencana awal: **auth password/email + lupa-password**, **upload foto produk
-admin**, **pembayaran Bybit USDT-BEP20**, dan **auto-update kurs pasar**.
+admin**, **pembayaran Bybit USDT-BEP20**, **auto-update kurs pasar**, dan
+**halaman Branding** (upload favicon/hero/banner + identitas toko).
 
 ---
 

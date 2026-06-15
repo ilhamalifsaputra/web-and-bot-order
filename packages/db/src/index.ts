@@ -25,3 +25,4 @@ export * from "./crud/credentials";
 export * from "./crud/webauth";
 export * from "./crud/admins";
 export * from "./crud/web_secret";
+export * from "./crud/setup";

@@ -1565,6 +1565,35 @@ proses worker sejati, dan tuning terbatas. Pertimbangkan **Hostinger VPS** bila:
 > dari [`.env.example`](.env.example)) + sebagian lewat **web-admin → Settings**.
 > Tujuannya: **semua fitur menyala maksimal**. Acuan kebenaran: `packages/core/src/config.ts`.
 
+### 5.0 Setup lewat wizard (tanpa edit `.env`) — cara default sekarang
+
+Pada instalasi **baru** (belum ada admin yang punya password), kamu **tidak perlu
+mengedit `.env`** untuk login pertama. Setelah file ter-upload dan app jalan,
+cukup buka panel admin di browser (`http(s)://<host-admin>/`) — kamu **otomatis
+diarahkan ke `/setup`** dan dipandu **tiga langkah**:
+
+1. **Bot token** — tempel token dari **@BotFather**. Boleh juga klik **"Atur
+   nanti"** untuk lewati (token bisa diisi nanti via Settings).
+2. **Owner admin** — isi **Telegram ID**-mu (lihat di **@userinfobot**) + **password
+   login** (minimal 8 karakter). ID ini jadi **owner/admin pertama**.
+3. **Identitas toko** — nama toko / tagline. **Opsional** (semua punya default,
+   boleh dilewati).
+
+Saat **Selesai**: kamu **otomatis login**. Jika token bot tadi diisi, ada tombol
+**"Nyalakan bot sekarang"** yang menulis `tmp/restart.txt` (best-effort) supaya app
+me-reboot dan bot menyala. Bila tombol gagal, pakai tombol **Restart** di panel
+hosting.
+
+Catatan:
+- **Selama setup belum selesai**, storefront menampilkan halaman **"Toko belum
+  aktif"** (503). Setelah Selesai, **wizard terkunci permanen** dan tak bisa
+  diakses lagi.
+- **`WEB_COOKIE_SECRET` boleh dikosongkan** — kalau kosong, di-generate otomatis
+  & disimpan (Fase 1). **`BINANCE_PAY_ID` juga boleh kosong**.
+- **Deploy lama / jalur manual**: `/bootstrap` (§5.4) tetap ada sebagai cara
+  kompatibel. Wizard hanya muncul pada instalasi baru (belum ada admin
+  berpassword).
+
 ### 5.1 Konsep: `.env` vs web-admin Settings
 - **`.env`** dibaca **saat boot** — ganti nilai = **harus restart** aplikasi.
 - **Settings (web-admin)** dibaca **runtime** — kebanyakan **langsung berlaku
@@ -1593,7 +1622,12 @@ DEFAULT_LANGUAGE=id
 `DATABASE_URL_PRISMA` sudah punya default (`file:../data/bot.db`) — tak perlu diisi
 kecuali kamu pindah lokasi DB (di Hostinger pakai path absolut — Bagian 4 §6).
 
-### 5.4 Urutan boot & LOGIN PERTAMA (paling sering bikin bingung)
+### 5.4 Urutan boot & LOGIN PERTAMA (jalur manual / deploy lama)
+
+> Pada instalasi **baru**, pakai **wizard `/setup`** (§5.0) — lebih mudah, tanpa
+> `/start` atau edit `.env`. Langkah di bawah adalah jalur **manual `/bootstrap`**
+> yang tetap berlaku untuk **deploy lama** atau bila kamu ingin mengontrol penuh.
+
 1. Isi `.env` minimum (§5.3) dan siapkan DB (`prisma db push`, atau upload
    `data/bot.db` kosong yang sudah dibuat — Bagian 4 §5).
 2. **Jalankan app** → bot menyala (mode polling).

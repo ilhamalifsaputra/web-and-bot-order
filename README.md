@@ -276,11 +276,17 @@ Ringkasannya:
 
 Setelah aplikasi jalan dan panel admin bisa dibuka:
 
-1. Buka panel admin di browser: `http://SERVER-KAMU:8000/login`
-2. Karena belum ada admin, kamu otomatis diarahkan ke halaman **`/bootstrap`**.
-3. Halaman itu menampilkan daftar **ID Telegram yang diizinkan** (dari
-   `ADMIN_IDS` di `.env`). Pastikan ID-mu ada di situ.
-4. Buat **username + password** admin pertama. Selesai — kamu sekarang bisa login.
+1. Buka panel admin di browser: `http://SERVER-KAMU:8000/`
+2. Karena ini instalasi baru, kamu otomatis diarahkan ke **wizard setup**.
+   Ikuti **3 langkah** singkat:
+   - **Bot token** dari @BotFather (boleh pilih **"Atur nanti"**).
+   - **ID Telegram**-mu (dari @userinfobot) + **password** login.
+   - **Nama toko** (opsional, boleh dilewati).
+3. Selesai — kamu **otomatis login**. Kalau token bot diisi, klik tombol
+   **"Nyalakan bot sekarang"** untuk menyalakan bot.
+
+> Deploy lama? Cara manual **`/bootstrap`** (set password untuk ID di `ADMIN_IDS`)
+> masih ada — lihat `DOCS.md` Bagian 5.
 
 > Lupa password nanti? Jalankan perintah pemulihan di server:
 > ```bash

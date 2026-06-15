@@ -1,6 +1,6 @@
 import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
 
-import { readFileSync, existsSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";

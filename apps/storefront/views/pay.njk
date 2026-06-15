@@ -44,10 +44,12 @@
     <h2 class="section-title mb-3">{{ t('web.pay_bybit_title', lang) }}</h2>
     <p class="text-sm text-ink-soft mt-2">{{ t('web.pay_bybit_amount', lang) }}</p>
     <div class="font-display font-semibold text-pine text-2xl mt-1">${{ order.total }}</div>
+    {% if bybit_address %}
     <p class="text-sm text-ink-soft mt-3">{{ t('web.pay_bybit_address', lang) }}</p>
     <div class="codeish !text-base mt-1 select-all break-all">{{ bybit_address }}</div>
+    {% endif %}
     <p class="text-xs text-ink-faint mt-4">{{ t('web.pay_bybit_note', lang) }}</p>
-    {% else %}
+    {% elif is_qris %}
     {# ---- TokoPay (QRIS) ---- #}
     <h2 class="section-title mb-3">{{ t('web.pay_idr_title', lang) }}</h2>
     <div class="font-display font-semibold text-pine text-2xl">{{ order.total | idr }}</div>
@@ -89,6 +91,15 @@
           {% endif %}
         </div>
       </div>
+    {% endif %}
+    {% else %}
+    {# Unknown / bot-only method (e.g. BINANCE_PAY created via the bot) reaching
+       the web pay page — show a neutral pointer instead of a broken card. #}
+    <p class="text-sm text-ink-soft">{{ t('web.pay_method_elsewhere', lang) }}</p>
+    {% if bot_username %}
+    <a href="https://t.me/{{ bot_username }}" target="_blank" rel="noopener noreferrer" class="btn btn-soft btn-sm mt-3">
+      <i data-lucide="send" class="w-3.5 h-3.5"></i> Telegram
+    </a>
     {% endif %}
     {% endif %}
 

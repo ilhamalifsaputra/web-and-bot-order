@@ -575,6 +575,7 @@ describe("checkout — Bybit option", () => {
     const res = await app.inject({ method: "GET", url: `/checkout/${code}/pay`, headers: { cookie } });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("0xDEADBEEF00000000000000000000000000000000");
+    expect(res.body).toContain("$"); // USDT amount shown on the Bybit card
   });
 
   it("rejects method=bybit when Bybit is disabled", async () => {

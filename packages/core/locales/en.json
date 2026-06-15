@@ -107,6 +107,8 @@
   "checkout.pay_binance_pay_btn": "💳 Binance Pay",
   "checkout.pay_bybit_btn": "⛓ USDT BSC (auto)",
   "checkout.pay_internal_btn": "🔁 Binance Transfer (auto)",
+  "checkout.pay_qris_btn": "🇮🇩 Pay with QRIS (Rupiah)",
+  "checkout.qris_instructions": "🧾 <b>Order {code}</b>\nScan the QR below with any QRIS app (GoPay, OVO, DANA, bank).\n\n💵 Amount: <b>{amount}</b>\n⏳ Pay before: {expiry}\n\nDelivery is automatic once your payment is confirmed.",
   "checkout.payment_unavailable": "Payments aren't available right now — the shop hasn't finished setting up. Please try again later.",
   "checkout.payment_instructions": "<b>Payment Instructions</b>\n\nOrder: <code>{code}</code>\nAmount: <b>{total}</b>\n\nSend <b>exactly</b> the amount above to:\nBinance Pay ID: <code>{binance_id}</code>\n\n⚠ The amount includes a unique identifier — do not round it.\n\n⏳ Time remaining: <b>{countdown}</b>\n\nAfter transfer, tap the button below and upload your screenshot + Transaction ID.",
   "checkout.proof_submitted": "✓ Proof received.\n\nOrder <code>{code}</code> is now pending verification.\nYou will receive a notification once reviewed.",

@@ -336,6 +336,7 @@ export function orderConfirmKb(
   voucherCode = "",
   internalEnabled = false,
   bybitEnabled = false,
+  tokopayEnabled = false,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   if (voucherCode) {
@@ -347,12 +348,13 @@ export function orderConfirmKb(
       { text: coreT("checkout.use_voucher", lang), data: cb("voucher", "start", productId, qty) },
     ]);
   }
-  if (internalEnabled || bybitEnabled) {
+  if (internalEnabled || bybitEnabled || tokopayEnabled) {
     // Explicit payment methods (Binance Pay is always available; the auto-confirm
     // crypto methods appear only when configured).
     rows.push([{ text: coreT("checkout.pay_binance_pay_btn", lang), data: cb("pay", productId, qty) }]);
     if (internalEnabled) rows.push([{ text: coreT("checkout.pay_internal_btn", lang), data: cb("payx", productId, qty) }]);
     if (bybitEnabled) rows.push([{ text: coreT("checkout.pay_bybit_btn", lang), data: cb("payb", productId, qty) }]);
+    if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: cb("payq", productId, qty) }]);
   } else {
     rows.push([{ text: coreT("checkout.confirm_btn", lang), data: cb("pay", productId, qty) }]);
   }
@@ -384,6 +386,14 @@ export function proofCancelKb(orderId: number, lang: string): InlineKeyboard {
 export function paymentInstructionsKb(orderId: number, lang: string): InlineKeyboard {
   return ik([
     [{ text: coreT("checkout.i_paid", lang), data: cb("checkout", "proof", orderId) }],
+    [{ text: coreT("checkout.cancel_order", lang), data: cb("checkout", "cancel", orderId) }],
+    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+  ]);
+}
+
+/** QRIS payment screen: auto-confirm via webhook, so only Cancel + Menu (no proof). */
+export function qrisWaitingKb(orderId: number, lang: string): InlineKeyboard {
+  return ik([
     [{ text: coreT("checkout.cancel_order", lang), data: cb("checkout", "cancel", orderId) }],
     [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
   ]);

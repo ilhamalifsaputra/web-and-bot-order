@@ -107,6 +107,8 @@
   "checkout.pay_binance_pay_btn": "💳 Binance Pay",
   "checkout.pay_bybit_btn": "⛓ USDT BSC (otomatis)",
   "checkout.pay_internal_btn": "🔁 Transfer Binance (otomatis)",
+  "checkout.pay_qris_btn": "🇮🇩 Bayar QRIS (Rupiah)",
+  "checkout.qris_instructions": "🧾 <b>Pesanan {code}</b>\nScan QR di bawah dengan aplikasi QRIS apa pun (GoPay, OVO, DANA, bank).\n\n💵 Jumlah: <b>{amount}</b>\n⏳ Bayar sebelum: {expiry}\n\nPengiriman otomatis begitu pembayaran terkonfirmasi.",
   "checkout.payment_unavailable": "Pembayaran lagi tidak tersedia — toko belum selesai disetel. Coba lagi nanti ya.",
   "checkout.payment_instructions": "<b>Instruksi Pembayaran</b>\n\nOrder: <code>{code}</code>\nJumlah: <b>{total}</b>\n\nKirim <b>tepat</b> jumlah di atas ke:\nBinance Pay ID: <code>{binance_id}</code>\n\n⚠ Jumlah sudah termasuk angka unik — jangan dibulatkan.\n\n⏳ Sisa waktu: <b>{countdown}</b>\n\nSetelah transfer, tap tombol di bawah dan upload screenshot + Transaction ID.",
   "checkout.proof_submitted": "✓ Bukti diterima.\n\nPesanan <code>{code}</code> sedang menunggu verifikasi.\nNotifikasi akan dikirim setelah di-review.",

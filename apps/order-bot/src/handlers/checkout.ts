@@ -38,7 +38,9 @@ import {
   setOrderPaymentMessage,
   cancelOrder,
   finalizeOrderPayment,
+  getTokopayCreds,
 } from "@app/db";
+import { createTransaction } from "@app/core/payments/tokopay";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
@@ -350,6 +352,7 @@ export async function showOrderConfirmation(
 
   const rate = await currentUsdtRate();
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
+  const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
   await smartEdit(
     ctx,
     t(ctx, "checkout.confirm_order", {
@@ -359,7 +362,7 @@ export async function showOrderConfirmation(
       voucher_line: r.voucherLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null, bybitEnabled && rate !== null),
+    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null, bybitEnabled && rate !== null, tokopayEnabled),
   );
 }
 
@@ -374,6 +377,7 @@ export async function renderOrderConfirmation(
   if (!r) return;
   const rate = await currentUsdtRate();
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
+  const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
   const msg = await ctx.api.sendMessage(
     ctx.chat!.id,
     t(ctx, "checkout.confirm_order", {
@@ -383,7 +387,7 @@ export async function renderOrderConfirmation(
       voucher_line: r.voucherLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null, bybitEnabled && rate !== null) },
+    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null, bybitEnabled && rate !== null, tokopayEnabled) },
   );
   ctx.session.menuMsgId = msg.message_id;
 }
@@ -567,6 +571,87 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang));
   // Anchor the instructions message so the poller can flip it to success.
   if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+}
+
+/**
+ * QRIS (TokoPay) — create an IDR order, draw the QR inside Telegram, and let the
+ * existing TokoPay webhook auto-confirm. No proof upload. ⚠ Needs the public
+ * callback URL configured (DOCS §15.5) or the order will stall then auto-cancel.
+ */
+export async function buyNowTokopay(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+  const info = requireUser(ctx);
+  const lang = ctx.session.lang;
+  const chatId = ctx.chat!.id;
+
+  const creds = await getTokopayCreds(prisma);
+  if (!creds) {
+    await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
+    return;
+  }
+  const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+  delete ctx.session.scratch.appliedVoucherCode;
+
+  const user = await getUser(prisma, info.id);
+  if (user === null) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+  if ((await countUserPendingOrders(prisma, info.id)) >= MAX_PENDING_ORDERS) {
+    await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
+    return;
+  }
+
+  let order: Awaited<ReturnType<typeof createOrderDirect>>;
+  try {
+    order = await prisma.$transaction(async (tx) => {
+      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode });
+      if (!created) return created;
+      return finalizeOrderPayment(tx, created.id, { currency: OrderCurrency.IDR });
+    });
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      return;
+    }
+    throw e;
+  }
+  if (!order) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+
+  // Create (idempotent on ref_id) the gateway transaction + cache it.
+  let gateway;
+  try {
+    gateway = await createTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
+    await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify(gateway) } });
+  } catch (err) {
+    logger.error({ err }, `TokoPay create failed for ${order.orderCode}`);
+    await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
+    return;
+  }
+
+  const expiry = order.expiresAt
+    ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
+    : `${config.PAYMENT_WINDOW_MINUTES}m`;
+  const caption = t(ctx, "checkout.qris_instructions", {
+    code: order.orderCode,
+    amount: formatIdr(order.totalAmount),
+    expiry,
+  });
+
+  // Edit the confirm bubble into the QRIS caption, then send the QR image below.
+  await smartEdit(ctx, caption, ckb.qrisWaitingKb(order.id, lang));
+  ctx.session.qrMsgId = undefined;
+  if (gateway.qrLink) {
+    try {
+      const qrMsg = await ctx.api.sendPhoto(chatId, gateway.qrLink);
+      ctx.session.qrMsgId = qrMsg.message_id;
+    } catch (err) {
+      logger.error({ err }, "Failed to send QRIS photo");
+    }
+  }
+  setActivePayment(chatId, order.id);
 }
 
 // ---------------------------------------------------------------------------

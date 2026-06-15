@@ -73,6 +73,11 @@ const dispatchPayBybit: DomainDispatcher = async (ctx, parts) => {
   await checkout.buyNowBybit(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
 };
 
+const dispatchPayTokopay: DomainDispatcher = async (ctx, parts) => {
+  // v1:payq:<pid>:<qty> → QRIS (TokoPay) order (auto-confirmed by webhook)
+  await checkout.buyNowTokopay(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+};
+
 const dispatchVoucher: DomainDispatcher = async (ctx, parts) => {
   // v1:voucher:remove:<pid>:<qty>  (voucher:start is owned by the voucher conv)
   if (parts[2] === "remove") {
@@ -138,6 +143,7 @@ const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
   pay: dispatchPay,
   payx: dispatchPayInternal,
   payb: dispatchPayBybit,
+  payq: dispatchPayTokopay,
   qty: dispatchQty,
   ref: dispatchRef,
   restock: dispatchRestock,

@@ -1,7 +1,19 @@
 // setup-db MUST be first — temp DB + push before any @app import.
 import "./setup-db";
 
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@app/core/payments/tokopay", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/tokopay")>()),
+  createTransaction: vi.fn().mockResolvedValue({
+    trxId: "TP-TEST",
+    payUrl: null,
+    qrLink: "https://x/qr.png",
+    qrString: "000",
+    totalBayar: "100",
+  }),
+}));
+
 import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast, setSetting } from "@app/db";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
@@ -193,6 +205,17 @@ describe("checkout handlers", () => {
       calls(sink, "editMessageText").length + calls(sink, "sendMessage").length + calls(sink, "reply").length,
     ).toBeGreaterThan(0);
     checkout.cancelPaymentJobs(orders[0]!.id); // clear the countdown timer
+  });
+
+  it("buyNowTokopay creates an IDR/TOKOPAY order and sends the QR photo", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const { ctx, sink } = makeCtx({ session: { dbUser: sample.user, lang: "en" } });
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+    const orders = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
+    expect(orders[0]!.paymentMethod).toBe("TOKOPAY");
+    expect(orders[0]!.currency).toBe("IDR");
+    expect(calls(sink, "sendPhoto").length).toBe(1);
   });
 
   it("buyNow refuses past the pending-order limit", async () => {

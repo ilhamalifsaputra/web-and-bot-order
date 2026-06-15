@@ -6,6 +6,8 @@
  * and locks itself once `setup_completed` is set (final step only).
  */
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { logger } from "@app/core/logger";
 import { config } from "@app/core/config";
 import { addAdminId, setAdminIds } from "@app/core/runtime";
@@ -165,5 +167,26 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
   app.get("/setup/done", async (_req, reply) => {
     const botConfigured = (await getSetting(prisma, "bot_token")) !== null;
     return reply.view("setup_done.njk", { bot_configured: botConfigured, error: null, restarted: false });
+  });
+
+  // Best-effort Passenger restart: touch tmp/restart.txt so the app reboots and
+  // picks up the new bot token/admin (grammY can't hot-swap a token — spec §7).
+  app.post("/setup/restart", async (_req, reply) => {
+    const target = process.env.RESTART_TRIGGER_FILE ?? join(process.cwd(), "tmp", "restart.txt");
+    let ok = true;
+    try {
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, new Date().toISOString());
+      logger.info("Setup: wrote Passenger restart trigger");
+    } catch (err) {
+      ok = false;
+      logger.warn({ err }, "Setup: failed to write restart trigger");
+    }
+    const botConfigured = (await getSetting(prisma, "bot_token")) !== null;
+    return reply.view("setup_done.njk", {
+      bot_configured: botConfigured,
+      restarted: ok,
+      error: ok ? null : "Tak bisa menulis file restart otomatis. Pakai tombol Restart di panel hosting.",
+    });
   });
 }

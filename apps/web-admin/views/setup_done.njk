@@ -11,6 +11,9 @@
     <p class="page-lead mb-6">Kamu sudah masuk sebagai owner.</p>
 
     <div class="card card-pad space-y-4">
+      {% if error %}
+        <div class="rounded-xl border border-rust/30 bg-rust-tint px-4 py-3 text-sm text-rust-dark">{{ error }}</div>
+      {% endif %}
       {% if bot_configured %}
         {% if restarted %}
           <p class="text-sm text-pine">Bot sedang dinyalakan ulang. Tunggu beberapa detik lalu coba <code>/start</code> di Telegram.</p>

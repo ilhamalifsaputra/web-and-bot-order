@@ -1,5 +1,8 @@
 import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
 
+import { readFileSync, existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
@@ -1357,6 +1360,30 @@ describe("setup wizard — step 1 (connect bot)", () => {
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/setup/owner");
     expect(await getSetting(prisma, "bot_token")).toBeNull();
+  });
+});
+
+describe("setup wizard — restart trigger", () => {
+  it("writes the Passenger restart file best-effort", async () => {
+    // Seed a bot_token so setup_done.njk enters the bot_configured branch
+    // and shows the "dinyalakan" text when restarted=true.
+    await setSetting(prisma, "bot_token", "123:test-token");
+    const target = join(tmpdir(), `restart-${Date.now()}.txt`);
+    process.env.RESTART_TRIGGER_FILE = target;
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/setup/restart",
+        payload: form({}),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(existsSync(target)).toBe(true);
+      expect(res.body).toContain("dinyalakan"); // setup_done.njk restarted=true branch
+    } finally {
+      if (existsSync(target)) rmSync(target);
+      delete process.env.RESTART_TRIGGER_FILE;
+    }
   });
 });
 

@@ -322,11 +322,12 @@ Semua pembayaran bisa diatur dari **panel admin → Settings → Payments**
 Detail teknis tiap metode ada di [bagian 10](#10-referensi-lengkap-variabel-env).
 
 > 🎨 **Personalisasi tampilan toko** — dari **panel admin → Settings → Branding**
-> kamu bisa **upload favicon** (ikon tab, PNG/ICO/SVG), **gambar hero** halaman
-> depan website, dan **banner bot** (muncul di atas menu utama & daftar produk),
-> plus mengubah **nama toko, tagline, dan pesan sambutan**. Semua langsung berlaku
-> tanpa restart. Ukuran yang disarankan: favicon 512×512, hero 1600×900, banner
-> 1280×720.
+> kamu bisa **upload favicon** (ikon tab, PNG/ICO/SVG), **logo toko** (tampil di
+> header website, PNG/SVG/WebP), **gambar hero** halaman depan website, dan
+> **banner bot** (muncul di atas menu utama & daftar produk), plus mengubah **nama
+> toko, tagline, dan pesan sambutan**. Semua langsung berlaku tanpa restart.
+> Ukuran yang disarankan: favicon 512×512, logo tinggi ~64px (mis. 240×64), hero
+> 1600×900, banner 1280×720.
 
 ---
 

@@ -184,6 +184,21 @@ describe("favicon", () => {
   });
 });
 
+describe("shop logo", () => {
+  it("renders the logo image in the header when web_logo_url is set", async () => {
+    await setSetting(prisma, "web_logo_url", "/uploads/branding/logo-abc123.png");
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.body).toContain("/uploads/branding/logo-abc123.png");
+    await deleteSetting(prisma, "web_logo_url");
+  });
+
+  it("falls back to the store icon when no logo is set", async () => {
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.body).not.toContain("/uploads/branding/logo-");
+    expect(res.body).toContain('data-lucide="store"');
+  });
+});
+
 describe("password login", () => {
   let pwUserId: number;
   beforeAll(async () => {

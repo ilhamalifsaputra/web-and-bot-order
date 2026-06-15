@@ -25,6 +25,12 @@ const RASTER_MIME: Record<string, string> = {
   "image/png": "png",
   "image/webp": "webp",
 };
+// Logos want transparency (PNG/SVG) so JPG is excluded; WebP allowed.
+const LOGO_MIME: Record<string, string> = {
+  "image/png": "png",
+  "image/svg+xml": "svg",
+  "image/webp": "webp",
+};
 
 const TEXT_KEYS = new Set(["shop_name", "shop_tagline", "welcome"]);
 
@@ -93,8 +99,9 @@ async function handleUpload(
 export default async function brandingRoutes(app: FastifyInstance): Promise<void> {
   app.get("/branding", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const [favicon, hero, banner, shopName, shopTagline, welcome] = await Promise.all([
+    const [favicon, logo, hero, banner, shopName, shopTagline, welcome] = await Promise.all([
       getSetting(prisma, "web_favicon_url"),
+      getSetting(prisma, "web_logo_url"),
       getSetting(prisma, "web_hero_url"),
       getSetting(prisma, "banner_image"),
       getSetting(prisma, "shop_name"),
@@ -106,6 +113,7 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
       admin: req.admin,
       active_nav: "/branding",
       favicon_url: favicon ?? "",
+      logo_url: logo ?? "",
       hero_url: hero ?? "",
       banner_url: bannerIsUpload ? banner : "",
       banner_is_legacy: Boolean(banner) && !bannerIsUpload,
@@ -125,6 +133,17 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
       maxBytes: 1 * 1024 * 1024,
       settingKey: "web_favicon_url",
       auditAction: "branding_favicon_upload",
+    }),
+  );
+
+  app.post("/branding/logo", { preHandler: currentAdmin }, (req, reply) =>
+    handleUpload(req, reply, {
+      kind: "logo",
+      field: "logo",
+      allowed: LOGO_MIME,
+      maxBytes: 1 * 1024 * 1024,
+      settingKey: "web_logo_url",
+      auditAction: "branding_logo_upload",
     }),
   );
 

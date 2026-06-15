@@ -88,6 +88,20 @@ describe("branding page", () => {
     expect(v).toMatch(/^\/uploads\/branding\/favicon-[0-9a-f]+\.png$/);
   });
 
+  it("logo upload (PNG) sets web_logo_url", async () => {
+    const mp = multipart({ csrf_token: csrf }, { field: "logo", filename: "l.png", contentType: "image/png", content: PNG });
+    const res = await postMultipart("/branding/logo", cookie, mp);
+    expect(res.statusCode).toBe(303);
+    expect(await getSetting(prisma, "web_logo_url")).toMatch(/^\/uploads\/branding\/logo-[0-9a-f]+\.png$/);
+  });
+
+  it("logo upload rejects JPEG (logos need transparency)", async () => {
+    const mp = multipart({ csrf_token: csrf }, { field: "logo", filename: "l.jpg", contentType: "image/jpeg", content: PNG });
+    const res = await postMultipart("/branding/logo", cookie, mp);
+    expect(res.statusCode).toBe(303);
+    expect(await getSetting(prisma, "web_logo_url")).toBeNull();
+  });
+
   it("favicon upload rejects a non-image MIME", async () => {
     const mp = multipart({ csrf_token: csrf }, { field: "favicon", filename: "f.txt", contentType: "text/plain", content: Buffer.from("nope") });
     const res = await postMultipart("/branding/favicon", cookie, mp);

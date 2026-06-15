@@ -65,6 +65,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         cart_count: 0,
         fx: null,
         favicon_url: "/static/favicon.svg",
+        logo_url: "",
       });
     }
   });
@@ -78,6 +79,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       cart_count: 0,
       fx: null,
       favicon_url: "/static/favicon.svg",
+      logo_url: "",
     });
   });
 

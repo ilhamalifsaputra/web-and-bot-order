@@ -71,12 +71,13 @@ Rencana Bagian 1 §8 / Bagian 2 §6 mengutamakan Unsplash. Nyatanya:
   kategori (`apps/storefront/src/images.ts`) → placeholder.
 - **Branding bisa di-upload (Juni 2026):** halaman **web-admin › Settings ›
   Branding** (`apps/web-admin/src/routes/branding.ts`, view `branding.njk`)
-  meng-upload **favicon** (PNG/ICO/SVG), **hero** storefront, dan **banner bot**
-  (JPG/PNG/WebP) ke **`data/uploads/branding/`** (nama file di-hash, anti
-  traversal). Setting: `web_favicon_url`, `web_hero_url`, `banner_image`.
-  Storefront memakai favicon di tiap halaman (`shopContext` → `favicon_url`,
-  fallback `/static/favicon.svg`) dan hero di home (`web_hero_url` →
-  fallback `HERO_IMAGE`). Folder `/uploads/` di **kedua** app kini menyajikan
+  meng-upload **favicon** (PNG/ICO/SVG), **logo header** (PNG/SVG/WebP), **hero**
+  storefront, dan **banner bot** (JPG/PNG/WebP) ke **`data/uploads/branding/`**
+  (nama file di-hash, anti traversal). Setting: `web_favicon_url`, `web_logo_url`,
+  `web_hero_url`, `banner_image`. Storefront memakai favicon di tiap halaman
+  (`shopContext` → `favicon_url`, fallback `/static/favicon.svg`), **logo** di
+  header (`logo_url`; kosong → ikon `store` bawaan), dan hero di home
+  (`web_hero_url` → fallback `HERO_IMAGE`). Folder `/uploads/` di **kedua** app kini menyajikan
   header `X-Content-Type-Options: nosniff` + CSP ketat agar SVG yang di-upload
   inert (tak bisa eksekusi script bila dibuka langsung).
 

@@ -30,6 +30,29 @@
     </form>
   </div>
 
+  {# ── Shop logo ── #}
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center gap-2">
+      <i data-lucide="store" class="w-5 h-5 text-sky-500"></i> Shop logo
+    </h2>
+    <p class="text-xs text-ink-soft mb-4">
+      Shown in the storefront header next to the shop name. Recommended ~64 px tall
+      (e.g. 240×64), transparent background. PNG, SVG, or WebP. Max 1 MB.
+    </p>
+    {% if logo_url %}
+    <div class="flex items-center gap-2 mb-3">
+      <img src="{{ logo_url }}" alt="Current logo" class="h-12 max-w-[12rem] rounded border border-sand object-contain bg-sand/40 px-2">
+      <span class="text-xs text-ink-soft">Current logo — uploading a new one will replace it.</span>
+    </div>
+    {% endif %}
+    <form method="post" action="/branding/logo" enctype="multipart/form-data" class="flex items-center gap-2">
+      <input type="hidden" name="csrf_token" value="{{ admin.csrf }}">
+      <input type="file" name="logo" accept="image/png,image/svg+xml,image/webp" required
+             class="field text-sm file:mr-2 file:btn file:btn-soft file:border-0 file:text-xs">
+      <button class="btn btn-primary btn-sm whitespace-nowrap">Upload logo</button>
+    </form>
+  </div>
+
   {# ── Hero ── #}
   <div class="card card-pad">
     <h2 class="section-title mb-1 flex items-center gap-2">

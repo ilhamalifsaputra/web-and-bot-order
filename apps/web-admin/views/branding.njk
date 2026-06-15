@@ -24,7 +24,7 @@
     {% endif %}
     <form method="post" action="/branding/favicon" enctype="multipart/form-data" class="flex items-center gap-2">
       <input type="hidden" name="csrf_token" value="{{ admin.csrf }}">
-      <input type="file" name="favicon" accept="image/png,image/x-icon,image/svg+xml" required
+      <input type="file" name="favicon" accept="image/png,image/x-icon,image/vnd.microsoft.icon,image/svg+xml" required
              class="field text-sm file:mr-2 file:btn file:btn-soft file:border-0 file:text-xs">
       <button class="btn btn-primary btn-sm whitespace-nowrap">Upload favicon</button>
     </form>

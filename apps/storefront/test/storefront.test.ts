@@ -7,7 +7,7 @@ vi.mock("@app/core/mailer", () => ({
 }));
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
-import { prisma, initDb, setSetting } from "@app/db";
+import { prisma, initDb, setSetting, deleteSetting } from "@app/db";
 import { buildApp } from "../src/server";
 
 let app: FastifyInstance;
@@ -52,6 +52,8 @@ beforeAll(async () => {
     },
   });
   emptyProductId = empty.id;
+  // Storefront tests model a live shop — keep the setup gate open.
+  await setSetting(prisma, "setup_completed", "true");
 });
 
 afterAll(async () => {
@@ -504,5 +506,22 @@ describe("account settings", () => {
     expect(follow.body).toContain("already linked to another member");
     const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
     expect(row.telegramId).toBe(636363n); // unchanged
+  });
+});
+
+describe("storefront setup gate", () => {
+  it("shows a 'shop not active yet' page while setup is pending", async () => {
+    await deleteSetting(prisma, "setup_completed"); // no admin password in this DB
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toContain("belum aktif");
+    await setSetting(prisma, "setup_completed", "true"); // restore for other tests
+  });
+
+  it("still serves /healthz while setup is pending", async () => {
+    await deleteSetting(prisma, "setup_completed");
+    const res = await app.inject({ method: "GET", url: "/healthz" });
+    expect(res.statusCode).toBe(200);
+    await setSetting(prisma, "setup_completed", "true");
   });
 });

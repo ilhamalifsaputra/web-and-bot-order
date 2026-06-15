@@ -245,14 +245,20 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const state = payState(order);
-      const isUsdt = order.currency === OrderCurrency.USDT;
+      const method = order.paymentMethod; // "BINANCE_INTERNAL" | "BYBIT" | "TOKOPAY" | ...
+      const isBinance = method === PaymentMethod.BINANCE_INTERNAL;
+      const isBybit = method === PaymentMethod.BYBIT;
+      const isQris = method === PaymentMethod.TOKOPAY;
+
+      // Bybit deposit address (no API call — just the configured address).
+      const bybitAddress = isBybit ? (await resolveBybitConfig(prisma)).depositAddress : "";
 
       // TokoPay transaction (QR / pay link) only while actually payable.
       // The result is cached in order.paymentRef (JSON) after the first fetch so
       // that page refreshes don't create extra transactions in TokoPay.
       let gateway: TokopayOrderInfo | null = null;
       let gatewayError = false;
-      if (!isUsdt && state === "waiting") {
+      if (isQris && state === "waiting") {
         gateway = parseCachedGateway(order.paymentRef);
         if (!gateway) {
           const creds = await getTokopayCreds(prisma);
@@ -278,7 +284,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
       // Contact fallbacks shown when the Rupiah gateway is temporarily down, so
       // a stuck buyer always has a way to reach us instead of a dead red box.
-      const waNumber = gatewayError && !isUsdt
+      const waNumber = gatewayError && isQris
         ? ((await getSetting(prisma, "support_whatsapp")) ?? "").replace(/[^0-9]/g, "")
         : "";
 
@@ -293,7 +299,10 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
           expires_at_iso: order.expiresAt ? ensureUtc(order.expiresAt).toISO() : null,
         },
         state,
-        is_usdt: isUsdt,
+        is_binance: isBinance,
+        is_bybit: isBybit,
+        is_qris: isQris,
+        bybit_address: bybitAddress,
         binance_uid: config.BINANCE_RECEIVE_UID ?? "",
         gateway,
         gateway_error: gatewayError,

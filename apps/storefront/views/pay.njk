@@ -20,7 +20,7 @@
 
   {% if state == "waiting" %}
   <div class="card card-pad">
-    {% if is_usdt %}
+    {% if is_binance %}
     {# ---- Binance Internal Transfer (UID) — auto-confirm ---- #}
     <h2 class="section-title mb-3">{{ t('web.pay_usdt_title', lang) }}</h2>
     <ol class="text-sm text-ink-soft space-y-3 list-decimal pl-4">
@@ -39,6 +39,14 @@
       </li>
     </ol>
     <p class="text-xs text-ink-faint mt-4">{{ t('web.binance_auto_note', lang) }}</p>
+    {% elif is_bybit %}
+    {# ---- Bybit USDT-BSC deposit — auto-confirm (amount match) ---- #}
+    <h2 class="section-title mb-3">{{ t('web.pay_bybit_title', lang) }}</h2>
+    <p class="text-sm text-ink-soft mt-2">{{ t('web.pay_bybit_amount', lang) }}</p>
+    <div class="font-display font-semibold text-pine text-2xl mt-1">${{ order.total }}</div>
+    <p class="text-sm text-ink-soft mt-3">{{ t('web.pay_bybit_address', lang) }}</p>
+    <div class="codeish !text-base mt-1 select-all break-all">{{ bybit_address }}</div>
+    <p class="text-xs text-ink-faint mt-4">{{ t('web.pay_bybit_note', lang) }}</p>
     {% else %}
     {# ---- TokoPay (QRIS) ---- #}
     <h2 class="section-title mb-3">{{ t('web.pay_idr_title', lang) }}</h2>

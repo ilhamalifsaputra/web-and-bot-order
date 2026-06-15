@@ -562,6 +562,21 @@ describe("checkout — Bybit option", () => {
     expect(order!.currency).toBe("USDT");
   });
 
+  it("pay page for a BYBIT order shows the deposit address + USDT amount", async () => {
+    await enableBybit();
+    const { cookie, csrf } = await checkoutSession();
+    const created = await app.inject({
+      method: "POST",
+      url: "/checkout",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ method: "bybit", csrf_token: csrf }).toString(),
+    });
+    const code = created.headers.location!.split("/")[2]!; // /checkout/<code>/pay
+    const res = await app.inject({ method: "GET", url: `/checkout/${code}/pay`, headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("0xDEADBEEF00000000000000000000000000000000");
+  });
+
   it("rejects method=bybit when Bybit is disabled", async () => {
     await disableBybit();
     const { cookie, csrf } = await checkoutSession(); // Bybit NOT enabled here

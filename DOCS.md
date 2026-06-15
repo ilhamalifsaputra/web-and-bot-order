@@ -580,7 +580,8 @@ web:
 
 #### 15.5 Integrasi TokoPay (PG IDR)
 Pola seperti poller Binance Internal, tapi **didorong webhook**:
-- **Modul** `apps/storefront/src/payments/tokopay.ts`:
+- **Modul** `packages/core/src/payments/tokopay.ts` (klien bersama; resolver
+  kredensial `getTokopayCreds` di `@app/db`):
   - `createTransaction(order)` → panggil API TokoPay (merchant id + secret),
     dapat **QR/VA/checkout URL** + ref; simpan ref di `Order.paymentRef`.
   - `verifyCallback(body, sig)` → verifikasi **tanda tangan** (signature) TokoPay.

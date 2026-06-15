@@ -31,6 +31,7 @@ import {
   subscribeToRestock,
   productRating,
   getSetting,
+  setSetting,
   searchProducts,
   listUserTickets,
   getTicket,
@@ -38,6 +39,7 @@ import {
 } from "@app/db";
 import type { MyContext } from "../context";
 import { smartEdit, renderMenu } from "../util/chat";
+import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/banner";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import { esc, formatPrice, formatIdr, statusBadge, groupOrderItems, formatCountdown, priceIdr, orderAmount, mixedAmount } from "../util/format";
@@ -68,13 +70,29 @@ function requireUser(ctx: MyContext) {
 // /start + dashboard
 // ---------------------------------------------------------------------------
 
-// Optional banner image shown on top of the main menu and product list. Set
-// from the bot (Settings → Banner image) or the web admin; the screen renders
-// as a photo+caption when present. Absent/cleared → plain menu. Never shown on
-// payment screens (those renderers simply don't request it).
-const BANNER_IMAGE_KEY = "banner_image";
-async function bannerImage(): Promise<string | undefined> {
-  return (await getSetting(prisma, BANNER_IMAGE_KEY)) || undefined;
+// Optional banner shown above the main menu and product list. The value is a
+// web-admin upload path or a legacy Telegram file_id; uploads are sent via
+// InputFile and the resulting file_id is cached (util/banner.ts).
+async function bannerArg(): Promise<{ photo: string | InputFile; needsCache: boolean } | undefined> {
+  const [value, cached] = await Promise.all([
+    getSetting(prisma, BANNER_IMAGE_KEY),
+    getSetting(prisma, BANNER_FILEID_KEY),
+  ]);
+  return bannerPhotoArg(value, cached);
+}
+
+const cacheBannerFileId = async (fileId: string): Promise<void> => {
+  await setSetting(prisma, BANNER_FILEID_KEY, fileId);
+};
+
+/** renderMenu with the configured banner (if any) + file_id caching. */
+async function renderMenuBanner(
+  ctx: MyContext,
+  text: string,
+  replyMarkup: Parameters<typeof renderMenu>[2],
+): Promise<void> {
+  const b = await bannerArg();
+  await renderMenu(ctx, text, replyMarkup, b?.photo, b?.needsCache ? cacheBannerFileId : undefined);
 }
 
 async function buildDashboardText(ctx: MyContext): Promise<string> {
@@ -104,7 +122,7 @@ async function backToMainFromPersistent(ctx: MyContext): Promise<void> {
   delete sc(ctx).viewingProductId;
   ctx.session.awaitingQtyProductId = undefined;
   const text = await buildDashboardText(ctx);
-  await renderMenu(ctx, text, ckb.mainPersistentKb(ctx.session.lang), await bannerImage());
+  await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
 }
 
 async function handleBackButton(ctx: MyContext): Promise<void> {
@@ -149,12 +167,12 @@ export async function startCommand(ctx: MyContext): Promise<void> {
   delete sc(ctx).browsePage;
 
   const text = await buildDashboardText(ctx);
-  await renderMenu(ctx, text, ckb.mainPersistentKb(ctx.session.lang), await bannerImage());
+  await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
 }
 
 export async function showMainMenu(ctx: MyContext): Promise<void> {
   const text = await buildDashboardText(ctx);
-  await renderMenu(ctx, text, ckb.mainPersistentKb(ctx.session.lang), await bannerImage());
+  await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
 }
 
 // Universal /cancel when no conversation is active.
@@ -199,7 +217,7 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // The numbered keyboard is a reply keyboard; renderMenu sends a fresh message
   // carrying it (an edit can't bear a reply keyboard). The banner (if set) rides
   // on top as a photo+caption, unless the list is too long for a caption.
-  await renderMenu(
+  await renderMenuBanner(
     ctx,
     text,
     ckb.productsPersistentKb(pageProducts.length, lang, {
@@ -207,7 +225,6 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
       showNext: page < totalPages - 1,
       showBack: false,
     }),
-    await bannerImage(),
   );
 }
 

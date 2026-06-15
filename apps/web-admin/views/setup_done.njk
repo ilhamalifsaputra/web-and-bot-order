@@ -1,0 +1,30 @@
+{% extends "base.njk" %}
+{% block title %}Setup selesai{% endblock %}
+{% block nav %}{% endblock %}
+
+{% block content %}
+<div class="min-h-[70vh] flex items-center justify-center">
+  <div class="w-full max-w-md text-center">
+    <span class="inline-flex items-center gap-2 font-display text-2xl font-semibold text-pine">
+      <i data-lucide="party-popper" class="w-6 h-6"></i> Setup selesai!
+    </span>
+    <p class="page-lead mb-6">Kamu sudah masuk sebagai owner.</p>
+
+    <div class="card card-pad space-y-4">
+      {% if bot_configured %}
+        {% if restarted %}
+          <p class="text-sm text-pine">Bot sedang dinyalakan ulang. Tunggu beberapa detik lalu coba <code>/start</code> di Telegram.</p>
+        {% else %}
+          <p class="text-sm text-ink-soft">Bot sudah tersambung tapi belum menyala — restart sekali untuk mengaktifkannya.</p>
+          <form method="post" action="/setup/restart">
+            <button type="submit" class="btn btn-primary w-full"><i data-lucide="power" class="w-4 h-4"></i> Nyalakan bot sekarang</button>
+          </form>
+        {% endif %}
+      {% else %}
+        <p class="text-sm text-ink-soft">Belum menyambungkan bot? Kamu bisa mengaturnya nanti di <b>Settings → Bot token</b>.</p>
+      {% endif %}
+      <a href="/" class="btn btn-ghost w-full"><i data-lucide="layout-dashboard" class="w-4 h-4"></i> Ke dashboard</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

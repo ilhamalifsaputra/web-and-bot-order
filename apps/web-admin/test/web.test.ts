@@ -3,7 +3,7 @@ import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
-import { ProductType } from "@app/core/enums";
+import { ProductType, UserRole } from "@app/core/enums";
 import {
   prisma,
   initDb,
@@ -12,6 +12,7 @@ import {
   createProduct,
   bulkAddStock,
   getUser,
+  getUserByTelegramId,
   getOrder,
   createOrderDirect,
   attachPaymentProof,
@@ -1356,5 +1357,66 @@ describe("setup wizard — step 1 (connect bot)", () => {
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/setup/owner");
     expect(await getSetting(prisma, "bot_token")).toBeNull();
+  });
+});
+
+describe("setup wizard — step 2/3/finish", () => {
+  const OWNER_TG = 7000123;
+  beforeEach(async () => {
+    await deleteSetting(prisma, "setup_completed");
+    await deleteSetting(prisma, "setup_owner_tg");
+    resetAccountFailures(OWNER_TG);
+  });
+
+  async function createOwner() {
+    return app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: String(OWNER_TG), username: "owner", password: "supersecret", password_confirm: "supersecret" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+  }
+
+  it("rejects mismatched passwords without creating an admin", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: String(OWNER_TG), username: "owner", password: "supersecret", password_confirm: "nope" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(isAdmin(OWNER_TG)).toBe(false);
+  });
+
+  it("creates an ADMIN owner with a password and advances to step 3", async () => {
+    const res = await createOwner();
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/setup/shop");
+    expect(isAdmin(OWNER_TG)).toBe(true);
+    expect(adminIds()).toContain(OWNER_TG);
+    const user = await getUser(prisma, (await getUserByTelegramId(prisma, OWNER_TG))!.id);
+    expect(user!.role).toBe(UserRole.ADMIN);
+    expect(await getSetting(prisma, passwordHashKey(OWNER_TG))).not.toBeNull();
+    expect(await getSetting(prisma, "setup_owner_tg")).toBe(String(OWNER_TG));
+  });
+
+  it("finish: marks setup complete, sets a session cookie, locks the wizard", async () => {
+    await createOwner();
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/shop",
+      payload: form({ shop_name: "Toko Demo", skip: "" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/setup/done");
+    expect(await getSetting(prisma, "shop_name")).toBe("Toko Demo");
+    expect(await getSetting(prisma, "setup_completed")).toBe("true");
+    const setCookie = res.headers["set-cookie"];
+    expect(String(setCookie)).toContain(`${COOKIE}=`);
+    // Wizard now locked: GET /setup → /login.
+    const locked = await app.inject({ method: "GET", url: "/setup" });
+    expect(locked.statusCode).toBe(303);
+    expect(locked.headers.location).toBe("/login");
   });
 });

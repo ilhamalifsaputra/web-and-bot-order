@@ -1,0 +1,39 @@
+{% extends "base.njk" %}
+{% block title %}Setup · Setelan toko{% endblock %}
+{% block nav %}{% endblock %}
+
+{% block content %}
+<div class="min-h-[70vh] flex items-center justify-center">
+  <div class="w-full max-w-md">
+    <div class="text-center mb-8">
+      <span class="inline-flex items-center gap-2 font-display text-2xl font-semibold text-pine">
+        <i data-lucide="settings" class="w-6 h-6"></i> Setup Toko
+      </span>
+      <p class="page-lead">Langkah 3 dari 3 — Setelan dasar (boleh dilewati)</p>
+    </div>
+
+    <div class="card card-pad">
+      <p class="text-sm text-ink-soft mb-6">
+        Semua punya default. Kamu bisa mengubahnya kapan saja di <b>Settings</b>.
+      </p>
+
+      {% if error %}
+        <div class="mb-4 rounded-xl border border-rust/30 bg-rust-tint px-4 py-3 text-sm text-rust-dark">{{ error }}</div>
+      {% endif %}
+
+      <form method="post" action="/setup/shop" class="space-y-4">
+        <div>
+          <label class="field-label" for="shop_name">Nama toko</label>
+          <input id="shop_name" name="shop_name" type="text" class="field" placeholder="Toko Saya">
+        </div>
+        <div>
+          <label class="field-label" for="shop_tagline">Tagline (opsional)</label>
+          <input id="shop_tagline" name="shop_tagline" type="text" class="field">
+        </div>
+        <button type="submit" class="btn btn-primary w-full"><i data-lucide="check" class="w-4 h-4"></i> Simpan & selesai</button>
+        <button type="submit" name="skip" value="1" class="btn btn-ghost w-full">Lewati & selesai</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

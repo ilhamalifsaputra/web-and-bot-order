@@ -38,7 +38,16 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(cookie);
   await app.register(formbody);
   await app.register(fastifyStatic, { root: STATIC_DIR, prefix: "/static/" });
-  await app.register(fastifyStatic, { root: UPLOADS_DIR, prefix: "/uploads/", decorateReply: false });
+  await app.register(fastifyStatic, {
+    root: UPLOADS_DIR,
+    prefix: "/uploads/",
+    decorateReply: false,
+    // Make user-uploaded SVGs inert: no script execution if opened directly.
+    setHeaders: (res: import("@fastify/static").SetHeadersResponse) => {
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
+    },
+  });
   await app.register(viewsPlugin);
   await app.register(authPlugin);
   await app.register(setupGatePlugin);
@@ -55,6 +64,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         shop_name: "",
         cart_count: 0,
         fx: null,
+        favicon_url: "/static/favicon.svg",
       });
     }
   });
@@ -67,6 +77,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       shop_name: "",
       cart_count: 0,
       fx: null,
+      favicon_url: "/static/favicon.svg",
     });
   });
 

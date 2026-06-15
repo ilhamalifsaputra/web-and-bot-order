@@ -68,6 +68,8 @@ export interface ShopContext {
   path: string;
   /** Verified customer (or null) — drives the header Account/Sign-in state. */
   customer: Customer | null;
+  /** Favicon URL (web_favicon_url setting) or the bundled default. */
+  favicon_url: string;
 }
 
 /**
@@ -78,7 +80,7 @@ export interface ShopContext {
  */
 export async function shopContext(req: FastifyRequest, activeNav = "/"): Promise<ShopContext> {
   const customer = req.customer ?? (await optionalCustomer(req));
-  const [fxRate, shopName, shopTagline, cartCount] = await Promise.all([
+  const [fxRate, shopName, shopTagline, cartCount, favicon] = await Promise.all([
     getUsdIdrRate(prisma),
     getSetting(prisma, "shop_name"),
     getSetting(prisma, "shop_tagline"),
@@ -87,6 +89,7 @@ export async function shopContext(req: FastifyRequest, activeNav = "/"): Promise
           .aggregate({ where: { userId: customer.userId }, _sum: { quantity: true } })
           .then((r) => r._sum.quantity ?? 0)
       : Promise.resolve(readGuestCart(req).reduce((n, l) => n + l.q, 0)),
+    getSetting(prisma, "web_favicon_url"),
   ]);
   return {
     lang: requestLang(req),
@@ -97,6 +100,7 @@ export async function shopContext(req: FastifyRequest, activeNav = "/"): Promise
     active_nav: activeNav,
     path: req.url,
     customer,
+    favicon_url: favicon || "/static/favicon.svg",
   };
 }
 

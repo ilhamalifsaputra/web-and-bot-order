@@ -169,6 +169,21 @@ describe("errors", () => {
   });
 });
 
+describe("favicon", () => {
+  it("renders the default favicon link when none is configured", async () => {
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.body).toContain('rel="icon"');
+    expect(res.body).toContain("/static/favicon.svg");
+  });
+
+  it("renders the configured favicon when web_favicon_url is set", async () => {
+    await setSetting(prisma, "web_favicon_url", "/uploads/branding/favicon-deadbeef.png");
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.body).toContain("/uploads/branding/favicon-deadbeef.png");
+    await deleteSetting(prisma, "web_favicon_url");
+  });
+});
+
 describe("password login", () => {
   let pwUserId: number;
   beforeAll(async () => {

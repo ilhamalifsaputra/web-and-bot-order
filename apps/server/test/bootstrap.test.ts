@@ -3,7 +3,7 @@ import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
 import { createServer, request as httpRequest, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { prisma } from "@app/db";
+import { prisma, setSetting } from "@app/db";
 import { buildServer, dispatchByHost } from "../src/index";
 
 /** Fastify instance type without a direct `fastify` dependency. */
@@ -16,6 +16,12 @@ type App = Awaited<ReturnType<typeof buildServer>>["app"];
  * `bot.init()` / Telegram call is needed.
  */
 const SECRET = "test-webhook-secret-123";
+
+beforeAll(async () => {
+  // Combined-server suite models a configured deploy; open the setup gate so
+  // /bootstrap and the host-dispatch login redirect behave as before.
+  await setSetting(prisma, "setup_completed", "true");
+});
 
 describe("combined server bootstrap", () => {
   describe("webhook mode", () => {

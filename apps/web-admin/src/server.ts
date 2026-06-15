@@ -15,6 +15,7 @@ import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import viewsPlugin from "./plugins/views";
 import authPlugin from "./plugins/auth";
+import setupGatePlugin from "./plugins/setupGate";
 import authRoutes from "./routes/auth";
 import dashboardRoutes from "./routes/dashboard";
 import stockRoutes from "./routes/stock";
@@ -51,6 +52,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(fastifyStatic, { root: UPLOADS_DIR, prefix: "/uploads/", decorateReply: false });
   await app.register(viewsPlugin);
   await app.register(authPlugin);
+  await app.register(setupGatePlugin);
 
   // Friendly error page; never log the request body (it may carry secrets).
   app.setErrorHandler((err, req, reply) => {

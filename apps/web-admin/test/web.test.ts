@@ -19,6 +19,7 @@ import {
   listTicketMessages,
   setSetting,
   getSetting,
+  deleteSetting,
   getVoucherByCode,
   countAvailableStock,
   markUnderpaid,
@@ -106,6 +107,8 @@ beforeEach(async () => {
   const { raw, data } = makeSession(admin.id, ADMIN_TG, jti);
 
   seed = { adminId: admin.id, customerId: customer.id, productId: product.id, cookie: raw, csrf: data.csrf };
+  // Existing suites model a CONFIGURED deploy — keep the first-run gate open.
+  await setSetting(prisma, "setup_completed", "true");
 });
 
 // ---- helpers --------------------------------------------------------------
@@ -1269,5 +1272,27 @@ describe("page smoke tests", () => {
     expect((await get(`/orders/${orderId}`, seed.cookie)).statusCode).toBe(200);
     expect((await get(`/stock/${seed.productId}`, seed.cookie)).statusCode).toBe(200);
     expect((await get(`/users/${seed.customerId}`, seed.cookie)).statusCode).toBe(200);
+  });
+});
+
+describe("first-run setup gate", () => {
+  it("redirects to /setup when setup is pending (no flag, no admin password)", async () => {
+    await deleteSetting(prisma, "setup_completed"); // seeded admin has no password
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/setup");
+  });
+
+  it("does NOT gate once an admin already has a password (backward compat)", async () => {
+    await deleteSetting(prisma, "setup_completed");
+    await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("password123"));
+    const res = await app.inject({ method: "GET", url: "/", headers: { cookie: `${COOKIE}=${seed.cookie}` } });
+    expect(res.statusCode).toBe(200); // dashboard renders, gate stayed open
+  });
+
+  it("never gates excluded paths (/healthz)", async () => {
+    await deleteSetting(prisma, "setup_completed");
+    const res = await app.inject({ method: "GET", url: "/healthz" });
+    expect(res.statusCode).toBe(200);
   });
 });

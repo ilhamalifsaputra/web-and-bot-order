@@ -27,6 +27,7 @@ import {
   searchUsers,
   getSetting,
   setSetting,
+  deleteSetting,
   createProduct,
   listAllCategories,
   createCategory,
@@ -38,6 +39,7 @@ import {
 } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { adminEdit, adminAnchor, consumeInput } from "../util/chat";
+import { BANNER_FILEID_KEY } from "../util/banner";
 import { coreT, t } from "../util/i18n";
 import { esc, formatPrice } from "../util/format";
 import { validateText, validateVoucherCode, parseStockUpload } from "../util/validators";
@@ -434,6 +436,8 @@ export async function settingConversation(conversation: MyConversation, ctx: MyC
         await consumeInput(u);
         const oldFileId = await conversation.external(() => prisma.setting.findUnique({ where: { key } }).then((r) => r?.value ?? null));
         await conversation.external(() => prisma.setting.deleteMany({ where: { key } }));
+        // Drop any cached upload file_id so a later web banner can't resurface it.
+        await conversation.external(() => deleteSetting(prisma, BANNER_FILEID_KEY));
         // Save undo state with a 30-second expiry window.
         if (oldFileId) {
           u.session.scratch.undoBanner = { fileId: oldFileId, expiresAt: Date.now() + 30_000 };
@@ -476,6 +480,8 @@ export async function settingConversation(conversation: MyConversation, ctx: MyC
   const adminTg = ctx.from!.id;
   await prisma.$transaction(async (tx) => {
     await setSetting(tx, key, value);
+    // A bot-set banner is a raw file_id; invalidate any cached upload file_id.
+    if (key === "banner_image") await deleteSetting(tx, BANNER_FILEID_KEY);
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
       adminId: adminIdOf(admin),

@@ -28,6 +28,7 @@ import {
   adjustWallet,
   getSetting,
   setSetting,
+  deleteSetting,
   updateProduct,
   listStockItemsForProduct,
   markStockDead,
@@ -40,6 +41,7 @@ import {
 } from "@app/db";
 import type { MyContext } from "../context";
 import { adminEdit } from "../util/chat";
+import { BANNER_FILEID_KEY } from "../util/banner";
 import { coreT, t } from "../util/i18n";
 import { esc, formatPrice, formatIdr, mixedAmount } from "../util/format";
 import * as akb from "../keyboards/admin";
@@ -549,6 +551,8 @@ async function undoBannerRemoval(ctx: MyContext): Promise<void> {
   ctx.session.scratch.undoBanner = undefined;
   await prisma.$transaction(async (tx) => {
     await setSetting(tx, "banner_image", undoState.fileId);
+    // Restoring a raw file_id; clear any cached upload file_id.
+    await deleteSetting(tx, BANNER_FILEID_KEY);
     const admin = await getUserByTelegramId(tx, ctx.from!.id);
     await logAdminAction(tx, {
       adminId: adminId(admin),

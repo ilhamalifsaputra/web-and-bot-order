@@ -1,19 +1,31 @@
 // setup-db MUST be first — temp DB + push before any @app import.
 import "./setup-db";
 
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@app/core/payments/tokopay", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/tokopay")>()),
+  createTransaction: vi.fn().mockResolvedValue({
+    trxId: "TP-TEST",
+    payUrl: null,
+    qrLink: "https://x/qr.png",
+    qrString: "000",
+    totalBayar: "100",
+  }),
+}));
+
 import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast, setSetting } from "@app/db";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { makeCtx, calls, type SentCall } from "./helpers/ctx";
+import { makeCtx, calls, sentIncludes, offersForwardAction, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
-import { handleAdminCallback, adminCommand } from "../src/handlers/admin";
+import { handleAdminCallback, adminCommand, adminWalletCommand } from "../src/handlers/admin";
 import { routeCallback } from "../src/handlers/callbacks";
 import { upsertUser } from "@app/db";
 
@@ -91,13 +103,14 @@ describe("customer handlers", () => {
     expect((ctx.session.scratch as { browseProductIds?: number[] }).browseProductIds).toEqual([sample.product.id]);
   });
 
-  it("browseProductsFlat shows a numbered list with prices on each line", async () => {
+  it("browseProductsFlat shows a numbered list of products", async () => {
     const { ctx, sink } = customerCtx();
     await customer.browseProductsFlat(ctx);
     const dump = JSON.stringify(sink);
-    expect(dump).toContain("[ 1 ]"); // numbered layout (compact for big catalogs)
-    expect(dump).toContain(sample.product.name.toUpperCase());
-    expect(dump).toMatch(/—\s*[^\s]+/); // a price follows the product name
+    // Compact numbered layout: "1. <name>" per line. The price is not on the
+    // list line — it lives on the product detail screen ("Enter a number to
+    // view details").
+    expect(dump).toContain(`1. ${sample.product.name}`);
   });
 
   it("browseProduct shows detail and sets the viewing breadcrumb", async () => {
@@ -163,6 +176,36 @@ describe("customer handlers", () => {
     // not_found path → still sends something, but never leaks the code
     expect(JSON.stringify(stranger.sink)).not.toContain(order!.orderCode);
   });
+
+  it("viewOrder shows credentials for a delivered order owned by the buyer", async () => {
+    // Approve a pending-verification order so it becomes DELIVERED with assigned stock.
+    const order = await makeOrder();
+    await attachPaymentProof(prisma, order!.id, { fileId: "proof-file", txid: "TX1234567890" });
+    await verification.approve(adminCtx({ callbackData: `v1:adm:verif:approve:${order!.id}` }).ctx, order!.id);
+
+    const sold = await prisma.stockItem.findFirst({ where: { orderItems: { some: { orderId: order!.id } }, status: StockStatus.SOLD } });
+    expect(sold).toBeTruthy();
+
+    const { ctx, sink } = customerCtx();
+    await customer.viewOrder(ctx, order!.id);
+    expect(sentIncludes(sink, sold!.credentials)).toBe(true);
+  });
+
+  it("viewOrder never strands the user when the order isn't found", async () => {
+    const order = await makeOrder();
+    const stranger = makeCtx({
+      from: { id: 777 },
+      session: { lang: "en", scratch: {}, dbUser: { id: 99999, telegramId: "777", role: "CUSTOMER", language: "EN", referralCode: "X", walletBalance: "0" } },
+    });
+    await customer.viewOrder(stranger.ctx, order!.id);
+    expect(offersForwardAction(stranger.sink)).toBe(true);
+  });
+
+  it("viewMyTicket never strands the user when the ticket isn't found", async () => {
+    const { ctx, sink } = customerCtx();
+    await customer.viewMyTicket(ctx, 999999);
+    expect(offersForwardAction(sink)).toBe(true);
+  });
 });
 
 // ===========================================================================
@@ -192,6 +235,37 @@ describe("checkout handlers", () => {
       calls(sink, "editMessageText").length + calls(sink, "sendMessage").length + calls(sink, "reply").length,
     ).toBeGreaterThan(0);
     checkout.cancelPaymentJobs(orders[0]!.id); // clear the countdown timer
+  });
+
+  it("buyNow unifies the Binance QR + instructions into one photo+caption bubble when a QR is set", async () => {
+    await setSetting(prisma, "usd_idr_rate", "1");
+    await setSetting(prisma, "qr", "QR_FILE_ID"); // stored QR file_id
+    const { ctx, sink } = customerCtx({ callbackData: "v1:pay:1:1" });
+    await checkout.buyNow(ctx, sample.product.id, 1);
+    const orders = await prisma.order.findMany();
+    expect(orders).toHaveLength(1);
+    // QR + instructions ride in ONE photo+caption bubble — no separate sendPhoto.
+    expect(calls(sink, "sendPhoto").length).toBe(0);
+    const photoCalls = calls(sink, "replyWithPhoto");
+    expect(photoCalls.length).toBe(1);
+    expect((photoCalls[0]!.args[1] as { caption?: string }).caption).toBeTruthy();
+    checkout.cancelPaymentJobs(orders[0]!.id); // clear the countdown timer
+  });
+
+  it("buyNowTokopay creates an IDR/TOKOPAY order and sends the QR as one photo+caption bubble", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const { ctx, sink } = makeCtx({ session: { dbUser: sample.user, lang: "en" } });
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+    const orders = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
+    expect(orders[0]!.paymentMethod).toBe("TOKOPAY");
+    expect(orders[0]!.currency).toBe("IDR");
+    // QR + instructions are unified into ONE photo+caption bubble (not a
+    // separate sendPhoto below a text bubble).
+    expect(calls(sink, "sendPhoto").length).toBe(0);
+    const photoCalls = calls(sink, "replyWithPhoto");
+    expect(photoCalls.length).toBe(1);
+    expect((photoCalls[0]!.args[1] as { caption?: string }).caption).toBeTruthy();
   });
 
   it("buyNow refuses past the pending-order limit", async () => {
@@ -308,6 +382,25 @@ describe("admin handlers", () => {
     await handleAdminCallback(ctx, "v1:adm:dash".split(":"));
     // answered with an alert, no dashboard content
     expect(calls(sink, "answerCallbackQuery").length).toBe(1);
+  });
+
+  it("adminWalletCommand offers a back action on bad args (never strands)", async () => {
+    const { ctx, sink } = adminCtx({ match: "only-one-arg" });
+    await adminWalletCommand(ctx);
+    expect(offersForwardAction(sink)).toBe(true);
+  });
+
+  it("adminWalletCommand credits the wallet, localizes the result, and offers a back action", async () => {
+    // An Indonesian-speaking admin must see the result in Indonesian (not a
+    // hardcoded English line) — proves the success screen goes through i18n.
+    const { ctx, sink } = makeCtx({
+      from: { id: 999, username: "boss" },
+      match: `${sample.user.id} 5`,
+      session: { lang: "id", scratch: {}, dbUser: { id: adminDbId, telegramId: "999", role: UserRole.ADMIN, language: "ID", referralCode: "A", walletBalance: "0" } },
+    });
+    await adminWalletCommand(ctx);
+    expect(sentIncludes(sink, "Saldo baru")).toBe(true); // localized to the admin's language
+    expect(offersForwardAction(sink)).toBe(true);
   });
 
   it("user ban toggles the flag and writes an audit row", async () => {

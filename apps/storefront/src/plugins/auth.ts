@@ -30,7 +30,7 @@ declare module "fastify" {
 export async function optionalCustomer(req: FastifyRequest): Promise<Customer | null> {
   const data = readCustomerSession(req.cookies[SHOP_COOKIE_NAME]);
   if (!data) return null;
-  const storedJti = await getSetting(prisma, shopSessionJtiKey(data.telegramId));
+  const storedJti = await getSetting(prisma, shopSessionJtiKey(data.userId));
   if (!storedJti || storedJti !== data.jti) return null;
   const user = await getUser(prisma, data.userId);
   if (!user || user.banned) return null;

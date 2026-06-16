@@ -250,6 +250,22 @@ export function listBulkPricingRules(db: Db) {
   });
 }
 
+/**
+ * All active quantity-discount rules keyed by product id, so catalog grids can
+ * show a "buy N+, save X%" badge without an N+1 query per card. Products with
+ * no rule are simply absent from the map.
+ */
+export async function activeBulkPricingByProduct(
+  db: Db,
+): Promise<Record<number, { minQuantity: number; discountPercent: string }>> {
+  const rules = await db.bulkPricing.findMany({ where: { isActive: true } });
+  const out: Record<number, { minQuantity: number; discountPercent: string }> = {};
+  for (const r of rules) {
+    out[r.productId] = { minQuantity: r.minQuantity, discountPercent: r.discountPercent.toString() };
+  }
+  return out;
+}
+
 // ---- low stock report (kept here since it's product-centric) ----
 
 /** (product, availableCount) for active products at/below threshold. */

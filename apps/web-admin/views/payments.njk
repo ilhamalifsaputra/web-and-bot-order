@@ -3,10 +3,7 @@
 {% block title %}Payments · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="wallet" class="w-7 h-7 text-emerald-500"></i> Automatic Payments</h1>
-  <p class="page-lead">Payments that come in through Binance are matched to orders and delivered for you.</p>
-</header>
+{{ ui.page_header('Automatic Payments', 'Payments that come in through Binance are matched to orders and delivered for you.', 'wallet', 'sales') }}
 
 {{ ui.flash(msg, kind) }}
 
@@ -18,7 +15,7 @@
 {% endif %}
 
 {# ---- Auto-check status + result summary ---- #}
-<section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+<section class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-8 gap-4 mb-8">
   <div class="card card-pad col-span-2">
     <div class="stat-label">Auto-check status</div>
     <div class="text-sm mt-2 text-ink">
@@ -30,7 +27,7 @@
       {% if health.backoffUntil %}· <span class="text-amberx">paused until {{ health.backoffUntil | localdt('HH:mm:ss') }}</span>{% endif %}
     </div>
   </div>
-  {% set cards = [['matched','Confirmed','text-grass'], ['underpaid','Paid too little','text-amberx'], ['unmatched','Couldn’t match','text-pine'], ['delivery_failed','Delivery failed','text-rust']] %}
+  {% set cards = [['matched','Confirmed','text-grass'], ['underpaid','Paid too little','text-amberx'], ['unmatched','Couldn’t match','text-pine'], ['delivery_failed','Delivery failed','text-rust'], ['credited_to_balance','Added to credit balance','text-grass'], ['dismissed','Dismissed','text-ink-soft']] %}
   {% for c in cards %}
   <div class="card card-pad">
     <div class="stat-label">{{ c[1] }}</div>
@@ -59,7 +56,7 @@
         <tr class="align-top">
           <td><a class="link font-mono text-xs" href="/orders/{{ o.id }}">{{ o.orderCode }}</a></td>
           <td class="text-ink-soft">{{ o.user.username or o.user.fullName or o.user.id }}</td>
-          <td class="tabular">{{ o.totalAmount | money }} {{ currency }}</td>
+          <td class="tabular">{{ o.totalAmount | idr }}</td>
           <td class="text-ink-soft break-all max-w-xs">{{ o.adminNote or '—' }}</td>
           <td>
             <div class="flex gap-2 justify-end">
@@ -102,7 +99,7 @@
       <label class="field-label">Order code</label>
       <input name="order_code" required list="pending-internal" class="field font-mono w-40" placeholder="ABC123">
       <datalist id="pending-internal">
-        {% for o in pending_internal %}<option value="{{ o.orderCode }}">{{ o.totalAmount }} {{ currency }}</option>{% endfor %}
+        {% for o in pending_internal %}<option value="{{ o.orderCode }}">{{ o.totalAmount | idr }}</option>{% endfor %}
       </datalist>
     </div>
     <button class="btn btn-primary">Match &amp; deliver</button>
@@ -112,7 +109,36 @@
   {% endif %}
 </section>
 
+{# ---- Add an unmatched payment to a buyer's credit balance ---- #}
+<section class="card card-pad mb-8">
+  <h2 class="section-title mb-1">Add to a buyer's credit balance</h2>
+  <p class="text-xs text-ink-soft mb-4">If a payment came in for an order you can no longer fulfil (it expired or the stock is gone), add it to that buyer's credit balance instead. The amount lands in the order's currency for them to spend on a future purchase — the order is then closed.</p>
+  <form method="post" action="/payments/credit" class="flex flex-wrap gap-3 items-end"
+        onsubmit="return confirm('Add this payment to the buyer\'s credit balance and close the order?')">
+    {{ ui.csrf_field(admin) }}
+    <div>
+      <label class="field-label">Payment reference</label>
+      <input name="binance_tx_id" required class="field font-mono w-56" placeholder="Payment reference">
+    </div>
+    <div>
+      <label class="field-label">Order code</label>
+      <input name="order_code" required class="field font-mono w-40" placeholder="ABC123">
+    </div>
+    <button class="btn btn-primary">Add to credit balance</button>
+  </form>
+</section>
+
 {# ---- History ---- #}
+<div class="rounded-xl px-4 py-3 mb-4 text-xs bg-sand/60 text-ink-soft border border-line leading-relaxed">
+  <b>Reference</b> is the payment's ID at Binance — we match it to an order
+  automatically by the <b>exact amount received</b>, so it is <b>not</b> an order
+  code and won't be found in your sales orders.
+  <b>“Couldn’t match”</b> means money arrived that didn’t line up with any waiting
+  order. If a customer simply forgot the order note, link it with
+  <a href="#" onclick="document.querySelector('input[name=binance_tx_id]').focus();return false" class="link">Match a payment by hand</a> above.
+  If it belongs to no order at all (e.g. a <b>test deposit</b>), use
+  <b>Dismiss</b> to clear it from the list.
+</div>
 <div class="flex items-center justify-between mb-3">
   <h2 class="section-title">Payment history</h2>
   <form method="get" action="/payments" class="flex gap-2 items-center text-sm">
@@ -129,7 +155,7 @@
     <thead>
       <tr>
         <th>When</th><th>Reference</th><th>Result</th>
-        <th>Amount</th><th>Order</th>
+        <th>Amount received (USDT)</th><th>Order</th>
       </tr>
     </thead>
     <tbody>
@@ -138,9 +164,22 @@
         <td class="text-ink-soft whitespace-nowrap" title="{{ tzname }}">{{ r.createdAt | localdt('yyyy-LL-dd HH:mm:ss') }}</td>
         <td class="font-mono text-xs break-all max-w-xs">{{ r.binanceTxId }}</td>
         <td>{{ ui.status_badge(r.outcome) }}</td>
-        <td class="tabular">{{ r.amount | money }}{% if r.amount is not none %} {{ currency }}{% endif %}</td>
+        {# Binance transfers are a genuine USDT crypto rail — labelled explicitly,
+           independent of the IDR shop money shown elsewhere. #}
+        <td class="tabular">{{ r.amount | money }}{% if r.amount is not none %} USDT{% endif %}</td>
         <td>
           {% if r.order %}<a class="link font-mono text-xs" href="/orders/{{ r.order.id }}">{{ r.order.orderCode }}</a>
+          {% elif r.outcome == 'unmatched' %}
+          <div class="flex gap-2 items-center">
+            <button type="button" class="btn btn-ghost btn-sm"
+                    onclick="document.querySelector('input[name=binance_tx_id]:not([type=hidden])').value='{{ r.binanceTxId }}';document.querySelector('input[name=order_code]').focus();window.scrollTo(0,0);return false">Add to buyer's credit balance</button>
+            <form method="post" action="/payments/dismiss" class="inline">
+              {{ ui.csrf_field(admin) }}
+              <input type="hidden" name="binance_tx_id" value="{{ r.binanceTxId }}">
+              <button class="btn btn-ghost btn-sm"
+                      onclick="return confirm('Dismiss this payment? Use this only when it belongs to no order (e.g. a test deposit). It will be marked “dismissed” and kept in the history.')">Dismiss</button>
+            </form>
+          </div>
           {% else %}<span class="text-ink-faint">—</span>{% endif %}
         </td>
       </tr>
@@ -151,12 +190,6 @@
   </table>
 </div>
 
-<div class="flex items-center justify-between mt-4 text-sm text-ink-soft">
-  <span>{{ total }} payment(s) · page {{ page }}</span>
-  <span class="flex gap-3">
-    {% set qbase = '/payments?outcome=' + f.outcome %}
-    {% if page > 1 %}<a class="link" href="{{ qbase }}&page={{ page - 1 }}">← Newer</a>{% endif %}
-    {% if has_next %}<a class="link" href="{{ qbase }}&page={{ page + 1 }}">Older →</a>{% endif %}
-  </span>
-</div>
+{% set qbase = '/payments?outcome=' + f.outcome %}
+{{ ui.pager(qbase, page, has_next, total, 'payment(s)') }}
 {% endblock %}

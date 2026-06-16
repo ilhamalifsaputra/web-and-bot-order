@@ -6,7 +6,7 @@
  * failure (e.g. editing a photo+caption bubble, or "message is not modified")
  * we fall through to a fresh send so the user always gets a response.
  */
-import type { InlineKeyboard, Keyboard } from "grammy";
+import { InputFile, type InlineKeyboard, type Keyboard } from "grammy";
 import { GrammyError } from "grammy";
 import type { MyContext } from "../context";
 
@@ -33,6 +33,40 @@ function isNotModified(err: unknown): boolean {
   );
 }
 
+/**
+ * Best-effort: strip the inline keyboard off an older bubble so only the
+ * freshly rendered screen keeps live buttons. Keeps the "one active screen per
+ * chat" invariant — without this, every fresh send leaves the previous menu's
+ * buttons tappable, and a tap there acts on moved-on state.
+ */
+export async function retireKeyboard(ctx: MyContext, messageId: number): Promise<void> {
+  const chatId = ctx.chat?.id;
+  if (chatId === undefined) return;
+  try {
+    await ctx.api.editMessageReplyMarkup(chatId, messageId, { reply_markup: undefined });
+  } catch {
+    /* old, deleted, or never had a keyboard — nothing to clean */
+  }
+}
+
+/**
+ * Best-effort delete of the user's typed wizard input. Used by multi-step
+ * flows so the chat stays a single anchor bubble instead of accumulating
+ * prompt → input → error → input chains — and so sensitive pastes (stock
+ * credentials) don't linger in the visible history. Bots may delete incoming
+ * messages in private chats for 48h; failures are ignored.
+ */
+export async function consumeInput(ctx: MyContext): Promise<void> {
+  const m = ctx.message;
+  const chatId = ctx.chat?.id;
+  if (!m || chatId === undefined) return;
+  try {
+    await ctx.api.deleteMessage(chatId, m.message_id);
+  } catch {
+    /* too old or not deletable — leave it */
+  }
+}
+
 /** Render the next customer screen (edit on tap, send on typed input). */
 export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Markup): Promise<void> {
   // Clear qty-input mode on any navigation so it doesn't leak.
@@ -51,14 +85,22 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
       } else {
         await ctx.editMessageText(body, { parse_mode: "HTML", reply_markup: replyMarkup });
       }
-      if (cqMsg) ctx.session.menuMsgId = cqMsg.message_id;
+      if (cqMsg) {
+        // The tap may have landed on an older bubble — retire the previously
+        // active menu so two screens never stay live at once.
+        const prev = ctx.session.menuMsgId;
+        if (prev !== undefined && prev !== cqMsg.message_id) await retireKeyboard(ctx, prev);
+        ctx.session.menuMsgId = cqMsg.message_id;
+      }
       return;
     } catch (err) {
       if (isNotModified(err)) return;
       // fall through to a fresh send
     }
   }
+  const prev = ctx.session.menuMsgId ?? ctx.callbackQuery?.message?.message_id;
   const msg = await ctx.reply(body, { parse_mode: "HTML", reply_markup: replyMarkup });
+  if (prev !== undefined && prev !== msg.message_id) await retireKeyboard(ctx, prev);
   ctx.session.menuMsgId = msg.message_id;
 }
 
@@ -80,12 +122,13 @@ export async function renderMenu(
   ctx: MyContext,
   text: string,
   replyMarkup?: Markup,
-  photoFileId?: string,
+  photo?: string | InputFile,
+  onPhotoSent?: (fileId: string) => void | Promise<void>,
 ): Promise<void> {
   ctx.session.awaitingQtyProductId = undefined;
   const body = truncateText(text);
 
-  if (photoFileId && body.length <= MAX_CAPTION_LEN) {
+  if (photo && body.length <= MAX_CAPTION_LEN) {
     // Editing in place only works when we're on a callback and the current
     // bubble is already a photo (the menus here use reply keyboards, so this is
     // rare — the common path is a fresh photo send below).
@@ -94,6 +137,8 @@ export async function renderMenu(
       if (cqMsg && "photo" in cqMsg && cqMsg.photo) {
         try {
           await ctx.editMessageCaption({ caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
+          const prev = ctx.session.menuMsgId;
+          if (prev !== undefined && prev !== cqMsg.message_id) await retireKeyboard(ctx, prev);
           ctx.session.menuMsgId = cqMsg.message_id;
           return;
         } catch (err) {
@@ -102,8 +147,11 @@ export async function renderMenu(
         }
       }
     }
-    const msg = await ctx.replyWithPhoto(photoFileId, { caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
+    const prev = ctx.session.menuMsgId ?? ctx.callbackQuery?.message?.message_id;
+    const msg = await ctx.replyWithPhoto(photo, { caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
+    if (prev !== undefined && prev !== msg.message_id) await retireKeyboard(ctx, prev);
     ctx.session.menuMsgId = msg.message_id;
+    if (onPhotoSent && msg.photo?.length) await onPhotoSent(msg.photo[msg.photo.length - 1]!.file_id);
     return;
   }
 
@@ -122,13 +170,62 @@ export async function adminEdit(ctx: MyContext, text: string, replyMarkup?: Mark
       } else {
         await ctx.editMessageText(body, { parse_mode: "HTML", reply_markup: replyMarkup });
       }
-      if (cqMsg) ctx.session.adminMsgId = cqMsg.message_id;
+      if (cqMsg) {
+        const prev = ctx.session.adminMsgId;
+        if (prev !== undefined && prev !== cqMsg.message_id) await retireKeyboard(ctx, prev);
+        ctx.session.adminMsgId = cqMsg.message_id;
+      }
       return;
     } catch (err) {
       if (isNotModified(err)) return;
       // fall through
     }
   }
+  const prev = ctx.session.adminMsgId ?? ctx.callbackQuery?.message?.message_id;
   const msg = await ctx.reply(body, { parse_mode: "HTML", reply_markup: replyMarkup });
+  if (prev !== undefined && prev !== msg.message_id) await retireKeyboard(ctx, prev);
   ctx.session.adminMsgId = msg.message_id;
+}
+
+// ---------------------------------------------------------------------------
+// Wizard anchors — multi-step flows keep ONE bubble that every prompt, error
+// and confirmation edits in place. Typed input would normally fall through to
+// a fresh send (smartEdit/adminEdit only edit on a tap); these helpers instead
+// edit the session-tracked anchor message, so a wizard never accumulates
+// prompt → input → error chains. Pair with consumeInput() on the typed update.
+// ---------------------------------------------------------------------------
+
+async function editAnchor(
+  ctx: MyContext,
+  anchorId: number | undefined,
+  text: string,
+  replyMarkup?: Markup,
+): Promise<number | undefined> {
+  const body = truncateText(text);
+  const chatId = ctx.chat?.id;
+  if (chatId !== undefined && anchorId !== undefined && (replyMarkup === undefined || isInline(replyMarkup))) {
+    try {
+      await ctx.api.editMessageText(chatId, anchorId, body, { parse_mode: "HTML", reply_markup: replyMarkup });
+      return anchorId;
+    } catch (err) {
+      if (isNotModified(err)) return anchorId;
+      // fall through to a fresh send (anchor may be a photo or deleted)
+    }
+  }
+  const msg = await ctx.reply(body, { parse_mode: "HTML", reply_markup: replyMarkup });
+  if (anchorId !== undefined && anchorId !== msg.message_id) await retireKeyboard(ctx, anchorId);
+  return msg.message_id;
+}
+
+/** Render a customer wizard step into the anchor bubble (edit-in-place). */
+export async function menuAnchor(ctx: MyContext, text: string, replyMarkup?: Markup): Promise<void> {
+  if (ctx.callbackQuery) return smartEdit(ctx, text, replyMarkup);
+  ctx.session.awaitingQtyProductId = undefined;
+  ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, text, replyMarkup);
+}
+
+/** Render an admin wizard step into the anchor bubble (edit-in-place). */
+export async function adminAnchor(ctx: MyContext, text: string, replyMarkup?: Markup): Promise<void> {
+  if (ctx.callbackQuery) return adminEdit(ctx, text, replyMarkup);
+  ctx.session.adminMsgId = await editAnchor(ctx, ctx.session.adminMsgId, text, replyMarkup);
 }

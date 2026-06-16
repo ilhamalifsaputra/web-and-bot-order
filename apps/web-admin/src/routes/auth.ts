@@ -2,7 +2,8 @@
  * Login, logout, first-admin bootstrap, healthcheck — port of routers/auth.py.
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { config, isAdmin } from "@app/core/config";
+import { config } from "@app/core/config";
+import { isAdmin } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { UserRole } from "@app/core/enums";
 import {
@@ -13,6 +14,7 @@ import {
   getUserByTelegramId,
   enqueueAdminPasswordReset,
   logAdminAction,
+  anyAdminPasswordSet,
 } from "@app/db";
 import {
   hashPassword,
@@ -34,13 +36,6 @@ import {
   PW_RESET_TTL_MS,
 } from "../auth";
 import { optionalAdmin } from "../plugins/auth";
-
-async function anyAdminPasswordSet(): Promise<boolean> {
-  for (const tgId of config.ADMIN_IDS) {
-    if ((await getSetting(prisma, passwordHashKey(tgId))) !== null) return true;
-  }
-  return false;
-}
 
 /**
  * True if `telegramId` is a real, active web admin that already has a password
@@ -71,12 +66,12 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
 
   // ---- Bootstrap ----
   app.get("/bootstrap", async (_req, reply: FastifyReply) => {
-    if (await anyAdminPasswordSet()) return reply.code(303).redirect("/login");
+    if (await anyAdminPasswordSet(prisma)) return reply.code(303).redirect("/login");
     return reply.view("bootstrap.njk", { error: null, admin_ids: config.ADMIN_IDS });
   });
 
   app.post("/bootstrap", async (req, reply) => {
-    if (await anyAdminPasswordSet()) return reply.code(303).redirect("/login");
+    if (await anyAdminPasswordSet(prisma)) return reply.code(303).redirect("/login");
     const body = (req.body ?? {}) as Record<string, string>;
     const telegramId = Number(body.telegram_id);
     const password = body.password ?? "";
@@ -101,7 +96,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
 
   // ---- Login / logout ----
   app.get("/login", async (_req, reply) => {
-    if (!(await anyAdminPasswordSet())) return reply.code(303).redirect("/bootstrap");
+    if (!(await anyAdminPasswordSet(prisma))) return reply.code(303).redirect("/bootstrap");
     return reply.view("login.njk", { error: null });
   });
 

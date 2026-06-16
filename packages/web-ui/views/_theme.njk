@@ -44,50 +44,64 @@
   };
 </script>
 
-<style type="text/tailwindcss">
-  @layer base {
-    body { @apply font-sans bg-paper text-ink antialiased; }
-    h1, h2, h3 { @apply font-display; }
-  }
-  @layer components {
-    /* Surfaces */
-    .card        { @apply bg-card rounded-2xl border border-line shadow-soft; }
-    .card-pad    { @apply p-5 sm:p-6; }
+<style>
+  /* Component classes as plain CSS — works regardless of which Tailwind CDN
+     version is loaded. CSS variables come from app.css :root (with hardcoded
+     fallbacks so the page looks correct even before app.css resolves). */
 
-    /* Headings */
-    .page-title  { @apply font-display text-3xl font-semibold tracking-tight text-ink; }
-    .page-lead   { @apply text-sm text-ink-soft mt-1; }
-    .section-title { @apply font-display text-lg font-semibold text-ink; }
+  /* Base */
+  body { font-family: 'Manrope', system-ui, sans-serif; background-color: var(--paper, #f6f8fb); color: var(--ink, #1b2330); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  h1, h2, h3 { font-family: 'Outfit', system-ui, sans-serif; }
 
-    /* Buttons */
-    .btn         { @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-pine/30; }
-    .btn-primary { @apply bg-pine text-white hover:bg-pine-dark shadow-soft; }
-    .btn-soft    { @apply bg-pine-tint text-pine-dark hover:bg-pine/15; }
-    .btn-ghost   { @apply text-ink-soft hover:bg-sand hover:text-ink; }
-    .btn-danger  { @apply bg-rust text-white hover:bg-rust-dark; }
-    .btn-sm      { @apply px-3 py-1.5 text-xs rounded-lg; }
+  /* Surfaces */
+  .card     { background: var(--card, #fff); border-radius: 1rem; border: 1px solid var(--line, #e3e8ef); box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px -14px rgba(16,24,40,.12); }
+  .card-pad { padding: 1.25rem; }
+  @media (min-width: 640px) { .card-pad { padding: 1.5rem; } }
 
-    /* Forms */
-    .field-label { @apply block text-xs font-semibold uppercase tracking-wide text-ink-soft mb-1.5; }
-    .field       { @apply w-full rounded-xl border border-line bg-white px-3 py-2 text-sm text-ink placeholder:text-ink-faint transition focus:outline-none focus:border-pine focus:ring-2 focus:ring-pine/25; }
+  /* Headings */
+  .page-title    { font-family: 'Outfit', system-ui, sans-serif; font-size: 1.875rem; font-weight: 600; letter-spacing: -0.025em; color: var(--ink, #1b2330); display: flex; align-items: center; gap: 0.625rem; }
+  .page-lead     { font-size: 0.875rem; color: var(--ink-soft, #5a6473); margin-top: 0.25rem; }
+  .section-title { font-family: 'Outfit', system-ui, sans-serif; font-size: 1.125rem; font-weight: 600; color: var(--ink, #1b2330); }
 
-    /* Stats */
-    .stat-label  { @apply text-[0.7rem] font-semibold uppercase tracking-wider text-ink-soft; }
-    .stat-value  { @apply font-display text-3xl font-semibold text-ink mt-2 leading-none; }
-    .stat-sub    { @apply text-xs text-ink-soft mt-2; }
+  /* Buttons */
+  .btn         { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; border-radius: 0.75rem; padding: 0.5rem 1rem; font-size: 0.875rem; font-weight: 600; transition: background-color .15s, color .15s, box-shadow .15s; cursor: pointer; border: none; text-decoration: none; line-height: 1.25; }
+  .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(37,99,235,.35); }
+  .btn-primary { background: var(--pine, #2563eb); color: #fff; box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px -14px rgba(16,24,40,.12); }
+  .btn-primary:hover { background: var(--pine-dark, #1d4ed8); }
+  .btn-soft    { background: var(--pine-tint, #e6effe); color: var(--pine-dark, #1d4ed8); }
+  .btn-soft:hover { background: rgba(37,99,235,.15); }
+  .btn-ghost   { color: var(--ink-soft, #5a6473); background: transparent; }
+  .btn-ghost:hover { background: var(--sand, #eef1f6); color: var(--ink, #1b2330); }
+  .btn-danger  { background: var(--rust, #dc2626); color: #fff; }
+  .btn-danger:hover { background: var(--rust-dark, #b91c1c); }
+  .btn-sm      { padding: .375rem .75rem; font-size: .75rem; border-radius: .5rem; }
 
-    /* Tables */
-    .data-table  { @apply min-w-full text-sm; }
-    .data-table thead th { @apply px-4 py-3 text-left text-[0.7rem] font-semibold uppercase tracking-wider text-ink-soft bg-sand/50; }
-    .data-table tbody td { @apply px-4 py-3 align-middle; }
-    .data-table tbody tr { @apply border-t border-line; }
-    .data-table tbody tr:hover { @apply bg-sand/30; }
+  /* Forms */
+  .field-label { display: block; font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft, #5a6473); margin-bottom: .375rem; }
+  .field       { display: block; width: 100%; border-radius: .75rem; border: 1px solid var(--line, #e3e8ef); background: #fff; padding: .5rem .75rem; font-size: .875rem; color: var(--ink, #1b2330); transition: border-color .15s, box-shadow .15s; outline: none; font-family: inherit; box-sizing: border-box; }
+  .field::placeholder { color: var(--ink-faint, #97a1b1); }
+  .field:focus { border-color: var(--pine, #2563eb); box-shadow: 0 0 0 3px rgba(37,99,235,.2); outline: none; }
+  select.field { -webkit-appearance: auto; appearance: auto; }
+  input[type="file"].field { -webkit-appearance: auto; appearance: auto; padding: .25rem .5rem; }
+  textarea.field { resize: vertical; }
 
-    /* Misc */
-    .link        { @apply text-pine font-semibold hover:text-pine-dark hover:underline underline-offset-2; }
-    .codeish     { @apply font-mono text-xs bg-sand/60 rounded px-1.5 py-0.5 text-ink; }
-    .chip        { @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold; }
-  }
+  /* Stats */
+  .stat-label { font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft, #5a6473); }
+  .stat-value { font-family: 'Outfit', system-ui, sans-serif; font-size: 1.875rem; font-weight: 600; color: var(--ink, #1b2330); margin-top: .5rem; line-height: 1; }
+  .stat-sub   { font-size: .75rem; color: var(--ink-soft, #5a6473); margin-top: .5rem; }
+
+  /* Tables */
+  .data-table          { min-width: 100%; font-size: .875rem; border-collapse: collapse; }
+  .data-table thead th { padding: .75rem 1rem; text-align: left; font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft, #5a6473); background: rgba(238,241,246,.5); }
+  .data-table tbody td { padding: .75rem 1rem; vertical-align: middle; }
+  .data-table tbody tr { border-top: 1px solid var(--line, #e3e8ef); }
+  .data-table tbody tr:hover { background: rgba(238,241,246,.3); }
+
+  /* Misc */
+  .link    { color: var(--pine, #2563eb); font-weight: 600; text-decoration: none; text-underline-offset: .125rem; }
+  .link:hover { color: var(--pine-dark, #1d4ed8); text-decoration: underline; }
+  .codeish { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .75rem; background: rgba(238,241,246,.6); border-radius: .25rem; padding: .125rem .375rem; color: var(--ink, #1b2330); }
+  .chip    { display: inline-flex; align-items: center; gap: .25rem; border-radius: 9999px; padding: .125rem .625rem; font-size: .75rem; font-weight: 600; }
 </style>
 
 <script src="https://unpkg.com/htmx.org@2.0.3" defer></script>

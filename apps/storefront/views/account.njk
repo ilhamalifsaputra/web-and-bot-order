@@ -26,6 +26,14 @@
     <div class="stat-label">{{ t('web.account_referral', lang) }}</div>
     <div class="stat-value font-mono !text-2xl">{{ referral_code }}</div>
   </div>
+  <div class="card card-pad">
+    <div class="stat-label">{{ t('web.account_credit_idr', lang) }}</div>
+    <div class="stat-value tabular">{{ customer.user.walletBalance | idr }}</div>
+  </div>
+  <div class="card card-pad">
+    <div class="stat-label">{{ t('web.account_credit_usdt', lang) }}</div>
+    <div class="stat-value tabular">{{ customer.user.walletBalanceUsdt | money }} USDT</div>
+  </div>
 </div>
 
 <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -33,7 +41,8 @@
     ['/account/orders', 'shopping-bag', t('web.account_orders', lang)],
     ['/account/referral', 'gift', t('web.account_referral', lang)],
     ['/account/reviews', 'star', t('web.account_reviews', lang)],
-    ['/account/support', 'life-buoy', t('web.account_support', lang)]
+    ['/account/support', 'life-buoy', t('web.account_support', lang)],
+    ['/account/settings', 'settings', t('web.account_settings', lang)]
   ] %}
   {% for m in menu %}
   <a href="{{ m[0] }}" class="card card-pad flex items-center gap-3 hover:shadow-lift transition-shadow">

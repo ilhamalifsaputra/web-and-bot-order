@@ -109,11 +109,12 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
     const ctx = await shopContext(req, "/account");
     const customer = req.customer!;
     const code = customer.user.referralCode;
+    const username = botUsername();
     return reply.view("referral.njk", {
       ...ctx,
       customer,
       referral_code: code,
-      referral_link: `https://t.me/${botUsername() ?? ""}?start=ref_${code}`,
+      referral_link: username ? `https://t.me/${username}?start=ref_${code}` : null,
     });
   });
 

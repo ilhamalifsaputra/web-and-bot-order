@@ -15,6 +15,7 @@ import {
   markNotificationFailed,
 } from "@app/db";
 import { config } from "@app/core/config";
+import { publicChannelId } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { NotificationEvent } from "@app/core/enums";
 import { render } from "./templates";
@@ -75,7 +76,7 @@ async function drainBatch(bot: Bot): Promise<void> {
 
     // Admin DMs target payload.chat_id; everything else posts to the channel.
     const isDm = ADMIN_DM_EVENTS.has(row.event);
-    const chatId = isDm ? Number(payload.chat_id) : Number(config.PUBLIC_CHANNEL_ID);
+    const chatId = isDm ? Number(payload.chat_id) : Number(publicChannelId());
     if (!Number.isFinite(chatId)) {
       await markNotificationFailed(prisma, row.id, isDm ? "missing chat_id" : "no PUBLIC_CHANNEL_ID", 1);
       continue;
@@ -94,7 +95,7 @@ async function drainBatch(bot: Bot): Promise<void> {
       }
       if (e instanceof GrammyError && e.error_code === 403) {
         logger.error(
-          `Bot is not allowed to post in channel ${config.PUBLIC_CHANNEL_ID} — marking failed`,
+          `Bot is not allowed to post in channel ${publicChannelId()} — marking failed`,
         );
         await markNotificationFailed(
           prisma,

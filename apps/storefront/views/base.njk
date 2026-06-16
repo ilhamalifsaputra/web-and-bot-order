@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{{ shop_name }}{% endblock %}</title>
   {% block meta %}{% endblock %}
+  <link rel="icon" href="{{ favicon_url }}">
 
   {# Design tokens + component classes come from the SHARED theme partial
      (packages/web-ui/views/_theme.njk) — identical to web-admin. #}
@@ -19,7 +20,11 @@
 <nav class="sticky top-0 z-30 bg-card/85 backdrop-blur border-b border-line">
   <div class="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3 sm:gap-4">
     <a href="/" class="flex items-center gap-2 font-display text-lg font-semibold text-pine whitespace-nowrap">
+      {% if logo_url %}
+      <img src="{{ logo_url }}" alt="{{ shop_name }}" class="h-7 w-auto max-w-[10rem] object-contain">
+      {% else %}
       <i data-lucide="store" class="w-5 h-5"></i>
+      {% endif %}
       <span class="hidden xs:inline sm:inline">{{ shop_name }}</span>
     </a>
 

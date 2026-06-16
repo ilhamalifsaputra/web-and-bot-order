@@ -26,6 +26,8 @@ export interface SessionData {
   /** Last menu/admin message ids for in-place edits (chat.ts). */
   menuMsgId?: number;
   adminMsgId?: number;
+  /** Message id of the QR code photo sent alongside payment instructions. */
+  qrMsgId?: number;
   /** Set while waiting for a free-text quantity reply (browse flow). */
   awaitingQtyProductId?: number;
   /** Transient scratch for multi-step flows (mirrors context.user_data extras). */

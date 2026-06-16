@@ -4,11 +4,12 @@
  * it can DM users/admins directly.
  *
  * Schedule (scheduleJobs): auto-cancel every minute, stale-ticket close hourly,
- * finance reconcile every 6h, warranty reminders daily at 09:00 config.TIMEZONE.
+ * finance reconcile every 6h.
  */
 import { Cron } from "croner";
 import type { Api } from "grammy";
-import { config, isBinanceInternalEnabled } from "@app/core/config";
+import { isBinanceInternalEnabled } from "@app/core/config";
+import { adminIds } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
@@ -18,9 +19,10 @@ import {
   listStaleRepliedTickets,
   closeTicket,
   reconcileFinances,
-  listOrderItemsExpiringWarranty,
   logAdminAction,
   getBinancePollHealth,
+  getBybitPollHealth,
+  resolveBybitConfig,
   getSetting,
   setSetting,
   claimNextDueBroadcast,
@@ -102,10 +104,10 @@ export async function reconcileFinancesJob(api: Api): Promise<void> {
     details: JSON.stringify(findings).slice(0, 4000),
   });
 
-  if (config.ADMIN_IDS.length) {
+  if (adminIds().length) {
     try {
       await api.sendMessage(
-        config.ADMIN_IDS[0]!,
+        adminIds()[0]!,
         "⚠ Reconciliation drift detected\n" +
           `orders: ${findings.order_drift.length}\n` +
           `vouchers: ${findings.voucher_drift.length}\n` +
@@ -114,25 +116,6 @@ export async function reconcileFinancesJob(api: Api): Promise<void> {
       );
     } catch (err) {
       logger.error({ err }, "Failed to alert admin about reconciliation drift");
-    }
-  }
-}
-
-export async function sendWarrantyReminders(api: Api): Promise<void> {
-  const now = Date.now();
-  const start = new Date(now + (2 * 24 * 60 + 23 * 60) * 60_000); // +2d23h
-  const end = new Date(now + (3 * 24 * 60 + 60) * 60_000); // +3d1h
-  const items = await listOrderItemsExpiringWarranty(prisma, start, end);
-  for (const item of items) {
-    const lang = langCode(item.order.user.language);
-    try {
-      await api.sendMessage(
-        Number(item.order.user.telegramId),
-        coreT("order.warranty_reminder", lang, { product: item.product.name, code: item.order.orderCode }),
-        { parse_mode: "HTML", reply_markup: notificationKb(lang) },
-      );
-    } catch (err) {
-      logger.error({ err }, `Failed to send warranty reminder for item ${item.id}`);
     }
   }
 }
@@ -178,7 +161,7 @@ export async function binancePollWatchdog(api: Api): Promise<void> {
     const lastRun = health.lastRun ? Date.parse(health.lastRun) : 0;
     const mins = lastRun ? Math.round((Date.now() - lastRun) / 60_000) : "∞";
     logger.error(`Binance poller watchdog: no cycle in ${mins} min — alerting admins`);
-    for (const adminId of config.ADMIN_IDS) {
+    for (const adminId of adminIds()) {
       try {
         await api.sendMessage(
           adminId,
@@ -194,6 +177,40 @@ export async function binancePollWatchdog(api: Api): Promise<void> {
   } else if (decision === "recover") {
     await setSetting(prisma, POLL_ALERT_KEY, "0");
     logger.info("Binance poller watchdog: poller recovered");
+  }
+}
+
+const BYBIT_POLL_ALERT_KEY = "bybit_poll_alert_sent";
+
+/** Bybit-deposit twin of binancePollWatchdog — same stale/recover logic on the
+ * Bybit poller heartbeat, with its own alert-state key so the two pollers'
+ * alerts never clobber each other. */
+export async function bybitPollWatchdog(api: Api): Promise<void> {
+  if (!(await resolveBybitConfig(prisma)).enabled) return;
+  const health = await getBybitPollHealth(prisma);
+  const alerted = (await getSetting(prisma, BYBIT_POLL_ALERT_KEY)) === "1";
+  const decision = pollWatchdogDecision(health, alerted);
+
+  if (decision === "alert") {
+    const lastRun = health.lastRun ? Date.parse(health.lastRun) : 0;
+    const mins = lastRun ? Math.round((Date.now() - lastRun) / 60_000) : "∞";
+    logger.error(`Bybit poller watchdog: no cycle in ${mins} min — alerting admins`);
+    for (const adminId of adminIds()) {
+      try {
+        await api.sendMessage(
+          adminId,
+          `⚠️ <b>Bybit deposit poller looks STUCK</b>\nNo completed cycle in <b>${mins}</b> min. ` +
+            `Auto-confirm is paused — check the order-bot process.`,
+          { parse_mode: "HTML" },
+        );
+      } catch (err) {
+        logger.error({ err }, `Failed to alert admin ${adminId} about stuck Bybit poller`);
+      }
+    }
+    await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "1");
+  } else if (decision === "recover") {
+    await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "0");
+    logger.info("Bybit poller watchdog: poller recovered");
   }
 }
 
@@ -259,8 +276,8 @@ export function scheduleJobs(api: Api): Cron[] {
     new Cron("*/1 * * * *", wrap("autoCancelExpiredOrders", autoCancelExpiredOrders)),
     new Cron("0 * * * *", wrap("autoCloseStaleTickets", autoCloseStaleTickets)),
     new Cron("0 */6 * * *", wrap("reconcileFinancesJob", reconcileFinancesJob)),
-    new Cron("0 9 * * *", { timezone: config.TIMEZONE }, wrap("sendWarrantyReminders", sendWarrantyReminders)),
     new Cron("*/2 * * * *", wrap("binancePollWatchdog", binancePollWatchdog)),
+    new Cron("*/2 * * * *", wrap("bybitPollWatchdog", bybitPollWatchdog)),
     new Cron("*/1 * * * *", { protect: true }, wrap("drainBroadcasts", drainBroadcasts)),
   ];
 }

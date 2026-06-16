@@ -17,6 +17,7 @@ import {
   productRating,
   productRatingSummaries,
   getBulkPricingForProduct,
+  activeBulkPricingByProduct,
   listReviews,
 } from "@app/db";
 import { productImage } from "../images";
@@ -24,11 +25,14 @@ import { shopContext } from "../shop";
 
 type ProductWithCategory = NonNullable<Awaited<ReturnType<typeof getProductWithCategory>>>;
 
+type BulkMap = Record<number, { minQuantity: number; discountPercent: string }>;
+
 /** Shape a product row (+joined category) into the card context the grid uses. */
 function card(
   p: ProductWithCategory,
   stock: Record<number, { available: number }>,
   ratings: Map<number, { avg: number | null; count: number }>,
+  bulk: BulkMap = {},
 ) {
   return {
     id: p.id,
@@ -39,6 +43,8 @@ function card(
     available: stock[p.id]?.available ?? 0,
     rating: ratings.get(p.id)?.avg ?? null,
     rating_count: ratings.get(p.id)?.count ?? 0,
+    bulk_discount: bulk[p.id]?.discountPercent ?? null,
+    bulk_min_qty: bulk[p.id]?.minQuantity ?? null,
   };
 }
 
@@ -55,18 +61,19 @@ const catalogRoutes: FastifyPluginAsync = async (app) => {
         message: t("web.not_found", ctx.lang),
       });
     }
-    const [categories, products, stock, ratings] = await Promise.all([
+    const [categories, products, stock, ratings, bulk] = await Promise.all([
       listActiveCategories(prisma),
       listActiveProductsWithCategory(prisma, category.id),
       stockStatusCounts(prisma),
       productRatingSummaries(prisma),
+      activeBulkPricingByProduct(prisma),
     ]);
     const ratingByProduct = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
     return reply.view("catalog.njk", {
       ...ctx,
       category,
       categories,
-      products: products.map((p) => card(p, stock, ratingByProduct)),
+      products: products.map((p) => card(p, stock, ratingByProduct, bulk)),
       low_threshold: config.LOW_STOCK_THRESHOLD,
     });
   });
@@ -124,16 +131,17 @@ const catalogRoutes: FastifyPluginAsync = async (app) => {
   app.get<{ Querystring: { q?: string } }>("/search", async (req, reply) => {
     const q = (req.query.q ?? "").trim();
     const ctx = await shopContext(req, "/search");
-    const [products, stock, ratings] = await Promise.all([
+    const [products, stock, ratings, bulk] = await Promise.all([
       q ? searchProductsWithCategory(prisma, q, 24) : Promise.resolve([]),
       stockStatusCounts(prisma),
       productRatingSummaries(prisma),
+      activeBulkPricingByProduct(prisma),
     ]);
     const ratingByProduct = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
     return reply.view("search.njk", {
       ...ctx,
       q,
-      products: products.map((p) => card(p, stock, ratingByProduct)),
+      products: products.map((p) => card(p, stock, ratingByProduct, bulk)),
       low_threshold: config.LOW_STOCK_THRESHOLD,
     });
   });

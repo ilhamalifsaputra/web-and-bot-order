@@ -78,6 +78,9 @@ export const PaymentMethod = {
   BINANCE_PAY: "BINANCE_PAY",
   /** New flow: USDT to a Binance UID with the order ref as the note; auto-confirmed. */
   BINANCE_INTERNAL: "BINANCE_INTERNAL",
+  /** USDT on-chain deposit to a Bybit BSC (BEP20) address; auto-confirmed by
+   *  matching the unique deposit amount (BEP20 carries no memo). */
+  BYBIT: "BYBIT",
   /** Rupiah gateway (QRIS/VA/e-wallet) — confirmed by webhook callback (plan.md §15.5). */
   TOKOPAY: "TOKOPAY",
 } as const;

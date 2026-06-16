@@ -20,9 +20,9 @@ import { pathToFileURL } from "node:url";
 import { Bot, webhookCallback } from "grammy";
 import { run } from "@grammyjs/runner";
 import { config } from "@app/core/config";
-import { botToken as runtimeBotToken, notifBotToken, setBotIdentity } from "@app/core/runtime";
+import { botToken as runtimeBotToken, notifBotToken, publicChannelId, setBotIdentity, setAdminIds, setWebSecret } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
-import { initDb, prisma, resolveBotCredentials } from "@app/db";
+import { initDb, prisma, resolveBotCredentials, resolveAdminIds, resolveWebCookieSecret } from "@app/db";
 import { buildBot, setupCommandMenu } from "@app/order-bot/main";
 import { scheduleJobs, scheduleFxRefresh } from "@app/order-bot/jobs";
 import { startPolling, stopPolling } from "@app/order-bot/payments/binanceInternal";
@@ -132,8 +132,8 @@ export async function buildServer(opts: ServerOptions = {}): Promise<BuiltServer
  * Returns the loop promise so shutdown can await it after aborting the signal.
  */
 async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal: AbortSignal): Promise<void> {
-  if (config.PUBLIC_CHANNEL_ID === undefined) {
-    logger.info("Notifier disabled (PUBLIC_CHANNEL_ID not set)");
+  if (publicChannelId() === undefined) {
+    logger.info("Notifier disabled (public_channel_id not set in Settings or env)");
     return;
   }
   // Reuse the main bot unless a separate notifier token is configured (Setting
@@ -145,12 +145,12 @@ async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal
     return;
   }
   const notifBot: Bot = dedicated ? new Bot(dedicated) : (mainBot as unknown as Bot);
-  if (dedicated) await notifBot.init();
-  logger.info(
-    `Notifier started -> channel ${config.PUBLIC_CHANNEL_ID} ` +
-      `(token=${dedicated ? "dedicated" : "main-bot"})`,
-  );
   try {
+    if (dedicated) await notifBot.init();
+    logger.info(
+      `Notifier started -> channel ${publicChannelId()} ` +
+        `(token=${dedicated ? "dedicated" : "main-bot"})`,
+    );
     await runDispatcher(notifBot, signal);
   } catch (err) {
     logger.error({ err }, "Notifier dispatcher exited unexpectedly");
@@ -161,6 +161,9 @@ async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal
 export async function start(): Promise<void> {
   await initDb(); // single PrismaClient, sets WAL + busy_timeout PRAGMAs
 
+  setAdminIds(await resolveAdminIds(prisma));
+  setWebSecret(await resolveWebCookieSecret(prisma));
+
   // Resolve bot credentials ONCE (Setting wins, env fallback — plan.md §16.3)
   // and stamp them for the synchronous consumers (referral links, Telegram
   // Login HMAC, admin file downloads). A token edit needs a restart (§16.2).
@@ -169,6 +172,7 @@ export async function start(): Promise<void> {
     botToken: creds.botToken ?? undefined,
     botUsername: creds.botUsername ?? undefined,
     notifBotToken: creds.notifBotToken ?? undefined,
+    publicChannelId: creds.publicChannelId ?? undefined,
   });
 
   const { app, shop, bot, mode } = await buildServer({ botToken: creds.botToken });

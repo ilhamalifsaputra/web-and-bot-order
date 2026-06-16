@@ -3,10 +3,7 @@
 {% block title %}Announcements · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="megaphone" class="w-7 h-7 text-rose-500"></i> Announcements</h1>
-  <p class="page-lead">Send a message to your customers on Telegram. You write it here; the bot delivers it.</p>
-</header>
+{{ ui.page_header('Announcements', 'Send a message to your customers on Telegram. You write it here; the bot delivers it.', 'megaphone', 'customers') }}
 {{ ui.flash(msg, kind) }}
 
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">

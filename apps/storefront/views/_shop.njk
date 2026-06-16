@@ -39,9 +39,19 @@
 {% macro product_card(p, fx, low, lang) -%}
 <a href="/p/{{ p.id }}"
    class="card overflow-hidden flex flex-col group transition-all duration-150 hover:shadow-lift hover:-translate-y-0.5">
-  <div class="aspect-[4/3] bg-sand overflow-hidden">
+  <div class="aspect-[4/3] bg-sand overflow-hidden relative">
     <img src="{{ p.image }}" alt="{{ p.name }}" loading="lazy" decoding="async"
          class="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300">
+    {# Real quantity-discount badge (bulk pricing), corner of the photo. #}
+    {% if p.bulk_discount %}
+    <span class="absolute top-2 left-2 chip bg-rust text-white shadow-soft !text-[0.65rem] !font-bold tracking-wide">
+      −{{ p.bulk_discount | float | round | int }}%
+    </span>
+    {% endif %}
+    {# Instant auto-delivery is this shop's headline perk — flag it on the grid. #}
+    <span class="absolute top-2 right-2 chip bg-ink/70 text-white backdrop-blur !text-[0.6rem] !font-semibold !px-2 !py-0.5">
+      <i data-lucide="zap" class="w-3 h-3 text-amber-300"></i> {{ t('web.badge_instant', lang) }}
+    </span>
   </div>
   <div class="p-3.5 flex flex-col gap-1.5 flex-1">
     <div class="font-display text-sm font-semibold text-ink leading-snug line-clamp-2">{{ p.name }}</div>
@@ -56,6 +66,12 @@
       {{ price(p.price, fx, "text-sm") }}
       {{ stock_badge(p.available, low, lang) }}
     </div>
+    {% if p.bulk_discount and p.bulk_min_qty %}
+    <div class="text-[0.7rem] text-grass-dark font-medium flex items-center gap-1">
+      <i data-lucide="tag" class="w-3 h-3"></i>
+      {{ t('web.bulk_hint', lang, { qty: p.bulk_min_qty, percent: p.bulk_discount | float | round | int }) }}
+    </div>
+    {% endif %}
   </div>
 </a>
 {%- endmacro %}

@@ -26,12 +26,12 @@ import {
   countUserOrders,
   listUserOrders,
   getOrder,
-  listUserDeliveredOrders,
   getUser,
   setUserLanguage,
   subscribeToRestock,
   productRating,
   getSetting,
+  setSetting,
   searchProducts,
   listUserTickets,
   getTicket,
@@ -39,6 +39,7 @@ import {
 } from "@app/db";
 import type { MyContext } from "../context";
 import { smartEdit, renderMenu } from "../util/chat";
+import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/banner";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import { esc, formatPrice, formatIdr, statusBadge, groupOrderItems, formatCountdown, priceIdr, orderAmount, mixedAmount } from "../util/format";
@@ -69,13 +70,29 @@ function requireUser(ctx: MyContext) {
 // /start + dashboard
 // ---------------------------------------------------------------------------
 
-// Optional banner image shown on top of the main menu and product list. Set
-// from the bot (Settings → Banner image) or the web admin; the screen renders
-// as a photo+caption when present. Absent/cleared → plain menu. Never shown on
-// payment screens (those renderers simply don't request it).
-const BANNER_IMAGE_KEY = "banner_image";
-async function bannerImage(): Promise<string | undefined> {
-  return (await getSetting(prisma, BANNER_IMAGE_KEY)) || undefined;
+// Optional banner shown above the main menu and product list. The value is a
+// web-admin upload path or a legacy Telegram file_id; uploads are sent via
+// InputFile and the resulting file_id is cached (util/banner.ts).
+async function bannerArg(): Promise<{ photo: string | InputFile; needsCache: boolean } | undefined> {
+  const [value, cached] = await Promise.all([
+    getSetting(prisma, BANNER_IMAGE_KEY),
+    getSetting(prisma, BANNER_FILEID_KEY),
+  ]);
+  return bannerPhotoArg(value, cached);
+}
+
+const cacheBannerFileId = async (fileId: string): Promise<void> => {
+  await setSetting(prisma, BANNER_FILEID_KEY, fileId);
+};
+
+/** renderMenu with the configured banner (if any) + file_id caching. */
+async function renderMenuBanner(
+  ctx: MyContext,
+  text: string,
+  replyMarkup: Parameters<typeof renderMenu>[2],
+): Promise<void> {
+  const b = await bannerArg();
+  await renderMenu(ctx, text, replyMarkup, b?.photo, b?.needsCache ? cacheBannerFileId : undefined);
 }
 
 async function buildDashboardText(ctx: MyContext): Promise<string> {
@@ -105,7 +122,7 @@ async function backToMainFromPersistent(ctx: MyContext): Promise<void> {
   delete sc(ctx).viewingProductId;
   ctx.session.awaitingQtyProductId = undefined;
   const text = await buildDashboardText(ctx);
-  await renderMenu(ctx, text, ckb.mainPersistentKb(ctx.session.lang), await bannerImage());
+  await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
 }
 
 async function handleBackButton(ctx: MyContext): Promise<void> {
@@ -137,16 +154,25 @@ export async function startCommand(ctx: MyContext): Promise<void> {
     });
   }
 
+  // Deep-link: t.me/<bot>?start=prod_<id> → open product detail directly.
+  if (args.length && args[0]!.startsWith("prod_")) {
+    const productId = parseInt(args[0]!.slice(5), 10);
+    if (!isNaN(productId)) {
+      await browseProduct(ctx, productId);
+      return;
+    }
+  }
+
   delete sc(ctx).browseProductIds;
   delete sc(ctx).browsePage;
 
   const text = await buildDashboardText(ctx);
-  await renderMenu(ctx, text, ckb.mainPersistentKb(ctx.session.lang), await bannerImage());
+  await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
 }
 
 export async function showMainMenu(ctx: MyContext): Promise<void> {
   const text = await buildDashboardText(ctx);
-  await renderMenu(ctx, text, ckb.mainPersistentKb(ctx.session.lang), await bannerImage());
+  await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
 }
 
 // Universal /cancel when no conversation is active.
@@ -163,9 +189,6 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
 
 export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void> {
   const lang = ctx.session.lang;
-  const info = ctx.session.dbUser;
-  const tg = ctx.from!;
-  const name = esc([tg.first_name, tg.last_name].filter(Boolean).join(" ") || tg.username || "");
 
   const products = await listAllActiveProducts(prisma);
   if (!products.length) {
@@ -182,19 +205,10 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   sc(ctx).browseProductIds = pageProducts.map((p) => p.id);
   delete sc(ctx).viewingProductId;
 
-  // Numbered list (compact for large catalogs — 5 number buttons per row) with
-  // the reseller-aware price on each line so buyers can compare without opening
-  // each one. Selection by number is resolved against the browseProductIds
-  // snapshot above (see handleProductNumber).
-  const isReseller = info?.role === UserRole.RESELLER;
-  const rate = await currentUsdtRate();
-  const itemLines = pageProducts.map((p, i) => {
-    const unit = isReseller && p.resellerPrice != null ? p.resellerPrice : p.price;
-    return `┊ [ ${i + 1} ] ${esc(p.name).toUpperCase()} — ${priceIdr(unit, rate)}`;
-  });
+  // Selection is resolved against the browseProductIds snapshot (see handleProductNumber).
+  const itemLines = pageProducts.map((p, i) => `${i + 1}. ${esc(p.name)}`);
 
   const text = t(ctx, "browse.list_decorated", {
-    name,
     page: page + 1,
     total: totalPages,
     items: itemLines.join("\n"),
@@ -203,7 +217,7 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // The numbered keyboard is a reply keyboard; renderMenu sends a fresh message
   // carrying it (an edit can't bear a reply keyboard). The banner (if set) rides
   // on top as a photo+caption, unless the list is too long for a caption.
-  await renderMenu(
+  await renderMenuBanner(
     ctx,
     text,
     ckb.productsPersistentKb(pageProducts.length, lang, {
@@ -211,7 +225,6 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
       showNext: page < totalPages - 1,
       showBack: false,
     }),
-    await bannerImage(),
   );
 }
 
@@ -428,34 +441,67 @@ export async function qtyChange(
 // My orders
 // ---------------------------------------------------------------------------
 
-export async function listMyOrders(ctx: MyContext, page = 0): Promise<void> {
+export async function listMyOrders(ctx: MyContext): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
-  const perPage = 5;
 
-  const total = await countUserOrders(prisma, info.id);
-  const orders = await listUserOrders(prisma, info.id, perPage, page * perPage);
-  const totalPages = Math.max(1, Math.ceil(total / perPage));
+  const orders = await listUserOrders(prisma, info.id, 10, 0);
 
-  if (!orders.length && page === 0) {
+  if (!orders.length) {
     await smartEdit(ctx, t(ctx, "order.list_empty"), ckb.backToMain(lang));
     return;
   }
 
-  const lines = [t(ctx, "order.list_title"), ""];
-  for (const o of orders) {
+  const lines = [t(ctx, "order.list_title", { count: orders.length }), ""];
+  for (let i = 0; i < orders.length; i++) {
+    const o = orders[i]!;
+    const groups = groupOrderItems(o.items);
+    const g = groups[0];
     lines.push(
-      t(ctx, "order.list_line", {
+      t(ctx, "order.list_entry", {
+        n: i + 1,
         code: o.orderCode,
         status: statusBadge(o.status),
+        product: g ? esc(g.product.name) : "-",
+        duration: g ? esc(g.product.durationLabel) : "-",
+        type: g ? esc(g.product.type) : "-",
+        qty: g ? String(g.quantity) : "-",
         total: orderAmount(o),
-        date: ensureUtc(o.createdAt).toFormat("yyyy-LL-dd"),
+        time: ensureUtc(o.createdAt).toFormat("dd/LL/yyyy HH:mm"),
       }),
     );
+    lines.push("");
   }
-  lines.push("");
-  lines.push(t(ctx, "order.page_info", { page: page + 1, total: totalPages }));
-  await smartEdit(ctx, lines.join("\n"), ckb.ordersListKb(orders, lang, page, totalPages));
+  await smartEdit(ctx, lines.join("\n"), ckb.ordersListKb(orders, lang));
+}
+
+export async function allOrderHistory(ctx: MyContext): Promise<void> {
+  const info = requireUser(ctx);
+  const orders = await listUserOrders(prisma, info.id, 100, 0);
+
+  if (!orders.length) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "order.history_empty"), show_alert: true });
+    return;
+  }
+
+  const lines: string[] = [`=== ${t(ctx, "order.history_file_header")} ===`, t(ctx, "order.history_file_count", { count: orders.length }), ""];
+  for (const o of orders) {
+    lines.push(`${t(ctx, "order.history_file_order")}: ${o.orderCode}`);
+    lines.push(`Status: ${o.status}`);
+    lines.push(`${t(ctx, "order.history_file_date")}: ${ensureUtc(o.createdAt).toFormat("dd/LL/yyyy HH:mm")}`);
+    lines.push(`${t(ctx, "order.history_file_amount")}: ${orderAmount(o)}`);
+    lines.push(`${t(ctx, "order.history_file_items")}:`);
+    for (const g of groupOrderItems(o.items)) {
+      lines.push(`  - ${g.product.name} × ${g.quantity}  ${formatIdr(g.lineTotal)}`);
+    }
+    lines.push("-".repeat(36));
+  }
+
+  const buf = Buffer.from(lines.join("\n"), "utf-8");
+  if (ctx.callbackQuery) await ctx.answerCallbackQuery();
+  await ctx.api.sendDocument(ctx.chat!.id, new InputFile(buf, "riwayat_order.txt"), {
+    caption: t(ctx, "order.all_history_caption", { count: orders.length }),
+  });
 }
 
 export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> {
@@ -463,7 +509,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
   const lang = ctx.session.lang;
   const order = await getOrder(prisma, orderId);
   if (order === null || order.userId !== info.id) {
-    await smartEdit(ctx, t(ctx, "error.order_not_found"));
+    await smartEdit(ctx, t(ctx, "error.order_not_found"), ckb.backToMain(lang));
     return;
   }
 
@@ -486,53 +532,39 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
       countdown,
     });
   } else {
-    text = t(ctx, "order.detail", {
-      code: order.orderCode,
-      status: statusBadge(order.status),
-      total: orderAmount(order),
-      created: ensureUtc(order.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'"),
-      lines: itemLines.join("\n"),
-    });
+    let credentialsBlock = "";
+    if (order.status === OrderStatus.DELIVERED) {
+      const groups: Array<[string, string[]]> = [];
+      const idx = new Map<number, number>();
+      for (const it of order.items) {
+        if (!it.stockItem) continue;
+        if (!idx.has(it.productId)) {
+          idx.set(it.productId, groups.length);
+          groups.push([it.product.name, []]);
+        }
+        groups[idx.get(it.productId)!]![1].push(it.stockItem.credentials);
+      }
+      if (groups.length) {
+        const blocks = groups
+          .map(([name, creds]) => `${esc(name)}\n<pre>${esc(creds.join("\n"))}</pre>`)
+          .join("\n\n");
+        credentialsBlock = `\n\n${t(ctx, "order.detail_credentials", { credentials: blocks })}`;
+      }
+    }
+    text =
+      t(ctx, "order.detail", {
+        code: order.orderCode,
+        status: statusBadge(order.status),
+        total: orderAmount(order),
+        created: ensureUtc(order.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'"),
+        lines: itemLines.join("\n"),
+      }) + credentialsBlock;
   }
   await smartEdit(ctx, text, ckb.orderDetailKb(order, lang));
 }
 
-export async function downloadHistory(ctx: MyContext): Promise<void> {
-  const info = requireUser(ctx);
-  const lang = ctx.session.lang;
-  const orders = await listUserDeliveredOrders(prisma, info.id, 50);
-
-  if (!orders.length) {
-    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "order.history_empty"), show_alert: true });
-    return;
-  }
-
-  const L = {
-    header: t(ctx, "order.history_file_header"),
-    total: t(ctx, "order.history_file_count", { count: orders.length }),
-    order: t(ctx, "order.history_file_order"),
-    date: t(ctx, "order.history_file_date"),
-    amount: t(ctx, "order.history_file_amount"),
-    items: t(ctx, "order.history_file_items"),
-  };
-  const lines: string[] = [`=== ${L.header} ===`, L.total, ""];
-  for (const o of orders) {
-    lines.push(`${L.order}: ${o.orderCode}`);
-    lines.push(`${L.date}: ${ensureUtc(o.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'")}`);
-    lines.push(`${L.amount}: ${orderAmount(o, 4)}`);
-    lines.push(`${L.items}:`);
-    for (const g of groupOrderItems(o.items)) {
-      lines.push(`  - ${g.product.name} x${g.quantity}  ${formatIdr(g.lineTotal)}`);
-    }
-    lines.push("-".repeat(36));
-  }
-
-  const buf = Buffer.from(lines.join("\n"), "utf-8");
-  if (ctx.callbackQuery) await ctx.answerCallbackQuery();
-  await ctx.api.sendDocument(ctx.chat!.id, new InputFile(buf, "transaction_history.txt"), {
-    caption: t(ctx, "order.history_file_caption", { count: orders.length }),
-  });
-}
+// Removed: per-order review, replacement, and the old delivered-only history
+// download. The single "Lihat Semua Riwayat" button now drives allOrderHistory.
 
 // ---------------------------------------------------------------------------
 // Wallet / Referral / Language / Restock
@@ -542,8 +574,12 @@ export async function viewWallet(ctx: MyContext): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const user = await getUser(prisma, info.id);
-  const balance = user ? user.walletBalance : new Decimal(0);
-  let text = t(ctx, "wallet.balance", { balance: price(balance) });
+  const idrBalance = user ? user.walletBalance : new Decimal(0);
+  const usdtBalance = user ? user.walletBalanceUsdt : new Decimal(0);
+  let text = t(ctx, "wallet.credit_balances", {
+    idr: formatIdr(idrBalance),
+    usdt: price(usdtBalance),
+  });
   text += "\n\n" + t(ctx, "wallet.topup_info");
   await smartEdit(ctx, text, ckb.backToMain(lang));
 }
@@ -614,7 +650,7 @@ export async function viewMyTicket(ctx: MyContext, ticketId: number): Promise<vo
 
   const ticket = await getTicket(prisma, ticketId);
   if (ticket === null || ticket.userId !== info.id) {
-    await smartEdit(ctx, t(ctx, "error.order_not_found"));
+    await smartEdit(ctx, t(ctx, "error.ticket_not_found"), ckb.backToMain(lang));
     return;
   }
   const messages = await listTicketMessages(prisma, ticketId, 10);

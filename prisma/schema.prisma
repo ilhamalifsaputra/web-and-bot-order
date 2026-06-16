@@ -20,12 +20,20 @@ datasource db {
 
 model User {
   id            Int       @id @default(autoincrement())
-  telegramId    BigInt    @unique(map: "ix_users_telegram_id") @map("telegram_id")
+  telegramId    BigInt?   @unique(map: "ix_users_telegram_id") @map("telegram_id")
   username      String?
   fullName      String?   @map("full_name")
+  /// Web-store login handle (3-32 chars [a-z0-9_], stored lowercase).
+  /// Distinct from `username` (= Telegram username, bot-owned).
+  loginUsername String?   @unique(map: "ix_users_login_username") @map("login_username")
+  email         String?   @unique(map: "ix_users_email")
+  passwordHash  String?   @map("password_hash")
   role          String    @default("CUSTOMER")
   language      String    @default("EN")
   walletBalance Decimal   @default(0) @map("wallet_balance")
+  /// USDT credit balance (IDR balance is `walletBalance`). Spent only on USDT
+  /// orders — no cross-currency conversion (dual-credit-balance design §A).
+  walletBalanceUsdt Decimal @default(0) @map("wallet_balance_usdt")
   referralCode  String    @unique(map: "ix_users_referral_code") @map("referral_code")
   referredById  Int?      @map("referred_by_id")
   banned        Boolean   @default(false)
@@ -43,6 +51,7 @@ model User {
   auditLogs            AuditLog[]
   ticketMessages       TicketMessage[]
   walletTransactions   WalletTransaction[]
+  passwordResetTokens PasswordResetToken[]
   referralsAsReferee   Referral?             @relation("ReferralReferee")
   referralsAsReferrer  Referral[]            @relation("ReferralReferrer")
   ticketsAsUser        SupportTicket[]       @relation("TicketUser")
@@ -60,6 +69,9 @@ model WalletTransaction {
   userId       Int      @map("user_id")
   delta        Decimal // signed: +credit / −debit (the amount actually applied)
   balanceAfter Decimal  @map("balance_after")
+  /// Currency of this ledger row's balance/delta. Existing rows default to IDR
+  /// (the system was IDR-base); USDT rows track the USDT credit balance.
+  currency     String   @default("IDR")
   reason       String // machine code: admin_adjust | underpaid_refund | referral | order_payment | order_refund | adjust
   note         String?
   adminId      Int?     @map("admin_id") // acting admin (null = system/customer)
@@ -70,6 +82,22 @@ model WalletTransaction {
 
   @@index([userId], map: "ix_wallet_transactions_user_id")
   @@map("wallet_transactions")
+}
+
+/// Forgot-password tokens for the storefront. Only the SHA-256 hex of the
+/// token is stored; rows are single-use (used_at) and expire after 1 hour.
+model PasswordResetToken {
+  id        Int       @id @default(autoincrement())
+  userId    Int       @map("user_id")
+  tokenHash String    @unique(map: "ix_password_reset_tokens_hash") @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId], map: "ix_password_reset_tokens_user_id")
+  @@map("password_reset_tokens")
 }
 
 model Category {
@@ -161,6 +189,7 @@ model Order {
   paymentMsgId       Int?      @map("payment_msg_id")
   paymentProofFileId String?   @map("payment_proof_file_id")
   binanceTxid        String?   @map("binance_txid")
+  bybitTxid          String?   @map("bybit_txid")
   adminNote          String?   @map("admin_note")
   rejectionReason    String?   @map("rejection_reason")
   createdAt          DateTime  @default(now()) @map("created_at")
@@ -179,6 +208,7 @@ model Order {
   @@index([userId], map: "ix_orders_user_id")
   @@index([status], map: "ix_orders_status")
   @@index([binanceTxid], map: "ix_orders_binance_txid")
+  @@index([bybitTxid], map: "ix_orders_bybit_txid")
   @@index([status, createdAt], map: "ix_orders_status_created")
   @@map("orders")
 }
@@ -407,6 +437,23 @@ model ProcessedBinanceTx {
 
   @@index([orderId], map: "ix_processed_binance_tx_order_id")
   @@map("processed_binance_tx")
+}
+
+/// Idempotency ledger for Bybit USDT-BSC deposits — same insert-first-on-unique
+/// pattern as ProcessedBinanceTx. The on-chain txID (a 0x… hash) is claimed
+/// exactly once, so repeated poll cycles can never double-deliver. BEP20 carries
+/// no memo, so there is no underpaid auto-path (an amount that matches no order
+/// is simply "unmatched"); outcome is matched | unmatched | delivery_failed.
+model ProcessedBybitTx {
+  id        Int      @id @default(autoincrement())
+  bybitTxId String   @unique(map: "ix_processed_bybit_tx_txid") @map("bybit_tx_id")
+  orderId   Int?     @map("order_id")
+  amount    Decimal?
+  outcome   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([orderId], map: "ix_processed_bybit_tx_order_id")
+  @@map("processed_bybit_tx")
 }
 
 /// Idempotency ledger for TokoPay webhook callbacks (the IDR payment path) —

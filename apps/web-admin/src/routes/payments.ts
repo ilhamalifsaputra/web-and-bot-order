@@ -26,6 +26,8 @@ import {
   deliverUnderpaidOrder,
   refundUnderpaidOrder,
   manualMatchTx,
+  dismissUnmatchedTx,
+  creditOrderToBalance,
   listOrders,
   listPendingInternalOrders,
   getOrderByCode,
@@ -167,5 +169,75 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
     }
     logger.info(`Tx ${binanceTxId} manually matched to ${orderCode} via web by admin_id=${req.admin!.userId}`);
     return redirectWithFlash(reply, "/payments", "Transfer matched and order delivered.", "success");
+  });
+
+  // ---- Add an UNMATCHED transfer to the buyer's credit balance ----
+  // The admin identifies the buyer's order (the money can't be fulfilled there,
+  // e.g. it expired); we credit the paid amount to their credit balance in the
+  // order's currency, void the order, and re-tag the tx as credited_to_balance.
+
+  app.post("/payments/credit", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = req.body as Record<string, string>;
+    const binanceTxId = (body.binance_tx_id ?? "").trim();
+    const orderCode = (body.order_code ?? "").trim();
+    if (!binanceTxId || !orderCode) {
+      return redirectWithFlash(reply, "/payments", "Both a transfer id and an order code are required.", "error");
+    }
+    try {
+      const target = await getOrderByCode(prisma, orderCode);
+      if (!target) {
+        return redirectWithFlash(reply, "/payments", `Order ${orderCode} not found.`, "error");
+      }
+      // The amount actually received, from the unmatched ledger row.
+      const ledger = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId } });
+      if (!ledger) {
+        return redirectWithFlash(reply, "/payments", "Transfer not found.", "error");
+      }
+      const { credited, currency } = await creditOrderToBalance(prisma, {
+        orderId: target.id,
+        amount: ledger.amount ?? undefined,
+        adminId: req.admin!.userId,
+        binanceTxId,
+      });
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "tx_credit_balance",
+        targetType: "order",
+        targetId: target.id,
+        details: `tx=${binanceTxId} order_code=${target.orderCode} credited=${credited.toString()} ${currency}`,
+      });
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return redirectWithFlash(reply, "/payments", humanizeValidationError(e), "error");
+      }
+      throw e;
+    }
+    logger.info(`Tx ${binanceTxId} credited to ${orderCode}'s buyer balance via web by admin_id=${req.admin!.userId}`);
+    return redirectWithFlash(reply, "/payments", "Payment added to the buyer's credit balance.", "success");
+  });
+
+  // ---- Dismiss an UNMATCHED transfer that has no order (e.g. a test deposit) ----
+
+  app.post("/payments/dismiss", { preHandler: csrfProtect }, async (req, reply) => {
+    const binanceTxId = ((req.body as Record<string, string>).binance_tx_id ?? "").trim();
+    if (!binanceTxId) {
+      return redirectWithFlash(reply, "/payments", "A payment reference is required.", "error");
+    }
+    try {
+      await dismissUnmatchedTx(prisma, binanceTxId);
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "tx_dismiss",
+        targetType: "payment",
+        details: `tx=${binanceTxId}`,
+      });
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return redirectWithFlash(reply, "/payments", humanizeValidationError(e), "error");
+      }
+      throw e;
+    }
+    logger.info(`Unmatched tx ${binanceTxId} dismissed via web by admin_id=${req.admin!.userId}`);
+    return redirectWithFlash(reply, "/payments", "Payment dismissed.", "success");
   });
 }

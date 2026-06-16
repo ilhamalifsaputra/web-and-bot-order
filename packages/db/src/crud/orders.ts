@@ -189,9 +189,10 @@ export async function createOrderFromCart(
     data: { uniqueCents: cents, totalAmount: q4(finalBeforeCents.plus(cents)) },
   });
 
-  // 9. Wallet debit (atomic)
+  // 9. Wallet debit (atomic). Cart orders are charged in IDR (TokoPay/QRIS),
+  //    so the IDR credit balance is spent.
   if (walletUsed.greaterThan(0)) {
-    await adjustWallet(db, args.user.id, walletUsed.negated(), { reason: "order_payment", orderId: order.id });
+    await adjustWallet(db, args.user.id, walletUsed.negated(), { currency: "IDR", reason: "order_payment", orderId: order.id });
   }
 
   // 10. Bump voucher usage
@@ -298,6 +299,58 @@ export async function createOrderDirect(
   return getOrder(db, order.id);
 }
 
+/**
+ * Spend the buyer's **USDT** credit balance on an already-finalized USDT order
+ * (totals + currency stamped by `finalizeOrderPayment`). Mirrors the IDR
+ * wallet-apply in `createOrderFromCart`, but reads/writes the USDT balance and
+ * debits via `adjustWallet(..., { currency: "USDT" })`.
+ *
+ * `walletAmount` is the buyer-requested credit to apply; the applied amount is
+ * clamped to the order total (never auto-drains the whole balance) and to the
+ * available USDT balance (overdraw → error.insufficient_wallet). Re-derives the
+ * USDT total net of the unique cents so the cents stay payable on-chain.
+ *
+ * No-op (and leaves walletUsed = 0) when `walletAmount` is unset/≤0 — current
+ * callers pass nothing yet, so the path is currency-correct and ready for a
+ * future caller without changing today's behavior. Run inside the creation tx.
+ */
+export async function applyUsdtWalletToOrder(
+  db: Db,
+  orderId: number,
+  walletAmount: Decimal.Value | null | undefined,
+): Promise<void> {
+  const requested = q4(Decimal.max(ZERO, new Decimal(walletAmount ?? 0)));
+  if (requested.lessThanOrEqualTo(0)) return;
+
+  const order = await db.order.findUniqueOrThrow({ where: { id: orderId } });
+  const user = await getUser(db, order.userId);
+  if (!user) throw new ValidationError("error.order_not_found");
+
+  // The payable USDT amount before unique-cents noise — credit balance covers
+  // the goods, the unique cents stay on the on-chain transfer.
+  const payable = Decimal.max(ZERO, new Decimal(order.totalAmount).minus(order.uniqueCents));
+  const walletUsed = q4(Decimal.min(requested, payable));
+  if (walletUsed.lessThanOrEqualTo(0)) return;
+
+  const balance = new Decimal(user.walletBalanceUsdt);
+  if (walletUsed.greaterThan(balance)) {
+    throw new ValidationError("error.insufficient_wallet");
+  }
+
+  await adjustWallet(db, order.userId, walletUsed.negated(), {
+    currency: "USDT",
+    reason: "order_payment",
+    orderId: order.id,
+  });
+  await db.order.update({
+    where: { id: order.id },
+    data: {
+      walletUsed,
+      totalAmount: q4(new Decimal(order.totalAmount).minus(walletUsed)),
+    },
+  });
+}
+
 export function listUserOrders(db: Db, userId: number, limit = 5, offset = 0) {
   return db.order.findMany({
     where: { userId },
@@ -310,6 +363,21 @@ export function listUserOrders(db: Db, userId: number, limit = 5, offset = 0) {
 
 export function countUserOrders(db: Db, userId: number) {
   return db.order.count({ where: { userId } });
+}
+
+/**
+ * Site-wide fulfilment figures for the storefront home: how many orders have
+ * actually been delivered and how many distinct customers have bought. Real
+ * numbers replace the old hard-coded "10.000+" stats so the page stays honest.
+ */
+export async function shopFulfilmentStats(
+  db: Db,
+): Promise<{ deliveredOrders: number; customers: number }> {
+  const [deliveredOrders, buyers] = await Promise.all([
+    db.order.count({ where: { status: OrderStatus.DELIVERED } }),
+    db.order.groupBy({ by: ["userId"], where: { status: OrderStatus.DELIVERED } }),
+  ]);
+  return { deliveredOrders, customers: buyers.length };
 }
 
 export function countUserPendingOrders(db: Db, userId: number) {
@@ -406,7 +474,14 @@ async function releaseOrderHolds(
     }
   }
   if (new Decimal(order.walletUsed).greaterThan(0)) {
-    await adjustWallet(db, order.userId, order.walletUsed, { allowNegative: true, reason: "order_refund", orderId: order.id });
+    // Credit back to the balance matching the order's currency: an order spends
+    // and is refunded against the same credit balance (IDR or USDT).
+    await adjustWallet(db, order.userId, order.walletUsed, {
+      currency: order.currency === "USDT" ? "USDT" : "IDR",
+      allowNegative: true,
+      reason: "order_refund",
+      orderId: order.id,
+    });
   }
   if (order.voucherId) {
     const v = await db.voucher.findUnique({ where: { id: order.voucherId } });
@@ -447,6 +522,87 @@ export async function cancelOrder(db: Db, orderId: number, reason: string) {
   });
   logger.info(`Cancelled order ${order.orderCode} reason=${reason}`);
   return getOrder(db, orderId);
+}
+
+/**
+ * Add a paid-but-unfulfillable order's external payment to the buyer's
+ * **credit balance** (store credit) in the order's currency, then void the
+ * order. Distinct from a refund: the money never leaves the system, it becomes
+ * spendable credit on a future order of the same currency.
+ *
+ * Amount credited = the order's external payment (`totalAmount`, i.e. the
+ * amount due after any walletUsed was already deducted). The `walletUsed`
+ * portion is a separate, already-spent credit and is returned by
+ * `releaseOrderHolds` (reason `order_refund`); crediting `totalAmount` here
+ * therefore does NOT double-count the wallet portion.
+ *
+ * Idempotent: a terminal order, or a pre-existing `unfulfilled_credit` ledger
+ * row for this order, makes the call a no-op — a retry/double-tap can't
+ * double-credit. When `binanceTxId` is given, that ledger row is re-tagged
+ * `credited_to_balance` and linked to the order (mirrors `manualMatchTx`).
+ *
+ * Audited at the route layer via `logAdminAction`.
+ */
+export async function creditOrderToBalance(
+  db: Db,
+  args: { orderId: number; amount?: Decimal.Value; adminId: number; binanceTxId?: string | null },
+): Promise<{ credited: Decimal; currency: "IDR" | "USDT" }> {
+  const order = await getOrder(db, args.orderId);
+  if (!order) throw new ValidationError("error.order_not_found");
+
+  const terminal: string[] = [
+    OrderStatus.CANCELLED,
+    OrderStatus.REJECTED,
+    OrderStatus.REFUNDED,
+    OrderStatus.DELIVERED,
+  ];
+  if (terminal.includes(order.status)) {
+    throw new ValidationError("error.order_terminal");
+  }
+
+  // Double-credit guard: bail if this order already has an unfulfilled_credit row.
+  const prior = await db.walletTransaction.findFirst({
+    where: { orderId: order.id, reason: "unfulfilled_credit" },
+  });
+  if (prior) throw new ValidationError("error.already_credited");
+
+  const currency: "IDR" | "USDT" = order.currency === "USDT" ? "USDT" : "IDR";
+  const amount = q4(Decimal.max(ZERO, new Decimal(args.amount ?? order.totalAmount)));
+
+  if (amount.greaterThan(0)) {
+    await adjustWallet(db, order.userId, amount, {
+      currency,
+      reason: "unfulfilled_credit",
+      orderId: order.id,
+      adminId: args.adminId,
+    });
+  }
+
+  // Release held stock + return the already-spent walletUsed (in order currency)
+  // + roll back voucher usage. Distinct money from the paid amount credited above.
+  await releaseOrderHolds(db, order);
+
+  await db.order.update({
+    where: { id: order.id },
+    data: {
+      status: OrderStatus.CANCELLED,
+      adminNote: `${order.adminNote ?? ""}\n[credit_to_balance] ${amount.toString()} ${currency} by admin_id=${args.adminId}`,
+    },
+  });
+
+  if (args.binanceTxId) {
+    await db.processedBinanceTx
+      .update({
+        where: { binanceTxId: args.binanceTxId },
+        data: { orderId: order.id, outcome: "credited_to_balance" },
+      })
+      .catch(() => undefined);
+  }
+
+  logger.info(
+    `Credited order ${order.orderCode} (${amount.toString()} ${currency}) to buyer's credit balance by admin=${args.adminId}`,
+  );
+  return { credited: amount, currency };
 }
 
 export async function rejectOrder(
@@ -536,8 +692,13 @@ export async function approveOrder(
   });
 
   // Enqueue testimoni notification in the same transaction as the status flip.
-  const rawId = String(order.user.telegramId);
-  const maskedBuyerId = rawId.slice(0, 4) + "X".repeat(Math.max(rawId.length - 4, 0));
+  // Web-only buyers (telegramId=null) get a "WEB-xx" masked id and the
+  // via_website flag so the admin channel post shows the origin.
+  const viaWebsite = order.user.telegramId == null;
+  const rawId = viaWebsite
+    ? `WEB-${(order.user.loginUsername ?? "user").slice(0, 2)}`
+    : String(order.user.telegramId);
+  const maskedBuyerId = rawId.slice(0, 4) + "X".repeat(Math.max(rawId.length - 4, 3));
   const itemsSummary = order.items.map((item) => ({
     name: item.product.name,
     duration: item.product.durationLabel,
@@ -553,6 +714,7 @@ export async function approveOrder(
     currency: order.currency,
     delivered_at: utcStamp(now),
     buyer_language: langCode(order.user.language),
+    via_website: viaWebsite,
   });
 
   logger.info(`Approved + delivered order ${order.orderCode} (admin=${args.adminId})`);

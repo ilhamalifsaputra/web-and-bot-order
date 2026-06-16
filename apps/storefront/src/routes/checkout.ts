@@ -11,6 +11,7 @@
  */
 import type { FastifyPluginAsync } from "fastify";
 import { config, isBinanceInternalEnabled } from "@app/core/config";
+import { botUsername } from "@app/core/runtime";
 import { OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { t } from "@app/core/i18n";
@@ -32,13 +33,12 @@ import {
   countUserPendingOrders,
   deliverPaidTokopayOrder,
   recordUnmatchedTokopayTx,
+  getSetting,
+  getTokopayCreds,
+  resolveBybitConfig,
 } from "@app/db";
 import { currentCustomer, csrfProtect, type Customer } from "../plugins/auth";
-import {
-  getTokopayCreds,
-  createTransaction,
-  verifyCallback,
-} from "../payments/tokopay";
+import { createTransaction, verifyCallback, type TokopayOrderInfo } from "@app/core/payments/tokopay";
 import { usdtFromIdr } from "../pricing";
 import { shopContext, requestLang } from "../shop";
 import { loadCartLines } from "./cart";
@@ -82,7 +82,7 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
       voucherError = "error.voucher_not_found";
     } else {
       try {
-        voucherDiscount = applyVoucherToSubtotal(voucher, subtotal.minus(bulkDiscount));
+        voucherDiscount = applyVoucherToSubtotal(voucher, subtotal);
       } catch (e) {
         if (e instanceof ValidationError) voucherError = e.key;
         else throw e;
@@ -99,12 +99,13 @@ async function checkoutView(
   voucherCode: string | null,
   errorKey: string | null,
 ) {
-  const [totals, fxRate, tokopay] = await Promise.all([
+  const [totals, fxRate, tokopay, bybit] = await Promise.all([
     computeTotals(customer, voucherCode),
     getUsdIdrRate(prisma),
     getTokopayCreds(prisma),
+    resolveBybitConfig(prisma),
   ]);
-  const usdtEnabled = Boolean(fxRate) && isBinanceInternalEnabled();
+  const haveRate = Boolean(fxRate);
   return {
     items_empty: totals.empty,
     subtotal: totals.subtotal.toString(),
@@ -114,9 +115,27 @@ async function checkoutView(
     total_usdt: fxRate ? usdtFromIdr(totals.total, fxRate).toString() : null,
     voucher_code: voucherCode ?? "",
     error_key: errorKey ?? totals.voucherError,
-    usdt_enabled: usdtEnabled,
+    binance_enabled: haveRate && isBinanceInternalEnabled(),
+    bybit_enabled: haveRate && bybit.enabled,
     idr_enabled: Boolean(tokopay),
   };
+}
+
+/**
+ * Parse a cached TokoPay gateway payload stored as JSON in order.paymentRef.
+ * Returns null when paymentRef is absent or not a JSON object (e.g. it holds a
+ * Binance payment note instead).
+ */
+function parseCachedGateway(paymentRef: string | null): TokopayOrderInfo | null {
+  if (!paymentRef || !paymentRef.startsWith("{")) return null;
+  try {
+    const d = JSON.parse(paymentRef) as Record<string, unknown>;
+    if (typeof d.trxId !== "string") return null;
+    const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+    return { trxId: d.trxId, payUrl: str(d.payUrl), qrLink: str(d.qrLink), qrString: str(d.qrString), totalBayar: str(d.totalBayar) };
+  } catch {
+    return null;
+  }
 }
 
 /** Status → step + i18n key for the pay page / polling partial. */
@@ -147,7 +166,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     { preHandler: csrfProtect },
     async (req, reply) => {
       const customer = req.customer!;
-      const method = (req.body.method ?? "").toUpperCase();
+      const method = (req.body.method ?? "").toLowerCase();
       const voucherCode = (req.body.voucher_code ?? "").trim().toUpperCase() || null;
 
       const rerender = async (errorKey: string) => {
@@ -156,21 +175,40 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).view("checkout.njk", { ...ctx, ...view });
       };
 
-      const [fxRate, tokopay] = await Promise.all([
+      const [fxRate, tokopay, bybit] = await Promise.all([
         getUsdIdrRate(prisma),
         getTokopayCreds(prisma),
+        resolveBybitConfig(prisma),
       ]);
-      const wantUsdt = method === OrderCurrency.USDT;
-      if (wantUsdt && (!fxRate || !isBinanceInternalEnabled())) return rerender("web.pay_method_unavailable");
-      if (!wantUsdt && method !== OrderCurrency.IDR) return rerender("web.pay_method_unavailable");
-      if (!wantUsdt && !tokopay) return rerender("web.pay_method_unavailable");
 
-      if ((await countUserPendingOrders(prisma, customer.userId)) >= MAX_PENDING_ORDERS) {
-        return rerender("error.too_many_pending");
+      // Map the chosen method token → (currency, paymentMethod), each gated.
+      // Stricter than PaymentChoice: method is required and BINANCE_PAY is excluded (web-only constraint).
+      type Choice =
+        | {
+            currency: typeof OrderCurrency.USDT;
+            rate: NonNullable<typeof fxRate>;
+            method: typeof PaymentMethod.BINANCE_INTERNAL | typeof PaymentMethod.BYBIT;
+          }
+        | { currency: typeof OrderCurrency.IDR };
+      let choice: Choice;
+      if (method === "binance") {
+        if (!fxRate || !isBinanceInternalEnabled()) return rerender("web.pay_method_unavailable");
+        choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BINANCE_INTERNAL };
+      } else if (method === "bybit") {
+        if (!fxRate || !bybit.enabled) return rerender("web.pay_method_unavailable");
+        choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BYBIT };
+      } else if (method === "qris") {
+        if (!tokopay) return rerender("web.pay_method_unavailable");
+        choice = { currency: OrderCurrency.IDR };
+      } else {
+        return rerender("web.pay_method_unavailable");
       }
 
       try {
         const order = await prisma.$transaction(async (tx) => {
+          if ((await countUserPendingOrders(tx, customer.userId)) >= MAX_PENDING_ORDERS) {
+            throw new ValidationError("error.too_many_pending");
+          }
           const created = await createOrderFromCart(tx, {
             user: {
               id: customer.userId,
@@ -181,13 +219,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
             walletAmount: 0, // wallet is hidden on the web (plan.md §17.1 #5)
           });
           if (!created) throw new ValidationError("error.generic");
-          return finalizeOrderPayment(
-            tx,
-            created.id,
-            wantUsdt
-              ? { currency: OrderCurrency.USDT, rate: fxRate! }
-              : { currency: OrderCurrency.IDR },
-          );
+          return finalizeOrderPayment(tx, created.id, choice);
         });
         return reply.code(303).redirect(`/checkout/${order!.orderCode}/pay`);
       } catch (e) {
@@ -213,27 +245,48 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const state = payState(order);
-      const isUsdt = order.currency === OrderCurrency.USDT;
+      const method = order.paymentMethod; // "BINANCE_INTERNAL" | "BYBIT" | "TOKOPAY" | ...
+      const isBinance = method === PaymentMethod.BINANCE_INTERNAL;
+      const isBybit = method === PaymentMethod.BYBIT;
+      const isQris = method === PaymentMethod.TOKOPAY;
+
+      // Bybit deposit address (no API call — just the configured address).
+      const bybitAddress = isBybit ? (await resolveBybitConfig(prisma)).depositAddress : "";
 
       // TokoPay transaction (QR / pay link) only while actually payable.
-      let gateway: Awaited<ReturnType<typeof createTransaction>> | null = null;
+      // The result is cached in order.paymentRef (JSON) after the first fetch so
+      // that page refreshes don't create extra transactions in TokoPay.
+      let gateway: TokopayOrderInfo | null = null;
       let gatewayError = false;
-      if (!isUsdt && state === "waiting") {
-        const creds = await getTokopayCreds(prisma);
-        if (creds) {
-          try {
-            gateway = await createTransaction(creds, {
-              refId: order.orderCode,
-              amountIdr: order.totalAmount,
-            });
-          } catch (err) {
-            logger.error({ err }, `TokoPay create failed for ${order.orderCode}`);
+      if (isQris && state === "waiting") {
+        gateway = parseCachedGateway(order.paymentRef);
+        if (!gateway) {
+          const creds = await getTokopayCreds(prisma);
+          if (creds) {
+            try {
+              gateway = await createTransaction(creds, {
+                refId: order.orderCode,
+                amountIdr: order.totalAmount,
+              });
+              await prisma.order.update({
+                where: { id: order.id },
+                data: { paymentRef: JSON.stringify(gateway) },
+              });
+            } catch (err) {
+              logger.error({ err }, `TokoPay create failed for ${order.orderCode}`);
+              gatewayError = true;
+            }
+          } else {
             gatewayError = true;
           }
-        } else {
-          gatewayError = true;
         }
       }
+
+      // Contact fallbacks shown when the Rupiah gateway is temporarily down, so
+      // a stuck buyer always has a way to reach us instead of a dead red box.
+      const waNumber = gatewayError && isQris
+        ? ((await getSetting(prisma, "support_whatsapp")) ?? "").replace(/[^0-9]/g, "")
+        : "";
 
       return reply.view("pay.njk", {
         ...ctx,
@@ -246,10 +299,15 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
           expires_at_iso: order.expiresAt ? ensureUtc(order.expiresAt).toISO() : null,
         },
         state,
-        is_usdt: isUsdt,
+        is_binance: isBinance,
+        is_bybit: isBybit,
+        is_qris: isQris,
+        bybit_address: bybitAddress,
         binance_uid: config.BINANCE_RECEIVE_UID ?? "",
         gateway,
         gateway_error: gatewayError,
+        wa_number: waNumber,
+        bot_username: botUsername() ?? "",
       });
     },
   );

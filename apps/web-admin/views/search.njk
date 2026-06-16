@@ -3,9 +3,7 @@
 {% block title %}Search · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-4">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="search" class="w-7 h-7 text-blue-500"></i> Search</h1>
-</header>
+{{ ui.page_header('Search', '', 'search', 'reports') }}
 
 <form method="get" action="/search" class="mb-6 flex gap-2 max-w-xl">
   <input type="text" name="q" value="{{ q }}" autofocus placeholder="Order code, Telegram ID / username, or product name" class="field flex-1">
@@ -22,8 +20,8 @@
       {% for u in users %}
       <li class="py-2.5 flex items-center justify-between gap-3">
         <a class="link font-normal text-ink hover:text-pine" href="/users/{{ u.id }}">
-          {{ u.fullName or u.username or ('Telegram ' + (u.telegramId | string)) }}
-          <span class="text-ink-faint font-mono text-xs">· {{ u.telegramId }}</span>
+          {{ u.fullName or u.username or (u.telegramId and ('Telegram ' + (u.telegramId | string))) or u.email or '—' }}
+          <span class="text-ink-faint font-mono text-xs">· {{ u.telegramId or "—" }}</span>
         </a>
         {{ ui.status_badge(u.role) }}
       </li>
@@ -39,7 +37,7 @@
       {% for p in products %}
       <li class="py-2.5 flex items-center justify-between gap-3">
         <a class="link font-normal text-ink hover:text-pine" href="/stock/{{ p.id }}">{{ p.name }}</a>
-        <span class="text-ink-soft tabular">{{ p.price | money }} {{ currency }}</span>
+        <span class="text-ink-soft tabular">{{ p.price | idr }}</span>
       </li>
       {% else %}
       <li class="py-4 text-center text-ink-faint">No products.</li>

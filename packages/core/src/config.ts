@@ -49,7 +49,7 @@ const looseBool = z
   .transform((s) => ["1", "true", "yes", "on"].includes(s.trim().toLowerCase()))
   .or(z.boolean());
 
-const Env = z.object({
+export const Env = z.object({
   // ---- Telegram ----
   // Optional since plan.md §16: the primary source is the `bot_token` /
   // `bot_username` Settings rows (web-admin editable, DB wins when filled);
@@ -60,7 +60,8 @@ const Env = z.object({
   SUPPORT_GROUP_ID: z.coerce.number().optional(),
 
   // ---- Payment ----
-  BINANCE_PAY_ID: z.string(),
+  // Optional: kosong = Binance Pay manual tidak dikonfigurasi (boot tetap jalan).
+  BINANCE_PAY_ID: z.string().default(""),
   BINANCE_QR_PATH: z.string().optional(),
   CURRENCY: z.string().default("USDT"),
   PAYMENT_WINDOW_MINUTES: z.coerce.number().default(30),
@@ -75,6 +76,21 @@ const Env = z.object({
   BINANCE_API_BASE: z.string().default("https://api.binance.com"),
   POLL_INTERVAL_SECONDS: z.coerce.number().default(10),
   INTERNAL_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(15),
+
+  // ---- Bybit USDT-BSC deposit (on-chain, auto-confirmed by unique amount) ----
+  // The BEP20 (BNB Smart Chain) USDT deposit address buyers send to. BEP20 has
+  // no memo, so matching is by the order's unique total amount (USE_UNIQUE_CENTS
+  // must stay on). All buyers share this one address.
+  BYBIT_DEPOSIT_ADDRESS: z.string().optional(),
+  // The Bybit chain id for the deposit network. The live probe returned "BSC".
+  BYBIT_DEPOSIT_CHAIN: z.string().default("BSC"),
+  // READ-ONLY API key/secret (Wallet read only — no Withdraw) to fetch deposits.
+  BYBIT_API_KEY: z.string().optional(),
+  BYBIT_API_SECRET: z.string().optional(),
+  BYBIT_API_BASE: z.string().default("https://api.bybit.com"),
+  // Window for the on-chain auto-confirm path. BSC needs ~60 confirmations
+  // (~1–2 min) plus the buyer's transfer time, so give it a little headroom.
+  BYBIT_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(30),
   // Optional USDT→IDR rate; if set, instructions show an IDR equivalent.
   USDT_IDR_RATE: z.coerce.number().optional(),
 
@@ -152,15 +168,19 @@ const Env = z.object({
   PUBLIC_CHANNEL_ID: z.coerce.number().optional(),
   NOTIF_POLL_INTERVAL_SECONDS: z.coerce.number().default(10),
   NOTIF_MAX_ATTEMPTS: z.coerce.number().default(5),
+
+  // ---- SMTP (storefront forgot-password email) ----
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().default(587),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().optional(),
+  SMTP_SECURE: looseBool.default(false),
 });
 
 export type Config = z.infer<typeof Env>;
 
 export const config: Config = Env.parse(process.env);
-
-/** True if the given Telegram user ID is in the admin allow-list. */
-export const isAdmin = (telegramId: number | bigint): boolean =>
-  config.ADMIN_IDS.includes(Number(telegramId));
 
 /**
  * Binance Internal Transfer is offered + auto-confirmed only when the receive
@@ -169,3 +189,14 @@ export const isAdmin = (telegramId: number | bigint): boolean =>
  */
 export const isBinanceInternalEnabled = (): boolean =>
   Boolean(config.BINANCE_RECEIVE_UID && config.BINANCE_API_KEY && config.BINANCE_API_SECRET);
+
+// Bybit's "enabled" gate is resolved at runtime from web-admin Settings (with
+// these BYBIT_* env vars as the fallback) — see resolveBybitConfig() in
+// @app/db, so the address/keys can be managed in /settings without a restart.
+
+/**
+ * SMTP is enabled for storefront password-reset emails only when the host and
+ * from-address are configured. Otherwise, the mailer is disabled and the
+ * password-reset feature is unavailable.
+ */
+export const isSmtpEnabled = (): boolean => Boolean(config.SMTP_HOST && config.SMTP_FROM);

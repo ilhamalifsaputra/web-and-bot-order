@@ -13,7 +13,7 @@ const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
 export interface ReconcileFindings {
   order_drift: Array<{ order_id: number; order_code: string; expected: string; actual: string }>;
   voucher_drift: Array<{ voucher_id: number; code: string; recorded_used: number; actual_orders: number }>;
-  negative_wallets: Array<{ user_id: number; telegram_id: string; balance: string }>;
+  negative_wallets: Array<{ user_id: number; telegram_id: string | null; balance: string }>;
 }
 
 export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
@@ -76,7 +76,7 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
   for (const u of negatives) {
     findings.negative_wallets.push({
       user_id: u.id,
-      telegram_id: u.telegramId.toString(),
+      telegram_id: u.telegramId ? u.telegramId.toString() : null,
       balance: new Decimal(u.walletBalance).toString(),
     });
   }

@@ -3,10 +3,7 @@
 {% block title %}Customers · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="users" class="w-7 h-7 text-emerald-500"></i> Customers</h1>
-  <p class="page-lead">Find a customer to view their orders, wallet, and tickets.</p>
-</header>
+{{ ui.page_header('Customers', 'Find a customer to view their orders, wallet, and tickets.', 'users', 'customers') }}
 {{ ui.flash(msg, kind) }}
 
 <form method="get" action="/users" class="card card-pad mb-6 flex gap-3 items-end">
@@ -28,7 +25,7 @@
       <tr>
         <td>{{ u.fullName or '—' }}</td>
         <td>{{ u.username or '—' }}</td>
-        <td class="font-mono text-xs">{{ u.telegramId }}</td>
+        <td class="font-mono text-xs">{{ u.telegramId or "—" }}</td>
         <td>{{ ui.status_badge(u.role) }}</td>
         <td>{% if u.banned %}<span class="chip bg-rust-tint text-rust-dark">Blocked</span>{% else %}<span class="text-ink-faint">—</span>{% endif %}</td>
         <td class="text-right"><a class="link" href="/users/{{ u.id }}">Open →</a></td>

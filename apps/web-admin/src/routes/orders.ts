@@ -13,6 +13,7 @@ import {
   getOrder,
   approveOrder,
   rejectOrder,
+  creditOrderToBalance,
   logAdminAction,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../plugins/auth";
@@ -74,6 +75,11 @@ export default async function ordersRoutes(app: FastifyInstance): Promise<void> 
       order,
       is_delivered: order.status === OrderStatus.DELIVERED,
       can_act: order.status === OrderStatus.PENDING_VERIFICATION,
+      // Paid but undeliverable (e.g. approve hit out-of-stock, or underpaid):
+      // offer adding the paid amount to the buyer's credit balance.
+      can_credit:
+        order.status === OrderStatus.PENDING_VERIFICATION ||
+        order.status === OrderStatus.UNDERPAID,
       msg: q.msg ?? null,
       kind: q.kind ?? "info",
     });
@@ -102,6 +108,35 @@ export default async function ordersRoutes(app: FastifyInstance): Promise<void> 
       reply,
       `/orders/${orderId}`,
       "Order approved and delivered. Credentials are shown below.",
+      "success",
+    );
+  });
+
+  app.post("/orders/:orderId/credit-balance", { preHandler: csrfProtect }, async (req, reply) => {
+    const orderId = Number((req.params as { orderId: string }).orderId);
+    try {
+      const { credited, currency } = await creditOrderToBalance(prisma, {
+        orderId,
+        adminId: req.admin!.userId,
+      });
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "order_credit_balance",
+        targetType: "order",
+        targetId: orderId,
+        details: `credited=${credited.toString()} ${currency}`,
+      });
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return redirectWithFlash(reply, `/orders/${orderId}`, humanizeValidationError(e), "error");
+      }
+      throw e;
+    }
+    logger.info(`Order ${orderId} paid amount credited to buyer balance via web by admin_id=${req.admin!.userId}`);
+    return redirectWithFlash(
+      reply,
+      `/orders/${orderId}`,
+      "Paid amount added to the buyer's credit balance.",
       "success",
     );
   });

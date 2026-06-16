@@ -7,50 +7,19 @@
  * the conversations plugin, so they are not duplicated across replays.
  */
 import { config } from "@app/core/config";
+import { adminIds } from "@app/core/runtime";
 import { SenderType, TicketStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
-import { prisma, createReview, getTicket, addTicketMessage } from "@app/db";
+import { prisma, getTicket, addTicketMessage } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { smartEdit } from "../util/chat";
 import { t } from "../util/i18n";
 import { esc } from "../util/format";
 import { validateText } from "../util/validators";
-import { backToMain } from "../keyboards/customer";
+import { backToMain, isPersistentLabel } from "../keyboards/customer";
 import * as akb from "../keyboards/admin";
-
-// ===========================================================================
-// Review: rate (entry carries the rating) → ask comment → save
-// ===========================================================================
-
-export async function reviewConversation(conversation: MyConversation, ctx: MyContext): Promise<void> {
-  const info = ctx.session.dbUser!;
-  const parts = (ctx.callbackQuery?.data ?? "").split(":");
-  const orderId = parseInt(parts[3]!, 10);
-  const productId = parseInt(parts[4]!, 10);
-  const rating = parseInt(parts[5]!, 10);
-
-  await ctx.answerCallbackQuery();
-  await smartEdit(ctx, t(ctx, "review.ask_comment", { rating }));
-
-  const msgCtx = await conversation.waitFor("message:text");
-  const raw = (msgCtx.message.text ?? "").trim();
-  const comment = raw === "-" ? null : raw;
-
-  try {
-    await conversation.external(() =>
-      createReview(prisma, { userId: info.id, orderId, productId, rating, comment }),
-    );
-  } catch (e) {
-    if (e instanceof ValidationError) {
-      await smartEdit(msgCtx, t(msgCtx, e.key));
-      return;
-    }
-    throw e;
-  }
-
-  await smartEdit(msgCtx, t(msgCtx, "review.submitted"), backToMain(msgCtx.session.lang));
-}
+import { handleProductNumber, showMainMenu } from "../handlers/customer";
 
 // ===========================================================================
 // Ticket user reply: entry v1:ticket:reply:<id> → ask text → save → notify
@@ -70,18 +39,31 @@ export async function ticketUserReplyConversation(conversation: MyConversation, 
     return;
   }
 
+  const lang = ctx.session.lang;
   await ctx.answerCallbackQuery();
-  await smartEdit(ctx, t(ctx, "ticket.ask_reply"));
+  await smartEdit(ctx, t(ctx, "ticket.ask_reply"), backToMain(lang));
 
   let body: string;
   for (;;) {
-    const msgCtx = await conversation.waitFor("message:text");
+    const u = await conversation.wait();
+    // 🏠 Menu — non-destructive escape to the dashboard. The conversation owns
+    // this update, so the router never sees it: answer + render here, then exit.
+    if ((u.callbackQuery?.data ?? "") === "v1:menu:main") {
+      await u.answerCallbackQuery();
+      await showMainMenu(u);
+      return;
+    }
+    const replyText = u.message?.text;
+    if (!replyText) continue;
+    // A reply-keyboard menu tap (Terms, FAQ, …) must not be captured as the
+    // ticket reply. Exit the conversation and run the tapped action instead.
+    if (isPersistentLabel(replyText)) return void (await handleProductNumber(u));
     try {
-      body = validateText(msgCtx.message.text ?? "", 2000, 1);
+      body = validateText(replyText, 2000, 1);
       break;
     } catch (e) {
       if (e instanceof ValidationError) {
-        await smartEdit(msgCtx, t(msgCtx, e.key, e.formatArgs));
+        await smartEdit(u, t(u, e.key, e.formatArgs), backToMain(lang));
         continue;
       }
       throw e;
@@ -94,7 +76,7 @@ export async function ticketUserReplyConversation(conversation: MyConversation, 
 
   await smartEdit(ctx, t(ctx, "ticket.reply_sent"), backToMain(ctx.session.lang));
 
-  const targets = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : config.ADMIN_IDS;
+  const targets = config.SUPPORT_GROUP_ID ? [config.SUPPORT_GROUP_ID] : adminIds();
   await conversation.external(async () => {
     for (const chatId of targets) {
       if (!chatId) continue;

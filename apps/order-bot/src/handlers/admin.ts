@@ -8,7 +8,8 @@
  * handleAdminCallback (called by the central router in callbacks.ts).
  */
 import { InputFile } from "grammy";
-import { config, isAdmin } from "@app/core/config";
+import { config } from "@app/core/config";
+import { isAdmin } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { UserRole, langCode } from "@app/core/enums";
@@ -26,6 +27,8 @@ import {
   setUserRole,
   adjustWallet,
   getSetting,
+  setSetting,
+  deleteSetting,
   updateProduct,
   listStockItemsForProduct,
   markStockDead,
@@ -38,6 +41,7 @@ import {
 } from "@app/db";
 import type { MyContext } from "../context";
 import { adminEdit } from "../util/chat";
+import { BANNER_FILEID_KEY } from "../util/banner";
 import { coreT, t } from "../util/i18n";
 import { esc, formatPrice, formatIdr, mixedAmount } from "../util/format";
 import * as akb from "../keyboards/admin";
@@ -213,10 +217,11 @@ async function userWalletPrompt(ctx: MyContext, userId: number): Promise<void> {
 /** `/wallet <user_db_id> <amount>` — manual wallet adjustment by admin. */
 export async function adminWalletCommand(ctx: MyContext): Promise<void> {
   ctx.session.adminMsgId = undefined;
+  const lang = ctx.session.lang;
   const args = (typeof ctx.match === "string" ? ctx.match : "").trim().split(/\s+/).filter(Boolean);
   logger.info(`admin_wallet_command: user=${ctx.from?.id} args=${args.join(" ")}`);
   if (args.length !== 2) {
-    await adminEdit(ctx, t(ctx, "admin.wallet_usage"));
+    await adminEdit(ctx, t(ctx, "admin.wallet_usage"), akb.backToAdminKb(lang));
     return;
   }
   let uid: number;
@@ -226,7 +231,7 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     amt = new Decimal(args[1]!);
     if (Number.isNaN(uid)) throw new Error("bad uid");
   } catch {
-    await adminEdit(ctx, t(ctx, "admin.wallet_bad_args"));
+    await adminEdit(ctx, t(ctx, "admin.wallet_bad_args"), akb.backToAdminKb(lang));
     return;
   }
 
@@ -248,10 +253,10 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     });
   } catch (err) {
     logger.error({ err }, "wallet adjust failed");
-    await adminEdit(ctx, t(ctx, "admin.wallet_failed"));
+    await adminEdit(ctx, t(ctx, "admin.wallet_failed"), akb.backToAdminKb(lang));
     return;
   }
-  await adminEdit(ctx, `New balance for user ${uid}: ${price(newBal)}`);
+  await adminEdit(ctx, t(ctx, "admin.wallet_adjusted", { uid, balance: price(newBal) }), akb.backToAdminKb(lang));
 }
 
 // ===========================================================================
@@ -528,6 +533,39 @@ export async function notifyRestockSubscribers(ctx: MyContext, productId: number
 }
 
 // ===========================================================================
+// Undo banner removal (30-second window, expiry stored in session.scratch)
+// ===========================================================================
+
+async function undoBannerRemoval(ctx: MyContext): Promise<void> {
+  const lang = ctx.session.lang;
+  const undoState = ctx.session.scratch.undoBanner as
+    | { fileId: string; expiresAt: number }
+    | undefined;
+
+  if (!undoState || Date.now() > undoState.expiresAt) {
+    ctx.session.scratch.undoBanner = undefined;
+    await ctx.answerCallbackQuery({ text: t(ctx, "admin.undo_expired"), show_alert: true });
+    return;
+  }
+
+  ctx.session.scratch.undoBanner = undefined;
+  await prisma.$transaction(async (tx) => {
+    await setSetting(tx, "banner_image", undoState.fileId);
+    // Restoring a raw file_id; clear any cached upload file_id.
+    await deleteSetting(tx, BANNER_FILEID_KEY);
+    const admin = await getUserByTelegramId(tx, ctx.from!.id);
+    await logAdminAction(tx, {
+      adminId: adminId(admin),
+      action: "setting_set",
+      targetType: "setting",
+      details: "banner_image=restored_via_undo",
+    });
+  });
+  await ctx.answerCallbackQuery({ text: t(ctx, "admin.banner_restored") });
+  await adminEdit(ctx, t(ctx, "admin.banner_restored"), akb.backToAdminKb(lang));
+}
+
+// ===========================================================================
 // Callback router entry (called by callbacks.ts for any v1:adm:*)
 // ===========================================================================
 
@@ -589,6 +627,7 @@ export async function handleAdminCallback(ctx: MyContext, parts: string[]): Prom
       break;
     case "settings":
       if (action === "menu") await showSettings(ctx);
+      else if (action === "undo" && parts[4] === "banner_image") await undoBannerRemoval(ctx);
       // 'set' handled by setting conversation.
       break;
     case "broadcast":

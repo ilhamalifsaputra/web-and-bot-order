@@ -1,9 +1,12 @@
 import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
 
+import { existsSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
-import { ProductType } from "@app/core/enums";
+import { ProductType, UserRole } from "@app/core/enums";
 import {
   prisma,
   initDb,
@@ -12,6 +15,7 @@ import {
   createProduct,
   bulkAddStock,
   getUser,
+  getUserByTelegramId,
   getOrder,
   createOrderDirect,
   attachPaymentProof,
@@ -19,6 +23,7 @@ import {
   listTicketMessages,
   setSetting,
   getSetting,
+  deleteSetting,
   getVoucherByCode,
   countAvailableStock,
   markUnderpaid,
@@ -27,7 +32,8 @@ import {
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
-import { setTokenValidator } from "../src/routes/settings";
+import { setTokenValidator, setChannelValidator } from "../src/routes/settings";
+import { setTokenValidator as setSetupTokenValidator } from "../src/routes/setup";
 import { Decimal } from "@app/core/money";
 import { setFxRateFetcher } from "@app/db";
 import {
@@ -53,6 +59,7 @@ import {
   resetAccountFailures,
 } from "../src/auth";
 import { canMutate } from "../src/plugins/auth";
+import { isAdmin, adminIds, setAdminIds } from "@app/core/runtime";
 
 const COOKIE = config.WEB_COOKIE_NAME;
 const ADMIN_TG = 999;
@@ -105,6 +112,8 @@ beforeEach(async () => {
   const { raw, data } = makeSession(admin.id, ADMIN_TG, jti);
 
   seed = { adminId: admin.id, customerId: customer.id, productId: product.id, cookie: raw, csrf: data.csrf };
+  // Existing suites model a CONFIGURED deploy — keep the first-run gate open.
+  await setSetting(prisma, "setup_completed", "true");
 });
 
 // ---- helpers --------------------------------------------------------------
@@ -321,6 +330,35 @@ describe("orders", () => {
     expect(res.statusCode).toBe(403);
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
   });
+
+  it("credit-balance on a paid order → CANCELLED + buyer credited + audit", async () => {
+    const orderId = await makePendingOrder(); // PENDING_VERIFICATION (paid)
+    const order = (await getOrder(prisma, orderId))!;
+    const before = Number((await getUser(prisma, seed.customerId))!.walletBalance);
+    const res = await post(`/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect((await getOrder(prisma, orderId))!.status).toBe("CANCELLED");
+    const after = Number((await getUser(prisma, seed.customerId))!.walletBalance);
+    expect(after - before).toBeCloseTo(Number(order.totalAmount));
+    const audit = await prisma.auditLog.findMany({ where: { action: "order_credit_balance", targetId: orderId } });
+    expect(audit.length).toBe(1);
+  });
+
+  it("credit-balance requires auth (anon → /login)", async () => {
+    const orderId = await makePendingOrder();
+    const res = await post(`/orders/${orderId}/credit-balance`, null, { csrf_token: "x" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
+  });
+
+  it("credit-balance rejects bad CSRF (403)", async () => {
+    const orderId = await makePendingOrder();
+    const res = await post(`/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: "bad" });
+    expect(res.statusCode).toBe(403);
+    expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
+  });
 });
 
 // ---- catalog (acceptance #5) ----------------------------------------------
@@ -391,6 +429,58 @@ describe("stock", () => {
   it("bulk add rejects bad CSRF", async () => {
     const res = await post(`/stock/${seed.productId}/add`, seed.cookie, { csrf_token: "nope", credentials: "x@e.com:p" });
     expect(res.statusCode).toBe(403);
+  });
+
+  it("bulk delete removes available rows but keeps sold + audit never logs credentials", async () => {
+    const avail = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" } });
+    const delId = avail[0].id;
+    const sold = await prisma.stockItem.update({
+      where: { id: avail[1].id },
+      data: { status: "SOLD", soldAt: new Date() },
+    });
+    const res = await post(`/stock/${seed.productId}/bulk-delete`, seed.cookie, {
+      csrf_token: seed.csrf,
+      ids: `${delId},${sold.id}`,
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await prisma.stockItem.findUnique({ where: { id: delId } })).toBeNull();
+    expect(await prisma.stockItem.findUnique({ where: { id: sold.id } })).not.toBeNull();
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "stock_bulk_delete", targetId: seed.productId } });
+    expect(audit.length).toBe(1);
+    expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
+  });
+
+  it("bulk delete requires auth", async () => {
+    const res = await post(`/stock/${seed.productId}/bulk-delete`, null, { csrf_token: "x", ids: "1" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("bulk delete rejects bad CSRF", async () => {
+    const res = await post(`/stock/${seed.productId}/bulk-delete`, seed.cookie, { csrf_token: "nope", ids: "1" });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("download returns AVAILABLE credentials as a text attachment + audit by count", async () => {
+    const avail = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" }, orderBy: { id: "asc" } });
+    const res = await get(`/stock/${seed.productId}/download`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/plain");
+    expect(res.headers["content-disposition"]).toContain("attachment");
+    expect(res.headers["content-disposition"]).toContain(".txt");
+    for (const it of avail) expect(res.body).toContain(it.credentials);
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "stock_download", targetId: seed.productId } });
+    expect(audit.length).toBeGreaterThanOrEqual(1);
+    expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
+  });
+
+  it("download requires auth", async () => {
+    const res = await get(`/stock/${seed.productId}/download`, null);
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
   });
 });
 
@@ -567,6 +657,14 @@ describe("settings", () => {
     const res = await post("/settings/edit", seed.cookie, { csrf_token: "bad", key: "support_contact", value: "pwned" });
     expect(res.statusCode).toBe(403);
   });
+
+  it("shop identity + banner fields no longer render an editable input on /settings", async () => {
+    const res = await get("/settings", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain('value="shop_name"');
+    expect(res.body).not.toContain('value="banner_image"');
+    expect(res.body).toContain('value="support_whatsapp"');
+  });
 });
 
 // ---- market USDT rate refresh (plan.md §15.8 resolved) ----------------------
@@ -663,6 +761,59 @@ describe("settings: bot tokens (§16)", () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).not.toContain("123456:goodtokenvalue");
   });
+
+  it("resolves a channel link to its numeric id and saves it", async () => {
+    setTokenValidator(async () => ({ ok: true, username: "MyShopBot" }));
+    await setSetting(prisma, "bot_token", "123456:goodtokenvalue"); // a token must exist to resolve with
+    setChannelValidator(async () => ({ ok: true, id: -1003960444894, title: "TESTIMONI" }));
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "public_channel_id", value: "t.me/testiilha",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "public_channel_id")).toBe("-1003960444894");
+  });
+
+  it("rejects an unresolvable channel — nothing is stored", async () => {
+    await setSetting(prisma, "bot_token", "123456:goodtokenvalue");
+    setChannelValidator(async () => ({ ok: false }));
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "public_channel_id", value: "@nope",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect(await getSetting(prisma, "public_channel_id")).toBeNull();
+  });
+
+  it("rejects when no bot token is configured to resolve with", async () => {
+    await deleteSetting(prisma, "bot_token");
+    setChannelValidator(async () => ({ ok: true, id: -100123, title: "x" }));
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "public_channel_id", value: "@chan",
+    });
+    expect(res.headers.location).toContain("kind=error");
+    expect(await getSetting(prisma, "public_channel_id")).toBeNull();
+  });
+
+  it("channel edits are owner-only (support role refused)", async () => {
+    await setSetting(prisma, "bot_token", "123456:goodtokenvalue");
+    setChannelValidator(async () => ({ ok: true, id: -100123, title: "x" }));
+    await setSetting(prisma, webRoleKey(ADMIN_TG), "support");
+    await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "public_channel_id", value: "@chan",
+    });
+    expect(await getSetting(prisma, "public_channel_id")).toBeNull();
+  });
+
+  it('a single "-" clears the saved channel id', async () => {
+    await setSetting(prisma, "public_channel_id", "-1003960444894");
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "public_channel_id", value: "-",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "public_channel_id")).toBeNull();
+  });
 });
 
 // ---- payments / Binance Internal ops (acceptance #5) ----------------------
@@ -719,6 +870,104 @@ describe("payments", () => {
     expect(tx!.orderId).toBe(order.id);
     // approve path enqueues exactly one testimoni outbox row.
     expect((await prisma.notificationOutbox.findMany({ where: { orderId: order.id } })).length).toBe(1);
+  });
+
+  it("credit unmatched tx → buyer credit balance + order CANCELLED + tx credited_to_balance + audit", async () => {
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    const before = Number((await getUser(prisma, seed.customerId))!.walletBalance);
+    await recordUnmatchedTx(prisma, { binanceTxId: "CRTX1", amount: "5.00" });
+
+    const res = await post("/payments/credit", seed.cookie, {
+      csrf_token: seed.csrf,
+      binance_tx_id: "CRTX1",
+      order_code: order.orderCode,
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+
+    expect((await getOrder(prisma, order.id))!.status).toBe("CANCELLED");
+    const after = Number((await getUser(prisma, seed.customerId))!.walletBalance);
+    expect(after - before).toBeCloseTo(5);
+
+    const tx = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "CRTX1" } });
+    expect(tx!.outcome).toBe("credited_to_balance");
+    expect(tx!.orderId).toBe(order.id);
+
+    const logs = await listAuditLogs(prisma, { limit: 5 });
+    expect(logs.some((l) => l.action === "tx_credit_balance")).toBe(true);
+  });
+
+  it("credit requires auth (anon → /login)", async () => {
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    await recordUnmatchedTx(prisma, { binanceTxId: "CRTX2", amount: "5.00" });
+    const res = await post("/payments/credit", null, {
+      csrf_token: "x",
+      binance_tx_id: "CRTX2",
+      order_code: order.orderCode,
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect((await getOrder(prisma, order.id))!.status).toBe("PENDING_PAYMENT");
+  });
+
+  it("credit rejects bad CSRF (403)", async () => {
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    await recordUnmatchedTx(prisma, { binanceTxId: "CRTX3", amount: "5.00" });
+    const res = await post("/payments/credit", seed.cookie, {
+      csrf_token: "bad",
+      binance_tx_id: "CRTX3",
+      order_code: order.orderCode,
+    });
+    expect(res.statusCode).toBe(403);
+    expect((await getOrder(prisma, order.id))!.status).toBe("PENDING_PAYMENT");
+  });
+
+  it("GET /payments renders the history with the explainer + a Dismiss action for unmatched rows", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "RENDTX", amount: "1.00" });
+    const res = await get("/payments", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("we match it to an order"); // Option A explainer
+    expect(res.body).toContain("/payments/dismiss"); // Option B dismiss form
+    expect(res.body).toContain("RENDTX");
+  });
+
+  it("dismiss unmatched tx → outcome dismissed + audit", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "DTX1", amount: "1.00" });
+    const res = await post("/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "DTX1" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    const tx = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "DTX1" } });
+    expect(tx!.outcome).toBe("dismissed");
+    const logs = await listAuditLogs(prisma, { limit: 5 });
+    expect(logs.some((l) => l.action === "tx_dismiss")).toBe(true);
+  });
+
+  it("dismiss an already-dismissed (non-unmatched) tx → error flash, row unchanged", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "DTX3", amount: "1.00" });
+    await post("/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "DTX3" });
+    // second dismiss: the row is no longer "unmatched" → rejected
+    const res = await post("/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "DTX3" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "DTX3" } }))!.outcome).toBe("dismissed");
+  });
+
+  it("dismiss requires auth (anon → /login)", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "DTX4", amount: "1.00" });
+    const res = await post("/payments/dismiss", null, { csrf_token: "x", binance_tx_id: "DTX4" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "DTX4" } }))!.outcome).toBe("unmatched");
+  });
+
+  it("dismiss rejects bad CSRF", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "DTX5", amount: "1.00" });
+    const res = await post("/payments/dismiss", seed.cookie, { csrf_token: "bad", binance_tx_id: "DTX5" });
+    expect(res.statusCode).toBe(403);
+    expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "DTX5" } }))!.outcome).toBe("unmatched");
   });
 
   it("deliver requires auth", async () => {
@@ -917,7 +1166,7 @@ describe("bulk operations", () => {
       csrf_token: seed.csrf, ids: String(seed.productId), mode: "set", value: "12.50",
     });
     expect(preview.statusCode).toBe(200);
-    expect(preview.body).toContain("12.50");
+    expect(preview.body).toContain("Rp13"); // 12.50 rendered as whole-Rupiah (ROUND_HALF_UP)
     expect(Number((await prisma.product.findUnique({ where: { id: seed.productId } }))!.price)).toBe(5);
 
     // Step 2 — apply the previewed pair.
@@ -936,7 +1185,7 @@ describe("bulk operations", () => {
       csrf_token: seed.csrf, ids: String(seed.productId), mode: "percent", value: "10",
     });
     expect(up.statusCode).toBe(200);
-    expect(up.body).toContain("5.5000"); // 5.00 + 10%
+    expect(up.body).toContain("Rp6"); // 5.00 + 10% = 5.5, rendered as whole-Rupiah
 
     const down = await post("/catalog/products/bulk-price", seed.cookie, {
       csrf_token: seed.csrf, ids: String(seed.productId), mode: "percent", value: "-100",
@@ -1143,6 +1392,74 @@ describe("session management", () => {
   });
 });
 
+// ---- manage DB admins (Unit 6) --------------------------------------------
+
+describe("manage DB admins", () => {
+  const NEW_ADMIN_TG = 777999;
+
+  beforeEach(() => {
+    // Reset runtime to env-only list so tests are isolated.
+    setAdminIds([...config.ADMIN_IDS]);
+  });
+
+  it("add: happy path — id appears in adminIds() and GET /admins renders it", async () => {
+    const res = await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    // Live runtime updated without restart.
+    expect(isAdmin(NEW_ADMIN_TG)).toBe(true);
+    // Page lists the new id.
+    const page = await get("/admins", seed.cookie);
+    expect(page.statusCode).toBe(200);
+    expect(page.body).toContain(String(NEW_ADMIN_TG));
+  });
+
+  it("add: rejects a non-integer telegram_id", async () => {
+    const res = await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: "notanumber" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect(isAdmin(NaN)).toBe(false);
+  });
+
+  it("add: requires auth (anon → 303 /login)", async () => {
+    const res = await post("/admins/add", null, { csrf_token: "x", telegram_id: String(NEW_ADMIN_TG) });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect(isAdmin(NEW_ADMIN_TG)).toBe(false);
+  });
+
+  it("add: rejects bad CSRF (403)", async () => {
+    const res = await post("/admins/add", seed.cookie, { csrf_token: "wrong", telegram_id: String(NEW_ADMIN_TG) });
+    expect(res.statusCode).toBe(403);
+    expect(isAdmin(NEW_ADMIN_TG)).toBe(false);
+  });
+
+  it("remove: removes a DB admin from runtime and DB", async () => {
+    // First add it.
+    await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+    expect(isAdmin(NEW_ADMIN_TG)).toBe(true);
+
+    const res = await post("/admins/remove", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(isAdmin(NEW_ADMIN_TG)).toBe(false);
+  });
+
+  it("remove: cannot remove an env-based admin", async () => {
+    const envAdmin = config.ADMIN_IDS[0]!;
+    const res = await post("/admins/remove", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(envAdmin) });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect(isAdmin(envAdmin)).toBe(true);
+  });
+
+  it("remove: cannot remove self", async () => {
+    const res = await post("/admins/remove", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(ADMIN_TG) });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+  });
+});
+
 // ---- broadcast composer (Tier 3 §12) — web ENQUEUES, never sends ----------
 
 describe("broadcast", () => {
@@ -1200,5 +1517,174 @@ describe("page smoke tests", () => {
     expect((await get(`/orders/${orderId}`, seed.cookie)).statusCode).toBe(200);
     expect((await get(`/stock/${seed.productId}`, seed.cookie)).statusCode).toBe(200);
     expect((await get(`/users/${seed.customerId}`, seed.cookie)).statusCode).toBe(200);
+  });
+});
+
+describe("first-run setup gate", () => {
+  it("redirects to /setup when setup is pending (no flag, no admin password)", async () => {
+    await deleteSetting(prisma, "setup_completed"); // seeded admin has no password
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/setup");
+  });
+
+  it("does NOT gate once an admin already has a password (backward compat)", async () => {
+    await deleteSetting(prisma, "setup_completed");
+    await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("password123"));
+    const res = await app.inject({ method: "GET", url: "/", headers: { cookie: `${COOKIE}=${seed.cookie}` } });
+    expect(res.statusCode).toBe(200); // dashboard renders, gate stayed open
+  });
+
+  it("never gates excluded paths (/healthz)", async () => {
+    await deleteSetting(prisma, "setup_completed");
+    const res = await app.inject({ method: "GET", url: "/healthz" });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
+describe("setup wizard — step 1 (connect bot)", () => {
+  beforeEach(async () => {
+    await deleteSetting(prisma, "setup_completed"); // open the wizard
+  });
+
+  it("renders the connect-bot form at GET /setup", async () => {
+    const res = await app.inject({ method: "GET", url: "/setup" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("Bot token");
+  });
+
+  it("rejects a bad token (getMe fails) and saves nothing", async () => {
+    setSetupTokenValidator(async () => ({ ok: false }));
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/bot",
+      payload: form({ bot_token: "garbage" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(await getSetting(prisma, "bot_token")).toBeNull();
+  });
+
+  it("rejects a whitespace-only token (trims to empty) and saves nothing", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/bot",
+      payload: form({ bot_token: "   " }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(await getSetting(prisma, "bot_token")).toBeNull();
+  });
+
+  it("saves token + username on a valid token and advances to step 2", async () => {
+    setSetupTokenValidator(async () => ({ ok: true, username: "ShopBot" }));
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/bot",
+      payload: form({ bot_token: "123:VALID" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/setup/owner");
+    expect(await getSetting(prisma, "bot_token")).toBe("123:VALID");
+    expect(await getSetting(prisma, "bot_username")).toBe("ShopBot");
+  });
+
+  it("can skip step 1 (Atur nanti) without saving a token", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/bot",
+      payload: form({ skip: "1" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/setup/owner");
+    expect(await getSetting(prisma, "bot_token")).toBeNull();
+  });
+});
+
+describe("setup wizard — restart trigger", () => {
+  it("writes the Passenger restart file best-effort", async () => {
+    // Seed a bot_token so setup_done.njk enters the bot_configured branch
+    // and shows the "dinyalakan" text when restarted=true.
+    await setSetting(prisma, "bot_token", "123:test-token");
+    const target = join(tmpdir(), `restart-${Date.now()}.txt`);
+    process.env.RESTART_TRIGGER_FILE = target;
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/setup/restart",
+        payload: form({}),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(existsSync(target)).toBe(true);
+      expect(res.body).toContain("dinyalakan"); // setup_done.njk restarted=true branch
+    } finally {
+      if (existsSync(target)) rmSync(target);
+      delete process.env.RESTART_TRIGGER_FILE;
+    }
+  });
+});
+
+describe("setup wizard — step 2/3/finish", () => {
+  const OWNER_TG = 7000123;
+  beforeEach(async () => {
+    await deleteSetting(prisma, "setup_completed");
+    await deleteSetting(prisma, "setup_owner_tg");
+    resetAccountFailures(OWNER_TG);
+    setAdminIds([...config.ADMIN_IDS]);
+  });
+
+  async function createOwner() {
+    return app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: String(OWNER_TG), username: "owner", password: "supersecret", password_confirm: "supersecret" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+  }
+
+  it("rejects mismatched passwords without creating an admin", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: String(OWNER_TG), username: "owner", password: "supersecret", password_confirm: "nope" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(isAdmin(OWNER_TG)).toBe(false);
+  });
+
+  it("creates an ADMIN owner with a password and advances to step 3", async () => {
+    const res = await createOwner();
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/setup/shop");
+    expect(isAdmin(OWNER_TG)).toBe(true);
+    expect(adminIds()).toContain(OWNER_TG);
+    const user = await getUser(prisma, (await getUserByTelegramId(prisma, OWNER_TG))!.id);
+    expect(user!.role).toBe(UserRole.ADMIN);
+    expect(await getSetting(prisma, passwordHashKey(OWNER_TG))).not.toBeNull();
+    expect(await getSetting(prisma, "setup_owner_tg")).toBe(String(OWNER_TG));
+  });
+
+  it("finish: marks setup complete, sets a session cookie, locks the wizard", async () => {
+    await createOwner();
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/shop",
+      payload: form({ shop_name: "Toko Demo" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/setup/done");
+    expect(await getSetting(prisma, "shop_name")).toBe("Toko Demo");
+    expect(await getSetting(prisma, "setup_completed")).toBe("true");
+    const setCookie = res.headers["set-cookie"];
+    expect(String(setCookie)).toContain(`${COOKIE}=`);
+    // Wizard now locked: GET /setup → /login.
+    const locked = await app.inject({ method: "GET", url: "/setup" });
+    expect(locked.statusCode).toBe(303);
+    expect(locked.headers.location).toBe("/login");
   });
 });

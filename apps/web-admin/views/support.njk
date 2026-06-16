@@ -3,10 +3,7 @@
 {% block title %}Support · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="life-buoy" class="w-7 h-7 text-sky-500"></i> Support</h1>
-  <p class="page-lead">Questions and problems sent in by customers.</p>
-</header>
+{{ ui.page_header('Support', 'Questions and problems sent in by customers.', 'life-buoy', 'customers') }}
 {{ ui.flash(msg, kind) }}
 
 <div class="card overflow-x-auto">

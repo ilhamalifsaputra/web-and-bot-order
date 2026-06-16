@@ -76,23 +76,27 @@ export async function loadCartLines(
     );
   }
   const lines = readGuestCart(req);
-  const out: CartLineView[] = [];
-  for (const l of lines) {
-    const product = await getProduct(prisma, l.p);
-    if (!product || !product.isActive) continue;
-    const unit = new Decimal(product.price);
-    out.push({
-      key: l.p,
-      product_id: l.p,
-      name: product.name,
-      image: productImage(product, null),
-      unit_price: unit.toString(),
-      qty: l.q,
-      line_total: unit.times(l.q).toString(),
-      available: await countAvailableStock(prisma, l.p),
-    });
-  }
-  return out;
+  const resolved = await Promise.all(
+    lines.map(async (l) => {
+      const [product, available] = await Promise.all([
+        getProduct(prisma, l.p),
+        countAvailableStock(prisma, l.p),
+      ]);
+      if (!product || !product.isActive) return null;
+      const unit = new Decimal(product.price);
+      return {
+        key: l.p,
+        product_id: l.p,
+        name: product.name,
+        image: productImage(product, null),
+        unit_price: unit.toString(),
+        qty: l.q,
+        line_total: unit.times(l.q).toString(),
+        available,
+      } satisfies CartLineView;
+    }),
+  );
+  return resolved.filter((l): l is CartLineView => l !== null);
 }
 
 const cartRoutes: FastifyPluginAsync = async (app) => {

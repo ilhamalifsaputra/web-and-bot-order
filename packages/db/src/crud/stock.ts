@@ -46,6 +46,38 @@ export async function bulkMarkStockDead(
   return res.count;
 }
 
+/**
+ * Hard-delete the selected stock rows. Two guards keep fulfilled-order history
+ * intact: SOLD rows are never removed, and any row referenced by an order item
+ * is skipped (so a delivered credential can never be deleted out from under an
+ * order). Returns the number actually deleted. Idempotent on an empty list.
+ */
+export async function bulkDeleteStock(db: Db, ids: number[]): Promise<number> {
+  if (!ids.length) return 0;
+  const res = await db.stockItem.deleteMany({
+    where: {
+      id: { in: ids },
+      status: { not: StockStatus.SOLD },
+      orderItems: { none: {} },
+    },
+  });
+  return res.count;
+}
+
+/**
+ * The remaining ready-to-sell credentials for a product, oldest first — used to
+ * build the downloadable export. AVAILABLE only (the "stok tersisa"); never
+ * RESERVED/SOLD/DEAD. Caller is responsible for never logging the result.
+ */
+export async function listAvailableCredentials(db: Db, productId: number): Promise<string[]> {
+  const rows = await db.stockItem.findMany({
+    where: { productId, status: StockStatus.AVAILABLE },
+    orderBy: { id: "asc" },
+    select: { credentials: true },
+  });
+  return rows.map((r) => r.credentials);
+}
+
 export function listStockItemsForProduct(db: Db, productId: number, limit = 30) {
   return db.stockItem.findMany({
     where: { productId },

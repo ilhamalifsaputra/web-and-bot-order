@@ -11,8 +11,8 @@
  */
 import { InputMediaBuilder } from "grammy";
 import type { MessageEntity } from "grammy/types";
-import { config, isAdmin } from "@app/core/config";
-import { botToken } from "@app/core/runtime";
+import { config } from "@app/core/config";
+import { botToken, isAdmin } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ProductType, SenderType, VoucherType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -25,7 +25,9 @@ import {
   getUserByTelegramId,
   logAdminAction,
   searchUsers,
+  getSetting,
   setSetting,
+  deleteSetting,
   createProduct,
   listAllCategories,
   createCategory,
@@ -36,7 +38,8 @@ import {
   addTicketMessage,
 } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
-import { adminEdit } from "../util/chat";
+import { adminEdit, adminAnchor, consumeInput } from "../util/chat";
+import { BANNER_FILEID_KEY } from "../util/banner";
 import { coreT, t } from "../util/i18n";
 import { esc, formatPrice } from "../util/format";
 import { validateText, validateVoucherCode, parseStockUpload } from "../util/validators";
@@ -108,33 +111,37 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
     const doc = u.message?.document;
     if (doc) {
       if (!doc.file_name || !doc.file_name.toLowerCase().endsWith(".txt")) {
-        await adminEdit(u, "Please send a .txt file.");
+        await adminAnchor(u, t(u, "admin.stock_err_txt"), akb.cancelInputKb());
         continue;
       }
       if (doc.file_size && doc.file_size > 1_000_000) {
-        await adminEdit(u, "File too large (max 1MB).");
+        await adminAnchor(u, t(u, "admin.stock_err_too_large"), akb.cancelInputKb());
         continue;
       }
       rawText = await conversation.external(() => downloadTgText(u, doc.file_id));
+      // Delete only after the download — keeps pasted credentials out of the
+      // visible chat history once they're safely captured.
+      await consumeInput(u);
     } else if (u.message?.text) {
       rawText = u.message.text;
+      await consumeInput(u);
     } else {
       continue;
     }
 
     const result = parseStockUpload(rawText);
     if (!result.valid.length) {
-      await adminEdit(
-        u,
-        "No valid credentials found. Expected format:\n" +
-          "<code>email:password</code> or <code>email|password|extra</code>\nOne per line.",
-      );
+      await adminAnchor(u, t(u, "admin.stock_err_no_valid"), akb.cancelInputKb());
       continue;
     }
     credentials = result.valid;
     skippedCount = result.skipped.length;
     break;
   }
+
+  // Buttonless processing state: a second paste/tap can't double-run the bulk
+  // insert while the transaction is in flight.
+  await adminAnchor(ctx, t(ctx, "admin.processing"));
 
   const adminTg = ctx.from!.id;
   const added = await prisma.$transaction(async (tx) => {
@@ -162,11 +169,7 @@ export async function voucherCreateConversation(conversation: MyConversation, ct
   if (!adminGate(ctx)) return denyAdmin(ctx);
   const lang = ctx.session.lang;
   await ctx.answerCallbackQuery();
-  await adminEdit(
-    ctx,
-    "🎟 <b>Create voucher</b>\n\nStep 1/3: send the code (3–32 chars, A–Z/0–9/_/-)",
-    akb.cancelInputKb(),
-  );
+  await adminEdit(ctx, t(ctx, "admin.voucher_step1"), akb.cancelInputKb());
 
   // Step 1: code
   let code: string;
@@ -174,27 +177,25 @@ export async function voucherCreateConversation(conversation: MyConversation, ct
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
     if (!u.message?.text) continue;
+    const raw = u.message.text;
+    await consumeInput(u);
     try {
-      code = validateVoucherCode(u.message.text);
+      code = validateVoucherCode(raw);
     } catch (e) {
       if (e instanceof ValidationError) {
-        await adminEdit(u, coreT(e.key, "en", e.formatArgs));
+        await adminAnchor(u, t(u, e.key, e.formatArgs), akb.cancelInputKb());
         continue;
       }
       throw e;
     }
     const existing = await conversation.external(() => getVoucherByCode(prisma, code));
     if (existing) {
-      await adminEdit(u, "That code already exists. Pick another.");
+      await adminAnchor(u, t(u, "admin.voucher_err_exists"), akb.cancelInputKb());
       continue;
     }
     break;
   }
-  await adminEdit(
-    ctx,
-    "Step 2/3: send type and value, e.g. <code>percent 10</code> for 10% off or <code>fixed 5</code> for 5 USDT off.",
-    akb.cancelInputKb(),
-  );
+  await adminEdit(ctx, t(ctx, "admin.voucher_step2", { code }), akb.cancelInputKb());
 
   // Step 2: type + value
   let vtype: VoucherType;
@@ -202,45 +203,43 @@ export async function voucherCreateConversation(conversation: MyConversation, ct
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    const raw = (u.message?.text ?? "").trim().toLowerCase().split(/\s+/);
-    if (raw.length !== 2) {
-      await adminEdit(u, "Send like <code>percent 10</code> or <code>fixed 5</code>.");
-      continue;
-    }
+    if (!u.message?.text) continue;
+    const raw = u.message.text.trim().toLowerCase().split(/\s+/);
+    await consumeInput(u);
     const [typeStr, valStr] = raw;
-    if (typeStr !== "percent" && typeStr !== "fixed") {
-      await adminEdit(u, "Type must be 'percent' or 'fixed'.");
+    if (raw.length !== 2 || (typeStr !== "percent" && typeStr !== "fixed")) {
+      await adminAnchor(u, t(u, "admin.voucher_err_format"), akb.cancelInputKb());
       continue;
     }
     let val: Decimal;
     try {
       val = new Decimal(valStr!);
     } catch {
-      await adminEdit(u, "Value must be a number.");
+      await adminAnchor(u, t(u, "admin.voucher_err_value"), akb.cancelInputKb());
       continue;
     }
     if (val.lessThanOrEqualTo(0)) {
-      await adminEdit(u, "Value must be positive.");
+      await adminAnchor(u, t(u, "admin.voucher_err_value"), akb.cancelInputKb());
       continue;
     }
     vtype = typeStr === "percent" ? VoucherType.PERCENT : VoucherType.FIXED;
     value = val;
     break;
   }
-  await adminEdit(ctx, "Step 3/3: usage limit (number, 0 for unlimited).", akb.cancelInputKb());
+  const discount = vtype === VoucherType.PERCENT ? `${value}%` : `${value} USDT`;
+  await adminEdit(ctx, t(ctx, "admin.voucher_step3", { code, discount }), akb.cancelInputKb());
 
   // Step 3: limit
   let limit: number;
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    const n = parseInt((u.message?.text ?? "").trim(), 10);
-    if (Number.isNaN(n)) {
-      await adminEdit(u, "Send a whole number (0 = unlimited).");
-      continue;
-    }
-    if (n < 0) {
-      await adminEdit(u, "Limit must be 0 or positive.");
+    if (!u.message?.text) continue;
+    const raw = u.message.text.trim();
+    await consumeInput(u);
+    const n = parseInt(raw, 10);
+    if (Number.isNaN(n) || n < 0) {
+      await adminAnchor(u, t(u, "admin.voucher_err_limit"), akb.cancelInputKb());
       continue;
     }
     limit = n;
@@ -260,7 +259,16 @@ export async function voucherCreateConversation(conversation: MyConversation, ct
     });
   });
 
-  await adminEdit(ctx, `✅ Voucher <code>${esc(code)}</code> created.`, akb.backToAdminKb(lang));
+  // Read-after-write: the wizard bubble becomes the created voucher's summary.
+  await adminEdit(
+    ctx,
+    t(ctx, "admin.voucher_created", {
+      code: esc(code),
+      discount,
+      limit: limit > 0 ? limit : t(ctx, "admin.unlimited"),
+    }),
+    akb.backToAdminKb(lang),
+  );
 }
 
 // ===========================================================================
@@ -294,6 +302,9 @@ export async function broadcastConversation(conversation: MyConversation, ctx: M
     if (m?.text) {
       text = m.text;
       entities = m.entities;
+      // The preview repeats the composed text, so the raw input can go.
+      // (Photo messages are kept: the broadcast reuses their file_id.)
+      await consumeInput(u);
       break;
     }
   }
@@ -321,7 +332,7 @@ export async function broadcastConversation(conversation: MyConversation, ctx: M
     }
   }
 
-  await adminEdit(ctx, "⏳ Memproses...");
+  await adminEdit(ctx, t(ctx, "admin.processing"));
   const result = await conversation.external(async () => {
     let sent = 0;
     let failed = 0;
@@ -361,23 +372,25 @@ export async function userSearchConversation(conversation: MyConversation, ctx: 
   if (!adminGate(ctx)) return denyAdmin(ctx);
   const lang = ctx.session.lang;
   await ctx.answerCallbackQuery();
-  await adminEdit(ctx, "🔎 Send a query (username, full name, or Telegram user ID):", akb.cancelInputKb());
+  await adminEdit(ctx, t(ctx, "admin.user_search_ask"), akb.cancelInputKb());
 
   let users: Awaited<ReturnType<typeof searchUsers>>;
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
     if (!u.message?.text) continue;
-    users = await conversation.external(() => searchUsers(prisma, u.message!.text!.trim()));
+    const query = u.message.text.trim();
+    await consumeInput(u);
+    users = await conversation.external(() => searchUsers(prisma, query));
     break;
   }
 
   if (!users.length) {
-    await adminEdit(ctx, "No users matched.", akb.backToAdminKb(lang));
+    await adminEdit(ctx, t(ctx, "admin.user_search_none"), akb.backToAdminKb(lang));
     return;
   }
   const shown = users.slice(0, 10);
-  const lines = [`🔎 <b>${shown.length} match(es)</b>`, ""];
+  const lines = [t(ctx, "admin.user_search_matches", { count: shown.length }), ""];
   for (const u of shown) {
     const roleTag = u.role === "RESELLER" ? "🛒" : "👤";
     const banTag = u.banned ? " 🚫" : "";
@@ -396,18 +409,20 @@ export async function settingConversation(conversation: MyConversation, ctx: MyC
   const lang = ctx.session.lang;
   const key = (ctx.callbackQuery?.data ?? "").split(":").at(-1)!;
 
-  const prompts: Record<string, string> = {
-    binance_pay_id: "💳 Send the new <b>Binance Pay ID</b> (the numeric ID buyers transfer USDT to).",
-    qr: "🖼 Send the new <b>QR image</b> as a photo. It will be shown to buyers at checkout.",
-    banner_image:
-      "📢 Send the new <b>banner image</b> as a photo. It appears on top of the main menu and the product list (never on payment screens).\n\nSend <code>-</code> to remove the banner.",
-    welcome:
-      "👋 Send the new <b>welcome message</b>.\n\n• Use <code>{name}</code> as a placeholder for the user's name.\n• HTML tags allowed (e.g. <code>&lt;b&gt;bold&lt;/b&gt;</code>).\n• Send <code>-</code> to reset to the default message.",
-    support_contact:
-      "📞 Send the <b>support contact</b> (e.g. <code>@yourusername</code> or <code>t.me/yourchannel</code>). It will appear on /support.\n\nSend <code>-</code> to clear.",
+  const promptKeys: Record<string, string> = {
+    binance_pay_id: "admin.setting_prompt_binance_pay_id",
+    qr: "admin.setting_prompt_qr",
+    banner_image: "admin.setting_prompt_banner_image",
+    welcome: "admin.setting_prompt_welcome",
+    support_contact: "admin.setting_prompt_support_contact",
   };
+  const promptKey = promptKeys[key];
   await ctx.answerCallbackQuery();
-  await adminEdit(ctx, prompts[key] ?? `Send new value for <b>${esc(key)}</b>:`, akb.cancelInputKb());
+  await adminEdit(
+    ctx,
+    promptKey ? t(ctx, promptKey) : t(ctx, "admin.setting_ask_value", { key: esc(key) }),
+    akb.cancelInputKb(),
+  );
 
   let value: string;
   let displayValue: string;
@@ -418,30 +433,42 @@ export async function settingConversation(conversation: MyConversation, ctx: MyC
     if (key === "qr" || key === "banner_image") {
       // banner_image can also be removed by sending "-".
       if (key === "banner_image" && (u.message?.text ?? "").trim() === "-") {
+        await consumeInput(u);
+        const oldFileId = await conversation.external(() => prisma.setting.findUnique({ where: { key } }).then((r) => r?.value ?? null));
         await conversation.external(() => prisma.setting.deleteMany({ where: { key } }));
-        await adminEdit(u, "✅ Banner removed.", akb.backToAdminKb(lang));
+        // Drop any cached upload file_id so a later web banner can't resurface it.
+        await conversation.external(() => deleteSetting(prisma, BANNER_FILEID_KEY));
+        // Save undo state with a 30-second expiry window.
+        if (oldFileId) {
+          u.session.scratch.undoBanner = { fileId: oldFileId, expiresAt: Date.now() + 30_000 };
+        }
+        await adminAnchor(u, t(u, "admin.banner_removed_undo"), akb.bannerRemovedUndoKb(lang));
         return;
       }
       if (!u.message?.photo) {
-        await adminEdit(u, "⚠️ Please send a <b>photo</b>, not text.");
+        await consumeInput(u);
+        await adminAnchor(u, t(u, "admin.setting_err_photo"), akb.cancelInputKb());
         continue;
       }
+      // Photo inputs are kept in the chat (the stored file_id references them).
       value = u.message.photo.at(-1)!.file_id;
       displayValue = "[photo]";
       break;
     }
 
-    const raw = (u.message?.text ?? "").trim();
+    if (!u.message?.text) continue;
+    const raw = u.message.text.trim();
+    await consumeInput(u);
     if (raw === "-" && (key === "welcome" || key === "support_contact")) {
       await conversation.external(() => prisma.setting.deleteMany({ where: { key } }));
-      await adminEdit(u, `✅ <b>${esc(key)}</b> cleared.`, akb.backToAdminKb(lang));
+      await adminAnchor(u, t(u, "admin.setting_cleared", { key: esc(key) }), akb.backToAdminKb(lang));
       return;
     }
     try {
       value = validateText(raw, 2000);
     } catch (e) {
       if (e instanceof ValidationError) {
-        await adminEdit(u, t(u, e.key, e.formatArgs));
+        await adminAnchor(u, t(u, e.key, e.formatArgs), akb.cancelInputKb());
         continue;
       }
       throw e;
@@ -453,6 +480,8 @@ export async function settingConversation(conversation: MyConversation, ctx: MyC
   const adminTg = ctx.from!.id;
   await prisma.$transaction(async (tx) => {
     await setSetting(tx, key, value);
+    // A bot-set banner is a raw file_id; invalidate any cached upload file_id.
+    if (key === "banner_image") await deleteSetting(tx, BANNER_FILEID_KEY);
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
       adminId: adminIdOf(admin),
@@ -461,7 +490,7 @@ export async function settingConversation(conversation: MyConversation, ctx: MyC
       details: `${key}=${displayValue}`,
     });
   });
-  await adminEdit(ctx, `✅ <b>${esc(key)}</b> updated.`, akb.backToAdminKb(lang));
+  await adminEdit(ctx, t(ctx, "admin.setting_updated", { key: esc(key) }), akb.backToAdminKb(lang));
 }
 
 // ===========================================================================
@@ -472,120 +501,187 @@ export async function productCreateConversation(conversation: MyConversation, ct
   if (!adminGate(ctx)) return denyAdmin(ctx);
   const lang = ctx.session.lang;
   await ctx.answerCallbackQuery();
-  await adminEdit(
-    ctx,
-    "🛍 <b>New Product</b>\n\nStep 1/6: Send product name (e.g. <code>Netflix Premium 1M</code>).\n\nTap ❌ Cancel to abort.",
-    akb.cancelInputKb(),
-  );
 
-  // Step 1: name
+  // Draft shape stored in session.scratch.productDraft between entries.
+  type ProductDraft = {
+    step: number;
+    name?: string;
+    type?: string;   // "SHARED" | "PRIVATE"
+    typeLabel?: string;
+    duration?: string;
+    price?: string;
+    resellerPrice?: string | null;
+  };
+  const clearDraft = () => void (ctx.session.scratch.productDraft = undefined);
+  const saveDraft = (d: ProductDraft) => void (ctx.session.scratch.productDraft = d);
+
+  // Check for an unfinished draft from a previous entry.
+  // `prior` is read once before any wait() — same value on replay.
+  const prior = ctx.session.scratch.productDraft as ProductDraft | undefined;
+  let skip = 0; // how many initial steps to restore from draft (0 = fresh start)
+  let dr: ProductDraft = { step: 1 };
+
+  if (prior && prior.step >= 2 && prior.name) {
+    await adminEdit(ctx, t(ctx, "admin.prod_draft_found", { step: prior.step, name: esc(prior.name) }), akb.productDraftResumeKb());
+    for (;;) {
+      const u = await conversation.wait();
+      const data = u.callbackQuery?.data ?? "";
+      if (data === "v1:adm:prod:draft:resume") {
+        await u.answerCallbackQuery();
+        dr = prior;
+        skip = prior.step - 1;
+        break;
+      }
+      if (data === "v1:adm:prod:draft:fresh") {
+        await u.answerCallbackQuery();
+        clearDraft();
+        break;
+      }
+      if (await handledEscape(u)) return;
+    }
+  }
+
+  // --- Step 1: name ---------------------------------------------------------
   let name: string;
-  for (;;) {
-    const u = await conversation.wait();
-    if (await handledEscape(u)) return;
-    if (!u.message?.text) continue;
-    try {
-      name = validateText(u.message.text, 128, 2);
-      break;
-    } catch (e) {
-      if (e instanceof ValidationError) {
-        await adminEdit(u, coreT(e.key, "en", e.formatArgs));
-        continue;
+  if (skip >= 1) {
+    name = dr.name!;
+  } else {
+    await adminEdit(ctx, t(ctx, "admin.prod_step1"), akb.cancelInputKb());
+    for (;;) {
+      const u = await conversation.wait();
+      if (await handledEscape(u)) return;
+      if (!u.message?.text) continue;
+      const raw = u.message.text;
+      await consumeInput(u);
+      try {
+        name = validateText(raw, 128, 2);
+        break;
+      } catch (e) {
+        if (e instanceof ValidationError) {
+          await adminAnchor(u, t(u, e.key, e.formatArgs), akb.cancelInputKb());
+          continue;
+        }
+        throw e;
       }
-      throw e;
     }
   }
-  await adminEdit(ctx, "Step 2/6: Pick product type.\n\nTap ❌ Cancel to abort.", akb.productTypePickerKb());
+  saveDraft({ step: 2, name: name! });
 
-  // Step 2: type (callback)
+  // --- Step 2: type ---------------------------------------------------------
   let ptype: ProductType;
-  for (;;) {
-    const u = await conversation.wait();
-    if (await handledEscape(u)) return;
-    const data = u.callbackQuery?.data ?? "";
-    if (data === "v1:adm:prod:cancel") {
-      await u.answerCallbackQuery({ text: "Cancelled" });
-      await adminCommand(u);
-      return;
+  let typeLabel: string;
+  if (skip >= 2) {
+    ptype = dr.type === "PRIVATE" ? ProductType.PRIVATE : ProductType.SHARED;
+    typeLabel = dr.typeLabel ?? (ptype === ProductType.SHARED ? "Shared" : "Private");
+  } else {
+    await adminEdit(ctx, t(ctx, "admin.prod_step2", { name: esc(name!) }), akb.productTypePickerKb());
+    for (;;) {
+      const u = await conversation.wait();
+      if (await handledEscape(u)) return;
+      const data = u.callbackQuery?.data ?? "";
+      if (data === "v1:adm:prod:cancel") {
+        await u.answerCallbackQuery({ text: t(u, "admin.toast.cancelled") });
+        await adminCommand(u);
+        return;
+      }
+      if (data === "v1:adm:prod:type:shared" || data === "v1:adm:prod:type:private") {
+        ptype = data.endsWith("shared") ? ProductType.SHARED : ProductType.PRIVATE;
+        await u.answerCallbackQuery();
+        break;
+      }
     }
-    if (data === "v1:adm:prod:type:shared" || data === "v1:adm:prod:type:private") {
-      ptype = data.endsWith("shared") ? ProductType.SHARED : ProductType.PRIVATE;
-      await u.answerCallbackQuery();
-      break;
+    typeLabel = ptype! === ProductType.SHARED ? "Shared" : "Private";
+  }
+  saveDraft({ step: 3, name: name!, type: ptype!, typeLabel });
+
+  // --- Step 3: duration -----------------------------------------------------
+  let duration: string;
+  if (skip >= 3) {
+    duration = dr.duration!;
+  } else {
+    await adminEdit(ctx, t(ctx, "admin.prod_step3", { name: esc(name!), type: typeLabel }), akb.cancelInputKb());
+    for (;;) {
+      const u = await conversation.wait();
+      if (await handledEscape(u)) return;
+      if (!u.message?.text) continue;
+      const raw = u.message.text;
+      await consumeInput(u);
+      try {
+        duration = validateText(raw, 32, 2);
+        break;
+      } catch (e) {
+        if (e instanceof ValidationError) {
+          await adminAnchor(u, t(u, e.key, e.formatArgs), akb.cancelInputKb());
+          continue;
+        }
+        throw e;
+      }
     }
   }
-  await adminEdit(ctx, "Step 3/6: Send duration label (e.g. <code>1 Month</code>, <code>3 Months</code>).", akb.cancelInputKb());
+  saveDraft({ step: 4, name: name!, type: ptype!, typeLabel, duration: duration! });
 
-  // Step 3: duration
-  let duration: string;
+  // --- Step 4: price --------------------------------------------------------
+  let priceVal: Decimal;
+  if (skip >= 4) {
+    priceVal = new Decimal(dr.price!);
+  } else {
+    await adminEdit(ctx, t(ctx, "admin.prod_step4", { name: esc(name!), type: typeLabel, duration: esc(duration!) }), akb.cancelInputKb());
+    for (;;) {
+      const u = await conversation.wait();
+      if (await handledEscape(u)) return;
+      if (!u.message?.text) continue;
+      const raw = u.message.text.trim().replace(",", ".");
+      await consumeInput(u);
+      try {
+        const p = new Decimal(raw);
+        if (p.lessThanOrEqualTo(0)) throw new Error();
+        priceVal = p;
+        break;
+      } catch {
+        await adminAnchor(u, t(u, "admin.prod_err_price"), akb.cancelInputKb());
+      }
+    }
+  }
+  saveDraft({ step: 5, name: name!, type: ptype!, typeLabel, duration: duration!, price: priceVal!.toString() });
+
+  // --- Step 5: reseller price -----------------------------------------------
+  let resellerVal: Decimal | null;
+  if (skip >= 5) {
+    resellerVal = dr.resellerPrice != null ? new Decimal(dr.resellerPrice) : null;
+  } else {
+    await adminEdit(ctx, t(ctx, "admin.prod_step5", { price: price(priceVal!) }), akb.cancelInputKb());
+    for (;;) {
+      const u = await conversation.wait();
+      if (await handledEscape(u)) return;
+      if (!u.message?.text) continue;
+      const raw = u.message.text.trim().replace(",", ".");
+      await consumeInput(u);
+      if (raw === "-") { resellerVal = null; break; }
+      try {
+        const p = new Decimal(raw);
+        if (p.lessThanOrEqualTo(0)) throw new Error();
+        resellerVal = p;
+        break;
+      } catch {
+        await adminAnchor(u, t(u, "admin.prod_err_reseller"), akb.cancelInputKb());
+      }
+    }
+  }
+  saveDraft({ step: 6, name: name!, type: ptype!, typeLabel, duration: duration!, price: priceVal!.toString(), resellerPrice: resellerVal ? resellerVal.toString() : null });
+
+  // --- Step 6: warranty (always runs — last step before DB write) -----------
+  let warranty: number | null;
+  await adminEdit(ctx, t(ctx, "admin.prod_step6"), akb.cancelInputKb());
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
     if (!u.message?.text) continue;
-    try {
-      duration = validateText(u.message.text, 32, 2);
-      break;
-    } catch (e) {
-      if (e instanceof ValidationError) {
-        await adminEdit(u, coreT(e.key, "en", e.formatArgs));
-        continue;
-      }
-      throw e;
-    }
-  }
-  await adminEdit(ctx, "Step 4/6: Send price in USDT (e.g. <code>5.00</code>).", akb.cancelInputKb());
-
-  // Step 4: price
-  let priceVal: Decimal;
-  for (;;) {
-    const u = await conversation.wait();
-    if (await handledEscape(u)) return;
-    const raw = (u.message?.text ?? "").trim().replace(",", ".");
-    try {
-      const p = new Decimal(raw);
-      if (p.lessThanOrEqualTo(0)) throw new Error();
-      priceVal = p;
-      break;
-    } catch {
-      await adminEdit(u, "Invalid. Send a positive number, e.g. 5.00");
-    }
-  }
-  await adminEdit(ctx, "Step 5/6: Send reseller price in USDT (or send <code>-</code> to skip).", akb.cancelInputKb());
-
-  // Step 5: reseller price
-  let resellerVal: Decimal | null;
-  for (;;) {
-    const u = await conversation.wait();
-    if (await handledEscape(u)) return;
-    const raw = (u.message?.text ?? "").trim().replace(",", ".");
-    if (raw === "-") {
-      resellerVal = null;
-      break;
-    }
-    try {
-      const p = new Decimal(raw);
-      if (p.lessThanOrEqualTo(0)) throw new Error();
-      resellerVal = p;
-      break;
-    } catch {
-      await adminEdit(u, "Invalid. Send a positive number or - to skip.");
-    }
-  }
-  await adminEdit(ctx, "Step 6/6: Send warranty days (e.g. <code>30</code>, or <code>-</code> for default).", akb.cancelInputKb());
-
-  // Step 6: warranty
-  let warranty: number | null;
-  for (;;) {
-    const u = await conversation.wait();
-    if (await handledEscape(u)) return;
-    const raw = (u.message?.text ?? "").trim();
-    if (raw === "-") {
-      warranty = null;
-      break;
-    }
+    const raw = u.message.text.trim();
+    await consumeInput(u);
+    if (raw === "-") { warranty = null; break; }
     const n = parseInt(raw, 10);
     if (Number.isNaN(n) || n < 0) {
-      await adminEdit(u, "Invalid. Send a non-negative integer or - to skip.");
+      await adminAnchor(u, t(u, "admin.prod_err_warranty"), akb.cancelInputKb());
       continue;
     }
     warranty = n;
@@ -598,11 +694,11 @@ export async function productCreateConversation(conversation: MyConversation, ct
     const catId = cats.length ? cats[0]!.id : (await createCategory(tx, "General", "📦")).id;
     const product = await createProduct(tx, {
       categoryId: catId,
-      name,
+      name: name!,
       description: null,
-      type: ptype,
-      durationLabel: duration,
-      price: priceVal,
+      type: ptype!,
+      durationLabel: duration!,
+      price: priceVal!,
       resellerPrice: resellerVal,
       warrantyDays: warranty,
     });
@@ -617,11 +713,8 @@ export async function productCreateConversation(conversation: MyConversation, ct
     return product.name;
   });
 
-  await adminEdit(
-    ctx,
-    `✅ Product <b>${esc(productName)}</b> created.\n\nNext: add stock via /admin → 📦 Stock.`,
-    akb.backToAdminKb(lang),
-  );
+  clearDraft(); // Created successfully — discard the draft.
+  await adminEdit(ctx, t(ctx, "admin.prod_created", { name: esc(productName) }), akb.backToAdminKb(lang));
 }
 
 // ===========================================================================
@@ -636,21 +729,23 @@ export async function productEditConversation(conversation: MyConversation, ctx:
   const productId = parseInt(parts[4]!, 10);
 
   const prompts: Record<string, string> = {
-    rename: "✏️ Send the new <b>product name</b>:",
-    price: "💲 Send the new <b>price</b> (number, e.g. <code>5.50</code>):",
+    rename: t(ctx, "admin.prod_ask_rename"),
+    price: t(ctx, "admin.prod_ask_price"),
   };
   await ctx.answerCallbackQuery();
-  await adminEdit(ctx, prompts[field] ?? "Send new value:", akb.cancelInputKb());
+  await adminEdit(ctx, prompts[field] ?? t(ctx, "admin.setting_ask_value", { key: esc(field) }), akb.cancelInputKb());
 
   const adminTg = ctx.from!.id;
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    const raw = (u.message?.text ?? "").trim();
+    if (!u.message?.text) continue;
+    const raw = u.message.text.trim();
+    await consumeInput(u);
 
     if (field === "rename") {
       if (raw.length < 2 || raw.length > 128) {
-        await adminEdit(u, "Name must be 2–128 characters.");
+        await adminAnchor(u, t(u, "admin.prod_err_name_len"), akb.cancelInputKb());
         continue;
       }
       await prisma.$transaction(async (tx) => {
@@ -664,7 +759,7 @@ export async function productEditConversation(conversation: MyConversation, ctx:
           details: `name=${raw}`,
         });
       });
-      await adminEdit(ctx, `✅ Product renamed to <b>${esc(raw)}</b>.`, akb.backToAdminKb(lang));
+      await adminEdit(ctx, t(ctx, "admin.prod_renamed", { name: esc(raw) }), akb.backToAdminKb(lang));
       return;
     }
 
@@ -674,7 +769,7 @@ export async function productEditConversation(conversation: MyConversation, ctx:
         p = new Decimal(raw.replace(",", "."));
         if (p.lessThanOrEqualTo(0)) throw new Error();
       } catch {
-        await adminEdit(u, "Invalid price. Send a positive number.");
+        await adminAnchor(u, t(u, "admin.prod_err_price"), akb.cancelInputKb());
         continue;
       }
       await prisma.$transaction(async (tx) => {
@@ -688,7 +783,7 @@ export async function productEditConversation(conversation: MyConversation, ctx:
           details: `price=${p}`,
         });
       });
-      await adminEdit(ctx, `✅ Price updated to <b>${price(p)}</b>.`, akb.backToAdminKb(lang));
+      await adminEdit(ctx, t(ctx, "admin.prod_price_updated", { price: price(p) }), akb.backToAdminKb(lang));
       return;
     }
     return;
@@ -705,44 +800,41 @@ export async function bulkPricingConversation(conversation: MyConversation, ctx:
   const productId = parseInt((ctx.callbackQuery?.data ?? "").split(":").at(-1)!, 10);
 
   await ctx.answerCallbackQuery();
-  await adminEdit(
-    ctx,
-    "💰 <b>Bulk Pricing Setup</b>\n\nStep 1/2: Send the <b>minimum quantity</b> (integer ≥ 5).\nCustomers who buy at least this many units get the discount.",
-    akb.cancelInputKb(),
-  );
+  await adminEdit(ctx, t(ctx, "admin.bulk_step1"), akb.cancelInputKb());
 
   // Step 1: min qty
   let minQty: number;
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    const n = parseInt((u.message?.text ?? "").trim(), 10);
+    if (!u.message?.text) continue;
+    const raw = u.message.text.trim();
+    await consumeInput(u);
+    const n = parseInt(raw, 10);
     if (Number.isNaN(n) || n < 5) {
-      await adminEdit(u, "Please send a whole number ≥ 5.");
+      await adminAnchor(u, t(u, "admin.bulk_err_min"), akb.cancelInputKb());
       continue;
     }
     minQty = n;
     break;
   }
-  await adminEdit(
-    ctx,
-    "Step 2/2: Send the <b>discount percentage</b> (e.g. <code>10</code> for 10% off).\nMust be between 1 and 99.",
-    akb.cancelInputKb(),
-  );
+  await adminEdit(ctx, t(ctx, "admin.bulk_step2", { minQty }), akb.cancelInputKb());
 
   // Step 2: percent
   let pct: Decimal;
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    const raw = (u.message?.text ?? "").trim().replace(",", ".");
+    if (!u.message?.text) continue;
+    const raw = u.message.text.trim().replace(",", ".");
+    await consumeInput(u);
     try {
       const p = new Decimal(raw);
       if (p.lessThan(1) || p.greaterThan(99)) throw new Error();
       pct = p;
       break;
     } catch {
-      await adminEdit(u, "Please send a number between 1 and 99.");
+      await adminAnchor(u, t(u, "admin.bulk_err_pct"), akb.cancelInputKb());
     }
   }
 
@@ -759,7 +851,7 @@ export async function bulkPricingConversation(conversation: MyConversation, ctx:
     });
   });
 
-  await adminEdit(ctx, `✅ Bulk pricing saved: buy <b>${minQty}+</b> → <b>${pct}% off</b>.`, akb.backToAdminKb(lang));
+  await adminEdit(ctx, t(ctx, "admin.bulk_saved", { minQty, pct }), akb.backToAdminKb(lang));
 }
 
 // ===========================================================================
@@ -774,14 +866,14 @@ export async function ticketReplyConversation(conversation: MyConversation, ctx:
   await ctx.answerCallbackQuery();
   const ticket = await conversation.external(() => getTicket(prisma, ticketId));
   if (ticket === null) {
-    await adminEdit(ctx, "Ticket not found.");
+    await adminEdit(ctx, t(ctx, "admin.ticket_not_found"), akb.backToAdminKb(lang));
     return;
   }
 
-  const photoNote = ticket.photoFileIds ? `\n📎 Photos: ${ticket.photoFileIds.split(",").length}` : "";
+  const photoNote = ticket.photoFileIds ? `\n📎 ${ticket.photoFileIds.split(",").length}` : "";
   await adminEdit(
     ctx,
-    `📩 <b>Replying to ticket #${ticketId}</b>${photoNote}\n\n<b>User message:</b>\n${esc(ticket.message)}\n\nType your reply and send it:`,
+    t(ctx, "admin.ticket_reply_prompt", { id: ticketId, photos: photoNote, message: esc(ticket.message) }),
     akb.cancelInputKb(),
   );
   if (ticket.photoFileIds) {
@@ -798,12 +890,14 @@ export async function ticketReplyConversation(conversation: MyConversation, ctx:
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
     if (!u.message?.text) continue;
+    const raw = u.message.text;
+    await consumeInput(u);
     try {
-      replyText = validateText(u.message.text, 2000, 1);
+      replyText = validateText(raw, 2000, 1);
       break;
     } catch (e) {
       if (e instanceof ValidationError) {
-        await adminEdit(u, t(u, e.key, e.formatArgs));
+        await adminAnchor(u, t(u, e.key, e.formatArgs), akb.cancelInputKb());
         continue;
       }
       throw e;
@@ -819,7 +913,13 @@ export async function ticketReplyConversation(conversation: MyConversation, ctx:
     return tgId;
   });
 
-  await adminEdit(ctx, `✅ Reply sent for ticket #${ticketId}.`, akb.backToAdminKb(lang));
+  // The typed reply was consumed above — keep its content in the confirmation
+  // so the admin still has a record of what was sent.
+  await adminEdit(
+    ctx,
+    t(ctx, "admin.ticket_reply_sent", { id: ticketId, reply: esc(replyText) }),
+    akb.backToAdminKb(lang),
+  );
 
   if (customerTgId) {
     try {

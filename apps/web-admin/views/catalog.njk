@@ -3,10 +3,7 @@
 {% block title %}Products · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="package" class="w-7 h-7 text-violet-500"></i> Products</h1>
-  <p class="page-lead">Group products into categories and set their prices.</p>
-</header>
+{{ ui.page_header('Products', 'Group products into categories and set their prices.', 'package', 'products') }}
 {{ ui.flash(msg, kind) }}
 
 <!-- Categories -->
@@ -72,8 +69,8 @@
         <div class="text-xs text-ink-faint mt-1 js-usdt-preview"></div></div>
       <div><label class="field-label">Reseller price (Rupiah)</label><input name="reseller_price" class="field"></div>
       <div><label class="field-label">Warranty (days)</label><input name="warranty_days" type="number" class="field"></div>
-      <div><label class="field-label">Photo ID (optional)</label><input name="image_file_id" class="field"></div>
-      <div><label class="field-label">Web photo URL (optional)</label><input name="web_image_url" type="url" placeholder="https://…" class="field"></div>
+      <div><label class="field-label">Bot photo ID (optional)</label><input name="image_file_id" class="field" placeholder="Telegram file_id"></div>
+      <div><label class="field-label">Web photo URL (optional)</label><input name="web_image_url" type="url" placeholder="https://… (or upload after saving)" class="field"></div>
       <div class="sm:col-span-2"><label class="field-label">Description</label><textarea name="description" rows="2" class="field"></textarea></div>
       <div><button class="btn btn-primary">Add product</button></div>
     </form>
@@ -84,7 +81,7 @@
     <form method="post" action="/catalog/products/import" class="mt-4">
       {{ ui.csrf_field(admin) }}
       <p class="text-xs text-ink-soft mb-3">
-        One product per line, separated by the “|” symbol. The <b>category</b> must already exist.<br>
+        One product per line, separated by the "|" symbol. The <b>category</b> must already exist.<br>
         <code class="codeish">category | name | kind | duration | price | reseller price | warranty days | description</code><br>
         Required: category, name, kind (shared/private), duration, price. The rest are optional. You'll see a preview before anything is saved.
       </p>
@@ -133,8 +130,8 @@
         </div>
       </div>
 
-      <div class="mt-3 flex flex-wrap gap-4 text-sm">
-        <details>
+      <div class="mt-3 border-t border-line pt-3 flex flex-wrap gap-x-4 gap-y-2 text-sm items-start">
+        <details class="w-auto open:w-full open:order-last">
           <summary class="cursor-pointer link font-normal">Edit</summary>
           <form method="post" action="/catalog/product/{{ p.id }}/update" class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
             {{ ui.csrf_field(admin) }}
@@ -144,22 +141,41 @@
               <div class="text-xs text-ink-faint mt-1 js-usdt-preview"></div></div>
             <div><label class="field-label">Reseller price (Rupiah)</label><input name="reseller_price" value="{{ p.resellerPrice or '' }}" class="field"></div>
             <div><label class="field-label">Warranty (days)</label><input name="warranty_days" type="number" value="{{ p.warrantyDays }}" class="field"></div>
-            <div><label class="field-label">Photo ID</label><input name="image_file_id" value="{{ p.imageFileId or '' }}" class="field"></div>
-            <div><label class="field-label">Web photo URL</label><input name="web_image_url" type="url" value="{{ p.webImageUrl or '' }}" placeholder="https://…" class="field"></div>
+            <div><label class="field-label">Bot photo ID</label><input name="image_file_id" value="{{ p.imageFileId or '' }}" class="field" placeholder="Telegram file_id (set from bot)"></div>
+            <div>
+              <label class="field-label">Web photo URL</label>
+              <input name="web_image_url" type="url" value="{{ p.webImageUrl or '' }}" placeholder="https://… or upload below" class="field">
+              <p class="text-xs text-ink-faint mt-0.5">Paste an external URL, or use the upload button below.</p>
+            </div>
             <div class="sm:col-span-2"><label class="field-label">Description</label><textarea name="description" rows="2" class="field">{{ p.description or '' }}</textarea></div>
             <label class="flex items-center gap-2 text-xs"><input type="checkbox" name="is_active" value="true" {% if p.isActive %}checked{% endif %}> Shown to customers</label>
-            <div class="sm:col-span-2"><button class="btn btn-primary">Save</button></div>
+            <div class="sm:col-span-2"><button class="btn btn-primary">Save changes</button></div>
           </form>
+          <div class="mt-4 pt-4 border-t border-sand">
+            <label class="field-label">Upload photo from your device</label>
+            {% if p.webImageUrl %}
+            <div class="mb-2 flex items-center gap-3">
+              <img src="{{ p.webImageUrl }}" alt="" class="w-16 h-16 object-cover rounded border border-sand">
+              <span class="text-xs text-ink-soft">Current photo — uploading a new one will replace it.</span>
+            </div>
+            {% endif %}
+            <form method="post" action="/catalog/product/{{ p.id }}/photo" enctype="multipart/form-data" class="flex items-center gap-2">
+              <input type="hidden" name="csrf_token" value="{{ admin.csrf }}">
+              <input type="file" name="photo" accept="image/jpeg,image/png,image/webp" required class="field text-sm file:mr-2 file:btn file:btn-soft file:border-0 file:text-xs">
+              <button class="btn btn-soft btn-sm whitespace-nowrap">Upload</button>
+            </form>
+            <p class="text-xs text-ink-faint mt-1">JPG, PNG, or WebP · max 5 MB</p>
+          </div>
         </details>
 
-        <details>
+        <details class="w-auto open:w-full open:order-last">
           <summary class="cursor-pointer link font-normal">Quantity discount {% if rule %}({{ rule.minQuantity }}+ → {{ rule.discountPercent }}%){% endif %}</summary>
           <form method="post" action="/catalog/product/{{ p.id }}/bulk-pricing" class="mt-3 flex flex-wrap gap-3 items-end">
             {{ ui.csrf_field(admin) }}
             <div><label class="field-label">Buy at least</label><input name="min_quantity" type="number" value="{{ rule.minQuantity if rule else '' }}" class="field w-24"></div>
             <div><label class="field-label">Discount %</label><input name="discount_percent" value="{{ rule.discountPercent if rule else '' }}" class="field w-24"></div>
             <button class="btn btn-soft">Save</button>
-            <span class="text-xs text-ink-faint self-center">Leave “buy at least” empty to remove.</span>
+            <span class="text-xs text-ink-faint self-center">Leave "buy at least" empty to remove.</span>
           </form>
         </details>
 

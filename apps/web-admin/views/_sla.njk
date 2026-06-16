@@ -7,7 +7,7 @@
 
   <div class="card card-pad">
     <h2 class="section-title mb-1 flex items-center justify-between">
-      <span class="flex items-center gap-2"><i data-lucide="alarm-clock" class="w-5 h-5 text-rose-500"></i> Waiting too long</span>
+      <span class="flex items-center gap-2"><i data-lucide="alarm-clock" class="w-5 h-5 text-rust"></i> Waiting too long</span>
       <span class="chip {% if sla.stale|length > 0 %}bg-rust-tint text-rust-dark{% else %}bg-sand text-ink-soft{% endif %}">{{ sla.stale|length }}</span>
     </h2>
     <p class="text-xs text-ink-faint mb-3">orders unchecked for more than {{ sla.stale_hours }}h</p>
@@ -25,7 +25,7 @@
 
   <div class="card card-pad">
     <h2 class="section-title mb-1 flex items-center justify-between">
-      <span class="flex items-center gap-2"><i data-lucide="hourglass" class="w-5 h-5 text-amber-500"></i> Payment about to expire</span>
+      <span class="flex items-center gap-2"><i data-lucide="hourglass" class="w-5 h-5 text-amberx"></i> Payment about to expire</span>
       <span class="chip {% if sla.expiring|length > 0 %}bg-amberx-tint text-amberx{% else %}bg-sand text-ink-soft{% endif %}">{{ sla.expiring|length }}</span>
     </h2>
     <p class="text-xs text-ink-faint mb-3">unpaid, expiring within {{ sla.expiring_minutes }} min</p>
@@ -43,7 +43,7 @@
 
   <div class="card card-pad">
     <h2 class="section-title mb-1 flex items-center justify-between">
-      <span class="flex items-center gap-2"><i data-lucide="shield-alert" class="w-5 h-5 text-violet-500"></i> Warranty ending soon</span>
+      <span class="flex items-center gap-2"><i data-lucide="shield-alert" class="w-5 h-5 text-pine"></i> Warranty ending soon</span>
       <span class="chip {% if sla.warranty|length > 0 %}bg-amberx-tint text-amberx{% else %}bg-sand text-ink-soft{% endif %}">{{ sla.warranty|length }}</span>
     </h2>
     <p class="text-xs text-ink-faint mb-3">within the next {{ sla.warranty_days }} days</p>

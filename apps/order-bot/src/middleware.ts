@@ -11,7 +11,8 @@
  * @safe_handler (per-handler try/except) becomes the global `bot.catch`.
  */
 import type { MiddlewareFn } from "grammy";
-import { config, isAdmin } from "@app/core/config";
+import { config } from "@app/core/config";
+import { isAdmin } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger, withUpdateId } from "@app/core/logger";
 import { prisma, upsertUser } from "@app/db";

@@ -26,7 +26,7 @@
           <tr>
             <td>{{ it.product.name }}</td>
             <td class="text-right tabular">{{ it.quantity }}</td>
-            <td class="text-right tabular">{{ it.unitPrice | money }} {{ currency }}</td>
+            <td class="text-right tabular">{{ it.unitPrice | idr }}</td>
             <td class="text-ink-soft">{{ it.warrantyDaysSnapshot }} days</td>
           </tr>
           {% endfor %}
@@ -66,6 +66,18 @@
     </div>
     {% endif %}
 
+    {% if can_credit %}
+    <div class="card card-pad">
+      <h2 class="section-title mb-1">Can't deliver this order?</h2>
+      <p class="text-xs text-ink-soft mb-3">If the customer paid but you can't fulfil this order (the stock is gone), add the paid amount to their credit balance — it stays in the order's currency for them to spend on a future purchase, and this order is closed.</p>
+      <form method="post" action="/orders/{{ order.id }}/credit-balance"
+            onsubmit="return confirm('Add {{ order.totalAmount | idr }} to the buyer\'s credit balance and close this order?');">
+        {{ ui.csrf_field(admin) }}
+        <button class="btn btn-soft"><i data-lucide="wallet" class="w-4 h-4"></i> Add paid amount to buyer's credit balance</button>
+      </form>
+    </div>
+    {% endif %}
+
     {% if order.adminNote %}
     <div class="card card-pad">
       <h2 class="section-title mb-2">Notes</h2>
@@ -80,7 +92,7 @@
       <dl class="space-y-1.5">
         <div class="flex justify-between gap-3"><dt class="text-ink-soft">Name</dt><dd>{{ order.user.fullName or '—' }}</dd></div>
         <div class="flex justify-between gap-3"><dt class="text-ink-soft">Username</dt><dd>{{ order.user.username or '—' }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Telegram</dt><dd>{{ order.user.telegramId }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Telegram</dt><dd>{{ order.user.telegramId or "—" }}</dd></div>
         <div class="flex justify-between gap-3"><dt class="text-ink-soft">Language</dt><dd>{{ order.user.language }}</dd></div>
       </dl>
       <a href="/users/{{ order.user.id }}" class="link text-xs mt-3 inline-block">View customer →</a>
@@ -89,12 +101,12 @@
     <div class="card card-pad text-sm">
       <h2 class="section-title mb-3">Money</h2>
       <dl class="space-y-1.5 tabular">
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Items total</dt><dd>{{ order.subtotalAmount | money }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Quantity discount</dt><dd>−{{ order.bulkDiscountAmount | money }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Discount code</dt><dd>−{{ order.discountAmount | money }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Wallet credit used</dt><dd>−{{ order.walletUsed | money }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft" title="Tiny amount added so the transfer can be matched automatically">Amount marker</dt><dd>{{ order.uniqueCents | money }}</dd></div>
-        <div class="flex justify-between gap-3 font-semibold border-t border-line pt-1.5 mt-1.5"><dt>Total to pay</dt><dd>{{ order.totalAmount | money }} {{ currency }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Items total</dt><dd>{{ order.subtotalAmount | idr }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Quantity discount</dt><dd>−{{ order.bulkDiscountAmount | idr }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Discount code</dt><dd>−{{ order.discountAmount | idr }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Wallet credit used</dt><dd>−{{ order.walletUsed | idr }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft" title="Tiny amount added so the transfer can be matched automatically">Amount marker</dt><dd>{{ order.uniqueCents | idr }}</dd></div>
+        <div class="flex justify-between gap-3 font-semibold border-t border-line pt-1.5 mt-1.5"><dt>Total to pay</dt><dd>{{ order.totalAmount | idr }}</dd></div>
       </dl>
     </div>
 

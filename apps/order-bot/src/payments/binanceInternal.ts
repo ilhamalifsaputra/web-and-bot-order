@@ -21,6 +21,7 @@
 import { createHmac } from "node:crypto";
 import type { Api } from "grammy";
 import { config, isBinanceInternalEnabled } from "@app/core/config";
+import { adminIds } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
@@ -184,18 +185,14 @@ function buildCredentialsBlob(
 type DeliveredOrder = Extract<DeliverResult, { status: "delivered" }>["order"];
 
 async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
+  // Web-only buyers have no Telegram chat — skip all DMs for them.
+  if (order.user.telegramId == null) return;
+
   const lang = langCode(order.user.language);
   const tgId = Number(order.user.telegramId);
 
-  try {
-    await api.sendMessage(tgId, coreT("order.payment_verified", lang, { code: order.orderCode }), {
-      parse_mode: "HTML",
-      reply_markup: notificationKb(lang),
-    });
-  } catch (err) {
-    logger.error({ err }, `payment_verified DM failed for ${tgId}`);
-  }
-
+  // Delivery is instant: skip the interim "payment verified / being prepared"
+  // notice and go straight to the credentials below.
   const warranty = Math.max(...order.items.map((i) => i.warrantyDaysSnapshot), 30);
   try {
     await api.sendMessage(
@@ -227,7 +224,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
 }
 
 async function alertAdmins(api: Api, text: string): Promise<void> {
-  for (const adminId of config.ADMIN_IDS) {
+  for (const adminId of adminIds()) {
     try {
       await api.sendMessage(adminId, text, { parse_mode: "HTML" });
     } catch (err) {

@@ -27,13 +27,12 @@ describe("order-bot wiring", () => {
     }).not.toThrow();
   });
 
-  it("registers exactly the 15 expected conversations with unique names", () => {
-    expect(CONVERSATIONS).toHaveLength(15);
+  it("registers exactly the 14 expected conversations with unique names", () => {
+    expect(CONVERSATIONS).toHaveLength(14);
     const names = CONVERSATIONS.map((c) => c.name);
     expect(new Set(names).size).toBe(names.length);
     expect(names).toEqual(
       expect.arrayContaining([
-        "review",
         "ticketUserReply",
         "proof",
         "voucher",

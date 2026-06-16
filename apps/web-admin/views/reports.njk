@@ -3,21 +3,18 @@
 {% block title %}Reports · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="bar-chart-3" class="w-7 h-7 text-amber-500"></i> Reports</h1>
-  <p class="page-lead">How your shop has been doing lately.</p>
-</header>
+{{ ui.page_header('Reports', 'How your shop has been doing lately.', 'bar-chart-3', 'reports') }}
 
 <section class="card card-pad mb-6">
   <div class="flex items-baseline justify-between mb-3">
     <h2 class="section-title">Sales — last 30 days</h2>
-    <span class="text-sm text-ink-soft tabular">{{ total_30d | money }} {{ currency }} total</span>
+    <span class="text-sm text-ink-soft tabular">{{ total_30d | idr }} total</span>
   </div>
   <svg viewBox="0 0 {{ spark.width }} {{ spark.height }}" class="w-full h-32" preserveAspectRatio="none" role="img" aria-label="Daily sales trend">
     {% if spark.area %}<polygon points="{{ spark.area }}" fill="#2563eb" fill-opacity="0.10" />{% endif %}
     <polyline points="{{ spark.line }}" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" />
   </svg>
-  <p class="text-xs text-ink-faint mt-1">Best day: {{ spark.max | round(2) }} {{ currency }} · one bar per day.</p>
+  <p class="text-xs text-ink-faint mt-1">Best day: {{ spark.max | idr }} · one bar per day.</p>
 </section>
 
 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -30,7 +27,7 @@
         <tr>
           <td><a class="link font-normal" href="/stock/{{ p.productId }}">{{ p.name }}</a></td>
           <td class="text-right tabular">{{ p.qty }}</td>
-          <td class="text-right tabular">{{ p.revenue | money }} {{ currency }}</td>
+          <td class="text-right tabular">{{ p.revenue | idr }}</td>
         </tr>
         {% else %}
         {{ ui.empty_row(3, 'No sales yet.') }}

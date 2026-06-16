@@ -8,6 +8,7 @@
  * DELIVERED and show the admin a one-tap resend button.
  */
 import { config } from "@app/core/config";
+import { adminIds } from "@app/core/runtime";
 import { OrderStatus, StockStatus, langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
@@ -80,7 +81,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
     .map((g) => `• ${esc(g.product.name)} × ${g.quantity} — ${formatIdr(g.lineTotal)}`)
     .join("\n");
   const userDisplay =
-    `<code>${order.user.telegramId}</code> ` +
+    `<code>${order.user.telegramId ?? "?"}</code> ` +
     `(@${esc(order.user.username ?? "")} — ${esc(order.user.fullName ?? "")})`;
   const text = t(ctx, "admin.verification_item", {
     code: order.orderCode,
@@ -111,7 +112,7 @@ export async function approve(ctx: MyContext, orderId: number): Promise<void> {
   const adminTg = ctx.from!.id;
   const adminLang = ctx.session.lang;
 
-  let buyerTgId: bigint;
+  let buyerTgId: bigint | null;
   let buyerLang: string;
   let orderCode: string;
   let warrantyDays: number;
@@ -146,37 +147,37 @@ export async function approve(ctx: MyContext, orderId: number): Promise<void> {
   }
 
   // Phase 2: notify buyer — first a "payment verified" status, then the creds.
-  try {
-    await ctx.api.sendMessage(Number(buyerTgId), coreT("order.payment_verified", buyerLang, { code: orderCode }), {
-      parse_mode: "HTML",
-      reply_markup: notificationKb(buyerLang),
-    });
-  } catch (err) {
-    logger.error({ err }, `Failed to send payment_verified notification to ${buyerTgId}`);
-  }
-
-  const credsBlob = credGroups
-    .map(([pname, creds]) => {
-      const header = coreT("order.delivered_group_header", buyerLang, { product: esc(pname), count: creds.length });
-      return `${header}\n<pre>${esc(creds.join("\n"))}</pre>`;
-    })
-    .join("\n\n");
-
+  // Web-registered buyers have no Telegram id: skip both DMs (they see the
+  // delivered order + credentials on the website) and don't offer a resend.
   let dmOk = false;
-  try {
-    await ctx.api.sendMessage(
-      Number(buyerTgId),
-      coreT("order.delivered_credentials", buyerLang, { code: orderCode, credentials: credsBlob, warranty: warrantyDays }),
-      { parse_mode: "HTML", reply_markup: notificationKb(buyerLang) },
-    );
+  if (buyerTgId === null) {
     dmOk = true;
-    const redacted = credGroups.flatMap(([, creds]) => creds.map(redactCredentials));
-    logger.info(`Delivered order ${orderCode} to user ${buyerTgId} (creds redacted: ${redacted.join(", ")})`);
-  } catch (err) {
-    logger.error(
-      { err },
-      `Order ${orderCode} approved in DB but DM to buyer ${buyerTgId} FAILED — resend button shown to admin`,
-    );
+    logger.info(`Order ${orderCode} approved; buyer is web-only (no Telegram id) — skipping DMs, order visible on the website`);
+  } else {
+    // Delivery is instant: no interim "payment verified / being prepared" DM —
+    // the credentials message below is the single delivery notification.
+    const credsBlob = credGroups
+      .map(([pname, creds]) => {
+        const header = coreT("order.delivered_group_header", buyerLang, { product: esc(pname), count: creds.length });
+        return `${header}\n<pre>${esc(creds.join("\n"))}</pre>`;
+      })
+      .join("\n\n");
+
+    try {
+      await ctx.api.sendMessage(
+        Number(buyerTgId),
+        coreT("order.delivered_credentials", buyerLang, { code: orderCode, credentials: credsBlob, warranty: warrantyDays }),
+        { parse_mode: "HTML", reply_markup: notificationKb(buyerLang) },
+      );
+      dmOk = true;
+      const redacted = credGroups.flatMap(([, creds]) => creds.map(redactCredentials));
+      logger.info(`Delivered order ${orderCode} to user ${buyerTgId} (creds redacted: ${redacted.join(", ")})`);
+    } catch (err) {
+      logger.error(
+        { err },
+        `Order ${orderCode} approved in DB but DM to buyer ${buyerTgId} FAILED — resend button shown to admin`,
+      );
+    }
   }
 
   // Phase 3: ack admin.
@@ -221,6 +222,14 @@ export async function resendCredentials(ctx: MyContext, orderId: number): Promis
 
   const buyerTgId = order.user.telegramId;
   const orderCode = order.orderCode;
+  if (buyerTgId === null) {
+    // Web-only buyer — there is no DM target; they see the credentials on the
+    // website. (The resend button isn't offered for these orders, but guard
+    // anyway so Number(null) can never become a sendMessage target.)
+    await ctx.answerCallbackQuery({ text: t(ctx, "admin.resend_fail"), show_alert: true });
+    logger.info(`Resend skipped for order ${orderCode}: buyer is web-only (no Telegram id)`);
+    return;
+  }
   const warrantyDays = Math.max(...order.items.map((it) => it.warrantyDaysSnapshot), 30);
 
   try {
@@ -246,7 +255,7 @@ async function maybeAlertLowStock(ctx: MyContext, _userId: number): Promise<void
   if (!rows.length) return;
   for (const { product, available } of rows) {
     if (!product) continue;
-    for (const adminId of config.ADMIN_IDS) {
+    for (const adminId of adminIds()) {
       try {
         await ctx.api.sendMessage(
           adminId,

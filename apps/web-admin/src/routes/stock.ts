@@ -12,6 +12,8 @@ import {
   listStockItemsForProduct,
   countAvailableStock,
   bulkAddStock,
+  bulkDeleteStock,
+  listAvailableCredentials,
   getStockItem,
   markStockDead,
   bulkMarkStockDead,
@@ -117,6 +119,60 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
     });
     logger.info(`Bulk-marked ${count} stock rows dead on product ${productId}`);
     return redirectWithFlash(reply, `/stock/${productId}`, `${count} stock item(s) marked dead.`, "success");
+  });
+
+  // Hard-delete selected stock items (one writer, audited once). The crud guard
+  // refuses SOLD rows and anything tied to an order item, so the count returned
+  // may be < the number selected — the flash reflects what actually went.
+  app.post("/stock/:productId/bulk-delete", { preHandler: csrfProtect }, async (req, reply) => {
+    const productId = Number((req.params as { productId: string }).productId);
+    const body = (req.body ?? {}) as Record<string, string>;
+    const ids = (body.ids ?? "")
+      .split(",")
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isInteger(n) && n > 0);
+    if (!ids.length) {
+      return redirectWithFlash(reply, `/stock/${productId}`, "Select at least one stock item.", "error");
+    }
+    const count = await bulkDeleteStock(prisma, ids);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "stock_bulk_delete",
+      targetType: "product",
+      targetId: productId,
+      details: `requested=${ids.length} deleted=${count}`, // never the credentials
+    });
+    logger.info(`Bulk-deleted ${count} stock rows on product ${productId}`);
+    const skipped = ids.length - count;
+    const tail = skipped > 0 ? ` (${skipped} skipped — sold or in an order)` : "";
+    return redirectWithFlash(reply, `/stock/${productId}`, `${count} stock item(s) deleted${tail}.`, "success");
+  });
+
+  // Download remaining (AVAILABLE) credentials as a plain-text file, one login
+  // per line — same shape as the upload box. Read-only, so currentAdmin (not
+  // csrfProtect); still audited by count. The credentials themselves are never
+  // logged.
+  app.get("/stock/:productId/download", { preHandler: currentAdmin }, async (req, reply) => {
+    const productId = Number((req.params as { productId: string }).productId);
+    const product = await getProduct(prisma, productId);
+    if (!product) {
+      return renderError(reply, { statusCode: 404, title: "Not found", message: "Product not found." });
+    }
+    const creds = await listAvailableCredentials(prisma, productId);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "stock_download",
+      targetType: "product",
+      targetId: productId,
+      details: `count=${creds.length}`, // never the credentials
+    });
+    const slug = product.name.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "stock";
+    const body = creds.length ? creds.join("\n") + "\n" : "";
+    return reply
+      .header("Content-Type", "text/plain; charset=utf-8")
+      .header("Content-Disposition", `attachment; filename="stock-${slug}-${productId}.txt"`)
+      .header("Cache-Control", "no-store")
+      .send(body);
   });
 
   app.post("/stock/item/:stockId/dead", { preHandler: csrfProtect }, async (req, reply) => {

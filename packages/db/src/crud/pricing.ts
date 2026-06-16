@@ -96,8 +96,15 @@ export type PaymentChoice =
   | {
       currency: typeof OrderCurrency.USDT;
       rate: Decimal.Value;
-      /** BINANCE_INTERNAL (auto-confirm, default) or BINANCE_PAY (manual proof, bot only). */
-      method?: typeof PaymentMethod.BINANCE_INTERNAL | typeof PaymentMethod.BINANCE_PAY;
+      /**
+       * BINANCE_INTERNAL (auto-confirm via note, default), BYBIT (auto-confirm
+       * via on-chain BSC deposit, matched by unique amount), or BINANCE_PAY
+       * (manual proof, bot only).
+       */
+      method?:
+        | typeof PaymentMethod.BINANCE_INTERNAL
+        | typeof PaymentMethod.BYBIT
+        | typeof PaymentMethod.BINANCE_PAY;
     };
 
 /**
@@ -144,8 +151,11 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
   const usdt = usdtFromIdr(baseIdr, rate);
   const cents = config.USE_UNIQUE_CENTS ? computeUniqueCents(order.id) : new Decimal(0);
 
-  // Auto-confirm path gets a unique transfer note + the short payment window.
+  // Auto-confirm paths get a bounded payment window. Binance Internal also gets
+  // a unique transfer note (paymentRef); Bybit BSC has no memo, so it relies on
+  // the unique-cents amount alone for matching — no paymentRef.
   let paymentRef: string | null = null;
+  let expiresAt: Date | null = null;
   if (method === PaymentMethod.BINANCE_INTERNAL) {
     paymentRef = generatePaymentRef();
     for (let i = 0; i < 5; i++) {
@@ -153,6 +163,9 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
       if (!clash) break;
       paymentRef = generatePaymentRef();
     }
+    expiresAt = addMinutes(new Date(), config.INTERNAL_PAYMENT_WINDOW_MINUTES);
+  } else if (method === PaymentMethod.BYBIT) {
+    expiresAt = addMinutes(new Date(), config.BYBIT_PAYMENT_WINDOW_MINUTES);
   }
 
   await db.order.update({
@@ -163,12 +176,8 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
       paymentMethod: method,
       uniqueCents: cents,
       totalAmount: usdt.plus(cents),
-      ...(paymentRef
-        ? {
-            paymentRef,
-            expiresAt: addMinutes(new Date(), config.INTERNAL_PAYMENT_WINDOW_MINUTES),
-          }
-        : {}),
+      ...(paymentRef ? { paymentRef } : {}),
+      ...(expiresAt ? { expiresAt } : {}),
     },
   });
   logger.info(

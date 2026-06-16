@@ -20,8 +20,8 @@ import { Bot, session } from "grammy";
 import { conversations, createConversation } from "@grammyjs/conversations";
 import { run, sequentialize } from "@grammyjs/runner";
 import { config } from "@app/core/config";
-import { botToken, setBotIdentity } from "@app/core/runtime";
-import { initDb, prisma, resolveBotCredentials } from "@app/db";
+import { botToken, setBotIdentity, adminIds, setAdminIds } from "@app/core/runtime";
+import { initDb, prisma, resolveBotCredentials, resolveAdminIds } from "@app/db";
 import { logger } from "@app/core/logger";
 import type { MyContext } from "./context";
 import { initialSession } from "./context";
@@ -35,6 +35,7 @@ import * as admin from "./handlers/admin";
 import { routeCallback } from "./handlers/callbacks";
 import { scheduleJobs, scheduleFxRefresh } from "./jobs";
 import { startPolling, stopPolling } from "./payments/binanceInternal";
+import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "./payments/bybitDeposit";
 
 /**
  * Build a fully-wired bot. Pure construction — no network/DB side effects.
@@ -96,6 +97,16 @@ export function buildBot(token?: string): Bot<MyContext> {
 
   // --- Callback router + persistent-keyboard number input (PTB group 2) ----
   bot.callbackQuery(/^v1:/, routeCallback);
+  // Buttons from pre-migration bubbles (non-v1 data) would otherwise hang the
+  // tap spinner forever — answer them with a "screen expired" toast.
+  bot.on("callback_query", async (ctx) => {
+    logger.warn({ event: "dead_tap", callbackData: ctx.callbackQuery.data, userId: ctx.from?.id }, "stale callback (pre-migration)");
+    try {
+      await ctx.answerCallbackQuery({ text: coreT("error.stale_screen", ctx.session.lang) });
+    } catch {
+      /* best-effort */
+    }
+  });
   bot.on("message:text", async (ctx, next) => {
     if ((ctx.message.text ?? "").startsWith("/")) return next();
     await customer.handleProductNumber(ctx);
@@ -167,7 +178,7 @@ export async function setupCommandMenu(bot: Bot<MyContext>): Promise<void> {
   try {
     await bot.api.setMyCommands(generalEn);
     await bot.api.setMyCommands(generalId, { language_code: "id" });
-    for (const adminId of config.ADMIN_IDS) {
+    for (const adminId of adminIds()) {
       try {
         await bot.api.setMyCommands(adminCommands, { scope: { type: "chat", chat_id: adminId } });
       } catch {
@@ -183,6 +194,7 @@ export async function setupCommandMenu(bot: Bot<MyContext>): Promise<void> {
 // --- Startup ---------------------------------------------------------------
 export async function start(): Promise<void> {
   await initDb();
+  setAdminIds(await resolveAdminIds(prisma));
   // Setting wins, env is the bootstrap/recovery fallback (plan.md §16.3).
   const creds = await resolveBotCredentials(prisma);
   if (!creds.botToken) {
@@ -224,12 +236,14 @@ export async function start(): Promise<void> {
     },
   });
 
-  // Binance Internal Transfer auto-confirmation poller (no-op unless creds set).
-  startPolling(bot.api);
+  // Crypto auto-confirmation pollers (each a no-op unless its creds are set).
+  startPolling(bot.api); // Binance Internal Transfer
+  startBybitPolling(bot.api); // Bybit USDT-BSC deposits
 
   const stop = async () => {
     logger.info("Shutting down…");
     stopPolling();
+    stopBybitPolling();
     if (runner.isRunning()) await runner.stop();
   };
   process.once("SIGINT", stop);

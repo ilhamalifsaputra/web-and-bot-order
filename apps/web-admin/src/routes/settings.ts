@@ -26,6 +26,10 @@ import {
 } from "../auth";
 import { currentAdmin, csrfProtect } from "../plugins/auth";
 import { redirectWithFlash } from "../flash";
+import { setTokenValidator, getTokenValidator, setChannelValidator, getChannelValidator } from "../lib/telegramCheck";
+
+// Re-exported for tests that import setTokenValidator from this module.
+export { setTokenValidator, setChannelValidator };
 
 // Whitelisted runtime keys the web may edit, with human labels.
 const EDITABLE: Record<string, string> = {
@@ -49,49 +53,40 @@ const EDITABLE: Record<string, string> = {
   tokopay_merchant_id: "TokoPay merchant ID",
   tokopay_secret: "TokoPay secret key",
   tokopay_enabled: "Rupiah payments on the website — true / false",
+  // ---- Bybit USDT-BSC deposit (auto-confirmed; leave blank to disable) ----
+  bybit_deposit_address: "Bybit BEP20 (BSC) USDT deposit address shown to buyers",
+  bybit_api_key: "Bybit API key — Wallet READ-ONLY (no Withdraw)",
+  bybit_api_secret: "Bybit API secret",
   // ---- Bot & notifications (plan.md §16.1) ----
-  bot_token: "Telegram bot token (from BotFather) — needs a restart to apply",
-  bot_username: "Bot username, without the @ — filled in for you when you save a token",
-  notif_bot_token: "Notifier bot token (optional — blank means the main bot posts)",
+  bot_token: "Order Bot token — the main @YourBot that receives customer orders (get from BotFather → /mybots → API Token); restart the app after saving",
+  bot_username: "Bot username without the @ — filled in automatically when you save the Order Bot token above",
+  notif_bot_token: "Channel Notifier Bot token — a SEPARATE bot used only to post announcements to your public channel (optional; leave blank and the Order Bot will post to the channel instead)",
+  public_channel_id: "Public channel for announcements — paste the channel link (t.me/…), @username, or numeric -100… ID; saved as the numeric ID. Restart the app after saving.",
 };
 
 // UI grouping (settings.njk tabs): every EDITABLE key belongs to exactly one
 // group; anything left over falls back into the Website tab so a new key can
 // never silently disappear from the page.
-const WEBSITE_KEYS = new Set(["shop_name", "shop_tagline", "support_whatsapp"]);
-const BOT_MESSAGE_KEYS = new Set(["welcome", "banner_image", "support_contact"]);
-const BOT_TOKEN_FIELD_KEYS = new Set(["bot_token", "bot_username", "notif_bot_token"]);
+// shop_name / shop_tagline / welcome / banner_image now live on the Branding
+// page; only support_whatsapp (contact) stays here. They remain in EDITABLE so
+// the read-only "all options" table and the generic /settings/edit fallback
+// still work, but BRANDING_KEYS keeps them out of the editable Settings form.
+const WEBSITE_KEYS = new Set(["support_whatsapp"]);
+const BOT_MESSAGE_KEYS = new Set(["support_contact"]);
+const BRANDING_KEYS = new Set(["shop_name", "shop_tagline", "welcome", "banner_image"]);
+const BOT_TOKEN_FIELD_KEYS = new Set(["bot_token", "bot_username", "notif_bot_token", "public_channel_id"]);
 const PAY_BINANCE_KEYS = new Set(["binance_pay_id", "qr"]);
 const PAY_RATE_KEYS = new Set(["usd_idr_rate", "usd_idr_rate_auto", "usd_idr_rate_rounding"]);
 const PAY_QRIS_KEYS = new Set(["tokopay_merchant_id", "tokopay_secret", "tokopay_enabled"]);
+const PAY_BYBIT_KEYS = new Set(["bybit_deposit_address", "bybit_api_key", "bybit_api_secret"]);
 
 // Write-only editable secrets: never echoed back into the form, hidden in the
 // "All saved options" table, audited as "(updated)" without the value.
-const SECRET_KEYS = new Set(["tokopay_secret", "bot_token", "notif_bot_token"]);
+const SECRET_KEYS = new Set(["tokopay_secret", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret"]);
 
 // Bot tokens get the §16.4 "don't brick the bot" treatment: owner-only, and
 // Telegram must accept the token (getMe) before anything is saved.
 const TOKEN_KEYS = new Set(["bot_token", "notif_bot_token"]);
-
-type TokenCheck = { ok: boolean; username?: string };
-/**
- * Ask Telegram whether the token works. Plain fetch (no grammy dependency
- * here); the token never appears in logs or error messages.
- */
-async function checkTokenWithTelegram(token: string): Promise<TokenCheck> {
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-    const data = (await res.json()) as { ok?: boolean; result?: { username?: string } };
-    return data.ok ? { ok: true, username: data.result?.username } : { ok: false };
-  } catch {
-    return { ok: false };
-  }
-}
-let tokenValidator: (token: string) => Promise<TokenCheck> = checkTokenWithTelegram;
-/** Test hook: stub the Telegram call. */
-export function setTokenValidator(fn: typeof tokenValidator): void {
-  tokenValidator = fn;
-}
 
 const SECRET_PREFIXES = [
   "web_admin_password_hash:",
@@ -128,7 +123,8 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     const pick = (keys: Set<string>) => allFields.filter((f) => keys.has(f.key));
     const grouped = new Set([
       ...WEBSITE_KEYS, ...BOT_MESSAGE_KEYS, ...BOT_TOKEN_FIELD_KEYS,
-      ...PAY_BINANCE_KEYS, ...PAY_RATE_KEYS, ...PAY_QRIS_KEYS,
+      ...PAY_BINANCE_KEYS, ...PAY_RATE_KEYS, ...PAY_QRIS_KEYS, ...PAY_BYBIT_KEYS,
+      ...BRANDING_KEYS,
     ]);
     // Leftover guard: an EDITABLE key missing from every group still shows up.
     const websiteFields = [
@@ -153,6 +149,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       pay_binance_fields: pick(PAY_BINANCE_KEYS),
       pay_rate_fields: pick(PAY_RATE_KEYS),
       pay_qris_fields: pick(PAY_QRIS_KEYS),
+      pay_bybit_fields: pick(PAY_BYBIT_KEYS),
       is_owner: req.admin!.role === "super",
       two_fa_enabled: twoFaEnabled,
       two_fa_pending: twoFaPending,
@@ -293,7 +290,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
           "success",
         );
       }
-      const check = await tokenValidator(value);
+      const check = await getTokenValidator()(value);
       if (!check.ok) {
         return redirectWithFlash(
           reply,
@@ -320,6 +317,40 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
         "Token saved and checked with Telegram. Restart the app to start using it.",
         "success",
       );
+    }
+
+    // Channel id: owner-only, resolved via getChat before storing (numeric id).
+    // Not a secret — the value is public and shown back in the form.
+    if (key === "public_channel_id") {
+      if (req.admin!.role !== "super") {
+        return redirectWithFlash(reply, "/settings", "Only the owner can change the channel.", "error");
+      }
+      // Escape hatch: "-" removes the Setting so env config is used after restart.
+      if (value === "-") {
+        await deleteSetting(prisma, key);
+        await logAdminAction(prisma, {
+          adminId: req.admin!.userId, action: "setting_clear", targetType: "setting", details: key,
+        });
+        return redirectWithFlash(reply, "/settings", "Channel cleared. After a restart the server's own configuration is used again.", "success");
+      }
+      // getChat needs a bot token — notifier token if set, else the main token.
+      // Read the raw Settings (not resolveBotCredentials' env fallback): this is
+      // a live, owner-triggered check, so it must use a token the owner actually
+      // saved here, not a possibly-stale bootstrap value from the environment.
+      const botToken = (await getSetting(prisma, "notif_bot_token")) ?? (await getSetting(prisma, "bot_token"));
+      if (!botToken) {
+        return redirectWithFlash(reply, "/settings", "Set a bot token first, then add the channel.", "error");
+      }
+      const check = await getChannelValidator()(botToken, value);
+      if (!check.ok || typeof check.id !== "number") {
+        return redirectWithFlash(reply, "/settings", "Couldn't find that channel. Check the link and that the bot is a member/admin of it.", "error");
+      }
+      await setSetting(prisma, key, String(check.id));
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId, action: "setting_set", targetType: "setting",
+        details: `${key}=${check.id}`, // channel id is public, fine to log
+      });
+      return redirectWithFlash(reply, "/settings", `Channel saved (resolved to ${check.id}). Restart the app to apply.`, "success");
     }
 
     const displayValue = SECRET_KEYS.has(key)

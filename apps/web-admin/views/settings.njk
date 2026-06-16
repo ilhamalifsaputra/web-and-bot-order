@@ -3,10 +3,7 @@
 {% block title %}Settings · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="settings" class="w-7 h-7 text-sky-500"></i> Settings</h1>
-  <p class="page-lead">Your shop's options and your sign-in security — grouped by what they change.</p>
-</header>
+{{ ui.page_header('Settings', "Your shop's options and your sign-in security — grouped by what they change.", 'settings', 'settings') }}
 {{ ui.flash(msg, kind) }}
 
 {% macro setting_form(fld) %}
@@ -107,6 +104,27 @@
       </div>
     </div>
   </div>
+
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center gap-2">
+      <i data-lucide="link" class="w-5 h-5 text-sky-500"></i> USDT on BSC via Bybit (auto-confirm)
+    </h2>
+    <div class="text-xs text-ink-soft mb-4 space-y-1.5">
+      <p>
+        Fill all three to turn on automatic USDT payments: buyers send to your
+        <strong class="text-ink">BEP20 (BNB Smart Chain)</strong> deposit address, and the bot
+        confirms &amp; delivers on its own. Leave any blank to hide this option.
+      </p>
+      <p>
+        The API key must be <strong class="text-ink">Wallet read-only</strong> (no Withdraw permission).
+        Saved keys are hidden — leave a field blank to keep the current value.
+        Takes effect within seconds, no restart needed.
+      </p>
+    </div>
+    <div class="space-y-3">
+      {% for fld in pay_bybit_fields %}{{ setting_form(fld) }}{% endfor %}
+    </div>
+  </div>
 </section>
 
 {# ════ Telegram bot — messages the bot sends + its tokens ════ #}
@@ -128,13 +146,24 @@
     <h2 class="section-title mb-1 flex items-center gap-2">
       <i data-lucide="key-round" class="w-5 h-5 text-sky-500"></i> Bot tokens
     </h2>
-    <p class="text-xs text-ink-soft mb-4">
-      Tokens are checked with Telegram before they're saved, and a new token only
-      starts working after the app restarts.
-      {% if not is_owner %}Only the owner can change these.{% endif %}
-      Type a single <span class="codeish">-</span> to remove a saved token and go
-      back to the server's own configuration.
-    </p>
+    <div class="text-xs text-ink-soft mb-4 space-y-1.5">
+      <p>
+        <strong class="text-ink">Order Bot</strong> — the main bot your customers talk to.
+        It handles all orders and sends delivery messages.
+        Get its token from <span class="codeish">@BotFather → /mybots → API Token</span>.
+      </p>
+      <p>
+        <strong class="text-ink">Channel Notifier Bot</strong> — an optional <em>second</em> bot
+        used only for posting announcements to your public channel.
+        Leave blank if you want the Order Bot to post to the channel too.
+      </p>
+      <p>
+        Tokens are verified with Telegram before saving.
+        The app must <strong class="text-ink">restart</strong> before a new token takes effect.
+        {% if not is_owner %}<span class="text-amberx">Only the owner can change these.</span>{% endif %}
+        Type <span class="codeish">-</span> to remove a saved token and fall back to the server's own config.
+      </p>
+    </div>
     <div class="space-y-3">
       {% for fld in bot_token_fields %}{{ setting_form(fld) }}{% endfor %}
     </div>

@@ -79,6 +79,32 @@ export function countRestockSubscribers(db: Db, productId: number): Promise<numb
   return db.restockSubscription.count({ where: { productId } });
 }
 
+/**
+ * Newest VISIBLE reviews with a written comment and a high rating (≥4) — the
+ * social-proof feed shown on the storefront home. Joined with buyer + product
+ * so the card can show a name + which product was reviewed. Replaces the old
+ * hard-coded testimonials so nothing on the page is invented.
+ */
+export function featuredReviews(db: Db, limit = 6) {
+  return db.review.findMany({
+    where: { hidden: false, rating: { gte: 4 }, comment: { not: null } },
+    include: { user: true, product: true },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
+}
+
+/** Shop-wide visible-review average + count — the honest figure behind the
+ * "satisfaction" stat on the home page. */
+export async function overallRating(db: Db): Promise<{ avg: number | null; count: number }> {
+  const agg = await db.review.aggregate({
+    where: { hidden: false },
+    _avg: { rating: true },
+    _count: { id: true },
+  });
+  return { avg: agg._avg.rating, count: agg._count.id };
+}
+
 // ---- Reviews moderation (web admin) --------------------------------------
 
 export interface ReviewFilter {

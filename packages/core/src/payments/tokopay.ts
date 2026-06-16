@@ -1,26 +1,15 @@
 /**
- * TokoPay integration (plan.md §15.5) — the Rupiah payment gateway (QRIS by
- * default). Pattern mirrors the Binance Internal module: this file owns the
- * HTTP/crypto specifics so they can be swapped without touching delivery
- * logic (which lives in @app/db crud/tokopay.ts, webhook-driven).
+ * TokoPay gateway client (HTTP + signature) — shared by the storefront pay page,
+ * its webhook route, and the bot's QRIS checkout. Pure: no @app/db dependency
+ * (credential resolution lives in @app/db `getTokopayCreds`). See DOCS.md §15.5.
  *
- * Credentials come from web-admin Settings (NOT env): `tokopay_merchant_id`,
- * `tokopay_secret`, gated by `tokopay_enabled` (§15.9). Empty/disabled means
- * the IDR path is off — checkout shows "Rupiah payment not available yet"
- * while the USDT/Binance path keeps working.
- *
- * ⚠ ASSUMPTION (flagged per plan.md §15.5, like the Binance endpoint note):
- * the endpoint shape below follows TokoPay's public docs as of writing —
- *   GET https://api.tokopay.id/v1/order?merchant=..&secret=..&ref_id=..
- *       &nominal=..&metode=QRIS
- *   → { status: "Success", data: { pay_url, qr_link, qr_string, total_bayar, trx_id } }
- * and the callback signature is md5("merchantId:secret:refId"). VERIFY both
- * against the live TokoPay dashboard/docs before go-live.
+ * ⚠ ASSUMPTION (flagged): the endpoint shape + callback signature
+ *   md5("merchantId:secret:refId") follow TokoPay's public docs. Verify against
+ *   the live dashboard before go-live.
  */
 import { createHash, timingSafeEqual } from "node:crypto";
-import { Decimal } from "@app/core/money";
-import { logger } from "@app/core/logger";
-import { getSetting, type Db } from "@app/db";
+import { Decimal } from "../money";
+import { logger } from "../logger";
 
 export const TOKOPAY_MERCHANT_KEY = "tokopay_merchant_id";
 export const TOKOPAY_SECRET_KEY = "tokopay_secret";
@@ -35,19 +24,6 @@ export interface TokopayCreds {
   channel: string;
 }
 
-/** Read the gateway credentials from Settings; null = the IDR path is off. */
-export async function getTokopayCreds(db: Db): Promise<TokopayCreds | null> {
-  const [merchantId, secret, enabled, channel] = await Promise.all([
-    getSetting(db, TOKOPAY_MERCHANT_KEY),
-    getSetting(db, TOKOPAY_SECRET_KEY),
-    getSetting(db, TOKOPAY_ENABLED_KEY),
-    getSetting(db, TOKOPAY_CHANNEL_KEY),
-  ]);
-  if (!merchantId || !secret) return null;
-  if ((enabled ?? "").trim().toLowerCase() === "false") return null;
-  return { merchantId, secret, channel: (channel ?? "QRIS").trim() || "QRIS" };
-}
-
 export interface TokopayOrderInfo {
   trxId: string;
   payUrl: string | null;
@@ -56,11 +32,7 @@ export interface TokopayOrderInfo {
   totalBayar: string | null;
 }
 
-/**
- * Create (or fetch — TokoPay treats ref_id as idempotent) the gateway
- * transaction for an order. `refId` = our orderCode; `nominal` = the exact
- * central-IDR total (whole Rupiah).
- */
+/** Create (or fetch — ref_id is idempotent) the gateway transaction for an order. */
 export async function createTransaction(
   creds: TokopayCreds,
   args: { refId: string; amountIdr: Decimal.Value },
@@ -97,7 +69,6 @@ export async function createTransaction(
   };
 }
 
-/** Fields we read from a TokoPay callback POST (unknown-shape tolerant). */
 export interface TokopayCallback {
   refId: string;
   trxId: string;
@@ -105,11 +76,7 @@ export interface TokopayCallback {
   paid: boolean;
 }
 
-/**
- * Verify a callback's signature and normalize its payload. Returns null when
- * the signature is wrong/missing — the webhook MUST drop those (§15.5:
- * verify before anything else).
- */
+/** Verify a callback's signature + normalize. Returns null on bad/missing signature. */
 export function verifyCallback(
   body: Record<string, unknown>,
   creds: Pick<TokopayCreds, "merchantId" | "secret">,

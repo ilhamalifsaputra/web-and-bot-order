@@ -5,9 +5,9 @@
 {% block content %}
 <div class="mb-5">
   <a href="/catalog" class="link text-sm">← Products</a>
-  <h1 class="page-title mt-1 flex items-center gap-2.5"><i data-lucide="badge-dollar-sign" class="w-7 h-7 text-emerald-500"></i> Confirm the price change</h1>
+  <h1 class="page-title mt-1 flex items-center gap-2.5"><i data-lucide="badge-dollar-sign" class="w-7 h-7 text-violet-500"></i> Confirm the price change</h1>
   <p class="page-lead">
-    {% if mode == 'percent' %}Changing the selected prices by <b>{{ value }}%</b>{% else %}Setting the selected prices to <b>{{ value }} {{ currency }}</b>{% endif %}.
+    {% if mode == 'percent' %}Changing the selected prices by <b>{{ value }}%</b>{% else %}Setting the selected prices to <b>{{ value | idr }}</b>{% endif %}.
     Check the new prices below before you apply them.
   </p>
 </div>
@@ -21,9 +21,9 @@
       {% for r in rows %}
       <tr class="{% if r.invalid %}bg-rust-tint/50{% endif %}">
         <td>{{ r.name }}</td>
-        <td class="text-right tabular text-ink-soft">{{ r.current | money }}</td>
+        <td class="text-right tabular text-ink-soft">{{ r.current | idr }}</td>
         <td class="text-right tabular font-medium">
-          {% if r.invalid %}<span class="text-rust">would be 0 or less — skipped</span>{% else %}{{ r.next | money }}{% endif %}
+          {% if r.invalid %}<span class="text-rust">would be 0 or less — skipped</span>{% else %}{{ r.next | idr }}{% endif %}
         </td>
       </tr>
       {% endfor %}

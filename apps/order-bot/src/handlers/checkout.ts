@@ -33,10 +33,14 @@ import {
   countUserPendingOrders,
   createOrderDirect,
   createInternalOrder,
+  createBybitOrder,
+  resolveBybitConfig,
   setOrderPaymentMessage,
   cancelOrder,
   finalizeOrderPayment,
+  getTokopayCreds,
 } from "@app/db";
+import { createTransaction } from "@app/core/payments/tokopay";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
@@ -101,6 +105,26 @@ interface PaymentJobBase {
   expiresAt: Date;
   binanceId: string;
   menuMsgId: number;
+  qrPhoto: boolean; // true when menuMsgId is a photo+caption bubble (edit caption, not text)
+}
+
+async function editPaymentBubble(
+  base: PaymentJobBase,
+  text: string,
+  kb: ReturnType<typeof ckb.paymentInstructionsKb>,
+): Promise<void> {
+  if (base.qrPhoto) {
+    await base.api.editMessageCaption(base.chatId, base.menuMsgId, {
+      caption: text,
+      parse_mode: "HTML",
+      reply_markup: kb,
+    });
+  } else {
+    await base.api.editMessageText(base.chatId, base.menuMsgId, text, {
+      parse_mode: "HTML",
+      reply_markup: kb,
+    });
+  }
 }
 
 function schedulePaymentJobs(base: PaymentJobBase): void {
@@ -144,10 +168,7 @@ async function countdownTick(base: PaymentJobBase): Promise<void> {
     countdown: formatCountdown(base.expiresAt),
   });
   try {
-    await base.api.editMessageText(base.chatId, base.menuMsgId, text, {
-      parse_mode: "HTML",
-      reply_markup: ckb.paymentInstructionsKb(base.orderId, base.lang),
-    });
+    await editPaymentBubble(base, text, ckb.paymentInstructionsKb(base.orderId, base.lang));
   } catch (exc) {
     if (!/message is not modified/i.test(String(exc))) {
       logger.debug(`Countdown edit failed for order ${base.orderId}: ${exc}`);
@@ -159,18 +180,25 @@ async function paymentReminder(base: PaymentJobBase, level: number): Promise<voi
   const order = await getOrder(prisma, base.orderId);
   if (order === null || order.status !== OrderStatus.PENDING_PAYMENT) return;
   const key = level === 2 ? "checkout.reminder_1min" : "checkout.reminder_2min";
+  const text = coreT(key, base.lang, {
+    code: order.orderCode,
+    total: price(order.totalAmount, 4),
+    binance_id: esc(base.binanceId),
+  });
+  const kb = ckb.paymentInstructionsKb(base.orderId, base.lang);
+  // Edit the existing payment-instructions bubble instead of flooding the chat
+  // with a new reminder message — consistent with the single-anchor pattern.
   try {
-    await base.api.sendMessage(
-      base.chatId,
-      coreT(key, base.lang, {
-        code: order.orderCode,
-        total: price(order.totalAmount, 4),
-        binance_id: esc(base.binanceId),
-      }),
-      { parse_mode: "HTML", reply_markup: ckb.paymentInstructionsKb(base.orderId, base.lang) },
-    );
+    await editPaymentBubble(base, text, kb);
+    return;
+  } catch (err) {
+    if (/message is not modified/i.test(String(err))) return;
+    // Bubble gone or a photo (QR) — fall back to a fresh message.
+  }
+  try {
+    await base.api.sendMessage(base.chatId, text, { parse_mode: "HTML", reply_markup: kb });
   } catch {
-    logger.warn(`Could not send payment reminder for order ${base.orderId}`);
+    logger.warn(`Could not deliver payment reminder for order ${base.orderId}`);
   }
 }
 
@@ -209,33 +237,52 @@ export async function sendPaymentInstructions(ctx: MyContext, orderId: number): 
   });
 
   cancelPaymentJobs(orderId);
+  // Clear any stale QR tracking from a previous payment screen before sending a fresh one.
+  ctx.session.qrMsgId = undefined;
 
-  // 1) Edit the confirmation bubble in place into the payment instructions
-  //    (reuse the message the "Confirm" button sits on). smartEdit falls back
-  //    to a fresh send when there's no callback to edit (e.g. /cancel path).
-  await smartEdit(ctx, text, ckb.paymentInstructionsKb(orderId, lang));
-  const menuMsgId = ctx.session.menuMsgId;
-
-  // 2) A QR image can't live inside an edited text message — if one is
-  //    configured, send it as a separate photo just below. Best-effort.
+  const kb = ckb.paymentInstructionsKb(orderId, lang);
+  // Resolve the QR source: a stored file_id setting wins, else the bundled image.
+  let qrPhotoArg: string | InputFile | undefined;
   if (qrFileId) {
-    try {
-      await ctx.api.sendPhoto(chatId, qrFileId);
-    } catch (err) {
-      logger.error({ err }, "Failed to send QR photo");
-    }
+    qrPhotoArg = qrFileId;
   } else if (config.BINANCE_QR_PATH && fs.existsSync(config.BINANCE_QR_PATH)) {
-    try {
-      await ctx.api.sendPhoto(chatId, new InputFile(config.BINANCE_QR_PATH));
-    } catch (err) {
-      logger.error({ err }, "Failed to send QR image");
-    }
+    qrPhotoArg = new InputFile(config.BINANCE_QR_PATH);
   }
 
-  // 3) Mark this order as the chat's active payment view + schedule jobs.
+  // Unify the QR image and the instructions into ONE photo+caption bubble
+  // (image + caption + payment keyboard), so the QR reads as part of the same
+  // screen instead of a detached photo below. A text confirm bubble can't morph
+  // into a photo via edit, so delete it and send the QR fresh, then track it as
+  // menuMsgId. The countdown/reminder jobs edit this bubble's caption (qrPhoto).
+  let qrPhoto = false;
+  if (qrPhotoArg) {
+    const confirmMsgId = ctx.callbackQuery?.message?.message_id ?? ctx.session.menuMsgId;
+    try {
+      const qrMsg = await ctx.replyWithPhoto(qrPhotoArg, {
+        caption: text,
+        parse_mode: "HTML",
+        reply_markup: kb,
+      });
+      ctx.session.menuMsgId = qrMsg.message_id;
+      qrPhoto = true;
+      if (confirmMsgId && confirmMsgId !== qrMsg.message_id) {
+        try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
+      }
+    } catch (err) {
+      logger.error({ err }, "Failed to send QR photo");
+      // QR image failed — fall back to a text-only instructions bubble.
+      await smartEdit(ctx, text, kb);
+    }
+  } else {
+    // No QR configured — keep the text-only instructions bubble.
+    await smartEdit(ctx, text, kb);
+  }
+  const menuMsgId = ctx.session.menuMsgId;
+
+  // Mark this order as the chat's active payment view + schedule jobs.
   setActivePayment(chatId, orderId);
   if (expiresAt && menuMsgId) {
-    schedulePaymentJobs({ api: ctx.api, orderId, chatId, lang, expiresAt, binanceId, menuMsgId });
+    schedulePaymentJobs({ api: ctx.api, orderId, chatId, lang, expiresAt, binanceId, menuMsgId, qrPhoto });
   }
 }
 
@@ -333,6 +380,8 @@ export async function showOrderConfirmation(
   if (!r) return;
 
   const rate = await currentUsdtRate();
+  const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
+  const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
   await smartEdit(
     ctx,
     t(ctx, "checkout.confirm_order", {
@@ -342,7 +391,7 @@ export async function showOrderConfirmation(
       voucher_line: r.voucherLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null),
+    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null, bybitEnabled && rate !== null, tokopayEnabled),
   );
 }
 
@@ -356,6 +405,8 @@ export async function renderOrderConfirmation(
   const r = await computeConfirmation(ctx, productId, quantity);
   if (!r) return;
   const rate = await currentUsdtRate();
+  const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
+  const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
   const msg = await ctx.api.sendMessage(
     ctx.chat!.id,
     t(ctx, "checkout.confirm_order", {
@@ -365,9 +416,41 @@ export async function renderOrderConfirmation(
       voucher_line: r.voucherLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null) },
+    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null, bybitEnabled && rate !== null, tokopayEnabled) },
   );
   ctx.session.menuMsgId = msg.message_id;
+}
+
+/**
+ * USDT payment submenu — keeps the order-summary bubble but swaps the keyboard
+ * for the USDT rails (Binance Transfer / Bybit). Reached from the "USDT" entry
+ * on the confirmation screen; Back returns to {@link showOrderConfirmation}.
+ */
+export async function showUsdtMethods(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+  const lang = ctx.session.lang;
+
+  const product = await getProduct(prisma, productId);
+  if (product === null) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.try_again"), show_alert: true });
+    await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
+    return;
+  }
+  const r = await computeConfirmation(ctx, productId, quantity);
+  if (!r) return;
+
+  const rate = await currentUsdtRate();
+  const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
+  await smartEdit(
+    ctx,
+    t(ctx, "checkout.confirm_order", {
+      product: esc(r.productName),
+      qty: quantity,
+      unit_price: priceIdr(r.unitPrice, rate),
+      voucher_line: r.voucherLine,
+      total: priceIdr(r.subtotal, rate),
+    }),
+    ckb.usdtMethodsKb(productId, quantity, lang, isBinanceInternalEnabled() && rate !== null, bybitEnabled && rate !== null),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -486,6 +569,169 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
 }
 
+/**
+ * Bybit USDT-BSC deposit: create the order, show the BEP20 deposit address +
+ * the exact amount to send (no memo on BSC — matching is by amount), and anchor
+ * the message so the deposit poller can flip it to success on auto-confirm.
+ */
+export async function buyNowBybit(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+  const info = requireUser(ctx);
+  const lang = ctx.session.lang;
+  const rate = await currentUsdtRate();
+  const bybit = await resolveBybitConfig(prisma);
+  if (!bybit.enabled || !rate) {
+    await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
+    return;
+  }
+  const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+  delete ctx.session.scratch.appliedVoucherCode;
+
+  const user = await getUser(prisma, info.id);
+  if (user === null) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+  const pendingCount = await countUserPendingOrders(prisma, info.id);
+  if (pendingCount >= MAX_PENDING_ORDERS) {
+    await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
+    return;
+  }
+
+  let order: Awaited<ReturnType<typeof createBybitOrder>>;
+  try {
+    order = await prisma.$transaction((tx) =>
+      createBybitOrder(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode, rate }),
+    );
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      return;
+    }
+    throw e;
+  }
+  if (!order) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+
+  // The charged amount is USDT; show the central-IDR equivalent beside it
+  // (totalAmount × the fxRate snapshot, which includes the unique cents).
+  const fxRate = order.fxRate != null ? new Decimal(order.fxRate) : rate;
+  const idrLine = ` (≈ ${formatIdr(new Decimal(order.totalAmount).times(fxRate))})`;
+  const expiry = order.expiresAt
+    ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
+    : `${config.BYBIT_PAYMENT_WINDOW_MINUTES}m`;
+
+  const text = t(ctx, "checkout.bybit_instructions", {
+    code: order.orderCode,
+    address: esc(bybit.depositAddress),
+    amount: price(order.totalAmount, 4),
+    idr_line: idrLine,
+    expiry,
+  });
+  await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang));
+  // Anchor the instructions message so the poller can flip it to success.
+  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+}
+
+/**
+ * QRIS (TokoPay) — create an IDR order, draw the QR inside Telegram, and let the
+ * existing TokoPay webhook auto-confirm. No proof upload. ⚠ Needs the public
+ * callback URL configured (DOCS §15.5) or the order will stall then auto-cancel.
+ */
+export async function buyNowTokopay(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+  const info = requireUser(ctx);
+  const lang = ctx.session.lang;
+  const chatId = ctx.chat!.id;
+
+  const creds = await getTokopayCreds(prisma);
+  if (!creds) {
+    await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
+    return;
+  }
+  const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+  delete ctx.session.scratch.appliedVoucherCode;
+
+  const user = await getUser(prisma, info.id);
+  if (user === null) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+  if ((await countUserPendingOrders(prisma, info.id)) >= MAX_PENDING_ORDERS) {
+    await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
+    return;
+  }
+
+  let order: Awaited<ReturnType<typeof createOrderDirect>>;
+  try {
+    order = await prisma.$transaction(async (tx) => {
+      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode });
+      if (!created) return created;
+      return finalizeOrderPayment(tx, created.id, { currency: OrderCurrency.IDR });
+    });
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      return;
+    }
+    throw e;
+  }
+  if (!order) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+
+  // Create (idempotent on ref_id) the gateway transaction + cache it.
+  let gateway;
+  try {
+    gateway = await createTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
+    await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify(gateway) } });
+  } catch (err) {
+    logger.error({ err }, `TokoPay create failed for ${order.orderCode}`);
+    await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
+    return;
+  }
+
+  const expiry = order.expiresAt
+    ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
+    : `${config.PAYMENT_WINDOW_MINUTES}m`;
+  const caption = t(ctx, "checkout.qris_instructions", {
+    code: order.orderCode,
+    amount: formatIdr(order.totalAmount),
+    expiry,
+  });
+
+  // Unify the QR image and the payment instructions into ONE photo+caption
+  // bubble (image + caption + waiting keyboard), so the QR reads as part of the
+  // same screen instead of a detached photo below. A text confirm bubble can't
+  // morph into a photo via edit, so delete it and send the QR fresh, then track
+  // it as menuMsgId — smartEdit edits a photo bubble's caption in place, so the
+  // cancel/expiry transitions still land on this same bubble.
+  const confirmMsgId = ctx.callbackQuery?.message?.message_id ?? ctx.session.menuMsgId;
+  ctx.session.qrMsgId = undefined;
+  const waitingKb = ckb.qrisWaitingKb(order.id, lang);
+  if (gateway.qrLink) {
+    try {
+      const qrMsg = await ctx.replyWithPhoto(gateway.qrLink, {
+        caption,
+        parse_mode: "HTML",
+        reply_markup: waitingKb,
+      });
+      ctx.session.menuMsgId = qrMsg.message_id;
+      if (confirmMsgId && confirmMsgId !== qrMsg.message_id) {
+        try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
+      }
+    } catch (err) {
+      logger.error({ err }, "Failed to send QRIS photo");
+      // QR image failed — fall back to a text-only instructions bubble.
+      await smartEdit(ctx, caption, waitingKb);
+    }
+  } else {
+    await smartEdit(ctx, caption, waitingKb);
+  }
+  setActivePayment(chatId, order.id);
+}
+
 // ---------------------------------------------------------------------------
 // Order cancellation (user-initiated, before delivery)
 // ---------------------------------------------------------------------------
@@ -512,6 +758,14 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
   const chatId = ctx.chat!.id;
   clearActivePayment(chatId);
   cancelPaymentJobs(orderId);
+
+  // Delete the QR code photo that was sent alongside payment instructions.
+  const qrMsgId = ctx.session.qrMsgId;
+  if (qrMsgId) {
+    ctx.session.qrMsgId = undefined;
+    try { await ctx.api.deleteMessage(chatId, qrMsgId); } catch { /* already gone or too old */ }
+  }
+
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.cancelled_toast") });
 
   // Edit the bubble that owned the Cancel button into a confirmation reply,

@@ -46,6 +46,16 @@ export function mixedAmount(idr: Decimal.Value, usdt: Decimal.Value): string {
   return parts.join(" + ");
 }
 
+/**
+ * Truncate a string to `max` characters with a trailing ellipsis so it fits
+ * safely inside a Telegram inline-button label (Telegram renders ~30 chars per
+ * row button; keeping labels under 24 chars prevents visual clipping on most
+ * devices).
+ */
+export function truncLabel(text: string, max = 24): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
 /** Remaining time until expiry as "M:SS" (e.g. "4:32"). Port of _format_countdown. */
 export function formatCountdown(expiresAt: Date): string {
   const remainingMs = ensureUtc(expiresAt).toMillis() - Date.now();
@@ -75,7 +85,7 @@ export interface OrderItemLike {
   productId: number;
   quantity: number;
   unitPrice: Decimal.Value;
-  product: { id: number; name: string; durationLabel?: string } & Record<string, unknown>;
+  product: { id: number; name: string; durationLabel?: string; type?: string } & Record<string, unknown>;
   stockItem?: { credentials: string } | null;
 }
 

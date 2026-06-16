@@ -10,7 +10,7 @@ import type { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { OrderStatus, StockStatus, TicketStatus } from "@app/core/enums";
 import { t as coreT } from "@app/core/i18n";
-import { formatPrice, statusBadge } from "../util/format";
+import { formatPrice, truncLabel } from "../util/format";
 
 export const CB_PREFIX = "v1";
 
@@ -280,7 +280,7 @@ export function productsPageKb(page: number, totalPages: number, lang: string): 
 /** Inline keyboard for /search results — each product is a button. */
 export function searchResultsKb(products: ProductLike[], lang: string): InlineKeyboard {
   const rows: Btn[][] = products.map((p) => [
-    { text: p.name, data: cb("browse", "prod", p.id) },
+    { text: truncLabel(p.name, 30), data: cb("browse", "prod", p.id) },
   ]);
   rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
   return ik(rows);
@@ -290,24 +290,21 @@ export function searchResultsKb(products: ProductLike[], lang: string): InlineKe
 // Orders
 // ---------------------------------------------------------------------------
 
-export function ordersListKb(
-  orders: OrderLike[],
-  lang: string,
-  page = 0,
-  totalPages = 1,
-): InlineKeyboard {
-  const rows: Btn[][] = orders.map((o) => [
-    { text: `${o.orderCode} — ${statusBadge(o.status)}`, data: cb("order", "view", o.id) },
-  ]);
-  if (totalPages > 1) {
-    const nav: Btn[] = [];
-    if (page > 0) nav.push({ text: "◀️", data: cb("order", "page", page - 1) });
-    nav.push({ text: `${page + 1}/${totalPages}`, data: cb("noop") });
-    if (page < totalPages - 1) nav.push({ text: "▶️", data: cb("order", "page", page + 1) });
-    rows.push(nav);
+export function ordersListKb(orders: OrderLike[], lang: string): InlineKeyboard {
+  const rows: Btn[][] = [];
+  // The order details live as plain text in the message body. Only an unpaid
+  // order keeps a tappable row — it is the sole way back to finish (or cancel)
+  // the payment, so dropping it would strand the order. Delivered/cancelled
+  // orders need no action and stay button-free (matches the simplified design).
+  for (const o of orders) {
+    if (o.status === OrderStatus.PENDING_PAYMENT) {
+      rows.push([
+        { text: coreT("order.pay_btn", lang, { code: o.orderCode }), data: cb("order", "view", o.id) },
+      ]);
+    }
   }
   rows.push([
-    { text: coreT("order.download_history_btn", lang), data: cb("order", "history") },
+    { text: coreT("order.all_history_btn", lang), data: cb("order", "allhistory") },
     { text: coreT("menu.main", lang), data: cb("menu", "main") },
   ]);
   return ik(rows);
@@ -319,11 +316,6 @@ export function orderDetailKb(order: OrderLike, lang: string): InlineKeyboard {
     rows.push([{ text: coreT("checkout.i_paid", lang), data: cb("checkout", "proof", order.id) }]);
     rows.push([
       { text: coreT("checkout.cancel_order", lang), data: cb("checkout", "cancel", order.id) },
-    ]);
-  } else if (order.status === OrderStatus.DELIVERED) {
-    rows.push([
-      { text: coreT("order.leave_review", lang), data: cb("order", "review", order.id) },
-      { text: coreT("order.request_replacement", lang), data: cb("order", "replace", order.id) },
     ]);
   }
   rows.push([
@@ -343,6 +335,8 @@ export function orderConfirmKb(
   lang: string,
   voucherCode = "",
   internalEnabled = false,
+  bybitEnabled = false,
+  tokopayEnabled = false,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   if (voucherCode) {
@@ -354,16 +348,38 @@ export function orderConfirmKb(
       { text: coreT("checkout.use_voucher", lang), data: cb("voucher", "start", productId, qty) },
     ]);
   }
-  if (internalEnabled) {
-    // Two explicit payment methods.
-    rows.push([{ text: coreT("checkout.pay_binance_pay_btn", lang), data: cb("pay", productId, qty) }]);
-    rows.push([{ text: coreT("checkout.pay_internal_btn", lang), data: cb("payx", productId, qty) }]);
+  const hasUsdt = internalEnabled || bybitEnabled;
+  if (tokopayEnabled || hasUsdt) {
+    // Top-level methods: QRIS first, then a single USDT entry that opens a
+    // submenu (Binance / Bybit). The legacy manual Binance Pay method is retired.
+    if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: cb("payq", productId, qty) }]);
+    if (hasUsdt) rows.push([{ text: coreT("checkout.pay_usdt_btn", lang), data: cb("usdt", productId, qty) }]);
   } else {
+    // No payment method configured at all — fall back to a plain confirm.
     rows.push([{ text: coreT("checkout.confirm_btn", lang), data: cb("pay", productId, qty) }]);
   }
   rows.push([
     { text: coreT("checkout.cancel_btn", lang), data: cb("browse", "prod", productId) },
   ]);
+  return ik(rows);
+}
+
+/**
+ * USDT payment submenu — reached from the "USDT" entry on the order confirmation.
+ * Lists the configured auto-confirm USDT rails (Binance Transfer, Bybit/BSC) and
+ * a Back action that returns to the confirmation screen.
+ */
+export function usdtMethodsKb(
+  productId: number,
+  qty: number,
+  lang: string,
+  internalEnabled = false,
+  bybitEnabled = false,
+): InlineKeyboard {
+  const rows: Btn[][] = [];
+  if (internalEnabled) rows.push([{ text: coreT("checkout.pay_internal_btn", lang), data: cb("payx", productId, qty) }]);
+  if (bybitEnabled) rows.push([{ text: coreT("checkout.pay_bybit_btn", lang), data: cb("payb", productId, qty) }]);
+  rows.push([{ text: coreT("menu.back", lang), data: cb("buy", productId, qty) }]);
   return ik(rows);
 }
 
@@ -394,16 +410,12 @@ export function paymentInstructionsKb(orderId: number, lang: string): InlineKeyb
   ]);
 }
 
-// ---------------------------------------------------------------------------
-// Reviews
-// ---------------------------------------------------------------------------
-
-export function reviewRatingKb(orderId: number, productId: number): InlineKeyboard {
-  const row: Btn[] = [];
-  for (let n = 1; n <= 5; n++) {
-    row.push({ text: "⭐".repeat(n), data: cb("review", "rate", orderId, productId, n) });
-  }
-  return ik([row]);
+/** QRIS payment screen: auto-confirm via webhook, so only Cancel + Menu (no proof). */
+export function qrisWaitingKb(orderId: number, lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("checkout.cancel_order", lang), data: cb("checkout", "cancel", orderId) }],
+    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+  ]);
 }
 
 // ---------------------------------------------------------------------------

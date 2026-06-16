@@ -21,6 +21,7 @@
 import { createHmac, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { config } from "@app/core/config";
+import { webCookieSecret } from "@app/core/runtime";
 
 const PWD_HASH_PREFIX = "web_admin_password_hash:";
 const SESSION_JTI_PREFIX = "web_session_jti:";
@@ -226,7 +227,7 @@ function sign(body: string): string {
 }
 
 function cookieSecret(): string {
-  const s = config.WEB_COOKIE_SECRET;
+  const s = webCookieSecret();
   if (!s) throw new Error("WEB_COOKIE_SECRET is required for the web admin");
   return s;
 }

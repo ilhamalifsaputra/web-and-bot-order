@@ -67,6 +67,14 @@ describe("broadcast segments", () => {
     });
     expect(await countSegment(prisma, "RECENT_BUYERS")).toBe(1); // still just `buyer`
   });
+
+  it("excludes web-only accounts (no telegramId) from every segment", async () => {
+    await prisma.user.create({
+      data: { telegramId: null, loginUsername: "webonly", email: "w@o.test", referralCode: "WEBONL" },
+    });
+    const all = await resolveSegmentRecipients(prisma, "ALL");
+    expect(all.every((r) => r.telegramId !== null)).toBe(true);
+  });
 });
 
 describe("broadcast queue lifecycle", () => {

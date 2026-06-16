@@ -32,9 +32,20 @@ roadmap and deploy.
   the screen it lived on into a confirmation. Both helpers edit text *and*
   photo+caption bubbles, and fall back to a fresh send when an edit isn't
   possible. Never leave a stale screen behind.
+- **One active keyboard per chat.** Every render helper retires the previous
+  bubble's inline keyboard (`retireKeyboard`) when a new screen appears
+  elsewhere, so stale menus can't be tapped against moved-on state. Unknown /
+  pre-migration callback data answers with the `error.stale_screen` toast.
+- **Wizards are single-bubble.** Multi-step flows edit one anchor bubble
+  (`adminAnchor`/`menuAnchor` for typed-input steps) and delete the user's
+  typed input (`consumeInput`) once captured — prompts, validation errors and
+  the final confirmation all land in the same bubble, each with a live
+  Cancel/Back keyboard. Customer free-text with record value (support text,
+  review comments, TxIDs) and photos whose `file_id` is stored are NOT deleted.
 - **Toast vs alert:** routine success → non-blocking toast
   (`answerCallbackQuery({ text })`); errors / destructive confirms →
-  `show_alert: true`.
+  `show_alert: true`. Slow terminal mutations render a buttonless
+  `admin.processing` state first so a double-tap can't re-run them.
 - **Never strand the user:** every terminal screen offers ≥1 forward action
   (Menu / My Orders / Back).
 - **No leaked English:** customer- and admin-facing strings go through

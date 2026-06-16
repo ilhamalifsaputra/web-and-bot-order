@@ -7,9 +7,9 @@ import { langCode } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { prisma, getUserByTelegramId, rejectOrder, logAdminAction } from "@app/db";
-import { isAdmin } from "@app/core/config";
+import { isAdmin } from "@app/core/runtime";
 import type { MyContext, MyConversation } from "../context";
-import { adminEdit } from "../util/chat";
+import { adminEdit, adminAnchor, consumeInput } from "../util/chat";
 import { coreT, t } from "../util/i18n";
 import { esc } from "../util/format";
 import { validateText } from "../util/validators";
@@ -32,21 +32,27 @@ export async function rejectConversation(conversation: MyConversation, ctx: MyCo
   const orderId = parseInt((ctx.callbackQuery?.data ?? "").split(":").at(-1)!, 10);
 
   await ctx.answerCallbackQuery();
-  await adminEdit(ctx, t(ctx, "admin.ask_reject_reason"));
+  await adminEdit(ctx, t(ctx, "admin.ask_reject_reason"), akb.cancelInputKb());
 
   let reason: string;
   for (;;) {
     const u = await conversation.wait();
+    if ((u.callbackQuery?.data ?? "") === "v1:adm:cancel") {
+      await u.answerCallbackQuery();
+      await adminCommand(u);
+      return;
+    }
     if (isCmd(u, "cancel")) return void (await adminCommand(u));
     if (isCmd(u, "start")) return void (await startCommand(u));
     const text = u.message?.text;
     if (!text) continue;
+    await consumeInput(u);
     try {
       reason = validateText(text, 512, 3);
       break;
     } catch (e) {
       if (e instanceof ValidationError) {
-        await adminEdit(u, t(u, e.key, e.formatArgs));
+        await adminAnchor(u, t(u, e.key, e.formatArgs), akb.cancelInputKb());
         continue;
       }
       throw e;
@@ -54,7 +60,7 @@ export async function rejectConversation(conversation: MyConversation, ctx: MyCo
   }
 
   const adminTg = ctx.from!.id;
-  let buyerTgId: bigint;
+  let buyerTgId: bigint | null;
   let buyerLang: string;
   let orderCode: string;
   try {
@@ -75,20 +81,26 @@ export async function rejectConversation(conversation: MyConversation, ctx: MyCo
     orderCode = order.orderCode;
   } catch (e) {
     if (e instanceof ValidationError) {
-      await adminEdit(ctx, t(ctx, e.key, e.formatArgs));
+      await adminEdit(ctx, t(ctx, e.key, e.formatArgs), akb.backToAdminKb(adminLang));
       return;
     }
     throw e;
   }
 
-  try {
-    await ctx.api.sendMessage(
-      Number(buyerTgId),
-      coreT("order.rejected", buyerLang, { code: orderCode, reason: esc(reason) }),
-      { parse_mode: "HTML", reply_markup: notificationKb(buyerLang) },
-    );
-  } catch (err) {
-    logger.error({ err }, "Failed to notify buyer of rejection");
+  if (buyerTgId === null) {
+    // Web-registered buyer with no Telegram account — they see the rejected
+    // order on the website, so there is no DM to send.
+    logger.info(`Order ${orderCode} rejected; buyer is web-only (no Telegram id), skipping rejection DM`);
+  } else {
+    try {
+      await ctx.api.sendMessage(
+        Number(buyerTgId),
+        coreT("order.rejected", buyerLang, { code: orderCode, reason: esc(reason) }),
+        { parse_mode: "HTML", reply_markup: notificationKb(buyerLang) },
+      );
+    } catch (err) {
+      logger.error({ err }, "Failed to notify buyer of rejection");
+    }
   }
 
   await adminEdit(ctx, coreT("admin.rejected", adminLang, { code: orderCode }), akb.backToAdminKb(adminLang));

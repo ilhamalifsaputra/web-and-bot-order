@@ -29,6 +29,11 @@ process.env.USE_UNIQUE_CENTS = "0";
 process.env.DEFAULT_LANGUAGE = "en";
 process.env.LOW_STOCK_THRESHOLD = "3";
 process.env.PAYMENT_WINDOW_MINUTES = "30";
+// Neutralize payment creds so a developer's real root .env can't leak live keys
+// into the test process or make the auto-confirm "enabled" gate non-deterministic.
+process.env.BYBIT_DEPOSIT_ADDRESS = "";
+process.env.BYBIT_API_KEY = "";
+process.env.BYBIT_API_SECRET = "";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 execSync("pnpm exec prisma db push --skip-generate --accept-data-loss", {

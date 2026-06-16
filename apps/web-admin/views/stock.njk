@@ -3,10 +3,7 @@
 {% block title %}Stock · Shop Admin{% endblock %}
 
 {% block content %}
-<header class="mb-6">
-  <h1 class="page-title flex items-center gap-2.5"><i data-lucide="boxes" class="w-7 h-7 text-violet-500"></i> Stock</h1>
-  <p class="page-lead">How many of each product you have ready to sell.</p>
-</header>
+{{ ui.page_header('Stock', 'How many of each product you have ready to sell.', 'boxes', 'products') }}
 {{ ui.flash(msg, kind) }}
 
 {% if not products %}

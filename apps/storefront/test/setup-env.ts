@@ -23,6 +23,13 @@ process.env.BOT_USERNAME = "TestBot";
 process.env.BINANCE_PAY_ID = "111222333";
 process.env.USE_UNIQUE_CENTS = "0";
 process.env.DEFAULT_LANGUAGE = "en";
+process.env.SMTP_HOST = "smtp.test.invalid";
+process.env.SMTP_FROM = "Shop <no-reply@test.invalid>";
+// Shadow any real Bybit creds from the monorepo-root .env so payment-method
+// gating is driven purely by Settings in tests (dotenv never overrides these).
+process.env.BYBIT_DEPOSIT_ADDRESS = "";
+process.env.BYBIT_API_KEY = "";
+process.env.BYBIT_API_SECRET = "";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 execSync("pnpm exec prisma db push --skip-generate --accept-data-loss", {

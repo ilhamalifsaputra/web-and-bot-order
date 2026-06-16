@@ -8,6 +8,7 @@ import {
   deliverPaidInternalOrder,
   markUnderpaid,
   recordUnmatchedTx,
+  dismissUnmatchedTx,
   listPendingInternalOrders,
 } from "@app/db";
 import type { Api } from "grammy";
@@ -273,5 +274,23 @@ describe("markUnderpaid / recordUnmatchedTx", () => {
     expect(await recordUnmatchedTx(prisma, { binanceTxId: "TX-UNM", amount: "9.99" })).toBe(true);
     expect(await recordUnmatchedTx(prisma, { binanceTxId: "TX-UNM", amount: "9.99" })).toBe(false);
     expect(await prisma.processedBinanceTx.count({ where: { binanceTxId: "TX-UNM", outcome: "unmatched" } })).toBe(1);
+  });
+
+  it("dismissUnmatchedTx flips an unmatched row to dismissed (kept, not deleted)", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "TX-DIS", amount: "1.00" });
+    await dismissUnmatchedTx(prisma, "TX-DIS");
+    const row = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "TX-DIS" } });
+    expect(row!.outcome).toBe("dismissed");
+  });
+
+  it("dismissUnmatchedTx rejects a missing tx", async () => {
+    await expect(dismissUnmatchedTx(prisma, "NOPE")).rejects.toThrow();
+  });
+
+  it("dismissUnmatchedTx refuses a non-unmatched row (e.g. matched)", async () => {
+    const order = await makeInternalOrder();
+    await deliverPaidInternalOrder(prisma, { orderId: order!.id, binanceTxId: "TX-MTCH", amount: order!.totalAmount });
+    await expect(dismissUnmatchedTx(prisma, "TX-MTCH")).rejects.toThrow();
+    expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "TX-MTCH" } }))!.outcome).toBe("matched");
   });
 });

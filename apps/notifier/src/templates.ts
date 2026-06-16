@@ -81,6 +81,7 @@ interface DeliveredPayload {
   total?: unknown;
   currency?: unknown;
   delivered_at?: unknown;
+  via_website?: unknown;
 }
 
 interface AdminResetPayload {
@@ -114,19 +115,20 @@ export function render(
     );
   }
   if (event === NotificationEvent.ORDER_DELIVERED_DM) {
-    // Buyer DM after a web order auto-delivers (TokoPay path). Bilingual; links
-    // to the storefront order page — credentials are NEVER carried in the
-    // outbox payload (the /outbox admin panel would show them).
+    // Buyer DM after an order auto-delivers (TokoPay/QRIS path). Only enqueued for
+    // buyers WITH a Telegram account, so we point them to the bot's My Orders.
+    // Credentials are NEVER carried in the outbox payload (the /outbox admin panel
+    // would show them). The web order link stays as an optional fallback.
     const code = escape(String(payload.order_code ?? ""));
     const rawUrl = typeof payload.order_url === "string" ? payload.order_url : "";
     const url = /^https?:\/\//.test(rawUrl) ? rawUrl : "";
-    const linkEn = url ? `\nView it here: ${escape(url)}` : "";
-    const linkId = url ? `\nLihat di sini: ${escape(url)}` : "";
+    const linkEn = url ? `\nOr view on the website: ${escape(url)}` : "";
+    const linkId = url ? `\nAtau lihat di website: ${escape(url)}` : "";
     return (
       `✅ <b>Order <code>${code}</code> delivered!</b>\n` +
-      `Your payment is confirmed and your credentials are ready on the website (My orders).${linkEn}\n\n` +
+      `Payment confirmed — open <b>My Orders</b> in the bot to see your account(s).${linkEn}\n\n` +
       `✅ <b>Pesanan <code>${code}</code> terkirim!</b>\n` +
-      `Pembayaran dikonfirmasi — akunmu sudah siap di website (Pesananku).${linkId}`
+      `Pembayaran dikonfirmasi — buka <b>Pesananku</b> di bot untuk melihat akunmu.${linkId}`
     );
   }
   if (event === NotificationEvent.ORDER_DELIVERED) {
@@ -136,13 +138,14 @@ export function render(
     const total = escape(String(payload.total ?? "0"));
     const currency = escape(String(payload.currency ?? "USDT"));
     const deliveredAt = escape(String(payload.delivered_at ?? ""));
+    const viaWeb = payload.via_website ? `\n🌐 via Website` : "";
     return (
       `📢 <b>${s.title}</b>\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
       `👤 ${s.buyer}: <code>${buyer}</code>\n` +
       `🛍️ ${s.products}:\n${itemsText}\n` +
       `💳 ${s.total}: <b>${total} ${currency}</b>\n` +
-      `📅 ${s.date}: ${deliveredAt}\n` +
+      `📅 ${s.date}: ${deliveredAt}${viaWeb}\n` +
       `━━━━━━━━━━━━━━━━━━\n` +
       `${s.thanks}\n` +
       `━━━━━━━━━━━━━━━━━━`

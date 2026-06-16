@@ -5,8 +5,17 @@
 {% block content %}
 <div class="mb-6">
   <a href="/stock" class="link text-sm">← All stock</a>
-  <h1 class="page-title mt-1 flex items-center gap-2.5"><i data-lucide="boxes" class="w-7 h-7 text-violet-500"></i> {{ product.name }}</h1>
-  <p class="page-lead">{{ product.durationLabel }} · {{ available }} ready to sell</p>
+  <div class="mt-1 flex items-start justify-between gap-3 flex-wrap">
+    <div>
+      <h1 class="page-title flex items-center gap-2.5"><i data-lucide="boxes" class="w-7 h-7 text-violet-500"></i> {{ product.name }}</h1>
+      <p class="page-lead">{{ product.durationLabel }} · {{ available }} ready to sell</p>
+    </div>
+    {% if available %}
+    <a href="/stock/{{ product.id }}/download" class="btn btn-soft btn-sm shrink-0">
+      <i data-lucide="download" class="w-4 h-4"></i> Download remaining ({{ available }})
+    </a>
+    {% endif %}
+  </div>
 </div>
 {{ ui.flash(msg, kind) }}
 
@@ -31,10 +40,12 @@
       onsubmit="return collectBulkStock();">
   {{ ui.csrf_field(admin) }}
   <input type="hidden" name="ids" id="bs-ids">
-  <label class="flex items-center gap-1 text-ink-soft"><input type="checkbox" onclick="document.querySelectorAll('.bs-cb').forEach(c=>c.checked=this.checked)"> Select all (ready/held)</label>
+  <label class="flex items-center gap-1 text-ink-soft"><input type="checkbox" onclick="document.querySelectorAll('.bs-cb').forEach(c=>c.checked=this.checked)"> Select all</label>
   <input type="text" name="note" placeholder="reason (optional)" class="field w-auto py-1.5">
   <button type="submit" class="btn btn-danger btn-sm"
           onclick="return confirm('Mark the selected items as bad (no longer usable)?');">Mark selected as bad</button>
+  <button type="submit" formaction="/stock/{{ product.id }}/bulk-delete" class="btn btn-danger btn-sm"
+          onclick="return confirm('Permanently delete the selected items? This cannot be undone. Sold items are kept.');">Delete selected</button>
 </form>
 {% endif %}
 
@@ -55,7 +66,7 @@
     <tbody>
       {% for it in items %}
       <tr class="align-top">
-        <td>{% if (it.status | lower) in ['available', 'reserved'] %}<input type="checkbox" class="bs-cb" value="{{ it.id }}">{% endif %}</td>
+        <td>{% if (it.status | lower) != 'sold' %}<input type="checkbox" class="bs-cb" value="{{ it.id }}">{% endif %}</td>
         <td class="text-ink-faint tabular">{{ it.id }}</td>
         <td>{{ ui.status_badge(it.status) }}</td>
         <td class="font-mono text-xs break-all max-w-xs">{{ it.credentials }}</td>
@@ -93,7 +104,7 @@
 <script>
 function collectBulkStock() {
   const ids = [...document.querySelectorAll('.bs-cb:checked')].map(c => c.value);
-  if (!ids.length) { alert('Select at least one ready/held item.'); return false; }
+  if (!ids.length) { alert('Select at least one item.'); return false; }
   document.getElementById('bs-ids').value = ids.join(',');
   return true;
 }

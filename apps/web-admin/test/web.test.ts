@@ -330,6 +330,35 @@ describe("orders", () => {
     expect(res.statusCode).toBe(403);
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
   });
+
+  it("credit-balance on a paid order → CANCELLED + buyer credited + audit", async () => {
+    const orderId = await makePendingOrder(); // PENDING_VERIFICATION (paid)
+    const order = (await getOrder(prisma, orderId))!;
+    const before = Number((await getUser(prisma, seed.customerId))!.walletBalance);
+    const res = await post(`/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect((await getOrder(prisma, orderId))!.status).toBe("CANCELLED");
+    const after = Number((await getUser(prisma, seed.customerId))!.walletBalance);
+    expect(after - before).toBeCloseTo(Number(order.totalAmount));
+    const audit = await prisma.auditLog.findMany({ where: { action: "order_credit_balance", targetId: orderId } });
+    expect(audit.length).toBe(1);
+  });
+
+  it("credit-balance requires auth (anon → /login)", async () => {
+    const orderId = await makePendingOrder();
+    const res = await post(`/orders/${orderId}/credit-balance`, null, { csrf_token: "x" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
+  });
+
+  it("credit-balance rejects bad CSRF (403)", async () => {
+    const orderId = await makePendingOrder();
+    const res = await post(`/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: "bad" });
+    expect(res.statusCode).toBe(403);
+    expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
+  });
 });
 
 // ---- catalog (acceptance #5) ----------------------------------------------
@@ -400,6 +429,58 @@ describe("stock", () => {
   it("bulk add rejects bad CSRF", async () => {
     const res = await post(`/stock/${seed.productId}/add`, seed.cookie, { csrf_token: "nope", credentials: "x@e.com:p" });
     expect(res.statusCode).toBe(403);
+  });
+
+  it("bulk delete removes available rows but keeps sold + audit never logs credentials", async () => {
+    const avail = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" } });
+    const delId = avail[0].id;
+    const sold = await prisma.stockItem.update({
+      where: { id: avail[1].id },
+      data: { status: "SOLD", soldAt: new Date() },
+    });
+    const res = await post(`/stock/${seed.productId}/bulk-delete`, seed.cookie, {
+      csrf_token: seed.csrf,
+      ids: `${delId},${sold.id}`,
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await prisma.stockItem.findUnique({ where: { id: delId } })).toBeNull();
+    expect(await prisma.stockItem.findUnique({ where: { id: sold.id } })).not.toBeNull();
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "stock_bulk_delete", targetId: seed.productId } });
+    expect(audit.length).toBe(1);
+    expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
+  });
+
+  it("bulk delete requires auth", async () => {
+    const res = await post(`/stock/${seed.productId}/bulk-delete`, null, { csrf_token: "x", ids: "1" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("bulk delete rejects bad CSRF", async () => {
+    const res = await post(`/stock/${seed.productId}/bulk-delete`, seed.cookie, { csrf_token: "nope", ids: "1" });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("download returns AVAILABLE credentials as a text attachment + audit by count", async () => {
+    const avail = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" }, orderBy: { id: "asc" } });
+    const res = await get(`/stock/${seed.productId}/download`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/plain");
+    expect(res.headers["content-disposition"]).toContain("attachment");
+    expect(res.headers["content-disposition"]).toContain(".txt");
+    for (const it of avail) expect(res.body).toContain(it.credentials);
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "stock_download", targetId: seed.productId } });
+    expect(audit.length).toBeGreaterThanOrEqual(1);
+    expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
+  });
+
+  it("download requires auth", async () => {
+    const res = await get(`/stock/${seed.productId}/download`, null);
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
   });
 });
 
@@ -789,6 +870,59 @@ describe("payments", () => {
     expect(tx!.orderId).toBe(order.id);
     // approve path enqueues exactly one testimoni outbox row.
     expect((await prisma.notificationOutbox.findMany({ where: { orderId: order.id } })).length).toBe(1);
+  });
+
+  it("credit unmatched tx → buyer credit balance + order CANCELLED + tx credited_to_balance + audit", async () => {
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    const before = Number((await getUser(prisma, seed.customerId))!.walletBalance);
+    await recordUnmatchedTx(prisma, { binanceTxId: "CRTX1", amount: "5.00" });
+
+    const res = await post("/payments/credit", seed.cookie, {
+      csrf_token: seed.csrf,
+      binance_tx_id: "CRTX1",
+      order_code: order.orderCode,
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+
+    expect((await getOrder(prisma, order.id))!.status).toBe("CANCELLED");
+    const after = Number((await getUser(prisma, seed.customerId))!.walletBalance);
+    expect(after - before).toBeCloseTo(5);
+
+    const tx = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "CRTX1" } });
+    expect(tx!.outcome).toBe("credited_to_balance");
+    expect(tx!.orderId).toBe(order.id);
+
+    const logs = await listAuditLogs(prisma, { limit: 5 });
+    expect(logs.some((l) => l.action === "tx_credit_balance")).toBe(true);
+  });
+
+  it("credit requires auth (anon → /login)", async () => {
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    await recordUnmatchedTx(prisma, { binanceTxId: "CRTX2", amount: "5.00" });
+    const res = await post("/payments/credit", null, {
+      csrf_token: "x",
+      binance_tx_id: "CRTX2",
+      order_code: order.orderCode,
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect((await getOrder(prisma, order.id))!.status).toBe("PENDING_PAYMENT");
+  });
+
+  it("credit rejects bad CSRF (403)", async () => {
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    await recordUnmatchedTx(prisma, { binanceTxId: "CRTX3", amount: "5.00" });
+    const res = await post("/payments/credit", seed.cookie, {
+      csrf_token: "bad",
+      binance_tx_id: "CRTX3",
+      order_code: order.orderCode,
+    });
+    expect(res.statusCode).toBe(403);
+    expect((await getOrder(prisma, order.id))!.status).toBe("PENDING_PAYMENT");
   });
 
   it("GET /payments renders the history with the explainer + a Dismiss action for unmatched rows", async () => {

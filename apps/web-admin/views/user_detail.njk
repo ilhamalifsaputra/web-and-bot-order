@@ -21,8 +21,9 @@
       <dl class="space-y-1.5">
         <div class="flex justify-between gap-3"><dt class="text-ink-soft">Telegram</dt><dd class="font-mono">{{ user.telegramId or "—" }}</dd></div>
         <div class="flex justify-between gap-3"><dt class="text-ink-soft">Username</dt><dd>{{ user.username or '—' }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Wallet balance</dt><dd class="tabular">{{ user.walletBalance | idr }}</dd></div>
-        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Total spent</dt><dd class="tabular">{{ total_spent | idr }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">IDR credit balance</dt><dd class="tabular">{{ user.walletBalance | idr }}</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">USDT credit balance</dt><dd class="tabular">{{ user.walletBalanceUsdt | money }} USDT</dd></div>
+        <div class="flex justify-between gap-3"><dt class="text-ink-soft">Total spent</dt><dd class="tabular">{{ total_spent.idr | idr }}{% if total_spent.usdt and total_spent.usdt > 0 %} · {{ total_spent.usdt | money }} USDT{% endif %}</dd></div>
         <div class="flex justify-between gap-3"><dt class="text-ink-soft">Referral code</dt><dd class="font-mono">{{ user.referralCode }}</dd></div>
         <div class="flex justify-between gap-3"><dt class="text-ink-soft">Joined</dt><dd>{{ user.createdAt | localdt }}</dd></div>
         {% if user.banned and user.bannedReason %}<div class="text-rust text-xs mt-2">Block reason: {{ user.bannedReason }}</div>{% endif %}
@@ -85,13 +86,14 @@
       <h2 class="section-title mb-3">Wallet history</h2>
       <p class="text-xs text-ink-faint mb-2">Every change to their wallet — top-ups, refunds, referral rewards, and payments — with the balance after each one.</p>
       <table class="data-table">
-        <thead><tr><th>When</th><th class="text-right">Change</th><th class="text-right">Balance</th><th>Reason</th><th>Link</th></tr></thead>
+        <thead><tr><th>When</th><th class="text-right">Change</th><th class="text-right">Balance</th><th>Currency</th><th>Reason</th><th>Link</th></tr></thead>
         <tbody>
           {% for e in ledger %}
           <tr>
             <td class="text-ink-soft">{{ e.createdAt | localdt }}</td>
             <td class="text-right font-mono tabular {% if e.delta[0] == '-' %}text-rust{% else %}text-grass{% endif %}">{{ e.delta }}</td>
             <td class="text-right font-mono tabular text-ink-soft">{{ e.balanceAfter }}</td>
+            <td><span class="chip bg-sand text-ink-soft">{{ e.currency }}</span></td>
             <td>
               <span class="chip bg-sand text-ink-soft">{{ e.reason | replace('_', ' ') | title }}</span>
               {% if e.note %}<span class="text-ink-soft">· {{ e.note }}</span>{% endif %}
@@ -102,7 +104,7 @@
             </td>
           </tr>
           {% else %}
-          {{ ui.empty_row(5, 'No wallet activity.') }}
+          {{ ui.empty_row(6, 'No wallet activity.') }}
           {% endfor %}
         </tbody>
       </table>

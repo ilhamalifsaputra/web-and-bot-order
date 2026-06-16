@@ -237,7 +237,22 @@ describe("checkout handlers", () => {
     checkout.cancelPaymentJobs(orders[0]!.id); // clear the countdown timer
   });
 
-  it("buyNowTokopay creates an IDR/TOKOPAY order and sends the QR photo", async () => {
+  it("buyNow unifies the Binance QR + instructions into one photo+caption bubble when a QR is set", async () => {
+    await setSetting(prisma, "usd_idr_rate", "1");
+    await setSetting(prisma, "qr", "QR_FILE_ID"); // stored QR file_id
+    const { ctx, sink } = customerCtx({ callbackData: "v1:pay:1:1" });
+    await checkout.buyNow(ctx, sample.product.id, 1);
+    const orders = await prisma.order.findMany();
+    expect(orders).toHaveLength(1);
+    // QR + instructions ride in ONE photo+caption bubble — no separate sendPhoto.
+    expect(calls(sink, "sendPhoto").length).toBe(0);
+    const photoCalls = calls(sink, "replyWithPhoto");
+    expect(photoCalls.length).toBe(1);
+    expect((photoCalls[0]!.args[1] as { caption?: string }).caption).toBeTruthy();
+    checkout.cancelPaymentJobs(orders[0]!.id); // clear the countdown timer
+  });
+
+  it("buyNowTokopay creates an IDR/TOKOPAY order and sends the QR as one photo+caption bubble", async () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
     const { ctx, sink } = makeCtx({ session: { dbUser: sample.user, lang: "en" } });
@@ -245,7 +260,12 @@ describe("checkout handlers", () => {
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
     expect(orders[0]!.paymentMethod).toBe("TOKOPAY");
     expect(orders[0]!.currency).toBe("IDR");
-    expect(calls(sink, "sendPhoto").length).toBe(1);
+    // QR + instructions are unified into ONE photo+caption bubble (not a
+    // separate sendPhoto below a text bubble).
+    expect(calls(sink, "sendPhoto").length).toBe(0);
+    const photoCalls = calls(sink, "replyWithPhoto");
+    expect(photoCalls.length).toBe(1);
+    expect((photoCalls[0]!.args[1] as { caption?: string }).caption).toBeTruthy();
   });
 
   it("buyNow refuses past the pending-order limit", async () => {

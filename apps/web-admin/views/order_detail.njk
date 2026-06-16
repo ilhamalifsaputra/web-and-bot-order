@@ -66,6 +66,18 @@
     </div>
     {% endif %}
 
+    {% if can_credit %}
+    <div class="card card-pad">
+      <h2 class="section-title mb-1">Can't deliver this order?</h2>
+      <p class="text-xs text-ink-soft mb-3">If the customer paid but you can't fulfil this order (the stock is gone), add the paid amount to their credit balance — it stays in the order's currency for them to spend on a future purchase, and this order is closed.</p>
+      <form method="post" action="/orders/{{ order.id }}/credit-balance"
+            onsubmit="return confirm('Add {{ order.totalAmount | idr }} to the buyer\'s credit balance and close this order?');">
+        {{ ui.csrf_field(admin) }}
+        <button class="btn btn-soft"><i data-lucide="wallet" class="w-4 h-4"></i> Add paid amount to buyer's credit balance</button>
+      </form>
+    </div>
+    {% endif %}
+
     {% if order.adminNote %}
     <div class="card card-pad">
       <h2 class="section-title mb-2">Notes</h2>

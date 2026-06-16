@@ -62,12 +62,13 @@
   'open': 'Open', 'replied': 'Replied', 'pending': 'Waiting',
   'pending_payment': 'Awaiting payment', 'underpaid': 'Paid too little',
   'cancelled': 'Cancelled', 'rejected': 'Rejected', 'refunded': 'Refunded',
-  'dead': 'Used up', 'failed': 'Failed', 'unmatched': 'Unmatched'
+  'dead': 'Used up', 'failed': 'Failed', 'unmatched': 'Unmatched',
+  'credited_to_balance': 'Added to credit balance'
 } %}
 {% macro status_badge(value) -%}
 {% set v = (value | string | lower) %}
 <span class="chip
-  {% if v in ['delivered', 'paid', 'available', 'active', 'closed', 'sent', 'matched'] %}bg-grass-tint text-grass-dark
+  {% if v in ['delivered', 'paid', 'available', 'active', 'closed', 'sent', 'matched', 'credited_to_balance'] %}bg-grass-tint text-grass-dark
   {% elif v in ['pending_verification', 'reserved', 'open', 'replied', 'pending', 'underpaid'] %}bg-amberx-tint text-amberx
   {% elif v in ['pending_payment'] %}bg-pine-tint text-pine-dark
   {% elif v in ['cancelled', 'rejected', 'refunded', 'dead', 'failed', 'unmatched'] %}bg-rust-tint text-rust-dark

@@ -348,19 +348,38 @@ export function orderConfirmKb(
       { text: coreT("checkout.use_voucher", lang), data: cb("voucher", "start", productId, qty) },
     ]);
   }
-  if (internalEnabled || bybitEnabled || tokopayEnabled) {
-    // Explicit payment methods (Binance Pay is always available; the auto-confirm
-    // crypto methods appear only when configured).
-    rows.push([{ text: coreT("checkout.pay_binance_pay_btn", lang), data: cb("pay", productId, qty) }]);
-    if (internalEnabled) rows.push([{ text: coreT("checkout.pay_internal_btn", lang), data: cb("payx", productId, qty) }]);
-    if (bybitEnabled) rows.push([{ text: coreT("checkout.pay_bybit_btn", lang), data: cb("payb", productId, qty) }]);
+  const hasUsdt = internalEnabled || bybitEnabled;
+  if (tokopayEnabled || hasUsdt) {
+    // Top-level methods: QRIS first, then a single USDT entry that opens a
+    // submenu (Binance / Bybit). The legacy manual Binance Pay method is retired.
     if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: cb("payq", productId, qty) }]);
+    if (hasUsdt) rows.push([{ text: coreT("checkout.pay_usdt_btn", lang), data: cb("usdt", productId, qty) }]);
   } else {
+    // No payment method configured at all — fall back to a plain confirm.
     rows.push([{ text: coreT("checkout.confirm_btn", lang), data: cb("pay", productId, qty) }]);
   }
   rows.push([
     { text: coreT("checkout.cancel_btn", lang), data: cb("browse", "prod", productId) },
   ]);
+  return ik(rows);
+}
+
+/**
+ * USDT payment submenu — reached from the "USDT" entry on the order confirmation.
+ * Lists the configured auto-confirm USDT rails (Binance Transfer, Bybit/BSC) and
+ * a Back action that returns to the confirmation screen.
+ */
+export function usdtMethodsKb(
+  productId: number,
+  qty: number,
+  lang: string,
+  internalEnabled = false,
+  bybitEnabled = false,
+): InlineKeyboard {
+  const rows: Btn[][] = [];
+  if (internalEnabled) rows.push([{ text: coreT("checkout.pay_internal_btn", lang), data: cb("payx", productId, qty) }]);
+  if (bybitEnabled) rows.push([{ text: coreT("checkout.pay_bybit_btn", lang), data: cb("payb", productId, qty) }]);
+  rows.push([{ text: coreT("menu.back", lang), data: cb("buy", productId, qty) }]);
   return ik(rows);
 }
 

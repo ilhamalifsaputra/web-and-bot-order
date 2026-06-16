@@ -105,6 +105,26 @@ interface PaymentJobBase {
   expiresAt: Date;
   binanceId: string;
   menuMsgId: number;
+  qrPhoto: boolean; // true when menuMsgId is a photo+caption bubble (edit caption, not text)
+}
+
+async function editPaymentBubble(
+  base: PaymentJobBase,
+  text: string,
+  kb: ReturnType<typeof ckb.paymentInstructionsKb>,
+): Promise<void> {
+  if (base.qrPhoto) {
+    await base.api.editMessageCaption(base.chatId, base.menuMsgId, {
+      caption: text,
+      parse_mode: "HTML",
+      reply_markup: kb,
+    });
+  } else {
+    await base.api.editMessageText(base.chatId, base.menuMsgId, text, {
+      parse_mode: "HTML",
+      reply_markup: kb,
+    });
+  }
 }
 
 function schedulePaymentJobs(base: PaymentJobBase): void {
@@ -148,10 +168,7 @@ async function countdownTick(base: PaymentJobBase): Promise<void> {
     countdown: formatCountdown(base.expiresAt),
   });
   try {
-    await base.api.editMessageText(base.chatId, base.menuMsgId, text, {
-      parse_mode: "HTML",
-      reply_markup: ckb.paymentInstructionsKb(base.orderId, base.lang),
-    });
+    await editPaymentBubble(base, text, ckb.paymentInstructionsKb(base.orderId, base.lang));
   } catch (exc) {
     if (!/message is not modified/i.test(String(exc))) {
       logger.debug(`Countdown edit failed for order ${base.orderId}: ${exc}`);
@@ -172,10 +189,7 @@ async function paymentReminder(base: PaymentJobBase, level: number): Promise<voi
   // Edit the existing payment-instructions bubble instead of flooding the chat
   // with a new reminder message — consistent with the single-anchor pattern.
   try {
-    await base.api.editMessageText(base.chatId, base.menuMsgId, text, {
-      parse_mode: "HTML",
-      reply_markup: kb,
-    });
+    await editPaymentBubble(base, text, kb);
     return;
   } catch (err) {
     if (/message is not modified/i.test(String(err))) return;
@@ -226,34 +240,49 @@ export async function sendPaymentInstructions(ctx: MyContext, orderId: number): 
   // Clear any stale QR tracking from a previous payment screen before sending a fresh one.
   ctx.session.qrMsgId = undefined;
 
-  // 1) Edit the confirmation bubble in place into the payment instructions
-  //    (reuse the message the "Confirm" button sits on). smartEdit falls back
-  //    to a fresh send when there's no callback to edit (e.g. /cancel path).
-  await smartEdit(ctx, text, ckb.paymentInstructionsKb(orderId, lang));
-  const menuMsgId = ctx.session.menuMsgId;
-
-  // 2) A QR image can't live inside an edited text message — send it as a
-  //    separate photo just below and track its message_id so cancel can delete it.
+  const kb = ckb.paymentInstructionsKb(orderId, lang);
+  // Resolve the QR source: a stored file_id setting wins, else the bundled image.
+  let qrPhotoArg: string | InputFile | undefined;
   if (qrFileId) {
-    try {
-      const qrMsg = await ctx.api.sendPhoto(chatId, qrFileId);
-      ctx.session.qrMsgId = qrMsg.message_id;
-    } catch (err) {
-      logger.error({ err }, "Failed to send QR photo");
-    }
+    qrPhotoArg = qrFileId;
   } else if (config.BINANCE_QR_PATH && fs.existsSync(config.BINANCE_QR_PATH)) {
-    try {
-      const qrMsg = await ctx.api.sendPhoto(chatId, new InputFile(config.BINANCE_QR_PATH));
-      ctx.session.qrMsgId = qrMsg.message_id;
-    } catch (err) {
-      logger.error({ err }, "Failed to send QR image");
-    }
+    qrPhotoArg = new InputFile(config.BINANCE_QR_PATH);
   }
 
-  // 3) Mark this order as the chat's active payment view + schedule jobs.
+  // Unify the QR image and the instructions into ONE photo+caption bubble
+  // (image + caption + payment keyboard), so the QR reads as part of the same
+  // screen instead of a detached photo below. A text confirm bubble can't morph
+  // into a photo via edit, so delete it and send the QR fresh, then track it as
+  // menuMsgId. The countdown/reminder jobs edit this bubble's caption (qrPhoto).
+  let qrPhoto = false;
+  if (qrPhotoArg) {
+    const confirmMsgId = ctx.callbackQuery?.message?.message_id ?? ctx.session.menuMsgId;
+    try {
+      const qrMsg = await ctx.replyWithPhoto(qrPhotoArg, {
+        caption: text,
+        parse_mode: "HTML",
+        reply_markup: kb,
+      });
+      ctx.session.menuMsgId = qrMsg.message_id;
+      qrPhoto = true;
+      if (confirmMsgId && confirmMsgId !== qrMsg.message_id) {
+        try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
+      }
+    } catch (err) {
+      logger.error({ err }, "Failed to send QR photo");
+      // QR image failed — fall back to a text-only instructions bubble.
+      await smartEdit(ctx, text, kb);
+    }
+  } else {
+    // No QR configured — keep the text-only instructions bubble.
+    await smartEdit(ctx, text, kb);
+  }
+  const menuMsgId = ctx.session.menuMsgId;
+
+  // Mark this order as the chat's active payment view + schedule jobs.
   setActivePayment(chatId, orderId);
   if (expiresAt && menuMsgId) {
-    schedulePaymentJobs({ api: ctx.api, orderId, chatId, lang, expiresAt, binanceId, menuMsgId });
+    schedulePaymentJobs({ api: ctx.api, orderId, chatId, lang, expiresAt, binanceId, menuMsgId, qrPhoto });
   }
 }
 
@@ -390,6 +419,38 @@ export async function renderOrderConfirmation(
     { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null, bybitEnabled && rate !== null, tokopayEnabled) },
   );
   ctx.session.menuMsgId = msg.message_id;
+}
+
+/**
+ * USDT payment submenu — keeps the order-summary bubble but swaps the keyboard
+ * for the USDT rails (Binance Transfer / Bybit). Reached from the "USDT" entry
+ * on the confirmation screen; Back returns to {@link showOrderConfirmation}.
+ */
+export async function showUsdtMethods(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+  const lang = ctx.session.lang;
+
+  const product = await getProduct(prisma, productId);
+  if (product === null) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.try_again"), show_alert: true });
+    await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
+    return;
+  }
+  const r = await computeConfirmation(ctx, productId, quantity);
+  if (!r) return;
+
+  const rate = await currentUsdtRate();
+  const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
+  await smartEdit(
+    ctx,
+    t(ctx, "checkout.confirm_order", {
+      product: esc(r.productName),
+      qty: quantity,
+      unit_price: priceIdr(r.unitPrice, rate),
+      voucher_line: r.voucherLine,
+      total: priceIdr(r.subtotal, rate),
+    }),
+    ckb.usdtMethodsKb(productId, quantity, lang, isBinanceInternalEnabled() && rate !== null, bybitEnabled && rate !== null),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -640,16 +701,33 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     expiry,
   });
 
-  // Edit the confirm bubble into the QRIS caption, then send the QR image below.
-  await smartEdit(ctx, caption, ckb.qrisWaitingKb(order.id, lang));
+  // Unify the QR image and the payment instructions into ONE photo+caption
+  // bubble (image + caption + waiting keyboard), so the QR reads as part of the
+  // same screen instead of a detached photo below. A text confirm bubble can't
+  // morph into a photo via edit, so delete it and send the QR fresh, then track
+  // it as menuMsgId — smartEdit edits a photo bubble's caption in place, so the
+  // cancel/expiry transitions still land on this same bubble.
+  const confirmMsgId = ctx.callbackQuery?.message?.message_id ?? ctx.session.menuMsgId;
   ctx.session.qrMsgId = undefined;
+  const waitingKb = ckb.qrisWaitingKb(order.id, lang);
   if (gateway.qrLink) {
     try {
-      const qrMsg = await ctx.api.sendPhoto(chatId, gateway.qrLink);
-      ctx.session.qrMsgId = qrMsg.message_id;
+      const qrMsg = await ctx.replyWithPhoto(gateway.qrLink, {
+        caption,
+        parse_mode: "HTML",
+        reply_markup: waitingKb,
+      });
+      ctx.session.menuMsgId = qrMsg.message_id;
+      if (confirmMsgId && confirmMsgId !== qrMsg.message_id) {
+        try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
+      }
     } catch (err) {
       logger.error({ err }, "Failed to send QRIS photo");
+      // QR image failed — fall back to a text-only instructions bubble.
+      await smartEdit(ctx, caption, waitingKb);
     }
+  } else {
+    await smartEdit(ctx, caption, waitingKb);
   }
   setActivePayment(chatId, order.id);
 }

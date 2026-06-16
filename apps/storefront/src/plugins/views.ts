@@ -28,6 +28,18 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // shipped views dir). See DEPLOY-HOSTINGER.md §3.
 const VIEWS_DIR = process.env.STOREFRONT_VIEWS_DIR ?? join(HERE, "..", "..", "views");
 
+/** Plain money: 4dp string, "—" for null/empty. Used for native USDT amounts
+ * (e.g. the USDT credit balance) where no IDR→USDT derivation applies. Mirrors
+ * web-admin's `money` filter. */
+function moneyFilter(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "—";
+  try {
+    return new Decimal(value as Decimal.Value).toFixed(4);
+  } catch {
+    return String(value);
+  }
+}
+
 /** Central IDR price: "Rp79.000". "—" for null/empty. */
 function idrFilter(value: unknown): string {
   if (value === null || value === undefined || value === "") return "—";
@@ -72,6 +84,7 @@ const viewsPlugin: FastifyPluginAsync = async (app) => {
     autoescape: true,
     noCache: process.env.NODE_ENV !== "production",
   });
+  env.addFilter("money", moneyFilter);
   env.addFilter("idr", idrFilter);
   env.addFilter("usdt", usdtFilter);
   env.addFilter("localdt", localdtFilter);

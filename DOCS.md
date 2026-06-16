@@ -144,12 +144,57 @@ Whitelist `EDITABLE`, dikelompokkan jadi tab di `settings.njk`:
   token bot kosong (bot OFF sampai diisi + restart). Build & langkah Hostinger:
   Bagian 4.
 
+**7. Manajemen stok lanjutan di web-admin (Juni 2026).**
+Halaman **web-admin › Stock › (produk)** (`apps/web-admin/src/routes/stock.ts`,
+view `stock_product.njk`) kini punya tiga aksi di luar tambah-stok & catatan:
+- **Lihat stok** — tabel semua item per produk dengan status (AVAILABLE /
+  RESERVED / SOLD / DEAD), login, order, dan catatan.
+- **Unduh stok tersisa** — tombol "Download remaining" → `GET
+  /stock/:productId/download` mengembalikan **file `.txt`, satu kredensial per
+  baris** (format sama dengan kotak upload) hanya untuk item **AVAILABLE**.
+  Read-only (`currentAdmin`), `Content-Disposition: attachment` +
+  `Cache-Control: no-store`, **diaudit hanya jumlahnya** (`stock_download`) —
+  kredensial tak pernah masuk log.
+- **Hapus terpilih** — checkbox + tombol "Delete selected" → `POST
+  /stock/:productId/bulk-delete` **menghapus baris secara permanen** (beda dari
+  "Mark as bad" yang menyetel status DEAD tapi menyimpan barisnya). Dua pengaman
+  di crud `bulkDeleteStock`: item **SOLD tak pernah dihapus** dan item yang
+  **terkait order item dilewati**, sehingga histori order terkirim tetap utuh.
+  CSRF-protected, diaudit `stock_bulk_delete` (`requested`/`deleted`, tanpa
+  kredensial). Crud baru: `bulkDeleteStock`, `listAvailableCredentials` di
+  `packages/db/src/crud/stock.ts`.
+
+**8. Credit balance dua mata uang (IDR + USDT) untuk order tak terpenuhi.**
+Saat pembeli sudah membayar tapi pesanan tak bisa diantar (mis. pembayaran
+async/telat ke order yang sudah kedaluwarsa), dana bisa dimasukkan ke **credit
+balance** pembeli (store credit, **bukan** refund ke rekening, **bukan** "saldo").
+- **Dua saldo terpisah tanpa konversi**: kolom `User.walletBalance` (IDR) +
+  `User.walletBalanceUsdt`, dan `WalletTransaction.currency` menandai tiap baris
+  ledger. Chokepoint `adjustWallet` jadi sadar-mata-uang (overdraw per-currency).
+- Aksi admin: **payments › unmatched** ("Add to buyer's credit balance") dan
+  **order detail** (saat paid-but-undeliverable) memanggil `creditOrderToBalance`
+  → kredit ke saldo mata-uang order (`unfulfilled_credit`), lepas hold stok,
+  tandai order **CANCELLED** (bukan REFUNDED), idempoten, dan retag tx jadi
+  `credited_to_balance`. Kedua rute CSRF-protected + diaudit.
+- Tampil di **web-admin user detail**, **storefront account**, dan **profil bot**
+  (dua saldo). Crud: `packages/db/src/crud/{users,orders,binance_internal,
+  bybit_deposit}.ts`. Desain lengkap: `docs/superpowers/specs/2026-06-16-dual-credit-balance-design.md`.
+
+**9. Menu pembayaran dirapikan (bot & storefront, Juni 2026).**
+Nama & urutan metode jadi **QRIS / BINANCE / Bybit-BSC**, logo diseragamkan di
+storefront (`apps/storefront/static/pay/{qris,binance,bybit}.png`). Di bot, menu
+bayar dibersihkan dari emoji dan disusun **QRIS** lalu **USDT** (submenu Binance /
+Bybit); QR QRIS **dan** QR Binance manual kini satu bubble foto+caption (bukan
+foto terpisah). Metode "Binance manual" lama dihapus dari menu.
+
 ### Status fase (rencana Bagian 1 §12)
 Fase 0–6 (scaffold, katalog, akun+auth, keranjang+checkout, harga IDR+TokoPay,
 wiring deploy, poles) **sudah diimplementasikan**. Selain itu ditambahkan di luar
 rencana awal: **auth password/email + lupa-password**, **upload foto produk
-admin**, **pembayaran Bybit USDT-BEP20**, **auto-update kurs pasar**, dan
-**halaman Branding** (upload favicon/hero/banner + identitas toko).
+admin**, **pembayaran Bybit USDT-BEP20**, **auto-update kurs pasar**, **halaman
+Branding** (upload favicon/hero/banner + identitas toko), **manajemen stok
+lanjutan** (unduh stok tersisa + hapus terpilih), **credit balance IDR+USDT**, dan
+**menu pembayaran QRIS/BINANCE/Bybit yang dirapikan**.
 
 ---
 

@@ -73,7 +73,17 @@ export async function proofConversation(conversation: MyConversation, ctx: MyCon
   clearActivePayment(chatId);
   cancelPaymentJobs(orderId);
 
-  // Delete the QR code photo — it's no longer relevant once the user is uploading proof.
+  // Delete the QR once proof upload begins — it's no longer relevant. In the
+  // unified layout the QR IS the instructions bubble (a photo+caption) that the
+  // "I've Paid" button sits on, so drop it and start the proof flow on a fresh
+  // bubble (reset promptMsgId so editPrompt sends instead of editing a photo).
+  const cqMsg = ctx.callbackQuery?.message;
+  if (cqMsg && "photo" in cqMsg && cqMsg.photo) {
+    promptMsgId = undefined;
+    if (ctx.session.menuMsgId === cqMsg.message_id) ctx.session.menuMsgId = undefined;
+    try { await ctx.api.deleteMessage(chatId, cqMsg.message_id); } catch { /* already gone */ }
+  }
+  // Legacy separate-photo QR (older sessions still tracking qrMsgId): delete it too.
   const qrMsgId = ctx.session.qrMsgId;
   if (qrMsgId) {
     ctx.session.qrMsgId = undefined;

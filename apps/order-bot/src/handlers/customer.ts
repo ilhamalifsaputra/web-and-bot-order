@@ -574,8 +574,12 @@ export async function viewWallet(ctx: MyContext): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const user = await getUser(prisma, info.id);
-  const balance = user ? user.walletBalance : new Decimal(0);
-  let text = t(ctx, "wallet.balance", { balance: price(balance) });
+  const idrBalance = user ? user.walletBalance : new Decimal(0);
+  const usdtBalance = user ? user.walletBalanceUsdt : new Decimal(0);
+  let text = t(ctx, "wallet.credit_balances", {
+    idr: formatIdr(idrBalance),
+    usdt: price(usdtBalance),
+  });
   text += "\n\n" + t(ctx, "wallet.topup_info");
   await smartEdit(ctx, text, ckb.backToMain(lang));
 }

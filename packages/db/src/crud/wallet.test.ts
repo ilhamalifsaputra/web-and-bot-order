@@ -63,3 +63,54 @@ describe("adjustWallet ledger", () => {
     expect(row.reason).toBe("adjust");
   });
 });
+
+describe("adjustWallet per-currency (IDR vs USDT balances are independent)", () => {
+  const userBalances = () =>
+    prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { walletBalance: true, walletBalanceUsdt: true } });
+
+  it("defaults to IDR and does not touch the USDT balance", async () => {
+    await adjustWallet(prisma, userId, "5", { reason: "admin_adjust" });
+    const u = await userBalances();
+    expect(Number(u.walletBalance)).toBeCloseTo(5);
+    expect(Number(u.walletBalanceUsdt)).toBeCloseTo(0);
+    const row = (await prisma.walletTransaction.findFirst({ where: { userId } }))!;
+    expect(row.currency).toBe("IDR");
+  });
+
+  it("credits USDT without changing IDR, and tags the ledger row USDT", async () => {
+    await adjustWallet(prisma, userId, "3.5", { currency: "USDT", reason: "admin_adjust" });
+    const u = await userBalances();
+    expect(Number(u.walletBalance)).toBeCloseTo(0);
+    expect(Number(u.walletBalanceUsdt)).toBeCloseTo(3.5);
+    const row = (await prisma.walletTransaction.findFirst({ where: { userId } }))!;
+    expect(row.currency).toBe("USDT");
+  });
+
+  it("moves each currency independently (IDR debit leaves USDT, USDT debit leaves IDR)", async () => {
+    await adjustWallet(prisma, userId, "10", { currency: "IDR", reason: "admin_adjust" });
+    await adjustWallet(prisma, userId, "8", { currency: "USDT", reason: "admin_adjust" });
+
+    await adjustWallet(prisma, userId, "-4", { currency: "IDR", reason: "order_payment" });
+    let u = await userBalances();
+    expect(Number(u.walletBalance)).toBeCloseTo(6);
+    expect(Number(u.walletBalanceUsdt)).toBeCloseTo(8); // USDT untouched
+
+    await adjustWallet(prisma, userId, "-3", { currency: "USDT", reason: "order_payment" });
+    u = await userBalances();
+    expect(Number(u.walletBalance)).toBeCloseTo(6); // IDR untouched
+    expect(Number(u.walletBalanceUsdt)).toBeCloseTo(5);
+  });
+
+  it("overdraw is checked per-currency: USDT overdraw never touches IDR", async () => {
+    await adjustWallet(prisma, userId, "20", { currency: "IDR", reason: "admin_adjust" });
+    // USDT balance is 0 → debiting 1 USDT overdraws even though IDR is flush.
+    await expect(
+      adjustWallet(prisma, userId, "-1", { currency: "USDT", reason: "order_payment" }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    const u = await userBalances();
+    expect(Number(u.walletBalance)).toBeCloseTo(20); // unchanged
+    expect(Number(u.walletBalanceUsdt)).toBeCloseTo(0);
+    // No USDT ledger row written for the rejected move.
+    expect(await prisma.walletTransaction.count({ where: { userId, currency: "USDT" } })).toBe(0);
+  });
+});

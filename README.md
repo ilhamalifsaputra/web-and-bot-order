@@ -364,6 +364,24 @@ cp data/bot.db data/bot.db.bak-$(date +%Y%m%d)
 
 Simpan salinannya di tempat aman (download ke komputer / cloud).
 
+### Mengelola stok (panel admin → Stock)
+
+Buka **panel admin → Stock → pilih produk** untuk mengurus akun/kredensial:
+
+- **Tambah stok** — tempel kredensial, satu baris per akun (`email:password`).
+- **Lihat stok** — tabel semua item beserta statusnya (siap jual / terpakai /
+  terjual / rusak).
+- **Unduh stok tersisa** — tombol **"Download remaining"** mengunduh file `.txt`
+  berisi semua akun **yang masih siap dijual** (satu per baris, sama seperti
+  format upload). Berguna untuk cadangan atau pindah stok.
+- **Hapus terpilih** — centang beberapa item lalu **"Delete selected"** untuk
+  **menghapus permanen**. Item yang **sudah terjual otomatis dilindungi** (tidak
+  ikut terhapus) agar riwayat pesanan tetap utuh. Kalau hanya ingin menandai akun
+  rusak tanpa menghapus, pakai **"Mark as bad"**.
+
+> 🔒 File unduhan berisi kredensial asli — simpan dengan aman dan jangan
+> dibagikan. Hanya admin yang sudah login bisa mengunduhnya.
+
 ---
 
 ## 9. Masalah Umum & Solusi

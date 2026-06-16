@@ -19,7 +19,7 @@ import { logger } from "@app/core/logger";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
-import { getOrder, createOrderDirect, approveOrder } from "./orders";
+import { getOrder, createOrderDirect, approveOrder, applyUsdtWalletToOrder } from "./orders";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 
@@ -91,15 +91,21 @@ export async function createBybitOrder(
     voucherCode?: string | null;
     /** Rupiah per 1 USDT (usd_idr_rate) — required for the USDT path. */
     rate: Decimal.Value;
+    /** Optional USDT credit balance to spend on this order (clamped to total). */
+    walletAmount?: Decimal.Value;
   },
 ) {
   const created = await createOrderDirect(db, args);
   if (!created) return null;
-  return finalizeOrderPayment(db, created.id, {
+  const finalized = await finalizeOrderPayment(db, created.id, {
     currency: OrderCurrency.USDT,
     rate: args.rate,
     method: PaymentMethod.BYBIT,
   });
+  // Spend the USDT credit balance against the finalized USDT total (no-op when
+  // walletAmount is unset). Re-read so callers see the updated walletUsed/total.
+  await applyUsdtWalletToOrder(db, created.id, args.walletAmount);
+  return args.walletAmount != null ? getOrder(db, created.id) : finalized;
 }
 
 /** PENDING, not-yet-expired Bybit orders the deposit poller should match against. */

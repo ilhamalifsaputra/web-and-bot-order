@@ -63,6 +63,11 @@ const dispatchPay: DomainDispatcher = async (ctx, parts) => {
   await checkout.buyNow(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
 };
 
+const dispatchUsdt: DomainDispatcher = async (ctx, parts) => {
+  // v1:usdt:<pid>:<qty> → USDT payment submenu (Binance Transfer / Bybit)
+  await checkout.showUsdtMethods(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+};
+
 const dispatchPayInternal: DomainDispatcher = async (ctx, parts) => {
   // v1:payx:<pid>:<qty> → Binance Internal Transfer (auto-confirmed)
   await checkout.buyNowInternal(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
@@ -141,6 +146,7 @@ const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
   order: dispatchOrder,
   page: dispatchPage,
   pay: dispatchPay,
+  usdt: dispatchUsdt,
   payx: dispatchPayInternal,
   payb: dispatchPayBybit,
   payq: dispatchPayTokopay,

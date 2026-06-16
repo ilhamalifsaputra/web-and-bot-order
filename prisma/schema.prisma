@@ -31,6 +31,9 @@ model User {
   role          String    @default("CUSTOMER")
   language      String    @default("EN")
   walletBalance Decimal   @default(0) @map("wallet_balance")
+  /// USDT credit balance (IDR balance is `walletBalance`). Spent only on USDT
+  /// orders — no cross-currency conversion (dual-credit-balance design §A).
+  walletBalanceUsdt Decimal @default(0) @map("wallet_balance_usdt")
   referralCode  String    @unique(map: "ix_users_referral_code") @map("referral_code")
   referredById  Int?      @map("referred_by_id")
   banned        Boolean   @default(false)
@@ -66,6 +69,9 @@ model WalletTransaction {
   userId       Int      @map("user_id")
   delta        Decimal // signed: +credit / −debit (the amount actually applied)
   balanceAfter Decimal  @map("balance_after")
+  /// Currency of this ledger row's balance/delta. Existing rows default to IDR
+  /// (the system was IDR-base); USDT rows track the USDT credit balance.
+  currency     String   @default("IDR")
   reason       String // machine code: admin_adjust | underpaid_refund | referral | order_payment | order_refund | adjust
   note         String?
   adminId      Int?     @map("admin_id") // acting admin (null = system/customer)

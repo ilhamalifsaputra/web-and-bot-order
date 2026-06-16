@@ -105,6 +105,12 @@ export interface WalletAdjustOpts {
   note?: string | null;
   adminId?: number | null;
   orderId?: number | null;
+  /**
+   * Which credit balance this move applies to. "IDR" → `walletBalance`,
+   * "USDT" → `walletBalanceUsdt`. Defaults to "IDR" so every existing caller
+   * keeps behaving exactly as before. No cross-currency conversion.
+   */
+  currency?: "IDR" | "USDT";
 }
 
 /**
@@ -123,21 +129,23 @@ export async function adjustWallet(
   delta: Decimal.Value,
   opts: WalletAdjustOpts = {},
 ): Promise<Decimal> {
+  const currency = opts.currency ?? "IDR";
   const user = await db.user.findUniqueOrThrow({ where: { id: userId } });
-  const oldBalance = new Decimal(user.walletBalance);
+  const oldBalance = new Decimal(currency === "USDT" ? user.walletBalanceUsdt : user.walletBalance);
   const newBalance = quantizeMoney(oldBalance.plus(delta), 4);
   if (newBalance.lessThan(0) && !opts.allowNegative) {
     throw new ValidationError("error.insufficient_wallet");
   }
   await db.user.update({
     where: { id: userId },
-    data: { walletBalance: newBalance },
+    data: currency === "USDT" ? { walletBalanceUsdt: newBalance } : { walletBalance: newBalance },
   });
   await db.walletTransaction.create({
     data: {
       userId,
       delta: newBalance.minus(oldBalance), // the amount actually applied
       balanceAfter: newBalance,
+      currency,
       reason: opts.reason ?? "adjust",
       note: opts.note ?? null,
       adminId: opts.adminId ?? null,
@@ -200,6 +208,8 @@ export interface WalletLedgerEntry {
   createdAt: Date;
   delta: string;
   balanceAfter: string;
+  /** Currency this row's delta/balanceAfter are denominated in ("IDR" | "USDT"). */
+  currency: string;
   reason: string;
   note: string;
   adminId: number | null;
@@ -225,6 +235,7 @@ export async function listWalletLedger(
     createdAt: r.createdAt,
     delta: new Decimal(r.delta).toString(),
     balanceAfter: new Decimal(r.balanceAfter).toString(),
+    currency: r.currency,
     reason: r.reason,
     note: r.note ?? "",
     adminId: r.adminId,

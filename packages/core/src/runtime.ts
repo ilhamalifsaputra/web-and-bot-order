@@ -13,6 +13,7 @@ interface Resolved {
   botToken?: string;
   botUsername?: string;
   notifBotToken?: string;
+  publicChannelId?: number;
   adminIds?: number[];
   webCookieSecret?: string;
 }
@@ -24,6 +25,7 @@ export function setBotIdentity(identity: {
   botToken?: string;
   botUsername?: string;
   notifBotToken?: string;
+  publicChannelId?: number;
 }): void {
   resolved = { ...resolved, ...identity };
 }
@@ -43,6 +45,10 @@ export function botUsername(): string | undefined {
 
 export function notifBotToken(): string | undefined {
   return resolved.notifBotToken ?? config.NOTIF_BOT_TOKEN;
+}
+
+export function publicChannelId(): number | undefined {
+  return resolved.publicChannelId ?? config.PUBLIC_CHANNEL_ID;
 }
 
 // ---- Admin allow-list (env ∪ DB) -----------------------------------------

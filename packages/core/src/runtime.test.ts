@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { adminIds, isAdmin, setAdminIds, addAdminId, resetBotIdentity, webCookieSecret, setWebSecret } from "./runtime";
+import {
+  adminIds, isAdmin, setAdminIds, addAdminId, resetBotIdentity,
+  webCookieSecret, setWebSecret, setBotIdentity, publicChannelId,
+} from "./runtime";
 
 beforeEach(() => resetBotIdentity());
 
@@ -21,5 +24,14 @@ describe("runtime web cookie secret", () => {
   it("returns the stamped secret", () => {
     setWebSecret("a".repeat(40));
     expect(webCookieSecret()).toBe("a".repeat(40));
+  });
+});
+describe("runtime public channel id", () => {
+  it("returns the stamped channel id", () => {
+    setBotIdentity({ publicChannelId: -1003960444894 });
+    expect(publicChannelId()).toBe(-1003960444894);
+  });
+  it("is undefined when nothing is stamped and env is unset", () => {
+    expect(publicChannelId()).toBeUndefined();
   });
 });

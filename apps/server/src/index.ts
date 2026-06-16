@@ -20,7 +20,7 @@ import { pathToFileURL } from "node:url";
 import { Bot, webhookCallback } from "grammy";
 import { run } from "@grammyjs/runner";
 import { config } from "@app/core/config";
-import { botToken as runtimeBotToken, notifBotToken, setBotIdentity, setAdminIds, setWebSecret } from "@app/core/runtime";
+import { botToken as runtimeBotToken, notifBotToken, publicChannelId, setBotIdentity, setAdminIds, setWebSecret } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { initDb, prisma, resolveBotCredentials, resolveAdminIds, resolveWebCookieSecret } from "@app/db";
 import { buildBot, setupCommandMenu } from "@app/order-bot/main";
@@ -132,8 +132,8 @@ export async function buildServer(opts: ServerOptions = {}): Promise<BuiltServer
  * Returns the loop promise so shutdown can await it after aborting the signal.
  */
 async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal: AbortSignal): Promise<void> {
-  if (config.PUBLIC_CHANNEL_ID === undefined) {
-    logger.info("Notifier disabled (PUBLIC_CHANNEL_ID not set)");
+  if (publicChannelId() === undefined) {
+    logger.info("Notifier disabled (public_channel_id not set in Settings or env)");
     return;
   }
   // Reuse the main bot unless a separate notifier token is configured (Setting
@@ -148,7 +148,7 @@ async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal
   try {
     if (dedicated) await notifBot.init();
     logger.info(
-      `Notifier started -> channel ${config.PUBLIC_CHANNEL_ID} ` +
+      `Notifier started -> channel ${publicChannelId()} ` +
         `(token=${dedicated ? "dedicated" : "main-bot"})`,
     );
     await runDispatcher(notifBot, signal);
@@ -172,6 +172,7 @@ export async function start(): Promise<void> {
     botToken: creds.botToken ?? undefined,
     botUsername: creds.botUsername ?? undefined,
     notifBotToken: creds.notifBotToken ?? undefined,
+    publicChannelId: creds.publicChannelId ?? undefined,
   });
 
   const { app, shop, bot, mode } = await buildServer({ botToken: creds.botToken });

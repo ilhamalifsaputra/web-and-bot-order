@@ -2,9 +2,9 @@
 
 Aplikasi toko digital lengkap: **bot Telegram** untuk pelanggan, **panel admin web**
 untuk kamu mengelola produk/pesanan, dan **website toko** opsional. Pelanggan
-melihat katalog, memesan, dan membayar lewat **Binance, Bybit (USDT-BSC), atau
-TokoPay (QRIS)** — langsung dari Telegram atau dari website. Pembayaran kripto
-bisa **terkonfirmasi otomatis** (akun langsung terkirim tanpa kamu cek manual).
+melihat katalog, memesan, dan membayar lewat **QRIS (TokoPay), Binance Internal,
+atau Bybit (USDT-BSC)** — langsung dari Telegram atau dari website. Ketiganya
+**terkonfirmasi otomatis** (akun langsung terkirim tanpa kamu cek manual).
 
 Dibuat dengan **Node.js + TypeScript** (monorepo pnpm). Tiga layanan (bot, panel
 admin, notifier) berbagi **satu database SQLite** — tidak perlu server database
@@ -304,12 +304,18 @@ Setelah aplikasi jalan dan panel admin bisa dibuka:
 Semua pembayaran bisa diatur dari **panel admin → Settings → Payments**
 (tidak perlu edit `.env` dan tidak perlu restart untuk sebagian besar).
 
-| Metode | Cara konfirmasi | Yang perlu diisi |
-|---|---|---|
-| **Binance Pay** | Manual (pembeli upload bukti, kamu setujui) | `Binance Pay ID` + QR |
-| **Binance Internal Transfer** | **Otomatis** (transfer antar-UID, dicek bot) | UID + API key/secret read-only (di `.env`) |
-| **Bybit USDT-BSC** | **Otomatis** (deposit on-chain BEP20, dicek bot) | Alamat deposit + API key/secret (di panel atau `.env`) |
-| **TokoPay (QRIS)** | **Otomatis** (webhook) — untuk pembayaran Rupiah di website | Merchant ID + Secret (di panel) |
+Pembeli memilih **QRIS** atau **USDT** (lalu Binance / Bybit) saat membeli — di
+bot maupun website. Ketiganya auto-confirm:
+
+| Metode | Mata uang | Cara konfirmasi | Yang perlu diisi |
+|---|---|---|---|
+| **QRIS (TokoPay)** | Rupiah | **Otomatis** (webhook) | Merchant ID + Secret (di panel) |
+| **Binance Internal Transfer** | USDT | **Otomatis** (transfer antar-UID, dicek bot) | UID + API key/secret read-only |
+| **Bybit USDT-BSC** | USDT | **Otomatis** (deposit on-chain BEP20, dicek bot) | Alamat deposit + API key/secret |
+
+> **Binance Pay manual** (pembeli upload bukti, kamu approve) **bukan** metode
+> utama lagi — ia hanya muncul sebagai *fallback* bila belum ada satu pun metode
+> otomatis di atas yang dikonfigurasi. Perlu `BINANCE_PAY_ID` (lihat bagian 10).
 
 **Untuk Bybit** (auto-confirm USDT di jaringan BSC):
 - Buat API key Bybit yang **Wallet READ-ONLY** (tanpa izin Withdraw).
@@ -444,11 +450,15 @@ Yang **wajib** ditandai ✅.
 | `STOREFRONT_PORT` | Port website toko | `8100` |
 | `SHOP_PUBLIC_URL` | URL publik toko (mis. `https://shop.domain.com`). Bila diisi, satu listener memisah per `Host` | — |
 
-### Pembayaran — Binance Pay (bukti manual)
+### Pembayaran — Binance Pay manual (fallback)
+
+Hanya dipakai sebagai cadangan bila **tidak ada** metode otomatis
+(QRIS / Binance Internal / Bybit) yang diatur. Pembeli upload bukti, kamu
+approve manual di bot.
 
 | Variabel | Keterangan | Default |
 |---|---|---|
-| `BINANCE_PAY_ID` | Binance Pay ID yang ditampilkan ke pembeli (wajib jika dipakai) | — |
+| `BINANCE_PAY_ID` | Binance Pay ID yang ditampilkan ke pembeli. Kosongkan untuk menonaktifkan fallback ini | — |
 | `CURRENCY` | Label mata uang (mis. `USDT`) | `USDT` |
 | `PAYMENT_WINDOW_MINUTES` | Menit sebelum order bukti-manual auto-batal | `30` |
 | `USE_UNIQUE_CENTS` | Tambah sen unik untuk pencocokan otomatis (`1` = aktif) | `1` |

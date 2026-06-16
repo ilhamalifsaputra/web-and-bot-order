@@ -88,7 +88,8 @@ Rencana Bagian 1 §8 / Bagian 2 §6 mengutamakan Unsplash. Nyatanya:
 | **TokoPay (QRIS)** | IDR | bot **&** storefront | webhook `POST /pay/tokopay/callback` (verifikasi signature + idempotensi `ProcessedTokopayTx`) | web-admin Settings |
 | **Bybit USDT-BEP20 (on-chain)** | USDT | bot **&** storefront | poller cocokkan **nominal unik** (BEP20 tanpa memo); tak cocok = "unmatched" untuk review; idempoten via `processed_bybit_tx` UNIQUE | web-admin Settings |
 - **Simetri metode (Juni 2026):** storefront = QRIS + Binance + **Bybit**; bot =
-  Binance Pay/Internal + Bybit + **QRIS**. Klien TokoPay kini di rumah bersama
+  **QRIS + Binance Internal + Bybit** (menu dirapikan, lihat poin 9 — manual
+  Binance Pay kini hanya fallback zero-config). Klien TokoPay kini di rumah bersama
   `@app/core/payments/tokopay` (resolver `getTokopayCreds` di `@app/db`), dipakai
   storefront **dan** bot. Bot QRIS menggambar QR di dalam Telegram
   (`buyNowTokopay`, callback `payq`); pembeli QRIS Telegram dikonfirmasi via

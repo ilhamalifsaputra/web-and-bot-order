@@ -32,7 +32,7 @@ import {
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
-import { setTokenValidator } from "../src/routes/settings";
+import { setTokenValidator, setChannelValidator } from "../src/routes/settings";
 import { setTokenValidator as setSetupTokenValidator } from "../src/routes/setup";
 import { Decimal } from "@app/core/money";
 import { setFxRateFetcher } from "@app/db";
@@ -679,6 +679,59 @@ describe("settings: bot tokens (§16)", () => {
     const res = await get("/settings", seed.cookie);
     expect(res.statusCode).toBe(200);
     expect(res.body).not.toContain("123456:goodtokenvalue");
+  });
+
+  it("resolves a channel link to its numeric id and saves it", async () => {
+    setTokenValidator(async () => ({ ok: true, username: "MyShopBot" }));
+    await setSetting(prisma, "bot_token", "123456:goodtokenvalue"); // a token must exist to resolve with
+    setChannelValidator(async () => ({ ok: true, id: -1003960444894, title: "TESTIMONI" }));
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "public_channel_id", value: "t.me/testiilha",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "public_channel_id")).toBe("-1003960444894");
+  });
+
+  it("rejects an unresolvable channel — nothing is stored", async () => {
+    await setSetting(prisma, "bot_token", "123456:goodtokenvalue");
+    setChannelValidator(async () => ({ ok: false }));
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "public_channel_id", value: "@nope",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect(await getSetting(prisma, "public_channel_id")).toBeNull();
+  });
+
+  it("rejects when no bot token is configured to resolve with", async () => {
+    await deleteSetting(prisma, "bot_token");
+    setChannelValidator(async () => ({ ok: true, id: -100123, title: "x" }));
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "public_channel_id", value: "@chan",
+    });
+    expect(res.headers.location).toContain("kind=error");
+    expect(await getSetting(prisma, "public_channel_id")).toBeNull();
+  });
+
+  it("channel edits are owner-only (support role refused)", async () => {
+    await setSetting(prisma, "bot_token", "123456:goodtokenvalue");
+    setChannelValidator(async () => ({ ok: true, id: -100123, title: "x" }));
+    await setSetting(prisma, webRoleKey(ADMIN_TG), "support");
+    await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "public_channel_id", value: "@chan",
+    });
+    expect(await getSetting(prisma, "public_channel_id")).toBeNull();
+  });
+
+  it('a single "-" clears the saved channel id', async () => {
+    await setSetting(prisma, "public_channel_id", "-1003960444894");
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "public_channel_id", value: "-",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "public_channel_id")).toBeNull();
   });
 });
 

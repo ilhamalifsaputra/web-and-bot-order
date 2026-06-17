@@ -10,7 +10,7 @@ import type { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { OrderStatus, StockStatus, TicketStatus } from "@app/core/enums";
 import { t as coreT } from "@app/core/i18n";
-import { formatPrice, truncLabel } from "../util/format";
+import { formatPrice, priceIdr, truncLabel } from "../util/format";
 
 export const CB_PREFIX = "v1";
 
@@ -261,19 +261,34 @@ interface DenominationLike {
   name: string;
   durationLabel: string;
   price: Decimal.Value;
+  resellerPrice?: Decimal.Value | null;
 }
 
-/** Picker shown when a customer taps a product group: one button per member. */
-export function groupDenominationsKb(members: DenominationLike[], lang: string): InlineKeyboard {
-  const rows: Btn[][] = members.map((m) => [
-    {
-      text: coreT("browse.denomination_btn", lang, {
-        duration: m.durationLabel || m.name,
-        price: formatPrice(m.price),
-      }),
-      data: cb("browse", "prod", m.id),
-    },
-  ]);
+/**
+ * Picker shown when a customer taps a product group: one button per member.
+ * Catalog prices are central Rupiah (CLAUDE.md) — render with `priceIdr`,
+ * never `formatPrice` (USDT-only). Mirrors the unit-price selection used on
+ * the product detail screen (browseProduct): reseller price when present for
+ * reseller users, else the regular price.
+ */
+export function groupDenominationsKb(
+  members: DenominationLike[],
+  lang: string,
+  rate: Decimal | null = null,
+  isReseller = false,
+): InlineKeyboard {
+  const rows: Btn[][] = members.map((m) => {
+    const unitPrice = isReseller && m.resellerPrice != null ? m.resellerPrice : m.price;
+    return [
+      {
+        text: coreT("browse.denomination_btn", lang, {
+          duration: m.durationLabel || m.name,
+          price: priceIdr(unitPrice, rate),
+        }),
+        data: cb("browse", "prod", m.id),
+      },
+    ];
+  });
   rows.push([{ text: coreT("menu.back", lang), data: cb("browse", "prods") }]);
   return ik(rows);
 }

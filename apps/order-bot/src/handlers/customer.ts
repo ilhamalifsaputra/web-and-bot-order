@@ -382,6 +382,7 @@ export async function browseProduct(ctx: MyContext, productId: number, qty = 1):
 }
 
 export async function browseGroup(ctx: MyContext, groupId: number): Promise<void> {
+  const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const group = await getGroupWithActiveProducts(prisma, groupId);
   if (!group || group.products.length === 0) {
@@ -393,8 +394,10 @@ export async function browseGroup(ctx: MyContext, groupId: number): Promise<void
     await browseProduct(ctx, group.products[0]!.id);
     return;
   }
+  const isReseller = info.role === UserRole.RESELLER;
+  const rate = await currentUsdtRate();
   const text = t(ctx, "browse.choose_denomination", { name: esc(group.name) });
-  await smartEdit(ctx, text, ckb.groupDenominationsKb(group.products, lang));
+  await smartEdit(ctx, text, ckb.groupDenominationsKb(group.products, lang, rate, isReseller));
 }
 
 // ---------------------------------------------------------------------------

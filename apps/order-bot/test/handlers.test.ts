@@ -223,10 +223,10 @@ describe("denomination groups", () => {
     const cat = await prisma.category.create({ data: { name: `gc${Math.random()}` } });
     const group = await prisma.productGroup.create({ data: { categoryId: cat.id, name: "Capcut" } });
     const m1 = await prisma.product.create({
-      data: { categoryId: cat.id, name: "Capcut 7 day", type: "SHARED", durationLabel: "7 day", price: "10", productGroupId: group.id },
+      data: { categoryId: cat.id, name: "Capcut 7 day", type: "SHARED", durationLabel: "7 day", price: "30000", productGroupId: group.id },
     });
     const m2 = await prisma.product.create({
-      data: { categoryId: cat.id, name: "Capcut 1 Month", type: "SHARED", durationLabel: "1 Month", price: "30", productGroupId: group.id },
+      data: { categoryId: cat.id, name: "Capcut 1 Month", type: "SHARED", durationLabel: "1 Month", price: "75000", productGroupId: group.id },
     });
     return { group, m1, m2 };
   }
@@ -234,8 +234,8 @@ describe("denomination groups", () => {
   it("groupDenominationsKb renders one button per member + back", () => {
     const kb = groupDenominationsKb(
       [
-        { id: 1, name: "A", durationLabel: "7 day", price: "10" },
-        { id: 2, name: "B", durationLabel: "1 Month", price: "30" },
+        { id: 1, name: "A", durationLabel: "7 day", price: "30000" },
+        { id: 2, name: "B", durationLabel: "1 Month", price: "75000" },
       ],
       "en",
     );
@@ -243,6 +243,29 @@ describe("denomination groups", () => {
     expect(flat.some((b) => b.callback_data === "v1:browse:prod:1")).toBe(true);
     expect(flat.some((b) => b.callback_data === "v1:browse:prod:2")).toBe(true);
     expect(flat.some((b) => b.callback_data === "v1:browse:prods")).toBe(true); // back
+
+    // Catalog prices are central Rupiah — the button text must render IDR
+    // (priceIdr), never the USDT-only formatPrice (Finding 1).
+    const member1 = flat.find((b) => b.callback_data === "v1:browse:prod:1")!;
+    expect(member1.text).toContain("Rp30.000");
+    expect(member1.text).not.toContain("USDT");
+    const member2 = flat.find((b) => b.callback_data === "v1:browse:prod:2")!;
+    expect(member2.text).toContain("Rp75.000");
+    expect(member2.text).not.toContain("USDT");
+  });
+
+  it("groupDenominationsKb uses resellerPrice for reseller users when present", () => {
+    const kb = groupDenominationsKb(
+      [{ id: 1, name: "A", durationLabel: "7 day", price: "30000", resellerPrice: "20000" }],
+      "en",
+      null,
+      true,
+    );
+    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    const member1 = flat.find((b) => b.callback_data === "v1:browse:prod:1")!;
+    expect(member1.text).toContain("Rp20.000");
+    expect(member1.text).not.toContain("Rp30.000");
+    expect(member1.text).not.toContain("USDT");
   });
 
   it("browseGroup shows the denomination picker for the group", async () => {
@@ -254,6 +277,9 @@ describe("denomination groups", () => {
     const sent = sink as SentCall[];
     const markup = JSON.stringify(sent.map((c) => c.args[c.args.length - 1]));
     expect(markup).toContain(`v1:browse:prod:${m1.id}`);
+    // Picker buttons render the Rupiah price (Finding 1), never USDT.
+    expect(markup).toContain("Rp30.000");
+    expect(markup).not.toContain("USDT");
   });
 
   it("browseProductsFlat records a group entry and the number opens the picker", async () => {

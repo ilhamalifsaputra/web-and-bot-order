@@ -302,6 +302,8 @@
   "web.forgot_title": "Lupa kata sandi",
   "web.forgot_unavailable": "Reset kata sandi belum tersedia — silakan hubungi dukungan.",
   "web.footer_note": "Pengiriman instan · Bayar QRIS & USDT",
+  "web.from_price": "mulai",
+  "web.group_options": "{count} pilihan",
   "web.hero_cta": "Lihat produk",
   "web.hero_sub": "Bayar pakai QRIS atau USDT — kredensial terkirim begitu pembayaran masuk.",
   "web.hero_title": "Produk digital, terkirim instan",

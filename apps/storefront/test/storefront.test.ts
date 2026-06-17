@@ -129,6 +129,43 @@ describe("category + product detail", () => {
   });
 });
 
+describe("denomination groups", () => {
+  it("category page shows a group card linking to /g/:id", async () => {
+    const group = await prisma.productGroup.create({ data: { categoryId, name: "Capcut", isActive: true } });
+    await prisma.product.create({
+      data: { categoryId, name: "Capcut 7 day", type: "SHARED", durationLabel: "7 day", price: "10000", productGroupId: group.id },
+    });
+    await prisma.product.create({
+      data: { categoryId, name: "Capcut 1 Month", type: "SHARED", durationLabel: "1 Month", price: "30000", productGroupId: group.id },
+    });
+
+    const res = await app.inject({ method: "GET", url: `/c/${categoryId}` });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(`/g/${group.id}`);
+    expect(res.body).toContain("Capcut");
+  });
+
+  it("group page lists each denomination linking to /p/:id", async () => {
+    const group = await prisma.productGroup.create({ data: { categoryId, name: "Splice", isActive: true } });
+    const wk = await prisma.product.create({
+      data: { categoryId, name: "Splice 7 day", type: "SHARED", durationLabel: "7 day", price: "9000", productGroupId: group.id },
+    });
+    const mo = await prisma.product.create({
+      data: { categoryId, name: "Splice 1 Month", type: "SHARED", durationLabel: "1 Month", price: "29000", productGroupId: group.id },
+    });
+
+    const res = await app.inject({ method: "GET", url: `/g/${group.id}` });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(`/p/${wk.id}`);
+    expect(res.body).toContain(`/p/${mo.id}`);
+  });
+
+  it("unknown group id is 404", async () => {
+    const res = await app.inject({ method: "GET", url: "/g/999999" });
+    expect(res.statusCode).toBe(404);
+  });
+});
+
 describe("search + language", () => {
   it("finds products by name", async () => {
     const res = await app.inject({ method: "GET", url: "/search?q=netflix" });

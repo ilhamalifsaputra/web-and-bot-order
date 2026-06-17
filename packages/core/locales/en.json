@@ -302,6 +302,8 @@
   "web.forgot_title": "Forgot password",
   "web.forgot_unavailable": "Password reset isn't available right now — please contact support.",
   "web.footer_note": "Instant delivery · QRIS & USDT payments",
+  "web.from_price": "from",
+  "web.group_options": "{count} options",
   "web.hero_cta": "Browse products",
   "web.hero_sub": "Pay with QRIS or USDT — your credentials arrive right after payment.",
   "web.hero_title": "Digital products, delivered instantly",

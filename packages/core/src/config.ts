@@ -192,13 +192,10 @@ export type Config = z.infer<typeof Env>;
 
 export const config: Config = Env.parse(process.env);
 
-/**
- * Binance Internal Transfer is offered + auto-confirmed only when the receive
- * UID and read-only API credentials are all configured. Otherwise the option is
- * hidden and the poller is a no-op (keeps existing deploys unaffected).
- */
-export const isBinanceInternalEnabled = (): boolean =>
-  Boolean(config.BINANCE_RECEIVE_UID && config.BINANCE_API_KEY && config.BINANCE_API_SECRET);
+// Binance Internal Transfer's "enabled" gate is resolved at runtime from
+// web-admin Settings (with these BINANCE_* env vars as the fallback) — see
+// resolveBinanceInternalConfig() in @app/db, so the receive UID and API
+// key/secret can be managed in /settings without a restart.
 
 // Bybit's "enabled" gate is resolved at runtime from web-admin Settings (with
 // these BYBIT_* env vars as the fallback) — see resolveBybitConfig() in

@@ -719,6 +719,48 @@ describe("settings", () => {
     expect(res.body).not.toContain('value="banner_image"');
     expect(res.body).toContain('value="support_whatsapp"');
   });
+
+  it("accepts binance_receive_uid (not a secret — shown back on the page)", async () => {
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "binance_receive_uid", value: "123456789",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "binance_receive_uid")).toBe("123456789");
+    const page = await get("/settings", seed.cookie);
+    expect(page.body).toContain("123456789");
+  });
+
+  it("binance_api_key / binance_api_secret are write-only (blank keeps value, never echoed)", async () => {
+    await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "binance_api_key", value: "BINKEYSECRET",
+    });
+    await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "binance_api_secret", value: "BINSECRETVALUE",
+    });
+    expect(await getSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
+    expect(await getSetting(prisma, "binance_api_secret")).toBe("BINSECRETVALUE");
+
+    // Blank submit keeps the existing value (the "'<key>' left unchanged." path).
+    const blank = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "binance_api_key", value: "",
+    });
+    expect(blank.statusCode).toBe(303);
+    expect(blank.headers.location).toContain("kind=info");
+    expect(await getSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
+
+    // The stored secrets are never echoed into the form or the saved-data table.
+    const page = await get("/settings", seed.cookie);
+    expect(page.statusCode).toBe(200);
+    expect(page.body).not.toContain("BINKEYSECRET");
+    expect(page.body).not.toContain("BINSECRETVALUE");
+
+    // Audit records "(updated)" without the value (CLAUDE.md: never log secrets).
+    const logs = await listAuditLogs(prisma, { limit: 10 });
+    const entry = logs.find((l) => l.action === "setting_set" && (l.details ?? "").includes("binance_api_secret"));
+    expect(entry).toBeTruthy();
+    expect(entry!.details).not.toContain("BINSECRETVALUE");
+  });
 });
 
 // ---- settings: QR upload (mirrors branding.test.ts banner upload) ---------

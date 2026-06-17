@@ -8,7 +8,6 @@
  */
 import { Cron } from "croner";
 import type { Api } from "grammy";
-import { isBinanceInternalEnabled } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
@@ -22,6 +21,7 @@ import {
   logAdminAction,
   getBinancePollHealth,
   getBybitPollHealth,
+  resolveBinanceInternalConfig,
   resolveBybitConfig,
   getSetting,
   setSetting,
@@ -152,7 +152,7 @@ export function pollWatchdogDecision(
  * aren't spammed every tick.
  */
 export async function binancePollWatchdog(api: Api): Promise<void> {
-  if (!isBinanceInternalEnabled()) return;
+  if (!(await resolveBinanceInternalConfig(prisma)).enabled) return;
   const health = await getBinancePollHealth(prisma);
   const alerted = (await getSetting(prisma, POLL_ALERT_KEY)) === "1";
   const decision = pollWatchdogDecision(health, alerted);

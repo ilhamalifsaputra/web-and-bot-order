@@ -20,7 +20,7 @@
  */
 import { createHmac } from "node:crypto";
 import type { Api } from "grammy";
-import { config, isBinanceInternalEnabled } from "@app/core/config";
+import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
@@ -32,6 +32,8 @@ import {
   markUnderpaid,
   recordUnmatchedTx,
   recordBinancePollHealth,
+  resolveBinanceInternalConfig,
+  type BinanceInternalConfig,
   type DeliverResult,
 } from "@app/db";
 import { coreT } from "../util/i18n";
@@ -103,8 +105,8 @@ export function matchByAmount<T extends { totalAmount: Decimal.Value }>(
 // Signed Binance REST (read-only)
 // ---------------------------------------------------------------------------
 
-function sign(query: string): string {
-  return createHmac("sha256", config.BINANCE_API_SECRET ?? "").update(query).digest("hex");
+function sign(query: string, apiSecret: string): string {
+  return createHmac("sha256", apiSecret).update(query).digest("hex");
 }
 
 class RateLimitedError extends Error {}
@@ -133,7 +135,7 @@ export function normalizeTx(raw: Record<string, unknown>): BinanceTx | null {
 }
 
 /** Fetch recent incoming transfers (last hour). Throws RateLimitedError on 429/418. */
-async function fetchIncomingTransfers(): Promise<BinanceTx[]> {
+async function fetchIncomingTransfers(cfg: BinanceInternalConfig): Promise<BinanceTx[]> {
   const params = new URLSearchParams({
     startTime: String(Date.now() - 60 * 60 * 1000),
     limit: "100",
@@ -141,8 +143,8 @@ async function fetchIncomingTransfers(): Promise<BinanceTx[]> {
     recvWindow: "5000",
   });
   const qs = params.toString();
-  const url = `${config.BINANCE_API_BASE}/sapi/v1/pay/transactions?${qs}&signature=${sign(qs)}`;
-  const res = await fetch(url, { headers: { "X-MBX-APIKEY": config.BINANCE_API_KEY ?? "" } });
+  const url = `${cfg.apiBase}/sapi/v1/pay/transactions?${qs}&signature=${sign(qs, cfg.apiSecret)}`;
+  const res = await fetch(url, { headers: { "X-MBX-APIKEY": cfg.apiKey } });
   if (res.status === 429 || res.status === 418) {
     throw new RateLimitedError(`Binance rate limited (HTTP ${res.status})`);
   }
@@ -153,7 +155,7 @@ async function fetchIncomingTransfers(): Promise<BinanceTx[]> {
   const rows = body.data ?? [];
   return rows
     .map(normalizeTx)
-    .filter((t): t is BinanceTx => t !== null && t.currency.toUpperCase() === config.CURRENCY.toUpperCase());
+    .filter((t): t is BinanceTx => t !== null && t.currency.toUpperCase() === cfg.currency.toUpperCase());
 }
 
 // ---------------------------------------------------------------------------
@@ -240,12 +242,13 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
 let backoffUntil = 0;
 
 export async function pollOnce(api: Api): Promise<void> {
-  if (!isBinanceInternalEnabled()) return;
+  const cfg = await resolveBinanceInternalConfig(prisma);
+  if (!cfg.enabled) return;
   if (Date.now() < backoffUntil) return;
 
   let txs: BinanceTx[];
   try {
-    txs = await fetchIncomingTransfers();
+    txs = await fetchIncomingTransfers(cfg);
   } catch (err) {
     if (err instanceof RateLimitedError) {
       backoffUntil = Date.now() + 60_000;
@@ -329,21 +332,6 @@ let isRunning = false;
 let stopped = false;
 
 export function startPolling(api: Api): void {
-  if (!isBinanceInternalEnabled()) {
-    logger.info("Binance Internal Transfer disabled (no UID/API creds) — poller not started");
-    return;
-  }
-  // The amount fallback (matchByAmount) can only disambiguate orders when their
-  // totals are distinct. With Binance Internal on but unique-cents off, two
-  // buyers owing the same amount become unmatchable (refused, not mis-delivered)
-  // — auto-confirm silently degrades. Warn loudly at boot.
-  if (!config.USE_UNIQUE_CENTS) {
-    logger.warn(
-      "⚠ Binance Internal is ENABLED but USE_UNIQUE_CENTS is OFF — equal-total " +
-        "orders cannot be matched by amount when the note is missing. Set " +
-        "USE_UNIQUE_CENTS=1 so every order has a distinct total.",
-    );
-  }
   stopped = false;
   const intervalMs = config.POLL_INTERVAL_SECONDS * 1000;
   const tick = async () => {
@@ -360,7 +348,28 @@ export function startPolling(api: Api): void {
     }
     if (!stopped) timer = setTimeout(tick, intervalMs);
   };
-  logger.info(`Binance Internal Transfer poller started (every ${config.POLL_INTERVAL_SECONDS}s)`);
+  // The loop always runs and self-gates each cycle on
+  // resolveBinanceInternalConfig().enabled, so enabling Binance Internal in
+  // web-admin Settings takes effect without a restart. The boot log just
+  // reports the CURRENT state.
+  void resolveBinanceInternalConfig(prisma).then((cfg) => {
+    if (!cfg.enabled) {
+      logger.info("Binance Internal Transfer disabled (no UID/API creds in Settings or .env) — poller idle");
+      return;
+    }
+    // The amount fallback (matchByAmount) can only disambiguate orders when
+    // their totals are distinct. With Binance Internal on but unique-cents
+    // off, two buyers owing the same amount become unmatchable (refused, not
+    // mis-delivered) — auto-confirm silently degrades. Warn loudly at boot.
+    if (!config.USE_UNIQUE_CENTS) {
+      logger.warn(
+        "⚠ Binance Internal is ENABLED but USE_UNIQUE_CENTS is OFF — equal-total " +
+          "orders cannot be matched by amount when the note is missing. Set " +
+          "USE_UNIQUE_CENTS=1 so every order has a distinct total.",
+      );
+    }
+    logger.info(`Binance Internal Transfer poller active (every ${config.POLL_INTERVAL_SECONDS}s)`);
+  });
   timer = setTimeout(tick, intervalMs);
 }
 

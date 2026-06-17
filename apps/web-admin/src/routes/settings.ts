@@ -69,6 +69,10 @@ const EDITABLE: Record<string, string> = {
   bybit_deposit_address: "Bybit BEP20 (BSC) USDT deposit address shown to buyers",
   bybit_api_key: "Bybit API key — Wallet READ-ONLY (no Withdraw)",
   bybit_api_secret: "Bybit API secret",
+  // ---- Binance Internal Transfer (UID-based auto-confirm; leave blank to disable) ----
+  binance_receive_uid: "Binance UID buyers transfer to (Internal Transfer)",
+  binance_api_key: "Binance API key — READ-ONLY (no trading/withdraw)",
+  binance_api_secret: "Binance API secret",
   // ---- Bot & notifications (plan.md §16.1) ----
   bot_token: "Order Bot token — the main @YourBot that receives customer orders (get from BotFather → /mybots → API Token); restart the app after saving",
   bot_username: "Bot username without the @ — filled in automatically when you save the Order Bot token above",
@@ -91,10 +95,11 @@ const PAY_BINANCE_KEYS = new Set(["binance_pay_id", "qr"]);
 const PAY_RATE_KEYS = new Set(["usd_idr_rate", "usd_idr_rate_auto", "usd_idr_rate_rounding"]);
 const PAY_QRIS_KEYS = new Set(["tokopay_merchant_id", "tokopay_secret", "tokopay_enabled"]);
 const PAY_BYBIT_KEYS = new Set(["bybit_deposit_address", "bybit_api_key", "bybit_api_secret"]);
+const PAY_BINANCE_INTERNAL_KEYS = new Set(["binance_receive_uid", "binance_api_key", "binance_api_secret"]);
 
 // Write-only editable secrets: never echoed back into the form, hidden in the
 // "All saved options" table, audited as "(updated)" without the value.
-const SECRET_KEYS = new Set(["tokopay_secret", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret"]);
+const SECRET_KEYS = new Set(["tokopay_secret", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret"]);
 
 // Bot tokens get the §16.4 "don't brick the bot" treatment: owner-only, and
 // Telegram must accept the token (getMe) before anything is saved.
@@ -141,7 +146,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     const grouped = new Set([
       ...WEBSITE_KEYS, ...BOT_MESSAGE_KEYS, ...BOT_TOKEN_FIELD_KEYS,
       ...PAY_BINANCE_KEYS, ...PAY_RATE_KEYS, ...PAY_QRIS_KEYS, ...PAY_BYBIT_KEYS,
-      ...BRANDING_KEYS,
+      ...PAY_BINANCE_INTERNAL_KEYS, ...BRANDING_KEYS,
     ]);
     // Leftover guard: an EDITABLE key missing from every group still shows up.
     const websiteFields = [
@@ -172,6 +177,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       pay_rate_fields: pick(PAY_RATE_KEYS),
       pay_qris_fields: pick(PAY_QRIS_KEYS),
       pay_bybit_fields: pick(PAY_BYBIT_KEYS),
+      pay_binance_internal_fields: pick(PAY_BINANCE_INTERNAL_KEYS),
       qr_is_upload: qrIsUpload,
       qr_url: qrIsUpload ? qrValue : "",
       is_owner: req.admin!.role === "super",

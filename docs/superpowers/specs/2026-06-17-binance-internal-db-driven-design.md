@@ -88,6 +88,19 @@ ter-ekspor — tidak perlu menyentuh `packages/db/src/index.ts`.
 - `apps/web-admin/src/routes/dashboard.ts` (baris ~81): ganti `if (isBinanceInternalEnabled())`
   dengan `if ((await resolveBinanceInternalConfig(prisma)).enabled)` (handler sudah async).
   Ganti import.
+- `apps/web-admin/src/routes/payments.ts` (baris ~59): view-model `enabled:
+  isBinanceInternalEnabled()` → resolve sekali di awal handler async
+  `const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;`
+  lalu `enabled: binanceEnabled`. Ganti import (buang `isBinanceInternalEnabled`,
+  tambah `resolveBinanceInternalConfig` dari `@app/db`).
+- `apps/storefront/src/routes/checkout.ts` (baris ~118 dan ~195): di KEDUA blok
+  `Promise.all` yang sudah me-resolve `resolveBybitConfig(prisma)` (baris ~102-107
+  di `checkoutView`, dan ~178-182 di `POST /checkout`), tambahkan
+  `resolveBinanceInternalConfig(prisma)` ke array dan pakai `.enabled`:
+  `binance_enabled: haveRate && binance.enabled` (gantikan baris 118), dan
+  `if (!fxRate || !binance.enabled) return rerender("web.pay_method_unavailable");`
+  (gantikan baris 195). Sejajar persis dengan `bybit` yang sudah ada di file ini.
+  Ganti import.
 - `apps/order-bot/src/handlers/checkout.ts` — 4 titik (baris 409, 434, 467, 531).
   Di tiap fungsi, resolve sekali `const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;`
   **sejajar `bybitEnabled = (await resolveBybitConfig(prisma)).enabled`** yang sudah ada
@@ -138,5 +151,8 @@ ter-ekspor — tidak perlu menyentuh `packages/db/src/index.ts`.
   SECRET_KEYS → write-only, audit tanpa nilai, tak pernah di-echo ke form.
 - **Settings whitelist-only:** ketiga key masuk `EDITABLE`; tak ada pelebaran lain.
 - **Single-writer SQLite:** resolver hanya membaca (`getSetting`), aman.
-- **Ripple sync→async** sudah dipetakan lengkap di §3; tak ada pemanggil
-  `isBinanceInternalEnabled()` lain di luar daftar itu (diverifikasi via grep).
+- **Ripple sync→async** sudah dipetakan lengkap di §3 dan diverifikasi via
+  `grep -r isBinanceInternalEnabled **/src/**/*.ts`: pemanggil sumber = config.ts
+  (definisi, dihapus), order-bot `binanceInternal.ts` (2), `jobs/index.ts` (1),
+  `checkout.ts` (4); web-admin `dashboard.ts` (1), `payments.ts` (1); storefront
+  `checkout.ts` (2). Tidak ada lagi di luar itu (tes pakai resolver/DB, bukan helper).

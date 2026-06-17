@@ -4,16 +4,16 @@
  * manually, CSRF checked against req.admin.csrf, role gated with canMutate,
  * audited. Files land in data/uploads/branding and the path is saved to settings.
  */
-import { mkdir, writeFile, unlink } from "node:fs/promises";
-import { basename, join } from "node:path";
-import { randomBytes } from "node:crypto";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { prisma, getSetting, setSetting, deleteSetting, logAdminAction } from "@app/db";
+import { join } from "node:path";
+import type { FastifyInstance } from "fastify";
+import { prisma, getSetting, deleteSetting, setSetting, logAdminAction } from "@app/db";
 import { currentAdmin, csrfProtect, canMutate } from "../plugins/auth";
 import { redirectWithFlash } from "../flash";
 import { UPLOADS_DIR } from "../paths";
+import { handleUpload, deleteOldUpload } from "../lib/upload";
 
 const BRANDING_DIR = join(UPLOADS_DIR, "branding");
+const BRANDING_URL_PREFIX = "/uploads/branding";
 
 const FAVICON_MIME: Record<string, string> = {
   "image/png": "png",
@@ -34,68 +34,6 @@ const LOGO_MIME: Record<string, string> = {
 };
 
 const TEXT_KEYS = new Set(["shop_name", "shop_tagline", "welcome"]);
-
-/** Delete a previous branding upload (ignore legacy file_ids / missing files). */
-async function deleteOldUpload(oldValue: string | null): Promise<void> {
-  if (oldValue && oldValue.startsWith("/uploads/branding/")) {
-    await unlink(join(BRANDING_DIR, basename(oldValue))).catch(() => undefined);
-  }
-}
-
-/** Shared multipart image upload: CSRF + role gate + MIME + size, then save. */
-async function handleUpload(
-  req: FastifyRequest,
-  reply: FastifyReply,
-  opts: {
-    kind: string;
-    field: string;
-    allowed: Record<string, string>;
-    maxBytes: number;
-    settingKey: string;
-    auditAction: string;
-    afterSave?: () => Promise<void>;
-  },
-): Promise<FastifyReply> {
-  if (!canMutate(req.admin!.role, req.url)) {
-    return reply.code(403).type("text/plain").send("Insufficient permissions for this action.");
-  }
-  let csrfField: string | null = null;
-  let fileBuffer: Buffer | null = null;
-  let mimetype = "";
-  for await (const part of req.parts({ limits: { fileSize: opts.maxBytes } })) {
-    if (part.type === "field" && part.fieldname === "csrf_token") {
-      csrfField = part.value as string;
-    } else if (part.type === "file" && part.fieldname === opts.field) {
-      mimetype = part.mimetype;
-      const chunks: Buffer[] = [];
-      for await (const chunk of part.file) chunks.push(chunk);
-      if (chunks.length > 0) fileBuffer = Buffer.concat(chunks);
-    }
-  }
-  if (!csrfField || csrfField !== req.admin!.csrf) {
-    return reply.code(403).type("text/plain").send("CSRF check failed");
-  }
-  if (!fileBuffer || fileBuffer.length === 0) {
-    return redirectWithFlash(reply, "/branding", "No file selected.", "error");
-  }
-  const ext = opts.allowed[mimetype];
-  if (!ext) {
-    return redirectWithFlash(reply, "/branding", "That file type is not allowed.", "error");
-  }
-  const filename = `${opts.kind}-${randomBytes(8).toString("hex")}.${ext}`;
-  await mkdir(BRANDING_DIR, { recursive: true });
-  await writeFile(join(BRANDING_DIR, filename), fileBuffer);
-  await deleteOldUpload(await getSetting(prisma, opts.settingKey));
-  await setSetting(prisma, opts.settingKey, `/uploads/branding/${filename}`);
-  if (opts.afterSave) await opts.afterSave();
-  await logAdminAction(prisma, {
-    adminId: req.admin!.userId,
-    action: opts.auditAction,
-    targetType: "setting",
-    details: `filename=${filename}`,
-  });
-  return redirectWithFlash(reply, "/branding", "Saved.", "success");
-}
 
 export default async function brandingRoutes(app: FastifyInstance): Promise<void> {
   app.get("/branding", { preHandler: currentAdmin }, async (req, reply) => {
@@ -132,8 +70,11 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
       field: "favicon",
       allowed: FAVICON_MIME,
       maxBytes: 1 * 1024 * 1024,
+      destDir: BRANDING_DIR,
+      urlPrefix: BRANDING_URL_PREFIX,
       settingKey: "web_favicon_url",
       auditAction: "branding_favicon_upload",
+      redirectPath: "/branding",
     }),
   );
 
@@ -143,8 +84,11 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
       field: "logo",
       allowed: LOGO_MIME,
       maxBytes: 1 * 1024 * 1024,
+      destDir: BRANDING_DIR,
+      urlPrefix: BRANDING_URL_PREFIX,
       settingKey: "web_logo_url",
       auditAction: "branding_logo_upload",
+      redirectPath: "/branding",
     }),
   );
 
@@ -154,8 +98,11 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
       field: "hero",
       allowed: RASTER_MIME,
       maxBytes: 5 * 1024 * 1024,
+      destDir: BRANDING_DIR,
+      urlPrefix: BRANDING_URL_PREFIX,
       settingKey: "web_hero_url",
       auditAction: "branding_hero_upload",
+      redirectPath: "/branding",
     }),
   );
 
@@ -165,8 +112,11 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
       field: "banner",
       allowed: RASTER_MIME,
       maxBytes: 5 * 1024 * 1024,
+      destDir: BRANDING_DIR,
+      urlPrefix: BRANDING_URL_PREFIX,
       settingKey: "banner_image",
       auditAction: "branding_banner_upload",
+      redirectPath: "/branding",
       afterSave: () => deleteSetting(prisma, "banner_image_fileid").then(() => undefined),
     }),
   );
@@ -175,7 +125,7 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
     if (!canMutate(req.admin!.role, req.url)) {
       return reply.code(403).type("text/plain").send("Insufficient permissions for this action.");
     }
-    await deleteOldUpload(await getSetting(prisma, "banner_image"));
+    await deleteOldUpload(BRANDING_URL_PREFIX, BRANDING_DIR, await getSetting(prisma, "banner_image"));
     await deleteSetting(prisma, "banner_image");
     await deleteSetting(prisma, "banner_image_fileid");
     await logAdminAction(prisma, {

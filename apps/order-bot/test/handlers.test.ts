@@ -14,7 +14,7 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
-import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast, setSetting } from "@app/db";
+import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast, setSetting, getSetting } from "@app/db";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
@@ -249,6 +249,23 @@ describe("checkout handlers", () => {
     const photoCalls = calls(sink, "replyWithPhoto");
     expect(photoCalls.length).toBe(1);
     expect((photoCalls[0]!.args[1] as { caption?: string }).caption).toBeTruthy();
+    checkout.cancelPaymentJobs(orders[0]!.id); // clear the countdown timer
+  });
+
+  it("buyNow sends an uploaded QR via InputFile and caches the resulting file_id once", async () => {
+    await setSetting(prisma, "usd_idr_rate", "1");
+    await setSetting(prisma, "qr", "/uploads/qr/qr-test.png"); // web upload, no cache yet
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:pay:1:1",
+      replyWithPhotoResult: { photo: [{ file_id: "CACHED_FROM_UPLOAD" }] },
+    });
+    await checkout.buyNow(ctx, sample.product.id, 1);
+    const orders = await prisma.order.findMany();
+    expect(orders).toHaveLength(1);
+    const photoCalls = calls(sink, "replyWithPhoto");
+    expect(photoCalls.length).toBe(1);
+    // Cached after the first send so a re-render won't re-upload the same file.
+    expect(await getSetting(prisma, "qr_fileid")).toBe("CACHED_FROM_UPLOAD");
     checkout.cancelPaymentJobs(orders[0]!.id); // clear the countdown timer
   });
 

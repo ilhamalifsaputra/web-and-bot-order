@@ -24,6 +24,7 @@ import {
   prisma,
   getOrder,
   getSetting,
+  setSetting,
   getProduct,
   countAvailableStock,
   getBulkPricingForProduct,
@@ -46,6 +47,7 @@ import { smartEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
 import { esc, formatPrice, formatIdr, priceIdr } from "../util/format";
 import { currentUsdtRate } from "../util/rate";
+import { QR_FILEID_KEY, qrPhotoArg as resolveQrPhotoArg } from "../util/qr";
 import * as ckb from "../keyboards/customer";
 
 const MAX_PENDING_ORDERS = 10;
@@ -225,7 +227,6 @@ export async function sendPaymentInstructions(ctx: MyContext, orderId: number): 
   }
 
   const binanceId = (await getSetting(prisma, "binance_pay_id")) || config.BINANCE_PAY_ID;
-  const qrFileId = await getSetting(prisma, "qr");
   const expiresAt = order.expiresAt ? ensureUtc(order.expiresAt).toJSDate() : null;
   const countdown = expiresAt ? formatCountdown(expiresAt) : `${config.PAYMENT_WINDOW_MINUTES}:00`;
 
@@ -241,10 +242,14 @@ export async function sendPaymentInstructions(ctx: MyContext, orderId: number): 
   ctx.session.qrMsgId = undefined;
 
   const kb = ckb.paymentInstructionsKb(orderId, lang);
-  // Resolve the QR source: a stored file_id setting wins, else the bundled image.
+  // Resolve the QR source: a web upload (cached file_id if any) or a legacy
+  // file_id setting wins, else fall back to the bundled image.
+  const qrArg = resolveQrPhotoArg(await getSetting(prisma, "qr"), await getSetting(prisma, QR_FILEID_KEY));
   let qrPhotoArg: string | InputFile | undefined;
-  if (qrFileId) {
-    qrPhotoArg = qrFileId;
+  let needsCache = false;
+  if (qrArg) {
+    qrPhotoArg = qrArg.photo;
+    needsCache = qrArg.needsCache;
   } else if (config.BINANCE_QR_PATH && fs.existsSync(config.BINANCE_QR_PATH)) {
     qrPhotoArg = new InputFile(config.BINANCE_QR_PATH);
   }
@@ -267,6 +272,16 @@ export async function sendPaymentInstructions(ctx: MyContext, orderId: number): 
       qrPhoto = true;
       if (confirmMsgId && confirmMsgId !== qrMsg.message_id) {
         try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
+      }
+      // Cache the Telegram file_id for a fresh upload so the bot re-uploads the
+      // same image at most once; a cache failure must never break checkout.
+      if (needsCache) {
+        try {
+          const fileId = qrMsg.photo?.at(-1)?.file_id;
+          if (fileId) await setSetting(prisma, QR_FILEID_KEY, fileId);
+        } catch (err) {
+          logger.warn({ err }, "Failed to cache QR file_id");
+        }
       }
     } catch (err) {
       logger.error({ err }, "Failed to send QR photo");

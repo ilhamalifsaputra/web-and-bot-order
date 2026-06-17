@@ -109,6 +109,20 @@
         Shown to buyers who pay with USDT: your Binance Pay ID at checkout, and
         the QR image the bot sends for payment.
       </p>
+
+      {% if qr_is_upload %}
+      <div class="flex items-center gap-2 mb-3">
+        <img src="{{ qr_url }}" alt="Current payment QR" class="w-20 h-20 rounded border border-sand object-contain bg-sand/40">
+        <span class="text-xs text-ink-soft">Current QR — uploading a new one will replace it.</span>
+      </div>
+      {% endif %}
+      <form method="post" action="/settings/qr" enctype="multipart/form-data" class="flex items-center gap-2 mb-4">
+        <input type="hidden" name="csrf_token" value="{{ admin.csrf }}">
+        <input type="file" name="qr_image" accept="image/jpeg,image/png,image/webp" required
+               class="field text-sm file:mr-2 file:btn file:btn-soft file:border-0 file:text-xs">
+        <button class="btn btn-primary btn-sm whitespace-nowrap">Upload QR</button>
+      </form>
+
       <div class="space-y-3">
         {% for fld in pay_binance_fields %}{{ setting_form(fld) }}{% endfor %}
       </div>

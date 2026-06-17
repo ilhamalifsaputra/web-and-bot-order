@@ -6,6 +6,9 @@ node_modules/
 .env.*
 !.env.example
 
+# --- local MCP server config (token via ${HOSTINGER_API_TOKEN} env var) ---
+.mcp.json
+
 # --- runtime data: DB (+ WAL/SHM/backups), logs (any nesting) ---
 data/
 *.db

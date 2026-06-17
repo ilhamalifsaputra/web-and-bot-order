@@ -7,6 +7,7 @@
  * treated as "already processed". Combined with SQLite's single-writer
  * serialization + busy_timeout, this prevents double-delivery without locks.
  */
+import { config } from "@app/core/config";
 import { OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
@@ -18,6 +19,63 @@ import { getOrder, createOrderDirect, approveOrder, applyUsdtWalletToOrder } fro
 import { adjustWallet } from "./users";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
+
+// ---------------------------------------------------------------------------
+// Resolved config (web-admin Settings win; .env is the bootstrap/recovery
+// fallback, plan.md §16). Read per-request/per-poll so an edit in /settings
+// takes effect on the next cycle without a restart (like Bybit/TokoPay).
+// ---------------------------------------------------------------------------
+
+export const BINANCE_UID_KEY = "binance_receive_uid";
+export const BINANCE_API_KEY_KEY = "binance_api_key";
+export const BINANCE_API_SECRET_KEY = "binance_api_secret";
+
+export interface BinanceInternalConfig {
+  /** True only when receiveUid + apiKey + apiSecret are all present. */
+  enabled: boolean;
+  receiveUid: string;
+  apiKey: string;
+  apiSecret: string;
+  apiBase: string;
+  currency: string;
+  pollIntervalSeconds: number;
+  windowMinutes: number;
+}
+
+/** First non-empty (trimmed) value, else "". DB value wins over the env fallback. */
+function pick(dbVal: string | null, envVal?: string): string {
+  const a = (dbVal ?? "").trim();
+  if (a) return a;
+  return (envVal ?? "").trim();
+}
+
+/**
+ * Resolve the Binance Internal Transfer config from Settings (with .env
+ * fallback). `enabled` gates the poller, the watchdog, and the checkout
+ * option. The API base, currency, poll interval, and payment window stay
+ * env-only (rarely change); only the receive UID and the API key/secret are
+ * web-editable.
+ */
+export async function resolveBinanceInternalConfig(db: Db): Promise<BinanceInternalConfig> {
+  const [uid, key, secret] = await Promise.all([
+    getSetting(db, BINANCE_UID_KEY),
+    getSetting(db, BINANCE_API_KEY_KEY),
+    getSetting(db, BINANCE_API_SECRET_KEY),
+  ]);
+  const receiveUid = pick(uid, config.BINANCE_RECEIVE_UID);
+  const apiKey = pick(key, config.BINANCE_API_KEY);
+  const apiSecret = pick(secret, config.BINANCE_API_SECRET);
+  return {
+    enabled: Boolean(receiveUid && apiKey && apiSecret),
+    receiveUid,
+    apiKey,
+    apiSecret,
+    apiBase: config.BINANCE_API_BASE,
+    currency: config.CURRENCY,
+    pollIntervalSeconds: config.POLL_INTERVAL_SECONDS,
+    windowMinutes: config.INTERNAL_PAYMENT_WINDOW_MINUTES,
+  };
+}
 
 /**
  * Create a direct order, then stamp it as a USDT/Binance-Internal payment:

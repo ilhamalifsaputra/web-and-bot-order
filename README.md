@@ -22,13 +22,12 @@ terpisah.
 2. [Mengisi File `.env`](#2-mengisi-file-env)
 3. [Jalur Instalasi A — VPS dengan Docker (disarankan)](#3-jalur-a--vps-dengan-docker-disarankan)
 4. [Jalur Instalasi B — VPS tanpa Docker](#4-jalur-b--vps-tanpa-docker-langsung-nodejs)
-5. [Jalur Instalasi C — Hostinger Node.js App Manager](#5-jalur-c--hostinger-nodejs-app-manager-hosting-biasa)
-6. [Buat Admin Pertama](#6-buat-admin-pertama)
-7. [Mengatur Pembayaran](#7-mengatur-pembayaran)
-8. [Update, Backup, dan Perawatan](#8-update-backup-dan-perawatan)
-9. [Masalah Umum & Solusi](#9-masalah-umum--solusi)
-10. [Referensi Lengkap Variabel `.env`](#10-referensi-lengkap-variabel-env)
-11. [Untuk Developer](#11-untuk-developer)
+5. [Buat Admin Pertama](#5-buat-admin-pertama)
+6. [Mengatur Pembayaran](#6-mengatur-pembayaran)
+7. [Update, Backup, dan Perawatan](#7-update-backup-dan-perawatan)
+8. [Masalah Umum & Solusi](#8-masalah-umum--solusi)
+9. [Referensi Lengkap Variabel `.env`](#9-referensi-lengkap-variabel-env)
+10. [Untuk Developer](#10-untuk-developer)
 
 ---
 
@@ -38,7 +37,7 @@ terpisah.
 
 | Kebutuhan | Keterangan |
 |---|---|
-| **Server** | VPS (mis. Hostinger VPS, DigitalOcean) **atau** hosting Node.js (Hostinger Node App Manager) |
+| **Server** | VPS (mis. Hostinger VPS, DigitalOcean) dengan akses root/SSH |
 | **Node.js ≥ 20** | Sudah otomatis kalau pakai Docker. Cek versi: `node -v` |
 | **pnpm 9** | Hanya untuk jalur non-Docker. Install: `npm install -g pnpm@9` |
 | **Akun Telegram** | Untuk membuat bot dan menjadi admin |
@@ -112,8 +111,8 @@ CURRENCY=USDT
 > dan andalkan wizard.
 
 Pengaturan pembayaran (Binance/Bybit/TokoPay) **tidak wajib** sekarang — bisa
-diisi belakangan lewat panel admin (lihat [bagian 7](#7-mengatur-pembayaran)).
-Daftar lengkap semua variabel ada di [bagian 10](#10-referensi-lengkap-variabel-env).
+diisi belakangan lewat panel admin (lihat [bagian 6](#6-mengatur-pembayaran)).
+Daftar lengkap semua variabel ada di [bagian 9](#9-referensi-lengkap-variabel-env).
 
 ---
 
@@ -210,13 +209,13 @@ docker compose logs -f order-bot   # lihat log bot (Ctrl+C untuk keluar)
 - Toko web (kalau dinyalakan): buka `http://IP-VPS-KAMU:8100/` di browser.
 - Bot: chat botmu di Telegram, ketik `/start` → harus membalas.
 
-✅ Selesai. Lanjut ke [Buat Admin Pertama](#6-buat-admin-pertama).
+✅ Selesai. Lanjut ke [Buat Admin Pertama](#5-buat-admin-pertama).
 
 > 🔒 **Penting untuk keamanan:** panel admin (port 8000) dan toko web (port 8100)
 > di atas terbuka lewat HTTP biasa. Untuk produksi, taruh di belakang **reverse
 > proxy + HTTPS** (mis. Nginx/Caddy + domain), lalu set `WEB_COOKIE_SECURE=true`
 > di `.env`. Toko web umumnya pakai domain/subdomain sendiri (`SHOP_PUBLIC_URL`,
-> lihat [bagian 10](#10-referensi-lengkap-variabel-env)). Jangan biarkan panel
+> lihat [bagian 9](#9-referensi-lengkap-variabel-env)). Jangan biarkan panel
 > admin telanjang di internet tanpa HTTPS.
 
 ### Perintah Docker yang sering dipakai
@@ -281,7 +280,7 @@ pnpm start                      # bot + panel admin + toko + notifier sekaligus
 > - Punya domain untuk toko? Set `SHOP_PUBLIC_URL=https://shop.domainmu.com`
 >   (dan `SHOP_HOST`) supaya toko & admin berbagi **satu port** lewat pemisahan
 >   per-domain, dan link toko di pesan pelanggan memakai domain itu. Lihat
->   [bagian 10](#10-referensi-lengkap-variabel-env).
+>   [bagian 9](#9-referensi-lengkap-variabel-env).
 
 ### Langkah 5 — Supaya tetap hidup setelah SSH ditutup
 
@@ -303,45 +302,7 @@ Perintah PM2 berguna: `pm2 logs bot-order`, `pm2 restart bot-order`,
 
 ---
 
-## 5. Jalur C — Hostinger Node.js App Manager (hosting biasa)
-
-Kalau kamu **tidak** punya VPS, tapi punya hosting Hostinger dengan fitur
-**"Setup Node.js App"** (berbasis Passenger). Jalur ini sedikit lebih rumit
-karena kode harus di-*bundle* jadi satu file dulu.
-
-**Panduan lengkap langkah-demi-langkah ada di [`DOCS.md` → Bagian 4 (Deploy Hostinger)](DOCS.md#bagian-4--deploy-ke-hostinger-node-app-manager).**
-Ringkasannya:
-
-1. **Di komputermu**, bangun bundle satu file:
-   ```bash
-   pnpm install
-   pnpm run build:bundle          # menghasilkan dist/server.cjs
-   ```
-2. **Upload** ke folder aplikasi Hostinger (via File Manager atau SFTP):
-   `dist/server.cjs`, `package.prod.json` (rename jadi `package.json`),
-   `prisma/schema.prisma`, folder `views/ locales/ static/`, dan
-   `data/bot.db` (database — buat dulu di lokal dengan `pnpm exec prisma db push`).
-3. **Di panel Node App Hostinger**: set *startup file* = `dist/server.cjs`,
-   pilih Node 20/22, klik **Run NPM Install**, isi Environment Variables
-   (lihat bagian 7 di `DOCS.md` Bagian 4), lalu **Restart**.
-4. **Wajib:** pasang **UptimeRobot** yang nge-ping URL webmu tiap 1–5 menit.
-   Tanpa ini, Hostinger menidurkan aplikasi saat sepi dan **bot ikut mati**.
-
-> 🛍️ **Toko web juga sudah termasuk** di bundle ini (`dist/server.cjs` = proses
-> gabungan yang sama seperti Jalur B). Karena Hostinger Passenger hanya memberi
-> **satu port**, toko dan panel admin dipisah **per-domain**: set `SHOP_HOST`
-> (mis. `shop.domainmu.com`) dan `SHOP_PUBLIC_URL=https://shop.domainmu.com` di
-> Environment Variables, lalu arahkan subdomain itu ke aplikasi yang sama.
-> Request ke `SHOP_HOST` → toko; domain lain → panel admin. Kalau `SHOP_HOST`
-> dikosongkan, hanya panel admin yang tampil (toko tidak punya port terpisah di
-> mode managed-hosting ini). Detail di [`DOCS.md` Bagian 4](DOCS.md#bagian-4--deploy-ke-hostinger-node-app-manager).
-
-> Karena keterbatasan idle-shutdown ini, **VPS (Jalur A) lebih disarankan** kalau
-> botmu harus selalu responsif. Detail trade-off ada di `DOCS.md` Bagian 4 §0 & §10.
-
----
-
-## 6. Buat Admin Pertama
+## 5. Buat Admin Pertama
 
 Setelah aplikasi jalan dan panel admin bisa dibuka:
 
@@ -368,7 +329,7 @@ Setelah aplikasi jalan dan panel admin bisa dibuka:
 
 ---
 
-## 7. Mengatur Pembayaran
+## 6. Mengatur Pembayaran
 
 Semua pembayaran bisa diatur dari **panel admin → Settings → Payments**
 (tidak perlu edit `.env` dan tidak perlu restart untuk sebagian besar).
@@ -384,7 +345,7 @@ bot maupun website. Ketiganya auto-confirm:
 
 > **Binance Pay manual** (pembeli upload bukti, kamu approve) **bukan** metode
 > utama lagi — ia hanya muncul sebagai *fallback* bila belum ada satu pun metode
-> otomatis di atas yang dikonfigurasi. Perlu `BINANCE_PAY_ID` (lihat bagian 10).
+> otomatis di atas yang dikonfigurasi. Perlu `BINANCE_PAY_ID` (lihat bagian 9).
 
 **Untuk Bybit** (auto-confirm USDT di jaringan BSC):
 - Buat API key Bybit yang **Wallet READ-ONLY** (tanpa izin Withdraw).
@@ -394,7 +355,7 @@ bot maupun website. Ketiganya auto-confirm:
 - Penting: cocok-pembayaran Bybit pakai **nominal unik**, jadi pastikan
   `USE_UNIQUE_CENTS=1` tetap aktif, dan pembeli mengirim **jumlah persis**.
 
-Detail teknis tiap metode ada di [bagian 10](#10-referensi-lengkap-variabel-env).
+Detail teknis tiap metode ada di [bagian 9](#9-referensi-lengkap-variabel-env).
 
 > 🎨 **Personalisasi tampilan toko** — dari **panel admin → Settings → Branding**
 > kamu bisa **upload favicon** (ikon tab, PNG/ICO/SVG), **logo toko** (tampil di
@@ -406,7 +367,7 @@ Detail teknis tiap metode ada di [bagian 10](#10-referensi-lengkap-variabel-env)
 
 ---
 
-## 8. Update, Backup, dan Perawatan
+## 7. Update, Backup, dan Perawatan
 
 ### Update ke versi baru
 
@@ -459,7 +420,7 @@ Buka **panel admin → Stock → pilih produk** untuk mengurus akun/kredensial:
 
 ---
 
-## 9. Masalah Umum & Solusi
+## 8. Masalah Umum & Solusi
 
 | Gejala | Penyebab | Solusi |
 |---|---|---|
@@ -467,10 +428,8 @@ Buka **panel admin → Stock → pilih produk** untuk mengurus akun/kredensial:
 | HTTP 500 / `attempt to write a readonly database` | Folder `data/` dimiliki `root`, container jalan sebagai UID 999 | `sudo chown -R 999:999 data` (lihat Langkah 5.5) lalu `docker compose restart web-admin order-bot` |
 | Bot crash saat start: `String must contain at least 20 character(s)` | Baris `BOT_TOKEN=` dikosongkan, bukan dihapus | Hapus/_comment_ baris `BOT_TOKEN` di `.env` (token diatur lewat panel); jangan tinggalkan `BOT_TOKEN=` kosong |
 | Bot tidak membalas `/start` | Token salah, atau proses mati | Cek `BOT_TOKEN`; cek `docker compose logs order-bot` / `pm2 logs` |
-| Bot di Hostinger kadang mati | App di-idle-kan Passenger saat sepi | Pasang UptimeRobot ping URL web tiap 1–5 menit |
 | Tidak bisa login / muncul loop login | Cookie tidak tersimpan | Untuk HTTP lokal set `WEB_COOKIE_SECURE=false`; untuk produksi pakai HTTPS + `WEB_COOKIE_SECURE=true` |
 | Pembayaran Bybit tidak otomatis | Nominal dibulatkan / jaringan salah | Pembeli harus kirim **jumlah persis** via **BEP20**; pastikan `USE_UNIQUE_CENTS=1` |
-| `Cannot find module '@app/core'` (Hostinger) | Upload source mentah, bukan bundle | Pakai `pnpm run build:bundle`, upload `dist/server.cjs` |
 | Panel admin tak bisa diakses dari luar | Bind ke `127.0.0.1` | Di Docker sudah `0.0.0.0`; non-Docker set `WEB_HOST=0.0.0.0` (di balik HTTPS) |
 
 Masih bingung? Lihat log dulu — hampir semua masalah kelihatan di sana:
@@ -478,7 +437,7 @@ Masih bingung? Lihat log dulu — hampir semua masalah kelihatan di sana:
 
 ---
 
-## 10. Referensi Lengkap Variabel `.env`
+## 9. Referensi Lengkap Variabel `.env`
 
 Semua variabel divalidasi saat start oleh Zod (`packages/core/src/config.ts`).
 Yang **wajib** ditandai ✅.
@@ -487,7 +446,7 @@ Yang **wajib** ditandai ✅.
 
 | Variabel | Keterangan | Wajib | Default |
 |---|---|---|---|
-| `DATABASE_URL_PRISMA` | Path file SQLite. Di container/Hostinger pakai path absolut, mis. `file:/app/data/bot.db` | ✅ | `file:../data/bot.db` |
+| `DATABASE_URL_PRISMA` | Path file SQLite. Di dalam container pakai path absolut, mis. `file:/app/data/bot.db` | ✅ | `file:../data/bot.db` |
 | `ADMIN_IDS` | ID Telegram admin, dipisah koma | ✅ | — |
 | `TIMEZONE` | Zona waktu tampilan (mis. `Asia/Jakarta`) | ✅ | — |
 | `DEFAULT_LANGUAGE` | Bahasa default user baru (`en`/`id`) | | `en` |
@@ -557,7 +516,11 @@ Settings → Payments** (panel menang atas `.env`, tanpa restart).
 | `BYBIT_API_BASE` | Base URL API Bybit | `https://api.bybit.com` |
 | `BYBIT_PAYMENT_WINDOW_MINUTES` | Menit sebelum order deposit kedaluwarsa | `30` |
 
-### Mode Webhook (opsional, untuk Hostinger)
+### Mode Webhook (opsional)
+
+Default `polling` tidak butuh domain/HTTPS. Mode `webhook` berguna kalau kamu
+sudah punya domain + reverse proxy HTTPS dan ingin Telegram mendorong update
+lewat HTTP alih-alih long-polling.
 
 | Variabel | Keterangan |
 |---|---|
@@ -570,7 +533,7 @@ Settings → Payments** (panel menang atas `.env`, tanpa restart).
 
 ---
 
-## 11. Untuk Developer
+## 10. Untuk Developer
 
 ### Menjalankan saat ngoding (proses terpisah)
 
@@ -599,7 +562,7 @@ apps/
   web-admin/    Panel admin (Fastify + Nunjucks + HTMX)
   storefront/   Website toko pelanggan
   notifier/     Pengirim notifikasi (menguras notification_outbox)
-  server/       Entry gabungan satu proses (untuk Hostinger)
+  server/       Entry gabungan satu proses (dipakai oleh `pnpm start`)
 packages/
   core/         Util bersama (config, money, i18n, logging) + locale en/id
   db/           Prisma client + CRUD per-domain (+ tes Vitest)
@@ -612,11 +575,10 @@ data/bot.db            Database (di-gitignore)
 
 | File | Isi |
 |---|---|
-| `DOCS.md` | Dokumentasi gabungan: rencana & desain storefront, cutover IDR, deploy Hostinger |
+| `DOCS.md` | Dokumentasi gabungan: rencana & desain storefront, cutover IDR |
 | `CLAUDE.md` | Konvensi & aturan koding (Decimal untuk uang, audit, dll.) |
 | `.env.example` | Daftar semua variabel lingkungan |
 
 ---
 
-Butuh bantuan lebih detail untuk Hostinger? Buka **`DOCS.md` Bagian 4**.
 Selamat berjualan! 🚀

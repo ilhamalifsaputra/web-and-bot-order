@@ -456,6 +456,74 @@ describe("catalog", () => {
   });
 });
 
+describe("product groups", () => {
+  it("create group happy + audit", async () => {
+    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const res = await post("/catalog/group", seed.cookie, {
+      csrf_token: seed.csrf,
+      category_id: String(product!.categoryId),
+      name: "Capcut",
+      emoji: "🎬",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    const groups = await prisma.productGroup.findMany({ where: { name: "Capcut" } });
+    expect(groups.length).toBe(1);
+    const audit = await prisma.auditLog.findMany({ where: { action: "group_create" } });
+    expect(audit.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("assign product to a same-category group", async () => {
+    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const group = await prisma.productGroup.create({
+      data: { categoryId: product!.categoryId, name: "Grp" },
+    });
+    const res = await post(`/catalog/group/${group.id}/assign`, seed.cookie, {
+      csrf_token: seed.csrf,
+      ids: String(seed.productId),
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
+    expect(fresh!.productGroupId).toBe(group.id);
+  });
+
+  it("assign rejects a cross-category product with a flash error", async () => {
+    const otherCat = await prisma.category.create({ data: { name: `Other${counter++}` } });
+    const group = await prisma.productGroup.create({ data: { categoryId: otherCat.id, name: "XCat" } });
+    const res = await post(`/catalog/group/${group.id}/assign`, seed.cookie, {
+      csrf_token: seed.csrf,
+      ids: String(seed.productId),
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
+    expect(fresh!.productGroupId).toBeNull();
+  });
+
+  it("delete group unlinks members", async () => {
+    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const group = await prisma.productGroup.create({ data: { categoryId: product!.categoryId, name: "Del" } });
+    await prisma.product.update({ where: { id: seed.productId }, data: { productGroupId: group.id } });
+    const res = await post(`/catalog/group/${group.id}/delete`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(303);
+    expect(await prisma.productGroup.findUnique({ where: { id: group.id } })).toBeNull();
+    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
+    expect(fresh!.productGroupId).toBeNull();
+  });
+
+  it("create group requires auth", async () => {
+    const res = await post("/catalog/group", null, { csrf_token: "x", name: "Nope", category_id: "1" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("create group rejects bad CSRF", async () => {
+    const res = await post("/catalog/group", seed.cookie, { csrf_token: "bad", name: "Nope", category_id: "1" });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
 // ---- stock (acceptance #5) ------------------------------------------------
 
 describe("stock", () => {

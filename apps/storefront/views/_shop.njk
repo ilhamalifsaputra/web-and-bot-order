@@ -76,6 +76,32 @@
 </a>
 {%- endmacro %}
 
+{# Group (denomination) card for the grid pages — a product family that hides
+   its members behind /g/:id until the buyer picks a duration/plan. Expects
+   the shaped context from routes: {id, name, emoji, from_price, count, image}. #}
+{% macro group_card(g, fx, lang) -%}
+<a href="/g/{{ g.id }}"
+   class="card overflow-hidden flex flex-col group transition-all duration-150 hover:shadow-lift hover:-translate-y-0.5">
+  <div class="aspect-[4/3] bg-sand overflow-hidden relative">
+    <img src="{{ g.image }}" alt="{{ g.name }}" loading="lazy" decoding="async"
+         class="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300">
+    <span class="absolute top-2 right-2 chip bg-ink/70 text-white backdrop-blur !text-[0.6rem] !font-semibold !px-2 !py-0.5">
+      <i data-lucide="zap" class="w-3 h-3 text-amber-300"></i> {{ t('web.badge_instant', lang) }}
+    </span>
+  </div>
+  <div class="p-3.5 flex flex-col gap-1.5 flex-1">
+    <div class="font-display text-sm font-semibold text-ink leading-snug line-clamp-2">
+      {% if g.emoji %}{{ g.emoji }} {% endif %}{{ g.name }}
+    </div>
+    <div class="text-xs text-ink-faint">{{ t('web.group_options', lang, { count: g.count }) }}</div>
+    <div class="mt-auto pt-2 flex items-center gap-1.5 flex-wrap">
+      <span class="text-xs text-ink-soft">{{ t('web.from_price', lang) }}</span>
+      {{ price(g.from_price, fx, "text-sm") }}
+    </div>
+  </div>
+</a>
+{%- endmacro %}
+
 {# Checkout stepper (design.md §4.6): 1 Keranjang → 2 Pembayaran → 3 Selesai. #}
 {% macro stepper(step, lang) -%}
 {% set labels = [t('web.step_cart', lang), t('web.step_pay', lang), t('web.step_done', lang)] %}

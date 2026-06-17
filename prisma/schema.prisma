@@ -108,8 +108,31 @@ model Category {
   isActive  Boolean @default(true) @map("is_active")
 
   products Product[]
+  groups   ProductGroup[]
 
   @@map("categories")
+}
+
+/// Optional parent for product denominations (e.g. "Capcut" → 1 Month / 7 day).
+/// Display/navigation only — each member Product keeps its own price & stock.
+/// A group lives in exactly one category; all members must share that category.
+model ProductGroup {
+  id          Int      @id @default(autoincrement())
+  categoryId  Int      @map("category_id")
+  name        String
+  emoji       String?
+  description String?
+  webImageUrl String?  @map("web_image_url")
+  imageFileId String?  @map("image_file_id")
+  sortOrder   Int      @default(0) @map("sort_order")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  category Category  @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
+  products Product[]
+
+  @@index([categoryId], map: "ix_product_groups_category_id")
+  @@map("product_groups")
 }
 
 model Product {
@@ -129,8 +152,10 @@ model Product {
   warrantyDays  Int      @default(30) @map("warranty_days")
   isActive      Boolean  @default(true) @map("is_active")
   createdAt     DateTime @default(now()) @map("created_at")
+  productGroupId Int?     @map("product_group_id")
 
   category             Category              @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
+  productGroup         ProductGroup?         @relation(fields: [productGroupId], references: [id], onUpdate: NoAction)
   stockItems           StockItem[]
   orderItems           OrderItem[]
   cartItems            CartItem[]
@@ -139,6 +164,7 @@ model Product {
   bulkPricing          BulkPricing?
 
   @@index([categoryId], map: "ix_products_category_id")
+  @@index([productGroupId], map: "ix_products_product_group_id")
   @@map("products")
 }
 

@@ -47,6 +47,70 @@
   </details>
 </section>
 
+<!-- Product groups (denominations) -->
+<section class="mb-10">
+  <h2 class="section-title mb-3">Product Groups (denominations)</h2>
+  <div class="card overflow-x-auto mb-4">
+    <table class="data-table">
+      <thead>
+        <tr><th>Group</th><th>Category</th><th>Members</th><th>Active</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for g in groups %}
+        <tr>
+          <td class="font-medium">{{ g.emoji or '' }} {{ g.name }}</td>
+          <td>{{ g.category.name if g.category else '—' }}</td>
+          <td class="tabular">{{ g._count.products }}</td>
+          <td>{{ ui.status_badge('active' if g.isActive else 'inactive') }}</td>
+          <td class="text-right">
+            <form method="post" action="/catalog/group/{{ g.id }}/delete" class="inline"
+                  onsubmit="return confirm('Delete group? Products are kept.');">
+              {{ ui.csrf_field(admin) }}
+              <button class="btn btn-soft btn-sm">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        {{ ui.empty_row(5, 'No product groups yet.') }}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <details class="card card-pad mb-4">
+    <summary class="cursor-pointer font-medium text-sm text-pine">+ Add a group</summary>
+    <form method="post" action="/catalog/group" class="mt-4 flex flex-wrap gap-3 items-end">
+      {{ ui.csrf_field(admin) }}
+      <div><label class="field-label">Category</label>
+        <select name="category_id" required class="field">
+          {% for c in categories %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
+        </select></div>
+      <div><label class="field-label">Name</label><input name="name" required placeholder="e.g. Capcut" class="field"></div>
+      <div><label class="field-label">Icon</label><input name="emoji" class="field w-20" placeholder="emoji (optional)"></div>
+      <div><label class="field-label">Order</label><input name="sort_order" type="number" value="0" class="field w-20"></div>
+      <button class="btn btn-primary">Add group</button>
+    </form>
+  </details>
+
+  {% if groups %}
+  <details class="card card-pad">
+    <summary class="cursor-pointer font-medium text-sm text-pine">Assign products to a group</summary>
+    <form method="post" action="" id="assign-group-form" class="mt-4 flex flex-wrap gap-3 items-end"
+          onsubmit="this.action='/catalog/group/' + this.group_id.value + '/assign';">
+      {{ ui.csrf_field(admin) }}
+      <div><label class="field-label">Group</label>
+        <select name="group_id" required class="field">
+          {% for g in groups %}<option value="{{ g.id }}">{{ g.name }} ({{ g.category.name if g.category else '—' }})</option>{% endfor %}
+        </select></div>
+      <div class="grow"><label class="field-label">Member product ids (comma-separated, full membership)</label>
+        <input name="ids" placeholder="e.g. 12,13,14" class="field"></div>
+      <button class="btn btn-soft">Save membership</button>
+    </form>
+    <p class="text-xs text-ink-faint mt-2">Saving replaces the group's full membership — any product id left out is unlinked. All ids must share the group's category.</p>
+  </details>
+  {% endif %}
+</section>
+
 <!-- Products -->
 <section>
   <h2 class="section-title mb-3">Items for sale</h2>

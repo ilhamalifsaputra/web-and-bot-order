@@ -26,6 +26,12 @@ import {
   upsertBulkPricing,
   logAdminAction,
   getUsdIdrRate,
+  listAllGroups,
+  createGroup,
+  updateGroup,
+  deleteGroup,
+  assignProductToGroup,
+  CategoryMismatchError,
 } from "@app/db";
 import { currentAdmin, csrfProtect, canMutate } from "../plugins/auth";
 import { redirectWithFlash } from "../flash";
@@ -143,6 +149,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
     // Prices are central Rupiah; the rate powers the read-only USDT preview
     // next to the price inputs (same figure buyers see — plan.md §15.6).
     const fxRate = await getUsdIdrRate(prisma);
+    const groups = await listAllGroups(prisma);
 
     const rulesByProduct: Record<number, (typeof rules)[number]> = {};
     for (const r of rules) rulesByProduct[r.productId] = r;
@@ -153,6 +160,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       categories,
       products,
       rules_by_product: rulesByProduct,
+      groups,
       product_types: PRODUCT_TYPES,
       usd_idr_rate: fxRate ? fxRate.toString() : null,
       msg: q.msg ?? null,
@@ -492,5 +500,100 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       details: `min_qty=${minq} pct=${pct.toString()}`,
     });
     return redirectWithFlash(reply, "/catalog", "Bulk pricing saved.", "success");
+  });
+
+  // ---- Product groups (denominations) ----
+  app.post("/catalog/group", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, string>;
+    const name = (body.name ?? "").trim();
+    const categoryId = Number(body.category_id);
+    if (!name || !Number.isInteger(categoryId) || categoryId <= 0) {
+      return redirectWithFlash(reply, "/catalog", "Group name and category are required.", "error");
+    }
+    const group = await createGroup(prisma, {
+      categoryId,
+      name,
+      emoji: (body.emoji ?? "").trim() || null,
+      description: (body.description ?? "").trim() || null,
+      webImageUrl: (body.web_image_url ?? "").trim() || null,
+      sortOrder: Number(body.sort_order) || 0,
+    });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "group_create",
+      targetType: "product_group",
+      targetId: group.id,
+      details: `name=${name}`,
+    });
+    return redirectWithFlash(reply, "/catalog", `Group '${name}' created.`, "success");
+  });
+
+  app.post("/catalog/group/:groupId/update", { preHandler: csrfProtect }, async (req, reply) => {
+    const groupId = Number((req.params as { groupId: string }).groupId);
+    const body = (req.body ?? {}) as Record<string, string>;
+    const name = (body.name ?? "").trim();
+    if (!name) return redirectWithFlash(reply, "/catalog", "Group name is required.", "error");
+    await updateGroup(prisma, groupId, {
+      name,
+      emoji: (body.emoji ?? "").trim() || null,
+      description: (body.description ?? "").trim() || null,
+      webImageUrl: (body.web_image_url ?? "").trim() || null,
+      sortOrder: Number(body.sort_order) || 0,
+      isActive: truthy(body.is_active),
+    });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "group_update",
+      targetType: "product_group",
+      targetId: groupId,
+      details: `name=${name}`,
+    });
+    return redirectWithFlash(reply, "/catalog", "Group updated.", "success");
+  });
+
+  app.post("/catalog/group/:groupId/delete", { preHandler: csrfProtect }, async (req, reply) => {
+    const groupId = Number((req.params as { groupId: string }).groupId);
+    await deleteGroup(prisma, groupId);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "group_delete",
+      targetType: "product_group",
+      targetId: groupId,
+    });
+    return redirectWithFlash(reply, "/catalog", "Group deleted (products kept).", "success");
+  });
+
+  // Assign/unassign products to a group. `ids` is the comma-separated selection;
+  // products NOT in the list are unlinked from this group, so the form is the
+  // full membership state. Cross-category picks are rejected as a group.
+  app.post("/catalog/group/:groupId/assign", { preHandler: csrfProtect }, async (req, reply) => {
+    const groupId = Number((req.params as { groupId: string }).groupId);
+    const body = (req.body ?? {}) as Record<string, string>;
+    const ids = parseIds(body.ids);
+    try {
+      // Unlink anything currently in the group but not re-selected. Both passes
+      // run in one transaction so a cross-category rejection partway through
+      // rolls back the whole membership change (group-level, all-or-nothing).
+      await prisma.$transaction(async (tx) => {
+        const current = await tx.product.findMany({ where: { productGroupId: groupId }, select: { id: true } });
+        for (const c of current) {
+          if (!ids.includes(c.id)) await assignProductToGroup(tx, c.id, null);
+        }
+        for (const id of ids) await assignProductToGroup(tx, id, groupId);
+      });
+    } catch (err) {
+      if (err instanceof CategoryMismatchError) {
+        return redirectWithFlash(reply, "/catalog", "All products must be in the group's category.", "error");
+      }
+      throw err;
+    }
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "group_assign",
+      targetType: "product_group",
+      targetId: groupId,
+      details: `ids=${ids.join("|").slice(0, 180)}`,
+    });
+    return redirectWithFlash(reply, "/catalog", "Group membership updated.", "success");
   });
 }

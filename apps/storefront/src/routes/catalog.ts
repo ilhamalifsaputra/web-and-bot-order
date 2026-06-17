@@ -19,6 +19,8 @@ import {
   getBulkPricingForProduct,
   activeBulkPricingByProduct,
   listReviews,
+  listCatalogEntries,
+  getGroupWithActiveProducts,
 } from "@app/db";
 import { productImage } from "../images";
 import { shopContext } from "../shop";
@@ -69,12 +71,58 @@ const catalogRoutes: FastifyPluginAsync = async (app) => {
       activeBulkPricingByProduct(prisma),
     ]);
     const ratingByProduct = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
+
+    const entries = await listCatalogEntries(prisma, category.id);
+    const groupCards = entries
+      .filter((e): e is Extract<typeof entries[number], { kind: "group" }> => e.kind === "group")
+      .map((e) => ({
+        id: e.group.id,
+        name: e.group.name,
+        emoji: e.group.emoji,
+        from_price: e.members[0]!.price.toString(), // members are price-asc
+        count: e.members.length,
+        image: e.group.webImageUrl ?? productImage(e.members[0]!, category.name),
+      }));
+    const productEntryIds = new Set(
+      entries.filter((e) => e.kind === "product").map((e) => (e as { product: { id: number } }).product.id),
+    );
+    const productCards = products
+      .filter((p) => productEntryIds.has(p.id))
+      .map((p) => card(p, stock, ratingByProduct, bulk));
+
     return reply.view("catalog.njk", {
       ...ctx,
       category,
       categories,
-      products: products.map((p) => card(p, stock, ratingByProduct, bulk)),
+      groups: groupCards,
+      products: productCards,
       low_threshold: config.LOW_STOCK_THRESHOLD,
+    });
+  });
+
+  // Group (denomination) detail.
+  app.get<{ Params: { id: string } }>("/g/:id", async (req, reply) => {
+    const groupId = Number(req.params.id);
+    const ctx = await shopContext(req, "/g");
+    const group = Number.isInteger(groupId) ? await getGroupWithActiveProducts(prisma, groupId) : null;
+    if (!group || !group.isActive || group.products.length === 0) {
+      return reply.code(404).view("error.njk", {
+        ...ctx,
+        status_code: 404,
+        message: t("web.not_found", ctx.lang),
+      });
+    }
+    const category = await getCategory(prisma, group.categoryId);
+    return reply.view("group.njk", {
+      ...ctx,
+      group: { id: group.id, name: group.name, emoji: group.emoji, description: group.description },
+      denominations: group.products.map((p) => ({
+        id: p.id,
+        duration_label: p.durationLabel,
+        name: p.name,
+        price: p.price.toString(),
+        image: group.webImageUrl ?? productImage(p, category ? category.name : ""),
+      })),
     });
   });
 

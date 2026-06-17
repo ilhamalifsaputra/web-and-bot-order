@@ -6,6 +6,8 @@ import { config } from "@app/core/config";
 import { ProductType, StockStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
+import type { Category, Product, ProductGroup } from "@prisma/client";
+import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
 
 // ---- Categories ----
@@ -286,4 +288,133 @@ export async function lowStockProducts(
     .filter((r) => r.available <= threshold)
     .sort((a, b) => a.available - b.available);
   return result;
+}
+
+// ---- Product groups (denominations) ----
+
+/** Discriminated catalog row used by every customer surface. */
+export type CatalogEntry =
+  | { kind: "group"; group: ProductGroup; members: Product[] }
+  | { kind: "product"; product: Product };
+
+/** Thrown when assigning a product to a group in a different category. */
+export class CategoryMismatchError extends Error {
+  constructor() {
+    super("product and group must share the same category");
+    this.name = "CategoryMismatchError";
+  }
+}
+
+export function createGroup(
+  db: Db,
+  args: {
+    categoryId: number;
+    name: string;
+    emoji?: string | null;
+    description?: string | null;
+    webImageUrl?: string | null;
+    imageFileId?: string | null;
+    sortOrder?: number;
+  },
+) {
+  return db.productGroup.create({
+    data: {
+      categoryId: args.categoryId,
+      name: args.name,
+      emoji: args.emoji ?? null,
+      description: args.description ?? null,
+      webImageUrl: args.webImageUrl ?? null,
+      imageFileId: args.imageFileId ?? null,
+      sortOrder: args.sortOrder ?? 0,
+    },
+  });
+}
+
+export async function updateGroup(db: Db, groupId: number, fields: Record<string, unknown>) {
+  if (Object.keys(fields).length === 0) return;
+  await db.productGroup.update({ where: { id: groupId }, data: fields });
+}
+
+/** Delete a group, unlinking its members first (products survive). */
+export async function deleteGroup(db: PrismaClient, groupId: number): Promise<void> {
+  await db.$transaction(async (tx) => {
+    await tx.product.updateMany({ where: { productGroupId: groupId }, data: { productGroupId: null } });
+    await tx.productGroup.delete({ where: { id: groupId } });
+  });
+}
+
+/**
+ * Link a product to a group (or unlink when groupId is null). Enforces the
+ * invariant that a grouped product shares the group's category.
+ */
+export async function assignProductToGroup(
+  db: Db,
+  productId: number,
+  groupId: number | null,
+): Promise<void> {
+  if (groupId !== null) {
+    const [product, group] = await Promise.all([
+      db.product.findUnique({ where: { id: productId } }),
+      db.productGroup.findUnique({ where: { id: groupId } }),
+    ]);
+    if (!product || !group) throw new Error("product or group not found");
+    if (product.categoryId !== group.categoryId) throw new CategoryMismatchError();
+  }
+  await db.product.update({ where: { id: productId }, data: { productGroupId: groupId } });
+}
+
+/** All groups (active + inactive) with category + member count — admin list. */
+export function listAllGroups(db: Db) {
+  return db.productGroup.findMany({
+    include: { category: true, _count: { select: { products: true } } },
+    orderBy: [{ categoryId: "asc" }, { sortOrder: "asc" }, { name: "asc" }],
+  });
+}
+
+/** A group with its active members ordered by price asc (denomination picker). */
+export function getGroupWithActiveProducts(db: Db, groupId: number) {
+  return db.productGroup.findUnique({
+    where: { id: groupId },
+    include: { products: { where: { isActive: true }, orderBy: { price: "asc" } } },
+  });
+}
+
+/**
+ * Mixed, ordered catalog rows for a category (or the whole catalog when
+ * categoryId is omitted). Rules:
+ *  - active groups with >=1 active member; empty/inactive groups dropped
+ *  - a group with exactly one active member is emitted as that product (collapse)
+ *  - active products with no group (or in an inactive group) are emitted as products
+ * Final order: by display name, case-insensitive ascending (group.name / product.name).
+ */
+export async function listCatalogEntries(db: Db, categoryId?: number): Promise<CatalogEntry[]> {
+  const groups = await db.productGroup.findMany({
+    where: { isActive: true, ...(categoryId != null ? { categoryId } : {}) },
+    include: { products: { where: { isActive: true }, orderBy: { price: "asc" } } },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+
+  const groupedIds = new Set<number>();
+  const entries: CatalogEntry[] = [];
+  for (const g of groups) {
+    const { products: members, ...group } = g;
+    for (const m of members) groupedIds.add(m.id);
+    if (members.length === 0) continue; // hide empty group
+    if (members.length === 1) entries.push({ kind: "product", product: members[0]! }); // collapse
+    else entries.push({ kind: "group", group, members });
+  }
+
+  const ungrouped = await db.product.findMany({
+    where: {
+      isActive: true,
+      ...(categoryId != null ? { categoryId } : {}),
+      id: { notIn: [...groupedIds] },
+    },
+    orderBy: { name: "asc" },
+  });
+  for (const p of ungrouped) entries.push({ kind: "product", product: p });
+
+  const nameOf = (e: CatalogEntry) => (e.kind === "group" ? e.group.name : e.product.name).toLowerCase();
+  entries.sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+  return entries;
 }

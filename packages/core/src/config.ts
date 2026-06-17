@@ -130,9 +130,6 @@ export const Env = z.object({
     .transform((s) => s.toLowerCase())
     .pipe(z.enum(["debug", "info", "warn", "warning", "error"]))
     .transform((s) => (s === "warning" ? "warn" : s)),
-  LOG_FILE_PATH: z.string().default("data/logs/bot.log"),
-  LOG_BACKUP_COUNT: z.coerce.number().default(5),
-  LOG_JSON_FILE: looseBool.default(false),
 
   // ---- web-admin ----
   WEB_COOKIE_SECRET: z.string().min(32).optional(),

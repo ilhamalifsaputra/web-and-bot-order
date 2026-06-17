@@ -8,9 +8,9 @@
 generator client {
   provider = "prisma-client-js"
   // No binaryTargets: the deploy runs `prisma generate` (postinstall) ON the
-  // Hostinger Linux host, so "native" already produces the correct Linux query
+  // target Linux host, so "native" already produces the correct Linux query
   // engine there. Hardcoding Linux targets here would force every dev/CI machine
-  // to download extra engine binaries on each generate. See DEPLOY-HOSTINGER.md §5.
+  // to download extra engine binaries on each generate.
 }
 
 datasource db {

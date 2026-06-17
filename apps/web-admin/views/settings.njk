@@ -149,6 +149,27 @@
       {% for fld in pay_bybit_fields %}{{ setting_form(fld) }}{% endfor %}
     </div>
   </div>
+
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center gap-2">
+      <i data-lucide="arrow-left-right" class="w-5 h-5 text-sky-500"></i> USDT via Binance Internal Transfer (auto-confirm)
+    </h2>
+    <div class="text-xs text-ink-soft mb-4 space-y-1.5">
+      <p>
+        Fill all three to turn on automatic USDT payments: buyers send via
+        <strong class="text-ink">Binance Internal Transfer</strong> to your UID, and the bot
+        confirms &amp; delivers on its own. Leave any blank to hide this option.
+      </p>
+      <p>
+        The API key must be <strong class="text-ink">read-only</strong> (no trading/withdraw).
+        Saved keys are hidden — leave a field blank to keep the current value.
+        Takes effect within seconds, no restart needed.
+      </p>
+    </div>
+    <div class="space-y-3">
+      {% for fld in pay_binance_internal_fields %}{{ setting_form(fld) }}{% endfor %}
+    </div>
+  </div>
 </section>
 
 {# ════ Telegram bot — messages the bot sends + its tokens ════ #}

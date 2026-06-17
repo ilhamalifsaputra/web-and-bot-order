@@ -10,7 +10,7 @@
  * unique cents stay consistent across both fronts.
  */
 import type { FastifyPluginAsync } from "fastify";
-import { config, isBinanceInternalEnabled } from "@app/core/config";
+import { config } from "@app/core/config";
 import { botUsername } from "@app/core/runtime";
 import { OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -36,6 +36,7 @@ import {
   getSetting,
   getTokopayCreds,
   resolveBybitConfig,
+  resolveBinanceInternalConfig,
 } from "@app/db";
 import { currentCustomer, csrfProtect, type Customer } from "../plugins/auth";
 import { createTransaction, verifyCallback, type TokopayOrderInfo } from "@app/core/payments/tokopay";
@@ -99,11 +100,12 @@ async function checkoutView(
   voucherCode: string | null,
   errorKey: string | null,
 ) {
-  const [totals, fxRate, tokopay, bybit] = await Promise.all([
+  const [totals, fxRate, tokopay, bybit, binance] = await Promise.all([
     computeTotals(customer, voucherCode),
     getUsdIdrRate(prisma),
     getTokopayCreds(prisma),
     resolveBybitConfig(prisma),
+    resolveBinanceInternalConfig(prisma),
   ]);
   const haveRate = Boolean(fxRate);
   return {
@@ -115,7 +117,7 @@ async function checkoutView(
     total_usdt: fxRate ? usdtFromIdr(totals.total, fxRate).toString() : null,
     voucher_code: voucherCode ?? "",
     error_key: errorKey ?? totals.voucherError,
-    binance_enabled: haveRate && isBinanceInternalEnabled(),
+    binance_enabled: haveRate && binance.enabled,
     bybit_enabled: haveRate && bybit.enabled,
     idr_enabled: Boolean(tokopay),
   };
@@ -175,10 +177,11 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).view("checkout.njk", { ...ctx, ...view });
       };
 
-      const [fxRate, tokopay, bybit] = await Promise.all([
+      const [fxRate, tokopay, bybit, binance] = await Promise.all([
         getUsdIdrRate(prisma),
         getTokopayCreds(prisma),
         resolveBybitConfig(prisma),
+        resolveBinanceInternalConfig(prisma),
       ]);
 
       // Map the chosen method token → (currency, paymentMethod), each gated.
@@ -192,7 +195,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         | { currency: typeof OrderCurrency.IDR };
       let choice: Choice;
       if (method === "binance") {
-        if (!fxRate || !isBinanceInternalEnabled()) return rerender("web.pay_method_unavailable");
+        if (!fxRate || !binance.enabled) return rerender("web.pay_method_unavailable");
         choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BINANCE_INTERNAL };
       } else if (method === "bybit") {
         if (!fxRate || !bybit.enabled) return rerender("web.pay_method_unavailable");

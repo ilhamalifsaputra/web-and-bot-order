@@ -5,13 +5,14 @@
  * at /partials/dashboard-sla so HTMX can poll-refresh it without a full reload.
  */
 import type { FastifyInstance } from "fastify";
-import { config, isBinanceInternalEnabled } from "@app/core/config";
+import { config } from "@app/core/config";
 import { addDays, addMinutes } from "@app/core/datetime";
 import { Decimal } from "@app/core/money";
 import {
   prisma,
   type Db,
   resolveBotCredentials,
+  resolveBinanceInternalConfig,
   botOverallStats,
   revenueSummary,
   lowStockProducts,
@@ -78,7 +79,7 @@ export default async function dashboardRoutes(app: FastifyInstance): Promise<voi
 
     // Surface money that arrived but didn't deliver (unmatched / delivery_failed).
     let binance: { unmatched: number; delivery_failed: number } | null = null;
-    if (isBinanceInternalEnabled()) {
+    if ((await resolveBinanceInternalConfig(prisma)).enabled) {
       const counts = await processedTxOutcomeCounts(prisma);
       binance = { unmatched: counts.unmatched ?? 0, delivery_failed: counts.delivery_failed ?? 0 };
     }

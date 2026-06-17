@@ -14,7 +14,7 @@
 import { InputFile } from "grammy";
 import type { Api } from "grammy";
 import fs from "node:fs";
-import { config, isBinanceInternalEnabled } from "@app/core/config";
+import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { ensureUtc, localize } from "@app/core/datetime";
 import { OrderStatus, OrderCurrency, PaymentMethod, UserRole } from "@app/core/enums";
@@ -36,6 +36,7 @@ import {
   createInternalOrder,
   createBybitOrder,
   resolveBybitConfig,
+  resolveBinanceInternalConfig,
   setOrderPaymentMessage,
   cancelOrder,
   finalizeOrderPayment,
@@ -395,6 +396,7 @@ export async function showOrderConfirmation(
   if (!r) return;
 
   const rate = await currentUsdtRate();
+  const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
   const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
   await smartEdit(
@@ -406,7 +408,7 @@ export async function showOrderConfirmation(
       voucher_line: r.voucherLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null, bybitEnabled && rate !== null, tokopayEnabled),
+    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, binanceEnabled && rate !== null, bybitEnabled && rate !== null, tokopayEnabled),
   );
 }
 
@@ -420,6 +422,7 @@ export async function renderOrderConfirmation(
   const r = await computeConfirmation(ctx, productId, quantity);
   if (!r) return;
   const rate = await currentUsdtRate();
+  const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
   const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
   const msg = await ctx.api.sendMessage(
@@ -431,7 +434,7 @@ export async function renderOrderConfirmation(
       voucher_line: r.voucherLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, isBinanceInternalEnabled() && rate !== null, bybitEnabled && rate !== null, tokopayEnabled) },
+    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, binanceEnabled && rate !== null, bybitEnabled && rate !== null, tokopayEnabled) },
   );
   ctx.session.menuMsgId = msg.message_id;
 }
@@ -454,6 +457,7 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
   if (!r) return;
 
   const rate = await currentUsdtRate();
+  const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
   await smartEdit(
     ctx,
@@ -464,7 +468,7 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
       voucher_line: r.voucherLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    ckb.usdtMethodsKb(productId, quantity, lang, isBinanceInternalEnabled() && rate !== null, bybitEnabled && rate !== null),
+    ckb.usdtMethodsKb(productId, quantity, lang, binanceEnabled && rate !== null, bybitEnabled && rate !== null),
   );
 }
 
@@ -528,7 +532,8 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const rate = await currentUsdtRate();
-  if (!isBinanceInternalEnabled() || !rate) {
+  const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
+  if (!binanceEnabled || !rate) {
     await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
     return;
   }

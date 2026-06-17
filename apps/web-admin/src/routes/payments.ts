@@ -12,12 +12,13 @@
  * notifier to drain. Every mutation is audited.
  */
 import type { FastifyInstance } from "fastify";
-import { config, isBinanceInternalEnabled } from "@app/core/config";
+import { config } from "@app/core/config";
 import { OrderStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import {
   prisma,
+  resolveBinanceInternalConfig,
   listProcessedBinanceTx,
   countProcessedBinanceTx,
   processedTxOutcomeCounts,
@@ -52,11 +53,12 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
     const health = await getBinancePollHealth(prisma);
     const underpaid = await listOrders(prisma, { status: OrderStatus.UNDERPAID, limit: 50 });
     const pendingInternal = await listPendingInternalOrders(prisma, new Date());
+    const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
 
     return reply.view("payments.njk", {
       admin: req.admin,
       active_nav: "/payments",
-      enabled: isBinanceInternalEnabled(),
+      enabled: binanceEnabled,
       ledger,
       total,
       page,

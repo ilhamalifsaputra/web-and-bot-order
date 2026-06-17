@@ -571,12 +571,16 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
     const body = (req.body ?? {}) as Record<string, string>;
     const ids = parseIds(body.ids);
     try {
-      // Unlink anything currently in the group but not re-selected.
-      const current = await prisma.product.findMany({ where: { productGroupId: groupId }, select: { id: true } });
-      for (const c of current) {
-        if (!ids.includes(c.id)) await assignProductToGroup(prisma, c.id, null);
-      }
-      for (const id of ids) await assignProductToGroup(prisma, id, groupId);
+      // Unlink anything currently in the group but not re-selected. Both passes
+      // run in one transaction so a cross-category rejection partway through
+      // rolls back the whole membership change (group-level, all-or-nothing).
+      await prisma.$transaction(async (tx) => {
+        const current = await tx.product.findMany({ where: { productGroupId: groupId }, select: { id: true } });
+        for (const c of current) {
+          if (!ids.includes(c.id)) await assignProductToGroup(tx, c.id, null);
+        }
+        for (const id of ids) await assignProductToGroup(tx, id, groupId);
+      });
     } catch (err) {
       if (err instanceof CategoryMismatchError) {
         return redirectWithFlash(reply, "/catalog", "All products must be in the group's category.", "error");

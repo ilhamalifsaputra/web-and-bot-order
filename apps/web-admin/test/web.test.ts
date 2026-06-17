@@ -501,6 +501,40 @@ describe("product groups", () => {
     expect(fresh!.productGroupId).toBeNull();
   });
 
+  it("assign rolls back the whole batch when one product is cross-category", async () => {
+    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const group = await prisma.productGroup.create({
+      data: { categoryId: product!.categoryId, name: "Atomic" },
+    });
+    const validProduct = await createProduct(prisma, {
+      categoryId: product!.categoryId,
+      name: `Valid${counter++}`,
+      description: "x",
+      type: ProductType.SHARED,
+      durationLabel: "1 Month",
+      price: "5.00",
+    });
+    const otherCat = await prisma.category.create({ data: { name: `Other${counter++}` } });
+    const crossCatProduct = await createProduct(prisma, {
+      categoryId: otherCat.id,
+      name: `Cross${counter++}`,
+      description: "x",
+      type: ProductType.SHARED,
+      durationLabel: "1 Month",
+      price: "5.00",
+    });
+
+    const res = await post(`/catalog/group/${group.id}/assign`, seed.cookie, {
+      csrf_token: seed.csrf,
+      ids: `${validProduct.id},${crossCatProduct.id}`,
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+
+    const freshValid = await prisma.product.findUnique({ where: { id: validProduct.id } });
+    expect(freshValid!.productGroupId).toBeNull();
+  });
+
   it("delete group unlinks members", async () => {
     const product = await prisma.product.findUnique({ where: { id: seed.productId } });
     const group = await prisma.productGroup.create({ data: { categoryId: product!.categoryId, name: "Del" } });

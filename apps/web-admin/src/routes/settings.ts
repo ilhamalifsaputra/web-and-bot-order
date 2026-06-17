@@ -3,6 +3,7 @@
  * Port of routers/settings.py. The `settings` table is shared with the bot, so
  * only whitelisted keys may be edited and secret-bearing keys are never shown.
  */
+import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { logger } from "@app/core/logger";
 import {
@@ -27,6 +28,17 @@ import {
 import { currentAdmin, csrfProtect } from "../plugins/auth";
 import { redirectWithFlash } from "../flash";
 import { setTokenValidator, getTokenValidator, setChannelValidator, getChannelValidator } from "../lib/telegramCheck";
+import { handleUpload, deleteOldUpload } from "../lib/upload";
+import { UPLOADS_DIR } from "../paths";
+
+// Payment QR upload (twin of branding's banner upload — see branding.ts).
+const QR_DIR = join(UPLOADS_DIR, "qr");
+const QR_URL_PREFIX = "/uploads/qr";
+const QR_RASTER_MIME: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+};
 
 // Re-exported for tests that import setTokenValidator from this module.
 export { setTokenValidator, setChannelValidator };
@@ -36,7 +48,7 @@ const EDITABLE: Record<string, string> = {
   binance_pay_id: "Binance Pay ID shown at checkout",
   support_contact: "Support contact handle/text",
   welcome: "Welcome message",
-  qr: "Payment QR image (Telegram file_id)",
+  qr: "Payment QR image — upload below, or paste a Telegram file_id",
   // Banner shown on top of the bot's main menu + product list. Placeholder for
   // now: paste a Telegram file_id, or (easier) set the image from the bot's
   // Settings → Banner image. Clear this field to turn the banner off.
@@ -119,6 +131,11 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       secret: SECRET_KEYS.has(key),
       has_value: Boolean(currentValues[key]),
       value: SECRET_KEYS.has(key) ? "" : currentValues[key] ?? "",
+      // Bot identity (token/username/notifier/channel) is resolved ONCE at boot
+      // and stamped into the runtime (resolveBotCredentials → @app/core/runtime),
+      // so a change only takes effect after a restart. Every other editable key
+      // is read live via getSetting, so it applies immediately.
+      needs_restart: BOT_TOKEN_FIELD_KEYS.has(key),
     }));
     const pick = (keys: Set<string>) => allFields.filter((f) => keys.has(f.key));
     const grouped = new Set([
@@ -139,6 +156,11 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       ? { secret: pendingSecret, uri: otpauthUri(pendingSecret, String(tg)) }
       : null;
 
+    // QR preview: the field's value may be a web upload (/uploads/qr/...) or a
+    // legacy Telegram file_id; only the former can be rendered as an <img>.
+    const qrValue = currentValues["qr"] ?? "";
+    const qrIsUpload = qrValue.startsWith("/uploads/");
+
     return reply.view("settings.njk", {
       admin: req.admin,
       active_nav: "/settings",
@@ -150,6 +172,8 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       pay_rate_fields: pick(PAY_RATE_KEYS),
       pay_qris_fields: pick(PAY_QRIS_KEYS),
       pay_bybit_fields: pick(PAY_BYBIT_KEYS),
+      qr_is_upload: qrIsUpload,
+      qr_url: qrIsUpload ? qrValue : "",
       is_owner: req.admin!.role === "super",
       two_fa_enabled: twoFaEnabled,
       two_fa_pending: twoFaPending,
@@ -157,6 +181,25 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       kind: q.kind ?? "info",
     });
   });
+
+  // Payment QR image upload — twin of branding.ts's /branding/banner. Multipart,
+  // so it can't use csrfProtect (which reads req.body); handleUpload does its
+  // own CSRF + role check. Clears qr_fileid so the bot uploads the new image
+  // fresh once and caches the resulting Telegram file_id (CLAUDE.md: money path).
+  app.post("/settings/qr", { preHandler: currentAdmin }, (req, reply) =>
+    handleUpload(req, reply, {
+      kind: "qr",
+      field: "qr_image",
+      allowed: QR_RASTER_MIME,
+      maxBytes: 5 * 1024 * 1024,
+      destDir: QR_DIR,
+      urlPrefix: QR_URL_PREFIX,
+      settingKey: "qr",
+      auditAction: "settings_qr_upload",
+      redirectPath: "/settings",
+      afterSave: () => deleteSetting(prisma, "qr_fileid").then(() => undefined),
+    }),
+  );
 
   // ---- 2FA (TOTP) — self-service for every admin (see canMutate) ----
   app.post("/settings/2fa/begin", { preHandler: csrfProtect }, async (req, reply) => {

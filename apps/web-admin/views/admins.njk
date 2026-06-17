@@ -82,5 +82,10 @@
     <button class="btn btn-primary">Add admin</button>
   </form>
   <p class="text-ink-faint text-xs mt-2">The person must also set a password before they can sign in.</p>
+  <p class="text-ink-faint text-xs mt-1 flex items-start gap-1.5">
+    <i data-lucide="rotate-cw" class="w-3.5 h-3.5 mt-0.5 shrink-0"></i>
+    <span>If your Telegram bot runs as a separate process (e.g. Docker/VPS), restart the bot
+    for it to recognize admins you add or remove here. (Single-process deploys pick it up live.)</span>
+  </p>
 </div>
 {% endblock %}

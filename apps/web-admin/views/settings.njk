@@ -6,12 +6,22 @@
 {{ ui.page_header('Settings', "Your shop's options and your sign-in security — grouped by what they change.", 'settings', 'settings') }}
 {{ ui.flash(msg, kind) }}
 
+<p class="text-xs text-ink-soft mb-5 flex items-center gap-2">
+  <i data-lucide="info" class="w-3.5 h-3.5"></i>
+  Most changes take effect immediately. Fields marked
+  <span class="chip bg-amberx-tint text-amberx text-[11px] whitespace-nowrap"><i data-lucide="rotate-cw" class="w-3 h-3"></i> restart needed</span>
+  only apply after you restart the app.
+</p>
+
 {% macro setting_form(fld) %}
 <form method="post" action="/settings/edit" class="flex gap-2 items-end">
   {{ ui.csrf_field(admin) }}
   <input type="hidden" name="key" value="{{ fld.key }}">
   <div class="flex-1">
-    <label class="field-label">{{ fld.label }}</label>
+    <label class="field-label flex flex-wrap items-center gap-2">
+      <span>{{ fld.label }}</span>
+      {% if fld.needs_restart %}<span class="chip bg-amberx-tint text-amberx text-[11px] whitespace-nowrap"><i data-lucide="rotate-cw" class="w-3 h-3"></i> restart needed</span>{% endif %}
+    </label>
     {% if fld.secret %}
     {# Write-only: the saved value is never echoed back; blank = keep it. #}
     <input type="password" name="value" value="" autocomplete="new-password" class="field"
@@ -99,6 +109,20 @@
         Shown to buyers who pay with USDT: your Binance Pay ID at checkout, and
         the QR image the bot sends for payment.
       </p>
+
+      {% if qr_is_upload %}
+      <div class="flex items-center gap-2 mb-3">
+        <img src="{{ qr_url }}" alt="Current payment QR" class="w-20 h-20 rounded border border-sand object-contain bg-sand/40">
+        <span class="text-xs text-ink-soft">Current QR — uploading a new one will replace it.</span>
+      </div>
+      {% endif %}
+      <form method="post" action="/settings/qr" enctype="multipart/form-data" class="flex items-center gap-2 mb-4">
+        <input type="hidden" name="csrf_token" value="{{ admin.csrf }}">
+        <input type="file" name="qr_image" accept="image/jpeg,image/png,image/webp" required
+               class="field text-sm file:mr-2 file:btn file:btn-soft file:border-0 file:text-xs">
+        <button class="btn btn-primary btn-sm whitespace-nowrap">Upload QR</button>
+      </form>
+
       <div class="space-y-3">
         {% for fld in pay_binance_fields %}{{ setting_form(fld) }}{% endfor %}
       </div>
@@ -263,13 +287,21 @@
 <script>
 (function () {
   'use strict';
-  // Simple tabs: one panel visible at a time; the choice survives reloads
-  // (flash redirects) via the URL hash. Without JS all panels stay visible.
+  // Simple tabs: one panel visible at a time. The choice survives in-page via the
+  // URL hash, and — crucially — across the save round-trip too: every settings
+  // form POSTs and the server 303-redirects back to /settings, and the URL hash
+  // is NEVER sent to the server, so it's lost on the redirect. We stash the
+  // active tab in sessionStorage on submit and restore it on the next load, so
+  // saving keeps you on the tab you were editing instead of snapping back to the
+  // first one. Without JS all panels stay visible.
+  var PENDING_KEY = 'settings:tabAfterSave';
   var tabs = document.querySelectorAll('#settings-tabs [data-tab]');
   var panels = document.querySelectorAll('[data-panel]');
   var ids = Array.prototype.map.call(tabs, function (b) { return b.dataset.tab; });
+  var current = ids[0];
 
   function show(id) {
+    current = id;
     panels.forEach(function (p) { p.hidden = p.dataset.panel !== id; });
     tabs.forEach(function (b) {
       var on = b.dataset.tab === id;
@@ -284,7 +316,23 @@
     b.addEventListener('click', function () { show(b.dataset.tab); });
   });
 
+  // Remember the active tab right before any settings form submits, so the
+  // post-redirect load can land us back here.
+  document.querySelectorAll('[data-panel] form').forEach(function (f) {
+    f.addEventListener('submit', function () {
+      try { sessionStorage.setItem(PENDING_KEY, current); } catch (e) { /* private mode */ }
+    });
+  });
+
+  // One-shot restore after a save redirect; the hash (if present) still wins.
+  var pending = null;
+  try {
+    pending = sessionStorage.getItem(PENDING_KEY);
+    if (pending) sessionStorage.removeItem(PENDING_KEY);
+  } catch (e) { /* private mode */ }
+
   var initial = location.hash.slice(1);
+  if (ids.indexOf(initial) < 0 && pending && ids.indexOf(pending) >= 0) initial = pending;
   show(ids.indexOf(initial) >= 0 ? initial : ids[0]);
 }());
 </script>

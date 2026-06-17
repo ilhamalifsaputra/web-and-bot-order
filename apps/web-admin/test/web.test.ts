@@ -18,6 +18,7 @@ import {
   getUserByTelegramId,
   getOrder,
   createOrderDirect,
+  createWebUser,
   attachPaymentProof,
   createTicket,
   listTicketMessages,
@@ -134,6 +135,44 @@ function post(url: string, cookie: string | null, fields: Record<string, string>
 
 function get(url: string, cookie: string | null) {
   return app.inject({ method: "GET", url, cookies: cookie ? { [COOKIE]: cookie } : {} });
+}
+
+// 1x1 PNG, mirrors apps/web-admin/test/branding.test.ts.
+const PNG_1PX = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+function multipart(
+  fields: Record<string, string>,
+  file?: { field: string; filename: string; contentType: string; content: Buffer },
+): { payload: Buffer; headers: Record<string, string> } {
+  const boundary = "----vitest" + Math.random().toString(16).slice(2);
+  const chunks: Buffer[] = [];
+  for (const [k, v] of Object.entries(fields)) {
+    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+  }
+  if (file) {
+    chunks.push(
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${file.field}"; filename="${file.filename}"\r\n` +
+          `Content-Type: ${file.contentType}\r\n\r\n`,
+      ),
+    );
+    chunks.push(file.content, Buffer.from("\r\n"));
+  }
+  chunks.push(Buffer.from(`--${boundary}--\r\n`));
+  return { payload: Buffer.concat(chunks), headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
+}
+
+function postMultipart(url: string, cookie: string | null, mp: ReturnType<typeof multipart>) {
+  return app.inject({
+    method: "POST",
+    url,
+    headers: mp.headers,
+    cookies: cookie ? { [COOKIE]: cookie } : {},
+    payload: mp.payload,
+  });
 }
 
 async function makePendingOrder(): Promise<number> {
@@ -296,6 +335,21 @@ describe("orders", () => {
 
     const audit = await prisma.auditLog.findMany({ where: { action: "approve_order", targetId: orderId } });
     expect(audit.length).toBe(1);
+  });
+
+  it("list shows a web buyer's login handle, not a dash", async () => {
+    // Web-store buyers have no Telegram fullName/username — only loginUsername /
+    // email. The list must fall back to those instead of rendering "—".
+    const web = await createWebUser(prisma, {
+      loginUsername: "weshopper",
+      email: "we@shop.test",
+      passwordHash: "x",
+    });
+    await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 });
+
+    const res = await get("/orders", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("weshopper");
   });
 
   it("reject → REJECTED + audit", async () => {
@@ -664,6 +718,44 @@ describe("settings", () => {
     expect(res.body).not.toContain('value="shop_name"');
     expect(res.body).not.toContain('value="banner_image"');
     expect(res.body).toContain('value="support_whatsapp"');
+  });
+});
+
+// ---- settings: QR upload (mirrors branding.test.ts banner upload) ---------
+
+describe("settings: QR upload", () => {
+  it("happy: uploads a PNG, saves /uploads/qr/... and clears the file_id cache", async () => {
+    await setSetting(prisma, "qr_fileid", "STALE");
+    const mp = multipart(
+      { csrf_token: seed.csrf },
+      { field: "qr_image", filename: "qr.png", contentType: "image/png", content: PNG_1PX },
+    );
+    const res = await postMultipart("/settings/qr", seed.cookie, mp);
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "qr")).toMatch(/^\/uploads\/qr\/qr-[0-9a-f]+\.png$/);
+    expect(await getSetting(prisma, "qr_fileid")).toBeNull();
+  });
+
+  it("auth-fail: no session is rejected", async () => {
+    const mp = multipart(
+      { csrf_token: seed.csrf },
+      { field: "qr_image", filename: "qr.png", contentType: "image/png", content: PNG_1PX },
+    );
+    const res = await postMultipart("/settings/qr", null, mp);
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect(await getSetting(prisma, "qr")).toBeNull();
+  });
+
+  it("bad-csrf: wrong csrf token is rejected with 403", async () => {
+    const mp = multipart(
+      { csrf_token: "bad" },
+      { field: "qr_image", filename: "qr.png", contentType: "image/png", content: PNG_1PX },
+    );
+    const res = await postMultipart("/settings/qr", seed.cookie, mp);
+    expect(res.statusCode).toBe(403);
+    expect(await getSetting(prisma, "qr")).toBeNull();
   });
 });
 
@@ -1504,6 +1596,21 @@ describe("broadcast", () => {
 
 // ---- smoke: every GET page renders 200 for an admin -----------------------
 
+describe("dashboard", () => {
+  it("shows delivered revenue as a Rupiah amount, not a dash", async () => {
+    // Regression: the cards read rev.revenue / overall.total_revenue, but the
+    // DB layer returns revenue_idr / revenue_usdt — so every card rendered "—"
+    // even with delivered orders. Deliver one (product price 5.00) and assert
+    // the headline shows the amount.
+    const orderId = await makePendingOrder();
+    await post(`/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+
+    const res = await get("/", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("Rp5");
+  });
+});
+
 describe("page smoke tests", () => {
   it("all nav pages render 200", async () => {
     for (const path of ["/", "/stock", "/orders", "/payments", "/outbox", "/catalog", "/vouchers", "/users", "/reviews", "/reports", "/support", "/settings", "/audit", "/search", "/admins", "/broadcast"]) {
@@ -1619,7 +1726,10 @@ describe("setup wizard — restart trigger", () => {
       });
       expect(res.statusCode).toBe(200);
       expect(existsSync(target)).toBe(true);
-      expect(res.body).toContain("dinyalakan"); // setup_done.njk restarted=true branch
+      // setup_done.njk restarted=true branch (topology-honest copy): confirms the
+      // trigger was written AND surfaces the Docker/VPS manual-restart fallback.
+      expect(res.body).toContain("Sinyal restart sudah ditulis");
+      expect(res.body).toContain("docker compose restart order-bot");
     } finally {
       if (existsSync(target)) rmSync(target);
       delete process.env.RESTART_TRIGGER_FILE;

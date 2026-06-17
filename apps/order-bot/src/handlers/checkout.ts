@@ -24,6 +24,7 @@ import {
   prisma,
   getOrder,
   getSetting,
+  setSetting,
   getProduct,
   countAvailableStock,
   getBulkPricingForProduct,
@@ -46,6 +47,7 @@ import { smartEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
 import { esc, formatPrice, formatIdr, priceIdr } from "../util/format";
 import { currentUsdtRate } from "../util/rate";
+import { QR_FILEID_KEY, qrPhotoArg as resolveQrPhotoArg } from "../util/qr";
 import * as ckb from "../keyboards/customer";
 
 const MAX_PENDING_ORDERS = 10;
@@ -225,7 +227,6 @@ export async function sendPaymentInstructions(ctx: MyContext, orderId: number): 
   }
 
   const binanceId = (await getSetting(prisma, "binance_pay_id")) || config.BINANCE_PAY_ID;
-  const qrFileId = await getSetting(prisma, "qr");
   const expiresAt = order.expiresAt ? ensureUtc(order.expiresAt).toJSDate() : null;
   const countdown = expiresAt ? formatCountdown(expiresAt) : `${config.PAYMENT_WINDOW_MINUTES}:00`;
 
@@ -241,10 +242,14 @@ export async function sendPaymentInstructions(ctx: MyContext, orderId: number): 
   ctx.session.qrMsgId = undefined;
 
   const kb = ckb.paymentInstructionsKb(orderId, lang);
-  // Resolve the QR source: a stored file_id setting wins, else the bundled image.
+  // Resolve the QR source: a web upload (cached file_id if any) or a legacy
+  // file_id setting wins, else fall back to the bundled image.
+  const qrArg = resolveQrPhotoArg(await getSetting(prisma, "qr"), await getSetting(prisma, QR_FILEID_KEY));
   let qrPhotoArg: string | InputFile | undefined;
-  if (qrFileId) {
-    qrPhotoArg = qrFileId;
+  let needsCache = false;
+  if (qrArg) {
+    qrPhotoArg = qrArg.photo;
+    needsCache = qrArg.needsCache;
   } else if (config.BINANCE_QR_PATH && fs.existsSync(config.BINANCE_QR_PATH)) {
     qrPhotoArg = new InputFile(config.BINANCE_QR_PATH);
   }
@@ -267,6 +272,16 @@ export async function sendPaymentInstructions(ctx: MyContext, orderId: number): 
       qrPhoto = true;
       if (confirmMsgId && confirmMsgId !== qrMsg.message_id) {
         try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
+      }
+      // Cache the Telegram file_id for a fresh upload so the bot re-uploads the
+      // same image at most once; a cache failure must never break checkout.
+      if (needsCache) {
+        try {
+          const fileId = qrMsg.photo?.at(-1)?.file_id;
+          if (fileId) await setSetting(prisma, QR_FILEID_KEY, fileId);
+        } catch (err) {
+          logger.warn({ err }, "Failed to cache QR file_id");
+        }
       }
     } catch (err) {
       logger.error({ err }, "Failed to send QR photo");
@@ -736,9 +751,12 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
 // Order cancellation (user-initiated, before delivery)
 // ---------------------------------------------------------------------------
 
+// How long the "order cancelled" bubble lingers before it deletes itself. Short
+// enough to read, long enough not to feel like a flicker.
+const CANCEL_NOTICE_MS = 2000;
+
 export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promise<void> {
   const info = requireUser(ctx);
-  const lang = ctx.session.lang;
 
   const order = await getOrder(prisma, orderId);
   if (order === null || order.userId !== info.id) {
@@ -768,13 +786,19 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
 
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.cancelled_toast") });
 
-  // Edit the bubble that owned the Cancel button into a confirmation reply,
-  // instead of leaving the stale payment screen behind. smartEdit edits on a
-  // callback tap and gracefully falls back to a fresh send on the /cancel text
-  // path (or when the bubble can't be edited, e.g. a photo+caption QR screen).
-  await smartEdit(
-    ctx,
-    t(ctx, "checkout.order_cancelled", { code: order.orderCode }),
-    ckb.notificationKb(lang),
-  );
+  // The QRIS/payment screen is a single photo+caption bubble (the QR image), so
+  // editing it in place leaves the QR stuck on screen under the "cancelled"
+  // text. Instead show a brief confirmation, then delete the whole bubble after
+  // a short beat so nothing lingers. The persistent reply keyboard still offers
+  // a way forward, so removing the bubble never strands the user.
+  await smartEdit(ctx, t(ctx, "checkout.order_cancelled", { code: order.orderCode }));
+  const cancelledMsgId = ctx.session.menuMsgId;
+  ctx.session.menuMsgId = undefined;
+  if (cancelledMsgId !== undefined) {
+    setTimeout(() => {
+      void ctx.api.deleteMessage(chatId, cancelledMsgId).catch(() => {
+        /* already gone or too old to delete */
+      });
+    }, CANCEL_NOTICE_MS);
+  }
 }

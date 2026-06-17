@@ -25,7 +25,7 @@ import { usdtFromIdr } from "../pricing";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // Same override convention as web-admin (bundled deploys point this at the
-// shipped views dir). See DEPLOY-HOSTINGER.md §3.
+// shipped views dir).
 const VIEWS_DIR = process.env.STOREFRONT_VIEWS_DIR ?? join(HERE, "..", "..", "views");
 
 /** Plain money: 4dp string, "—" for null/empty. Used for native USDT amounts

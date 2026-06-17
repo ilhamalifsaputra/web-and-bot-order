@@ -19,7 +19,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // VIEWS_DIR is resolved relative to this source file, which breaks once the app
 // is bundled into a single file (import.meta.url then points at dist/). Allow an
 // explicit override so the bundled deploy can point at the shipped views/ dir.
-// See DEPLOY-HOSTINGER.md §3.
 const VIEWS_DIR = process.env.VIEWS_DIR ?? join(HERE, "..", "..", "views");
 
 /** Money: 4dp string, "—" for null/empty. Mirrors deps._money_filter. */

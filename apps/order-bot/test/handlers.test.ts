@@ -14,7 +14,7 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
-import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast, setSetting } from "@app/db";
+import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast, setSetting, getSetting } from "@app/db";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
@@ -252,6 +252,23 @@ describe("checkout handlers", () => {
     checkout.cancelPaymentJobs(orders[0]!.id); // clear the countdown timer
   });
 
+  it("buyNow sends an uploaded QR via InputFile and caches the resulting file_id once", async () => {
+    await setSetting(prisma, "usd_idr_rate", "1");
+    await setSetting(prisma, "qr", "/uploads/qr/qr-test.png"); // web upload, no cache yet
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:pay:1:1",
+      replyWithPhotoResult: { photo: [{ file_id: "CACHED_FROM_UPLOAD" }] },
+    });
+    await checkout.buyNow(ctx, sample.product.id, 1);
+    const orders = await prisma.order.findMany();
+    expect(orders).toHaveLength(1);
+    const photoCalls = calls(sink, "replyWithPhoto");
+    expect(photoCalls.length).toBe(1);
+    // Cached after the first send so a re-render won't re-upload the same file.
+    expect(await getSetting(prisma, "qr_fileid")).toBe("CACHED_FROM_UPLOAD");
+    checkout.cancelPaymentJobs(orders[0]!.id); // clear the countdown timer
+  });
+
   it("buyNowTokopay creates an IDR/TOKOPAY order and sends the QR as one photo+caption bubble", async () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
@@ -276,10 +293,23 @@ describe("checkout handlers", () => {
     expect(await prisma.order.count()).toBe(before); // no new order
   });
 
-  it("cancelPendingOrder cancels the order", async () => {
+  it("cancelPendingOrder cancels the order and removes the lingering bubble after a beat", async () => {
     const order = await makeOrder();
-    const { ctx } = customerCtx({ callbackData: `v1:checkout:cancel:${order!.id}` });
-    await checkout.cancelPendingOrder(ctx, order!.id);
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:cancel:${order!.id}` });
+
+    vi.useFakeTimers();
+    try {
+      await checkout.cancelPendingOrder(ctx, order!.id);
+      // A confirmation is shown immediately, but the bubble must not vanish yet.
+      expect(calls(sink, "deleteMessage").length).toBe(0);
+      // After the notice window the whole payment/QR bubble is deleted so it
+      // doesn't stay stuck on screen under the "cancelled" text.
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(calls(sink, "deleteMessage").length).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+
     const after = await getOrder(prisma, order!.id);
     expect(after!.status).toBe(OrderStatus.CANCELLED);
   });

@@ -1,14 +1,13 @@
 /**
  * Bundle the combined server (apps/server/src/index.ts) + every `@app/*` package
- * into a single `dist/server.cjs` for Hostinger Node.js App Manager (Passenger),
- * which installs with npm (no pnpm workspaces) and runs plain `node`.
- * See DEPLOY-HOSTINGER.md §2 #3.
+ * into a single `dist/server.cjs` for a plain-node managed-hosting deploy
+ * (Passenger), which installs with npm (no pnpm workspaces) and runs plain `node`.
  *
  * What stays EXTERNAL (loaded from node_modules at runtime, not inlined):
  *  - @prisma/client + the generated `.prisma/client` — ships a native query
  *    engine binary; must be regenerated on the server (`prisma generate`).
- *  - pino / pino-roll / thread-stream — resolve worker-thread transport files
- *    by path; bundling breaks that resolution.
+ *  - pino / thread-stream — resolve worker-thread transport files by path;
+ *    bundling breaks that resolution.
  *  - nunjucks — loads templates from disk via dynamic requires.
  * Everything else (grammy, fastify, zod, decimal.js, luxon, croner, dotenv,
  * bcryptjs, and all `@app/*` source) is inlined.
@@ -33,7 +32,6 @@ async function main(): Promise<void> {
       "@prisma/client",
       ".prisma/client",
       "pino",
-      "pino-roll",
       "thread-stream",
       "nunjucks",
     ],

@@ -2,7 +2,7 @@
   "name": "telegram-order-bot-server",
   "version": "0.1.0",
   "private": true,
-  "description": "Combined single-process build for Hostinger Node.js App Manager. Upload this as package.json (rename) alongside dist/server.cjs — see DEPLOY-HOSTINGER.md §3.",
+  "description": "Combined single-process build (dist/server.cjs from `pnpm build:bundle`). Upload this as package.json (rename) alongside dist/server.cjs for a plain-node managed-hosting deploy.",
   "engines": {
     "node": ">=20"
   },
@@ -14,7 +14,6 @@
     "@prisma/client": "^5.22.0",
     "nunjucks": "^3.2.4",
     "pino": "^9.5.0",
-    "pino-roll": "^3.0.0",
     "prisma": "^5.22.0",
     "thread-stream": "^3.1.0"
   }

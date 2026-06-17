@@ -1,35 +1,35 @@
 /**
- * Banner-image resolution. The `banner_image` setting may hold a web-admin
- * upload path (`/uploads/branding/…`, shared filesystem) or a legacy Telegram
- * file_id (set by sending a photo to the bot). Uploads are sent via InputFile
- * and the resulting file_id is cached in `banner_image_fileid` so the bot
- * re-uploads at most once per banner.
+ * Payment-QR resolution. The `qr` setting may hold a web-admin upload path
+ * (`/uploads/qr/…`, shared filesystem) or a legacy Telegram file_id (set by
+ * sending a photo to the bot). Uploads are sent via InputFile and the
+ * resulting file_id is cached in `qr_fileid` so the bot re-uploads at most
+ * once per QR image. Twin of banner.ts.
  */
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { InputFile } from "grammy";
 
-export const BANNER_IMAGE_KEY = "banner_image";
-export const BANNER_FILEID_KEY = "banner_image_fileid";
+export const QR_KEY = "qr";
+export const QR_FILEID_KEY = "qr_fileid";
 
 // Module-relative (not cwd-relative): web-admin writes uploads under the repo's
 // data/uploads, and pnpm runs the bot with cwd = the order-bot package dir, so a
-// cwd-based path would look in the wrong place and the banner photo would 404.
+// cwd-based path would look in the wrong place and the QR photo would 404.
 // HERE = apps/order-bot/src/util → up 4 → <root>/data/uploads. Override via env.
 const HERE = dirname(fileURLToPath(import.meta.url));
 const UPLOADS_ROOT =
   process.env.UPLOADS_DIR ?? join(HERE, "..", "..", "..", "..", "data", "uploads");
 
-export type BannerValue =
+export type QrValue =
   | { kind: "none" }
   | { kind: "fileId"; fileId: string }
   | { kind: "upload"; relPath: string };
 
-export function resolveBannerValue(
-  bannerImage: string | null | undefined,
+export function resolveQrValue(
+  qr: string | null | undefined,
   cachedFileId: string | null | undefined,
-): BannerValue {
-  const v = (bannerImage ?? "").trim();
+): QrValue {
+  const v = (qr ?? "").trim();
   if (!v) return { kind: "none" };
   if (v.startsWith("/uploads/")) {
     const cached = (cachedFileId ?? "").trim();
@@ -39,12 +39,12 @@ export function resolveBannerValue(
   return { kind: "fileId", fileId: v };
 }
 
-/** Build the photo argument for `renderMenu`, or undefined when no banner. */
-export function bannerPhotoArg(
-  bannerImage: string | null | undefined,
+/** Build the photo argument for the checkout payment screen, or undefined when no QR. */
+export function qrPhotoArg(
+  qr: string | null | undefined,
   cachedFileId: string | null | undefined,
 ): { photo: string | InputFile; needsCache: boolean } | undefined {
-  const r = resolveBannerValue(bannerImage, cachedFileId);
+  const r = resolveQrValue(qr, cachedFileId);
   if (r.kind === "none") return undefined;
   if (r.kind === "fileId") return { photo: r.fileId, needsCache: false };
   return { photo: new InputFile(join(UPLOADS_ROOT, r.relPath)), needsCache: true };

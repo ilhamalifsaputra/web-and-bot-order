@@ -12,8 +12,7 @@ import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // src/ -> ../locales (package root). Overridable via env because the relative
-// path breaks once bundled (import.meta.url moves to dist/). See
-// DEPLOY-HOSTINGER.md §3.
+// path breaks once bundled (import.meta.url moves to dist/).
 const LOCALES_DIR = process.env.LOCALES_DIR ?? join(HERE, "..", "locales");
 const SUPPORTED = ["en", "id"] as const;
 type Lang = (typeof SUPPORTED)[number];

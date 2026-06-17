@@ -18,6 +18,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // Resolved relative to this source file, which breaks once the app is bundled
 // (import.meta.url then points at dist/). Allow an explicit override so the
 // bundled deploy can point at the shipped shared views/ dir, exactly like the
-// web-admin VIEWS_DIR override. See DEPLOY-HOSTINGER.md §3.
+// web-admin VIEWS_DIR override.
 export const sharedViewsDir: string =
   process.env.SHARED_VIEWS_DIR ?? join(HERE, "..", "views");

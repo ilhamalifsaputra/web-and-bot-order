@@ -31,6 +31,8 @@ export interface MakeCtxOptions {
   document?: { file_id: string; file_name?: string; file_size?: number };
   /** ctx.match (command args / regex match). */
   match?: string;
+  /** Extra fields merged into replyWithPhoto's resolved Message (e.g. `photo`). */
+  replyWithPhotoResult?: Record<string, unknown>;
 }
 
 export interface FakeCtx {
@@ -108,7 +110,12 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
     match: opts.match,
     session,
     reply: rec("reply"),
-    replyWithPhoto: rec("replyWithPhoto"),
+    replyWithPhoto: opts.replyWithPhotoResult
+      ? (...args: unknown[]) => {
+          sink.push({ method: "replyWithPhoto", args });
+          return Promise.resolve({ message_id: ++msgSeq, chat, date: 0, ...opts.replyWithPhotoResult });
+        }
+      : rec("replyWithPhoto"),
     replyWithDocument: rec("replyWithDocument"),
     editMessageText: rec("editMessageText"),
     editMessageCaption: rec("editMessageCaption"),

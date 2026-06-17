@@ -38,11 +38,14 @@ import brandingRoutes from "./routes/branding";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // Overridable via env so the bundled deploy can point at the shipped static/
-// dir (import.meta.url moves to dist/ after bundling). See DEPLOY-HOSTINGER.md §3.
+// dir (import.meta.url moves to dist/ after bundling).
 const STATIC_DIR = process.env.STATIC_DIR ?? join(HERE, "..", "static");
 // Uploaded product photos land here; served at /uploads/ by both apps so the
-// storefront can also serve them with no cross-origin complexity.
-export const UPLOADS_DIR = process.env.UPLOADS_DIR ?? join(HERE, "..", "..", "..", "data", "uploads");
+// storefront can also serve them with no cross-origin complexity. Single source
+// of truth in ./paths so the upload writers (catalog / branding) agree with this
+// reader regardless of process.cwd().
+export { UPLOADS_DIR } from "./paths";
+import { UPLOADS_DIR } from "./paths";
 
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });

@@ -1,10 +1,12 @@
-# Compose for the migrated Node stack. All three services share ONE image and
-# ONE SQLite file (./data/bot.db, WAL mode) via the mounted ./data volume.
+# Compose for the migrated Node stack. All services share ONE image and ONE
+# SQLite file (./data/bot.db, WAL mode) via the mounted ./data volume.
 #
-# Phased cutover (see RUN.md): you can bring services up one at a time, e.g.
+# Services: notifier, web-admin, order-bot, and the optional storefront (the
+# customer-facing web store). Bring them up one at a time if you like, e.g.
 #   docker compose up -d notifier      # Fase 1
 #   docker compose up -d web-admin     # Fase 3
 #   docker compose up -d order-bot     # Fase 5  (stop the Python bot FIRST)
+#   docker compose up -d storefront    # opsional: hanya jika menjual via web
 #
 # IMPORTANT (migrate.md §14.12): never run the Python order-bot and the Node
 # order-bot against the same DB simultaneously — two order-flow writers corrupt
@@ -51,6 +53,29 @@ services:
         - node
         - -e
         - "fetch('http://127.0.0.1:'+(process.env.WEB_PORT||8000)+'/login').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # Customer-facing web store. Optional: skip it (or never expose its port) if you
+  # only sell through the Telegram bot. Shares the same DB + ./data uploads as the
+  # admin, so it is one more SQLite writer (see RUN.md §9 / CLAUDE.md).
+  storefront:
+    <<: *app
+    container_name: bot-storefront
+    command: ["pnpm", "--filter", "@app/storefront", "start"]
+    # Same as web-admin: bind 0.0.0.0 inside the container (default is 127.0.0.1).
+    environment:
+      WEB_HOST: "0.0.0.0"
+    ports:
+      - "${STOREFRONT_PORT:-8100}:${STOREFRONT_PORT:-8100}"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:'+(process.env.STOREFRONT_PORT||8100)+'/healthz').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"
       interval: 30s
       timeout: 5s
       retries: 3

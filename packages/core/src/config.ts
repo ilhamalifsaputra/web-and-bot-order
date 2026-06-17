@@ -43,6 +43,19 @@ const csvNumbers = z
   )
   .pipe(z.array(z.number().int()));
 
+/**
+ * Make a schema optional in the "blank means unset" sense: an empty or
+ * whitespace-only string is coerced to `undefined` *before* validation, so a
+ * left-blank `.env` line (e.g. `BOT_TOKEN=`) boots like the line was absent
+ * instead of failing the inner `.min()` check. `.optional()` alone only accepts
+ * `undefined`, not `""`.
+ */
+const blankableOptional = <T extends z.ZodTypeAny>(inner: T) =>
+  z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? undefined : v),
+    inner.optional(),
+  );
+
 /** "1"/"true"/"yes"/"on" → true (case-insensitive). Mirrors pydantic bool parsing. */
 const looseBool = z
   .string()
@@ -54,8 +67,8 @@ export const Env = z.object({
   // Optional since plan.md §16: the primary source is the `bot_token` /
   // `bot_username` Settings rows (web-admin editable, DB wins when filled);
   // env is the bootstrap / recovery fallback. See @app/core/runtime.
-  BOT_TOKEN: z.string().min(20).optional(),
-  BOT_USERNAME: z.string().min(3).optional(),
+  BOT_TOKEN: blankableOptional(z.string().min(20)),
+  BOT_USERNAME: blankableOptional(z.string().min(3)),
   ADMIN_IDS: csvNumbers,
   SUPPORT_GROUP_ID: z.coerce.number().optional(),
 

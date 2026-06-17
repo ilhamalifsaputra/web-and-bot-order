@@ -96,6 +96,21 @@ CURRENCY=USDT
 > tanpa mengedit `.env`. Nilai di panel akan menang atas `.env`. `.env` cukup
 > untuk pertama kali (bootstrap).
 
+> ⚠️ **Kalau token diatur lewat wizard/panel** (bukan `.env`), **hapus atau
+> _comment_** baris `BOT_TOKEN` di `.env` — **jangan dikosongkan** jadi
+> `BOT_TOKEN=`. Validasi menerima "tidak ada" (`undefined`) tetapi **menolak
+> string kosong**, jadi `BOT_TOKEN=` kosong bikin bot gagal start dengan error
+> `String must contain at least 20 character(s)`. Tulis `# BOT_TOKEN=` atau hapus
+> barisnya sama sekali.
+>
+> Beda dengan `BOT_TOKEN`, baris `ADMIN_IDS` **aman dikosongkan** (`ADMIN_IDS=`)
+> karena defaultnya string kosong. Tapi jangan biarkan **angka contoh**
+> (mis. `ADMIN_IDS=11111111,22222222`) tertinggal: nilai env ini **digabung
+> (union)** dengan daftar admin di database, bukan ditimpa — jadi ID palsu itu
+> tetap ikut aktif (muncul warning `Could not set admin commands for 11111111`)
+> walau admin asli sudah diisi lewat wizard. Isi ID-mu sendiri, atau kosongkan
+> dan andalkan wizard.
+
 Pengaturan pembayaran (Binance/Bybit/TokoPay) **tidak wajib** sekarang — bisa
 diisi belakangan lewat panel admin (lihat [bagian 7](#7-mengatur-pembayaran)).
 Daftar lengkap semua variabel ada di [bagian 10](#10-referensi-lengkap-variabel-env).
@@ -148,13 +163,41 @@ docker compose run --rm order-bot pnpm exec prisma db push
 
 Ini membuat file database `data/bot.db` dengan struktur tabel yang benar.
 
+### Langkah 5.5 — (Otomatis) Folder `data/` yang bisa ditulis container
+
+Container memakai user non-root `app` (UID **999**) demi keamanan, sedangkan
+folder `data/` hasil `git clone` dimiliki `root` di host. Tanpa penanganan, ini
+membuat database **readonly** bagi container dan panel admin gagal dengan **HTTP
+500** (`attempt to write a readonly database`) saat menyimpan pengaturan pertama
+kali.
+
+> ✅ **Sejak versi ini kamu tidak perlu melakukan apa-apa** — entrypoint container
+> (`docker-entrypoint.sh`) otomatis memperbaiki kepemilikan `data/` saat start,
+> lalu menurunkan hak akses ke user `app`. Lewati saja ke Langkah 6.
+
+> 🔧 **Kalau masih kena `attempt to write a readonly database`** (mis. mount
+> bersifat read-only, atau pakai image lama), perbaiki manual di host lalu restart
+> container yang menulis:
+> ```bash
+> sudo chown -R 999:999 data
+> docker compose restart web-admin order-bot
+> ```
+> UID `999` adalah default; kalau di mesinmu berbeda, cek dulu:
+> `docker compose run --rm order-bot id -u`.
+
 ### Langkah 6 — Nyalakan layanan (urutan ini penting)
 
 ```bash
 docker compose up -d notifier      # 1. pengirim notifikasi
 docker compose up -d web-admin     # 2. panel admin (port 8000)
 docker compose up -d order-bot     # 3. bot Telegram (terakhir)
+docker compose up -d storefront    # 4. toko web pelanggan (port 8100) — opsional
 ```
+
+> 🛍️ **Baris ke-4 (`storefront`) opsional.** Nyalakan hanya kalau kamu mau
+> berjualan lewat **website toko** selain bot Telegram. Kalau cukup jualan dari
+> bot saja, lewati saja — bot, panel admin, dan notifier tetap jalan tanpanya.
+> Atau nyalakan semuanya sekaligus dengan `docker compose up -d`.
 
 ### Langkah 7 — Cek jalan atau tidak
 
@@ -164,14 +207,17 @@ docker compose logs -f order-bot   # lihat log bot (Ctrl+C untuk keluar)
 ```
 
 - Panel admin: buka `http://IP-VPS-KAMU:8000/login` di browser.
+- Toko web (kalau dinyalakan): buka `http://IP-VPS-KAMU:8100/` di browser.
 - Bot: chat botmu di Telegram, ketik `/start` → harus membalas.
 
 ✅ Selesai. Lanjut ke [Buat Admin Pertama](#6-buat-admin-pertama).
 
-> 🔒 **Penting untuk keamanan:** panel admin di atas terbuka di port 8000 lewat
-> HTTP biasa. Untuk produksi, taruh di belakang **reverse proxy + HTTPS**
-> (mis. Nginx/Caddy + domain), lalu set `WEB_COOKIE_SECURE=true` di `.env`.
-> Jangan biarkan panel admin telanjang di internet tanpa HTTPS.
+> 🔒 **Penting untuk keamanan:** panel admin (port 8000) dan toko web (port 8100)
+> di atas terbuka lewat HTTP biasa. Untuk produksi, taruh di belakang **reverse
+> proxy + HTTPS** (mis. Nginx/Caddy + domain), lalu set `WEB_COOKIE_SECURE=true`
+> di `.env`. Toko web umumnya pakai domain/subdomain sendiri (`SHOP_PUBLIC_URL`,
+> lihat [bagian 10](#10-referensi-lengkap-variabel-env)). Jangan biarkan panel
+> admin telanjang di internet tanpa HTTPS.
 
 ### Perintah Docker yang sering dipakai
 
@@ -221,7 +267,21 @@ pnpm start                      # bot + panel admin + toko + notifier sekaligus
 ```
 
 - Panel admin: `http://IP-VPS-KAMU:8000/login`
-- Toko (opsional): `http://IP-VPS-KAMU:8100`
+- Toko web (opsional): `http://IP-VPS-KAMU:8100`
+
+> 🛍️ **Toko web sudah otomatis ikut jalan** di Jalur B — beda dengan Docker
+> (Jalur A) yang memisah tiap layanan, di sini `pnpm start` menyalakan satu proses
+> gabungan yang **sekaligus** melayani bot, panel admin (port `WEB_PORT`, default
+> 8000), **dan** toko (port `STOREFRONT_PORT`, default 8100). Tidak perlu perintah
+> tambahan.
+> - Tidak mau jualan lewat web? Cukup **abaikan port 8100** (jangan dibuka di
+>   firewall). Bot & panel admin tetap jalan normal.
+> - Agar toko & panel bisa dibuka dari luar VPS, set `WEB_HOST=0.0.0.0` di `.env`
+>   (default `127.0.0.1` hanya lokal) — idealnya di balik reverse proxy + HTTPS.
+> - Punya domain untuk toko? Set `SHOP_PUBLIC_URL=https://shop.domainmu.com`
+>   (dan `SHOP_HOST`) supaya toko & admin berbagi **satu port** lewat pemisahan
+>   per-domain, dan link toko di pesan pelanggan memakai domain itu. Lihat
+>   [bagian 10](#10-referensi-lengkap-variabel-env).
 
 ### Langkah 5 — Supaya tetap hidup setelah SSH ditutup
 
@@ -266,6 +326,15 @@ Ringkasannya:
    (lihat bagian 7 di `DOCS.md` Bagian 4), lalu **Restart**.
 4. **Wajib:** pasang **UptimeRobot** yang nge-ping URL webmu tiap 1–5 menit.
    Tanpa ini, Hostinger menidurkan aplikasi saat sepi dan **bot ikut mati**.
+
+> 🛍️ **Toko web juga sudah termasuk** di bundle ini (`dist/server.cjs` = proses
+> gabungan yang sama seperti Jalur B). Karena Hostinger Passenger hanya memberi
+> **satu port**, toko dan panel admin dipisah **per-domain**: set `SHOP_HOST`
+> (mis. `shop.domainmu.com`) dan `SHOP_PUBLIC_URL=https://shop.domainmu.com` di
+> Environment Variables, lalu arahkan subdomain itu ke aplikasi yang sama.
+> Request ke `SHOP_HOST` → toko; domain lain → panel admin. Kalau `SHOP_HOST`
+> dikosongkan, hanya panel admin yang tampil (toko tidak punya port terpisah di
+> mode managed-hosting ini). Detail di [`DOCS.md` Bagian 4](DOCS.md#bagian-4--deploy-ke-hostinger-node-app-manager).
 
 > Karena keterbatasan idle-shutdown ini, **VPS (Jalur A) lebih disarankan** kalau
 > botmu harus selalu responsif. Detail trade-off ada di `DOCS.md` Bagian 4 §0 & §10.
@@ -395,6 +464,8 @@ Buka **panel admin → Stock → pilih produk** untuk mengurus akun/kredensial:
 | Gejala | Penyebab | Solusi |
 |---|---|---|
 | `P2022: column does not exist` | Struktur database belum diperbarui | `prisma db push` lalu restart |
+| HTTP 500 / `attempt to write a readonly database` | Folder `data/` dimiliki `root`, container jalan sebagai UID 999 | `sudo chown -R 999:999 data` (lihat Langkah 5.5) lalu `docker compose restart web-admin order-bot` |
+| Bot crash saat start: `String must contain at least 20 character(s)` | Baris `BOT_TOKEN=` dikosongkan, bukan dihapus | Hapus/_comment_ baris `BOT_TOKEN` di `.env` (token diatur lewat panel); jangan tinggalkan `BOT_TOKEN=` kosong |
 | Bot tidak membalas `/start` | Token salah, atau proses mati | Cek `BOT_TOKEN`; cek `docker compose logs order-bot` / `pm2 logs` |
 | Bot di Hostinger kadang mati | App di-idle-kan Passenger saat sepi | Pasang UptimeRobot ping URL web tiap 1–5 menit |
 | Tidak bisa login / muncul loop login | Cookie tidak tersimpan | Untuk HTTP lokal set `WEB_COOKIE_SECURE=false`; untuk produksi pakai HTTPS + `WEB_COOKIE_SECURE=true` |

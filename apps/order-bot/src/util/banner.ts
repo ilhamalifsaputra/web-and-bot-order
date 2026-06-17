@@ -5,13 +5,20 @@
  * and the resulting file_id is cached in `banner_image_fileid` so the bot
  * re-uploads at most once per banner.
  */
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { InputFile } from "grammy";
 
 export const BANNER_IMAGE_KEY = "banner_image";
 export const BANNER_FILEID_KEY = "banner_image_fileid";
 
-const UPLOADS_ROOT = process.env.UPLOADS_DIR ?? join(process.cwd(), "data", "uploads");
+// Module-relative (not cwd-relative): web-admin writes uploads under the repo's
+// data/uploads, and pnpm runs the bot with cwd = the order-bot package dir, so a
+// cwd-based path would look in the wrong place and the banner photo would 404.
+// HERE = apps/order-bot/src/util → up 4 → <root>/data/uploads. Override via env.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const UPLOADS_ROOT =
+  process.env.UPLOADS_DIR ?? join(HERE, "..", "..", "..", "..", "data", "uploads");
 
 export type BannerValue =
   | { kind: "none" }

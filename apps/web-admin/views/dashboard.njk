@@ -39,9 +39,9 @@
    primary), so the eye reads them as one family; the cumulative all-time card
    below uses grass. #}
 {% set sales_cards = [
-  { label: 'Sales · last 24 hours', value: rev_24h.revenue, sub: rev_24h.orders, icon: 'trending-up',    tint: 'bg-pine-tint text-pine' },
-  { label: 'Sales · last 7 days',   value: rev_7d.revenue,  sub: rev_7d.orders,  icon: 'calendar-range', tint: 'bg-pine-tint text-pine' },
-  { label: 'Sales · last 30 days',  value: rev_30d.revenue, sub: rev_30d.orders, icon: 'calendar-days',  tint: 'bg-pine-tint text-pine' }
+  { label: 'Sales · last 24 hours', rev: rev_24h, icon: 'trending-up',    tint: 'bg-pine-tint text-pine' },
+  { label: 'Sales · last 7 days',   rev: rev_7d,  icon: 'calendar-range', tint: 'bg-pine-tint text-pine' },
+  { label: 'Sales · last 30 days',  rev: rev_30d, icon: 'calendar-days',  tint: 'bg-pine-tint text-pine' }
 ] %}
 <section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-5 mt-6">
   {% for c in sales_cards %}
@@ -50,8 +50,8 @@
       <div class="stat-label">{{ c.label }}</div>
       <span class="grid place-items-center w-9 h-9 rounded-lg {{ c.tint }}"><i data-lucide="{{ c.icon }}" class="w-5 h-5"></i></span>
     </div>
-    <div class="stat-value tabular">{{ c.value | idr }}</div>
-    <div class="stat-sub">{{ c.sub }} orders</div>
+    <div class="stat-value tabular">{{ c.rev.idr | idr }}</div>
+    <div class="stat-sub">{{ c.rev.orders }} orders{% if c.rev.usdt %} · {{ c.rev.usdt }} USDT{% endif %}</div>
   </div>
   {% endfor %}
   <div class="card card-pad">
@@ -59,8 +59,8 @@
       <div class="stat-label">All-time sales</div>
       <span class="grid place-items-center w-9 h-9 rounded-lg bg-grass-tint text-grass-dark"><i data-lucide="wallet" class="w-5 h-5"></i></span>
     </div>
-    <div class="stat-value tabular">{{ overall.total_revenue | idr }}</div>
-    <div class="stat-sub">{{ overall.items_sold }} items sold</div>
+    <div class="stat-value tabular">{{ all_time.idr | idr }}</div>
+    <div class="stat-sub">{{ overall.items_sold }} items sold{% if all_time.usdt %} · {{ all_time.usdt }} USDT{% endif %}</div>
   </div>
 </section>
 

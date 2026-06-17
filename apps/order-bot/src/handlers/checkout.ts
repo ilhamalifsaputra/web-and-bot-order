@@ -736,9 +736,12 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
 // Order cancellation (user-initiated, before delivery)
 // ---------------------------------------------------------------------------
 
+// How long the "order cancelled" bubble lingers before it deletes itself. Short
+// enough to read, long enough not to feel like a flicker.
+const CANCEL_NOTICE_MS = 2000;
+
 export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promise<void> {
   const info = requireUser(ctx);
-  const lang = ctx.session.lang;
 
   const order = await getOrder(prisma, orderId);
   if (order === null || order.userId !== info.id) {
@@ -768,13 +771,19 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
 
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.cancelled_toast") });
 
-  // Edit the bubble that owned the Cancel button into a confirmation reply,
-  // instead of leaving the stale payment screen behind. smartEdit edits on a
-  // callback tap and gracefully falls back to a fresh send on the /cancel text
-  // path (or when the bubble can't be edited, e.g. a photo+caption QR screen).
-  await smartEdit(
-    ctx,
-    t(ctx, "checkout.order_cancelled", { code: order.orderCode }),
-    ckb.notificationKb(lang),
-  );
+  // The QRIS/payment screen is a single photo+caption bubble (the QR image), so
+  // editing it in place leaves the QR stuck on screen under the "cancelled"
+  // text. Instead show a brief confirmation, then delete the whole bubble after
+  // a short beat so nothing lingers. The persistent reply keyboard still offers
+  // a way forward, so removing the bubble never strands the user.
+  await smartEdit(ctx, t(ctx, "checkout.order_cancelled", { code: order.orderCode }));
+  const cancelledMsgId = ctx.session.menuMsgId;
+  ctx.session.menuMsgId = undefined;
+  if (cancelledMsgId !== undefined) {
+    setTimeout(() => {
+      void ctx.api.deleteMessage(chatId, cancelledMsgId).catch(() => {
+        /* already gone or too old to delete */
+      });
+    }, CANCEL_NOTICE_MS);
+  }
 }

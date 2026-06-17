@@ -119,6 +119,11 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       secret: SECRET_KEYS.has(key),
       has_value: Boolean(currentValues[key]),
       value: SECRET_KEYS.has(key) ? "" : currentValues[key] ?? "",
+      // Bot identity (token/username/notifier/channel) is resolved ONCE at boot
+      // and stamped into the runtime (resolveBotCredentials → @app/core/runtime),
+      // so a change only takes effect after a restart. Every other editable key
+      // is read live via getSetting, so it applies immediately.
+      needs_restart: BOT_TOKEN_FIELD_KEYS.has(key),
     }));
     const pick = (keys: Set<string>) => allFields.filter((f) => keys.has(f.key));
     const grouped = new Set([

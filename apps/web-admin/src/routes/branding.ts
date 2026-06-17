@@ -11,8 +11,9 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { prisma, getSetting, setSetting, deleteSetting, logAdminAction } from "@app/db";
 import { currentAdmin, csrfProtect, canMutate } from "../plugins/auth";
 import { redirectWithFlash } from "../flash";
+import { UPLOADS_DIR } from "../paths";
 
-const BRANDING_DIR = join(process.env.UPLOADS_DIR ?? join(process.cwd(), "data", "uploads"), "branding");
+const BRANDING_DIR = join(UPLOADS_DIR, "branding");
 
 const FAVICON_MIME: Record<string, string> = {
   "image/png": "png",

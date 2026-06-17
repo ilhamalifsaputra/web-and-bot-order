@@ -6,6 +6,7 @@ import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
+import { UPLOADS_DIR } from "../paths";
 import { ProductType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import {
@@ -430,16 +431,14 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       }
 
       const filename = `${productId}-${randomBytes(8).toString("hex")}.${ext}`;
-      const uploadsDir = join(
-        process.env.UPLOADS_DIR ?? join(process.cwd(), "data", "uploads"),
-        "products",
-      );
+      const uploadsDir = join(UPLOADS_DIR, "products");
       await mkdir(uploadsDir, { recursive: true });
       await writeFile(join(uploadsDir, filename), fileBuffer);
 
-      // Remove the old local upload when replacing it.
+      // Remove the old local upload when replacing it. webImageUrl is "/uploads/…"
+      // so strip the prefix and re-anchor under UPLOADS_DIR.
       if (product.webImageUrl?.startsWith("/uploads/")) {
-        await unlink(join(process.cwd(), "data", product.webImageUrl.slice(1))).catch(() => undefined);
+        await unlink(join(UPLOADS_DIR, product.webImageUrl.replace(/^\/uploads\//, ""))).catch(() => undefined);
       }
 
       await updateProduct(prisma, productId, { webImageUrl: `/uploads/products/${filename}` });

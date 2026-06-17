@@ -195,10 +195,19 @@ export async function setupCommandMenu(bot: Bot<MyContext>): Promise<void> {
 export async function start(): Promise<void> {
   await initDb();
   setAdminIds(await resolveAdminIds(prisma));
+  // Market-rate auto-update needs no bot token, so schedule it BEFORE the token
+  // guard — it must keep running on a web-only / pre-setup boot (§16.3), matching
+  // apps/server. As a side effect the croner timer keeps this process alive
+  // instead of exiting (and crash-looping under `restart: unless-stopped`) while
+  // an operator is still filling in the token via the web wizard.
+  scheduleFxRefresh();
   // Setting wins, env is the bootstrap/recovery fallback (plan.md §16.3).
   const creds = await resolveBotCredentials(prisma);
   if (!creds.botToken) {
-    logger.error("Bot token is not configured — set it in web-admin Settings or BOT_TOKEN env");
+    logger.error(
+      "Bot token is not configured — set it in web-admin Settings or BOT_TOKEN env. " +
+        "Bot stays off; FX auto-update keeps running.",
+    );
     return;
   }
   setBotIdentity({
@@ -216,7 +225,7 @@ export async function start(): Promise<void> {
   }
   await setupCommandMenu(bot);
   scheduleJobs(bot.api);
-  scheduleFxRefresh();
+  // (scheduleFxRefresh already started above, before the token guard.)
   // drop_pending_updates: discard updates queued during downtime so stale
   // "Buy"/"Approve" taps aren't reprocessed against moved-on state. Best-effort:
   // a transient network blip here must not stop the bot from starting — the

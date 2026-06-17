@@ -276,10 +276,23 @@ describe("checkout handlers", () => {
     expect(await prisma.order.count()).toBe(before); // no new order
   });
 
-  it("cancelPendingOrder cancels the order", async () => {
+  it("cancelPendingOrder cancels the order and removes the lingering bubble after a beat", async () => {
     const order = await makeOrder();
-    const { ctx } = customerCtx({ callbackData: `v1:checkout:cancel:${order!.id}` });
-    await checkout.cancelPendingOrder(ctx, order!.id);
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:cancel:${order!.id}` });
+
+    vi.useFakeTimers();
+    try {
+      await checkout.cancelPendingOrder(ctx, order!.id);
+      // A confirmation is shown immediately, but the bubble must not vanish yet.
+      expect(calls(sink, "deleteMessage").length).toBe(0);
+      // After the notice window the whole payment/QR bubble is deleted so it
+      // doesn't stay stuck on screen under the "cancelled" text.
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(calls(sink, "deleteMessage").length).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+    }
+
     const after = await getOrder(prisma, order!.id);
     expect(after!.status).toBe(OrderStatus.CANCELLED);
   });

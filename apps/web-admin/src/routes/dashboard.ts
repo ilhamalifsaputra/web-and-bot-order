@@ -7,6 +7,7 @@
 import type { FastifyInstance } from "fastify";
 import { config, isBinanceInternalEnabled } from "@app/core/config";
 import { addDays, addMinutes } from "@app/core/datetime";
+import { Decimal } from "@app/core/money";
 import {
   prisma,
   type Db,
@@ -28,6 +29,21 @@ import { currentAdmin } from "../plugins/auth";
 const STALE_VERIFICATION_HOURS = 12;
 const EXPIRING_SOON_MINUTES = 15;
 const WARRANTY_HORIZON_DAYS = 3;
+
+/**
+ * Flatten a {revenue_idr, revenue_usdt, orders} summary into template-friendly
+ * primitives. Revenue is split per currency in the DB layer (reports.ts), so the
+ * cards show IDR as the headline and surface USDT only when there actually is
+ * USDT revenue — a Decimal is always truthy in Nunjucks, so the zero check must
+ * happen here, not in the template.
+ */
+function shapeRevenue(r: { revenue_idr: Decimal; revenue_usdt: Decimal; orders: number }) {
+  return {
+    idr: r.revenue_idr.toString(),
+    usdt: new Decimal(r.revenue_usdt).isZero() ? null : r.revenue_usdt.toString(),
+    orders: r.orders,
+  };
+}
 
 /** Gather the SLA action-queue lists shared by the page and its HTMX fragment. */
 async function slaContext(db: Db) {
@@ -71,9 +87,10 @@ export default async function dashboardRoutes(app: FastifyInstance): Promise<voi
       admin: req.admin,
       active_nav: "/",
       overall,
-      rev_24h: rev24h,
-      rev_7d: rev7d,
-      rev_30d: rev30d,
+      all_time: shapeRevenue({ ...overall, revenue_idr: overall.revenue_idr, revenue_usdt: overall.revenue_usdt, orders: 0 }),
+      rev_24h: shapeRevenue(rev24h),
+      rev_7d: shapeRevenue(rev7d),
+      rev_30d: shapeRevenue(rev30d),
       low_stock: lowStock,
       low_stock_count: lowStock.length,
       low_stock_threshold: config.LOW_STOCK_THRESHOLD,

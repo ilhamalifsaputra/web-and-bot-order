@@ -18,6 +18,7 @@ import {
   getUserByTelegramId,
   getOrder,
   createOrderDirect,
+  createWebUser,
   attachPaymentProof,
   createTicket,
   listTicketMessages,
@@ -296,6 +297,21 @@ describe("orders", () => {
 
     const audit = await prisma.auditLog.findMany({ where: { action: "approve_order", targetId: orderId } });
     expect(audit.length).toBe(1);
+  });
+
+  it("list shows a web buyer's login handle, not a dash", async () => {
+    // Web-store buyers have no Telegram fullName/username — only loginUsername /
+    // email. The list must fall back to those instead of rendering "—".
+    const web = await createWebUser(prisma, {
+      loginUsername: "weshopper",
+      email: "we@shop.test",
+      passwordHash: "x",
+    });
+    await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 });
+
+    const res = await get("/orders", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("weshopper");
   });
 
   it("reject → REJECTED + audit", async () => {
@@ -1504,6 +1520,21 @@ describe("broadcast", () => {
 
 // ---- smoke: every GET page renders 200 for an admin -----------------------
 
+describe("dashboard", () => {
+  it("shows delivered revenue as a Rupiah amount, not a dash", async () => {
+    // Regression: the cards read rev.revenue / overall.total_revenue, but the
+    // DB layer returns revenue_idr / revenue_usdt — so every card rendered "—"
+    // even with delivered orders. Deliver one (product price 5.00) and assert
+    // the headline shows the amount.
+    const orderId = await makePendingOrder();
+    await post(`/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+
+    const res = await get("/", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("Rp5");
+  });
+});
+
 describe("page smoke tests", () => {
   it("all nav pages render 200", async () => {
     for (const path of ["/", "/stock", "/orders", "/payments", "/outbox", "/catalog", "/vouchers", "/users", "/reviews", "/reports", "/support", "/settings", "/audit", "/search", "/admins", "/broadcast"]) {
@@ -1619,7 +1650,10 @@ describe("setup wizard — restart trigger", () => {
       });
       expect(res.statusCode).toBe(200);
       expect(existsSync(target)).toBe(true);
-      expect(res.body).toContain("dinyalakan"); // setup_done.njk restarted=true branch
+      // setup_done.njk restarted=true branch (topology-honest copy): confirms the
+      // trigger was written AND surfaces the Docker/VPS manual-restart fallback.
+      expect(res.body).toContain("Sinyal restart sudah ditulis");
+      expect(res.body).toContain("docker compose restart order-bot");
     } finally {
       if (existsSync(target)) rmSync(target);
       delete process.env.RESTART_TRIGGER_FILE;

@@ -256,6 +256,28 @@ export function productDetailKb(
   return ik(rows);
 }
 
+interface DenominationLike {
+  id: number;
+  name: string;
+  durationLabel: string;
+  price: Decimal.Value;
+}
+
+/** Picker shown when a customer taps a product group: one button per member. */
+export function groupDenominationsKb(members: DenominationLike[], lang: string): InlineKeyboard {
+  const rows: Btn[][] = members.map((m) => [
+    {
+      text: coreT("browse.denomination_btn", lang, {
+        duration: m.durationLabel || m.name,
+        price: formatPrice(m.price),
+      }),
+      data: cb("browse", "prod", m.id),
+    },
+  ]);
+  rows.push([{ text: coreT("menu.back", lang), data: cb("browse", "prods") }]);
+  return ik(rows);
+}
+
 export function qtyInputCancelKb(productId: number, lang: string): InlineKeyboard {
   return ik([
     [{ text: coreT("browse.qty_input_cancel", lang), data: cb("qty", "cancel", productId) }],

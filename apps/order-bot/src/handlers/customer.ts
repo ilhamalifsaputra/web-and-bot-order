@@ -19,7 +19,8 @@ import {
   upsertUser,
   botOverallStats,
   userTotalSpent,
-  listAllActiveProducts,
+  listCatalogEntries,
+  getGroupWithActiveProducts,
   getProduct,
   countAvailableStock,
   getBulkPricingForProduct,
@@ -55,7 +56,7 @@ const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimal
 // --- session scratch accessors (mirror context.user_data keys) -------------
 interface BrowseScratch {
   browsePage?: number;
-  browseProductIds?: number[];
+  browseEntries?: Array<{ kind: "group" | "product"; id: number }>;
   viewingProductId?: number;
 }
 const sc = (ctx: MyContext) => ctx.session.scratch as BrowseScratch & Record<string, unknown>;
@@ -163,7 +164,7 @@ export async function startCommand(ctx: MyContext): Promise<void> {
     }
   }
 
-  delete sc(ctx).browseProductIds;
+  delete sc(ctx).browseEntries;
   delete sc(ctx).browsePage;
 
   const text = await buildDashboardText(ctx);
@@ -190,23 +191,28 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
 export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void> {
   const lang = ctx.session.lang;
 
-  const products = await listAllActiveProducts(prisma);
-  if (!products.length) {
+  const entries = await listCatalogEntries(prisma);
+  if (!entries.length) {
     await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
     return;
   }
 
-  const totalPages = Math.max(1, Math.ceil(products.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
   page = Math.max(0, Math.min(page, totalPages - 1));
   const start = page * PAGE_SIZE;
-  const pageProducts = products.slice(start, start + PAGE_SIZE);
+  const pageEntries = entries.slice(start, start + PAGE_SIZE);
 
   sc(ctx).browsePage = page;
-  sc(ctx).browseProductIds = pageProducts.map((p) => p.id);
+  sc(ctx).browseEntries = pageEntries.map((e) =>
+    e.kind === "group" ? { kind: "group" as const, id: e.group.id } : { kind: "product" as const, id: e.product.id },
+  );
   delete sc(ctx).viewingProductId;
 
-  // Selection is resolved against the browseProductIds snapshot (see handleProductNumber).
-  const itemLines = pageProducts.map((p, i) => `${i + 1}. ${esc(p.name)}`);
+  // Selection is resolved against the browseEntries snapshot (see handleProductNumber).
+  const itemLines = pageEntries.map((e, i) => {
+    const label = e.kind === "group" ? `${e.group.name} ›` : e.product.name;
+    return `${i + 1}. ${esc(label)}`;
+  });
 
   const text = t(ctx, "browse.list_decorated", {
     page: page + 1,
@@ -220,7 +226,7 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   await renderMenuBanner(
     ctx,
     text,
-    ckb.productsPersistentKb(pageProducts.length, lang, {
+    ckb.productsPersistentKb(pageEntries.length, lang, {
       showPrev: page > 0,
       showNext: page < totalPages - 1,
       showBack: false,
@@ -283,37 +289,37 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
       return;
   }
 
-  // Number buttons — product selection. Only short digit strings.
+  // Number buttons — entry selection. Only short digit strings.
   if (!/^\d+$/.test(text) || text.length > 4) return;
 
-  // Resolve the tapped number against the SNAPSHOT captured when the list was
-  // last rendered (browseProductIds), so a catalog change between render and tap
-  // can't shift the numbering and open the wrong product. Fall back to a fresh
-  // page slice only when there's no snapshot yet (e.g. a number typed before
-  // browsing this session).
-  let productIds = sc(ctx).browseProductIds ?? [];
-  if (!productIds.length) {
-    const products = await listAllActiveProducts(prisma);
+  // Resolve against the SNAPSHOT captured when the list was rendered, so a
+  // catalog change between render and tap can't shift the numbering.
+  let entries = sc(ctx).browseEntries ?? [];
+  if (!entries.length) {
+    const all = await listCatalogEntries(prisma);
     const page = sc(ctx).browsePage ?? 0;
-    const start = page * PAGE_SIZE;
-    productIds = products.slice(start, start + PAGE_SIZE).map((p) => p.id);
-    sc(ctx).browseProductIds = productIds;
+    const startIdx = page * PAGE_SIZE;
+    entries = all.slice(startIdx, startIdx + PAGE_SIZE).map((e) =>
+      e.kind === "group" ? { kind: "group" as const, id: e.group.id } : { kind: "product" as const, id: e.product.id },
+    );
+    sc(ctx).browseEntries = entries;
   }
 
-  if (!productIds.length) {
+  if (!entries.length) {
     await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
     return;
   }
 
   const idx = parseInt(text, 10);
-  if (idx < 1 || idx > productIds.length) {
-    await smartEdit(ctx, t(ctx, "browse.invalid_number", { max: productIds.length }), ckb.backToMain(lang));
+  if (idx < 1 || idx > entries.length) {
+    await smartEdit(ctx, t(ctx, "browse.invalid_number", { max: entries.length }), ckb.backToMain(lang));
     return;
   }
 
-  const productId = productIds[idx - 1]!;
-  logger.debug(`handle_product_number: user selected idx=${idx} product_id=${productId}`);
-  await browseProduct(ctx, productId);
+  const entry = entries[idx - 1]!;
+  logger.debug(`handle_product_number: user selected idx=${idx} ${entry.kind}=${entry.id}`);
+  if (entry.kind === "group") await browseGroup(ctx, entry.id);
+  else await browseProduct(ctx, entry.id);
 }
 
 export async function browseProduct(ctx: MyContext, productId: number, qty = 1): Promise<void> {
@@ -373,6 +379,22 @@ export async function browseProduct(ctx: MyContext, productId: number, qty = 1):
 
   await smartEdit(ctx, text, ckb.productDetailKb(p, stock, lang, qty));
   sc(ctx).viewingProductId = productId;
+}
+
+export async function browseGroup(ctx: MyContext, groupId: number): Promise<void> {
+  const lang = ctx.session.lang;
+  const group = await getGroupWithActiveProducts(prisma, groupId);
+  if (!group || group.products.length === 0) {
+    // Group emptied/deactivated between render and tap — don't strand the user.
+    await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
+    return;
+  }
+  if (group.products.length === 1) {
+    await browseProduct(ctx, group.products[0]!.id);
+    return;
+  }
+  const text = t(ctx, "browse.choose_denomination", { name: esc(group.name) });
+  await smartEdit(ctx, text, ckb.groupDenominationsKb(group.products, lang));
 }
 
 // ---------------------------------------------------------------------------

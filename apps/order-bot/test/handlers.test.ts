@@ -22,6 +22,7 @@ import { buildSampleData, resetDb, type SampleData } from "../../../tests/helper
 import { makeCtx, calls, sentIncludes, offersForwardAction, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
+import { groupDenominationsKb } from "../src/keyboards/customer";
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
@@ -100,7 +101,9 @@ describe("customer handlers", () => {
     const { ctx, sink } = customerCtx();
     await customer.browseProductsFlat(ctx);
     expect(sink.length).toBeGreaterThan(0);
-    expect((ctx.session.scratch as { browseProductIds?: number[] }).browseProductIds).toEqual([sample.product.id]);
+    expect((ctx.session.scratch as { browseEntries?: Array<{ kind: string; id: number }> }).browseEntries).toEqual([
+      { kind: "product", id: sample.product.id },
+    ]);
   });
 
   it("browseProductsFlat shows a numbered list of products", async () => {
@@ -132,7 +135,10 @@ describe("customer handlers", () => {
     const other = await prisma.product.create({
       data: { categoryId: sample.product.categoryId, name: "Other", type: "SHARED", durationLabel: "1 Month", price: "9" },
     });
-    const { ctx } = customerCtx({ text: "1", session: { ...userSession(), scratch: { browsePage: 0, browseProductIds: [other.id] } } });
+    const { ctx } = customerCtx({
+      text: "1",
+      session: { ...userSession(), scratch: { browsePage: 0, browseEntries: [{ kind: "product", id: other.id }] } },
+    });
     await customer.handleProductNumber(ctx);
     expect((ctx.session.scratch as { viewingProductId?: number }).viewingProductId).toBe(other.id);
   });
@@ -205,6 +211,57 @@ describe("customer handlers", () => {
     const { ctx, sink } = customerCtx();
     await customer.viewMyTicket(ctx, 999999);
     expect(offersForwardAction(sink)).toBe(true);
+  });
+});
+
+// ===========================================================================
+// Product groups (denominations)
+// ===========================================================================
+
+describe("denomination groups", () => {
+  async function makeGroupWithTwo() {
+    const cat = await prisma.category.create({ data: { name: `gc${Math.random()}` } });
+    const group = await prisma.productGroup.create({ data: { categoryId: cat.id, name: "Capcut" } });
+    const m1 = await prisma.product.create({
+      data: { categoryId: cat.id, name: "Capcut 7 day", type: "SHARED", durationLabel: "7 day", price: "10", productGroupId: group.id },
+    });
+    const m2 = await prisma.product.create({
+      data: { categoryId: cat.id, name: "Capcut 1 Month", type: "SHARED", durationLabel: "1 Month", price: "30", productGroupId: group.id },
+    });
+    return { group, m1, m2 };
+  }
+
+  it("groupDenominationsKb renders one button per member + back", () => {
+    const kb = groupDenominationsKb(
+      [
+        { id: 1, name: "A", durationLabel: "7 day", price: "10" },
+        { id: 2, name: "B", durationLabel: "1 Month", price: "30" },
+      ],
+      "en",
+    );
+    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    expect(flat.some((b) => b.callback_data === "v1:browse:prod:1")).toBe(true);
+    expect(flat.some((b) => b.callback_data === "v1:browse:prod:2")).toBe(true);
+    expect(flat.some((b) => b.callback_data === "v1:browse:prods")).toBe(true); // back
+  });
+
+  it("browseGroup shows the denomination picker for the group", async () => {
+    const { group, m1 } = await makeGroupWithTwo();
+    const { ctx, sink } = customerCtx();
+    await customer.browseGroup(ctx, group.id);
+    expect(sentIncludes(sink, "Capcut")).toBe(true);
+    // members reachable via browse:prod buttons
+    const sent = sink as SentCall[];
+    const markup = JSON.stringify(sent.map((c) => c.args[c.args.length - 1]));
+    expect(markup).toContain(`v1:browse:prod:${m1.id}`);
+  });
+
+  it("browseProductsFlat records a group entry and the number opens the picker", async () => {
+    const { group } = await makeGroupWithTwo();
+    const { ctx } = customerCtx();
+    await customer.browseProductsFlat(ctx);
+    const entries = (ctx.session.scratch as { browseEntries?: Array<{ kind: string; id: number }> }).browseEntries ?? [];
+    expect(entries.some((e) => e.kind === "group" && e.id === group.id)).toBe(true);
   });
 });
 

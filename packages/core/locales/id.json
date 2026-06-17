@@ -60,6 +60,8 @@
   "browse.already_subscribed": "Notifikasi restock untuk produk ini sudah aktif.",
   "browse.bulk_deal": "Harga bundel: beli <b>{min_qty}+</b> dan hemat <b>{percent}%</b>.",
   "browse.buy_now": "🛒 Beli Sekarang",
+  "browse.choose_denomination": "<b>{name}</b>\n\nPilih paket:",
+  "browse.denomination_btn": "{duration} — {price}",
   "browse.invalid_number": "Masukkan angka antara 1 dan {max}.",
   "browse.list_decorated": "📦 <b>Daftar Produk</b>\n\n{items}\n\n📄 Halaman {page}/{total}\n💡 Masukkan nomor untuk lanjut.",
   "browse.nav_next": "Lanjut ▶️",

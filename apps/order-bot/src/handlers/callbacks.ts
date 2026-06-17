@@ -44,6 +44,7 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
   if (action === "prods") await customer.browseProductsFlat(ctx);
   else if (action === "page") await customer.browseProductsFlat(ctx, parseInt(parts[3]!, 10));
   else if (action === "prod") await customer.browseProduct(ctx, parseInt(parts[3]!, 10));
+  else if (action === "group") await customer.browseGroup(ctx, parseInt(parts[3]!, 10));
 };
 
 const dispatchQty: DomainDispatcher = async (ctx, parts) => {

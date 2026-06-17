@@ -532,8 +532,8 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const rate = await currentUsdtRate();
-  const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
-  if (!binanceEnabled || !rate) {
+  const cfg = await resolveBinanceInternalConfig(prisma);
+  if (!cfg.enabled || !rate) {
     await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
     return;
   }
@@ -578,7 +578,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
 
   const text = t(ctx, "checkout.internal_instructions", {
     code: order.paymentRef,
-    uid: esc(config.BINANCE_RECEIVE_UID ?? ""),
+    uid: esc(cfg.receiveUid),
     note: order.paymentRef,
     amount: price(order.totalAmount, 4),
     idr_line: idrLine,

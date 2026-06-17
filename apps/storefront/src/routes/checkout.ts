@@ -255,6 +255,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
       // Bybit deposit address (no API call — just the configured address).
       const bybitAddress = isBybit ? (await resolveBybitConfig(prisma)).depositAddress : "";
+      const binanceUid = isBinance ? (await resolveBinanceInternalConfig(prisma)).receiveUid : "";
 
       // TokoPay transaction (QR / pay link) only while actually payable.
       // The result is cached in order.paymentRef (JSON) after the first fetch so
@@ -306,7 +307,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         is_bybit: isBybit,
         is_qris: isQris,
         bybit_address: bybitAddress,
-        binance_uid: config.BINANCE_RECEIVE_UID ?? "",
+        binance_uid: binanceUid,
         gateway,
         gateway_error: gatewayError,
         wa_number: waNumber,

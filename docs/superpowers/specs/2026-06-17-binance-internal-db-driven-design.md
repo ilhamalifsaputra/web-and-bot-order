@@ -107,6 +107,14 @@ ter-ekspor — tidak perlu menyentuh `packages/db/src/index.ts`.
   di fungsi yang sama (baris 398, 423, 457), lalu pakai `binanceEnabled && rate !== null`
   menggantikan `isBinanceInternalEnabled() && rate !== null`. Untuk `enterBinanceInternal`
   (baris ~531): `const cfg = await resolveBinanceInternalConfig(prisma); if (!cfg.enabled || !rate) {…}`.
+  **Tampilan UID (jalur uang):** `buyNowInternal` (~baris 531) menampilkan UID pada
+  `checkout.internal_instructions` (`uid: ...`). Simpan `cfg` penuh di scope (jangan buang
+  jadi `.enabled` saja) dan render `uid: esc(cfg.receiveUid)` — JANGAN `config.BINANCE_RECEIVE_UID`,
+  agar UID dari Settings tampil tanpa restart.
+- `apps/storefront/src/routes/checkout.ts` — tampilan UID di halaman bayar (`pay.njk`).
+  Resolve `const binanceUid = isBinance ? (await resolveBinanceInternalConfig(prisma)).receiveUid : "";`
+  **sejajar `bybitAddress = isBybit ? (await resolveBybitConfig(prisma)).depositAddress : ""`**,
+  lalu `binance_uid: binanceUid` (gantikan `config.BINANCE_RECEIVE_UID ?? ""`).
 - `packages/core/src/config.ts`: **hapus** `isBinanceInternalEnabled()` (baris 200-201)
   karena tak ada lagi pemakai. Pertahankan field env `BINANCE_RECEIVE_UID/API_KEY/
   API_SECRET/API_BASE` (dipakai sebagai fallback oleh resolver + probe script).

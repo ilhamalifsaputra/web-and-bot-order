@@ -172,17 +172,27 @@ Kredensial & setelan terpusat di **web-admin → Settings**
 - **Bybit:** `bybit_deposit_address`, `bybit_api_key`, `bybit_api_secret`.
 - **Branding:** identitas toko + upload aset (halaman `/branding` terpisah).
 
-**Prioritas: DB (Setting) menang, `.env` = bootstrap/pemulihan.**
+**Aturan umum: DB (Setting) menang, `.env` = bootstrap/pemulihan** — tapi ada
+tiga pola resolver yang sengaja berbeda. Tabel sumber-kebenaran per setting
+(resolver di `packages/db/src/crud/`, dipanggil sekali per proses saat boot lalu
+di-stamp ke `@app/core/runtime`):
 
-| | Dibaca | Efek perubahan |
-|---|---|---|
-| `.env` | saat boot | **perlu restart** |
-| Token bot/notifier | saat boot | **perlu restart** (walau diubah di Settings) |
-| `tokopay_*`, `bybit_*`, `usd_idr_rate`, setelan lain | runtime | **langsung berlaku** |
+| Setting | env var | DB key | Yang menang | Resolver | Perubahan berlaku |
+|---|---|---|---|---|---|
+| Token bot/notif, username, channel | `BOT_TOKEN`, `BOT_USERNAME`, `NOTIF_BOT_TOKEN`, `PUBLIC_CHANNEL_ID` | `bot_token` dst | **DB > env** | `credentials.ts` | **perlu restart** (instance grammY sudah jalan) |
+| Admin ids | `ADMIN_IDS` | `admin_ids` | **union (env ∪ DB)** — keduanya berlaku, hapus dari satu sumber saja tak mencabut akses | `admins.ts` | proses web **langsung** (`setAdminIds`); bot/notifier (proses lain) **perlu restart** |
+| Web cookie secret | `WEB_COOKIE_SECRET` | `web_cookie_secret` | **env > DB > generated** (kebalikan; env = override operator; bila kosong, di-generate & disimpan ke DB) | `web_secret.ts` | **perlu restart** (mengganti → invalidasi semua sesi) |
+| Kurs USDT↔IDR | `USDT_IDR_RATE` | `usd_idr_rate` | **DB > env** | `pricing.ts` (`getUsdIdrRate`, dibaca **per-operasi**) | **langsung berlaku** |
+| `tokopay_*`, `bybit_*`, `binance_*`, setelan toko lain | — | Setting | **DB** (sumber tunggal, env tak ikut) | crud terkait | **langsung berlaku** (dibaca runtime) |
+
+> **Catatan multi-proses:** setiap proses (order-bot, notifier, web-admin,
+> storefront — atau `apps/server` saat satu-proses) menyimpan snapshot runtime
+> sendiri. Setting yang "perlu restart" hanya menempel di proses yang dibaca
+> ulang; di deploy multi-proses, restart **proses yang relevan**, bukan hanya web.
 
 Key rahasia (`tokopay_secret`, `bot_token`, `notif_bot_token`, `bybit_api_key`,
-`bybit_api_secret`) ditangani **write-only**: tak di-echo, `(hidden)` di tabel,
-audit `key=(updated)` tanpa nilai.
+`bybit_api_secret`, `web_cookie_secret`) ditangani **write-only**: tak di-echo,
+`(hidden)` di tabel, audit `key=(updated)` tanpa nilai.
 
 ---
 

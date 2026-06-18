@@ -3,7 +3,7 @@
 {% block title %}Products · Shop Admin{% endblock %}
 
 {% block content %}
-{{ ui.page_header('Products', 'Group products into categories and set their prices.', 'package', 'products') }}
+{{ ui.page_header('Products', 'Atur produk per kategori, denominasi, dan harganya.', 'package', 'products') }}
 {{ ui.flash(msg, kind) }}
 
 <!-- Categories -->
@@ -49,11 +49,11 @@
 
 <!-- Product groups (denominations) -->
 <section class="mb-10">
-  <h2 class="section-title mb-3">Product Groups (denominations)</h2>
+  <h2 class="section-title mb-3">Denominasi</h2>
   <div class="card overflow-x-auto mb-4">
     <table class="data-table">
       <thead>
-        <tr><th>Group</th><th>Category</th><th>Members</th><th>Active</th><th></th></tr>
+        <tr><th>Denominasi</th><th>Category</th><th>Members</th><th>Active</th><th></th></tr>
       </thead>
       <tbody>
         {% for g in groups %}
@@ -64,21 +64,21 @@
           <td>{{ ui.status_badge('active' if g.isActive else 'inactive') }}</td>
           <td class="text-right">
             <form method="post" action="/catalog/group/{{ g.id }}/delete" class="inline"
-                  onsubmit="return confirm('Delete group? Products are kept.');">
+                  onsubmit="return confirm('Hapus denominasi? Produk tetap ada.');">
               {{ ui.csrf_field(admin) }}
               <button class="btn btn-soft btn-sm">Delete</button>
             </form>
           </td>
         </tr>
         {% else %}
-        {{ ui.empty_row(5, 'No product groups yet.') }}
+        {{ ui.empty_row(5, 'Belum ada denominasi.') }}
         {% endfor %}
       </tbody>
     </table>
   </div>
 
   <details class="card card-pad mb-4">
-    <summary class="cursor-pointer font-medium text-sm text-pine">+ Add a group</summary>
+    <summary class="cursor-pointer font-medium text-sm text-pine">+ Tambah denominasi</summary>
     <form method="post" action="/catalog/group" class="mt-4 flex flex-wrap gap-3 items-end">
       {{ ui.csrf_field(admin) }}
       <div><label class="field-label">Category</label>
@@ -88,12 +88,12 @@
       <div><label class="field-label">Name</label><input name="name" required placeholder="e.g. Capcut" class="field"></div>
       <div><label class="field-label">Icon</label><input name="emoji" class="field w-20" placeholder="emoji (optional)"></div>
       <div><label class="field-label">Order</label><input name="sort_order" type="number" value="0" class="field w-20"></div>
-      <button class="btn btn-primary">Add group</button>
+      <button class="btn btn-primary">Tambah denominasi</button>
     </form>
   </details>
 
   {% if groups %}
-  <p class="text-xs text-ink-faint">Untuk memasukkan produk ke grup: buka produk di <b>Items for sale</b> → <b>Edit</b> → pilih <b>Group</b>.</p>
+  <p class="text-xs text-ink-faint">Untuk memasukkan produk ke denominasi: buka produk di <b>Items for sale</b> → <b>Edit</b> → pilih <b>Denominasi</b>.</p>
   {% endif %}
 </section>
 
@@ -170,7 +170,7 @@
           <div>
             <span class="font-medium">{{ p.name }}</span>
             <span class="text-ink-faint text-sm">· {{ p.category.name if p.category else '—' }} · {{ p.durationLabel }} · #{{ p.id }}</span>
-            {% if p.productGroup %}<span class="text-pine text-xs">· Grup: {{ p.productGroup.name }}</span>{% endif %}
+            {% if p.productGroup %}<span class="text-pine text-xs">· Denominasi: {{ p.productGroup.name }}</span>{% endif %}
             {{ ui.status_badge('active' if p.isActive else 'inactive') }}
           </div>
         </div>
@@ -198,14 +198,14 @@
               <input name="web_image_url" type="url" value="{{ p.webImageUrl or '' }}" placeholder="https://… or upload below" class="field">
               <p class="text-xs text-ink-faint mt-0.5">Paste an external URL, or use the upload button below.</p>
             </div>
-            <div><label class="field-label">Group (optional)</label>
+            <div><label class="field-label">Denominasi (opsional)</label>
               <select name="product_group_id" class="field">
-                <option value="">— No group —</option>
+                <option value="">— Tanpa denominasi —</option>
                 {% for g in groups %}{% if g.categoryId == p.categoryId %}
                 <option value="{{ g.id }}" {% if p.productGroupId == g.id %}selected{% endif %}>{{ g.name }}</option>
                 {% endif %}{% endfor %}
               </select>
-              <p class="text-xs text-ink-faint mt-0.5">Kelompokkan denominasi (mis. semua varian Capcut) di bawah satu grup.</p></div>
+              <p class="text-xs text-ink-faint mt-0.5">Kelompokkan varian/denominasi (mis. semua varian Capcut) di bawah satu denominasi.</p></div>
             <div class="sm:col-span-2"><label class="field-label">Description</label><textarea name="description" rows="2" class="field">{{ p.description or '' }}</textarea></div>
             <label class="flex items-center gap-2 text-xs"><input type="checkbox" name="is_active" value="true" {% if p.isActive %}checked{% endif %}> Shown to customers</label>
             <div class="sm:col-span-2"><button class="btn btn-primary">Save changes</button></div>

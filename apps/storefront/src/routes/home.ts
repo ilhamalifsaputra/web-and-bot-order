@@ -9,7 +9,7 @@ import {
   prisma,
   getSetting,
   listActiveCategories,
-  listNewestActiveProducts,
+  listNewestCatalogEntries,
   stockStatusCounts,
   productRatingSummaries,
   activeBulkPricingByProduct,
@@ -17,8 +17,9 @@ import {
   overallRating,
   shopFulfilmentStats,
 } from "@app/db";
-import { categoryImage, productImage, HERO_IMAGE } from "../images";
+import { categoryImage, HERO_IMAGE } from "../images";
 import { shopContext, LANG_COOKIE } from "../shop";
+import { shapeEntries } from "../cards";
 
 /**
  * A privacy-safe display name for a public testimonial: prefer the buyer's full
@@ -38,10 +39,10 @@ function reviewerName(user: { fullName: string | null; loginUsername: string | n
 const homeRoutes: FastifyPluginAsync = async (app) => {
   app.get("/", async (req, reply) => {
     const ctx = await shopContext(req, "/");
-    const [categories, products, stock, ratings, bulk, reviews, rating, fulfil, waNumber, heroUrl] =
+    const [categories, entries, stock, ratings, bulk, reviews, rating, fulfil, waNumber, heroUrl] =
       await Promise.all([
         listActiveCategories(prisma),
-        listNewestActiveProducts(prisma, 12),
+        listNewestCatalogEntries(prisma, 12),
         stockStatusCounts(prisma),
         productRatingSummaries(prisma),
         activeBulkPricingByProduct(prisma),
@@ -54,7 +55,9 @@ const homeRoutes: FastifyPluginAsync = async (app) => {
         // Hero banner — admin-uploaded image overrides the Unsplash default.
         getSetting(prisma, "web_hero_url"),
       ]);
-    const ratingByProduct = new Map(ratings.map((r) => [r.productId, r]));
+    const ratingByProduct = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
+    const catName = new Map(categories.map((c) => [c.id, c.name]));
+    const cards = shapeEntries(entries, catName, stock, ratingByProduct, bulk);
 
     // Honest home-page figures: only show real numbers once a handful of orders
     // have actually shipped; before that the band falls back to value props so
@@ -84,18 +87,8 @@ const homeRoutes: FastifyPluginAsync = async (app) => {
       ...ctx,
       hero_image: heroUrl || HERO_IMAGE,
       categories: categories.map((c) => ({ ...c, image: categoryImage(c.name) })),
-      products: products.map((p) => ({
-        id: p.id,
-        name: p.name,
-        category_name: p.category.name,
-        price: p.price.toString(),
-        image: productImage(p, p.category.name),
-        available: stock[p.id]?.available ?? 0,
-        rating: ratingByProduct.get(p.id)?.avg ?? null,
-        rating_count: ratingByProduct.get(p.id)?.count ?? 0,
-        bulk_discount: bulk[p.id]?.discountPercent ?? null,
-        bulk_min_qty: bulk[p.id]?.minQuantity ?? null,
-      })),
+      groups: cards.groups,
+      products: cards.products,
       stats,
       testimonials,
       low_threshold: config.LOW_STOCK_THRESHOLD,

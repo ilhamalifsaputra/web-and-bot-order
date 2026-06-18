@@ -164,6 +164,23 @@ describe("denomination groups", () => {
     const res = await app.inject({ method: "GET", url: "/g/999999" });
     expect(res.statusCode).toBe(404);
   });
+
+  it("home 'latest' shows a group card linking to /g/:id, not the denominations flat", async () => {
+    const group = await prisma.productGroup.create({ data: { categoryId, name: "HomeBrand", isActive: true } });
+    const d1 = await prisma.product.create({
+      data: { categoryId, name: "HomeBrand 7 day", type: "SHARED", durationLabel: "7 day", price: "9000", productGroupId: group.id },
+    });
+    const d2 = await prisma.product.create({
+      data: { categoryId, name: "HomeBrand 1 Month", type: "SHARED", durationLabel: "1 Month", price: "29000", productGroupId: group.id },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(`/g/${group.id}`);   // group card present
+    expect(res.body).toContain("HomeBrand");
+    expect(res.body).not.toContain(`/p/${d1.id}`);  // denominations are NOT shown flat on home
+    expect(res.body).not.toContain(`/p/${d2.id}`);
+  });
 });
 
 describe("search + language", () => {

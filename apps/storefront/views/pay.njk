@@ -27,7 +27,7 @@
       <li>{{ t('web.binance_step_open', lang) }}</li>
       <li>
         {{ t('web.binance_step_uid', lang) }}
-        <div class="codeish !text-base mt-1 select-all">{{ binance_uid }}</div>
+        <div class="codeish !text-base mt-1 select-all break-all">{{ binance_uid }}</div>
       </li>
       <li>
         {{ t('web.binance_step_amount', lang) }}
@@ -35,7 +35,7 @@
       </li>
       <li>
         {{ t('web.binance_step_note', lang) }}
-        <div class="codeish !text-base mt-1 select-all">{{ order.payment_ref }}</div>
+        <div class="codeish !text-base mt-1 select-all break-all">{{ order.payment_ref }}</div>
       </li>
     </ol>
     <p class="text-xs text-ink-faint mt-4">{{ t('web.binance_auto_note', lang) }}</p>
@@ -119,7 +119,7 @@
     {% endif %}
   </div>
 
-  <form method="post" action="/checkout/{{ order.code }}/cancel" class="mt-4 text-center">
+  <form method="post" action="/checkout/{{ order.code }}/cancel" data-submit-once class="mt-4 text-center">
     <input type="hidden" name="csrf_token" value="{{ customer.csrf }}">
     <button type="submit" class="btn btn-ghost text-rust">{{ t('web.cancel_order', lang) }}</button>
   </form>

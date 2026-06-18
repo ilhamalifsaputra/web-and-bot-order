@@ -93,21 +93,7 @@
   </details>
 
   {% if groups %}
-  <details class="card card-pad">
-    <summary class="cursor-pointer font-medium text-sm text-pine">Assign products to a group</summary>
-    <form method="post" action="" id="assign-group-form" class="mt-4 flex flex-wrap gap-3 items-end"
-          onsubmit="this.action='/catalog/group/' + this.group_id.value + '/assign';">
-      {{ ui.csrf_field(admin) }}
-      <div><label class="field-label">Group</label>
-        <select name="group_id" required class="field">
-          {% for g in groups %}<option value="{{ g.id }}">{{ g.name }} ({{ g.category.name if g.category else '—' }})</option>{% endfor %}
-        </select></div>
-      <div class="grow"><label class="field-label">Member product ids (comma-separated, full membership)</label>
-        <input name="ids" placeholder="e.g. 12,13,14" class="field"></div>
-      <button class="btn btn-soft">Save membership</button>
-    </form>
-    <p class="text-xs text-ink-faint mt-2">Saving replaces the group's full membership — any product id left out is unlinked. All ids must share the group's category.</p>
-  </details>
+  <p class="text-xs text-ink-faint">Untuk memasukkan produk ke grup: buka produk di <b>Items for sale</b> → <b>Edit</b> → pilih <b>Group</b>.</p>
   {% endif %}
 </section>
 
@@ -183,7 +169,8 @@
           <input type="checkbox" class="bp-cb mt-1" value="{{ p.id }}">
           <div>
             <span class="font-medium">{{ p.name }}</span>
-            <span class="text-ink-faint text-sm">· {{ p.category.name if p.category else '—' }} · {{ p.durationLabel }}</span>
+            <span class="text-ink-faint text-sm">· {{ p.category.name if p.category else '—' }} · {{ p.durationLabel }} · #{{ p.id }}</span>
+            {% if p.productGroup %}<span class="text-pine text-xs">· Grup: {{ p.productGroup.name }}</span>{% endif %}
             {{ ui.status_badge('active' if p.isActive else 'inactive') }}
           </div>
         </div>
@@ -211,6 +198,14 @@
               <input name="web_image_url" type="url" value="{{ p.webImageUrl or '' }}" placeholder="https://… or upload below" class="field">
               <p class="text-xs text-ink-faint mt-0.5">Paste an external URL, or use the upload button below.</p>
             </div>
+            <div><label class="field-label">Group (optional)</label>
+              <select name="product_group_id" class="field">
+                <option value="">— No group —</option>
+                {% for g in groups %}{% if g.categoryId == p.categoryId %}
+                <option value="{{ g.id }}" {% if p.productGroupId == g.id %}selected{% endif %}>{{ g.name }}</option>
+                {% endif %}{% endfor %}
+              </select>
+              <p class="text-xs text-ink-faint mt-0.5">Kelompokkan denominasi (mis. semua varian Capcut) di bawah satu grup.</p></div>
             <div class="sm:col-span-2"><label class="field-label">Description</label><textarea name="description" rows="2" class="field">{{ p.description or '' }}</textarea></div>
             <label class="flex items-center gap-2 text-xs"><input type="checkbox" name="is_active" value="true" {% if p.isActive %}checked{% endif %}> Shown to customers</label>
             <div class="sm:col-span-2"><button class="btn btn-primary">Save changes</button></div>

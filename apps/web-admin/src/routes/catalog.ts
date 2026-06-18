@@ -375,6 +375,25 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       fields.warrantyDays = n;
     }
     await updateProduct(prisma, productId, fields);
+
+    // Group membership is edited inline on the product. Only act when the field
+    // is present, so an old form (no group select) never clears membership.
+    if (body.product_group_id !== undefined) {
+      const raw = body.product_group_id.trim();
+      const groupId = raw === "" ? null : Number(raw);
+      if (groupId !== null && !Number.isInteger(groupId)) {
+        return redirectWithFlash(reply, "/catalog", "Invalid group.", "error");
+      }
+      try {
+        await assignProductToGroup(prisma, productId, groupId);
+      } catch (err) {
+        if (err instanceof CategoryMismatchError) {
+          return redirectWithFlash(reply, "/catalog", "Produk harus satu kategori dengan grup.", "error");
+        }
+        throw err;
+      }
+    }
+
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "product_update",

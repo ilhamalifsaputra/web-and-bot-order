@@ -546,6 +546,57 @@ describe("product groups", () => {
     expect(fresh!.productGroupId).toBeNull();
   });
 
+  it("product update assigns a same-category group", async () => {
+    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const group = await prisma.productGroup.create({
+      data: { categoryId: product!.categoryId, name: "EditGrp" },
+    });
+    const res = await post(`/catalog/product/${seed.productId}/update`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: product!.name,
+      price: "5.00",
+      product_group_id: String(group.id),
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
+    expect(fresh!.productGroupId).toBe(group.id);
+  });
+
+  it("product update with empty group unlinks", async () => {
+    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const group = await prisma.productGroup.create({
+      data: { categoryId: product!.categoryId, name: "UnlinkGrp" },
+    });
+    await prisma.product.update({ where: { id: seed.productId }, data: { productGroupId: group.id } });
+    const res = await post(`/catalog/product/${seed.productId}/update`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: product!.name,
+      price: "5.00",
+      product_group_id: "",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
+    expect(fresh!.productGroupId).toBeNull();
+  });
+
+  it("product update rejects a cross-category group", async () => {
+    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const otherCat = await prisma.category.create({ data: { name: `Other${counter++}` } });
+    const group = await prisma.productGroup.create({ data: { categoryId: otherCat.id, name: "XEditGrp" } });
+    const res = await post(`/catalog/product/${seed.productId}/update`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: product!.name,
+      price: "5.00",
+      product_group_id: String(group.id),
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
+    expect(fresh!.productGroupId).toBeNull();
+  });
+
   it("create group requires auth", async () => {
     const res = await post("/catalog/group", null, { csrf_token: "x", name: "Nope", category_id: "1" });
     expect(res.statusCode).toBe(303);

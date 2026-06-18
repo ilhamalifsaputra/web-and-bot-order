@@ -107,10 +107,10 @@ export function getProductWithCategory(db: Db, productId: number) {
   });
 }
 
-/** Every product (active + inactive) with its category — admin views. */
+/** Every product (active + inactive) with its category and group — admin views. */
 export function listAllProducts(db: Db) {
   return db.product.findMany({
-    include: { category: true },
+    include: { category: true, productGroup: true },
     orderBy: { name: "asc" },
   });
 }

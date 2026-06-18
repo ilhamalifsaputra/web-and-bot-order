@@ -24,18 +24,27 @@ Order = ROI↑ / risk↓. Each unit: file · extraction · safety net · DoD.
   `listCatalogEntries` both `orderBy name`); category page ⇒ member `categoryId`
   == page category, so `catName` lookup == old `category.name`. Full suite 523 green.
 
-## ▶ A-02 — split `handlers/checkout.ts` (~809 LOC) — NEXT
+## ◐ A-02 — split `handlers/checkout.ts` (809 LOC) — IN PROGRESS (multi-step)
 
-- **Why next:** highest-LOC handler with cohesive seams (one branch per payment
-  method) → low-risk strangler. Bot UX contract ⇒ behaviour must be identical.
-- **Plan (one PR):** extract per-method handlers to
-  `apps/order-bot/src/handlers/checkout/{qris,binance,bybit}.ts`, keep the public
-  entry (`handlers/checkout.ts`) as a thin router that re-exports/dispatches. No
-  flow change, no string changes (i18n keys identical).
-- **Safety net:** existing `apps/order-bot/test/*` checkout/payment-menu tests;
-  add characterisation around any branch not covered before extracting it.
-- **DoD:** `pnpm -r typecheck && npx vitest run` green; zero diff in emitted
-  Telegram text/keyboards for each method; one PR, reviewable.
+Cohesive seams extracted one at a time into `handlers/checkout/*`; the public
+entry stays `handlers/checkout.ts` (thin), re-exporting so `import * as checkout`
+callers (callbacks, conversations) never move. Behaviour identical each step.
+
+- **✅ Step 1 — timers module.** Moved the countdown/reminder machinery
+  (`timersByOrder`/`activePaymentByChat` maps, `setActivePayment`,
+  `clearActivePayment`, `cancelPaymentJobs`, `schedulePaymentJobs`,
+  `formatCountdown`, `editPaymentBubble`, `countdownTick`, `paymentReminder`) to
+  `handlers/checkout/timers.ts` (161 LOC). `checkout.ts` imports what it needs and
+  re-exports the three public timer fns. **809 → 676 LOC.** Safety net: existing
+  `handlers.test.ts` (`checkout.cancelPaymentJobs`/`buyNow`) +
+  `conversations.test.ts` + `bybit-deposit.test.ts`. Full suite 523 green.
+- **▶ Step 2 (next) — per-method handlers.** Extract `buyNow` (Binance Pay),
+  `buyNowInternal`, `buyNowBybit`, `buyNowTokopay` to
+  `handlers/checkout/{binance,bybit,qris}.ts`, factoring the shared preamble
+  (`requireUser`, pending-count guard, voucher scratch, rate) into a small
+  `checkout/shared.ts`. One method per PR; no i18n-key or keyboard changes.
+- **DoD per step:** `pnpm -r typecheck && npx vitest run` green; zero diff in
+  emitted Telegram text/keyboards; one reviewable PR.
 
 ## ⏳ Scheduled (one PR each, after A-02)
 

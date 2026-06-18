@@ -10,7 +10,6 @@ import {
   getCategory,
   getProductWithCategory,
   listActiveCategories,
-  listActiveProductsWithCategory,
   stockStatusCounts,
   countAvailableStock,
   productRating,
@@ -27,31 +26,6 @@ import { productImage } from "../images";
 import { shopContext } from "../shop";
 import { shapeEntries } from "../cards";
 
-type ProductWithCategory = NonNullable<Awaited<ReturnType<typeof getProductWithCategory>>>;
-
-type BulkMap = Record<number, { minQuantity: number; discountPercent: string }>;
-
-/** Shape a product row (+joined category) into the card context the grid uses. */
-function card(
-  p: ProductWithCategory,
-  stock: Record<number, { available: number }>,
-  ratings: Map<number, { avg: number | null; count: number }>,
-  bulk: BulkMap = {},
-) {
-  return {
-    id: p.id,
-    name: p.name,
-    category_name: p.category.name,
-    price: p.price.toString(),
-    image: productImage(p, p.category.name),
-    available: stock[p.id]?.available ?? 0,
-    rating: ratings.get(p.id)?.avg ?? null,
-    rating_count: ratings.get(p.id)?.count ?? 0,
-    bulk_discount: bulk[p.id]?.discountPercent ?? null,
-    bulk_min_qty: bulk[p.id]?.minQuantity ?? null,
-  };
-}
-
 const catalogRoutes: FastifyPluginAsync = async (app) => {
   // Category listing.
   app.get<{ Params: { id: string } }>("/c/:id", async (req, reply) => {
@@ -65,39 +39,24 @@ const catalogRoutes: FastifyPluginAsync = async (app) => {
         message: t("web.not_found", ctx.lang),
       });
     }
-    const [categories, products, stock, ratings, bulk] = await Promise.all([
+    const [categories, entries, stock, ratings, bulk] = await Promise.all([
       listActiveCategories(prisma),
-      listActiveProductsWithCategory(prisma, category.id),
+      listCatalogEntries(prisma, category.id),
       stockStatusCounts(prisma),
       productRatingSummaries(prisma),
       activeBulkPricingByProduct(prisma),
     ]);
     const ratingByProduct = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
-
-    const entries = await listCatalogEntries(prisma, category.id);
-    const groupCards = entries
-      .filter((e): e is Extract<typeof entries[number], { kind: "group" }> => e.kind === "group")
-      .map((e) => ({
-        id: e.group.id,
-        name: e.group.name,
-        emoji: e.group.emoji,
-        from_price: e.members[0]!.price.toString(), // members are price-asc
-        count: e.members.length,
-        image: e.group.webImageUrl ?? productImage(e.members[0]!, category.name),
-      }));
-    const productEntryIds = new Set(
-      entries.filter((e) => e.kind === "product").map((e) => (e as { product: { id: number } }).product.id),
-    );
-    const productCards = products
-      .filter((p) => productEntryIds.has(p.id))
-      .map((p) => card(p, stock, ratingByProduct, bulk));
+    const catName = new Map(categories.map((c) => [c.id, c.name]));
+    // Same shaper as /search & home — one source of truth for grid cards (A-04).
+    const cards = shapeEntries(entries, catName, stock, ratingByProduct, bulk);
 
     return reply.view("catalog.njk", {
       ...ctx,
       category,
       categories,
-      groups: groupCards,
-      products: productCards,
+      groups: cards.groups,
+      products: cards.products,
       low_threshold: config.LOW_STOCK_THRESHOLD,
     });
   });

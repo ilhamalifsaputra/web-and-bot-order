@@ -11,7 +11,6 @@ import {
   getProductWithCategory,
   listActiveCategories,
   listActiveProductsWithCategory,
-  searchProductsWithCategory,
   stockStatusCounts,
   countAvailableStock,
   productRating,
@@ -21,9 +20,12 @@ import {
   listReviews,
   listCatalogEntries,
   getGroupWithActiveProducts,
+  searchCatalogEntries,
+  type CatalogEntry,
 } from "@app/db";
 import { productImage } from "../images";
 import { shopContext } from "../shop";
+import { shapeEntries } from "../cards";
 
 type ProductWithCategory = NonNullable<Awaited<ReturnType<typeof getProductWithCategory>>>;
 
@@ -179,17 +181,21 @@ const catalogRoutes: FastifyPluginAsync = async (app) => {
   app.get<{ Querystring: { q?: string } }>("/search", async (req, reply) => {
     const q = (req.query.q ?? "").trim();
     const ctx = await shopContext(req, "/search");
-    const [products, stock, ratings, bulk] = await Promise.all([
-      q ? searchProductsWithCategory(prisma, q, 24) : Promise.resolve([]),
+    const [entries, categories, stock, ratings, bulk] = await Promise.all([
+      q ? searchCatalogEntries(prisma, q, 24) : Promise.resolve([] as CatalogEntry[]),
+      listActiveCategories(prisma),
       stockStatusCounts(prisma),
       productRatingSummaries(prisma),
       activeBulkPricingByProduct(prisma),
     ]);
     const ratingByProduct = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
+    const catName = new Map(categories.map((c) => [c.id, c.name]));
+    const cards = shapeEntries(entries, catName, stock, ratingByProduct, bulk);
     return reply.view("search.njk", {
       ...ctx,
       q,
-      products: products.map((p) => card(p, stock, ratingByProduct, bulk)),
+      groups: cards.groups,
+      products: cards.products,
       low_threshold: config.LOW_STOCK_THRESHOLD,
     });
   });

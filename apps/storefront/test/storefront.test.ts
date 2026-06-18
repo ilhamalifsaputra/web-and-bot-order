@@ -213,6 +213,21 @@ describe("search + language", () => {
     expect(sw.statusCode).toBe(303);
     expect(sw.headers.location).toBe("/");
   });
+
+  it("collapses grouped denominations into a group card in search results", async () => {
+    const group = await prisma.productGroup.create({ data: { categoryId, name: "SearchBrand", isActive: true } });
+    const d1 = await prisma.product.create({
+      data: { categoryId, name: "SearchBrand 7 day", type: "SHARED", durationLabel: "7 day", price: "9000", productGroupId: group.id },
+    });
+    await prisma.product.create({
+      data: { categoryId, name: "SearchBrand 1 Month", type: "SHARED", durationLabel: "1 Month", price: "29000", productGroupId: group.id },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/search?q=SearchBrand" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(`/g/${group.id}`);  // group card
+    expect(res.body).not.toContain(`/p/${d1.id}`); // not flat denominations
+  });
 });
 
 describe("errors", () => {

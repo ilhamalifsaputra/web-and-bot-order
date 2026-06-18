@@ -18,6 +18,7 @@
     "test": "vitest run",
     "dev:notifier": "pnpm --filter @app/notifier dev",
     "dev:web": "pnpm --filter @app/web-admin dev",
+    "dev:store": "pnpm --filter @app/storefront dev",
     "dev:bot": "pnpm --filter @app/order-bot dev"
   },
   "devDependencies": {

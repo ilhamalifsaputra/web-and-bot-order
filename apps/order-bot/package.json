@@ -6,7 +6,9 @@
   "exports": {
     "./main": "./src/main.ts",
     "./jobs": "./src/jobs/index.ts",
-    "./payments/binanceInternal": "./src/payments/binanceInternal.ts"
+    "./payments/binanceInternal": "./src/payments/binanceInternal.ts",
+    "./payments/bybitDeposit": "./src/payments/bybitDeposit.ts",
+    "./payments/tokopayReconcile": "./src/payments/tokopayReconcile.ts"
   },
   "scripts": {
     "dev": "tsx watch src/main.ts",

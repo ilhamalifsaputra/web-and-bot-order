@@ -39,6 +39,18 @@ export async function getTokopayCreds(db: Db): Promise<TokopayCreds | null> {
   return { merchantId, secret, channel: (channel ?? "QRIS").trim() || "QRIS" };
 }
 
+/** PENDING, not-yet-expired TokoPay orders the reconcile poller should check. */
+export function listPendingTokopayOrders(db: Db, now: Date) {
+  return db.order.findMany({
+    where: {
+      status: OrderStatus.PENDING_PAYMENT,
+      paymentMethod: PaymentMethod.TOKOPAY,
+      expiresAt: { gt: now },
+    },
+    include: { user: true },
+  });
+}
+
 export type TokopayDeliverResult =
   | { status: "delivered"; order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }
   | { status: "already_processed" }

@@ -39,6 +39,7 @@ import {
 import { coreT } from "../util/i18n";
 import { esc } from "../util/format";
 import { notificationKb } from "../keyboards/customer";
+import { sendAccountFile } from "../util/delivery";
 
 const AMOUNT_TOLERANCE = 0.01; // USDT
 
@@ -162,28 +163,6 @@ async function fetchIncomingTransfers(cfg: BinanceInternalConfig): Promise<Binan
 // Delivery side-effects (DM buyer + edit the payment bubble)
 // ---------------------------------------------------------------------------
 
-function buildCredentialsBlob(
-  items: Array<{ productId: number; product: { name: string }; stockItem: { credentials: string } | null }>,
-  lang: string,
-): string {
-  const groups: Array<[string, string[]]> = [];
-  const idx = new Map<number, number>();
-  for (const it of items) {
-    if (!it.stockItem) continue;
-    if (!idx.has(it.productId)) {
-      idx.set(it.productId, groups.length);
-      groups.push([it.product.name, []]);
-    }
-    groups[idx.get(it.productId)!]![1].push(it.stockItem.credentials);
-  }
-  return groups
-    .map(([name, creds]) => {
-      const header = coreT("order.delivered_group_header", lang, { product: esc(name), count: creds.length });
-      return `${header}\n<pre>${esc(creds.join("\n"))}</pre>`;
-    })
-    .join("\n\n");
-}
-
 type DeliveredOrder = Extract<DeliverResult, { status: "delivered" }>["order"];
 
 async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
@@ -194,20 +173,11 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   const tgId = Number(order.user.telegramId);
 
   // Delivery is instant: skip the interim "payment verified / being prepared"
-  // notice and go straight to the credentials below.
-  const warranty = Math.max(...order.items.map((i) => i.warrantyDaysSnapshot), 30);
+  // notice and send the account file straight away.
   try {
-    await api.sendMessage(
-      tgId,
-      coreT("order.delivered_credentials", lang, {
-        code: order.orderCode,
-        credentials: buildCredentialsBlob(order.items, lang),
-        warranty,
-      }),
-      { parse_mode: "HTML", reply_markup: notificationKb(lang) },
-    );
+    await sendAccountFile(api, tgId, order, lang);
   } catch (err) {
-    logger.error({ err }, `credentials DM failed for order ${order.orderCode}`);
+    logger.error({ err }, `account file DM failed for order ${order.orderCode}`);
   }
 
   // Turn the payment-instructions bubble into a success message in place.

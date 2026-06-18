@@ -25,7 +25,7 @@ import { adminEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
 import { esc, formatIdr, orderAmount, groupOrderItems, redactCredentials } from "../util/format";
 import * as akb from "../keyboards/admin";
-import { notificationKb } from "../keyboards/customer";
+import { sendAccountFile } from "../util/delivery";
 
 /** Build per-product credential sections for the buyer DM (one header + <pre>). */
 function buildCredSections(
@@ -115,9 +115,9 @@ export async function approve(ctx: MyContext, orderId: number): Promise<void> {
   let buyerTgId: bigint | null;
   let buyerLang: string;
   let orderCode: string;
-  let warrantyDays: number;
   let buyerId: number;
   let credGroups: Array<[string, string[]]>;
+  let buyerItems: Parameters<typeof sendAccountFile>[2]["items"];
 
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -135,8 +135,8 @@ export async function approve(ctx: MyContext, orderId: number): Promise<void> {
     buyerTgId = result.user.telegramId;
     buyerLang = langCode(result.user.language);
     orderCode = result.orderCode;
-    warrantyDays = Math.max(...result.items.map((it) => it.warrantyDaysSnapshot), 30);
     buyerId = result.userId;
+    buyerItems = result.items;
     credGroups = buildCredSections(result.items, buyerLang).groups;
   } catch (e) {
     if (e instanceof Error && "key" in e) {
@@ -155,20 +155,9 @@ export async function approve(ctx: MyContext, orderId: number): Promise<void> {
     logger.info(`Order ${orderCode} approved; buyer is web-only (no Telegram id) — skipping DMs, order visible on the website`);
   } else {
     // Delivery is instant: no interim "payment verified / being prepared" DM —
-    // the credentials message below is the single delivery notification.
-    const credsBlob = credGroups
-      .map(([pname, creds]) => {
-        const header = coreT("order.delivered_group_header", buyerLang, { product: esc(pname), count: creds.length });
-        return `${header}\n<pre>${esc(creds.join("\n"))}</pre>`;
-      })
-      .join("\n\n");
-
+    // the account file below is the single delivery notification.
     try {
-      await ctx.api.sendMessage(
-        Number(buyerTgId),
-        coreT("order.delivered_credentials", buyerLang, { code: orderCode, credentials: credsBlob, warranty: warrantyDays }),
-        { parse_mode: "HTML", reply_markup: notificationKb(buyerLang) },
-      );
+      await sendAccountFile(ctx.api, Number(buyerTgId), { orderCode, items: buyerItems }, buyerLang);
       dmOk = true;
       const redacted = credGroups.flatMap(([, creds]) => creds.map(redactCredentials));
       logger.info(`Delivered order ${orderCode} to user ${buyerTgId} (creds redacted: ${redacted.join(", ")})`);
@@ -214,7 +203,7 @@ export async function resendCredentials(ctx: MyContext, orderId: number): Promis
 
   const buyerLang = langCode(order.user.language);
   const soldItems = order.items.filter((oi) => oi.stockItem && oi.stockItem.status === StockStatus.SOLD);
-  const { blob, groups } = buildCredSections(soldItems, buyerLang);
+  const { groups } = buildCredSections(soldItems, buyerLang);
   if (!groups.length) {
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.resend_no_creds"), show_alert: true });
     return;
@@ -225,19 +214,14 @@ export async function resendCredentials(ctx: MyContext, orderId: number): Promis
   if (buyerTgId === null) {
     // Web-only buyer — there is no DM target; they see the credentials on the
     // website. (The resend button isn't offered for these orders, but guard
-    // anyway so Number(null) can never become a sendMessage target.)
+    // anyway so Number(null) can never become a sendDocument target.)
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.resend_fail"), show_alert: true });
     logger.info(`Resend skipped for order ${orderCode}: buyer is web-only (no Telegram id)`);
     return;
   }
-  const warrantyDays = Math.max(...order.items.map((it) => it.warrantyDaysSnapshot), 30);
 
   try {
-    await ctx.api.sendMessage(
-      Number(buyerTgId),
-      coreT("order.delivered_credentials", buyerLang, { code: orderCode, credentials: blob, warranty: warrantyDays }),
-      { parse_mode: "HTML" },
-    );
+    await sendAccountFile(ctx.api, Number(buyerTgId), { orderCode, items: soldItems }, buyerLang);
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.resend_ok"), show_alert: true });
     logger.info(`Resent credentials for order ${orderCode} to user ${buyerTgId}`);
   } catch (err) {

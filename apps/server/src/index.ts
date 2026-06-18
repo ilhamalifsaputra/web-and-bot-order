@@ -26,6 +26,8 @@ import { initDb, prisma, resolveBotCredentials, resolveAdminIds, resolveWebCooki
 import { buildBot, setupCommandMenu } from "@app/order-bot/main";
 import { scheduleJobs, scheduleFxRefresh } from "@app/order-bot/jobs";
 import { startPolling, stopPolling } from "@app/order-bot/payments/binanceInternal";
+import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "@app/order-bot/payments/bybitDeposit";
+import { startPolling as startTokopayPolling, stopPolling as stopTokopayPolling } from "@app/order-bot/payments/tokopayReconcile";
 import { buildApp } from "@app/web-admin/server";
 import { buildApp as buildShopApp } from "@app/storefront/server";
 import { runDispatcher } from "@app/notifier/dispatcher";
@@ -126,16 +128,14 @@ export async function buildServer(opts: ServerOptions = {}): Promise<BuiltServer
 }
 
 /**
- * Start the public-channel outbox drain loop in-process. Uses the dedicated
- * NOTIF_BOT_TOKEN bot when configured, otherwise falls back to the main bot
- * (which must be an admin of PUBLIC_CHANNEL_ID). No-op without PUBLIC_CHANNEL_ID.
- * Returns the loop promise so shutdown can await it after aborting the signal.
+ * Start the outbox drain loop in-process. Uses the dedicated NOTIF_BOT_TOKEN bot
+ * when configured, otherwise falls back to the main bot. Runs whenever a bot is
+ * available — buyer/admin DMs (ORDER_DELIVERED_DM, ADMIN_PW_RESET) must deliver
+ * even without a public channel. Channel-post rows (ORDER_DELIVERED testimonial)
+ * are simply left pending until PUBLIC_CHANNEL_ID is configured (handled in the
+ * dispatcher). Returns the loop promise so shutdown can await it.
  */
 async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal: AbortSignal): Promise<void> {
-  if (publicChannelId() === undefined) {
-    logger.info("Notifier disabled (public_channel_id not set in Settings or env)");
-    return;
-  }
   // Reuse the main bot unless a separate notifier token is configured (Setting
   // wins, env fallback — stamped into the runtime at boot). The cast is safe:
   // the dispatcher only touches `bot.api`, which is invariant in C.
@@ -148,7 +148,7 @@ async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal
   try {
     if (dedicated) await notifBot.init();
     logger.info(
-      `Notifier started -> channel ${publicChannelId()} ` +
+      `Notifier started -> channel ${publicChannelId() ?? "(none — DMs only)"} ` +
         `(token=${dedicated ? "dedicated" : "main-bot"})`,
     );
     await runDispatcher(notifBot, signal);
@@ -188,9 +188,12 @@ export async function start(): Promise<void> {
     }
     // Best-effort command menu (logs internally, never throws).
     await setupCommandMenu(bot);
-    // In-process workers — exactly one instance each (single process).
+    // In-process workers — exactly one instance each (single process). Each
+    // poller is a no-op unless its creds are configured.
     jobs = scheduleJobs(bot.api);
-    startPolling(bot.api);
+    startPolling(bot.api); // Binance Internal Transfer
+    startBybitPolling(bot.api); // Bybit USDT-BSC deposits
+    startTokopayPolling(bot.api); // TokoPay / QRIS reconcile (webhook safety net)
   }
   // Market-rate auto-update needs no bot — runs even on a web-only boot.
   jobs = [...jobs, scheduleFxRefresh()];
@@ -266,6 +269,8 @@ export async function start(): Promise<void> {
     try {
       for (const job of jobs) job.stop();
       stopPolling();
+      stopBybitPolling();
+      stopTokopayPolling();
       notifierAbort.abort();
       await notifierDone; // let the drain loop unwind
       if (runner?.isRunning()) await runner.stop();

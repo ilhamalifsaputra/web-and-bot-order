@@ -69,6 +69,62 @@ export async function createTransaction(
   };
 }
 
+export interface TokopayStatus {
+  paid: boolean;
+  amount: Decimal;
+  trxId: string | null;
+}
+
+/** Gateway payment-status strings we treat as "paid/settled". */
+const PAID_STATES = ["paid", "success", "completed", "settlement", "lunas", "berhasil"];
+
+/**
+ * Poll the gateway for an order's current payment status (reconcile path — used
+ * by the bot's TokoPay poller when the webhook hasn't arrived). Re-hits the
+ * idempotent `/v1/order` endpoint with the same `ref_id`; a repeat call returns
+ * the existing transaction's status rather than creating a new one.
+ *
+ * ⚠ ASSUMPTION (flagged, same as the rest of this client): the status field on
+ *   the `/v1/order` response (`data.status`) follows TokoPay's public docs.
+ *   Verify against the live dashboard before go-live.
+ */
+export async function checkTransaction(
+  creds: TokopayCreds,
+  args: { refId: string; amountIdr: Decimal.Value },
+): Promise<TokopayStatus> {
+  const params = new URLSearchParams({
+    merchant: creds.merchantId,
+    secret: creds.secret,
+    ref_id: args.refId,
+    nominal: new Decimal(args.amountIdr).toFixed(0),
+    metode: creds.channel,
+  });
+  const res = await fetch(`${API_BASE}/v1/order?${params.toString()}`);
+  if (!res.ok) {
+    throw new Error(`TokoPay status HTTP ${res.status}`); // never log the query — it carries the secret
+  }
+  const body = (await res.json()) as {
+    status?: unknown;
+    data?: Record<string, unknown>;
+    error_msg?: unknown;
+  };
+  const ok = String(body.status ?? "").toLowerCase() === "success" || body.status === 200;
+  if (!ok || !body.data) {
+    throw new Error(`TokoPay status rejected: ${String(body.error_msg ?? body.status ?? "unknown")}`);
+  }
+  const d = body.data;
+  const statusStr = String(d.status ?? "").toLowerCase();
+  const amountRaw = d.total_bayar ?? d.nominal ?? d.amount ?? args.amountIdr;
+  let amount: Decimal;
+  try {
+    amount = new Decimal(String(amountRaw));
+  } catch {
+    amount = new Decimal(args.amountIdr);
+  }
+  const trxId = (typeof d.trx_id === "string" && d.trx_id) || (typeof d.reference === "string" && d.reference) || null;
+  return { paid: PAID_STATES.includes(statusStr), amount, trxId };
+}
+
 export interface TokopayCallback {
   refId: string;
   trxId: string;

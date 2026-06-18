@@ -464,8 +464,8 @@ describe("verification handlers", () => {
     expect(await prisma.stockItem.count({ where: { status: StockStatus.SOLD } })).toBe(1);
     expect(await prisma.notificationOutbox.count()).toBe(1);
     expect(await prisma.auditLog.count({ where: { action: "approve_order" } })).toBe(1);
-    // credentials DM goes to the buyer's telegram id (42)
-    const dm = calls(sink, "sendMessage").find((c) => c.args[0] === 42);
+    // account file (.txt) DM goes to the buyer's telegram id (42)
+    const dm = calls(sink, "sendDocument").find((c) => c.args[0] === 42);
     expect(dm).toBeTruthy();
   });
 
@@ -475,7 +475,7 @@ describe("verification handlers", () => {
     await verification.approve(adminCtx({ callbackData: `v1:adm:verif:approve:${order.id}` }).ctx, order.id);
     const { ctx, sink } = adminCtx({ callbackData: `v1:adm:verif:resend:${order.id}` });
     await verification.resendCredentials(ctx, order.id);
-    expect(calls(sink, "sendMessage").some((c) => c.args[0] === 42)).toBe(true);
+    expect(calls(sink, "sendDocument").some((c) => c.args[0] === 42)).toBe(true);
   });
 });
 

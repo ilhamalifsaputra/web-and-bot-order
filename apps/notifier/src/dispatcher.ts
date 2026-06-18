@@ -1,23 +1,41 @@
 /**
- * Polling loop that drains notification_outbox -> the public Telegram channel.
- * Direct port of notif_bot/dispatcher.py.
+ * Polling loop that drains notification_outbox -> Telegram.
+ *
+ * Two kinds of rows:
+ *  - Direct messages to a buyer/admin (payload.chat_id): ORDER_DELIVERED_DM,
+ *    ADMIN_PW_RESET. These deliver regardless of whether a public channel is
+ *    configured — the loop runs whenever a bot token is available.
+ *  - Channel posts (ORDER_DELIVERED testimonial): need PUBLIC_CHANNEL_ID. When
+ *    no channel is configured they are left PENDING (skipped) so they post once
+ *    a channel is set, rather than being failed away.
+ *
+ * ORDER_DELIVERED_DM is special: the buyer receives their account(s) as a
+ * `<order-code>.txt` document, with credentials read LIVE from the DB at send
+ * time. Credentials NEVER ride in the outbox payload (CLAUDE.md).
  *
  * Each pending row is sent independently; status is updated in short writes to
- * keep the SQLite write lock held only briefly (the bot.* writers run in the
- * same DB). Telegram flood control (429/RetryAfter) backs off and bails out of
- * the tick so the rest retry next poll; Forbidden (403) fails the row at once.
+ * keep the SQLite write lock held only briefly. Telegram flood control
+ * (429/RetryAfter) backs off and bails out of the tick; Forbidden (403) fails
+ * the row at once.
  */
-import { Bot, GrammyError } from "grammy";
+import { Bot, GrammyError, InputFile } from "grammy";
 import {
   prisma,
   fetchPendingNotifications,
   markNotificationSent,
   markNotificationFailed,
+  getOrderByCodeFull,
 } from "@app/db";
 import { config } from "@app/core/config";
 import { publicChannelId } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
-import { NotificationEvent } from "@app/core/enums";
+import { NotificationEvent, langCode } from "@app/core/enums";
+import {
+  buildAccountFileContent,
+  buildDeliveryCaption,
+  warrantyDaysFor,
+  accountFileName,
+} from "@app/core/delivery";
 import { render } from "./templates";
 
 // Events delivered as a direct message (payload.chat_id), not as a post to
@@ -27,6 +45,8 @@ const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.ADMIN_PW_RESET,
   NotificationEvent.ORDER_DELIVERED_DM, // buyer DM (web auto-delivery)
 ]);
+
+type PendingRow = Awaited<ReturnType<typeof fetchPendingNotifications>>[number];
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -62,56 +82,98 @@ async function drainBatch(bot: Bot): Promise<void> {
       continue;
     }
 
-    const text = render(row.event, payload);
-    if (!text) {
-      // Unknown event type — drop so we don't loop forever.
-      await markNotificationFailed(
-        prisma,
-        row.id,
-        `no template for event ${row.event}`,
-        1,
-      );
+    // Buyer account-delivery DM: send the account(s) as a .txt document, with
+    // credentials read live from the DB (never from the outbox payload).
+    if (row.event === NotificationEvent.ORDER_DELIVERED_DM) {
+      if ((await deliverAccountDm(bot, row, payload)) === "ratelimited") return;
       continue;
     }
 
-    // Admin DMs target payload.chat_id; everything else posts to the channel.
+    const text = render(row.event, payload);
+    if (!text) {
+      // Unknown event type — drop so we don't loop forever.
+      await markNotificationFailed(prisma, row.id, `no template for event ${row.event}`, 1);
+      continue;
+    }
+
     const isDm = ADMIN_DM_EVENTS.has(row.event);
+    // Channel post with no channel configured → leave PENDING so it posts once a
+    // public channel is set, instead of failing the row permanently.
+    if (!isDm && publicChannelId() === undefined) continue;
     const chatId = isDm ? Number(payload.chat_id) : Number(publicChannelId());
     if (!Number.isFinite(chatId)) {
       await markNotificationFailed(prisma, row.id, isDm ? "missing chat_id" : "no PUBLIC_CHANNEL_ID", 1);
       continue;
     }
 
-    try {
-      await bot.api.sendMessage(chatId, text, { parse_mode: "HTML" });
-      await markNotificationSent(prisma, row.id);
-      logger.info(`Sent notif id=${row.id} event=${row.event}`);
-    } catch (e) {
-      if (e instanceof GrammyError && e.parameters?.retry_after) {
-        // Telegram flood control: sleep then bail; remaining rows retry next tick.
-        logger.warn(`Rate limited, sleeping ${e.parameters.retry_after}s`);
-        await sleep((e.parameters.retry_after + 1) * 1000);
-        return;
-      }
-      if (e instanceof GrammyError && e.error_code === 403) {
-        logger.error(
-          `Bot is not allowed to post in channel ${publicChannelId()} — marking failed`,
-        );
-        await markNotificationFailed(
-          prisma,
-          row.id,
-          "Forbidden: bot not in channel or lacks post permission",
-          1,
-        );
-        continue;
-      }
-      logger.error({ err: e }, `Failed to send notif id=${row.id}`);
-      await markNotificationFailed(
-        prisma,
-        row.id,
-        String(e),
-        config.NOTIF_MAX_ATTEMPTS,
-      );
+    if ((await trySend(bot, row, () => bot.api.sendMessage(chatId, text, { parse_mode: "HTML" }))) === "ratelimited") {
+      return; // remaining rows retry next tick
     }
+  }
+}
+
+/**
+ * Deliver a buyer's account(s) as a `<order-code>.txt` document. Reads the order
+ * (incl. stock credentials) live from the DB — the outbox payload only carries
+ * the order code + chat id, never credentials.
+ */
+async function deliverAccountDm(
+  bot: Bot,
+  row: PendingRow,
+  payload: Record<string, unknown>,
+): Promise<"ok" | "ratelimited"> {
+  const chatId = Number(payload.chat_id);
+  if (!Number.isFinite(chatId)) {
+    await markNotificationFailed(prisma, row.id, "missing chat_id", 1);
+    return "ok";
+  }
+  const code = typeof payload.order_code === "string" ? payload.order_code : "";
+  const order = code ? await getOrderByCodeFull(prisma, code) : null;
+  if (!order) {
+    await markNotificationFailed(prisma, row.id, `order not found for code ${code}`, 1);
+    return "ok";
+  }
+
+  const lang = langCode(order.user.language);
+  const warranty = warrantyDaysFor(order.items);
+  const content = buildAccountFileContent(
+    { orderCode: order.orderCode, warrantyDays: warranty, items: order.items },
+    lang,
+  );
+  const file = new InputFile(Buffer.from(content, "utf8"), accountFileName(order.orderCode));
+
+  return trySend(bot, row, () =>
+    bot.api.sendDocument(chatId, file, {
+      caption: buildDeliveryCaption(order.orderCode, warranty, lang),
+      parse_mode: "HTML",
+    }),
+  );
+}
+
+/**
+ * Run one Telegram send and update the outbox row. Returns "ratelimited" when
+ * Telegram flood-controlled us (caller should bail the tick); "ok" otherwise
+ * (sent, or failed-and-recorded).
+ */
+async function trySend(bot: Bot, row: PendingRow, send: () => Promise<unknown>): Promise<"ok" | "ratelimited"> {
+  try {
+    await send();
+    await markNotificationSent(prisma, row.id);
+    logger.info(`Sent notif id=${row.id} event=${row.event}`);
+    return "ok";
+  } catch (e) {
+    if (e instanceof GrammyError && e.parameters?.retry_after) {
+      logger.warn(`Rate limited, sleeping ${e.parameters.retry_after}s`);
+      await sleep((e.parameters.retry_after + 1) * 1000);
+      return "ratelimited";
+    }
+    if (e instanceof GrammyError && e.error_code === 403) {
+      logger.error(`Forbidden sending notif id=${row.id} (bot blocked or not in channel) — marking failed`);
+      await markNotificationFailed(prisma, row.id, "Forbidden: bot blocked, or not in channel / lacks post permission", 1);
+      return "ok";
+    }
+    logger.error({ err: e }, `Failed to send notif id=${row.id}`);
+    await markNotificationFailed(prisma, row.id, String(e), config.NOTIF_MAX_ATTEMPTS);
+    return "ok";
   }
 }

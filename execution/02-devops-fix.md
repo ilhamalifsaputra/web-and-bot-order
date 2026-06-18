@@ -45,6 +45,3 @@ SQLite WAL (M-5), koordinasi entrypoint container (M-8).
 - **Deployment checklist:** TLS aktif; cookie secure; trustProxy; access log mengalir; `/healthz`+`/login` hijau; semua surface up.
 - **Rollback plan:** revert nginx; matikan TLS redirect; restore DB; verifikasi pasca-rollback.
 - **502 runbook.**
-
-## CONSTRAINT
-Jangan mengubah kode app. Hasilkan deployment checklist + rollback plan + runbook.

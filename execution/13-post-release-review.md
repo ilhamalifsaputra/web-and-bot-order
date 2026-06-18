@@ -60,5 +60,3 @@ Semua issue Sprint 1 (H-1..H-4) + DoD rilis dari `audit/reports/phase-15-product
 - [ ] Mitigasi (rollback/hotfix) + komunikasi.
 - [ ] Post-mortem + action item masuk backlog.
 
-## CONSTRAINT
-Jangan ubah kode. Hasilkan checklist rilis lengkap (smoke/rollback/post-deploy/monitoring/incident).

@@ -40,5 +40,3 @@ Tutup gap dokumentasi yang menghambat operator/developer: config precedence, bac
 ## OUTPUT
 - **Documentation roadmap:** daftar dokumen × bagian baru/diperbaiki × prioritas × status, plus draf isi untuk DOC-01..05.
 
-## CONSTRAINT
-Jangan ubah kode. Hasilkan documentation roadmap (+ draf konten).

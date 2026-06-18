@@ -40,6 +40,3 @@ Tutup blind spot observability: access log request, redaksi log sensitif, cakupa
 
 ## OUTPUT
 - **Observability roadmap:** access log (format, redaksi, korelasi ref), audit-coverage gap + perbaikan, opsi error-tracking (kapan & bagaimana), retensi log.
-
-## CONSTRAINT
-Jangan log secret/body. Hasilkan observability roadmap (+ patch minimal access-log/redaksi sesuai rencana).

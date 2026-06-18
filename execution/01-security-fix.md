@@ -42,6 +42,3 @@ Menutup temuan keamanan: dependency rentan (H-1) & hardening upload (M-6), patch
 
 ## OUTPUT
 Patch plan + **regression checklist**: upload branding/logo/hero/QR sukses; MIME palsu ditolak; `/static/`+`/uploads/` 200+header; tak ada breaking v9; suite hijau.
-
-## CONSTRAINT
-Jangan langsung memperbaiki kode — hasilkan patch plan + regression checklist (WRITING/EXECUTION PLAN sebagai panduan).

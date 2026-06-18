@@ -44,5 +44,3 @@ Tutup celah test & edge case yang teridentifikasi audit; jaga suite tetap determ
 ## OUTPUT
 - **Test matrix:** baris = fitur/flow (register, login, 2FA, katalog, search, denominasi, checkout Bybit/QRIS, voucher, wallet, webhook, audit) × kolom = unit/route/edge × status (ada/tambah). Plus daftar test baru F-01..F-04, L-9.
 
-## CONSTRAINT
-Jangan ubah kode produksi kecuali test menyingkap bug nyata (laporkan terpisah). Hasilkan test matrix + rencana test.

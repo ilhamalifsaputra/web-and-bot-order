@@ -109,6 +109,27 @@ describe("branding page", () => {
     expect(await getSetting(prisma, "web_favicon_url")).toBeNull();
   });
 
+  // M-6 (execution/01): the dangerous case the header-only allowlist missed — a
+  // valid image MIME header (image/png) on bytes that are NOT an image. The
+  // magic-byte sniff must reject it (content doesn't match the claimed type).
+  it("favicon upload rejects a spoofed MIME (image/png header, non-image bytes)", async () => {
+    const mp = multipart(
+      { csrf_token: csrf },
+      { field: "favicon", filename: "evil.png", contentType: "image/png", content: Buffer.from("GIF89a not really a png <?php ?>") },
+    );
+    const res = await postMultipart("/branding/favicon", cookie, mp);
+    expect(res.statusCode).toBe(303);
+    expect(await getSetting(prisma, "web_favicon_url")).toBeNull();
+  });
+
+  it("favicon upload accepts a real SVG (text magic, no binary signature)", async () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"></svg>');
+    const mp = multipart({ csrf_token: csrf }, { field: "favicon", filename: "f.svg", contentType: "image/svg+xml", content: svg });
+    const res = await postMultipart("/branding/favicon", cookie, mp);
+    expect(res.statusCode).toBe(303);
+    expect(await getSetting(prisma, "web_favicon_url")).toMatch(/^\/uploads\/branding\/favicon-[0-9a-f]+\.svg$/);
+  });
+
   it("favicon upload fails bad CSRF", async () => {
     const mp = multipart({ csrf_token: "bad" }, { field: "favicon", filename: "f.png", contentType: "image/png", content: PNG });
     const res = await postMultipart("/branding/favicon", cookie, mp);

@@ -35,6 +35,17 @@ const UPLOADS_DIR = process.env.UPLOADS_DIR ?? join(HERE, "..", "..", "..", "dat
 export async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
 
+  // L-01: lightweight access log for 502/4xx/5xx diagnosis. Method + path +
+  // status + duration only — never the query string (may carry tokens), body,
+  // or headers (never log secrets — CLAUDE.md).
+  app.addHook("onResponse", (req, reply, done) => {
+    logger.info(
+      { method: req.method, path: req.url.split("?", 1)[0], status: reply.statusCode, ms: Math.round(reply.elapsedTime) },
+      "access",
+    );
+    done();
+  });
+
   await app.register(cookie);
   await app.register(formbody);
   await app.register(fastifyStatic, { root: STATIC_DIR, prefix: "/static/" });

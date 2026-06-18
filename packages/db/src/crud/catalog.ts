@@ -461,16 +461,28 @@ export async function listNewestCatalogEntries(db: Db, limit = 12): Promise<Cata
  * inactive group) stay product cards. Single-member groups collapse to a
  * product. Sorted by display name asc, capped at `limit`.
  */
+// Over-fetch factor for the search candidate reads. We cap the LIKE matches at
+// the DB instead of slurping every row into memory (P5-01), but fetch a
+// name-sorted superset (limit * this) so the cap can never drop a card that
+// belongs in the name-sorted top `limit`. Verified by the large-dataset parity
+// test in product_groups.test.ts.
+const SEARCH_OVERFETCH = 4;
+
 export async function searchCatalogEntries(db: Db, query: string, limit = 24): Promise<CatalogEntry[]> {
   const q = query.trim();
   if (!q) return [];
 
+  const cap = limit * SEARCH_OVERFETCH;
   const matchedProducts = await db.product.findMany({
     where: { isActive: true, OR: [{ name: { contains: q } }, { description: { contains: q } }] },
+    orderBy: { name: "asc" },
+    take: cap,
   });
   const groupsByName = await db.productGroup.findMany({
     where: { isActive: true, name: { contains: q } },
     select: { id: true },
+    orderBy: { name: "asc" },
+    take: cap,
   });
 
   // Active group ids to render as group cards: matched products' groups + name hits.

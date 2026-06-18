@@ -203,4 +203,27 @@ describe("searchCatalogEntries", () => {
   it("returns [] for an empty query", async () => {
     expect(await searchCatalogEntries(prisma, "   ", 24)).toEqual([]);
   });
+
+  it("caps unbounded matches to the name-sorted top `limit` (P5-01 parity)", async () => {
+    // 120 matches > the DB over-fetch cap (limit * SEARCH_OVERFETCH = 96). The
+    // result must still be the alphabetically-first 24 cards, proving the take
+    // can't drop a card that belongs in the name-sorted top `limit`.
+    const cat = await makeCategory();
+    const expectedTop = Array.from({ length: 24 }, (_, i) => `ItemCap ${String(i + 1).padStart(3, "0")}`);
+    await prisma.product.createMany({
+      data: Array.from({ length: 120 }, (_, i) => ({
+        categoryId: cat.id,
+        name: `ItemCap ${String(i + 1).padStart(3, "0")}`,
+        type: "SHARED" as const,
+        durationLabel: "1 Month",
+        price: "5",
+      })),
+    });
+
+    const entries = await searchCatalogEntries(prisma, "ItemCap", 24);
+    expect(entries).toHaveLength(24);
+    expect(entries.every((e) => e.kind === "product")).toBe(true);
+    const names = entries.map((e) => (e.kind === "group" ? e.group.name : e.product.name));
+    expect(names).toEqual(expectedTop);
+  });
 });

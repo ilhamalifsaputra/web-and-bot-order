@@ -237,6 +237,14 @@ describe("search + language", () => {
     expect(res.body).toContain("Nothing found");
   });
 
+  // F-01 (execution/10): a partial substring (not the whole product name) still
+  // matches — searchCatalogEntries uses a `contains` LIKE.
+  it("matches a partial substring of the product name", async () => {
+    const res = await app.inject({ method: "GET", url: "/search?q=remium 1 Bul" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("Netflix Premium 1 Bulan");
+  });
+
   it("switches to Indonesian via the lang cookie", async () => {
     const sw = await app.inject({ method: "GET", url: "/lang?to=id&back=/" });
     expect(sw.statusCode).toBe(303);

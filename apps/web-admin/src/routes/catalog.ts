@@ -581,38 +581,4 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
     });
     return redirectWithFlash(reply, "/catalog", "Group deleted (products kept).", "success");
   });
-
-  // Assign/unassign products to a group. `ids` is the comma-separated selection;
-  // products NOT in the list are unlinked from this group, so the form is the
-  // full membership state. Cross-category picks are rejected as a group.
-  app.post("/catalog/group/:groupId/assign", { preHandler: csrfProtect }, async (req, reply) => {
-    const groupId = Number((req.params as { groupId: string }).groupId);
-    const body = (req.body ?? {}) as Record<string, string>;
-    const ids = parseIds(body.ids);
-    try {
-      // Unlink anything currently in the group but not re-selected. Both passes
-      // run in one transaction so a cross-category rejection partway through
-      // rolls back the whole membership change (group-level, all-or-nothing).
-      await prisma.$transaction(async (tx) => {
-        const current = await tx.product.findMany({ where: { productGroupId: groupId }, select: { id: true } });
-        for (const c of current) {
-          if (!ids.includes(c.id)) await assignProductToGroup(tx, c.id, null);
-        }
-        for (const id of ids) await assignProductToGroup(tx, id, groupId);
-      });
-    } catch (err) {
-      if (err instanceof CategoryMismatchError) {
-        return redirectWithFlash(reply, "/catalog", "All products must be in the group's category.", "error");
-      }
-      throw err;
-    }
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "group_assign",
-      targetType: "product_group",
-      targetId: groupId,
-      details: `ids=${ids.join("|").slice(0, 180)}`,
-    });
-    return redirectWithFlash(reply, "/catalog", "Group membership updated.", "success");
-  });
 }

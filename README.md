@@ -247,17 +247,31 @@ pm2 restart bot-order
 > ⚠️ Bila ada perubahan struktur database, jalankan `prisma db push` **dulu** baru
 > kode baru — kalau terbalik muncul `P2022: column does not exist`.
 
-**Backup database** (rutin — semua data di satu file):
+**Backup database** (rutin — semua data di satu file SQLite):
+
+> ⚠️ Database memakai mode **WAL**, jadi transaksi terbaru bisa masih ada di
+> `bot.db-wal` yang belum di-checkpoint. **Jangan `cp data/bot.db`** saat layanan
+> jalan — bisa kehilangan data. Pakai online backup `sqlite3 .backup` yang
+> mengambil snapshot konsisten (sudah disediakan skripnya):
 
 ```bash
-cp data/bot.db data/bot.db.bak-$(date +%Y%m%d)
+deploy/backup/backup.sh        # .backup + integrity_check + gzip + retensi
+# restore (rollback): stop writer → swap → integrity → restart → smoke /healthz
+deploy/backup/restore.sh data/backups/bot-<stamp>.db
 ```
+
+Detail (cron tiap 6 jam, RTO/RPO, off-box, uji restore): **`deploy/backup/README.md`**.
 
 **Kelola stok** (panel admin → Stock → pilih produk): tambah stok (satu baris per
 akun, `email:password`), lihat status item, download sisa stok `.txt`, hapus /
 tandai rusak. Item terjual otomatis dilindungi dari penghapusan.
 
 > 🔒 File unduhan berisi kredensial asli — hanya admin login yang bisa mengunduh.
+
+**Reverse proxy, TLS & rilis publik:** app bind `127.0.0.1`; ekspos publik lewat
+nginx + TLS (terminasi HTTPS, proxy ke app), lalu set `WEB_COOKIE_SECURE=true`.
+Config nginx siap pakai + checklist deploy + **runbook 502** ada di
+**`deploy/README.md`** dan **`deploy/nginx/telegram-shop.conf`**.
 
 ---
 

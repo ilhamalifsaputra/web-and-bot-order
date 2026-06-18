@@ -43,6 +43,16 @@ database SQLite** (`data/bot.db`, mode WAL).
 - **Web tak pernah kirim Telegram** — enqueue ke `notification_outbox`, notifier/bot
   yang mengirim.
 - **SQLite single-writer** — tiap `$transaction` dijaga pendek.
+- **Group-aware (denominasi).** Produk bisa dikelompokkan jadi satu **grup**
+  (mis. "Netflix" → 1 bulan / 1 tahun). Grid (home, kategori, search) menampilkan
+  **kartu grup** yang drill ke `/g/:id` untuk memilih denominasi, lewat satu
+  shaper bersama `shapeEntries` (`apps/storefront/src/cards.ts`); grup
+  ber-anggota tunggal otomatis kolaps jadi kartu produk biasa.
+- **Server-rendered, TIDAK ada API publik.** Admin & storefront mengembalikan
+  HTML (Nunjucks + HTMX), bukan JSON. Tidak ada REST/GraphQL untuk konsumsi
+  pihak ketiga; satu-satunya endpoint non-HTML adalah webhook internal
+  (`/pay/tokopay/callback`, `/tg/<secret>` saat `BOT_MODE=webhook`) dan
+  `/healthz`. Integrasi = lewat DB/CRUD, bukan HTTP.
 
 **Topologi listen** (`apps/server/src/index.ts`):
 

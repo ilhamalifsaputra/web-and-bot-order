@@ -3,6 +3,7 @@ import { money, fmtMoney, moneyEq, Decimal } from "./money";
 import { t } from "./i18n";
 import { fetchUsdIdrMarketRate, roundRateToStep } from "./fx";
 import { OrderStatus, UserRole, NotificationEvent, langCode } from "./enums";
+import { computeUniqueCents } from "./formatters";
 
 describe("money", () => {
   it("quantizes to 4 dp", () => {
@@ -17,6 +18,35 @@ describe("money", () => {
   });
   it("null renders em dash", () => {
     expect(fmtMoney(null)).toBe("—");
+  });
+});
+
+describe("computeUniqueCents (M-9 disambiguation offset)", () => {
+  it("is deterministic per order id and within 0.02–0.98", () => {
+    for (const id of [1, 2, 48, 49, 50, 100, 1234]) {
+      const c = computeUniqueCents(id);
+      expect(c.equals(computeUniqueCents(id))).toBe(true); // deterministic
+      expect(c.gte(new Decimal("0.02"))).toBe(true);
+      expect(c.lte(new Decimal("0.98"))).toBe(true);
+      expect(c.decimalPlaces()).toBeLessThanOrEqual(4);
+    }
+  });
+
+  it("formula = ((id % 49) + 1) / 50", () => {
+    expect(computeUniqueCents(1).equals(new Decimal("0.04"))).toBe(true); // (1%49)+1=2 → 2/50
+    expect(computeUniqueCents(2).equals(new Decimal("0.06"))).toBe(true); // 3/50
+    expect(computeUniqueCents(48).equals(new Decimal("0.98"))).toBe(true); // (48%49)+1=49 → 49/50
+    expect(computeUniqueCents(49).equals(new Decimal("0.02"))).toBe(true); // wraps: (49%49)+1=1 → 1/50
+  });
+
+  it("CLOSES THE GAP: adjacent offsets are > AMOUNT_TOLERANCE (0.01) so equal-base orders disambiguate", () => {
+    // Two consecutive order ids must produce totals more than 0.01 apart, so the
+    // payment matchers (|received − total| <= 0.01) see only ONE candidate and
+    // auto-confirm the right order instead of refusing on a phantom collision.
+    for (const id of [1, 2, 10, 47, 100]) {
+      const spread = computeUniqueCents(id + 1).minus(computeUniqueCents(id)).abs();
+      expect(spread.gt(new Decimal("0.01"))).toBe(true); // > AMOUNT_TOLERANCE
+    }
   });
 });
 

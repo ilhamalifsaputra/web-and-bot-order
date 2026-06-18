@@ -79,12 +79,22 @@ export function generatePaymentRef(): string {
 }
 
 /**
- * Deterministic cents offset (0.0001 … 0.0099) keyed off order id, used to
- * disambiguate simultaneous transfers of the same amount. (id % 99) + 1 / 10000.
+ * Deterministic amount offset (0.02 … 0.98 USDT) keyed off order id, used to
+ * disambiguate simultaneous transfers of the same base amount (M-9).
+ *
+ * The step (0.02) is deliberately **larger than AMOUNT_TOLERANCE (0.01)** in the
+ * payment matchers, which compare `|received − total| <= 0.01`. With a smaller
+ * step two equal-base orders stayed within tolerance of each other (both matched
+ * → refuse), so the offset never actually disambiguated them. A 0.02 step means
+ * adjacent-id orders are ≥0.02 apart → only the intended order matches.
+ *
+ * Trade-off (offset up to 0.98): orders whose *base* totals differ by < ~0.98
+ * USDT can now alias within tolerance and refuse — still safe (manual, never a
+ * mis-deliver). 49 buckets keep the surcharge under 1 USDT.
  */
 export function computeUniqueCents(orderIdOrSeed: number): Decimal {
-  const offset = (orderIdOrSeed % 99) + 1;
-  return new Decimal(offset).div(10000).toDecimalPlaces(4);
+  const bucket = (orderIdOrSeed % 49) + 1; // 1..49
+  return new Decimal(bucket).div(50).toDecimalPlaces(4); // 0.02 .. 0.98, step 0.02
 }
 
 /** Escape user text for Telegram HTML (quote=False — only & < >). */

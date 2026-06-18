@@ -473,68 +473,6 @@ describe("product groups", () => {
     expect(audit.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("assign product to a same-category group", async () => {
-    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
-    const group = await prisma.productGroup.create({
-      data: { categoryId: product!.categoryId, name: "Grp" },
-    });
-    const res = await post(`/catalog/group/${group.id}/assign`, seed.cookie, {
-      csrf_token: seed.csrf,
-      ids: String(seed.productId),
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
-    expect(fresh!.productGroupId).toBe(group.id);
-  });
-
-  it("assign rejects a cross-category product with a flash error", async () => {
-    const otherCat = await prisma.category.create({ data: { name: `Other${counter++}` } });
-    const group = await prisma.productGroup.create({ data: { categoryId: otherCat.id, name: "XCat" } });
-    const res = await post(`/catalog/group/${group.id}/assign`, seed.cookie, {
-      csrf_token: seed.csrf,
-      ids: String(seed.productId),
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
-    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
-    expect(fresh!.productGroupId).toBeNull();
-  });
-
-  it("assign rolls back the whole batch when one product is cross-category", async () => {
-    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
-    const group = await prisma.productGroup.create({
-      data: { categoryId: product!.categoryId, name: "Atomic" },
-    });
-    const validProduct = await createProduct(prisma, {
-      categoryId: product!.categoryId,
-      name: `Valid${counter++}`,
-      description: "x",
-      type: ProductType.SHARED,
-      durationLabel: "1 Month",
-      price: "5.00",
-    });
-    const otherCat = await prisma.category.create({ data: { name: `Other${counter++}` } });
-    const crossCatProduct = await createProduct(prisma, {
-      categoryId: otherCat.id,
-      name: `Cross${counter++}`,
-      description: "x",
-      type: ProductType.SHARED,
-      durationLabel: "1 Month",
-      price: "5.00",
-    });
-
-    const res = await post(`/catalog/group/${group.id}/assign`, seed.cookie, {
-      csrf_token: seed.csrf,
-      ids: `${validProduct.id},${crossCatProduct.id}`,
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
-
-    const freshValid = await prisma.product.findUnique({ where: { id: validProduct.id } });
-    expect(freshValid!.productGroupId).toBeNull();
-  });
-
   it("delete group unlinks members", async () => {
     const product = await prisma.product.findUnique({ where: { id: seed.productId } });
     const group = await prisma.productGroup.create({ data: { categoryId: product!.categoryId, name: "Del" } });
@@ -542,6 +480,57 @@ describe("product groups", () => {
     const res = await post(`/catalog/group/${group.id}/delete`, seed.cookie, { csrf_token: seed.csrf });
     expect(res.statusCode).toBe(303);
     expect(await prisma.productGroup.findUnique({ where: { id: group.id } })).toBeNull();
+    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
+    expect(fresh!.productGroupId).toBeNull();
+  });
+
+  it("product update assigns a same-category group", async () => {
+    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const group = await prisma.productGroup.create({
+      data: { categoryId: product!.categoryId, name: "EditGrp" },
+    });
+    const res = await post(`/catalog/product/${seed.productId}/update`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: product!.name,
+      price: "5.00",
+      product_group_id: String(group.id),
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
+    expect(fresh!.productGroupId).toBe(group.id);
+  });
+
+  it("product update with empty group unlinks", async () => {
+    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const group = await prisma.productGroup.create({
+      data: { categoryId: product!.categoryId, name: "UnlinkGrp" },
+    });
+    await prisma.product.update({ where: { id: seed.productId }, data: { productGroupId: group.id } });
+    const res = await post(`/catalog/product/${seed.productId}/update`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: product!.name,
+      price: "5.00",
+      product_group_id: "",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
+    expect(fresh!.productGroupId).toBeNull();
+  });
+
+  it("product update rejects a cross-category group", async () => {
+    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const otherCat = await prisma.category.create({ data: { name: `Other${counter++}` } });
+    const group = await prisma.productGroup.create({ data: { categoryId: otherCat.id, name: "XEditGrp" } });
+    const res = await post(`/catalog/product/${seed.productId}/update`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: product!.name,
+      price: "5.00",
+      product_group_id: String(group.id),
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
     const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
     expect(fresh!.productGroupId).toBeNull();
   });

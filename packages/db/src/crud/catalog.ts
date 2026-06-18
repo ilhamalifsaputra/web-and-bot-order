@@ -107,10 +107,10 @@ export function getProductWithCategory(db: Db, productId: number) {
   });
 }
 
-/** Every product (active + inactive) with its category — admin views. */
+/** Every product (active + inactive) with its category and group — admin views. */
 export function listAllProducts(db: Db) {
   return db.product.findMany({
-    include: { category: true },
+    include: { category: true, productGroup: true },
     orderBy: { name: "asc" },
   });
 }
@@ -417,4 +417,91 @@ export async function listCatalogEntries(db: Db, categoryId?: number): Promise<C
   const nameOf = (e: CatalogEntry) => (e.kind === "group" ? e.group.name : e.product.name).toLowerCase();
   entries.sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
   return entries;
+}
+
+/**
+ * Newest catalog rows (groups + ungrouped products) for the storefront home
+ * "latest" grid. Same collapse rules as listCatalogEntries, but ordered by
+ * recency: a group ranks by its newest active member's createdAt, a product by
+ * its own createdAt. Newest first, capped at `limit` cards.
+ */
+export async function listNewestCatalogEntries(db: Db, limit = 12): Promise<CatalogEntry[]> {
+  const groups = await db.productGroup.findMany({
+    where: { isActive: true },
+    include: { products: { where: { isActive: true }, orderBy: { price: "asc" } } },
+  });
+
+  const groupedIds = new Set<number>();
+  const ranked: Array<{ entry: CatalogEntry; recency: number }> = [];
+  for (const g of groups) {
+    const { products: members, ...group } = g;
+    for (const m of members) groupedIds.add(m.id);
+    if (members.length === 0) continue; // hide empty group
+    const recency = Math.max(...members.map((m) => m.createdAt.getTime()));
+    if (members.length === 1) ranked.push({ entry: { kind: "product", product: members[0]! }, recency });
+    else ranked.push({ entry: { kind: "group", group, members }, recency });
+  }
+
+  const ungrouped = await db.product.findMany({
+    where: { isActive: true, id: { notIn: [...groupedIds] } },
+  });
+  for (const p of ungrouped) {
+    ranked.push({ entry: { kind: "product", product: p }, recency: p.createdAt.getTime() });
+  }
+
+  ranked.sort((a, b) => b.recency - a.recency);
+  return ranked.slice(0, limit).map((r) => r.entry);
+}
+
+/**
+ * Search the catalog and return group + product rows. Matches active products by
+ * name/description and active groups by name; a matched product that belongs to
+ * an active group is shown as that group's card (full active members), so the
+ * buyer picks the denomination next. Ungrouped matches (and members of an
+ * inactive group) stay product cards. Single-member groups collapse to a
+ * product. Sorted by display name asc, capped at `limit`.
+ */
+export async function searchCatalogEntries(db: Db, query: string, limit = 24): Promise<CatalogEntry[]> {
+  const q = query.trim();
+  if (!q) return [];
+
+  const matchedProducts = await db.product.findMany({
+    where: { isActive: true, OR: [{ name: { contains: q } }, { description: { contains: q } }] },
+  });
+  const groupsByName = await db.productGroup.findMany({
+    where: { isActive: true, name: { contains: q } },
+    select: { id: true },
+  });
+
+  // Active group ids to render as group cards: matched products' groups + name hits.
+  const groupIds = new Set<number>();
+  for (const p of matchedProducts) if (p.productGroupId != null) groupIds.add(p.productGroupId);
+  for (const g of groupsByName) groupIds.add(g.id);
+
+  const groups = groupIds.size
+    ? await db.productGroup.findMany({
+        where: { id: { in: [...groupIds] }, isActive: true },
+        include: { products: { where: { isActive: true }, orderBy: { price: "asc" } } },
+      })
+    : [];
+
+  const groupedIds = new Set<number>();
+  const entries: CatalogEntry[] = [];
+  for (const g of groups) {
+    const { products: members, ...group } = g;
+    for (const m of members) groupedIds.add(m.id);
+    if (members.length === 0) continue;
+    if (members.length === 1) entries.push({ kind: "product", product: members[0]! });
+    else entries.push({ kind: "group", group, members });
+  }
+
+  // Matched products not represented by a shown group → product cards (no dupes).
+  for (const p of matchedProducts) {
+    if (groupedIds.has(p.id)) continue;
+    entries.push({ kind: "product", product: p });
+  }
+
+  const nameOf2 = (e: CatalogEntry) => (e.kind === "group" ? e.group.name : e.product.name).toLowerCase();
+  entries.sort((a, b) => nameOf2(a).localeCompare(nameOf2(b)));
+  return entries.slice(0, limit);
 }

@@ -6,6 +6,8 @@ import {
   deleteGroup,
   assignProductToGroup,
   listCatalogEntries,
+  listNewestCatalogEntries,
+  searchCatalogEntries,
   CategoryMismatchError,
 } from "./catalog";
 
@@ -126,5 +128,79 @@ describe("listCatalogEntries", () => {
     const entries = await listCatalogEntries(prisma, cat.id);
     expect(entries.every((e) => e.kind === "product")).toBe(true);
     expect(entries).toHaveLength(2);
+  });
+});
+
+describe("listNewestCatalogEntries", () => {
+  it("ranks a group by its newest active member, above an older loose product", async () => {
+    const cat = await makeCategory();
+    const old = await makeProduct(cat.id, "Older Loose", "1 Month", "5");
+    const group = await createGroup(prisma, { categoryId: cat.id, name: "Capcut" });
+    const wk = await makeProduct(cat.id, "Capcut 7 day", "7 day", "10");
+    const mo = await makeProduct(cat.id, "Capcut 1 Month", "1 Month", "30");
+    await assignProductToGroup(prisma, wk.id, group.id);
+    await assignProductToGroup(prisma, mo.id, group.id);
+
+    const entries = await listNewestCatalogEntries(prisma, 50);
+    const groupIdx = entries.findIndex((e) => e.kind === "group" && e.group.id === group.id);
+    const looseIdx = entries.findIndex((e) => e.kind === "product" && e.product.id === old.id);
+    expect(groupIdx).toBeGreaterThanOrEqual(0);
+    expect(looseIdx).toBeGreaterThanOrEqual(0);
+    expect(groupIdx).toBeLessThan(looseIdx); // group (newer member) ranks first
+  });
+
+  it("collapses a single-member group and honours the limit", async () => {
+    const cat = await makeCategory();
+    const group = await createGroup(prisma, { categoryId: cat.id, name: "Solo" });
+    const only = await makeProduct(cat.id, "Solo 1 Month", "1 Month", "5");
+    await assignProductToGroup(prisma, only.id, group.id);
+
+    const entries = await listNewestCatalogEntries(prisma, 1);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.kind).toBe("product"); // newest row is the just-created Solo product
+  });
+});
+
+describe("searchCatalogEntries", () => {
+  it("collapses a grouped denomination match into a group card", async () => {
+    const cat = await makeCategory();
+    const group = await createGroup(prisma, { categoryId: cat.id, name: "ZorroBrand" });
+    const a = await makeProduct(cat.id, "ZorroBrand 1 Month", "1 Month", "30");
+    const b = await makeProduct(cat.id, "ZorroBrand 7 day", "7 day", "10");
+    await assignProductToGroup(prisma, a.id, group.id);
+    await assignProductToGroup(prisma, b.id, group.id);
+
+    const entries = await searchCatalogEntries(prisma, "ZorroBrand", 24);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.kind).toBe("group");
+    if (entries[0]!.kind !== "group") throw new Error("unreachable");
+    expect(entries[0]!.group.id).toBe(group.id);
+    expect(entries[0]!.members).toHaveLength(2);
+  });
+
+  it("keeps an ungrouped match as a product card", async () => {
+    const cat = await makeCategory();
+    const loose = await makeProduct(cat.id, "LonelyUnique", "1 Month", "5");
+    const entries = await searchCatalogEntries(prisma, "LonelyUnique", 24);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.kind).toBe("product");
+    if (entries[0]!.kind !== "product") throw new Error("unreachable");
+    expect(entries[0]!.product.id).toBe(loose.id);
+  });
+
+  it("matches a group by its name even when members don't match the query", async () => {
+    const cat = await makeCategory();
+    const group = await createGroup(prisma, { categoryId: cat.id, name: "QuokkaPack" });
+    const a = await makeProduct(cat.id, "QuokkaBasic", "1 Month", "30");
+    const b = await makeProduct(cat.id, "QuokkaPro", "7 day", "10");
+    await assignProductToGroup(prisma, a.id, group.id);
+    await assignProductToGroup(prisma, b.id, group.id);
+
+    const entries = await searchCatalogEntries(prisma, "QuokkaPack", 24);
+    expect(entries.some((e) => e.kind === "group" && e.group.id === group.id)).toBe(true);
+  });
+
+  it("returns [] for an empty query", async () => {
+    expect(await searchCatalogEntries(prisma, "   ", 24)).toEqual([]);
   });
 });

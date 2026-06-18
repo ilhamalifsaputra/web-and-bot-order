@@ -36,6 +36,10 @@ coverage/
 # --- Prisma generated client (regenerated via prisma generate) ---
 **/generated/
 
+# --- local working dirs (audit reports / execution scratch) ---
+/execution/
+/audit/
+
 # --- OS / editor ---
 .DS_Store
 Thumbs.db

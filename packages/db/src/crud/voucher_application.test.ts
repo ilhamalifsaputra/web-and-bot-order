@@ -80,6 +80,29 @@ describe("applyVoucherToSubtotal (pure)", () => {
       expect.objectContaining({ key: "error.voucher_min_purchase" }),
     );
   });
+
+  // F-02 (execution/10): the lower side of the boundaries the "used-up"/"expired"
+  // tests cover from above — exactly one use left, and not-yet-expired, both apply.
+  it("a voucher with one use left (usedCount = usageLimit - 1) still applies", async () => {
+    const v = await createVoucher(prisma, {
+      code: "LAST1",
+      type: VoucherType.PERCENT,
+      value: "10",
+      usageLimit: 2,
+    });
+    const almost = { ...v, usedCount: 1 }; // one redemption remaining
+    expect(applyVoucherToSubtotal(almost, "20.00").equals("2.0000")).toBe(true);
+  });
+
+  it("a voucher expiring in the near future still applies", async () => {
+    const v = await createVoucher(prisma, {
+      code: "SOON",
+      type: VoucherType.PERCENT,
+      value: "10",
+      expiresAt: new Date(Date.now() + 60_000), // 1 min ahead → still valid
+    });
+    expect(applyVoucherToSubtotal(v, "20.00").equals("2.0000")).toBe(true);
+  });
 });
 
 describe("createOrderFromCart with voucher", () => {

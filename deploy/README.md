@@ -1,0 +1,90 @@
+# Deployment — public release (execution/02)
+
+Reverse proxy + TLS (H-2), backup/restore (M-5 — see `deploy/backup/`), and
+container surface verification (M-8). Minimal & reversible; every step has a
+rollback.
+
+## Topology
+
+```
+Internet ──TLS──▶ nginx (443) ──http──▶ 127.0.0.1:8000  web-admin   (admin.example.com)
+                                  └────▶ 127.0.0.1:8100  storefront  (shop.example.com)
+docker-compose: order-bot · notifier · web-admin · storefront  (one image, one ./data/bot.db)
+```
+
+Apps stay bound to **127.0.0.1** (never exposed directly). nginx terminates TLS.
+
+## H-2 — TLS + reverse proxy
+
+1. DNS: point `admin.` and `shop.` subdomains at the host.
+2. Install the config: copy `deploy/nginx/telegram-shop.conf` →
+   `/etc/nginx/sites-available/`, symlink into `sites-enabled/`, edit the domain
+   + cert paths.
+3. Certs: `certbot --nginx -d admin.example.com -d shop.example.com`.
+4. `nginx -t && systemctl reload nginx`.
+5. **App config (`.env`):** set `WEB_COOKIE_SECURE=true`. Browsers see HTTPS via
+   nginx, so session cookies get the Secure flag with **no app change**.
+6. Verify: `curl -I https://admin.example.com/login` → `200`; HTTP → `301`.
+
+**Why no `trustProxy` change:** the only consumer of the client IP is the login
+lockout (`apps/web-admin/.../auth.ts` `clientIp`), which already reads
+`X-Forwarded-For` itself; `req.protocol` isn't used to build URLs. So enabling
+Fastify `trustProxy` would change behaviour for no functional gain. Revisit only
+if the Fastify request logger is turned on (execution/11) and needs `req.ip`.
+
+## Access log (L-01)
+
+App request logging is `logger: false` today (`*/src/server.ts`) — owned by
+execution/11. Until then, **nginx access logs are the request trail**
+(`/var/log/nginx/access.log`), which is enough to diagnose a 502.
+
+## M-8 — container surfaces
+
+`docker-compose.yml` runs **all** surfaces off one image, overriding the
+Dockerfile's default `CMD` (`order-bot start`) per service:
+
+| Service | command | port |
+|---|---|---|
+| order-bot | `@app/order-bot start` | — |
+| notifier | `@app/notifier start` | — |
+| web-admin | `@app/web-admin start` | `${WEB_PORT:-8000}` |
+| storefront | `@app/storefront start` | `${STOREFRONT_PORT:-8100}` |
+
+Verify after deploy: `docker compose config` (services resolve) and
+`docker compose ps` (web-admin + storefront healthchecks green). The Dockerfile
+`CMD` is only the fallback when no compose `command` is given — expected.
+
+## Deployment checklist (public release)
+
+- [ ] nginx installed, `nginx -t` clean, 80→443 redirect works.
+- [ ] TLS valid on both subdomains (`curl -I` → 200; cert not expired).
+- [ ] `.env`: `WEB_COOKIE_SECURE=true`.
+- [ ] `docker compose ps` — all 4 services up, healthchecks green.
+- [ ] `GET /healthz` (admin + shop) → 200; `GET /login` → 200.
+- [ ] Backup cron active (`deploy/backup/README.md`); one restore rehearsed.
+
+## 502 runbook
+
+A 502/504 from nginx means the upstream app didn't answer. Triage in order:
+
+1. **Is the app up?** `docker compose ps` — is web-admin/storefront `Up`/healthy?
+   - Down/restarting → `docker compose logs --tail=100 web-admin`. Common: DB
+     migration mismatch (`P2022`) — apply schema then restart (CLAUDE.md), or a
+     boot crash (bad `.env`).
+2. **Is it listening on the expected port?** `curl -I http://127.0.0.1:8000/healthz`
+   from the host. 200 → nginx/proxy_pass port mismatch. Connection refused →
+   app not bound (check `WEB_HOST=0.0.0.0` inside the container).
+3. **nginx logs:** `tail -f /var/log/nginx/error.log` — `connect() failed`
+   (upstream down) vs `upstream timed out` (slow handler; timeouts are 5s/30s).
+4. **Recover:** `docker compose restart web-admin` (or the affected service).
+   Confirm `/healthz` 200, then retry through nginx.
+
+## Rollback
+
+- **nginx:** disable the site (`rm sites-enabled/telegram-shop.conf`),
+  `systemctl reload nginx`; or revert to the previous config file.
+- **TLS-only issue:** comment the 80→443 `return 301` to serve plain HTTP
+  temporarily while fixing certs.
+- **App/DB:** `deploy/backup/restore.sh <last-good-backup>` (stops writers,
+  swaps the DB, integrity-checks, restarts, smoke-tests `/healthz`).
+- **Verify post-rollback:** `docker compose ps` green + `/healthz` 200 + `/login` 200.

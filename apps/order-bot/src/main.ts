@@ -121,7 +121,10 @@ export function buildBot(token?: string): Bot<MyContext> {
     const bits: string[] = [`ref=${ref}`];
     if (ctx.from) bits.push(`user=${ctx.from.id}`);
     if (ctx.callbackQuery?.data) bits.push(`cb=${ctx.callbackQuery.data}`);
-    else if (ctx.message?.text) bits.push(`text=${ctx.message.text.slice(0, 120)}`);
+    // L-8: never log the raw user text — it can carry TxIDs, support messages, or
+    // other sensitive input. Record only that a text update was in flight + its
+    // length, which is enough to correlate via `ref` without leaking content.
+    else if (ctx.message?.text) bits.push(`msglen=${ctx.message.text.length}`);
     logger.error({ err: err.error, ref }, `Unhandled error in grammY [${bits.join(" ")}]`);
 
     // Best-effort: tell the user something broke (with the ref), so an uncaught

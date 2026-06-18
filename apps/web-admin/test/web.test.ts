@@ -632,13 +632,17 @@ describe("stock", () => {
 // ---- users (acceptance #5) ------------------------------------------------
 
 describe("users", () => {
-  it("wallet adjust happy", async () => {
+  it("wallet adjust happy (+ audit row — L-9)", async () => {
     const before = (await getUser(prisma, seed.customerId))!.walletBalance;
     const res = await post(`/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "5.00", note: "goodwill" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toContain("kind=success");
     const after = (await getUser(prisma, seed.customerId))!.walletBalance;
     expect(Number(after) - Number(before)).toBeCloseTo(5);
+    // L-9 (execution/10): a money-moving admin route must leave an audit trail.
+    const audit = await prisma.auditLog.findMany({ where: { action: "wallet_adjust", targetId: seed.customerId } });
+    expect(audit.length).toBe(1);
+    expect(audit[0]!.adminId).toBe(seed.adminId);
   });
 
   it("set role happy (lowercase accepted)", async () => {

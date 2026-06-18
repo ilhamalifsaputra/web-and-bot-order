@@ -7,7 +7,16 @@ vi.mock("@app/core/mailer", () => ({
 }));
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
-import { prisma, initDb, setSetting, deleteSetting, addToCart, getOrderByCode } from "@app/db";
+import {
+  prisma,
+  initDb,
+  setSetting,
+  deleteSetting,
+  addToCart,
+  getOrderByCode,
+  createGroup,
+  assignProductToGroup,
+} from "@app/db";
 import { buildApp } from "../src/server";
 
 let app: FastifyInstance;
@@ -106,6 +115,38 @@ describe("category + product detail", () => {
     expect(res.statusCode).toBe(404);
   });
 
+  // Characterisation test for A-04 (refactor/09): /c/:id must render BOTH a group
+  // card (drills into /g/:id) and an ungrouped product card (/p/:id). Locks the
+  // shaping behaviour before unifying card() onto shapeEntries.
+  it("renders group cards and ungrouped product cards on a category page", async () => {
+    const cat = await prisma.category.create({ data: { name: "A04Cat", sortOrder: 9 } });
+    const g = await createGroup(prisma, { categoryId: cat.id, name: "A04Group" });
+    const m1 = await prisma.product.create({
+      data: { categoryId: cat.id, name: "A04 Member Cheap", type: "SHARED", durationLabel: "1m", price: "10000" },
+    });
+    const m2 = await prisma.product.create({
+      data: { categoryId: cat.id, name: "A04 Member Pricey", type: "SHARED", durationLabel: "3m", price: "30000" },
+    });
+    await assignProductToGroup(prisma, m1.id, g.id);
+    await assignProductToGroup(prisma, m2.id, g.id);
+    const loose = await prisma.product.create({
+      data: { categoryId: cat.id, name: "A04 Loose Product", type: "SHARED", durationLabel: "1m", price: "15000" },
+    });
+
+    const res = await app.inject({ method: "GET", url: `/c/${cat.id}` });
+    expect(res.statusCode).toBe(200);
+    // Group card: links to /g/:id, shows the group name and the cheapest "from" price.
+    expect(res.body).toContain(`/g/${g.id}`);
+    expect(res.body).toContain("A04Group");
+    expect(res.body).toContain("Rp10.000"); // from_price = cheapest member
+    // Ungrouped product: its own /p/:id card.
+    expect(res.body).toContain(`/p/${loose.id}`);
+    expect(res.body).toContain("A04 Loose Product");
+    // Grouped members are NOT emitted as their own product cards.
+    expect(res.body).not.toContain(`/p/${m1.id}`);
+    expect(res.body).not.toContain(`/p/${m2.id}`);
+  });
+
   it("renders product detail with stock badge and warranty", async () => {
     const res = await app.inject({ method: "GET", url: `/p/${productId}` });
     expect(res.statusCode).toBe(200);
@@ -194,6 +235,14 @@ describe("search + language", () => {
     const res = await app.inject({ method: "GET", url: "/search?q=zzz-nope" });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("Nothing found");
+  });
+
+  // F-01 (execution/10): a partial substring (not the whole product name) still
+  // matches — searchCatalogEntries uses a `contains` LIKE.
+  it("matches a partial substring of the product name", async () => {
+    const res = await app.inject({ method: "GET", url: "/search?q=remium 1 Bul" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("Netflix Premium 1 Bulan");
   });
 
   it("switches to Indonesian via the lang cookie", async () => {

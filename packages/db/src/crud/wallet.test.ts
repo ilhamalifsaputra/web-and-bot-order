@@ -57,6 +57,29 @@ describe("adjustWallet ledger", () => {
     expect(Number((await prisma.user.findUnique({ where: { id: userId } }))!.walletBalance)).toBe(0);
   });
 
+  // F-03 (execution/10): an admin manual adjust may push the balance negative
+  // when allowNegative is set (e.g. clawing back an erroneous credit). The guard
+  // is bypassed only then; a ledger row is still written.
+  it("allowNegative lets an admin adjust the balance below zero (with a ledger row)", async () => {
+    const newBal = await adjustWallet(prisma, userId, "-5", {
+      reason: "admin_adjust",
+      adminId: 7,
+      allowNegative: true,
+    });
+    expect(newBal.toString()).toBe("-5");
+    expect(Number((await prisma.user.findUnique({ where: { id: userId } }))!.walletBalance)).toBe(-5);
+    const row = (await prisma.walletTransaction.findFirst({ where: { userId } }))!;
+    expect(row.balanceAfter.toString()).toBe("-5");
+    expect(Number(row.delta)).toBe(-5);
+    expect(row.adminId).toBe(7);
+  });
+
+  it("the overdraw guard is exact: a debit to precisely zero is allowed", async () => {
+    await adjustWallet(prisma, userId, "5", { reason: "admin_adjust" });
+    const bal = await adjustWallet(prisma, userId, "-5", { reason: "order_payment" }); // → 0, not negative
+    expect(bal.toString()).toBe("0");
+  });
+
   it("default reason is 'adjust' when none is given", async () => {
     await adjustWallet(prisma, userId, "1");
     const row = (await prisma.walletTransaction.findFirst({ where: { userId } }))!;

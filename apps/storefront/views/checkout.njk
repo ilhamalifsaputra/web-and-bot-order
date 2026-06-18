@@ -13,7 +13,7 @@
 </div>
 {% endif %}
 
-<form method="post" action="/checkout" class="grid lg:grid-cols-3 gap-6 items-start">
+<form method="post" action="/checkout" data-submit-once class="grid lg:grid-cols-3 gap-6 items-start">
   <input type="hidden" name="csrf_token" value="{{ customer.csrf }}">
 
   <div class="lg:col-span-2 space-y-6">

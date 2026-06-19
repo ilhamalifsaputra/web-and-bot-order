@@ -71,7 +71,6 @@
   "browse.notify_restock": "🔔 Beritahu saat tersedia",
   "browse.out_of_stock": "Stok habis",
   "browse.page_info": "Halaman {page}/{total}",
-  "browse.product_detail": "<b>{name}</b>\n\nHarga: <b>{price}</b>\nDurasi: {duration}\nTipe: {type}\nGaransi: {warranty} hari\nStok tersedia: <b>{stock}</b>\nRating: {rating}",
   "browse.qty_input_btn": "Masukkan Jumlah",
   "browse.qty_input_cancel": "Batal",
   "browse.qty_input_invalid": "Jumlah tidak valid. Masukkan angka antara 1 sampai {max}.",

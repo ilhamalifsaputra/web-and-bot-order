@@ -71,7 +71,6 @@
   "browse.notify_restock": "🔔 Notify when available",
   "browse.out_of_stock": "Out of stock",
   "browse.page_info": "Page {page}/{total}",
-  "browse.product_detail": "<b>{name}</b>\n\nPrice: <b>{price}</b>\nDuration: {duration}\nType: {type}\nWarranty: {warranty} days\nIn stock: <b>{stock}</b>\nRating: {rating}",
   "browse.qty_input_btn": "Enter Quantity",
   "browse.qty_input_cancel": "Cancel",
   "browse.qty_input_invalid": "Invalid quantity. Enter a whole number between 1 and {max}.",

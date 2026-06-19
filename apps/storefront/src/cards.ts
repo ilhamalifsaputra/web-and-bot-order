@@ -1,27 +1,26 @@
 /**
- * Shared card-context shapers for the grid pages (home, category, search). A
- * storefront grid renders parent "group" cards (which drill into denominations
- * via /g/:id) plus plain "product" cards (/p/:id), both derived from the
- * CatalogEntry stream. Centralising the shaping keeps the three grids identical.
+ * Shared card-context shaper for the grid pages (home, category, search). In the
+ * 3-tier catalog a grid renders ONE kind of card: a Product (mid-tier) card that
+ * links to the product detail page `/p/:slug`. Denominations (the SKUs with a
+ * price/stock) are NEVER shown on a grid — they are chosen only inside product
+ * detail. The card's headline price is the product's "starting price" = its
+ * cheapest active denomination. Centralising the shaping keeps the three grids
+ * identical.
  */
-import type { CatalogEntry } from "@app/db";
+import type { CatalogProduct } from "@app/db";
+import { Decimal } from "@app/core/money";
 import { productImage } from "./images";
 
-export type GroupCard = {
-  id: number;
-  name: string;
-  emoji: string | null;
-  from_price: string;
-  count: number;
-  image: string;
-};
-
 export type ProductCard = {
-  id: number;
+  slug: string;
   name: string;
   category_name: string;
-  price: string;
+  /** Cheapest active denomination price (Decimal as string) — "starting from". */
+  from_price: string;
+  /** Number of denominations (plans) the product offers. */
+  variant_count: number;
   image: string;
+  /** Available stock across all denominations of this product. */
   available: number;
   rating: number | null;
   rating_count: number;
@@ -29,47 +28,58 @@ export type ProductCard = {
   bulk_min_qty: number | null;
 };
 
+/** Available stock keyed by denomination id. */
 type StockMap = Record<number, { available: number }>;
+/** Rating summaries keyed by denomination id (`productId` column = SKU). */
 type RatingMap = Map<number, { avg: number | null; count: number }>;
+/** Active bulk-pricing rules keyed by denomination id. */
 type BulkMap = Record<number, { minQuantity: number; discountPercent: string }>;
 
-/** Split a CatalogEntry stream into the group + product card contexts a grid renders. */
-export function shapeEntries(
-  entries: CatalogEntry[],
-  catName: Map<number, string>,
+/**
+ * Shape a `CatalogProduct[]` (Product + its active denominations, price asc)
+ * into product cards. Stock/rating/bulk maps are keyed by denomination id, so
+ * each product aggregates across its denominations: stock = sum, rating = the
+ * cheapest (lead) denomination's summary, bulk badge = the best discount found.
+ */
+export function shapeProducts(
+  products: CatalogProduct[],
   stock: StockMap,
   ratings: RatingMap,
   bulk: BulkMap = {},
-): { groups: GroupCard[]; products: ProductCard[] } {
-  const groups: GroupCard[] = [];
-  const products: ProductCard[] = [];
-  for (const e of entries) {
-    if (e.kind === "group") {
-      const first = e.members[0]!; // members are price-asc → cheapest is "from"
-      groups.push({
-        id: e.group.id,
-        name: e.group.name,
-        emoji: e.group.emoji,
-        from_price: first.price.toString(),
-        count: e.members.length,
-        image: e.group.webImageUrl ?? productImage(first, catName.get(first.categoryId) ?? ""),
-      });
-    } else {
-      const p = e.product;
-      const cn = catName.get(p.categoryId) ?? "";
-      products.push({
-        id: p.id,
-        name: p.name,
-        category_name: cn,
-        price: p.price.toString(),
-        image: productImage(p, cn),
-        available: stock[p.id]?.available ?? 0,
-        rating: ratings.get(p.id)?.avg ?? null,
-        rating_count: ratings.get(p.id)?.count ?? 0,
-        bulk_discount: bulk[p.id]?.discountPercent ?? null,
-        bulk_min_qty: bulk[p.id]?.minQuantity ?? null,
-      });
+): ProductCard[] {
+  const cards: ProductCard[] = [];
+  for (const p of products) {
+    const denoms = p.denominations; // active, price-asc (cheapest first)
+    if (denoms.length === 0) continue; // listCatalogProducts already filters these out
+    const lead = denoms[0]!; // cheapest → the "starting price" + lead rating
+    const fromPrice = denoms.reduce(
+      (min, d) => Decimal.min(min, new Decimal(d.price)),
+      new Decimal(lead.price),
+    );
+    const available = denoms.reduce((sum, d) => sum + (stock[d.id]?.available ?? 0), 0);
+    // Best (largest) active bulk discount across this product's denominations.
+    let bulkDiscount: string | null = null;
+    let bulkMinQty: number | null = null;
+    for (const d of denoms) {
+      const rule = bulk[d.id];
+      if (rule && (bulkDiscount === null || new Decimal(rule.discountPercent).greaterThan(bulkDiscount))) {
+        bulkDiscount = rule.discountPercent;
+        bulkMinQty = rule.minQuantity;
+      }
     }
+    cards.push({
+      slug: p.slug,
+      name: p.name,
+      category_name: p.category.name,
+      from_price: fromPrice.toString(),
+      variant_count: denoms.length,
+      image: p.webImageUrl ?? productImage(p, p.category.name),
+      available,
+      rating: ratings.get(lead.id)?.avg ?? null,
+      rating_count: ratings.get(lead.id)?.count ?? 0,
+      bulk_discount: bulkDiscount,
+      bulk_min_qty: bulkMinQty,
+    });
   }
-  return { groups, products };
+  return cards;
 }

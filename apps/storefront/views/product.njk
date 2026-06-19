@@ -4,6 +4,12 @@
 {% block title %}{{ product.name }} — {{ shop_name }}{% endblock %}
 
 {% block content %}
+{{ shop.breadcrumb([
+  { label: t('web.nav_home', lang), href: "/" },
+  { label: product.category_name, href: "/c/" + product.category_slug },
+  { label: product.name }
+], lang) }}
+
 <div class="grid md:grid-cols-2 gap-6 lg:gap-10">
   {# Image #}
   <div class="card overflow-hidden self-start">
@@ -13,74 +19,61 @@
     </div>
   </div>
 
-  {# Facts + actions #}
-  <div>
-    <div class="text-xs text-ink-faint mb-1">
-      <a href="/" class="hover:text-pine">{{ t('web.nav_home', lang) }}</a>
-      <span class="mx-1">/</span> {{ product.category_name }}
-    </div>
+  {# Facts + denomination picker + actions #}
+  <div id="product-detail">
     <h1 class="page-title !text-2xl sm:!text-3xl">{{ product.name }}</h1>
-    <div class="flex items-center gap-2 mt-2 text-sm text-ink-soft flex-wrap">
-      <span>{{ product.duration_label }}</span>
-      <span class="text-ink-faint">·</span>
-      <span class="inline-flex items-center gap-1">
-        <i data-lucide="shield-check" class="w-4 h-4 text-grass"></i>
-        {{ t('web.warranty_days', lang, { days: product.warranty_days }) }}
-      </span>
-    </div>
 
-    {% if rating_count > 0 %}
-    <div class="flex items-center gap-2 mt-3 text-sm text-ink-soft">
-      {{ shop.stars(rating, "w-4 h-4") }}
-      <span class="font-semibold text-ink">{{ rating | round(1) }}</span>
-      <span class="text-ink-faint">({{ t('web.review_count', lang, { count: rating_count }) }})</span>
-    </div>
+    {% if product.description %}
+    <div class="mt-3 text-sm text-ink-soft whitespace-pre-line">{{ product.description }}</div>
     {% endif %}
 
+    {# Denomination cards — pick a plan (never a dropdown). The cheapest active
+       denomination is preselected; selecting another updates the live price /
+       stock / warranty and the checkout payload below. #}
+    <div class="mt-6">
+      <h2 class="section-title mb-3">{{ t('web.choose_plan', lang) }}</h2>
+      <div id="denom-list" class="grid gap-2.5">
+        {% for d in denominations %}
+        {{ shop.denomination_card(d, fx, low_threshold, lang) }}
+        {% endfor %}
+      </div>
+    </div>
+
+    {# Live summary — price/stock/warranty of the selected denomination. #}
     <div class="card card-pad mt-5">
       <div class="flex items-center justify-between gap-3 flex-wrap">
-        {{ shop.price(product.price, fx, "text-2xl") }}
-        {{ shop.stock_badge(available, low_threshold, lang) }}
+        <div id="sel-price" class="font-display font-semibold text-pine text-2xl"></div>
+        <div id="sel-stock"></div>
       </div>
       {% if fx %}
       <div class="text-xs text-ink-faint mt-1.5">{{ t('web.usdt_note', lang) }}</div>
       {% endif %}
 
-      {% if bulk %}
-      <div class="chip bg-pine-tint text-pine-dark mt-3">
-        <i data-lucide="tag" class="w-3.5 h-3.5"></i>
-        {{ t('web.bulk_deal', lang, { min: bulk.min_quantity, percent: bulk.discount_percent }) }}
-      </div>
-      {% endif %}
-
-      <div class="mt-5 flex gap-2 flex-wrap">
-        {% if available > 0 %}
-        <form method="post" action="/cart/add" class="flex gap-2 items-center flex-wrap">
-          {% if customer %}<input type="hidden" name="csrf_token" value="{{ customer.csrf }}">{% endif %}
-          <input type="hidden" name="product_id" value="{{ product.id }}">
+      {# Buy Now / Add To Cart — both post the selected denomination_id. #}
+      <form id="buy-form" method="post" action="/cart/add" class="mt-5 flex flex-wrap items-end gap-2">
+        {% if customer %}<input type="hidden" name="csrf_token" value="{{ customer.csrf }}">{% endif %}
+        <input type="hidden" name="denomination_id" id="sel-denom-input" value="">
+        <div class="flex flex-col gap-1">
           <label class="text-xs text-ink-soft" for="qty">{{ t('web.qty', lang) }}</label>
-          <input id="qty" type="number" name="qty" value="1" min="1" max="{{ available }}" class="field !w-20 text-center">
-          <button type="submit" class="btn btn-primary">
-            <i data-lucide="shopping-cart" class="w-4 h-4"></i> {{ t('web.add_to_cart', lang) }}
-          </button>
-        </form>
-        {% else %}
-        <form method="post" action="/restock/{{ product.id }}">
-          {% if customer %}<input type="hidden" name="csrf_token" value="{{ customer.csrf }}">{% endif %}
-          <button type="submit" class="btn btn-soft">
-            <i data-lucide="bell" class="w-4 h-4"></i> {{ t('web.notify_restock', lang) }}
-          </button>
-        </form>
-        {% endif %}
-      </div>
-    </div>
+          <input id="qty" type="number" name="qty" value="1" min="1" max="99" class="field !w-20 text-center">
+        </div>
+        <button type="submit" id="btn-cart" class="btn btn-soft">
+          <i data-lucide="shopping-cart" class="w-4 h-4"></i> {{ t('web.add_to_cart', lang) }}
+        </button>
+        <button type="submit" id="btn-buy" name="buy_now" value="1" class="btn btn-primary">
+          <i data-lucide="zap" class="w-4 h-4"></i> {{ t('web.buy_now', lang) }}
+        </button>
+      </form>
 
-    {% if product.description %}
-    <div class="mt-6">
-      <h2 class="section-title mb-2">{{ t('web.description', lang) }}</h2>
-      <div class="text-sm text-ink-soft whitespace-pre-line">{{ product.description }}</div>
+      {# Out-of-stock restock CTA — shown by JS when the selected plan is empty
+         (works only when logged in). #}
+      <form id="restock-form" method="post" action="/restock/" class="mt-3 hidden">
+        {% if customer %}<input type="hidden" name="csrf_token" value="{{ customer.csrf }}">{% endif %}
+        <button type="submit" class="btn btn-soft">
+          <i data-lucide="bell" class="w-4 h-4"></i> {{ t('web.notify_restock', lang) }}
+        </button>
+      </form>
     </div>
-    {% endif %}
   </div>
 </div>
 
@@ -103,4 +96,71 @@
   <div class="card card-pad text-center text-ink-faint py-10">{{ t('web.no_reviews', lang) }}</div>
   {% endif %}
 </section>
+
+{# Denomination selection: update the live price/stock + checkout payload, and
+   swap Buy/Cart ↔ restock CTA when the picked plan is out of stock. Pure
+   progressive enhancement — the radios + form already carry the data. #}
+<script>
+(function () {
+  'use strict';
+  var root = document.getElementById('product-detail');
+  if (!root) return;
+  var radios = root.querySelectorAll('.denom-radio');
+  var priceEl = document.getElementById('sel-price');
+  var stockEl = document.getElementById('sel-stock');
+  var denomInput = document.getElementById('sel-denom-input');
+  var qtyInput = document.getElementById('qty');
+  var buyForm = document.getElementById('buy-form');
+  var restockForm = document.getElementById('restock-form');
+  // Locale strings + threshold (developer-controlled — never user input).
+  var T = {{ {
+    low: low_threshold,
+    available: t('web.stock_available', lang),
+    left: t('web.stock_left', lang, { count: '__N__' }),
+    out: t('web.stock_out', lang)
+  } | dump | safe }};
+
+  function fmtIdr(v) {
+    try { return 'Rp' + Number(v).toLocaleString('id-ID'); } catch (e) { return 'Rp' + v; }
+  }
+
+  function select(label) {
+    var price = label.getAttribute('data-price');
+    var avail = parseInt(label.getAttribute('data-available'), 10) || 0;
+    var id = label.getAttribute('data-denom-id');
+    priceEl.textContent = fmtIdr(price);
+    denomInput.value = id;
+    if (qtyInput) qtyInput.max = Math.max(1, avail);
+    // Stock badge text mirrors the server macro (kept simple here).
+    var cls, txt;
+    if (avail > T.low) { cls = 'bg-grass-tint text-grass-dark'; txt = T.available; }
+    else if (avail > 0) { cls = 'bg-amberx-tint text-amberx'; txt = T.left.replace('__N__', avail); }
+    else { cls = 'bg-rust-tint text-rust-dark'; txt = T.out; }
+    stockEl.innerHTML = '<span class="chip ' + cls + '">' + txt + '</span>';
+    // Toggle Buy/Cart vs restock when empty.
+    if (avail > 0) {
+      buyForm.classList.remove('hidden');
+      restockForm.classList.add('hidden');
+    } else {
+      buyForm.classList.add('hidden');
+      restockForm.classList.remove('hidden');
+      restockForm.setAttribute('action', '/restock/' + id);
+    }
+  }
+
+  radios.forEach(function (r) {
+    r.addEventListener('change', function () {
+      if (r.checked) select(r.closest('.denom-card'));
+    });
+  });
+
+  // Preselect the first in-stock plan, else the first plan.
+  var firstEnabled = null;
+  for (var i = 0; i < radios.length; i++) {
+    if (!radios[i].disabled) { firstEnabled = radios[i]; break; }
+  }
+  var initial = firstEnabled || radios[0];
+  if (initial) { initial.checked = true; select(initial.closest('.denom-card')); }
+}());
+</script>
 {% endblock %}

@@ -9,17 +9,17 @@ import {
   prisma,
   getSetting,
   listActiveCategories,
-  listNewestCatalogEntries,
+  listNewestCatalogProducts,
   stockStatusCounts,
   productRatingSummaries,
-  activeBulkPricingByProduct,
+  activeBulkPricingByDenomination,
   featuredReviews,
   overallRating,
   shopFulfilmentStats,
 } from "@app/db";
 import { categoryImage, HERO_IMAGE } from "../images";
 import { shopContext, LANG_COOKIE } from "../shop";
-import { shapeEntries } from "../cards";
+import { shapeProducts } from "../cards";
 
 /**
  * A privacy-safe display name for a public testimonial: prefer the buyer's full
@@ -39,13 +39,13 @@ function reviewerName(user: { fullName: string | null; loginUsername: string | n
 const homeRoutes: FastifyPluginAsync = async (app) => {
   app.get("/", async (req, reply) => {
     const ctx = await shopContext(req, "/");
-    const [categories, entries, stock, ratings, bulk, reviews, rating, fulfil, waNumber, heroUrl] =
+    const [categories, products, stock, ratings, bulk, reviews, rating, fulfil, waNumber, heroUrl] =
       await Promise.all([
         listActiveCategories(prisma),
-        listNewestCatalogEntries(prisma, 12),
+        listNewestCatalogProducts(prisma, 12),
         stockStatusCounts(prisma),
         productRatingSummaries(prisma),
-        activeBulkPricingByProduct(prisma),
+        activeBulkPricingByDenomination(prisma),
         featuredReviews(prisma, 4),
         overallRating(prisma),
         shopFulfilmentStats(prisma),
@@ -55,9 +55,8 @@ const homeRoutes: FastifyPluginAsync = async (app) => {
         // Hero banner — admin-uploaded image overrides the Unsplash default.
         getSetting(prisma, "web_hero_url"),
       ]);
-    const ratingByProduct = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
-    const catName = new Map(categories.map((c) => [c.id, c.name]));
-    const cards = shapeEntries(entries, catName, stock, ratingByProduct, bulk);
+    const ratingByDenom = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
+    const cards = shapeProducts(products, stock, ratingByDenom, bulk);
 
     // Honest home-page figures: only show real numbers once a handful of orders
     // have actually shipped; before that the band falls back to value props so
@@ -87,8 +86,7 @@ const homeRoutes: FastifyPluginAsync = async (app) => {
       ...ctx,
       hero_image: heroUrl || HERO_IMAGE,
       categories: categories.map((c) => ({ ...c, image: categoryImage(c.name) })),
-      groups: cards.groups,
-      products: cards.products,
+      products: cards,
       stats,
       testimonials,
       low_threshold: config.LOW_STOCK_THRESHOLD,

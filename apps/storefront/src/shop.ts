@@ -10,12 +10,34 @@ import { getUsdIdrRate } from "./pricing";
 import { optionalCustomer, type Customer } from "./plugins/auth";
 
 export const LANG_COOKIE = "shop_lang";
-export const CART_COOKIE = "shop_cart";
+/**
+ * Guest cart cookie — VERSIONED at the catalog 3-tier cutover (Phase 3). Before
+ * the rename `p` was the old `products.id` (the SKU); now `p` is a
+ * `denominations.id`. The migration preserved old `products.id` values as
+ * `denominations.id`, so a stale `shop_cart` cookie *usually* resolves to the
+ * right row — but "usually" is not "always", so we hard-invalidate it:
+ *   - the cookie NAME changed `shop_cart` → `shop_cart_v2`;
+ *   - the payload is now `{v: 2, items: [{p, q}]}` and any payload missing
+ *     `v === 2` is ignored;
+ *   - the legacy `shop_cart` cookie is cleared on the next write.
+ * Net effect: a pre-cutover cart can never resolve to a wrong denomination.
+ */
+export const CART_COOKIE = "shop_cart_v2";
+/** The pre-cutover cookie name — read only to clear it. */
+export const LEGACY_CART_COOKIE = "shop_cart";
+/** Current guest-cart cookie schema version. Bump to invalidate again. */
+export const CART_COOKIE_VERSION = 2;
 
-/** Guest cart cookie payload: [{p: productId, q: qty}] (plan.md §5 decision D). */
+/** Guest cart cookie line: {p: denomination id, q: qty}. */
 export interface GuestCartLine {
   p: number;
   q: number;
+}
+
+/** Versioned guest-cart cookie envelope. */
+interface GuestCartPayload {
+  v: number;
+  items: GuestCartLine[];
 }
 
 /** "en" | "id" from the cookie, else the configured default. */
@@ -24,14 +46,25 @@ export function requestLang(req: FastifyRequest): string {
   return raw === "id" || raw === "en" ? raw : config.DEFAULT_LANGUAGE;
 }
 
-/** Parse the guest-cart cookie defensively (bad cookie = empty cart). */
+/**
+ * Parse the versioned guest-cart cookie defensively (bad/old cookie = empty
+ * cart). Only the current `{v: CART_COOKIE_VERSION, items: [...]}` envelope is
+ * honoured; the legacy `shop_cart` cookie (a bare array, no version) is never
+ * read here — see CART_COOKIE docs for the cutover rationale.
+ */
 export function readGuestCart(req: FastifyRequest): GuestCartLine[] {
   const raw = req.cookies[CART_COOKIE];
   if (!raw) return [];
   try {
-    const arr = JSON.parse(raw) as unknown;
-    if (!Array.isArray(arr)) return [];
-    return arr
+    const payload = JSON.parse(raw) as unknown;
+    if (
+      typeof payload !== "object" || payload === null ||
+      (payload as GuestCartPayload).v !== CART_COOKIE_VERSION ||
+      !Array.isArray((payload as GuestCartPayload).items)
+    ) {
+      return [];
+    }
+    return (payload as GuestCartPayload).items
       .filter(
         (x): x is GuestCartLine =>
           typeof x === "object" && x !== null &&
@@ -47,13 +80,16 @@ export function readGuestCart(req: FastifyRequest): GuestCartLine[] {
 }
 
 export function writeGuestCart(reply: FastifyReply, lines: GuestCartLine[]): void {
-  void reply.setCookie(CART_COOKIE, JSON.stringify(lines), {
+  const payload: GuestCartPayload = { v: CART_COOKIE_VERSION, items: lines };
+  void reply.setCookie(CART_COOKIE, JSON.stringify(payload), {
     path: "/",
     httpOnly: true,
     sameSite: "lax",
     secure: config.WEB_COOKIE_SECURE,
     maxAge: 60 * 60 * 24 * 30, // 30 days
   });
+  // Evict any pre-cutover cookie so a stale denomination/SKU id can't linger.
+  void reply.clearCookie(LEGACY_CART_COOKIE, { path: "/" });
 }
 
 export interface ShopContext {

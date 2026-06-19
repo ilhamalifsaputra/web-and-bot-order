@@ -19,34 +19,38 @@ import {
 } from "@app/db";
 import { buildApp } from "../src/server";
 
-/** Seed a mid-tier Product with N denominations (the "group" shape). */
-async function seedGroup(
+/** Seed a mid-tier Product with N denominations (the 3-tier shape). */
+async function seedProduct(
   categoryId: number,
   name: string,
   denoms: Array<{ name: string; price: string; duration?: string }>,
 ) {
-  const group = await createCatalogProduct(prisma, { categoryId, name });
+  const product = await createCatalogProduct(prisma, { categoryId, name });
   const members = [];
   for (const d of denoms) {
     members.push(
       await createDenomination(prisma, {
-        productId: group.id, name: d.name, type: "SHARED", durationLabel: d.duration ?? "1 Month", price: d.price,
+        productId: product.id, name: d.name, type: "SHARED", durationLabel: d.duration ?? "1 Month", price: d.price,
       }),
     );
   }
-  return { group, members };
+  return { product, members };
 }
 
-/** Seed a single-denomination product (collapses to a product card). */
+/** Seed a single-denomination product. */
 async function seedLoose(categoryId: number, name: string, price: string, duration = "1 month") {
   const parent = await createCatalogProduct(prisma, { categoryId, name });
-  return createDenomination(prisma, { productId: parent.id, name, type: "SHARED", durationLabel: duration, price });
+  const denom = await createDenomination(prisma, { productId: parent.id, name, type: "SHARED", durationLabel: duration, price });
+  return { parent, denom };
 }
 
 let app: FastifyInstance;
-let productId: number;
+let productId: number; // denomination id of the Netflix SKU
+let productSlug: string; // parent product slug for /p/:slug
 let categoryId: number;
-let emptyProductId: number;
+let categorySlug: string;
+let emptyProductId: number; // denomination id of the Spotify SKU
+let emptyProductSlug: string; // its parent product slug
 
 beforeAll(async () => {
   await initDb();
@@ -56,11 +60,13 @@ beforeAll(async () => {
     data: { name: "Streaming", slug: "streaming", emoji: "🎬", sortOrder: 1 },
   });
   categoryId = cat.id;
+  categorySlug = cat.slug;
   const netflixParent = await createCatalogProduct(prisma, {
     categoryId: cat.id,
     name: "Netflix Premium 1 Bulan",
     description: "Profil sharing, garansi penuh.",
   });
+  productSlug = netflixParent.slug;
   const prod = await createDenomination(prisma, {
     productId: netflixParent.id,
     name: "Netflix Premium 1 Bulan",
@@ -78,7 +84,8 @@ beforeAll(async () => {
     })),
   });
   const empty = await seedLoose(cat.id, "Spotify Family", "25000");
-  emptyProductId = empty.id;
+  emptyProductId = empty.denom.id;
+  emptyProductSlug = empty.parent.slug;
   // Storefront tests model a live shop — keep the setup gate open.
   await setSetting(prisma, "setup_completed", "true");
 });
@@ -121,100 +128,98 @@ describe("home", () => {
   });
 });
 
-describe("category + product detail", () => {
-  it("lists category products", async () => {
-    const res = await app.inject({ method: "GET", url: `/c/${categoryId}` });
+describe("category page — product cards only", () => {
+  it("lists category products on slug URLs", async () => {
+    const res = await app.inject({ method: "GET", url: `/c/${categorySlug}` });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("Netflix Premium 1 Bulan");
+    expect(res.body).toContain(`/p/${productSlug}`); // product card link
   });
 
-  it("404s an unknown category", async () => {
-    const res = await app.inject({ method: "GET", url: "/c/99999" });
+  it("404s an unknown category slug", async () => {
+    const res = await app.inject({ method: "GET", url: "/c/no-such-category" });
     expect(res.statusCode).toBe(404);
   });
 
-  // Characterisation test for A-04 (refactor/09): /c/:id must render BOTH a group
-  // card (drills into /g/:id) and an ungrouped product card (/p/:id). Locks the
-  // shaping behaviour before unifying card() onto shapeEntries.
-  it("renders group cards and ungrouped product cards on a category page", async () => {
-    const cat = await prisma.category.create({ data: { name: "A04Cat", slug: "a04cat", sortOrder: 9 } });
-    const { group: g, members } = await seedGroup(cat.id, "A04Group", [
-      { name: "A04 Member Cheap", price: "10000", duration: "1m" },
-      { name: "A04 Member Pricey", price: "30000", duration: "3m" },
+  // Core 3-tier rule: the category grid shows PRODUCT cards (link /p/:slug,
+  // starting price) and NEVER denomination rows. A multi-plan product appears
+  // as ONE card; its denominations are not linked from the grid.
+  it("shows product cards (not denomination rows) for a multi-plan product", async () => {
+    const cat = await prisma.category.create({ data: { name: "Editing", slug: "editing-cat", sortOrder: 9 } });
+    const { product, members } = await seedProduct(cat.id, "CapCut Pro", [
+      { name: "1 Week", price: "10000", duration: "1 Week" },
+      { name: "1 Month", price: "30000", duration: "1 Month" },
     ]);
     const [m1, m2] = members;
-    const loose = await seedLoose(cat.id, "A04 Loose Product", "15000", "1m");
 
-    const res = await app.inject({ method: "GET", url: `/c/${cat.id}` });
+    const res = await app.inject({ method: "GET", url: `/c/${cat.slug}` });
     expect(res.statusCode).toBe(200);
-    // Group card: links to /g/:id, shows the group name and the cheapest "from" price.
-    expect(res.body).toContain(`/g/${g.id}`);
-    expect(res.body).toContain("A04Group");
-    expect(res.body).toContain("Rp10.000"); // from_price = cheapest member
-    // Ungrouped product (single denomination): its own /p/:id card.
-    expect(res.body).toContain(`/p/${loose.id}`);
-    expect(res.body).toContain("A04 Loose Product");
-    // Grouped members are NOT emitted as their own product cards.
-    expect(res.body).not.toContain(`/p/${m1!.id}`);
-    expect(res.body).not.toContain(`/p/${m2!.id}`);
+    // One product card linking to product detail, showing the starting price.
+    expect(res.body).toContain(`/p/${product.slug}`);
+    expect(res.body).toContain("CapCut Pro");
+    expect(res.body).toContain("Rp10.000"); // starting price = cheapest denomination
+    // Denominations must NOT be rendered as their own grid cards/rows. There is
+    // no denomination URL surface on a grid; the leaf is reached via /p/:slug.
+    expect(res.body).not.toContain(`>1 Week<`);
+    expect(res.body).not.toContain(`>1 Month<`);
+    // Sanity: the denomination ids never appear as product-detail links.
+    expect(res.body).not.toContain(`/p/${m1!.id}"`);
+    expect(res.body).not.toContain(`/p/${m2!.id}"`);
   });
 
-  it("renders product detail with stock badge and warranty", async () => {
-    const res = await app.inject({ method: "GET", url: `/p/${productId}` });
+  it("renders product detail with denomination cards + Buy Now / Add To Cart", async () => {
+    const cat = await prisma.category.create({ data: { name: "DetailCat", slug: "detail-cat", sortOrder: 8 } });
+    const { product, members } = await seedProduct(cat.id, "Detail Product", [
+      { name: "1 Week", price: "12000", duration: "1 Week" },
+      { name: "1 Month", price: "32000", duration: "1 Month" },
+    ]);
+    const [wk, mo] = members;
+    // Give the cheaper plan stock so it's selectable.
+    await prisma.stockItem.create({ data: { productId: wk!.id, credentials: "a@b:c", status: "AVAILABLE" } });
+
+    const res = await app.inject({ method: "GET", url: `/p/${product.slug}` });
+    expect(res.statusCode).toBe(200);
+    // Breadcrumb Home > Category > Product.
+    expect(res.body).toContain("DetailCat");
+    expect(res.body).toContain("Detail Product");
+    // Denomination cards (radios), one per plan — NOT a dropdown.
+    expect(res.body).toContain(`name="denomination_id" value="${wk!.id}"`);
+    expect(res.body).toContain(`name="denomination_id" value="${mo!.id}"`);
+    expect(res.body).toContain("1 Week");
+    expect(res.body).toContain("1 Month");
+    // Buy Now + Add To Cart buttons.
+    expect(res.body).toContain("Add to cart");
+    expect(res.body).toContain("Buy now");
+  });
+
+  it("renders product detail stock badge for the Netflix product", async () => {
+    const res = await app.inject({ method: "GET", url: `/p/${productSlug}` });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("Netflix Premium 1 Bulan");
     expect(res.body).toContain("Available"); // 5 > LOW_STOCK_THRESHOLD(3)
-    expect(res.body).toContain("30-day warranty");
   });
 
   it("shows out-of-stock + restock CTA when no stock", async () => {
-    const res = await app.inject({ method: "GET", url: `/p/${emptyProductId}` });
+    const res = await app.inject({ method: "GET", url: `/p/${emptyProductSlug}` });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("Out of stock");
     expect(res.body).toContain("Notify me when ready");
   });
 
   it("404s an inactive product", async () => {
-    await prisma.denomination.update({ where: { id: emptyProductId }, data: { isActive: false } });
-    const res = await app.inject({ method: "GET", url: `/p/${emptyProductId}` });
+    await prisma.product.update({ where: { slug: emptyProductSlug }, data: { isActive: false } });
+    const res = await app.inject({ method: "GET", url: `/p/${emptyProductSlug}` });
     expect(res.statusCode).toBe(404);
-    await prisma.denomination.update({ where: { id: emptyProductId }, data: { isActive: true } });
-  });
-});
-
-describe("denomination groups", () => {
-  it("category page shows a group card linking to /g/:id", async () => {
-    const { group } = await seedGroup(categoryId, "Capcut", [
-      { name: "Capcut 7 day", price: "10000", duration: "7 day" },
-      { name: "Capcut 1 Month", price: "30000", duration: "1 Month" },
-    ]);
-
-    const res = await app.inject({ method: "GET", url: `/c/${categoryId}` });
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain(`/g/${group.id}`);
-    expect(res.body).toContain("Capcut");
+    await prisma.product.update({ where: { slug: emptyProductSlug }, data: { isActive: true } });
   });
 
-  it("group page lists each denomination linking to /p/:id", async () => {
-    const { group, members } = await seedGroup(categoryId, "Splice", [
-      { name: "Splice 7 day", price: "9000", duration: "7 day" },
-      { name: "Splice 1 Month", price: "29000", duration: "1 Month" },
-    ]);
-    const [wk, mo] = members;
-
-    const res = await app.inject({ method: "GET", url: `/g/${group.id}` });
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain(`/p/${wk!.id}`);
-    expect(res.body).toContain(`/p/${mo!.id}`);
-  });
-
-  it("unknown group id is 404", async () => {
-    const res = await app.inject({ method: "GET", url: "/g/999999" });
+  it("404s an unknown product slug", async () => {
+    const res = await app.inject({ method: "GET", url: "/p/no-such-product" });
     expect(res.statusCode).toBe(404);
   });
 
-  it("home 'latest' shows a group card linking to /g/:id, not the denominations flat", async () => {
-    const { group, members } = await seedGroup(categoryId, "HomeBrand", [
+  it("home 'latest' shows the product card, never denominations flat", async () => {
+    const { product, members } = await seedProduct(categoryId, "HomeBrand", [
       { name: "HomeBrand 7 day", price: "9000", duration: "7 day" },
       { name: "HomeBrand 1 Month", price: "29000", duration: "1 Month" },
     ]);
@@ -222,10 +227,10 @@ describe("denomination groups", () => {
 
     const res = await app.inject({ method: "GET", url: "/" });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain(`/g/${group.id}`);   // group card present
+    expect(res.body).toContain(`/p/${product.slug}`); // product card present
     expect(res.body).toContain("HomeBrand");
-    expect(res.body).not.toContain(`/p/${d1!.id}`);  // denominations are NOT shown flat on home
-    expect(res.body).not.toContain(`/p/${d2!.id}`);
+    expect(res.body).not.toContain(`/p/${d1!.id}"`);  // denominations not flat on home
+    expect(res.body).not.toContain(`/p/${d2!.id}"`);
   });
 });
 
@@ -243,7 +248,7 @@ describe("search + language", () => {
   });
 
   // F-01 (execution/10): a partial substring (not the whole product name) still
-  // matches — searchCatalogEntries uses a `contains` LIKE.
+  // matches — searchCatalog uses a `contains` LIKE.
   it("matches a partial substring of the product name", async () => {
     const res = await app.inject({ method: "GET", url: "/search?q=remium 1 Bul" });
     expect(res.statusCode).toBe(200);
@@ -268,17 +273,76 @@ describe("search + language", () => {
     expect(sw.headers.location).toBe("/");
   });
 
-  it("collapses grouped denominations into a group card in search results", async () => {
-    const { group, members } = await seedGroup(categoryId, "SearchBrand", [
-      { name: "SearchBrand 7 day", price: "9000", duration: "7 day" },
-      { name: "SearchBrand 1 Month", price: "29000", duration: "1 Month" },
+  // 3-tier rule: search returns PRODUCTS, never their plans. Searching the
+  // product name yields the product card; the denominations are not surfaced.
+  it("returns products (not denominations/plans) in search results", async () => {
+    const { product, members } = await seedProduct(categoryId, "CapCut Search", [
+      { name: "1 Week Plan", price: "9000", duration: "1 Week" },
+      { name: "1 Month Plan", price: "29000", duration: "1 Month" },
     ]);
-    const [d1] = members;
+    const [d1, d2] = members;
 
-    const res = await app.inject({ method: "GET", url: "/search?q=SearchBrand" });
+    // Searching the product name returns the product card…
+    const res = await app.inject({ method: "GET", url: "/search?q=CapCut Search" });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain(`/g/${group.id}`);  // group card
-    expect(res.body).not.toContain(`/p/${d1!.id}`); // not flat denominations
+    expect(res.body).toContain(`/p/${product.slug}`);
+    expect(res.body).toContain("CapCut Search");
+    // …but the denomination ids are never linked as their own results.
+    expect(res.body).not.toContain(`/p/${d1!.id}"`);
+    expect(res.body).not.toContain(`/p/${d2!.id}"`);
+  });
+});
+
+describe("guest cart — line label + cookie versioning", () => {
+  // Add a denomination to the guest cart; the cart line must read
+  // `Product - Denomination ×qty` and the cookie must be the versioned v2.
+  it("renders the cart line as `Product - Denomination` and sets shop_cart_v2", async () => {
+    const cat = await prisma.category.create({ data: { name: "CartCat", slug: "cart-cat", sortOrder: 7 } });
+    const { members } = await seedProduct(cat.id, "CapCut Pro", [{ name: "1 Month", price: "30000", duration: "1 Month" }]);
+    const denomId = members[0]!.id;
+
+    const add = await app.inject({
+      method: "POST",
+      url: "/cart/add",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ denomination_id: String(denomId), qty: "1" }).toString(),
+    });
+    expect(add.statusCode).toBe(303);
+    const setCookie = add.headers["set-cookie"];
+    const cookieStr = Array.isArray(setCookie) ? setCookie.join("; ") : String(setCookie);
+    // New versioned cookie name; old name not (re)written.
+    expect(cookieStr).toContain("shop_cart_v2=");
+
+    const cart = await app.inject({ method: "GET", url: "/cart", headers: { cookie: cookieStr } });
+    expect(cart.statusCode).toBe(200);
+    expect(cart.body).toContain("CapCut Pro - 1 Month"); // Product - Denomination label
+  });
+
+  // Cutover hazard: a stale pre-rename `shop_cart` cookie (bare array, no
+  // version) MUST be ignored — it can never resolve to a denomination row.
+  it("ignores a legacy shop_cart cookie (no version envelope)", async () => {
+    const legacy = "shop_cart=" + encodeURIComponent(JSON.stringify([{ p: productId, q: 3 }]));
+    const cart = await app.inject({ method: "GET", url: "/cart", headers: { cookie: legacy } });
+    expect(cart.statusCode).toBe(200);
+    // The stale cookie resolved to nothing → empty cart.
+    expect(cart.body).toContain("Your cart is empty");
+    expect(cart.body).not.toContain("Netflix Premium 1 Bulan");
+  });
+
+  // A wrong-version envelope (e.g. a future {v:99,...}) is also ignored.
+  it("ignores a cart cookie whose version != current", async () => {
+    const badVer = "shop_cart_v2=" + encodeURIComponent(JSON.stringify({ v: 99, items: [{ p: productId, q: 2 }] }));
+    const cart = await app.inject({ method: "GET", url: "/cart", headers: { cookie: badVer } });
+    expect(cart.statusCode).toBe(200);
+    expect(cart.body).toContain("Your cart is empty");
+  });
+
+  // The current v2 envelope resolves correctly.
+  it("reads a current v2 cart cookie", async () => {
+    const ok = "shop_cart_v2=" + encodeURIComponent(JSON.stringify({ v: 2, items: [{ p: productId, q: 2 }] }));
+    const cart = await app.inject({ method: "GET", url: "/cart", headers: { cookie: ok } });
+    expect(cart.statusCode).toBe(200);
+    expect(cart.body).toContain("Netflix Premium 1 Bulan");
   });
 });
 

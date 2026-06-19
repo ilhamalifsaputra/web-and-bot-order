@@ -12,16 +12,22 @@ import { Decimal } from "@app/core/money";
 import { UserRole } from "@app/core/enums";
 import {
   prisma,
-  getCart,
+  getCartWithDenominationProduct,
   addToCart,
   updateCartItemQty,
   removeFromCart,
-  getProduct,
+  getDenomination,
+  getDenominationWithProduct,
   countAvailableStock,
 } from "@app/db";
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { productImage } from "../images";
 import { shopContext, readGuestCart, writeGuestCart, type GuestCartLine } from "../shop";
+
+/** Cart-line label per the 3-tier spec: `Product - Denomination`. */
+function cartLineLabel(productName: string, denominationName: string): string {
+  return productName === denominationName ? productName : `${productName} - ${denominationName}`;
+}
 
 const clampQty = (raw: unknown): number => {
   const n = Number(raw);
@@ -37,8 +43,12 @@ function csrfOk(req: FastifyRequest, customer: Customer | null): boolean {
 }
 
 export interface CartLineView {
-  key: number; // cartItemId (signed in) or productId (guest)
-  product_id: number;
+  key: number; // cartItemId (signed in) or denomination id (guest)
+  /** Denomination id — the sellable SKU (cart cookie `p`). */
+  denomination_id: number;
+  /** Parent product slug, for the line's link to product detail (/p/:slug). */
+  product_slug: string;
+  /** Display label: `Product - Denomination` (e.g. "CapCut Pro - 1 Month"). */
   name: string;
   image: string;
   unit_price: string;
@@ -54,19 +64,23 @@ export async function loadCartLines(
 ): Promise<CartLineView[]> {
   if (customer) {
     const isReseller = customer.user.role === UserRole.RESELLER;
-    const rows = await getCart(prisma, customer.userId);
+    // Join the parent Product so the line can show `Product - Denomination`.
+    const rows = await getCartWithDenominationProduct(prisma, customer.userId);
     return Promise.all(
       rows
         .filter((r) => r.product.isActive)
         .map(async (r) => {
+          const denom = r.product; // the Denomination (SKU)
+          const parent = denom.product; // the mid-tier Product
           const unit = new Decimal(
-            isReseller && r.product.resellerPrice != null ? r.product.resellerPrice : r.product.price,
+            isReseller && denom.resellerPrice != null ? denom.resellerPrice : denom.price,
           );
           return {
             key: r.id,
-            product_id: r.productId,
-            name: r.product.name,
-            image: productImage(r.product, null),
+            denomination_id: r.productId,
+            product_slug: parent.slug,
+            name: cartLineLabel(parent.name, denom.name),
+            image: denom.webImageUrl ?? productImage(parent, parent.category.name),
             unit_price: unit.toString(),
             qty: r.quantity,
             line_total: unit.times(r.quantity).toString(),
@@ -78,17 +92,19 @@ export async function loadCartLines(
   const lines = readGuestCart(req);
   const resolved = await Promise.all(
     lines.map(async (l) => {
-      const [product, available] = await Promise.all([
-        getProduct(prisma, l.p),
+      const [denom, available] = await Promise.all([
+        getDenominationWithProduct(prisma, l.p),
         countAvailableStock(prisma, l.p),
       ]);
-      if (!product || !product.isActive) return null;
-      const unit = new Decimal(product.price);
+      if (!denom || !denom.isActive) return null;
+      const parent = denom.product; // mid-tier Product (+ category)
+      const unit = new Decimal(denom.price);
       return {
         key: l.p,
-        product_id: l.p,
-        name: product.name,
-        image: productImage(product, null),
+        denomination_id: l.p,
+        product_slug: parent.slug,
+        name: cartLineLabel(parent.name, denom.name),
+        image: denom.webImageUrl ?? productImage(parent, parent.category.name),
         unit_price: unit.toString(),
         qty: l.q,
         line_total: unit.times(l.q).toString(),
@@ -113,29 +129,34 @@ const cartRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
-  app.post<{ Body: { product_id?: string; qty?: string; csrf_token?: string } }>(
+  app.post<{ Body: { denomination_id?: string; qty?: string; csrf_token?: string; buy_now?: string } }>(
     "/cart/add",
     async (req, reply) => {
       const customer = await optionalCustomer(req);
       if (!csrfOk(req, customer)) {
         return reply.code(403).type("text/plain").send("CSRF check failed");
       }
-      const productId = Number(req.body.product_id);
+      const denominationId = Number(req.body.denomination_id);
       const qty = clampQty(req.body.qty ?? 1) || 1;
-      const product = Number.isInteger(productId) ? await getProduct(prisma, productId) : null;
-      if (product?.isActive) {
+      const denom = Number.isInteger(denominationId)
+        ? await getDenomination(prisma, denominationId)
+        : null;
+      if (denom?.isActive) {
         if (customer) {
-          await addToCart(prisma, customer.userId, product.id, qty);
+          await addToCart(prisma, customer.userId, denom.id, qty);
         } else {
           const lines = readGuestCart(req);
-          const existing = lines.find((l) => l.p === product.id);
+          const existing = lines.find((l) => l.p === denom.id);
           const next: GuestCartLine[] = existing
-            ? lines.map((l) => (l.p === product.id ? { p: l.p, q: Math.min(l.q + qty, 99) } : l))
-            : [...lines, { p: product.id, q: qty }];
+            ? lines.map((l) => (l.p === denom.id ? { p: l.p, q: Math.min(l.q + qty, 99) } : l))
+            : [...lines, { p: denom.id, q: qty }];
           writeGuestCart(reply, next);
         }
       }
-      return reply.code(303).redirect("/cart");
+      // "Buy Now" sends the buyer straight to checkout (login-gated there);
+      // "Add To Cart" lands on the cart page.
+      const dest = req.body.buy_now ? "/checkout" : "/cart";
+      return reply.code(303).redirect(dest);
     },
   );
 

@@ -12,6 +12,20 @@ export function getCart(db: Db, userId: number) {
   });
 }
 
+/**
+ * Cart rows with the denomination AND its parent product (+ category) joined —
+ * the storefront needs the parent product name to render the cart-line label
+ * `Product - Denomination ×qty`. `r.product` is the Denomination (SKU);
+ * `r.product.product` is its mid-tier Product. Renamed in Phase 5 cleanup.
+ */
+export function getCartWithDenominationProduct(db: Db, userId: number) {
+  return db.cartItem.findMany({
+    where: { userId },
+    include: { product: { include: { product: { include: { category: true } } } } },
+    orderBy: { addedAt: "asc" },
+  });
+}
+
 /** Upsert: increment quantity (capped 99) if the product is already in cart. */
 export async function addToCart(
   db: Db,

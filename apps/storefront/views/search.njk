@@ -8,11 +8,8 @@
   <h1 class="page-title">{{ t('web.search_results', lang, { q: q }) }}</h1>
 </div>
 
-{% if groups.length or products.length %}
+{% if products.length %}
 <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-  {% for g in groups %}
-  {{ shop.group_card(g, fx, lang) }}
-  {% endfor %}
   {% for p in products %}
   {{ shop.product_card(p, fx, low_threshold, lang) }}
   {% endfor %}

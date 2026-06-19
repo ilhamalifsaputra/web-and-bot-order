@@ -24,7 +24,7 @@ import {
   createReview,
   listReviews,
   subscribeToRestock,
-  getProduct,
+  getDenominationWithProduct,
 } from "@app/db";
 import { currentCustomer, csrfProtect } from "../plugins/auth";
 import { shopContext } from "../shop";
@@ -227,11 +227,12 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
     { preHandler: csrfProtect },
     async (req, reply) => {
       const customer = req.customer!;
-      const product = await getProduct(prisma, Number(req.params.id));
-      if (product?.isActive) {
-        await subscribeToRestock(prisma, customer.userId, product.id);
+      const denom = await getDenominationWithProduct(prisma, Number(req.params.id));
+      if (denom?.isActive) {
+        await subscribeToRestock(prisma, customer.userId, denom.id);
       }
-      return reply.code(303).redirect(product ? `/p/${product.id}` : "/");
+      // Bounce back to the parent product detail (slug URL).
+      return reply.code(303).redirect(denom ? `/p/${denom.product.slug}` : "/");
     },
   );
 

@@ -11,18 +11,15 @@
 {# Pills for switching category #}
 <div class="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1 mb-6">
   {% for c in categories %}
-  <a href="/c/{{ c.id }}"
+  <a href="/c/{{ c.slug }}"
      class="chip whitespace-nowrap !px-3.5 !py-1.5 transition-colors {% if c.id == category.id %}bg-pine text-white{% else %}bg-sand text-ink-soft hover:bg-pine-tint hover:text-pine-dark{% endif %}">
     {% if c.emoji %}{{ c.emoji }} {% endif %}{{ c.name }}
   </a>
   {% endfor %}
 </div>
 
-{% if groups.length or products.length %}
+{% if products.length %}
 <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-  {% for g in groups %}
-  {{ shop.group_card(g, fx, lang) }}
-  {% endfor %}
   {% for p in products %}
   {{ shop.product_card(p, fx, low_threshold, lang) }}
   {% endfor %}

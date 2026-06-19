@@ -21,7 +21,7 @@ import { ensureUtc } from "@app/core/datetime";
 import {
   prisma,
   getCart,
-  getBulkPricingForProduct,
+  getBulkPricingForDenomination,
   getVoucherByCode,
   applyVoucherToSubtotal,
   computeBulkDiscountForCart,
@@ -66,7 +66,7 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
   }
   const bulkRules: Record<number, { minQuantity: number; discountPercent: Decimal.Value }> = {};
   for (const ci of lines) {
-    const rule = await getBulkPricingForProduct(prisma, ci.productId);
+    const rule = await getBulkPricingForDenomination(prisma, ci.productId);
     if (rule) bulkRules[ci.productId] = rule;
   }
   const bulkDiscount = computeBulkDiscountForCart(

@@ -20,7 +20,7 @@ import {
   prisma,
   setSetting,
   addToCart,
-  getProduct,
+  getDenomination,
   getUserByTelegramId,
   findUserByLoginIdentifier,
   LOGIN_USERNAME_RE,
@@ -52,8 +52,8 @@ export async function establishSession(
 ): Promise<void> {
   const guestCart = readGuestCart(req);
   for (const line of guestCart) {
-    const product = await getProduct(prisma, line.p);
-    if (product?.isActive) await addToCart(prisma, user.id, line.p, line.q);
+    const denom = await getDenomination(prisma, line.p);
+    if (denom?.isActive) await addToCart(prisma, user.id, line.p, line.q);
   }
   if (guestCart.length) writeGuestCart(reply, []);
 

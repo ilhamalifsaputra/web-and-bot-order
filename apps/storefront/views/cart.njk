@@ -13,11 +13,11 @@
   <div class="lg:col-span-2 card divide-y divide-line">
     {% for item in items %}
     <div class="p-4 flex items-center gap-3 sm:gap-4">
-      <a href="/p/{{ item.product_id }}" class="w-16 h-16 rounded-xl overflow-hidden bg-sand shrink-0">
+      <a href="/p/{{ item.product_slug }}" class="w-16 h-16 rounded-xl overflow-hidden bg-sand shrink-0">
         <img src="{{ item.image }}" alt="{{ item.name }}" loading="lazy" class="w-full h-full object-cover">
       </a>
       <div class="flex-1 min-w-0">
-        <a href="/p/{{ item.product_id }}" class="font-display text-sm font-semibold text-ink hover:text-pine line-clamp-2">{{ item.name }}</a>
+        <a href="/p/{{ item.product_slug }}" class="font-display text-sm font-semibold text-ink hover:text-pine line-clamp-2">{{ item.name }}</a>
         <div class="mt-1">{{ shop.price(item.unit_price, fx, "text-sm") }}</div>
         {% if item.qty > item.available %}
         <div class="text-xs text-rust mt-1">{{ t('web.stock_left', lang, { count: item.available }) }}</div>

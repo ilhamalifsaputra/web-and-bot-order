@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
+import { createOrderDirect } from "./orders";
+import { upsertUser } from "./users";
+import { bulkAddStock } from "./stock";
 import {
   slugify,
   ensureUniqueSlug,
@@ -12,6 +15,8 @@ import {
   assignDenominationToProduct,
   deleteCatalogProduct,
   deleteCatalogProductCascade,
+  deleteDenomination,
+  bulkSetCatalogProductsActive,
   listCatalogProducts,
   listNewestCatalogProducts,
   searchCatalog,
@@ -110,6 +115,50 @@ describe("delete product", () => {
     await deleteCatalogProductCascade(prisma, p.id);
     expect(await prisma.product.findUnique({ where: { id: p.id } })).toBeNull();
     expect(await prisma.denomination.findUnique({ where: { id: d.id } })).toBeNull();
+  });
+});
+
+describe("deleteDenomination", () => {
+  it("deletes a denomination with no order history", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Deletable");
+    const d = await makeDenom(p.id, "1 Month", "5");
+    await deleteDenomination(prisma, d.id);
+    expect(await prisma.denomination.findUnique({ where: { id: d.id } })).toBeNull();
+  });
+
+  it("refuses to delete a denomination with order history", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Ordered");
+    const d = await makeDenom(p.id, "1 Month", "5");
+    await bulkAddStock(prisma, d.id, ["cred1"]);
+    const user = await upsertUser(prisma, {
+      telegramId: Math.floor(Math.random() * 1_000_000_000),
+      username: null,
+      fullName: null,
+    });
+    await createOrderDirect(prisma, { user, productId: d.id, quantity: 1 });
+    await expect(deleteDenomination(prisma, d.id)).rejects.toThrow(/order history/);
+    expect(await prisma.denomination.findUnique({ where: { id: d.id } })).not.toBeNull();
+  });
+});
+
+describe("bulkSetCatalogProductsActive", () => {
+  it("flips isActive on the given products only, returns the updated count", async () => {
+    const cat = await makeCategory();
+    const a = await makeProduct(cat.id, "A");
+    const b = await makeProduct(cat.id, "B");
+    const c = await makeProduct(cat.id, "C");
+
+    const count = await bulkSetCatalogProductsActive(prisma, [a.id, b.id], false);
+    expect(count).toBe(2);
+    expect((await prisma.product.findUnique({ where: { id: a.id } }))!.isActive).toBe(false);
+    expect((await prisma.product.findUnique({ where: { id: b.id } }))!.isActive).toBe(false);
+    expect((await prisma.product.findUnique({ where: { id: c.id } }))!.isActive).toBe(true);
+  });
+
+  it("returns 0 for an empty id list", async () => {
+    expect(await bulkSetCatalogProductsActive(prisma, [], true)).toBe(0);
   });
 });
 

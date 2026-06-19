@@ -193,6 +193,13 @@ export function listProducts(db: Db, categoryId?: number) {
   });
 }
 
+/** Bulk activate/deactivate products (mid-tier) in one writer. Returns count updated. */
+export async function bulkSetCatalogProductsActive(db: Db, ids: number[], isActive: boolean): Promise<number> {
+  if (!ids.length) return 0;
+  const res = await db.product.updateMany({ where: { id: { in: ids } }, data: { isActive } });
+  return res.count;
+}
+
 /** Refuse to delete a product that still has denominations (use the cascade path). */
 export async function deleteCatalogProduct(db: Db, productId: number): Promise<void> {
   const count = await db.denomination.count({ where: { productId } });
@@ -329,6 +336,19 @@ export async function bulkSetPrices(db: Db, items: Array<{ id: number; price: st
     await db.denomination.update({ where: { id: it.id }, data: { price: it.price } });
   }
   return items.length;
+}
+
+/**
+ * Delete a denomination (and its stock/cart/review/bulk-pricing rows, which
+ * cascade at the DB level). Refuses when it has order history — those rows
+ * (`order_items`) do NOT cascade, so the financial record stays intact.
+ */
+export async function deleteDenomination(db: Db, denominationId: number): Promise<void> {
+  const orderCount = await db.orderItem.count({ where: { productId: denominationId } });
+  if (orderCount > 0) {
+    throw new Error("cannot delete a denomination with order history");
+  }
+  await db.denomination.delete({ where: { id: denominationId } });
 }
 
 /** (denomination, availableCount) for active denominations at/below threshold. */

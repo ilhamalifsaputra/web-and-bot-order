@@ -106,7 +106,7 @@
        data-denom-id="{{ d.id }}" data-price="{{ d.price }}" data-available="{{ d.available }}"
        data-label="{{ d.name }}">
   <div class="flex items-center gap-3 min-w-0">
-    <input type="radio" name="denomination_id" value="{{ d.id }}" class="denom-radio accent-pine shrink-0"
+    <input type="radio" name="denomination_id" value="{{ d.id }}" form="buy-form" class="denom-radio accent-pine shrink-0"
            {% if not d.in_stock %}disabled{% endif %}>
     <div class="min-w-0">
       <div class="font-display text-sm font-semibold text-ink leading-snug">{{ d.duration_label or d.name }}</div>

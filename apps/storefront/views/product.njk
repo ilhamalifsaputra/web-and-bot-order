@@ -52,7 +52,6 @@
       {# Buy Now / Add To Cart — both post the selected denomination_id. #}
       <form id="buy-form" method="post" action="/cart/add" class="mt-5 flex flex-wrap items-end gap-2">
         {% if customer %}<input type="hidden" name="csrf_token" value="{{ customer.csrf }}">{% endif %}
-        <input type="hidden" name="denomination_id" id="sel-denom-input" value="">
         <div class="flex flex-col gap-1">
           <label class="text-xs text-ink-soft" for="qty">{{ t('web.qty', lang) }}</label>
           <input id="qty" type="number" name="qty" value="1" min="1" max="99" class="field !w-20 text-center">
@@ -97,9 +96,10 @@
   {% endif %}
 </section>
 
-{# Denomination selection: update the live price/stock + checkout payload, and
-   swap Buy/Cart ↔ restock CTA when the picked plan is out of stock. Pure
-   progressive enhancement — the radios + form already carry the data. #}
+{# Denomination selection: update the live price/stock summary, and swap
+   Buy/Cart ↔ restock CTA when the picked plan is out of stock. The radios
+   carry denomination_id natively (form="buy-form" on each, see _shop.njk) —
+   this script is presentation only, not required for a correct submission. #}
 <script>
 (function () {
   'use strict';
@@ -108,7 +108,6 @@
   var radios = root.querySelectorAll('.denom-radio');
   var priceEl = document.getElementById('sel-price');
   var stockEl = document.getElementById('sel-stock');
-  var denomInput = document.getElementById('sel-denom-input');
   var qtyInput = document.getElementById('qty');
   var buyForm = document.getElementById('buy-form');
   var restockForm = document.getElementById('restock-form');
@@ -121,7 +120,10 @@
   } | dump | safe }};
 
   function fmtIdr(v) {
-    try { return 'Rp' + Number(v).toLocaleString('id-ID'); } catch (e) { return 'Rp' + v; }
+    // Round to whole rupiah first — matches the server's formatIdr
+    // (Decimal.ROUND_HALF_UP), so a fractional price never displays
+    // differently here than on the denomination card next to it.
+    try { return 'Rp' + Math.round(Number(v)).toLocaleString('id-ID'); } catch (e) { return 'Rp' + v; }
   }
 
   function select(label) {
@@ -129,7 +131,6 @@
     var avail = parseInt(label.getAttribute('data-available'), 10) || 0;
     var id = label.getAttribute('data-denom-id');
     priceEl.textContent = fmtIdr(price);
-    denomInput.value = id;
     if (qtyInput) qtyInput.max = Math.max(1, avail);
     // Stock badge text mirrors the server macro (kept simple here).
     var cls, txt;

@@ -355,7 +355,7 @@ describe("checkout handlers", () => {
   it("buyNowTokopay creates an IDR/TOKOPAY order and sends the QR as one photo+caption bubble", async () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
-    const { ctx, sink } = makeCtx({ session: { dbUser: sample.user, lang: "en" } });
+    const { ctx, sink } = customerCtx();
     await checkout.buyNowTokopay(ctx, sample.product.id, 1);
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
     expect(orders[0]!.paymentMethod).toBe("TOKOPAY");

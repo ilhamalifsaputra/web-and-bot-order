@@ -631,9 +631,9 @@ describe("stock", () => {
 
   it("bulk delete removes available rows but keeps sold + audit never logs credentials", async () => {
     const avail = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" } });
-    const delId = avail[0].id;
+    const delId = avail[0]!.id;
     const sold = await prisma.stockItem.update({
-      where: { id: avail[1].id },
+      where: { id: avail[1]!.id },
       data: { status: "SOLD", soldAt: new Date() },
     });
     const res = await post(`/stock/${seed.productId}/bulk-delete`, seed.cookie, {

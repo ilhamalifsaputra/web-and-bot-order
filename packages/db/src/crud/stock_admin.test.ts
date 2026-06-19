@@ -50,7 +50,7 @@ describe("bulkDeleteStock", () => {
       data: { status: StockStatus.SOLD, soldAt: new Date() },
     });
 
-    const deleted = await bulkDeleteStock(prisma, [soldId, rest[0]]);
+    const deleted = await bulkDeleteStock(prisma, [soldId!, rest[0]!]);
 
     expect(deleted).toBe(1); // only the AVAILABLE one
     expect(await prisma.stockItem.findUnique({ where: { id: soldId } })).not.toBeNull();
@@ -79,7 +79,7 @@ describe("bulkDeleteStock", () => {
     });
     expect(order.id).toBeGreaterThan(0);
 
-    const deleted = await bulkDeleteStock(prisma, [stockId]);
+    const deleted = await bulkDeleteStock(prisma, [stockId!]);
 
     expect(deleted).toBe(0);
     expect(await prisma.stockItem.findUnique({ where: { id: stockId } })).not.toBeNull();
@@ -93,7 +93,7 @@ describe("bulkDeleteStock", () => {
       data: { status: StockStatus.DEAD, note: "bad" },
     });
 
-    expect(await bulkDeleteStock(prisma, [deadId])).toBe(1);
+    expect(await bulkDeleteStock(prisma, [deadId!])).toBe(1);
   });
 
   it("returns 0 for an empty id list", async () => {

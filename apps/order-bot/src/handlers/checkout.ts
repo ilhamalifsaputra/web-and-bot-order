@@ -572,7 +572,10 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   let gateway;
   try {
     gateway = await createTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
-    await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify(gateway) } });
+    // Tagged `gateway: "tokopay"` to match the cache shape the storefront's own
+    // cache-write sites produce (apps/storefront/src/routes/checkout.ts) — its
+    // parseCachedGateway() requires this discriminator before trusting the cache.
+    await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify({ gateway: "tokopay", ...gateway }) } });
   } catch (err) {
     logger.error({ err }, `TokoPay create failed for ${order.orderCode}`);
     await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));

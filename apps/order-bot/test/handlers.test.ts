@@ -443,6 +443,12 @@ describe("checkout handlers", () => {
     const photoCalls = calls(sink, "replyWithPhoto");
     expect(photoCalls.length).toBe(1);
     expect((photoCalls[0]!.args[1] as { caption?: string }).caption).toBeTruthy();
+    // paymentRef is cached as JSON tagged `gateway: "tokopay"` — the same
+    // discriminator the storefront's parseCachedGateway() requires, so a
+    // storefront view of a bot-created order is a cache HIT, not a re-fetch.
+    const cached = JSON.parse(orders[0]!.paymentRef!) as { gateway?: string; trxId?: string };
+    expect(cached.gateway).toBe("tokopay");
+    expect(cached.trxId).toBe("TP-TEST");
   });
 
   it("buyNow refuses past the pending-order limit", async () => {

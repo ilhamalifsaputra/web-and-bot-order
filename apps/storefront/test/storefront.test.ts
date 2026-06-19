@@ -967,6 +967,44 @@ describe("checkout — PayDisini option (2nd IDR method, alongside TokoPay)", ()
     // yet defined — see web.pay_paydisini_* above, which IS asserted literally).
     expect(res.body).toContain("isn&#39;t available right now");
   });
+
+  // Regression for the "exactly one checked radio" cascade in checkout.njk.
+  // File order (= priority, confirmed by reading the existing fallthrough
+  // conditions top to bottom) is: qris/idr > paydisini > binance > bybit.
+  // idr off, binance off, bybit ON, paydisini ON: PayDisini outranks Bybit, so
+  // PayDisini must be the one checked — and Bybit must NOT also be checked
+  // (two `checked` radios in one `name="method"` group is invalid). Before the
+  // fix, bybit's condition was `not idr_enabled and not binance_enabled` (it
+  // didn't exclude paydisini_enabled), so BOTH radios ended up checked here.
+  it("checks exactly one radio (paydisini, not bybit) when bybit and paydisini are both enabled but idr/binance are not", async () => {
+    await enablePaydisini();
+    await setSetting(prisma, "bybit_deposit_address", "0xDEADBEEF00000000000000000000000000000000");
+    await setSetting(prisma, "bybit_api_key", "k");
+    await setSetting(prisma, "bybit_api_secret", "s");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    try {
+      const cookie = await loginAs("paydisinibuyer", "paydisini-pass-99");
+      await addToCart(prisma, buyerId, productId, 1);
+      const res = await app.inject({ method: "GET", url: "/checkout", headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+
+      const bybitInput = res.body.match(/<input type="radio" name="method" value="bybit"[^>]*>/)?.[0];
+      const paydisiniInput = res.body.match(/<input type="radio" name="method" value="paydisini"[^>]*>/)?.[0];
+      expect(bybitInput).toBeTruthy();
+      expect(paydisiniInput).toBeTruthy();
+      expect(paydisiniInput).toContain("checked");
+      expect(bybitInput).not.toContain("checked");
+
+      // Belt-and-suspenders: exactly one `checked` radio across the whole group.
+      const checkedCount = (res.body.match(/<input type="radio" name="method"[^>]*\bchecked\b[^>]*>/g) ?? []).length;
+      expect(checkedCount).toBe(1);
+    } finally {
+      await deleteSetting(prisma, "bybit_deposit_address");
+      await deleteSetting(prisma, "bybit_api_key");
+      await deleteSetting(prisma, "bybit_api_secret");
+      await deleteSetting(prisma, "usd_idr_rate");
+    }
+  });
 });
 
 describe("hero image", () => {

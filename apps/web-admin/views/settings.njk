@@ -143,6 +143,20 @@
 
   <div class="card card-pad">
     <h2 class="section-title mb-1 flex items-center gap-2">
+      <i data-lucide="bitcoin" class="w-5 h-5 text-sky-500"></i> USDT via NOWPayments (hosted crypto invoice)
+    </h2>
+    <p class="text-xs text-ink-soft mb-4">
+      The NOWPayments keys turn on USDT payments at checkout on the website via a
+      hosted crypto invoice. The pay currency selects the underlying crypto
+      network/rail (e.g. <span class="codeish">usdttrc20</span> for USDT on TRON).
+    </p>
+    <div class="space-y-3">
+      {% for fld in pay_nowpayments_fields %}{{ setting_form(fld) }}{% endfor %}
+    </div>
+  </div>
+
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center gap-2">
       <i data-lucide="link" class="w-5 h-5 text-sky-500"></i> USDT on BSC via Bybit (auto-confirm)
     </h2>
     <div class="text-xs text-ink-soft mb-4 space-y-1.5">

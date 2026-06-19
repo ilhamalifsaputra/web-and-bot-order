@@ -1321,6 +1321,48 @@ describe("settings", () => {
     expect(entry).toBeTruthy();
     expect(entry!.details).not.toContain("PDAPIKEYSECRET");
   });
+
+  it("accepts nowpayments_pay_currency (not a secret — shown back on the page)", async () => {
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "nowpayments_pay_currency", value: "usdttrc20",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "nowpayments_pay_currency")).toBe("usdttrc20");
+    const page = await get("/settings", seed.cookie);
+    expect(page.body).toContain("usdttrc20");
+  });
+
+  it("nowpayments_api_key / nowpayments_ipn_secret are write-only (blank keeps value, never echoed)", async () => {
+    await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "nowpayments_api_key", value: "NOWAPIKEYSECRET",
+    });
+    await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "nowpayments_ipn_secret", value: "NOWIPNSECRETVALUE",
+    });
+    expect(await getSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
+    expect(await getSetting(prisma, "nowpayments_ipn_secret")).toBe("NOWIPNSECRETVALUE");
+
+    // Blank submit keeps the existing value (the "'<key>' left unchanged." path).
+    const blank = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "nowpayments_api_key", value: "",
+    });
+    expect(blank.statusCode).toBe(303);
+    expect(blank.headers.location).toContain("kind=info");
+    expect(await getSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
+
+    // The stored secrets are never echoed into the form or the saved-data table.
+    const page = await get("/settings", seed.cookie);
+    expect(page.statusCode).toBe(200);
+    expect(page.body).not.toContain("NOWAPIKEYSECRET");
+    expect(page.body).not.toContain("NOWIPNSECRETVALUE");
+
+    // Audit records "(updated)" without the value (CLAUDE.md: never log secrets).
+    const logs = await listAuditLogs(prisma, { limit: 10 });
+    const entry = logs.find((l) => l.action === "setting_set" && (l.details ?? "").includes("nowpayments_ipn_secret"));
+    expect(entry).toBeTruthy();
+    expect(entry!.details).not.toContain("NOWIPNSECRETVALUE");
+  });
 });
 
 // ---- settings: QR upload (mirrors branding.test.ts banner upload) ---------

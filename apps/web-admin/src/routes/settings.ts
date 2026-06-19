@@ -69,6 +69,10 @@ const EDITABLE: Record<string, string> = {
   paydisini_apikey: "PayDisini API key",
   paydisini_enabled: "Rupiah payments via PayDisini on the website — true / false",
   paydisini_default_channel: "PayDisini channel/service code — default QRIS",
+  nowpayments_api_key: "NOWPayments API key",
+  nowpayments_ipn_secret: "NOWPayments IPN secret (verifies payment callbacks)",
+  nowpayments_enabled: "USDT payments via NOWPayments on the website — true / false",
+  nowpayments_pay_currency: "Underlying crypto network for NOWPayments — e.g. usdttrc20 (USDT on TRON), usdtbsc, usdterc20",
   // ---- Bybit USDT-BSC deposit (auto-confirmed; leave blank to disable) ----
   bybit_deposit_address: "Bybit BEP20 (BSC) USDT deposit address shown to buyers",
   bybit_api_key: "Bybit API key — Wallet READ-ONLY (no Withdraw)",
@@ -99,12 +103,13 @@ const PAY_BINANCE_KEYS = new Set(["binance_pay_id", "qr"]);
 const PAY_RATE_KEYS = new Set(["usd_idr_rate", "usd_idr_rate_auto", "usd_idr_rate_rounding"]);
 const PAY_QRIS_KEYS = new Set(["tokopay_merchant_id", "tokopay_secret", "tokopay_enabled"]);
 const PAY_PAYDISINI_KEYS = new Set(["paydisini_userkey", "paydisini_apikey", "paydisini_enabled", "paydisini_default_channel"]);
+const PAY_NOWPAYMENTS_KEYS = new Set(["nowpayments_api_key", "nowpayments_ipn_secret", "nowpayments_enabled", "nowpayments_pay_currency"]);
 const PAY_BYBIT_KEYS = new Set(["bybit_deposit_address", "bybit_api_key", "bybit_api_secret"]);
 const PAY_BINANCE_INTERNAL_KEYS = new Set(["binance_receive_uid", "binance_api_key", "binance_api_secret"]);
 
 // Write-only editable secrets: never echoed back into the form, hidden in the
 // "All saved options" table, audited as "(updated)" without the value.
-const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret"]);
+const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret"]);
 
 // Bot tokens get the §16.4 "don't brick the bot" treatment: owner-only, and
 // Telegram must accept the token (getMe) before anything is saved.
@@ -150,7 +155,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     const pick = (keys: Set<string>) => allFields.filter((f) => keys.has(f.key));
     const grouped = new Set([
       ...WEBSITE_KEYS, ...BOT_MESSAGE_KEYS, ...BOT_TOKEN_FIELD_KEYS,
-      ...PAY_BINANCE_KEYS, ...PAY_RATE_KEYS, ...PAY_QRIS_KEYS, ...PAY_PAYDISINI_KEYS, ...PAY_BYBIT_KEYS,
+      ...PAY_BINANCE_KEYS, ...PAY_RATE_KEYS, ...PAY_QRIS_KEYS, ...PAY_PAYDISINI_KEYS, ...PAY_NOWPAYMENTS_KEYS, ...PAY_BYBIT_KEYS,
       ...PAY_BINANCE_INTERNAL_KEYS, ...BRANDING_KEYS,
     ]);
     // Leftover guard: an EDITABLE key missing from every group still shows up.
@@ -182,6 +187,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       pay_rate_fields: pick(PAY_RATE_KEYS),
       pay_qris_fields: pick(PAY_QRIS_KEYS),
       pay_paydisini_fields: pick(PAY_PAYDISINI_KEYS),
+      pay_nowpayments_fields: pick(PAY_NOWPAYMENTS_KEYS),
       pay_bybit_fields: pick(PAY_BYBIT_KEYS),
       pay_binance_internal_fields: pick(PAY_BINANCE_INTERNAL_KEYS),
       qr_is_upload: qrIsUpload,

@@ -185,8 +185,14 @@ export function verifyIpn(
  *   also get their keys sorted.
  * - Everything else (string, number, boolean, null, undefined) is returned
  *   unchanged.
+ *
+ * Exported (in addition to being used internally by `verifyIpn`) so tests can
+ * compute a REAL signature against this exact implementation instead of a
+ * hand-rolled re-sort — a webhook test that imports this fails loudly if the
+ * sort logic ever changes/breaks, instead of silently testing against a
+ * second, possibly-drifted copy.
  */
-function sortKeysDeep(obj: unknown): unknown {
+export function sortKeysDeep(obj: unknown): unknown {
   if (Array.isArray(obj)) {
     return obj.map((item) => sortKeysDeep(item));
   }

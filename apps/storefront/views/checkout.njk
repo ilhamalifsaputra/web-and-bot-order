@@ -57,6 +57,15 @@
             {% if not bybit_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_bybit_disabled', lang) }}</span>{% endif %}
           </span>
         </label>
+        <label class="flex items-start gap-3 p-3 rounded-xl border {% if nowpayments_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
+          <input type="radio" name="method" value="nowpayments" class="mt-1" {% if not nowpayments_enabled %}disabled{% elif not idr_enabled and not paydisini_enabled and not binance_enabled and not bybit_enabled %}checked{% endif %}>
+          <img src="/static/pay/binance.png" alt="NOWPayments" class="h-7 w-7 rounded object-contain shrink-0 mt-0.5">
+          <span>
+            <span class="font-semibold text-sm block">{{ t('web.pay_nowpayments_title', lang) }}</span>
+            <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_nowpayments_sub', lang) }}</span>
+            {% if not nowpayments_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_nowpayments_disabled', lang) }}</span>{% endif %}
+          </span>
+        </label>
       </div>
     </div>
 

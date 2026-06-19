@@ -30,6 +30,10 @@ process.env.SMTP_FROM = "Shop <no-reply@test.invalid>";
 process.env.BYBIT_DEPOSIT_ADDRESS = "";
 process.env.BYBIT_API_KEY = "";
 process.env.BYBIT_API_SECRET = "";
+// NOWPayments' createInvoice needs a public IPN callback URL — without this,
+// the storefront pay page treats NOWPayments as unconfigured (gatewayError)
+// even with creds set, since it has nowhere to send the callback to.
+process.env.SHOP_PUBLIC_URL = "https://shop.test.invalid";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 execSync("pnpm exec prisma db push --skip-generate --accept-data-loss", {

@@ -19,6 +19,17 @@ vi.mock("@app/core/payments/paydisini", async (orig) => ({
     totalBayar: "100",
   }),
 }));
+// NOWPayments' createInvoice hits a real gateway HTTP endpoint too — mock it
+// for the "pay page redirects to the hosted invoice" checkout test below.
+// verifyIpn is left real/untouched (exercised separately in
+// nowpayments-webhook.test.ts).
+vi.mock("@app/core/payments/nowpayments", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/nowpayments")>()),
+  createInvoice: vi.fn().mockResolvedValue({
+    invoiceId: "NP-TEST-INV-1",
+    invoiceUrl: "https://x/nowpayments-invoice",
+  }),
+}));
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
 import {
@@ -1004,6 +1015,109 @@ describe("checkout — PayDisini option (2nd IDR method, alongside TokoPay)", ()
       await deleteSetting(prisma, "bybit_api_secret");
       await deleteSetting(prisma, "usd_idr_rate");
     }
+  });
+});
+
+describe("checkout — NOWPayments option (USDT hosted invoice, redirect-UX)", () => {
+  let buyerId: number;
+  beforeAll(async () => {
+    const { hashPassword } = await import("@app/core/password");
+    const u = await prisma.user.create({
+      data: {
+        loginUsername: "nowpaymentsbuyer",
+        email: "nowpayments@buyer.test",
+        passwordHash: hashPassword("nowpayments-pass-99"),
+        referralCode: "NOWP01",
+      },
+    });
+    buyerId = u.id;
+  });
+
+  async function enableNowpayments() {
+    await setSetting(prisma, "nowpayments_api_key", "ak-test");
+    await setSetting(prisma, "nowpayments_ipn_secret", "ipn-secret-test");
+    await setSetting(prisma, "nowpayments_pay_currency", "usdttrc20");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+  }
+  async function disableNowpayments() {
+    await deleteSetting(prisma, "nowpayments_api_key");
+    await deleteSetting(prisma, "nowpayments_ipn_secret");
+    await deleteSetting(prisma, "nowpayments_pay_currency");
+    await deleteSetting(prisma, "usd_idr_rate");
+  }
+
+  // Mirrors the storefront checkout flow: login → seed the cart → read CSRF from
+  // the checkout page. Returns { cookie, csrf } with a non-empty cart.
+  async function checkoutSession() {
+    const cookie = await loginAs("nowpaymentsbuyer", "nowpayments-pass-99");
+    await addToCart(prisma, buyerId, productId, 1);
+    const page = await app.inject({ method: "GET", url: "/checkout", headers: { cookie } });
+    return { cookie, csrf: csrfFrom(page.body) };
+  }
+
+  it("creates a NOWPAYMENTS/USDT order when method=nowpayments and NOWPayments is enabled", async () => {
+    await enableNowpayments();
+    const { cookie, csrf } = await checkoutSession();
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ method: "nowpayments", csrf_token: csrf }).toString(),
+    });
+    expect([302, 303]).toContain(res.statusCode);
+    const code = res.headers.location!.split("/")[2]!; // /checkout/<code>/pay
+    const order = await getOrderByCode(prisma, code);
+    expect(order!.paymentMethod).toBe("NOWPAYMENTS");
+    expect(order!.currency).toBe("USDT");
+  });
+
+  it("pay page for a NOWPAYMENTS order redirects to the hosted invoice + caches the tagged paymentRef", async () => {
+    await enableNowpayments();
+    const { cookie, csrf } = await checkoutSession();
+    const created = await app.inject({
+      method: "POST",
+      url: "/checkout",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ method: "nowpayments", csrf_token: csrf }).toString(),
+    });
+    const code = created.headers.location!.split("/")[2]!; // /checkout/<code>/pay
+    const res = await app.inject({ method: "GET", url: `/checkout/${code}/pay`, headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("https://x/nowpayments-invoice"); // hosted invoice link from the mocked gateway
+
+    // The cached paymentRef MUST carry the gateway: "nowpayments" discriminator
+    // tag — the bot's reconcile poller (nowpaymentsReconcile.ts extractInvoiceId)
+    // reads this exact tagged JSON to find the invoice id.
+    const order = await getOrderByCode(prisma, code);
+    const cached = JSON.parse(order!.paymentRef!) as Record<string, unknown>;
+    expect(cached.gateway).toBe("nowpayments");
+    expect(cached.invoiceId).toBe("NP-TEST-INV-1");
+    expect(cached.invoiceUrl).toBe("https://x/nowpayments-invoice");
+  });
+
+  it("rejects method=nowpayments when NOWPayments is disabled", async () => {
+    await disableNowpayments();
+    const { cookie, csrf } = await checkoutSession(); // NOWPayments NOT enabled here
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ method: "nowpayments", csrf_token: csrf }).toString(),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("rejects method=nowpayments when the USD/IDR rate is unset (USDT conversion needs it)", async () => {
+    await enableNowpayments();
+    await deleteSetting(prisma, "usd_idr_rate"); // creds present, but no rate
+    const { cookie, csrf } = await checkoutSession();
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ method: "nowpayments", csrf_token: csrf }).toString(),
+    });
+    expect(res.statusCode).toBe(400);
   });
 });
 

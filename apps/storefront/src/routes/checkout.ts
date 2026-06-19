@@ -40,6 +40,9 @@ import {
   getPaydisiniCreds,
   deliverPaidPaydisiniOrder,
   recordUnmatchedPaydisiniTx,
+  getNowpaymentsCreds,
+  deliverPaidNowpaymentsOrder,
+  recordUnmatchedNowpaymentsTx,
 } from "@app/db";
 import { currentCustomer, csrfProtect, type Customer } from "../plugins/auth";
 import { createTransaction, verifyCallback, type TokopayOrderInfo } from "@app/core/payments/tokopay";
@@ -48,6 +51,11 @@ import {
   verifyCallback as verifyPaydisiniCallback,
   type PaydisiniOrderInfo,
 } from "@app/core/payments/paydisini";
+import {
+  createInvoice as createNowpaymentsInvoice,
+  verifyIpn,
+  type NowpaymentsInvoice,
+} from "@app/core/payments/nowpayments";
 import { usdtFromIdr } from "../pricing";
 import { shopContext, requestLang } from "../shop";
 import { loadCartLines } from "./cart";
@@ -108,13 +116,14 @@ async function checkoutView(
   voucherCode: string | null,
   errorKey: string | null,
 ) {
-  const [totals, fxRate, tokopay, bybit, binance, paydisini] = await Promise.all([
+  const [totals, fxRate, tokopay, bybit, binance, paydisini, nowpayments] = await Promise.all([
     computeTotals(customer, voucherCode),
     getUsdIdrRate(prisma),
     getTokopayCreds(prisma),
     resolveBybitConfig(prisma),
     resolveBinanceInternalConfig(prisma),
     getPaydisiniCreds(prisma),
+    getNowpaymentsCreds(prisma),
   ]);
   const haveRate = Boolean(fxRate);
   return {
@@ -130,27 +139,33 @@ async function checkoutView(
     bybit_enabled: haveRate && bybit.enabled,
     idr_enabled: Boolean(tokopay),
     paydisini_enabled: Boolean(paydisini),
+    nowpayments_enabled: haveRate && Boolean(nowpayments),
   };
 }
 
 /**
  * Cached gateway payload shape stored as JSON in order.paymentRef, tagged with
- * a `gateway` discriminator. TokoPay and PayDisini are two independent IDR
- * payment options that share this single column (plan.md §15 — additive, not
- * exclusive), so a page refresh must be able to tell which gateway's JSON it
- * is looking at without relying solely on order.paymentMethod (kept anyway as
- * the primary signal — the tag is a defensive cross-check / future-proofing).
+ * a `gateway` discriminator. TokoPay, PayDisini and NOWPayments are three
+ * independent payment options that share this single column (plan.md §15 —
+ * additive, not exclusive), so a page refresh must be able to tell which
+ * gateway's JSON it is looking at without relying solely on
+ * order.paymentMethod (kept anyway as the primary signal — the tag is a
+ * defensive cross-check / future-proofing). NOWPayments' reconcile poller
+ * (apps/order-bot/src/payments/nowpaymentsReconcile.ts `extractInvoiceId`)
+ * reads this SAME tagged JSON, so the `gateway: "nowpayments"` tag is a hard
+ * contract, not optional — omitting it breaks the poller silently.
  */
 type CachedGateway =
   | ({ gateway: "tokopay" } & Record<string, unknown>)
-  | ({ gateway: "paydisini" } & Record<string, unknown>);
+  | ({ gateway: "paydisini" } & Record<string, unknown>)
+  | ({ gateway: "nowpayments" } & Record<string, unknown>);
 
-/** Shared JSON.parse + shape guard for the two cached-gateway parsers below. */
+/** Shared JSON.parse + shape guard for the cached-gateway parsers below. */
 function parseCachedGatewayJson(paymentRef: string | null): CachedGateway | null {
   if (!paymentRef || !paymentRef.startsWith("{")) return null;
   try {
     const d = JSON.parse(paymentRef) as Record<string, unknown>;
-    if (d.gateway !== "tokopay" && d.gateway !== "paydisini") return null;
+    if (d.gateway !== "tokopay" && d.gateway !== "paydisini" && d.gateway !== "nowpayments") return null;
     return d as CachedGateway;
   } catch {
     return null;
@@ -190,6 +205,22 @@ function parseCachedPaydisiniGateway(paymentRef: string | null): PaydisiniOrderI
   };
 }
 
+/**
+ * Parse a cached NOWPayments gateway payload stored as JSON in
+ * order.paymentRef. Mirrors parseCachedGateway (TokoPay) /
+ * parseCachedPaydisiniGateway above — see CachedGateway doc comment for why
+ * the discriminator tag exists (here it's a HARD requirement: the bot's
+ * NOWPayments reconcile poller reads this same tagged JSON to extract the
+ * invoice id — apps/order-bot/src/payments/nowpaymentsReconcile.ts).
+ */
+function parseCachedNowpaymentsGateway(paymentRef: string | null): NowpaymentsInvoice | null {
+  const d = parseCachedGatewayJson(paymentRef);
+  if (!d || d.gateway !== "nowpayments") return null;
+  if (typeof d.invoiceId !== "string" || !d.invoiceId) return null;
+  if (typeof d.invoiceUrl !== "string" || !d.invoiceUrl) return null;
+  return { invoiceId: d.invoiceId, invoiceUrl: d.invoiceUrl };
+}
+
 /** Status → step + i18n key for the pay page / polling partial. */
 function payState(order: OrderRow) {
   const expired =
@@ -216,12 +247,13 @@ export async function performCheckout(
   method: string,
   voucherCode: string | null,
 ): Promise<{ orderCode: string }> {
-  const [fxRate, tokopay, bybit, binance, paydisini] = await Promise.all([
+  const [fxRate, tokopay, bybit, binance, paydisini, nowpayments] = await Promise.all([
     getUsdIdrRate(prisma),
     getTokopayCreds(prisma),
     resolveBybitConfig(prisma),
     resolveBinanceInternalConfig(prisma),
     getPaydisiniCreds(prisma),
+    getNowpaymentsCreds(prisma),
   ]);
 
   // Map the chosen method token → (currency, paymentMethod), each gated.
@@ -230,7 +262,7 @@ export async function performCheckout(
     | {
         currency: typeof OrderCurrency.USDT;
         rate: NonNullable<typeof fxRate>;
-        method: typeof PaymentMethod.BINANCE_INTERNAL | typeof PaymentMethod.BYBIT;
+        method: typeof PaymentMethod.BINANCE_INTERNAL | typeof PaymentMethod.BYBIT | typeof PaymentMethod.NOWPAYMENTS;
       }
     | { currency: typeof OrderCurrency.IDR; method?: typeof PaymentMethod.PAYDISINI };
   let choice: Choice;
@@ -240,6 +272,9 @@ export async function performCheckout(
   } else if (method === "bybit") {
     if (!fxRate || !bybit.enabled) throw new ValidationError("web.pay_method_unavailable");
     choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BYBIT };
+  } else if (method === "nowpayments") {
+    if (!fxRate || !nowpayments) throw new ValidationError("web.pay_method_unavailable");
+    choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.NOWPAYMENTS };
   } else if (method === "qris") {
     if (!tokopay) throw new ValidationError("web.pay_method_unavailable");
     choice = { currency: OrderCurrency.IDR };
@@ -319,11 +354,12 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const state = payState(order);
-      const method = order.paymentMethod; // "BINANCE_INTERNAL" | "BYBIT" | "TOKOPAY" | "PAYDISINI" | ...
+      const method = order.paymentMethod; // "BINANCE_INTERNAL" | "BYBIT" | "TOKOPAY" | "PAYDISINI" | "NOWPAYMENTS" | ...
       const isBinance = method === PaymentMethod.BINANCE_INTERNAL;
       const isBybit = method === PaymentMethod.BYBIT;
       const isQris = method === PaymentMethod.TOKOPAY;
       const isPaydisini = method === PaymentMethod.PAYDISINI;
+      const isNowpayments = method === PaymentMethod.NOWPAYMENTS;
 
       // Bybit deposit address (no API call — just the configured address).
       const bybitAddress = isBybit ? (await resolveBybitConfig(prisma)).depositAddress : "";
@@ -390,9 +426,46 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         }
       }
 
+      // NOWPayments hosted invoice (redirect-UX, not inline QR) — third payment
+      // option, USDT branch (not IDR). Same lazy-create + cache pattern as
+      // TokoPay/PayDisini above, tagged `gateway: "nowpayments"` so a page
+      // refresh reads back the right branch even though all three share
+      // order.paymentRef — and so the bot's NOWPayments reconcile poller
+      // (apps/order-bot/src/payments/nowpaymentsReconcile.ts) can find the
+      // invoice id. order.totalAmount for a NOWPAYMENTS order is ALREADY in
+      // USDT (finalizeOrderPayment's USDT branch) — pass it straight through
+      // as amountUsd, no second conversion.
+      let nowpaymentsGateway: NowpaymentsInvoice | null = null;
+      let nowpaymentsGatewayError = false;
+      if (isNowpayments && state === "waiting") {
+        nowpaymentsGateway = parseCachedNowpaymentsGateway(order.paymentRef);
+        if (!nowpaymentsGateway) {
+          const creds = await getNowpaymentsCreds(prisma);
+          const publicUrl = shopPublicUrl();
+          if (creds && publicUrl) {
+            try {
+              nowpaymentsGateway = await createNowpaymentsInvoice(creds, {
+                orderId: order.orderCode,
+                amountUsd: order.totalAmount,
+                ipnCallbackUrl: `${publicUrl.replace(/\/+$/, "")}/pay/nowpayments/callback`,
+              });
+              await prisma.order.update({
+                where: { id: order.id },
+                data: { paymentRef: JSON.stringify({ gateway: "nowpayments", ...nowpaymentsGateway }) },
+              });
+            } catch (err) {
+              logger.error({ err }, `NOWPayments create failed for ${order.orderCode}`);
+              nowpaymentsGatewayError = true;
+            }
+          } else {
+            nowpaymentsGatewayError = true;
+          }
+        }
+      }
+
       // Contact fallbacks shown when a Rupiah gateway is temporarily down, so
       // a stuck buyer always has a way to reach us instead of a dead red box.
-      const waNumber = (gatewayError && isQris) || (paydisiniGatewayError && isPaydisini)
+      const waNumber = (gatewayError && isQris) || (paydisiniGatewayError && isPaydisini) || (nowpaymentsGatewayError && isNowpayments)
         ? ((await getSetting(prisma, "support_whatsapp")) ?? "").replace(/[^0-9]/g, "")
         : "";
 
@@ -411,12 +484,15 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         is_bybit: isBybit,
         is_qris: isQris,
         is_paydisini: isPaydisini,
+        is_nowpayments: isNowpayments,
         bybit_address: bybitAddress,
         binance_uid: binanceUid,
         gateway,
         gateway_error: gatewayError,
         paydisini_gateway: paydisiniGateway,
         paydisini_gateway_error: paydisiniGatewayError,
+        nowpayments_gateway: nowpaymentsGateway,
+        nowpayments_gateway_error: nowpaymentsGatewayError,
         wa_number: waNumber,
         bot_username: botUsername() ?? "",
       });
@@ -538,6 +614,59 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     } catch (err) {
       logger.error({ err }, `PayDisini delivery failed for ${order.orderCode}`);
       // 200 so PayDisini stops retrying — the ledger row is flagged delivery_failed
+      // and an admin resolves it from the orders panel.
+      return reply.send({ status: "delivery failed" });
+    }
+  });
+
+  // ---- NOWPayments IPN webhook (public; signature is the auth) — DIFFERS
+  // from TokoPay/PayDisini above: the signature arrives via the HTTP header
+  // `x-nowpayments-sig`, not a body field, and is HMAC-SHA512 over the
+  // recursively-key-sorted body (verifyIpn handles both). `orderId` in the
+  // verified result is `order.orderCode` (NOWPayments' `order_id`, set to
+  // orderCode when the invoice was created above), so lookup is via
+  // getOrderByCode exactly like the other two gateways. Same response
+  // contract: 403 disabled, 403 bad signature, 200 for every other outcome
+  // (ignored/unmatched/amount mismatch/delivered/delivery-failed) so
+  // NOWPayments stops retrying regardless of outcome. ----
+  app.post("/pay/nowpayments/callback", async (req, reply) => {
+    const creds = await getNowpaymentsCreds(prisma);
+    if (!creds) return reply.code(403).send({ status: "disabled" });
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const sigHeader = req.headers["x-nowpayments-sig"];
+    const cb = verifyIpn(body, typeof sigHeader === "string" ? sigHeader : undefined, creds);
+    if (!cb) return reply.code(403).send({ status: "bad signature" });
+    // Only an EXACT "finished" status is a delivery — every other status
+    // (waiting/confirming/confirmed/sending/partially_paid/failed/refunded/
+    // expired) is "not ready yet" and ignored, never an error.
+    if (!cb.paid) return reply.send({ status: "ignored" });
+
+    const order = await getOrderByCode(prisma, cb.orderId);
+    if (!order || order.paymentMethod !== PaymentMethod.NOWPAYMENTS) {
+      await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+      return reply.send({ status: "unmatched" });
+    }
+    // Amount sanity: never deliver on a short/partial payment.
+    if (cb.amount.lessThan(order.totalAmount)) {
+      logger.warn(
+        `NOWPayments callback short-paid ${order.orderCode}: got ${cb.amount.toString()}, expected ${order.totalAmount.toString()}`,
+      );
+      await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+      return reply.send({ status: "amount mismatch" });
+    }
+
+    try {
+      const r = await deliverPaidNowpaymentsOrder(prisma, {
+        orderId: order.id,
+        trxId: cb.trxId,
+        amount: cb.amount,
+        shopUrl: shopPublicUrl(),
+      });
+      return reply.send({ status: r.status });
+    } catch (err) {
+      logger.error({ err }, `NOWPayments delivery failed for ${order.orderCode}`);
+      // 200 so NOWPayments stops retrying — the ledger row is flagged delivery_failed
       // and an admin resolves it from the orders panel.
       return reply.send({ status: "delivery failed" });
     }

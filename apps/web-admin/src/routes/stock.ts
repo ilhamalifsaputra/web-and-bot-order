@@ -23,7 +23,7 @@ import {
   logAdminAction,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../plugins/auth";
-import { redirectWithFlash, renderError } from "../flash";
+import { redirectWithFlash, renderError, safeReturnTo } from "../flash";
 
 export default async function stockRoutes(app: FastifyInstance): Promise<void> {
   app.get("/stock", { preHandler: currentAdmin }, async (req, reply) => {
@@ -76,10 +76,14 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
 
   app.post("/stock/:productId/add", { preHandler: csrfProtect }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
-    const raw = (req.body as Record<string, string>).credentials ?? "";
+    const body = (req.body ?? {}) as Record<string, string>;
+    // Land back on the Inventory tab when posted from the product detail page;
+    // else the standalone /stock/:id page (unchanged default).
+    const back = safeReturnTo(body.return_to, `/stock/${productId}`);
+    const raw = body.credentials ?? "";
     const creds = raw.split(/\r?\n/).map((ln) => ln.trim()).filter(Boolean);
     if (creds.length === 0) {
-      return redirectWithFlash(reply, `/stock/${productId}`, "No credentials provided.", "error");
+      return redirectWithFlash(reply, back, "No credentials provided.", "error");
     }
     const product = await getProduct(prisma, productId);
     if (!product) return redirectWithFlash(reply, "/stock", "Product not found.", "error");
@@ -93,7 +97,7 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
       details: `added=${added}`, // never log the credentials themselves
     });
     logger.info(`Bulk-added ${added} stock rows to product ${productId}`);
-    return redirectWithFlash(reply, `/stock/${productId}`, `Added ${added} stock item(s).`, "success");
+    return redirectWithFlash(reply, back, `Added ${added} stock item(s).`, "success");
   });
 
   // Bulk mark selected stock items dead (one writer, audited once). Never logs
@@ -101,12 +105,13 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
   app.post("/stock/:productId/bulk-dead", { preHandler: csrfProtect }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
     const body = (req.body ?? {}) as Record<string, string>;
+    const back = safeReturnTo(body.return_to, `/stock/${productId}`);
     const ids = (body.ids ?? "")
       .split(",")
       .map((s) => Number(s.trim()))
       .filter((n) => Number.isInteger(n) && n > 0);
     if (!ids.length) {
-      return redirectWithFlash(reply, `/stock/${productId}`, "Select at least one stock item.", "error");
+      return redirectWithFlash(reply, back, "Select at least one stock item.", "error");
     }
     const note = (body.note ?? "").trim() || "bulk marked dead via web";
     const count = await bulkMarkStockDead(prisma, ids, note);
@@ -118,7 +123,7 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
       details: `count=${count} note=${note.slice(0, 160)}`, // never the credentials
     });
     logger.info(`Bulk-marked ${count} stock rows dead on product ${productId}`);
-    return redirectWithFlash(reply, `/stock/${productId}`, `${count} stock item(s) marked dead.`, "success");
+    return redirectWithFlash(reply, back, `${count} stock item(s) marked dead.`, "success");
   });
 
   // Hard-delete selected stock items (one writer, audited once). The crud guard
@@ -127,12 +132,13 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
   app.post("/stock/:productId/bulk-delete", { preHandler: csrfProtect }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
     const body = (req.body ?? {}) as Record<string, string>;
+    const back = safeReturnTo(body.return_to, `/stock/${productId}`);
     const ids = (body.ids ?? "")
       .split(",")
       .map((s) => Number(s.trim()))
       .filter((n) => Number.isInteger(n) && n > 0);
     if (!ids.length) {
-      return redirectWithFlash(reply, `/stock/${productId}`, "Select at least one stock item.", "error");
+      return redirectWithFlash(reply, back, "Select at least one stock item.", "error");
     }
     const count = await bulkDeleteStock(prisma, ids);
     await logAdminAction(prisma, {
@@ -145,7 +151,7 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
     logger.info(`Bulk-deleted ${count} stock rows on product ${productId}`);
     const skipped = ids.length - count;
     const tail = skipped > 0 ? ` (${skipped} skipped — sold or in an order)` : "";
-    return redirectWithFlash(reply, `/stock/${productId}`, `${count} stock item(s) deleted${tail}.`, "success");
+    return redirectWithFlash(reply, back, `${count} stock item(s) deleted${tail}.`, "success");
   });
 
   // Download remaining (AVAILABLE) credentials as a plain-text file, one login
@@ -177,9 +183,11 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
 
   app.post("/stock/item/:stockId/dead", { preHandler: csrfProtect }, async (req, reply) => {
     const stockId = Number((req.params as { stockId: string }).stockId);
-    const note = ((req.body as Record<string, string>).note ?? "").trim();
+    const body = (req.body ?? {}) as Record<string, string>;
+    const note = (body.note ?? "").trim();
     const item = await getStockItem(prisma, stockId);
     if (!item) return redirectWithFlash(reply, "/stock", "Stock item not found.", "error");
+    const back = safeReturnTo(body.return_to, `/stock/${item.productId}`);
 
     await markStockDead(prisma, stockId, note || "marked dead via web");
     await logAdminAction(prisma, {
@@ -189,14 +197,16 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
       targetId: stockId,
       details: `note=${note.slice(0, 200)}`,
     });
-    return redirectWithFlash(reply, `/stock/${item.productId}`, `Stock item #${stockId} marked dead.`, "success");
+    return redirectWithFlash(reply, back, `Stock item #${stockId} marked dead.`, "success");
   });
 
   app.post("/stock/item/:stockId/note", { preHandler: csrfProtect }, async (req, reply) => {
     const stockId = Number((req.params as { stockId: string }).stockId);
-    const note = ((req.body as Record<string, string>).note ?? "").trim();
+    const body = (req.body ?? {}) as Record<string, string>;
+    const note = (body.note ?? "").trim();
     const item = await getStockItem(prisma, stockId);
     if (!item) return redirectWithFlash(reply, "/stock", "Stock item not found.", "error");
+    const back = safeReturnTo(body.return_to, `/stock/${item.productId}`);
 
     await setStockNote(prisma, stockId, note || null);
     await logAdminAction(prisma, {
@@ -206,6 +216,6 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
       targetId: stockId,
       details: `note=${note.slice(0, 200)}`,
     });
-    return redirectWithFlash(reply, `/stock/${item.productId}`, `Note updated on item #${stockId}.`, "success");
+    return redirectWithFlash(reply, back, `Note updated on item #${stockId}.`, "success");
   });
 }

@@ -18,6 +18,23 @@ export function redirectWithFlash(
   return reply;
 }
 
+/**
+ * Allowlist a client-supplied `return_to` redirect target. Returns `raw` only
+ * when it is a safe in-app path under the product/stock admin (so a saved form
+ * can land back on the right tab); otherwise `fallback`. Rejects absolute URLs,
+ * protocol-relative `//host`, backslashes, and whitespace/control characters —
+ * no open-redirect surface. No `return_to` → callers keep their existing
+ * default, so behaviour is unchanged unless the new pages opt in.
+ */
+export function safeReturnTo(raw: unknown, fallback: string): string {
+  if (typeof raw !== "string") return fallback;
+  const v = raw.trim();
+  if (!v) return fallback;
+  if (/[\s\\]/.test(v) || v.includes("://") || v.startsWith("//")) return fallback;
+  if (!v.startsWith("/catalog/product/") && !v.startsWith("/stock/")) return fallback;
+  return v;
+}
+
 /** Turn an AppError/ValidationError (i18n key + args) into a readable sentence. */
 export function humanizeValidationError(exc: unknown): string {
   const key = (exc as { key?: string }).key ?? String(exc);

@@ -107,6 +107,24 @@
   {% block content %}{% endblock %}
 </main>
 
+{# Shared AlertDialog target for any [data-confirm] action (admin-ui.js). One
+   per page; replaces window.confirm() across the admin. #}
+{% if admin %}
+<dialog id="alert-dialog" class="alert" aria-labelledby="alert-dialog-title">
+  <div class="card-pad">
+    <h2 id="alert-dialog-title" class="section-title flex items-center gap-2">
+      <i data-lucide="alert-triangle" class="w-5 h-5 text-amberx"></i> Please confirm
+    </h2>
+    <p data-alert-message class="text-sm text-ink-soft mt-2">Are you sure?</p>
+    <div class="mt-5 flex justify-end gap-2">
+      <button type="button" class="btn btn-ghost btn-sm" onclick="this.closest('dialog').close()">Cancel</button>
+      <button type="button" data-alert-confirm class="btn btn-danger btn-sm">Confirm</button>
+    </div>
+  </div>
+</dialog>
+{% endif %}
+
+<script defer src="/static/admin-ui.js"></script>
 <script>
   // Render Lucide icons on load, and again after HTMX swaps content (e.g. the
   // dashboard "needs attention" widgets) so swapped-in <i> tags become SVGs.

@@ -456,6 +456,59 @@ describe("catalog", () => {
   });
 });
 
+// ---- product detail page (new /catalog/product/:id) -----------------------
+
+describe("product detail page", () => {
+  it("renders the four-tab detail page for an authed admin", async () => {
+    const res = await get(`/catalog/product/${seed.productId}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    // The page renders without Nunjucks errors and carries the tab scaffold.
+    expect(res.body).toContain('data-tabs="product"');
+    expect(res.body).toContain('data-tab="general"');
+    expect(res.body).toContain('data-tab="inventory"');
+    // return_to is wired so saves land back on this page.
+    expect(res.body).toContain(`/catalog/product/${seed.productId}`);
+  });
+
+  it("redirects anon to /login", async () => {
+    const res = await get(`/catalog/product/${seed.productId}`, null);
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("404s for a missing product", async () => {
+    const res = await get(`/catalog/product/99999999`, seed.cookie);
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("honors an allowlisted return_to on update", async () => {
+    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const back = `/catalog/product/${seed.productId}`;
+    const res = await post(`/catalog/product/${seed.productId}/update`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: product!.name,
+      price: "5.00",
+      return_to: back,
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toMatch(new RegExp(`^${back}\\?`));
+    expect(res.headers.location).toContain("kind=success");
+  });
+
+  it("rejects a hostile return_to and falls back to /catalog", async () => {
+    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const res = await post(`/catalog/product/${seed.productId}/update`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: product!.name,
+      price: "5.00",
+      return_to: "https://evil.example.com/phish",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toMatch(/^\/catalog\?/);
+    expect(res.headers.location).not.toContain("evil.example.com");
+  });
+});
+
 describe("product groups", () => {
   it("create group happy + audit", async () => {
     const product = await prisma.product.findUnique({ where: { id: seed.productId } });

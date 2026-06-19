@@ -107,6 +107,16 @@ export function getProductWithCategory(db: Db, productId: number) {
   });
 }
 
+/** A single product with category + group — backs the admin product detail page
+ * (header badges + denominasi). Mirrors getProductWithCategory but also loads the
+ * group so the page can show/preselect the denomination. */
+export function getProductDetail(db: Db, productId: number) {
+  return db.product.findUnique({
+    where: { id: productId },
+    include: { category: true, productGroup: true },
+  });
+}
+
 /** Every product (active + inactive) with its category and group — admin views. */
 export function listAllProducts(db: Db) {
   return db.product.findMany({

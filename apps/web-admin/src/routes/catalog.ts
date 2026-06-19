@@ -22,6 +22,11 @@ import {
   bulkSetPrices,
   getProductsByIds,
   getProduct,
+  getProductDetail,
+  getBulkPricingForProduct,
+  listStockItemsForProduct,
+  countAvailableStock,
+  countRestockSubscribers,
   deleteBulkPricing,
   upsertBulkPricing,
   logAdminAction,
@@ -34,7 +39,7 @@ import {
   CategoryMismatchError,
 } from "@app/db";
 import { currentAdmin, csrfProtect, canMutate } from "../plugins/auth";
-import { redirectWithFlash } from "../flash";
+import { redirectWithFlash, renderError, safeReturnTo } from "../flash";
 
 function dec(value: string | undefined): Decimal | null {
   if (value === undefined || String(value).trim() === "") return null;
@@ -163,6 +168,40 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       groups,
       product_types: PRODUCT_TYPES,
       usd_idr_rate: fxRate ? fxRate.toString() : null,
+      msg: q.msg ?? null,
+      kind: q.kind ?? "info",
+    });
+  });
+
+  // Single-product detail page (General / Photos / Discounts / Inventory tabs).
+  // Read-only assembly: reuses the same crud the catalog list + stock page use;
+  // every mutation still posts to the existing endpoints.
+  app.get("/catalog/product/:productId", { preHandler: currentAdmin }, async (req, reply) => {
+    const q = req.query as Record<string, string | undefined>;
+    const productId = Number((req.params as { productId: string }).productId);
+    const product = await getProductDetail(prisma, productId);
+    if (!product) {
+      return renderError(reply, { statusCode: 404, title: "Not found", message: "Product not found." });
+    }
+    const [rule, groups, fxRate, items, available, waiting] = await Promise.all([
+      getBulkPricingForProduct(prisma, productId),
+      listAllGroups(prisma),
+      getUsdIdrRate(prisma),
+      listStockItemsForProduct(prisma, productId, 500),
+      countAvailableStock(prisma, productId),
+      countRestockSubscribers(prisma, productId),
+    ]);
+
+    return reply.view("product_detail.njk", {
+      admin: req.admin,
+      active_nav: "/catalog",
+      product,
+      rule,
+      groups,
+      usd_idr_rate: fxRate ? fxRate.toString() : null,
+      items,
+      available,
+      waiting,
       msg: q.msg ?? null,
       kind: q.kind ?? "info",
     });
@@ -352,10 +391,13 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
   app.post("/catalog/product/:productId/update", { preHandler: csrfProtect }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
     const body = (req.body ?? {}) as Record<string, string>;
+    // Where to land after saving — the product detail page sends its own tab,
+    // the catalog list sends nothing → "/catalog" (unchanged behaviour).
+    const back = safeReturnTo(body.return_to, "/catalog");
     const name = (body.name ?? "").trim();
     const priceDec = dec(body.price);
     if (!name || priceDec === null) {
-      return redirectWithFlash(reply, "/catalog", "Name and a valid price are required.", "error");
+      return redirectWithFlash(reply, back, "Name and a valid price are required.", "error");
     }
     const fields: Record<string, unknown> = {
       name,
@@ -370,7 +412,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
     if ((body.warranty_days ?? "").trim()) {
       const n = Number(body.warranty_days);
       if (!Number.isInteger(n)) {
-        return redirectWithFlash(reply, "/catalog", "Warranty days must be a number.", "error");
+        return redirectWithFlash(reply, back, "Warranty days must be a number.", "error");
       }
       fields.warrantyDays = n;
     }
@@ -382,13 +424,13 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       const raw = body.product_group_id.trim();
       const groupId = raw === "" ? null : Number(raw);
       if (groupId !== null && !Number.isInteger(groupId)) {
-        return redirectWithFlash(reply, "/catalog", "Invalid group.", "error");
+        return redirectWithFlash(reply, back, "Invalid group.", "error");
       }
       try {
         await assignProductToGroup(prisma, productId, groupId);
       } catch (err) {
         if (err instanceof CategoryMismatchError) {
-          return redirectWithFlash(reply, "/catalog", "Produk harus satu kategori dengan grup.", "error");
+          return redirectWithFlash(reply, back, "Produk harus satu kategori dengan grup.", "error");
         }
         throw err;
       }
@@ -401,7 +443,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       targetId: productId,
       details: `name=${name}`,
     });
-    return redirectWithFlash(reply, "/catalog", "Product updated.", "success");
+    return redirectWithFlash(reply, back, "Product updated.", "success");
   });
 
   // ---- Product photo upload ----
@@ -427,12 +469,15 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       };
 
       let csrfField: string | null = null;
+      let returnToField: string | null = null;
       let fileBuffer: Buffer | null = null;
       let mimetype = "";
 
       for await (const part of req.parts({ limits: { fileSize: 5 * 1024 * 1024 } })) {
         if (part.type === "field" && part.fieldname === "csrf_token") {
           csrfField = part.value as string;
+        } else if (part.type === "field" && part.fieldname === "return_to") {
+          returnToField = part.value as string;
         } else if (part.type === "file" && part.fieldname === "photo") {
           mimetype = part.mimetype;
           const chunks: Buffer[] = [];
@@ -441,20 +486,23 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
         }
       }
 
+      // Land back on the product detail tab when posted from there; else /catalog.
+      const back = safeReturnTo(returnToField, "/catalog");
+
       if (!csrfField || csrfField !== req.admin!.csrf) {
         return reply.code(403).type("text/plain").send("CSRF check failed");
       }
       if (!fileBuffer || fileBuffer.length === 0) {
-        return redirectWithFlash(reply, "/catalog", "No file selected.", "error");
+        return redirectWithFlash(reply, back, "No file selected.", "error");
       }
       const ext = ALLOWED_MIME[mimetype];
       if (!ext) {
-        return redirectWithFlash(reply, "/catalog", "Only JPG, PNG, or WebP images are allowed.", "error");
+        return redirectWithFlash(reply, back, "Only JPG, PNG, or WebP images are allowed.", "error");
       }
 
       const product = await getProduct(prisma, productId);
       if (!product) {
-        return redirectWithFlash(reply, "/catalog", "Product not found.", "error");
+        return redirectWithFlash(reply, back, "Product not found.", "error");
       }
 
       const filename = `${productId}-${randomBytes(8).toString("hex")}.${ext}`;
@@ -476,7 +524,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
         targetId: productId,
         details: `filename=${filename}`,
       });
-      return redirectWithFlash(reply, "/catalog", "Photo uploaded.", "success");
+      return redirectWithFlash(reply, back, "Photo uploaded.", "success");
     },
   );
 
@@ -484,6 +532,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
   app.post("/catalog/product/:productId/bulk-pricing", { preHandler: csrfProtect }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
     const body = (req.body ?? {}) as Record<string, string>;
+    const back = safeReturnTo(body.return_to, "/catalog");
 
     if (!(body.min_quantity ?? "").trim()) {
       const removed = await deleteBulkPricing(prisma, productId);
@@ -495,20 +544,20 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
           targetId: productId,
         });
       }
-      return redirectWithFlash(reply, "/catalog", "Bulk pricing removed.", "success");
+      return redirectWithFlash(reply, back, "Bulk pricing removed.", "success");
     }
 
     const minq = Number(body.min_quantity);
     if (!Number.isInteger(minq)) {
-      return redirectWithFlash(reply, "/catalog", "Min quantity must be a number.", "error");
+      return redirectWithFlash(reply, back, "Min quantity must be a number.", "error");
     }
     const pct = dec(body.discount_percent);
     if (minq < 1 || pct === null || pct.lessThanOrEqualTo(0)) {
-      return redirectWithFlash(reply, "/catalog", "Provide a valid min qty and discount %.", "error");
+      return redirectWithFlash(reply, back, "Provide a valid min qty and discount %.", "error");
     }
     // verify product exists for a clean FK error message
     if (!(await getProduct(prisma, productId))) {
-      return redirectWithFlash(reply, "/catalog", "Product not found.", "error");
+      return redirectWithFlash(reply, back, "Product not found.", "error");
     }
     await upsertBulkPricing(prisma, { productId, minQuantity: minq, discountPercent: pct });
     await logAdminAction(prisma, {
@@ -518,7 +567,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       targetId: productId,
       details: `min_qty=${minq} pct=${pct.toString()}`,
     });
-    return redirectWithFlash(reply, "/catalog", "Bulk pricing saved.", "success");
+    return redirectWithFlash(reply, back, "Bulk pricing saved.", "success");
   });
 
   // ---- Product groups (denominations) ----

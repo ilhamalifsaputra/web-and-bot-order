@@ -5,6 +5,7 @@ import {
   createGroup,
   deleteGroup,
   assignProductToGroup,
+  getProductDetail,
   listCatalogEntries,
   listNewestCatalogEntries,
   searchCatalogEntries,
@@ -73,6 +74,34 @@ describe("deleteGroup", () => {
     const fresh = await prisma.product.findUnique({ where: { id: p.id } });
     expect(fresh).not.toBeNull();
     expect(fresh!.productGroupId).toBeNull();
+  });
+});
+
+describe("getProductDetail", () => {
+  it("includes the category and (linked) product group", async () => {
+    const cat = await makeCategory();
+    const group = await createGroup(prisma, { categoryId: cat.id, name: "DetailGrp" });
+    const p = await makeProduct(cat.id, "Detail 1 Month", "1 Month", "5");
+    await assignProductToGroup(prisma, p.id, group.id);
+
+    const detail = await getProductDetail(prisma, p.id);
+    expect(detail).not.toBeNull();
+    expect(detail!.id).toBe(p.id);
+    expect(detail!.category.id).toBe(cat.id);
+    expect(detail!.productGroup).not.toBeNull();
+    expect(detail!.productGroup!.id).toBe(group.id);
+  });
+
+  it("returns a null productGroup for an ungrouped product", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Ungrouped", "1 Month", "5");
+    const detail = await getProductDetail(prisma, p.id);
+    expect(detail).not.toBeNull();
+    expect(detail!.productGroup).toBeNull();
+  });
+
+  it("returns null for a missing product", async () => {
+    expect(await getProductDetail(prisma, 99999999)).toBeNull();
   });
 });
 

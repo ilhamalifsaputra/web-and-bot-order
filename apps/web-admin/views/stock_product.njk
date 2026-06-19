@@ -14,7 +14,7 @@
   </div>
   <div class="flex items-center gap-2 shrink-0">
     {% if available %}{{ ui.btn('Download remaining (' + available | string + ')', 'download', 'soft', href='/stock/' + product.id | string + '/download', cls='btn-sm') }}{% endif %}
-    {{ ui.btn('Open product', 'sliders-horizontal', 'soft', href='/catalog/product/' + product.id | string, cls='btn-sm') }}
+    {{ ui.btn('Open product', 'sliders-horizontal', 'soft', href='/catalog/product/' + product.product.id | string, cls='btn-sm') }}
   </div>
 </header>
 {{ ui.flash(msg, kind) }}

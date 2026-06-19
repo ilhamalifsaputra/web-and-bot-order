@@ -665,8 +665,15 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
     }
     try {
       await deleteDenomination(prisma, denominationId);
-    } catch {
-      return redirectWithFlash(reply, back, "Cannot delete a denomination with order history.", "error");
+    } catch (err) {
+      // Only the crud's specific "has order history" guard gets the friendly
+      // flash — mirror how the product-delete route discriminates its own
+      // guard error rather than catching every Error (exact message match,
+      // not substring, for the same reason documented there).
+      if (err instanceof Error && err.message === "cannot delete a denomination with order history") {
+        return redirectWithFlash(reply, back, "Cannot delete a denomination with order history.", "error");
+      }
+      throw err;
     }
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,

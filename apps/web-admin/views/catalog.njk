@@ -134,7 +134,13 @@
         </div>
       </div>
       <div class="flex flex-col items-end gap-2 shrink-0">
-        {{ ui.btn('Manage', 'sliders-horizontal', 'soft', href='/catalog/product/' ~ p.id, cls='btn-sm') }}
+        <div class="flex gap-2">
+          {{ ui.btn('Manage', 'sliders-horizontal', 'soft', href='/catalog/product/' ~ p.id, cls='btn-sm') }}
+          <form method="post" action="/catalog/product/{{ p.id }}/delete" data-confirm="Delete &quot;{{ p.name }}&quot;? This cannot be undone.">
+            {{ ui.csrf_field(admin) }}
+            {{ ui.btn('Delete', 'trash-2', 'danger', cls='btn-sm') }}
+          </form>
+        </div>
       </div>
     </div>
     {% else %}

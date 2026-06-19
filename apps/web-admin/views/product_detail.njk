@@ -152,6 +152,19 @@
   <label class="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" name="is_active" value="true" {% if product.isActive %}checked{% endif %}> Shown to customers</label>
   <div class="sm:col-span-2">{{ ui.btn('Save changes', 'save', 'primary') }}</div>
 </form>
+
+<div class="card card-pad mt-5 border-rust/30">
+  <h3 class="section-title text-rust-dark mb-1">Danger zone</h3>
+  {% if product.denominations | length %}
+  <p class="text-xs text-ink-soft mb-3">Delete its {{ product.denominations | length }} denomination{{ 's' if product.denominations | length != 1 }} first — see the Denominations tab — before this product can be deleted.</p>
+  {% else %}
+  <p class="text-xs text-ink-soft mb-3">This product has no denominations and can be deleted permanently.</p>
+  {% endif %}
+  <form method="post" action="/catalog/product/{{ product.id }}/delete" data-confirm="Delete &quot;{{ product.name }}&quot;? This cannot be undone.">
+    {{ ui.csrf_field(admin) }}
+    {{ ui.btn('Delete product', 'trash-2', 'danger') }}
+  </form>
+</div>
 {% endcall %}
 
 {# Photos #}

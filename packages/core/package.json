@@ -18,7 +18,8 @@
     "./password": "./src/password.ts",
     "./mailer": "./src/mailer.ts",
     "./delivery": "./src/delivery.ts",
-    "./payments/tokopay": "./src/payments/tokopay.ts"
+    "./payments/tokopay": "./src/payments/tokopay.ts",
+    "./payments/paydisini": "./src/payments/paydisini.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

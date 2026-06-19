@@ -92,6 +92,49 @@
         </div>
       </div>
     {% endif %}
+    {% elif is_paydisini %}
+    {# ---- PayDisini (QRIS / e-wallet) — second IDR option, same auto-confirm
+       shape as TokoPay above ---- #}
+    <h2 class="section-title mb-3">{{ t('web.pay_paydisini_title', lang) }}</h2>
+    <div class="font-display font-semibold text-pine text-2xl">{{ order.total | idr }}</div>
+    {% if paydisini_gateway %}
+      {% if paydisini_gateway.qrUrl %}
+      <div class="mt-4 flex justify-center">
+        <img src="{{ paydisini_gateway.qrUrl }}" alt="QRIS" class="w-56 h-56 rounded-xl border border-line bg-white p-2">
+      </div>
+      {% endif %}
+      {% if paydisini_gateway.checkoutUrl %}
+      <a href="{{ paydisini_gateway.checkoutUrl }}" target="_blank" rel="noopener" class="btn btn-primary w-full mt-4">
+        <i data-lucide="wallet" class="w-4 h-4"></i> {{ t('web.pay_open_gateway', lang) }}
+      </a>
+      {% endif %}
+      <p class="text-xs text-ink-faint mt-3">{{ t('web.paydisini_auto_note', lang) }}</p>
+    {% elif paydisini_gateway_error %}
+      {# Same friendly, recoverable error treatment as the TokoPay branch. #}
+      <div class="mt-4 rounded-xl border border-amberx/30 bg-amberx-tint/60 p-4">
+        <div class="flex items-start gap-3">
+          <i data-lucide="alert-triangle" class="w-5 h-5 text-amberx flex-shrink-0 mt-0.5"></i>
+          <div class="text-sm">
+            <p class="font-semibold text-ink">{{ t('web.pay_idr_down_title', lang) }}</p>
+            <p class="text-ink-soft mt-0.5 leading-relaxed">{{ t('web.pay_idr_down_body', lang) }}</p>
+          </div>
+        </div>
+        <div class="flex flex-wrap gap-2 mt-4">
+          <a href="/checkout/{{ order.code }}/pay" class="btn btn-soft btn-sm">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> {{ t('web.pay_retry', lang) }}
+          </a>
+          {% if wa_number %}
+          <a href="https://wa.me/{{ wa_number }}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">
+            <i data-lucide="message-circle" class="w-3.5 h-3.5"></i> WhatsApp
+          </a>
+          {% elif bot_username %}
+          <a href="https://t.me/{{ bot_username }}" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">
+            <i data-lucide="send" class="w-3.5 h-3.5"></i> Telegram
+          </a>
+          {% endif %}
+        </div>
+      </div>
+    {% endif %}
     {% else %}
     {# Unknown / bot-only method (e.g. BINANCE_PAY created via the bot) reaching
        the web pay page — show a neutral pointer instead of a broken card. #}

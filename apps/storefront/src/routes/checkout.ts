@@ -37,9 +37,17 @@ import {
   getTokopayCreds,
   resolveBybitConfig,
   resolveBinanceInternalConfig,
+  getPaydisiniCreds,
+  deliverPaidPaydisiniOrder,
+  recordUnmatchedPaydisiniTx,
 } from "@app/db";
 import { currentCustomer, csrfProtect, type Customer } from "../plugins/auth";
 import { createTransaction, verifyCallback, type TokopayOrderInfo } from "@app/core/payments/tokopay";
+import {
+  createTransaction as createPaydisiniTransaction,
+  verifyCallback as verifyPaydisiniCallback,
+  type PaydisiniOrderInfo,
+} from "@app/core/payments/paydisini";
 import { usdtFromIdr } from "../pricing";
 import { shopContext, requestLang } from "../shop";
 import { loadCartLines } from "./cart";
@@ -100,12 +108,13 @@ async function checkoutView(
   voucherCode: string | null,
   errorKey: string | null,
 ) {
-  const [totals, fxRate, tokopay, bybit, binance] = await Promise.all([
+  const [totals, fxRate, tokopay, bybit, binance, paydisini] = await Promise.all([
     computeTotals(customer, voucherCode),
     getUsdIdrRate(prisma),
     getTokopayCreds(prisma),
     resolveBybitConfig(prisma),
     resolveBinanceInternalConfig(prisma),
+    getPaydisiniCreds(prisma),
   ]);
   const haveRate = Boolean(fxRate);
   return {
@@ -120,24 +129,65 @@ async function checkoutView(
     binance_enabled: haveRate && binance.enabled,
     bybit_enabled: haveRate && bybit.enabled,
     idr_enabled: Boolean(tokopay),
+    paydisini_enabled: Boolean(paydisini),
   };
+}
+
+/**
+ * Cached gateway payload shape stored as JSON in order.paymentRef, tagged with
+ * a `gateway` discriminator. TokoPay and PayDisini are two independent IDR
+ * payment options that share this single column (plan.md §15 — additive, not
+ * exclusive), so a page refresh must be able to tell which gateway's JSON it
+ * is looking at without relying solely on order.paymentMethod (kept anyway as
+ * the primary signal — the tag is a defensive cross-check / future-proofing).
+ */
+type CachedGateway =
+  | ({ gateway: "tokopay" } & Record<string, unknown>)
+  | ({ gateway: "paydisini" } & Record<string, unknown>);
+
+/** Shared JSON.parse + shape guard for the two cached-gateway parsers below. */
+function parseCachedGatewayJson(paymentRef: string | null): CachedGateway | null {
+  if (!paymentRef || !paymentRef.startsWith("{")) return null;
+  try {
+    const d = JSON.parse(paymentRef) as Record<string, unknown>;
+    if (d.gateway !== "tokopay" && d.gateway !== "paydisini") return null;
+    return d as CachedGateway;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Parse a cached TokoPay gateway payload stored as JSON in order.paymentRef.
  * Returns null when paymentRef is absent or not a JSON object (e.g. it holds a
- * Binance payment note instead).
+ * Binance payment note instead), or when the cached gateway tag doesn't match
+ * TokoPay (e.g. a PayDisini payload left over from a different method).
  */
 function parseCachedGateway(paymentRef: string | null): TokopayOrderInfo | null {
-  if (!paymentRef || !paymentRef.startsWith("{")) return null;
-  try {
-    const d = JSON.parse(paymentRef) as Record<string, unknown>;
-    if (typeof d.trxId !== "string") return null;
-    const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
-    return { trxId: d.trxId, payUrl: str(d.payUrl), qrLink: str(d.qrLink), qrString: str(d.qrString), totalBayar: str(d.totalBayar) };
-  } catch {
-    return null;
-  }
+  const d = parseCachedGatewayJson(paymentRef);
+  if (!d || d.gateway !== "tokopay") return null;
+  const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+  if (typeof d.trxId !== "string") return null;
+  return { trxId: d.trxId, payUrl: str(d.payUrl), qrLink: str(d.qrLink), qrString: str(d.qrString), totalBayar: str(d.totalBayar) };
+}
+
+/**
+ * Parse a cached PayDisini gateway payload stored as JSON in order.paymentRef.
+ * Mirrors parseCachedGateway (TokoPay) above — see CachedGateway doc comment
+ * for why the discriminator tag exists.
+ */
+function parseCachedPaydisiniGateway(paymentRef: string | null): PaydisiniOrderInfo | null {
+  const d = parseCachedGatewayJson(paymentRef);
+  if (!d || d.gateway !== "paydisini") return null;
+  const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
+  if (typeof d.trxId !== "string") return null;
+  return {
+    trxId: d.trxId,
+    qrString: str(d.qrString),
+    qrUrl: str(d.qrUrl),
+    checkoutUrl: str(d.checkoutUrl),
+    totalBayar: str(d.totalBayar),
+  };
 }
 
 /** Status → step + i18n key for the pay page / polling partial. */
@@ -166,11 +216,12 @@ export async function performCheckout(
   method: string,
   voucherCode: string | null,
 ): Promise<{ orderCode: string }> {
-  const [fxRate, tokopay, bybit, binance] = await Promise.all([
+  const [fxRate, tokopay, bybit, binance, paydisini] = await Promise.all([
     getUsdIdrRate(prisma),
     getTokopayCreds(prisma),
     resolveBybitConfig(prisma),
     resolveBinanceInternalConfig(prisma),
+    getPaydisiniCreds(prisma),
   ]);
 
   // Map the chosen method token → (currency, paymentMethod), each gated.
@@ -181,7 +232,7 @@ export async function performCheckout(
         rate: NonNullable<typeof fxRate>;
         method: typeof PaymentMethod.BINANCE_INTERNAL | typeof PaymentMethod.BYBIT;
       }
-    | { currency: typeof OrderCurrency.IDR };
+    | { currency: typeof OrderCurrency.IDR; method?: typeof PaymentMethod.PAYDISINI };
   let choice: Choice;
   if (method === "binance") {
     if (!fxRate || !binance.enabled) throw new ValidationError("web.pay_method_unavailable");
@@ -192,6 +243,9 @@ export async function performCheckout(
   } else if (method === "qris") {
     if (!tokopay) throw new ValidationError("web.pay_method_unavailable");
     choice = { currency: OrderCurrency.IDR };
+  } else if (method === "paydisini") {
+    if (!paydisini) throw new ValidationError("web.pay_method_unavailable");
+    choice = { currency: OrderCurrency.IDR, method: PaymentMethod.PAYDISINI };
   } else {
     throw new ValidationError("web.pay_method_unavailable");
   }
@@ -265,10 +319,11 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const state = payState(order);
-      const method = order.paymentMethod; // "BINANCE_INTERNAL" | "BYBIT" | "TOKOPAY" | ...
+      const method = order.paymentMethod; // "BINANCE_INTERNAL" | "BYBIT" | "TOKOPAY" | "PAYDISINI" | ...
       const isBinance = method === PaymentMethod.BINANCE_INTERNAL;
       const isBybit = method === PaymentMethod.BYBIT;
       const isQris = method === PaymentMethod.TOKOPAY;
+      const isPaydisini = method === PaymentMethod.PAYDISINI;
 
       // Bybit deposit address (no API call — just the configured address).
       const bybitAddress = isBybit ? (await resolveBybitConfig(prisma)).depositAddress : "";
@@ -276,7 +331,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
 
       // TokoPay transaction (QR / pay link) only while actually payable.
       // The result is cached in order.paymentRef (JSON) after the first fetch so
-      // that page refreshes don't create extra transactions in TokoPay.
+      // that page refreshes don't create extra transactions in TokoPay. Tagged
+      // with `gateway: "tokopay"` since PayDisini below caches into the SAME
+      // column — see the CachedGateway doc comment above parseCachedGateway.
       let gateway: TokopayOrderInfo | null = null;
       let gatewayError = false;
       if (isQris && state === "waiting") {
@@ -291,7 +348,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
               });
               await prisma.order.update({
                 where: { id: order.id },
-                data: { paymentRef: JSON.stringify(gateway) },
+                data: { paymentRef: JSON.stringify({ gateway: "tokopay", ...gateway }) },
               });
             } catch (err) {
               logger.error({ err }, `TokoPay create failed for ${order.orderCode}`);
@@ -303,9 +360,39 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         }
       }
 
-      // Contact fallbacks shown when the Rupiah gateway is temporarily down, so
+      // PayDisini transaction (QR / checkout link) — second IDR option,
+      // alongside (not replacing) TokoPay above. Same lazy-create + cache
+      // pattern, tagged `gateway: "paydisini"` so a page refresh reads back
+      // the right branch even though both share order.paymentRef.
+      let paydisiniGateway: PaydisiniOrderInfo | null = null;
+      let paydisiniGatewayError = false;
+      if (isPaydisini && state === "waiting") {
+        paydisiniGateway = parseCachedPaydisiniGateway(order.paymentRef);
+        if (!paydisiniGateway) {
+          const creds = await getPaydisiniCreds(prisma);
+          if (creds) {
+            try {
+              paydisiniGateway = await createPaydisiniTransaction(creds, {
+                refId: order.orderCode,
+                amountIdr: order.totalAmount,
+              });
+              await prisma.order.update({
+                where: { id: order.id },
+                data: { paymentRef: JSON.stringify({ gateway: "paydisini", ...paydisiniGateway }) },
+              });
+            } catch (err) {
+              logger.error({ err }, `PayDisini create failed for ${order.orderCode}`);
+              paydisiniGatewayError = true;
+            }
+          } else {
+            paydisiniGatewayError = true;
+          }
+        }
+      }
+
+      // Contact fallbacks shown when a Rupiah gateway is temporarily down, so
       // a stuck buyer always has a way to reach us instead of a dead red box.
-      const waNumber = gatewayError && isQris
+      const waNumber = (gatewayError && isQris) || (paydisiniGatewayError && isPaydisini)
         ? ((await getSetting(prisma, "support_whatsapp")) ?? "").replace(/[^0-9]/g, "")
         : "";
 
@@ -323,10 +410,13 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         is_binance: isBinance,
         is_bybit: isBybit,
         is_qris: isQris,
+        is_paydisini: isPaydisini,
         bybit_address: bybitAddress,
         binance_uid: binanceUid,
         gateway,
         gateway_error: gatewayError,
+        paydisini_gateway: paydisiniGateway,
+        paydisini_gateway_error: paydisiniGatewayError,
         wa_number: waNumber,
         bot_username: botUsername() ?? "",
       });
@@ -404,6 +494,50 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     } catch (err) {
       logger.error({ err }, `TokoPay delivery failed for ${order.orderCode}`);
       // 200 so TokoPay stops retrying — the ledger row is flagged delivery_failed
+      // and an admin resolves it from the orders panel.
+      return reply.send({ status: "delivery failed" });
+    }
+  });
+
+  // ---- PayDisini webhook (public; signature is the auth — mirrors the
+  // TokoPay callback above byte-for-byte except for the gateway identifiers;
+  // same response contract so PayDisini stops retrying regardless of outcome:
+  // 403 disabled, 403 bad signature, 200 for every other outcome including
+  // delivery-failed) ----
+  app.post("/pay/paydisini/callback", async (req, reply) => {
+    const creds = await getPaydisiniCreds(prisma);
+    if (!creds) return reply.code(403).send({ status: "disabled" });
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const cb = verifyPaydisiniCallback(body, creds);
+    if (!cb) return reply.code(403).send({ status: "bad signature" });
+    if (!cb.paid) return reply.send({ status: "ignored" }); // pending/failed callbacks
+
+    const order = await getOrderByCode(prisma, cb.refId);
+    if (!order || order.paymentMethod !== PaymentMethod.PAYDISINI) {
+      await recordUnmatchedPaydisiniTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+      return reply.send({ status: "unmatched" });
+    }
+    // Amount sanity: never deliver on a short payment.
+    if (cb.amount.lessThan(order.totalAmount)) {
+      logger.warn(
+        `PayDisini callback short-paid ${order.orderCode}: got ${cb.amount.toString()}, expected ${order.totalAmount.toString()}`,
+      );
+      await recordUnmatchedPaydisiniTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+      return reply.send({ status: "amount mismatch" });
+    }
+
+    try {
+      const r = await deliverPaidPaydisiniOrder(prisma, {
+        orderId: order.id,
+        trxId: cb.trxId,
+        amount: cb.amount,
+        shopUrl: shopPublicUrl(),
+      });
+      return reply.send({ status: r.status });
+    } catch (err) {
+      logger.error({ err }, `PayDisini delivery failed for ${order.orderCode}`);
+      // 200 so PayDisini stops retrying — the ledger row is flagged delivery_failed
       // and an admin resolves it from the orders panel.
       return reply.send({ status: "delivery failed" });
     }

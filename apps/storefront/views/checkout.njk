@@ -30,8 +30,17 @@
             {% if not idr_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_idr_disabled', lang) }}</span>{% endif %}
           </span>
         </label>
+        <label class="flex items-start gap-3 p-3 rounded-xl border {% if paydisini_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
+          <input type="radio" name="method" value="paydisini" class="mt-1" {% if not paydisini_enabled %}disabled{% elif not idr_enabled %}checked{% endif %}>
+          <img src="/static/pay/qris.png" alt="PayDisini" class="h-7 w-auto max-w-[80px] object-contain shrink-0 mt-0.5">
+          <span>
+            <span class="font-semibold text-sm block">{{ t('web.pay_paydisini_title', lang) }}</span>
+            <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_paydisini_sub', lang) }}</span>
+            {% if not paydisini_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_paydisini_disabled', lang) }}</span>{% endif %}
+          </span>
+        </label>
         <label class="flex items-start gap-3 p-3 rounded-xl border {% if binance_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
-          <input type="radio" name="method" value="binance" class="mt-1" {% if not binance_enabled %}disabled{% elif not idr_enabled %}checked{% endif %}>
+          <input type="radio" name="method" value="binance" class="mt-1" {% if not binance_enabled %}disabled{% elif not idr_enabled and not paydisini_enabled %}checked{% endif %}>
           <img src="/static/pay/binance.png" alt="Binance" class="h-7 w-7 object-contain shrink-0 mt-0.5">
           <span>
             <span class="font-semibold text-sm block">{{ t('web.pay_usdt_title', lang) }}</span>

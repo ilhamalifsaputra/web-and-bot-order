@@ -5,6 +5,20 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 vi.mock("@app/core/mailer", () => ({
   sendMail: vi.fn().mockResolvedValue(undefined),
 }));
+// PayDisini's createTransaction hits a real gateway HTTP endpoint — mock it
+// for the "pay page renders the QR" checkout test below (mirrors
+// apps/order-bot/test/handlers.test.ts's TokoPay mock). verifyCallback is left
+// real/untouched since this file doesn't exercise the webhook route.
+vi.mock("@app/core/payments/paydisini", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/paydisini")>()),
+  createTransaction: vi.fn().mockResolvedValue({
+    trxId: "PD-TEST",
+    qrString: "000",
+    qrUrl: "https://x/paydisini-qr.png",
+    checkoutUrl: "https://x/paydisini-checkout",
+    totalBayar: "100",
+  }),
+}));
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
 import {
@@ -860,6 +874,98 @@ describe("checkout — Bybit option", () => {
       payload: new URLSearchParams({ method: "bybit", csrf_token: csrf }).toString(),
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe("checkout — PayDisini option (2nd IDR method, alongside TokoPay)", () => {
+  let buyerId: number;
+  beforeAll(async () => {
+    const { hashPassword } = await import("@app/core/password");
+    const u = await prisma.user.create({
+      data: {
+        loginUsername: "paydisinibuyer",
+        email: "paydisini@buyer.test",
+        passwordHash: hashPassword("paydisini-pass-99"),
+        referralCode: "PYDS01",
+      },
+    });
+    buyerId = u.id;
+  });
+
+  async function enablePaydisini() {
+    await setSetting(prisma, "paydisini_userkey", "uk-test");
+    await setSetting(prisma, "paydisini_apikey", "ak-test");
+    await setSetting(prisma, "paydisini_default_channel", "QRIS");
+  }
+  async function disablePaydisini() {
+    await deleteSetting(prisma, "paydisini_userkey");
+    await deleteSetting(prisma, "paydisini_apikey");
+    await deleteSetting(prisma, "paydisini_default_channel");
+  }
+
+  // Mirrors the storefront checkout flow: login → seed the cart → read CSRF from
+  // the checkout page. Returns { cookie, csrf } with a non-empty cart.
+  async function checkoutSession() {
+    const cookie = await loginAs("paydisinibuyer", "paydisini-pass-99");
+    await addToCart(prisma, buyerId, productId, 1);
+    const page = await app.inject({ method: "GET", url: "/checkout", headers: { cookie } });
+    return { cookie, csrf: csrfFrom(page.body) };
+  }
+
+  it("creates a PAYDISINI/IDR order when method=paydisini and PayDisini is enabled", async () => {
+    await enablePaydisini();
+    const { cookie, csrf } = await checkoutSession();
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ method: "paydisini", csrf_token: csrf }).toString(),
+    });
+    expect([302, 303]).toContain(res.statusCode);
+    const code = res.headers.location!.split("/")[2]!; // /checkout/<code>/pay
+    const order = await getOrderByCode(prisma, code);
+    expect(order!.paymentMethod).toBe("PAYDISINI");
+    expect(order!.currency).toBe("IDR");
+  });
+
+  it("pay page for a PAYDISINI order renders the QR code", async () => {
+    await enablePaydisini();
+    const { cookie, csrf } = await checkoutSession();
+    const created = await app.inject({
+      method: "POST",
+      url: "/checkout",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ method: "paydisini", csrf_token: csrf }).toString(),
+    });
+    const code = created.headers.location!.split("/")[2]!; // /checkout/<code>/pay
+    const res = await app.inject({ method: "GET", url: `/checkout/${code}/pay`, headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("https://x/paydisini-qr.png"); // QR image from the mocked gateway
+    expect(res.body).toContain("https://x/paydisini-checkout"); // pay/checkout link
+
+    // The TokoPay (QRIS) option remains available too — additive, not exclusive.
+    // The cart is now empty (the order above consumed it), so re-seed one item
+    // before re-checking the checkout page (an empty cart 303-redirects to /cart).
+    await addToCart(prisma, buyerId, productId, 1);
+    const checkoutPage = await app.inject({ method: "GET", url: "/checkout", headers: { cookie } });
+    expect(checkoutPage.body).toContain('value="qris"');
+    expect(checkoutPage.body).toContain('value="paydisini"');
+  });
+
+  it("rejects method=paydisini when PayDisini is disabled", async () => {
+    await disablePaydisini();
+    const { cookie, csrf } = await checkoutSession(); // PayDisini NOT enabled here
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ method: "paydisini", csrf_token: csrf }).toString(),
+    });
+    expect(res.statusCode).toBe(400);
+    // The rendered page shows the TRANSLATED string for web.pay_method_unavailable,
+    // not the literal key (the key only round-trips as-is for keys that are NOT
+    // yet defined — see web.pay_paydisini_* above, which IS asserted literally).
+    expect(res.body).toContain("isn&#39;t available right now");
   });
 });
 

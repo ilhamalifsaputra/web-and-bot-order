@@ -131,6 +131,18 @@
 
   <div class="card card-pad">
     <h2 class="section-title mb-1 flex items-center gap-2">
+      <i data-lucide="qr-code" class="w-5 h-5 text-sky-500"></i> Rupiah (QRIS/e-wallet) via PayDisini di website
+    </h2>
+    <p class="text-xs text-ink-soft mb-4">
+      The PayDisini keys turn on Rupiah (QRIS/e-wallet) payments at checkout on the website.
+    </p>
+    <div class="space-y-3">
+      {% for fld in pay_paydisini_fields %}{{ setting_form(fld) }}{% endfor %}
+    </div>
+  </div>
+
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center gap-2">
       <i data-lucide="link" class="w-5 h-5 text-sky-500"></i> USDT on BSC via Bybit (auto-confirm)
     </h2>
     <div class="text-xs text-ink-soft mb-4 space-y-1.5">

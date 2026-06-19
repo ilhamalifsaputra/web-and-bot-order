@@ -1284,6 +1284,43 @@ describe("settings", () => {
     expect(entry).toBeTruthy();
     expect(entry!.details).not.toContain("BINSECRETVALUE");
   });
+
+  it("accepts paydisini_userkey (not a secret — shown back on the page)", async () => {
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "paydisini_userkey", value: "userkey123",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "paydisini_userkey")).toBe("userkey123");
+    const page = await get("/settings", seed.cookie);
+    expect(page.body).toContain("userkey123");
+  });
+
+  it("paydisini_apikey is write-only (blank keeps value, never echoed)", async () => {
+    await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "paydisini_apikey", value: "PDAPIKEYSECRET",
+    });
+    expect(await getSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
+
+    // Blank submit keeps the existing value (the "'<key>' left unchanged." path).
+    const blank = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "paydisini_apikey", value: "",
+    });
+    expect(blank.statusCode).toBe(303);
+    expect(blank.headers.location).toContain("kind=info");
+    expect(await getSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
+
+    // The stored secret is never echoed into the form or the saved-data table.
+    const page = await get("/settings", seed.cookie);
+    expect(page.statusCode).toBe(200);
+    expect(page.body).not.toContain("PDAPIKEYSECRET");
+
+    // Audit records "(updated)" without the value (CLAUDE.md: never log secrets).
+    const logs = await listAuditLogs(prisma, { limit: 10 });
+    const entry = logs.find((l) => l.action === "setting_set" && (l.details ?? "").includes("paydisini_apikey"));
+    expect(entry).toBeTruthy();
+    expect(entry!.details).not.toContain("PDAPIKEYSECRET");
+  });
 });
 
 // ---- settings: QR upload (mirrors branding.test.ts banner upload) ---------

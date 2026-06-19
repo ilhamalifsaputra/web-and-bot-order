@@ -13,6 +13,7 @@ import {
   upsertUser,
   createCategory,
   createProduct,
+  getProduct,
   bulkAddStock,
   getUser,
   getUserByTelegramId,
@@ -429,7 +430,7 @@ describe("catalog", () => {
   });
 
   it("create product happy (lowercase type accepted)", async () => {
-    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const product = await getProduct(prisma, seed.productId);
     const res = await post("/catalog/product", seed.cookie, {
       csrf_token: seed.csrf,
       category_id: String(product!.categoryId),
@@ -482,7 +483,7 @@ describe("product detail page", () => {
   });
 
   it("honors an allowlisted return_to on update", async () => {
-    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const product = await getProduct(prisma, seed.productId);
     const back = `/catalog/product/${seed.productId}`;
     const res = await post(`/catalog/product/${seed.productId}/update`, seed.cookie, {
       csrf_token: seed.csrf,
@@ -496,7 +497,7 @@ describe("product detail page", () => {
   });
 
   it("rejects a hostile return_to and falls back to /catalog", async () => {
-    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const product = await getProduct(prisma, seed.productId);
     const res = await post(`/catalog/product/${seed.productId}/update`, seed.cookie, {
       csrf_token: seed.csrf,
       name: product!.name,
@@ -510,8 +511,12 @@ describe("product detail page", () => {
 });
 
 describe("product groups", () => {
+  // NOTE: a "group" is now the mid-tier Product (createGroup shim). The
+  // optional-parent / productGroupId assignment + unlink-on-delete semantics are
+  // gone; Phase 2 re-adds Product/Denomination management tests for the reworked
+  // admin routes. Kept here: create-happy + the CSRF/auth trio.
   it("create group happy + audit", async () => {
-    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
+    const product = await getProduct(prisma, seed.productId);
     const res = await post("/catalog/group", seed.cookie, {
       csrf_token: seed.csrf,
       category_id: String(product!.categoryId),
@@ -520,72 +525,10 @@ describe("product groups", () => {
     });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toContain("kind=success");
-    const groups = await prisma.productGroup.findMany({ where: { name: "Capcut" } });
+    const groups = await prisma.product.findMany({ where: { name: "Capcut" } });
     expect(groups.length).toBe(1);
     const audit = await prisma.auditLog.findMany({ where: { action: "group_create" } });
     expect(audit.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("delete group unlinks members", async () => {
-    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
-    const group = await prisma.productGroup.create({ data: { categoryId: product!.categoryId, name: "Del" } });
-    await prisma.product.update({ where: { id: seed.productId }, data: { productGroupId: group.id } });
-    const res = await post(`/catalog/group/${group.id}/delete`, seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(303);
-    expect(await prisma.productGroup.findUnique({ where: { id: group.id } })).toBeNull();
-    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
-    expect(fresh!.productGroupId).toBeNull();
-  });
-
-  it("product update assigns a same-category group", async () => {
-    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
-    const group = await prisma.productGroup.create({
-      data: { categoryId: product!.categoryId, name: "EditGrp" },
-    });
-    const res = await post(`/catalog/product/${seed.productId}/update`, seed.cookie, {
-      csrf_token: seed.csrf,
-      name: product!.name,
-      price: "5.00",
-      product_group_id: String(group.id),
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
-    expect(fresh!.productGroupId).toBe(group.id);
-  });
-
-  it("product update with empty group unlinks", async () => {
-    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
-    const group = await prisma.productGroup.create({
-      data: { categoryId: product!.categoryId, name: "UnlinkGrp" },
-    });
-    await prisma.product.update({ where: { id: seed.productId }, data: { productGroupId: group.id } });
-    const res = await post(`/catalog/product/${seed.productId}/update`, seed.cookie, {
-      csrf_token: seed.csrf,
-      name: product!.name,
-      price: "5.00",
-      product_group_id: "",
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
-    expect(fresh!.productGroupId).toBeNull();
-  });
-
-  it("product update rejects a cross-category group", async () => {
-    const product = await prisma.product.findUnique({ where: { id: seed.productId } });
-    const otherCat = await prisma.category.create({ data: { name: `Other${counter++}` } });
-    const group = await prisma.productGroup.create({ data: { categoryId: otherCat.id, name: "XEditGrp" } });
-    const res = await post(`/catalog/product/${seed.productId}/update`, seed.cookie, {
-      csrf_token: seed.csrf,
-      name: product!.name,
-      price: "5.00",
-      product_group_id: String(group.id),
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
-    const fresh = await prisma.product.findUnique({ where: { id: seed.productId } });
-    expect(fresh!.productGroupId).toBeNull();
   });
 
   it("create group requires auth", async () => {
@@ -1416,12 +1359,12 @@ describe("bulk operations", () => {
     const res = await post("/catalog/products/bulk", seed.cookie, { csrf_token: seed.csrf, ids: String(seed.productId), action: "deactivate" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toContain("kind=success");
-    expect((await prisma.product.findUnique({ where: { id: seed.productId } }))!.isActive).toBe(false);
+    expect((await getProduct(prisma, seed.productId))!.isActive).toBe(false);
     const audit = await prisma.auditLog.findMany({ where: { action: "product_bulk_active" } });
     expect(audit.length).toBeGreaterThanOrEqual(1);
 
     await post("/catalog/products/bulk", seed.cookie, { csrf_token: seed.csrf, ids: String(seed.productId), action: "activate" });
-    expect((await prisma.product.findUnique({ where: { id: seed.productId } }))!.isActive).toBe(true);
+    expect((await getProduct(prisma, seed.productId))!.isActive).toBe(true);
   });
 
   it("bulk mark stock dead (available only) + audit never logs credentials", async () => {
@@ -1449,7 +1392,7 @@ describe("bulk operations", () => {
     });
     expect(preview.statusCode).toBe(200);
     expect(preview.body).toContain("Rp13"); // 12.50 rendered as whole-Rupiah (ROUND_HALF_UP)
-    expect(Number((await prisma.product.findUnique({ where: { id: seed.productId } }))!.price)).toBe(5);
+    expect(Number((await getProduct(prisma, seed.productId))!.price)).toBe(5);
 
     // Step 2 — apply the previewed pair.
     const apply = await post("/catalog/products/bulk-price/apply", seed.cookie, {
@@ -1457,7 +1400,7 @@ describe("bulk operations", () => {
     });
     expect(apply.statusCode).toBe(303);
     expect(apply.headers.location).toContain("kind=success");
-    expect(Number((await prisma.product.findUnique({ where: { id: seed.productId } }))!.price)).toBeCloseTo(12.5);
+    expect(Number((await getProduct(prisma, seed.productId))!.price)).toBeCloseTo(12.5);
     const audit = await prisma.auditLog.findMany({ where: { action: "product_bulk_price" } });
     expect(audit.length).toBe(1);
   });
@@ -1474,11 +1417,11 @@ describe("bulk operations", () => {
     });
     expect(down.body).toContain("skipped");
     // Price untouched by either preview.
-    expect(Number((await prisma.product.findUnique({ where: { id: seed.productId } }))!.price)).toBe(5);
+    expect(Number((await getProduct(prisma, seed.productId))!.price)).toBe(5);
   });
 
   it("CSV import: preview is read-only, apply creates the valid rows", async () => {
-    const product = (await prisma.product.findUnique({ where: { id: seed.productId } }))!;
+    const product = (await getProduct(prisma, seed.productId))!;
     const cat = (await prisma.category.findUnique({ where: { id: product.categoryId } }))!;
     const csv =
       `${cat.name} | Imported A | shared | 1 Month | 9.99\n` +
@@ -1498,7 +1441,7 @@ describe("bulk operations", () => {
     expect(apply.statusCode).toBe(303);
     expect(apply.headers.location).toContain("kind=success");
     expect(await prisma.product.count()).toBe(before + 2);
-    const b = await prisma.product.findFirst({ where: { name: "Imported B" } });
+    const b = await prisma.denomination.findFirst({ where: { name: "Imported B" } });
     expect(b!.type).toBe("PRIVATE");
     expect(Number(b!.resellerPrice)).toBeCloseTo(15);
     expect(b!.warrantyDays).toBe(60);
@@ -1530,7 +1473,7 @@ describe("bulk operations", () => {
     expect(anon.headers.location).toBe("/login");
     const bad = await post("/catalog/products/bulk-price/apply", seed.cookie, { csrf_token: "bad", pairs: `${seed.productId}:1` });
     expect(bad.statusCode).toBe(403);
-    expect(Number((await prisma.product.findUnique({ where: { id: seed.productId } }))!.price)).toBe(5);
+    expect(Number((await getProduct(prisma, seed.productId))!.price)).toBe(5);
   });
 
   it("bulk requires auth and rejects bad CSRF", async () => {
@@ -1539,7 +1482,7 @@ describe("bulk operations", () => {
     expect(anon.headers.location).toBe("/login");
     const bad = await post("/catalog/products/bulk", seed.cookie, { csrf_token: "bad", ids: String(seed.productId), action: "deactivate" });
     expect(bad.statusCode).toBe(403);
-    expect((await prisma.product.findUnique({ where: { id: seed.productId } }))!.isActive).toBe(true);
+    expect((await getProduct(prisma, seed.productId))!.isActive).toBe(true);
   });
 });
 

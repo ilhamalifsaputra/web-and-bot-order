@@ -178,7 +178,8 @@ export async function productRatingSummaries(db: Db): Promise<ProductRatingSumma
     _count: { _all: true },
     _avg: { rating: true },
   });
-  const products = await db.product.findMany({ select: { id: true, name: true } });
+  // Reviews are keyed by denomination (column is `product_id`).
+  const products = await db.denomination.findMany({ select: { id: true, name: true } });
   const nameById = new Map(products.map((p) => [p.id, p.name]));
   const byProduct = new Map<number, ProductRatingSummary>();
   for (const g of grouped) {

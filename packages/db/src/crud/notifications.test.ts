@@ -21,10 +21,6 @@ afterAll(async () => {
 });
 
 async function seedOrder(): Promise<number> {
-  const cat = await prisma.category.create({ data: { name: `c${Date.now()}${Math.random()}` } });
-  const product = await prisma.product.create({
-    data: { categoryId: cat.id, name: "P", type: "SHARED", durationLabel: "1 Month", price: "5" },
-  });
   const user = await prisma.user.create({
     data: { telegramId: BigInt(Math.floor(Math.random() * 1e15)), referralCode: `r${Math.random()}` },
   });
@@ -36,7 +32,6 @@ async function seedOrder(): Promise<number> {
       totalAmount: "5",
     },
   });
-  void product;
   return order.id;
 }
 

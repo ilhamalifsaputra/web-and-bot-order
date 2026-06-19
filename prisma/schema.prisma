@@ -19,27 +19,27 @@ datasource db {
 }
 
 model User {
-  id            Int       @id @default(autoincrement())
-  telegramId    BigInt?   @unique(map: "ix_users_telegram_id") @map("telegram_id")
-  username      String?
-  fullName      String?   @map("full_name")
+  id                Int       @id @default(autoincrement())
+  telegramId        BigInt?   @unique(map: "ix_users_telegram_id") @map("telegram_id")
+  username          String?
+  fullName          String?   @map("full_name")
   /// Web-store login handle (3-32 chars [a-z0-9_], stored lowercase).
   /// Distinct from `username` (= Telegram username, bot-owned).
-  loginUsername String?   @unique(map: "ix_users_login_username") @map("login_username")
-  email         String?   @unique(map: "ix_users_email")
-  passwordHash  String?   @map("password_hash")
-  role          String    @default("CUSTOMER")
-  language      String    @default("EN")
-  walletBalance Decimal   @default(0) @map("wallet_balance")
+  loginUsername     String?   @unique(map: "ix_users_login_username") @map("login_username")
+  email             String?   @unique(map: "ix_users_email")
+  passwordHash      String?   @map("password_hash")
+  role              String    @default("CUSTOMER")
+  language          String    @default("EN")
+  walletBalance     Decimal   @default(0) @map("wallet_balance")
   /// USDT credit balance (IDR balance is `walletBalance`). Spent only on USDT
   /// orders — no cross-currency conversion (dual-credit-balance design §A).
-  walletBalanceUsdt Decimal @default(0) @map("wallet_balance_usdt")
-  referralCode  String    @unique(map: "ix_users_referral_code") @map("referral_code")
-  referredById  Int?      @map("referred_by_id")
-  banned        Boolean   @default(false)
-  bannedReason  String?   @map("banned_reason")
-  createdAt     DateTime  @default(now()) @map("created_at")
-  lastSeenAt    DateTime? @map("last_seen_at")
+  walletBalanceUsdt Decimal   @default(0) @map("wallet_balance_usdt")
+  referralCode      String    @unique(map: "ix_users_referral_code") @map("referral_code")
+  referredById      Int?      @map("referred_by_id")
+  banned            Boolean   @default(false)
+  bannedReason      String?   @map("banned_reason")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  lastSeenAt        DateTime? @map("last_seen_at")
 
   referredBy User?  @relation("UserReferral", fields: [referredById], references: [id], onUpdate: NoAction)
   referees   User[] @relation("UserReferral")
@@ -51,7 +51,7 @@ model User {
   auditLogs            AuditLog[]
   ticketMessages       TicketMessage[]
   walletTransactions   WalletTransaction[]
-  passwordResetTokens PasswordResetToken[]
+  passwordResetTokens  PasswordResetToken[]
   referralsAsReferee   Referral?             @relation("ReferralReferee")
   referralsAsReferrer  Referral[]            @relation("ReferralReferrer")
   ticketsAsUser        SupportTicket[]       @relation("TicketUser")
@@ -101,61 +101,80 @@ model PasswordResetToken {
 }
 
 model Category {
-  id        Int     @id @default(autoincrement())
-  name      String  @unique(map: "sqlite_autoindex_categories_1")
-  emoji     String?
-  sortOrder Int     @default(0) @map("sort_order")
-  isActive  Boolean @default(true) @map("is_active")
+  id          Int     @id @default(autoincrement())
+  name        String  @unique(map: "sqlite_autoindex_categories_1")
+  /// URL-safe handle (storefront `/c/:slug`). Backfilled from name at the
+  /// catalog-rename migration; UNIQUE + NOT NULL.
+  slug        String  @unique(map: "ix_categories_slug")
+  emoji       String?
+  description String?
+  /// Web-facing category image URL (admin-set, storefront only).
+  image       String?
+  sortOrder   Int     @default(0) @map("sort_order")
+  isActive    Boolean @default(true) @map("is_active")
 
   products Product[]
-  groups   ProductGroup[]
 
   @@map("categories")
 }
 
-/// Optional parent for product denominations (e.g. "Capcut" → 1 Month / 7 day).
-/// Display/navigation only — each member Product keeps its own price & stock.
-/// A group lives in exactly one category; all members must share that category.
-model ProductGroup {
+/// Mid-tier of the catalog (Category → **Product** → Denomination). The
+/// customer-facing item (e.g. "CapCut Pro"); carries image/description/nav only.
+/// NO price, NO stock — those live on each child Denomination (the sellable SKU).
+/// Physically the old `product_groups` table, renamed to `products`.
+model Product {
   id          Int      @id @default(autoincrement())
   categoryId  Int      @map("category_id")
   name        String
+  /// URL-safe handle (storefront `/p/:slug`). UNIQUE + NOT NULL.
+  slug        String   @unique(map: "ix_products_slug")
   emoji       String?
   description String?
+  /// Web-facing product photo URL (admin-set, storefront only). Telegram
+  /// imageFileId can't be used as an <img src>; when this is null the
+  /// storefront falls back to its curated Unsplash map (plan.md §8).
   webImageUrl String?  @map("web_image_url")
   imageFileId String?  @map("image_file_id")
   sortOrder   Int      @default(0) @map("sort_order")
   isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at")
 
-  category Category  @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
-  products Product[]
+  category      Category       @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
+  denominations Denomination[]
 
-  @@index([categoryId], map: "ix_product_groups_category_id")
-  @@map("product_groups")
+  @@index([categoryId], map: "ix_products_category_id")
+  @@map("products")
 }
 
-model Product {
-  id            Int      @id @default(autoincrement())
-  categoryId    Int      @map("category_id")
-  name          String
-  description   String?
-  imageFileId   String?  @map("image_file_id")
-  /// Web-facing product photo URL (admin-set, storefront only). Telegram
-  /// imageFileId can't be used as an <img src>; when this is null the
-  /// storefront falls back to its curated Unsplash map (plan.md §8).
-  webImageUrl   String?  @map("web_image_url")
-  type          String
-  durationLabel String   @map("duration_label")
-  price         Decimal
-  resellerPrice Decimal? @map("reseller_price")
-  warrantyDays  Int      @default(30) @map("warranty_days")
-  isActive      Boolean  @default(true) @map("is_active")
-  createdAt     DateTime @default(now()) @map("created_at")
-  productGroupId Int?     @map("product_group_id")
+/// Leaf of the catalog — the sellable SKU (e.g. "1 Month"). Price, cost, stock
+/// and auto-delivery all live here. Physically the old `products` table, renamed
+/// to `denominations`; ids are preserved so every dependent `product_id` FK
+/// (stock_items, order_items, cart_items, bulk_pricing, reviews,
+/// restock_subscriptions) keeps pointing at the same rows.
+model Denomination {
+  id                 Int      @id @default(autoincrement())
+  productId          Int      @map("product_id")
+  name               String
+  /// URL-safe handle. UNIQUE + NOT NULL.
+  slug               String   @unique(map: "ix_denominations_slug")
+  description        String?
+  imageFileId        String?  @map("image_file_id")
+  /// Web-facing photo URL (admin-set, storefront only); null → curated fallback.
+  webImageUrl        String?  @map("web_image_url")
+  type               String
+  durationLabel      String   @map("duration_label")
+  price              Decimal
+  /// Unit cost for margin reporting. Null = unknown / not tracked.
+  costPrice          Decimal? @map("cost_price")
+  resellerPrice      Decimal? @map("reseller_price")
+  /// Source key for auto-fulfilment (e.g. provider/handler id). Null = manual.
+  autoDeliverySource String?  @map("auto_delivery_source")
+  warrantyDays       Int      @default(30) @map("warranty_days")
+  sortOrder          Int      @default(0) @map("sort_order")
+  isActive           Boolean  @default(true) @map("is_active")
+  createdAt          DateTime @default(now()) @map("created_at")
 
-  category             Category              @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
-  productGroup         ProductGroup?         @relation(fields: [productGroupId], references: [id], onUpdate: NoAction)
+  product              Product               @relation(fields: [productId], references: [id], onUpdate: NoAction)
   stockItems           StockItem[]
   orderItems           OrderItem[]
   cartItems            CartItem[]
@@ -163,13 +182,13 @@ model Product {
   restockSubscriptions RestockSubscription[]
   bulkPricing          BulkPricing?
 
-  @@index([categoryId], map: "ix_products_category_id")
-  @@index([productGroupId], map: "ix_products_product_group_id")
-  @@map("products")
+  @@index([productId], map: "ix_denominations_product_id")
+  @@map("denominations")
 }
 
 model StockItem {
   id          Int       @id @default(autoincrement())
+  /// Holds a denomination id (column kept as `product_id` to avoid a rename).
   productId   Int       @map("product_id")
   credentials String
   status      String    @default("AVAILABLE")
@@ -179,8 +198,10 @@ model StockItem {
   soldAt      DateTime? @map("sold_at")
   note        String?
 
-  product    Product     @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  order      Order?      @relation(fields: [orderId], references: [id], onUpdate: NoAction)
+  // Relation field kept as `product` for source-compat; it resolves to a
+  // Denomination (the SKU). Renamed to `denomination` in Phase 5 cleanup.
+  product    Denomination @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  order      Order?       @relation(fields: [orderId], references: [id], onUpdate: NoAction)
   orderItems OrderItem[]
 
   @@index([status], map: "ix_stock_items_status")
@@ -242,15 +263,17 @@ model Order {
 model OrderItem {
   id                   Int     @id @default(autoincrement())
   orderId              Int     @map("order_id")
+  /// Holds a denomination id (column kept as `product_id` to avoid a rename).
   productId            Int     @map("product_id")
   stockItemId          Int?    @map("stock_item_id")
   quantity             Int     @default(1)
   unitPrice            Decimal @map("unit_price")
   warrantyDaysSnapshot Int     @map("warranty_days_snapshot")
 
-  order     Order      @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  product   Product    @relation(fields: [productId], references: [id], onUpdate: NoAction)
-  stockItem StockItem? @relation(fields: [stockItemId], references: [id], onUpdate: NoAction)
+  order     Order        @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  // `product` resolves to a Denomination (SKU); renamed in Phase 5 cleanup.
+  product   Denomination @relation(fields: [productId], references: [id], onUpdate: NoAction)
+  stockItem StockItem?   @relation(fields: [stockItemId], references: [id], onUpdate: NoAction)
 
   @@index([orderId], map: "ix_order_items_order_id")
   @@map("order_items")
@@ -276,6 +299,7 @@ model Voucher {
 model Review {
   id        Int      @id @default(autoincrement())
   userId    Int      @map("user_id")
+  /// Holds a denomination id (column kept as `product_id` to avoid a rename).
   productId Int      @map("product_id")
   orderId   Int      @map("order_id")
   rating    Int
@@ -283,9 +307,10 @@ model Review {
   hidden    Boolean  @default(false)
   createdAt DateTime @default(now()) @map("created_at")
 
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  // `product` resolves to a Denomination (SKU); renamed in Phase 5 cleanup.
+  product Denomination @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  order   Order        @relation(fields: [orderId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([userId, orderId], map: "sqlite_autoindex_reviews_1")
   @@index([productId], map: "ix_reviews_product_id")
@@ -347,11 +372,13 @@ model TicketMessage {
 model RestockSubscription {
   id        Int      @id @default(autoincrement())
   userId    Int      @map("user_id")
+  /// Holds a denomination id (column kept as `product_id` to avoid a rename).
   productId Int      @map("product_id")
   createdAt DateTime @default(now()) @map("created_at")
 
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  // `product` resolves to a Denomination (SKU); renamed in Phase 5 cleanup.
+  product Denomination @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([userId, productId], map: "sqlite_autoindex_restock_subscriptions_1")
   @@map("restock_subscriptions")
@@ -360,12 +387,14 @@ model RestockSubscription {
 model CartItem {
   id        Int      @id @default(autoincrement())
   userId    Int      @map("user_id")
+  /// Holds a denomination id (column kept as `product_id` to avoid a rename).
   productId Int      @map("product_id")
   quantity  Int      @default(1)
   addedAt   DateTime @default(now()) @map("added_at")
 
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  // `product` resolves to a Denomination (SKU); renamed in Phase 5 cleanup.
+  product Denomination @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([userId, productId], map: "sqlite_autoindex_cart_items_1")
   @@index([userId], map: "ix_cart_items_user_id")
@@ -374,13 +403,15 @@ model CartItem {
 
 model BulkPricing {
   id              Int      @id @default(autoincrement())
+  /// Holds a denomination id (column kept as `product_id` to avoid a rename).
   productId       Int      @unique(map: "ix_bulk_pricing_product_id") @map("product_id")
   minQuantity     Int      @map("min_quantity")
   discountPercent Decimal  @map("discount_percent")
   isActive        Boolean  @default(true) @map("is_active")
   createdAt       DateTime @default(now()) @map("created_at")
 
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  // `product` resolves to a Denomination (SKU); renamed in Phase 5 cleanup.
+  product Denomination @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@map("bulk_pricing")
 }

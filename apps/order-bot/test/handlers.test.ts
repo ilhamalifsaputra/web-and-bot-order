@@ -14,7 +14,7 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
-import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast, setSetting, getSetting } from "@app/db";
+import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination } from "@app/db";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
@@ -132,8 +132,9 @@ describe("customer handlers", () => {
   it("handleProductNumber honors the rendered snapshot over a fresh query (stale-catalog race)", async () => {
     // A second product exists; the snapshot points only at it. Tapping "1" must
     // open the snapshot's product, not whatever a fresh query would rank first.
-    const other = await prisma.product.create({
-      data: { categoryId: sample.product.categoryId, name: "Other", type: "SHARED", durationLabel: "1 Month", price: "9" },
+    const otherParent = await createCatalogProduct(prisma, { categoryId: sample.product.categoryId, name: "Other" });
+    const other = await createDenomination(prisma, {
+      productId: otherParent.id, name: "Other", type: "SHARED", durationLabel: "1 Month", price: "9",
     });
     const { ctx } = customerCtx({
       text: "1",
@@ -220,13 +221,14 @@ describe("customer handlers", () => {
 
 describe("denomination groups", () => {
   async function makeGroupWithTwo() {
-    const cat = await prisma.category.create({ data: { name: `gc${Math.random()}` } });
-    const group = await prisma.productGroup.create({ data: { categoryId: cat.id, name: "Capcut" } });
-    const m1 = await prisma.product.create({
-      data: { categoryId: cat.id, name: "Capcut 7 day", type: "SHARED", durationLabel: "7 day", price: "30000", productGroupId: group.id },
+    const cat = await prisma.category.create({ data: { name: `gc${Math.random()}`, slug: `gc-${Math.random()}` } });
+    // "group" is now the mid-tier Product; its members are denominations.
+    const group = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Capcut" });
+    const m1 = await createDenomination(prisma, {
+      productId: group.id, name: "Capcut 7 day", type: "SHARED", durationLabel: "7 day", price: "30000",
     });
-    const m2 = await prisma.product.create({
-      data: { categoryId: cat.id, name: "Capcut 1 Month", type: "SHARED", durationLabel: "1 Month", price: "75000", productGroupId: group.id },
+    const m2 = await createDenomination(prisma, {
+      productId: group.id, name: "Capcut 1 Month", type: "SHARED", durationLabel: "1 Month", price: "75000",
     });
     return { group, m1, m2 };
   }
@@ -536,7 +538,7 @@ describe("admin handlers", () => {
   it("toggle product flips is_active + audits", async () => {
     const { ctx } = adminCtx({ callbackData: `v1:adm:prod:toggle:${sample.product.id}` });
     await handleAdminCallback(ctx, `v1:adm:prod:toggle:${sample.product.id}`.split(":"));
-    const p = await prisma.product.findUnique({ where: { id: sample.product.id } });
+    const p = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
     expect(p!.isActive).toBe(false);
     expect(await prisma.auditLog.count({ where: { action: "product_toggle" } })).toBe(1);
   });

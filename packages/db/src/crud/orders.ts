@@ -219,7 +219,8 @@ export async function createOrderDirect(
     voucherCode?: string | null;
   },
 ) {
-  const product = await db.product.findUnique({ where: { id: args.productId } });
+  // args.productId is a denomination id (the sellable SKU).
+  const product = await db.denomination.findUnique({ where: { id: args.productId } });
   if (!product) throw new ValidationError("error.out_of_stock", { product: "(unknown)" });
 
   const isReseller = args.user.role === UserRole.RESELLER;

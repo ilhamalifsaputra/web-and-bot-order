@@ -1,14 +1,49 @@
 /**
- * Catalog domain — categories, products, bulk pricing. Port of the "Catalog"
- * and "Bulk pricing" sections of Python crud.py.
+ * Catalog domain — the 3-tier catalog Category → Product → Denomination.
+ *
+ * - Category: top-level grouping (storefront `/c/:slug`).
+ * - Product (mid-tier): the customer-facing item (e.g. "CapCut Pro"); image,
+ *   description and navigation only — NO price, NO stock.
+ * - Denomination (leaf / SKU): the sellable unit (e.g. "1 Month"); price, cost,
+ *   stock and auto-delivery all live here. Physically the old `products` table.
+ *
+ * NAMING HAZARD: pre-rename, "Product" meant the SKU. To keep the apps compiling
+ * phase-by-phase, the old SKU helpers survive as `@deprecated` shims (bottom of
+ * file) that adapt to the Denomination functions; `createProduct` even
+ * auto-creates a 1:1 wrapper Product so legacy create flows still work. The new
+ * mid-tier CRUD therefore uses transitional `*CatalogProduct` names — renamed to
+ * the clean `*Product` names in Phase 5 once the shims are deleted.
  */
 import { config } from "@app/core/config";
 import { ProductType, StockStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
-import type { Category, Product, ProductGroup } from "@prisma/client";
+import type { Category, Denomination, Product } from "@prisma/client";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
+import { slugify } from "../migrate/slug";
+
+// ---- Slugs ----
+
+export { slugify };
+
+type SlugKind = "category" | "product" | "denomination";
+
+async function slugExists(db: Db, kind: SlugKind, slug: string): Promise<boolean> {
+  if (kind === "category") return (await db.category.findUnique({ where: { slug }, select: { id: true } })) != null;
+  if (kind === "product") return (await db.product.findUnique({ where: { slug }, select: { id: true } })) != null;
+  return (await db.denomination.findUnique({ where: { slug }, select: { id: true } })) != null;
+}
+
+/** A unique slug for `name`, deduped with a numeric suffix on collision. */
+export async function ensureUniqueSlug(db: Db, kind: SlugKind, name: string): Promise<string> {
+  const base = slugify(name);
+  let candidate = base;
+  for (let n = 2; await slugExists(db, kind, candidate); n++) {
+    candidate = `${base}-${n}`;
+  }
+  return candidate;
+}
 
 // ---- Categories ----
 
@@ -25,249 +60,402 @@ export function listAllCategories(db: Db) {
   });
 }
 
-export function createCategory(
+export async function createCategory(
   db: Db,
-  name: string,
-  emoji: string | null = null,
-  sortOrder = 0,
+  args:
+    | string
+    | {
+        name: string;
+        emoji?: string | null;
+        description?: string | null;
+        image?: string | null;
+        sortOrder?: number;
+      },
+  emojiLegacy: string | null = null,
+  sortOrderLegacy = 0,
 ) {
-  return db.category.create({ data: { name, emoji, sortOrder } });
+  // Back-compat: createCategory(db, name, emoji?, sortOrder?) still works.
+  const a = typeof args === "string"
+    ? { name: args, emoji: emojiLegacy, sortOrder: sortOrderLegacy }
+    : args;
+  const slug = await ensureUniqueSlug(db, "category", a.name);
+  return db.category.create({
+    data: {
+      name: a.name,
+      slug,
+      emoji: a.emoji ?? null,
+      description: ("description" in a ? a.description : null) ?? null,
+      image: ("image" in a ? a.image : null) ?? null,
+      sortOrder: a.sortOrder ?? 0,
+    },
+  });
 }
 
-export async function updateCategory(
-  db: Db,
-  categoryId: number,
-  fields: Record<string, unknown>,
-) {
+export async function updateCategory(db: Db, categoryId: number, fields: Record<string, unknown>) {
   if (Object.keys(fields).length === 0) return;
   await db.category.update({ where: { id: categoryId }, data: fields });
-}
-
-export async function countProductsInCategory(db: Db, categoryId: number) {
-  return db.product.count({ where: { categoryId } });
-}
-
-// ---- Products ----
-
-export function listActiveProducts(db: Db, categoryId: number) {
-  return db.product.findMany({
-    where: { categoryId, isActive: true },
-    orderBy: { name: "asc" },
-  });
-}
-
-export function listAllActiveProducts(db: Db) {
-  return db.product.findMany({
-    where: { isActive: true },
-    orderBy: { name: "asc" },
-  });
-}
-
-/** Newest active products with category — storefront home "Terbaru" grid. */
-export function listNewestActiveProducts(db: Db, limit = 12) {
-  return db.product.findMany({
-    where: { isActive: true },
-    include: { category: true },
-    orderBy: { createdAt: "desc" },
-    take: limit,
-  });
-}
-
-/** Active products in a category with the category joined (storefront list). */
-export function listActiveProductsWithCategory(db: Db, categoryId: number) {
-  return db.product.findMany({
-    where: { categoryId, isActive: true },
-    include: { category: true },
-    orderBy: { name: "asc" },
-  });
-}
-
-/** Active-product search with category joined (storefront /search). */
-export function searchProductsWithCategory(db: Db, query: string, limit = 24) {
-  const q = query.trim();
-  if (!q) return Promise.resolve([]);
-  return db.product.findMany({
-    where: {
-      isActive: true,
-      OR: [{ name: { contains: q } }, { description: { contains: q } }],
-    },
-    include: { category: true },
-    take: limit,
-  });
 }
 
 export function getCategory(db: Db, categoryId: number) {
   return db.category.findUnique({ where: { id: categoryId } });
 }
 
-export function getProductWithCategory(db: Db, productId: number) {
-  return db.product.findUnique({
-    where: { id: productId },
-    include: { category: true },
-  });
+export function getCategoryBySlug(db: Db, slug: string) {
+  return db.category.findUnique({ where: { slug } });
 }
 
-/** A single product with category + group — backs the admin product detail page
- * (header badges + denominasi). Mirrors getProductWithCategory but also loads the
- * group so the page can show/preselect the denomination. */
-export function getProductDetail(db: Db, productId: number) {
-  return db.product.findUnique({
-    where: { id: productId },
-    include: { category: true, productGroup: true },
-  });
+/** Number of Products (mid-tier) in a category. */
+export async function countProductsInCategory(db: Db, categoryId: number) {
+  return db.product.count({ where: { categoryId } });
 }
 
-/** Every product (active + inactive) with its category and group — admin views. */
-export function listAllProducts(db: Db) {
-  return db.product.findMany({
-    include: { category: true, productGroup: true },
-    orderBy: { name: "asc" },
-  });
+// ---- Products (mid-tier) ----
+// Transitional `*CatalogProduct` names; renamed to `*Product` in Phase 5.
+
+/** Thrown when assigning a denomination to a product in a different category. */
+export class CategoryMismatchError extends Error {
+  constructor() {
+    super("denomination and product must share the same category");
+    this.name = "CategoryMismatchError";
+  }
 }
 
-/** Products for a set of ids (order not guaranteed). Used by bulk-edit previews. */
-export function getProductsByIds(db: Db, ids: number[]) {
-  if (!ids.length) return Promise.resolve([]);
-  return db.product.findMany({ where: { id: { in: ids } } });
-}
-
-export function getProduct(db: Db, productId: number) {
-  return db.product.findUnique({ where: { id: productId } });
-}
-
-export function createProduct(
+export async function createCatalogProduct(
   db: Db,
   args: {
     categoryId: number;
     name: string;
-    description: string | null;
-    type: ProductType;
-    durationLabel: string;
-    price: Decimal.Value;
-    resellerPrice?: Decimal.Value | null;
-    warrantyDays?: number | null;
-    imageFileId?: string | null;
+    emoji?: string | null;
+    description?: string | null;
     webImageUrl?: string | null;
+    imageFileId?: string | null;
+    sortOrder?: number;
+    isActive?: boolean;
   },
 ) {
+  const slug = await ensureUniqueSlug(db, "product", args.name);
   return db.product.create({
     data: {
       categoryId: args.categoryId,
       name: args.name,
-      description: args.description,
-      type: args.type,
-      durationLabel: args.durationLabel,
-      price: quantizeMoney(args.price, 4),
-      resellerPrice:
-        args.resellerPrice != null ? quantizeMoney(args.resellerPrice, 4) : null,
-      warrantyDays: args.warrantyDays || config.DEFAULT_WARRANTY_DAYS,
-      imageFileId: args.imageFileId ?? null,
+      slug,
+      emoji: args.emoji ?? null,
+      description: args.description ?? null,
       webImageUrl: args.webImageUrl ?? null,
+      imageFileId: args.imageFileId ?? null,
+      sortOrder: args.sortOrder ?? 0,
+      isActive: args.isActive ?? true,
     },
   });
 }
 
-export async function updateProduct(
-  db: Db,
-  productId: number,
-  fields: Record<string, unknown>,
-) {
+export async function updateCatalogProduct(db: Db, productId: number, fields: Record<string, unknown>) {
   if (Object.keys(fields).length === 0) return;
   await db.product.update({ where: { id: productId }, data: fields });
 }
 
-/** Bulk activate/deactivate products in one writer. Returns the count updated. */
-export async function bulkSetProductsActive(
-  db: Db,
-  ids: number[],
-  isActive: boolean,
-): Promise<number> {
-  if (!ids.length) return 0;
-  const res = await db.product.updateMany({
-    where: { id: { in: ids } },
-    data: { isActive },
+export function getCatalogProduct(db: Db, productId: number) {
+  return db.product.findUnique({ where: { id: productId } });
+}
+
+export function getCatalogProductBySlug(db: Db, slug: string) {
+  return db.product.findUnique({ where: { slug } });
+}
+
+/** A product with its denominations (price asc) + category — admin detail page. */
+export function getCatalogProductWithDenominations(db: Db, productId: number) {
+  return db.product.findUnique({
+    where: { id: productId },
+    include: {
+      category: true,
+      denominations: { orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
+    },
   });
+}
+
+/** A product by slug with its ACTIVE denominations (price asc) — storefront. */
+export function getCatalogProductBySlugWithDenominations(db: Db, slug: string) {
+  return db.product.findUnique({
+    where: { slug },
+    include: {
+      category: true,
+      denominations: { where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
+    },
+  });
+}
+
+/** Every product (active + inactive) with category + denomination count — admin. */
+export function listProducts(db: Db, categoryId?: number) {
+  return db.product.findMany({
+    where: categoryId != null ? { categoryId } : {},
+    include: { category: true, _count: { select: { denominations: true } } },
+    orderBy: [{ categoryId: "asc" }, { sortOrder: "asc" }, { name: "asc" }],
+  });
+}
+
+/** Refuse to delete a product that still has denominations (use the cascade path). */
+export async function deleteCatalogProduct(db: Db, productId: number): Promise<void> {
+  const count = await db.denomination.count({ where: { productId } });
+  if (count > 0) {
+    throw new Error("product not empty: move or delete its denominations first");
+  }
+  await db.product.delete({ where: { id: productId } });
+}
+
+/** Explicit cascade: delete a product and all its denominations. */
+export async function deleteCatalogProductCascade(db: PrismaClient, productId: number): Promise<void> {
+  await db.$transaction(async (tx) => {
+    await tx.denomination.deleteMany({ where: { productId } });
+    await tx.product.delete({ where: { id: productId } });
+  });
+}
+
+/** Move a denomination under another product in the same category. */
+export async function assignDenominationToProduct(
+  db: Db,
+  denominationId: number,
+  productId: number,
+): Promise<void> {
+  const [denom, product] = await Promise.all([
+    db.denomination.findUnique({ where: { id: denominationId }, include: { product: true } }),
+    db.product.findUnique({ where: { id: productId } }),
+  ]);
+  if (!denom || !product) throw new Error("denomination or product not found");
+  if (denom.product.categoryId !== product.categoryId) throw new CategoryMismatchError();
+  await db.denomination.update({ where: { id: denominationId }, data: { productId } });
+}
+
+// ---- Denominations (leaf / SKU) ----
+
+export async function createDenomination(
+  db: Db,
+  args: {
+    productId: number;
+    name: string;
+    type: ProductType | string;
+    durationLabel: string;
+    price: Decimal.Value;
+    costPrice?: Decimal.Value | null;
+    resellerPrice?: Decimal.Value | null;
+    autoDeliverySource?: string | null;
+    warrantyDays?: number | null;
+    description?: string | null;
+    imageFileId?: string | null;
+    webImageUrl?: string | null;
+    sortOrder?: number;
+    isActive?: boolean;
+  },
+) {
+  const slug = await ensureUniqueSlug(db, "denomination", args.name);
+  return db.denomination.create({
+    data: {
+      productId: args.productId,
+      name: args.name,
+      slug,
+      type: args.type,
+      durationLabel: args.durationLabel,
+      price: quantizeMoney(args.price, 4),
+      costPrice: args.costPrice != null ? quantizeMoney(args.costPrice, 4) : null,
+      resellerPrice: args.resellerPrice != null ? quantizeMoney(args.resellerPrice, 4) : null,
+      autoDeliverySource: args.autoDeliverySource ?? null,
+      warrantyDays: args.warrantyDays || config.DEFAULT_WARRANTY_DAYS,
+      description: args.description ?? null,
+      imageFileId: args.imageFileId ?? null,
+      webImageUrl: args.webImageUrl ?? null,
+      sortOrder: args.sortOrder ?? 0,
+      isActive: args.isActive ?? true,
+    },
+  });
+}
+
+export async function updateDenomination(db: Db, denominationId: number, fields: Record<string, unknown>) {
+  if (Object.keys(fields).length === 0) return;
+  await db.denomination.update({ where: { id: denominationId }, data: fields });
+}
+
+export function getDenomination(db: Db, denominationId: number) {
+  return db.denomination.findUnique({ where: { id: denominationId } });
+}
+
+export function getDenominationBySlug(db: Db, slug: string) {
+  return db.denomination.findUnique({ where: { slug } });
+}
+
+/** A denomination with its parent product + category joined. */
+export function getDenominationWithProduct(db: Db, denominationId: number) {
+  return db.denomination.findUnique({
+    where: { id: denominationId },
+    include: { product: { include: { category: true } } },
+  });
+}
+
+export function getDenominationsByIds(db: Db, ids: number[]) {
+  if (!ids.length) return Promise.resolve([]);
+  return db.denomination.findMany({ where: { id: { in: ids } } });
+}
+
+/** Every denomination (active + inactive) with parent product + category. */
+export function listAllDenominations(db: Db) {
+  return db.denomination.findMany({
+    include: { product: { include: { category: true } } },
+    orderBy: { name: "asc" },
+  });
+}
+
+/** Search active denominations by name/description (case-insensitive LIKE). */
+export function searchDenominations(db: Db, query: string, limit = 20) {
+  const q = query.trim();
+  if (!q) return Promise.resolve([]);
+  return db.denomination.findMany({
+    where: { isActive: true, OR: [{ name: { contains: q } }, { description: { contains: q } }] },
+    take: limit,
+  });
+}
+
+/** Bulk activate/deactivate denominations in one writer. Returns count updated. */
+export async function bulkSetDenominationsActive(db: Db, ids: number[], isActive: boolean): Promise<number> {
+  if (!ids.length) return 0;
+  const res = await db.denomination.updateMany({ where: { id: { in: ids } }, data: { isActive } });
   return res.count;
 }
 
 /**
- * Apply pre-computed new prices to products. Each item is {id, price} already
- * validated by the caller. No commit here (per crud convention) — wrap in the
- * caller's `prisma.$transaction(tx => bulkSetPrices(tx, items))` for atomicity.
- * Returns the count updated. (Prices are money — the web flow previews first.)
+ * Apply pre-computed new prices to denominations. Each item is {id, price}
+ * already validated by the caller. No commit here — wrap in the caller's
+ * `prisma.$transaction`. Returns the count updated.
  */
-export async function bulkSetPrices(
-  db: Db,
-  items: Array<{ id: number; price: string }>,
-): Promise<number> {
+export async function bulkSetPrices(db: Db, items: Array<{ id: number; price: string }>): Promise<number> {
   for (const it of items) {
-    await db.product.update({ where: { id: it.id }, data: { price: it.price } });
+    await db.denomination.update({ where: { id: it.id }, data: { price: it.price } });
   }
   return items.length;
 }
 
-/** Search active products by name/description (case-insensitive LIKE). */
-export function searchProducts(db: Db, query: string, limit = 20) {
+/** (denomination, availableCount) for active denominations at/below threshold. */
+export async function lowStockDenominations(
+  db: Db,
+  threshold: number,
+): Promise<Array<{ denomination: Denomination; available: number }>> {
+  const denoms = await db.denomination.findMany({ where: { isActive: true } });
+  const counts = await db.stockItem.groupBy({
+    by: ["productId"],
+    where: { status: StockStatus.AVAILABLE },
+    _count: { id: true },
+  });
+  const map = new Map<number, number>();
+  for (const c of counts) map.set(c.productId, c._count.id);
+  return denoms
+    .map((d) => ({ denomination: d, available: map.get(d.id) ?? 0 }))
+    .filter((r) => r.available <= threshold)
+    .sort((a, b) => a.available - b.available);
+}
+
+// ---- Catalog browse (Product-centric, the new customer surface) ----
+
+/** A product with its active denominations (price asc) — one storefront card. */
+export type CatalogProduct = Product & {
+  category: Category;
+  denominations: Denomination[];
+};
+
+/**
+ * Active products (with ≥1 active denomination) in a category — or the whole
+ * catalog when categoryId is omitted. Each carries its active denominations
+ * price-asc so a card can show the starting price. Ordered by sortOrder, name.
+ */
+export function listCatalogProducts(db: Db, categoryId?: number): Promise<CatalogProduct[]> {
+  return db.product.findMany({
+    where: {
+      isActive: true,
+      ...(categoryId != null ? { categoryId } : {}),
+      denominations: { some: { isActive: true } },
+    },
+    include: {
+      category: true,
+      denominations: { where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
+    },
+    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  });
+}
+
+/** Newest active products (by newest active denomination) for the home grid. */
+export async function listNewestCatalogProducts(db: Db, limit = 12): Promise<CatalogProduct[]> {
+  const products = await db.product.findMany({
+    where: { isActive: true, denominations: { some: { isActive: true } } },
+    include: {
+      category: true,
+      denominations: { where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
+    },
+  });
+  const recency = (p: CatalogProduct) =>
+    Math.max(p.createdAt.getTime(), ...p.denominations.map((d) => d.createdAt.getTime()));
+  return products.sort((a, b) => recency(b) - recency(a)).slice(0, limit);
+}
+
+/**
+ * Search products by name/description (products only — variants are chosen in
+ * product detail). Returns active products with ≥1 active denomination, each
+ * with its active denominations price-asc. Sorted by name, capped at `limit`.
+ */
+export function searchCatalog(db: Db, query: string, limit = 24): Promise<CatalogProduct[]> {
   const q = query.trim();
   if (!q) return Promise.resolve([]);
   return db.product.findMany({
     where: {
       isActive: true,
+      denominations: { some: { isActive: true } },
       OR: [{ name: { contains: q } }, { description: { contains: q } }],
     },
+    include: {
+      category: true,
+      denominations: { where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
+    },
+    orderBy: { name: "asc" },
     take: limit,
   });
 }
 
-// ---- Bulk pricing ----
+// ---- Bulk pricing (keyed by denomination) ----
 
 export async function upsertBulkPricing(
   db: Db,
-  args: { productId: number; minQuantity: number; discountPercent: Decimal.Value },
+  args: { denominationId?: number; productId?: number; minQuantity: number; discountPercent: Decimal.Value },
 ) {
+  const denominationId = args.denominationId ?? args.productId!;
   const discountPercent = quantizeMoney(args.discountPercent, 2);
-  const existing = await db.bulkPricing.findUnique({
-    where: { productId: args.productId },
-  });
+  const existing = await db.bulkPricing.findUnique({ where: { productId: denominationId } });
   if (existing) {
     return db.bulkPricing.update({
-      where: { productId: args.productId },
+      where: { productId: denominationId },
       data: { minQuantity: args.minQuantity, discountPercent, isActive: true },
     });
   }
   return db.bulkPricing.create({
-    data: {
-      productId: args.productId,
-      minQuantity: args.minQuantity,
-      discountPercent,
-    },
+    data: { productId: denominationId, minQuantity: args.minQuantity, discountPercent },
   });
 }
 
-export function getBulkPricingForProduct(db: Db, productId: number) {
-  return db.bulkPricing.findFirst({ where: { productId, isActive: true } });
+export function getBulkPricingForDenomination(db: Db, denominationId: number) {
+  return db.bulkPricing.findFirst({ where: { productId: denominationId, isActive: true } });
 }
 
-export async function deleteBulkPricing(db: Db, productId: number): Promise<boolean> {
-  const existing = await db.bulkPricing.findUnique({ where: { productId } });
+export async function deleteBulkPricing(db: Db, denominationId: number): Promise<boolean> {
+  const existing = await db.bulkPricing.findUnique({ where: { productId: denominationId } });
   if (!existing) return false;
-  await db.bulkPricing.delete({ where: { productId } });
+  await db.bulkPricing.delete({ where: { productId: denominationId } });
   return true;
 }
 
 export function listBulkPricingRules(db: Db) {
-  return db.bulkPricing.findMany({
-    include: { product: true },
-    orderBy: { productId: "asc" },
-  });
+  // `product` resolves to a Denomination (the SKU the rule applies to).
+  return db.bulkPricing.findMany({ include: { product: true }, orderBy: { productId: "asc" } });
 }
 
 /**
- * All active quantity-discount rules keyed by product id, so catalog grids can
- * show a "buy N+, save X%" badge without an N+1 query per card. Products with
- * no rule are simply absent from the map.
+ * Active quantity-discount rules keyed by denomination id, so catalog grids can
+ * show a "buy N+, save X%" badge without an N+1 query per card.
  */
-export async function activeBulkPricingByProduct(
+export async function activeBulkPricingByDenomination(
   db: Db,
 ): Promise<Record<number, { minQuantity: number; discountPercent: string }>> {
   const rules = await db.bulkPricing.findMany({ where: { isActive: true } });
@@ -278,43 +466,78 @@ export async function activeBulkPricingByProduct(
   return out;
 }
 
-// ---- low stock report (kept here since it's product-centric) ----
+// =========================================================================
+// @deprecated backward-compat shims — preserve old export names + return
+// shapes so the apps keep compiling until Phases 2–4 migrate them. Removed in
+// Phase 5. Here "Product" = the old SKU = the new Denomination.
+// =========================================================================
 
-/** (product, availableCount) for active products at/below threshold. */
-export async function lowStockProducts(
-  db: Db,
-  threshold: number,
-): Promise<Array<{ product: Awaited<ReturnType<typeof getProduct>>; available: number }>> {
-  const products = await db.product.findMany({ where: { isActive: true } });
-  const counts = await db.stockItem.groupBy({
-    by: ["productId"],
-    where: { status: StockStatus.AVAILABLE },
-    _count: { id: true },
-  });
-  const map = new Map<number, number>();
-  for (const c of counts) map.set(c.productId, c._count.id);
-  const result = products
-    .map((p) => ({ product: p, available: map.get(p.id) ?? 0 }))
-    .filter((r) => r.available <= threshold)
-    .sort((a, b) => a.available - b.available);
-  return result;
-}
+/** A denomination flattened with a synthetic `categoryId` (old SKU shape). */
+type LegacyProduct = Denomination & { categoryId: number };
 
-// ---- Product groups (denominations) ----
-
-/** Discriminated catalog row used by every customer surface. */
+/** @deprecated old SKU rows carried a `categoryId`/`productGroupId`. */
 export type CatalogEntry =
-  | { kind: "group"; group: ProductGroup; members: Product[] }
-  | { kind: "product"; product: Product };
+  | { kind: "group"; group: Product; members: LegacyProduct[] }
+  | { kind: "product"; product: LegacyProduct };
 
-/** Thrown when assigning a product to a group in a different category. */
-export class CategoryMismatchError extends Error {
-  constructor() {
-    super("product and group must share the same category");
-    this.name = "CategoryMismatchError";
-  }
+/**
+ * @deprecated old SKU create. Auto-creates a 1:1 wrapper Product (mandatory
+ * parent) carrying the category/name, then the denomination under it — so
+ * legacy "create a product under a category with a price" flows keep working.
+ */
+export async function createProduct(
+  db: Db,
+  args: {
+    categoryId: number;
+    name: string;
+    description?: string | null;
+    type: ProductType | string;
+    durationLabel: string;
+    price: Decimal.Value;
+    costPrice?: Decimal.Value | null;
+    resellerPrice?: Decimal.Value | null;
+    warrantyDays?: number | null;
+    imageFileId?: string | null;
+    webImageUrl?: string | null;
+  },
+) {
+  const parent = await createCatalogProduct(db, {
+    categoryId: args.categoryId,
+    name: args.name,
+    description: args.description ?? null,
+    webImageUrl: args.webImageUrl ?? null,
+    imageFileId: args.imageFileId ?? null,
+  });
+  const denom = await createDenomination(db, {
+    productId: parent.id,
+    name: args.name,
+    type: args.type,
+    durationLabel: args.durationLabel,
+    price: args.price,
+    costPrice: args.costPrice ?? null,
+    resellerPrice: args.resellerPrice ?? null,
+    warrantyDays: args.warrantyDays ?? null,
+    description: args.description ?? null,
+    imageFileId: args.imageFileId ?? null,
+    webImageUrl: args.webImageUrl ?? null,
+  });
+  return { ...denom, categoryId: parent.categoryId } as LegacyProduct;
 }
 
+/** @deprecated old SKU update → updateDenomination. */
+export function updateProduct(db: Db, productId: number, fields: Record<string, unknown>) {
+  return updateDenomination(db, productId, fields);
+}
+
+/** @deprecated old SKU read → denomination flattened with categoryId. */
+export async function getProduct(db: Db, productId: number): Promise<LegacyProduct | null> {
+  const d = await db.denomination.findUnique({ where: { id: productId }, include: { product: true } });
+  if (!d) return null;
+  const { product, ...rest } = d;
+  return { ...rest, categoryId: product.categoryId };
+}
+
+/** @deprecated use createCatalogProduct (mid-tier). */
 export function createGroup(
   db: Db,
   args: {
@@ -327,203 +550,211 @@ export function createGroup(
     sortOrder?: number;
   },
 ) {
-  return db.productGroup.create({
-    data: {
-      categoryId: args.categoryId,
-      name: args.name,
-      emoji: args.emoji ?? null,
-      description: args.description ?? null,
-      webImageUrl: args.webImageUrl ?? null,
-      imageFileId: args.imageFileId ?? null,
-      sortOrder: args.sortOrder ?? 0,
-    },
-  });
+  return createCatalogProduct(db, args);
 }
 
-export async function updateGroup(db: Db, groupId: number, fields: Record<string, unknown>) {
-  if (Object.keys(fields).length === 0) return;
-  await db.productGroup.update({ where: { id: groupId }, data: fields });
+/** @deprecated use updateCatalogProduct (mid-tier). */
+export function updateGroup(db: Db, groupId: number, fields: Record<string, unknown>) {
+  return updateCatalogProduct(db, groupId, fields);
 }
 
-/** Delete a group, unlinking its members first (products survive). */
-export async function deleteGroup(db: PrismaClient, groupId: number): Promise<void> {
-  await db.$transaction(async (tx) => {
-    await tx.product.updateMany({ where: { productGroupId: groupId }, data: { productGroupId: null } });
-    await tx.productGroup.delete({ where: { id: groupId } });
-  });
+/** @deprecated use deleteCatalogProductCascade. */
+export function deleteGroup(db: PrismaClient, groupId: number): Promise<void> {
+  return deleteCatalogProductCascade(db, groupId);
 }
 
-/**
- * Link a product to a group (or unlink when groupId is null). Enforces the
- * invariant that a grouped product shares the group's category.
- */
-export async function assignProductToGroup(
-  db: Db,
-  productId: number,
-  groupId: number | null,
-): Promise<void> {
-  if (groupId !== null) {
-    const [product, group] = await Promise.all([
-      db.product.findUnique({ where: { id: productId } }),
-      db.productGroup.findUnique({ where: { id: groupId } }),
-    ]);
-    if (!product || !group) throw new Error("product or group not found");
-    if (product.categoryId !== group.categoryId) throw new CategoryMismatchError();
-  }
-  await db.product.update({ where: { id: productId }, data: { productGroupId: groupId } });
+/** @deprecated use assignDenominationToProduct. groupId must be non-null now. */
+export async function assignProductToGroup(db: Db, productId: number, groupId: number | null): Promise<void> {
+  if (groupId === null) throw new Error("a denomination must belong to a product (parent is mandatory)");
+  await assignDenominationToProduct(db, productId, groupId);
 }
 
-/** All groups (active + inactive) with category + member count — admin list. */
-export function listAllGroups(db: Db) {
-  return db.productGroup.findMany({
-    include: { category: true, _count: { select: { products: true } } },
+/** @deprecated use listProducts. Old shape: groups with category + member count. */
+export async function listAllGroups(db: Db) {
+  const products = await db.product.findMany({
+    include: { category: true, _count: { select: { denominations: true } } },
     orderBy: [{ categoryId: "asc" }, { sortOrder: "asc" }, { name: "asc" }],
   });
+  return products.map((p) => {
+    const { _count, ...rest } = p;
+    return { ...rest, _count: { products: _count.denominations } };
+  });
 }
 
-/** A group with its active members ordered by price asc (denomination picker). */
-export function getGroupWithActiveProducts(db: Db, groupId: number) {
-  return db.productGroup.findUnique({
+/** @deprecated use getCatalogProductWithDenominations. Old shape: group + members. */
+export async function getGroupWithActiveProducts(db: Db, groupId: number) {
+  const product = await db.product.findUnique({
     where: { id: groupId },
-    include: { products: { where: { isActive: true }, orderBy: { price: "asc" } } },
+    include: { denominations: { where: { isActive: true }, orderBy: { price: "asc" } } },
   });
+  if (!product) return null;
+  const { denominations, ...group } = product;
+  const members: LegacyProduct[] = denominations.map((d) => ({ ...d, categoryId: product.categoryId }));
+  return { ...group, products: members };
 }
 
 /**
- * Mixed, ordered catalog rows for a category (or the whole catalog when
- * categoryId is omitted). Rules:
- *  - active groups with >=1 active member; empty/inactive groups dropped
- *  - a group with exactly one active member is emitted as that product (collapse)
- *  - active products with no group (or in an inactive group) are emitted as products
- * Final order: by display name, case-insensitive ascending (group.name / product.name).
+ * Map a product+denominations to a legacy CatalogEntry, REPLICATING the old
+ * collapse rule so existing surfaces/tests behave identically during transition:
+ * a product with exactly one active denomination collapses to a `product` entry;
+ * ≥2 stays a `group` entry. (Phases 3–4 drop collapse and always show products.)
  */
+function entryFromCatalogProduct(p: CatalogProduct): CatalogEntry {
+  const { denominations, category: _c, ...group } = p;
+  const members = denominations.map((d) => ({ ...d, categoryId: p.categoryId }));
+  if (members.length === 1) return { kind: "product", product: members[0]! };
+  return { kind: "group", group, members };
+}
+
+const byEntryName = (a: CatalogEntry, b: CatalogEntry) => {
+  const an = a.kind === "group" ? a.group.name : a.product.name;
+  const bn = b.kind === "group" ? b.group.name : b.product.name;
+  return an.toLowerCase().localeCompare(bn.toLowerCase());
+};
+
+/** @deprecated use listCatalogProducts. Reproduces the old group/product union. */
 export async function listCatalogEntries(db: Db, categoryId?: number): Promise<CatalogEntry[]> {
-  const groups = await db.productGroup.findMany({
-    where: { isActive: true, ...(categoryId != null ? { categoryId } : {}) },
-    include: { products: { where: { isActive: true }, orderBy: { price: "asc" } } },
-    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+  const products = await listCatalogProducts(db, categoryId);
+  return products.map(entryFromCatalogProduct).sort(byEntryName);
+}
+
+/** @deprecated use listNewestCatalogProducts. Keeps recency order (no re-sort). */
+export async function listNewestCatalogEntries(db: Db, limit = 12): Promise<CatalogEntry[]> {
+  const products = await listNewestCatalogProducts(db, limit);
+  return products.map(entryFromCatalogProduct);
+}
+
+/** @deprecated use searchCatalog. */
+export async function searchCatalogEntries(db: Db, query: string, limit = 24): Promise<CatalogEntry[]> {
+  const products = await searchCatalog(db, query, limit);
+  return products.map(entryFromCatalogProduct).sort(byEntryName);
+}
+
+/** @deprecated use getDenominationWithProduct. Old shape: SKU + category. */
+export async function getProductWithCategory(db: Db, productId: number) {
+  const d = await db.denomination.findUnique({
+    where: { id: productId },
+    include: { product: { include: { category: true } } },
   });
+  if (!d) return null;
+  const { product, ...rest } = d;
+  return { ...rest, categoryId: product.categoryId, productGroupId: product.id, category: product.category };
+}
 
-  const groupedIds = new Set<number>();
-  const entries: CatalogEntry[] = [];
-  for (const g of groups) {
-    const { products: members, ...group } = g;
-    for (const m of members) groupedIds.add(m.id);
-    if (members.length === 0) continue; // hide empty group
-    if (members.length === 1) entries.push({ kind: "product", product: members[0]! }); // collapse
-    else entries.push({ kind: "group", group, members });
-  }
+/** @deprecated use getDenominationWithProduct. Old shape: SKU + category + group. */
+export async function getProductDetail(db: Db, productId: number) {
+  const d = await db.denomination.findUnique({
+    where: { id: productId },
+    include: { product: { include: { category: true } } },
+  });
+  if (!d) return null;
+  const { product, ...rest } = d;
+  return {
+    ...rest,
+    categoryId: product.categoryId,
+    productGroupId: product.id,
+    category: product.category,
+    productGroup: product,
+  };
+}
 
-  const ungrouped = await db.product.findMany({
-    where: {
-      isActive: true,
-      ...(categoryId != null ? { categoryId } : {}),
-      id: { notIn: [...groupedIds] },
-    },
+/** @deprecated use getDenominationsByIds. */
+export function getProductsByIds(db: Db, ids: number[]) {
+  return getDenominationsByIds(db, ids);
+}
+
+/** @deprecated use listAllDenominations. Old shape: SKUs with category + group. */
+export async function listAllProducts(db: Db) {
+  const denoms = await db.denomination.findMany({
+    include: { product: { include: { category: true } } },
     orderBy: { name: "asc" },
   });
-  for (const p of ungrouped) entries.push({ kind: "product", product: p });
-
-  const nameOf = (e: CatalogEntry) => (e.kind === "group" ? e.group.name : e.product.name).toLowerCase();
-  entries.sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
-  return entries;
+  return denoms.map((d) => {
+    const { product, ...rest } = d;
+    return { ...rest, categoryId: product.categoryId, productGroupId: product.id, category: product.category, productGroup: product };
+  });
 }
 
-/**
- * Newest catalog rows (groups + ungrouped products) for the storefront home
- * "latest" grid. Same collapse rules as listCatalogEntries, but ordered by
- * recency: a group ranks by its newest active member's createdAt, a product by
- * its own createdAt. Newest first, capped at `limit` cards.
- */
-export async function listNewestCatalogEntries(db: Db, limit = 12): Promise<CatalogEntry[]> {
-  const groups = await db.productGroup.findMany({
-    where: { isActive: true },
-    include: { products: { where: { isActive: true }, orderBy: { price: "asc" } } },
-  });
-
-  const groupedIds = new Set<number>();
-  const ranked: Array<{ entry: CatalogEntry; recency: number }> = [];
-  for (const g of groups) {
-    const { products: members, ...group } = g;
-    for (const m of members) groupedIds.add(m.id);
-    if (members.length === 0) continue; // hide empty group
-    const recency = Math.max(...members.map((m) => m.createdAt.getTime()));
-    if (members.length === 1) ranked.push({ entry: { kind: "product", product: members[0]! }, recency });
-    else ranked.push({ entry: { kind: "group", group, members }, recency });
-  }
-
-  const ungrouped = await db.product.findMany({
-    where: { isActive: true, id: { notIn: [...groupedIds] } },
-  });
-  for (const p of ungrouped) {
-    ranked.push({ entry: { kind: "product", product: p }, recency: p.createdAt.getTime() });
-  }
-
-  ranked.sort((a, b) => b.recency - a.recency);
-  return ranked.slice(0, limit).map((r) => r.entry);
+/** @deprecated use bulkSetDenominationsActive. */
+export function bulkSetProductsActive(db: Db, ids: number[], isActive: boolean): Promise<number> {
+  return bulkSetDenominationsActive(db, ids, isActive);
 }
 
-/**
- * Search the catalog and return group + product rows. Matches active products by
- * name/description and active groups by name; a matched product that belongs to
- * an active group is shown as that group's card (full active members), so the
- * buyer picks the denomination next. Ungrouped matches (and members of an
- * inactive group) stay product cards. Single-member groups collapse to a
- * product. Sorted by display name asc, capped at `limit`.
- */
-// Over-fetch factor for the search candidate reads. We cap the LIKE matches at
-// the DB instead of slurping every row into memory (P5-01), but fetch a
-// name-sorted superset (limit * this) so the cap can never drop a card that
-// belongs in the name-sorted top `limit`. Verified by the large-dataset parity
-// test in product_groups.test.ts.
-const SEARCH_OVERFETCH = 4;
+/** @deprecated use searchDenominations. */
+export function searchProducts(db: Db, query: string, limit = 20) {
+  return searchDenominations(db, query, limit);
+}
 
-export async function searchCatalogEntries(db: Db, query: string, limit = 24): Promise<CatalogEntry[]> {
+/** @deprecated use searchCatalog (products only). Old shape: SKUs + category. */
+export async function searchProductsWithCategory(db: Db, query: string, limit = 24) {
   const q = query.trim();
   if (!q) return [];
-
-  const cap = limit * SEARCH_OVERFETCH;
-  const matchedProducts = await db.product.findMany({
+  const denoms = await db.denomination.findMany({
     where: { isActive: true, OR: [{ name: { contains: q } }, { description: { contains: q } }] },
-    orderBy: { name: "asc" },
-    take: cap,
+    include: { product: { include: { category: true } } },
+    take: limit,
   });
-  const groupsByName = await db.productGroup.findMany({
-    where: { isActive: true, name: { contains: q } },
-    select: { id: true },
-    orderBy: { name: "asc" },
-    take: cap,
+  return denoms.map((d) => {
+    const { product, ...rest } = d;
+    return { ...rest, categoryId: product.categoryId, category: product.category };
   });
+}
 
-  // Active group ids to render as group cards: matched products' groups + name hits.
-  const groupIds = new Set<number>();
-  for (const p of matchedProducts) if (p.productGroupId != null) groupIds.add(p.productGroupId);
-  for (const g of groupsByName) groupIds.add(g.id);
+/** @deprecated use listCatalogProducts. Old shape: active SKUs in a category. */
+export function listActiveProducts(db: Db, categoryId: number) {
+  return db.denomination.findMany({
+    where: { isActive: true, product: { categoryId } },
+    orderBy: { name: "asc" },
+  });
+}
 
-  const groups = groupIds.size
-    ? await db.productGroup.findMany({
-        where: { id: { in: [...groupIds] }, isActive: true },
-        include: { products: { where: { isActive: true }, orderBy: { price: "asc" } } },
-      })
-    : [];
+/** @deprecated. Old shape: all active SKUs. */
+export function listAllActiveProducts(db: Db) {
+  return db.denomination.findMany({ where: { isActive: true }, orderBy: { name: "asc" } });
+}
 
-  const groupedIds = new Set<number>();
-  const entries: CatalogEntry[] = [];
-  for (const g of groups) {
-    const { products: members, ...group } = g;
-    for (const m of members) groupedIds.add(m.id);
-    if (members.length === 0) continue;
-    if (members.length === 1) entries.push({ kind: "product", product: members[0]! });
-    else entries.push({ kind: "group", group, members });
-  }
+/** @deprecated use listNewestCatalogProducts. Old shape: newest SKUs + category. */
+export async function listNewestActiveProducts(db: Db, limit = 12) {
+  const denoms = await db.denomination.findMany({
+    where: { isActive: true },
+    include: { product: { include: { category: true } } },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+  });
+  return denoms.map((d) => {
+    const { product, ...rest } = d;
+    return { ...rest, categoryId: product.categoryId, category: product.category };
+  });
+}
 
-  // Matched products not represented by a shown group → product cards (no dupes).
-  for (const p of matchedProducts) {
-    if (groupedIds.has(p.id)) continue;
-    entries.push({ kind: "product", product: p });
-  }
+/** @deprecated use listCatalogProducts. Old shape: active SKUs in a category + cat. */
+export async function listActiveProductsWithCategory(db: Db, categoryId: number) {
+  const denoms = await db.denomination.findMany({
+    where: { isActive: true, product: { categoryId } },
+    include: { product: { include: { category: true } } },
+    orderBy: { name: "asc" },
+  });
+  return denoms.map((d) => {
+    const { product, ...rest } = d;
+    return { ...rest, categoryId: product.categoryId, category: product.category };
+  });
+}
 
-  const nameOf2 = (e: CatalogEntry) => (e.kind === "group" ? e.group.name : e.product.name).toLowerCase();
-  entries.sort((a, b) => nameOf2(a).localeCompare(nameOf2(b)));
-  return entries.slice(0, limit);
+/** @deprecated use lowStockDenominations. Old shape: {product, available}. */
+export async function lowStockProducts(
+  db: Db,
+  threshold: number,
+): Promise<Array<{ product: Denomination; available: number }>> {
+  const rows = await lowStockDenominations(db, threshold);
+  return rows.map((r) => ({ product: r.denomination, available: r.available }));
+}
+
+/** @deprecated use getBulkPricingForDenomination. */
+export function getBulkPricingForProduct(db: Db, productId: number) {
+  return getBulkPricingForDenomination(db, productId);
+}
+
+/** @deprecated use activeBulkPricingByDenomination. */
+export function activeBulkPricingByProduct(db: Db) {
+  return activeBulkPricingByDenomination(db);
 }

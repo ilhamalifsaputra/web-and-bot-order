@@ -12,6 +12,8 @@
     "build": "pnpm -r build",
     "build:bundle": "tsx scripts/build-bundle.ts",
     "reset-admin-password": "tsx scripts/reset-admin-password.ts",
+    "migrate-catalog-rename": "tsx scripts/migrate-catalog-rename.ts",
+    "backfill-catalog-slugs": "tsx scripts/backfill-catalog-slugs.ts",
     "bybit-probe": "tsx scripts/bybit-probe.ts",
     "start": "tsx apps/server/src/index.ts",
     "typecheck": "pnpm -r typecheck && tsc -p tsconfig.test.json",

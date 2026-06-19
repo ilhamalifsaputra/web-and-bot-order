@@ -14,10 +14,34 @@ import {
   deleteSetting,
   addToCart,
   getOrderByCode,
-  createGroup,
-  assignProductToGroup,
+  createCatalogProduct,
+  createDenomination,
 } from "@app/db";
 import { buildApp } from "../src/server";
+
+/** Seed a mid-tier Product with N denominations (the "group" shape). */
+async function seedGroup(
+  categoryId: number,
+  name: string,
+  denoms: Array<{ name: string; price: string; duration?: string }>,
+) {
+  const group = await createCatalogProduct(prisma, { categoryId, name });
+  const members = [];
+  for (const d of denoms) {
+    members.push(
+      await createDenomination(prisma, {
+        productId: group.id, name: d.name, type: "SHARED", durationLabel: d.duration ?? "1 Month", price: d.price,
+      }),
+    );
+  }
+  return { group, members };
+}
+
+/** Seed a single-denomination product (collapses to a product card). */
+async function seedLoose(categoryId: number, name: string, price: string, duration = "1 month") {
+  const parent = await createCatalogProduct(prisma, { categoryId, name });
+  return createDenomination(prisma, { productId: parent.id, name, type: "SHARED", durationLabel: duration, price });
+}
 
 let app: FastifyInstance;
 let productId: number;
@@ -29,19 +53,21 @@ beforeAll(async () => {
   app = await buildApp();
 
   const cat = await prisma.category.create({
-    data: { name: "Streaming", emoji: "🎬", sortOrder: 1 },
+    data: { name: "Streaming", slug: "streaming", emoji: "🎬", sortOrder: 1 },
   });
   categoryId = cat.id;
-  const prod = await prisma.product.create({
-    data: {
-      categoryId: cat.id,
-      name: "Netflix Premium 1 Bulan",
-      description: "Profil sharing, garansi penuh.",
-      type: "SHARED",
-      durationLabel: "1 month",
-      price: "40000", // IDR central price (plan.md §15)
-      warrantyDays: 30,
-    },
+  const netflixParent = await createCatalogProduct(prisma, {
+    categoryId: cat.id,
+    name: "Netflix Premium 1 Bulan",
+    description: "Profil sharing, garansi penuh.",
+  });
+  const prod = await createDenomination(prisma, {
+    productId: netflixParent.id,
+    name: "Netflix Premium 1 Bulan",
+    type: "SHARED",
+    durationLabel: "1 month",
+    price: "40000", // IDR central price (plan.md §15)
+    warrantyDays: 30,
   });
   productId = prod.id;
   await prisma.stockItem.createMany({
@@ -51,15 +77,7 @@ beforeAll(async () => {
       status: "AVAILABLE",
     })),
   });
-  const empty = await prisma.product.create({
-    data: {
-      categoryId: cat.id,
-      name: "Spotify Family",
-      type: "SHARED",
-      durationLabel: "1 month",
-      price: "25000",
-    },
-  });
+  const empty = await seedLoose(cat.id, "Spotify Family", "25000");
   emptyProductId = empty.id;
   // Storefront tests model a live shop — keep the setup gate open.
   await setSetting(prisma, "setup_completed", "true");
@@ -119,19 +137,13 @@ describe("category + product detail", () => {
   // card (drills into /g/:id) and an ungrouped product card (/p/:id). Locks the
   // shaping behaviour before unifying card() onto shapeEntries.
   it("renders group cards and ungrouped product cards on a category page", async () => {
-    const cat = await prisma.category.create({ data: { name: "A04Cat", sortOrder: 9 } });
-    const g = await createGroup(prisma, { categoryId: cat.id, name: "A04Group" });
-    const m1 = await prisma.product.create({
-      data: { categoryId: cat.id, name: "A04 Member Cheap", type: "SHARED", durationLabel: "1m", price: "10000" },
-    });
-    const m2 = await prisma.product.create({
-      data: { categoryId: cat.id, name: "A04 Member Pricey", type: "SHARED", durationLabel: "3m", price: "30000" },
-    });
-    await assignProductToGroup(prisma, m1.id, g.id);
-    await assignProductToGroup(prisma, m2.id, g.id);
-    const loose = await prisma.product.create({
-      data: { categoryId: cat.id, name: "A04 Loose Product", type: "SHARED", durationLabel: "1m", price: "15000" },
-    });
+    const cat = await prisma.category.create({ data: { name: "A04Cat", slug: "a04cat", sortOrder: 9 } });
+    const { group: g, members } = await seedGroup(cat.id, "A04Group", [
+      { name: "A04 Member Cheap", price: "10000", duration: "1m" },
+      { name: "A04 Member Pricey", price: "30000", duration: "3m" },
+    ]);
+    const [m1, m2] = members;
+    const loose = await seedLoose(cat.id, "A04 Loose Product", "15000", "1m");
 
     const res = await app.inject({ method: "GET", url: `/c/${cat.id}` });
     expect(res.statusCode).toBe(200);
@@ -139,12 +151,12 @@ describe("category + product detail", () => {
     expect(res.body).toContain(`/g/${g.id}`);
     expect(res.body).toContain("A04Group");
     expect(res.body).toContain("Rp10.000"); // from_price = cheapest member
-    // Ungrouped product: its own /p/:id card.
+    // Ungrouped product (single denomination): its own /p/:id card.
     expect(res.body).toContain(`/p/${loose.id}`);
     expect(res.body).toContain("A04 Loose Product");
     // Grouped members are NOT emitted as their own product cards.
-    expect(res.body).not.toContain(`/p/${m1.id}`);
-    expect(res.body).not.toContain(`/p/${m2.id}`);
+    expect(res.body).not.toContain(`/p/${m1!.id}`);
+    expect(res.body).not.toContain(`/p/${m2!.id}`);
   });
 
   it("renders product detail with stock badge and warranty", async () => {
@@ -163,22 +175,19 @@ describe("category + product detail", () => {
   });
 
   it("404s an inactive product", async () => {
-    await prisma.product.update({ where: { id: emptyProductId }, data: { isActive: false } });
+    await prisma.denomination.update({ where: { id: emptyProductId }, data: { isActive: false } });
     const res = await app.inject({ method: "GET", url: `/p/${emptyProductId}` });
     expect(res.statusCode).toBe(404);
-    await prisma.product.update({ where: { id: emptyProductId }, data: { isActive: true } });
+    await prisma.denomination.update({ where: { id: emptyProductId }, data: { isActive: true } });
   });
 });
 
 describe("denomination groups", () => {
   it("category page shows a group card linking to /g/:id", async () => {
-    const group = await prisma.productGroup.create({ data: { categoryId, name: "Capcut", isActive: true } });
-    await prisma.product.create({
-      data: { categoryId, name: "Capcut 7 day", type: "SHARED", durationLabel: "7 day", price: "10000", productGroupId: group.id },
-    });
-    await prisma.product.create({
-      data: { categoryId, name: "Capcut 1 Month", type: "SHARED", durationLabel: "1 Month", price: "30000", productGroupId: group.id },
-    });
+    const { group } = await seedGroup(categoryId, "Capcut", [
+      { name: "Capcut 7 day", price: "10000", duration: "7 day" },
+      { name: "Capcut 1 Month", price: "30000", duration: "1 Month" },
+    ]);
 
     const res = await app.inject({ method: "GET", url: `/c/${categoryId}` });
     expect(res.statusCode).toBe(200);
@@ -187,18 +196,16 @@ describe("denomination groups", () => {
   });
 
   it("group page lists each denomination linking to /p/:id", async () => {
-    const group = await prisma.productGroup.create({ data: { categoryId, name: "Splice", isActive: true } });
-    const wk = await prisma.product.create({
-      data: { categoryId, name: "Splice 7 day", type: "SHARED", durationLabel: "7 day", price: "9000", productGroupId: group.id },
-    });
-    const mo = await prisma.product.create({
-      data: { categoryId, name: "Splice 1 Month", type: "SHARED", durationLabel: "1 Month", price: "29000", productGroupId: group.id },
-    });
+    const { group, members } = await seedGroup(categoryId, "Splice", [
+      { name: "Splice 7 day", price: "9000", duration: "7 day" },
+      { name: "Splice 1 Month", price: "29000", duration: "1 Month" },
+    ]);
+    const [wk, mo] = members;
 
     const res = await app.inject({ method: "GET", url: `/g/${group.id}` });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain(`/p/${wk.id}`);
-    expect(res.body).toContain(`/p/${mo.id}`);
+    expect(res.body).toContain(`/p/${wk!.id}`);
+    expect(res.body).toContain(`/p/${mo!.id}`);
   });
 
   it("unknown group id is 404", async () => {
@@ -207,20 +214,18 @@ describe("denomination groups", () => {
   });
 
   it("home 'latest' shows a group card linking to /g/:id, not the denominations flat", async () => {
-    const group = await prisma.productGroup.create({ data: { categoryId, name: "HomeBrand", isActive: true } });
-    const d1 = await prisma.product.create({
-      data: { categoryId, name: "HomeBrand 7 day", type: "SHARED", durationLabel: "7 day", price: "9000", productGroupId: group.id },
-    });
-    const d2 = await prisma.product.create({
-      data: { categoryId, name: "HomeBrand 1 Month", type: "SHARED", durationLabel: "1 Month", price: "29000", productGroupId: group.id },
-    });
+    const { group, members } = await seedGroup(categoryId, "HomeBrand", [
+      { name: "HomeBrand 7 day", price: "9000", duration: "7 day" },
+      { name: "HomeBrand 1 Month", price: "29000", duration: "1 Month" },
+    ]);
+    const [d1, d2] = members;
 
     const res = await app.inject({ method: "GET", url: "/" });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain(`/g/${group.id}`);   // group card present
     expect(res.body).toContain("HomeBrand");
-    expect(res.body).not.toContain(`/p/${d1.id}`);  // denominations are NOT shown flat on home
-    expect(res.body).not.toContain(`/p/${d2.id}`);
+    expect(res.body).not.toContain(`/p/${d1!.id}`);  // denominations are NOT shown flat on home
+    expect(res.body).not.toContain(`/p/${d2!.id}`);
   });
 });
 
@@ -264,18 +269,16 @@ describe("search + language", () => {
   });
 
   it("collapses grouped denominations into a group card in search results", async () => {
-    const group = await prisma.productGroup.create({ data: { categoryId, name: "SearchBrand", isActive: true } });
-    const d1 = await prisma.product.create({
-      data: { categoryId, name: "SearchBrand 7 day", type: "SHARED", durationLabel: "7 day", price: "9000", productGroupId: group.id },
-    });
-    await prisma.product.create({
-      data: { categoryId, name: "SearchBrand 1 Month", type: "SHARED", durationLabel: "1 Month", price: "29000", productGroupId: group.id },
-    });
+    const { group, members } = await seedGroup(categoryId, "SearchBrand", [
+      { name: "SearchBrand 7 day", price: "9000", duration: "7 day" },
+      { name: "SearchBrand 1 Month", price: "29000", duration: "1 Month" },
+    ]);
+    const [d1] = members;
 
     const res = await app.inject({ method: "GET", url: "/search?q=SearchBrand" });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain(`/g/${group.id}`);  // group card
-    expect(res.body).not.toContain(`/p/${d1.id}`); // not flat denominations
+    expect(res.body).not.toContain(`/p/${d1!.id}`); // not flat denominations
   });
 });
 

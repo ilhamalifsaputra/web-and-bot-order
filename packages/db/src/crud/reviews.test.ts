@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { productRating, listReviews, setReviewHidden, featuredReviews, overallRating } from "./reviews";
+import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -16,9 +17,15 @@ afterAll(async () => {
 
 /** Seed a product plus N reviews with the given ratings/hidden flags. */
 async function seed(ratings: Array<{ rating: number; hidden?: boolean; comment?: string | null }>) {
-  const cat = await prisma.category.create({ data: { name: `c${Math.random()}` } });
-  const product = await prisma.product.create({
-    data: { categoryId: cat.id, name: "P", type: "SHARED", durationLabel: "1 Month", price: "5" },
+  const cat = await createCategory(prisma, `c${Math.random()}`);
+  const parent = await createCatalogProduct(prisma, { categoryId: cat.id, name: "P" });
+  // Reviews are keyed by denomination (the SKU); column is `product_id`.
+  const product = await createDenomination(prisma, {
+    productId: parent.id,
+    name: "P",
+    type: "SHARED",
+    durationLabel: "1 Month",
+    price: "5",
   });
   for (const [i, r] of ratings.entries()) {
     const user = await prisma.user.create({

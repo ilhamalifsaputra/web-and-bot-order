@@ -194,7 +194,8 @@ export async function topProducts(db: Db, limit = 10): Promise<TopProduct[]> {
     where: { order: { status: OrderStatus.DELIVERED } },
     select: { productId: true, quantity: true, unitPrice: true },
   });
-  const products = await db.product.findMany({ select: { id: true, name: true } });
+  // OrderItem is keyed by denomination (column is `product_id`).
+  const products = await db.denomination.findMany({ select: { id: true, name: true } });
   const nameById = new Map(products.map((p) => [p.id, p.name]));
 
   const acc = new Map<number, { qty: number; revenue: Decimal }>();

@@ -98,7 +98,7 @@ async function showDashboard(ctx: MyContext): Promise<void> {
 
 async function showProducts(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
-  const allProducts = await prisma.product.findMany({ orderBy: { name: "asc" } });
+  const allProducts = await prisma.denomination.findMany({ orderBy: { name: "asc" } });
   if (!allProducts.length) {
     await adminEdit(ctx, t(ctx, "admin.empty_products"), akb.backToAdminKb(lang));
     return;
@@ -120,7 +120,7 @@ async function showProducts(ctx: MyContext): Promise<void> {
 
 async function showStockMenu(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
-  const products = await prisma.product.findMany({ where: { isActive: true }, orderBy: { name: "asc" } });
+  const products = await prisma.denomination.findMany({ where: { isActive: true }, orderBy: { name: "asc" } });
   await adminEdit(ctx, t(ctx, "admin.hdr_stock_pick"), akb.stockProductsKb(products, lang));
 }
 
@@ -345,7 +345,7 @@ async function showSettings(ctx: MyContext): Promise<void> {
 
 async function viewProductAdmin(ctx: MyContext, productId: number): Promise<void> {
   const lang = ctx.session.lang;
-  const p = await prisma.product.findUnique({ where: { id: productId } });
+  const p = await prisma.denomination.findUnique({ where: { id: productId } });
   if (p === null) {
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.not_found"), show_alert: true });
     return;
@@ -365,7 +365,7 @@ async function viewProductAdmin(ctx: MyContext, productId: number): Promise<void
 
 async function toggleProduct(ctx: MyContext, productId: number): Promise<void> {
   const adminTg = ctx.from!.id;
-  const p = await prisma.product.findUnique({ where: { id: productId } });
+  const p = await prisma.denomination.findUnique({ where: { id: productId } });
   if (p === null) {
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.not_found"), show_alert: true });
     return;
@@ -392,7 +392,7 @@ async function toggleProduct(ctx: MyContext, productId: number): Promise<void> {
 
 async function viewStockItems(ctx: MyContext, productId: number): Promise<void> {
   const lang = ctx.session.lang;
-  const p = await prisma.product.findUnique({ where: { id: productId } });
+  const p = await prisma.denomination.findUnique({ where: { id: productId } });
   if (p === null) {
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.product_not_found"), show_alert: true });
     return;
@@ -429,7 +429,7 @@ async function adminMarkStockDead(ctx: MyContext, stockId: number, productId: nu
 
 async function showBulkPricing(ctx: MyContext, productId: number): Promise<void> {
   const lang = ctx.session.lang;
-  const p = await prisma.product.findUnique({ where: { id: productId } });
+  const p = await prisma.denomination.findUnique({ where: { id: productId } });
   if (p === null) {
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.product_not_found"), show_alert: true });
     return;

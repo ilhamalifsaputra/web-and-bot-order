@@ -302,7 +302,7 @@ describe("admin conversations", () => {
       msg(sink, { text: "-" }),
     ]);
     await productCreateConversation(conv.asMyConversation(), entry);
-    const p = await prisma.product.findFirst({ where: { name: "Spotify Premium 1M" } });
+    const p = await prisma.denomination.findFirst({ where: { name: "Spotify Premium 1M" } });
     expect(p).toBeTruthy();
     expect(Number(p!.price)).toBe(3.5);
     expect(await prisma.auditLog.count({ where: { action: "product_create" } })).toBe(1);
@@ -313,7 +313,7 @@ describe("admin conversations", () => {
     const entry = entryAdmin(sink, `v1:adm:prod:rename:${sample.product.id}`);
     const conv = new FakeConversation([msg(sink, { text: "Netflix Renamed" })]);
     await productEditConversation(conv.asMyConversation(), entry);
-    const p = await prisma.product.findUnique({ where: { id: sample.product.id } });
+    const p = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
     expect(p!.name).toBe("Netflix Renamed");
     expect(await prisma.auditLog.count({ where: { action: "product_rename" } })).toBe(1);
   });

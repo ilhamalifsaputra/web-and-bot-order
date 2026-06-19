@@ -24,6 +24,7 @@ import accountRoutes from "./routes/account";
 import settingsRoutes from "./routes/settings";
 import cartRoutes from "./routes/cart";
 import checkoutRoutes from "./routes/checkout";
+import apiRoutes from "./routes/api";
 import { requestLang } from "./shop";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -102,6 +103,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(settingsRoutes);
   await app.register(cartRoutes);
   await app.register(checkoutRoutes);
+  await app.register(apiRoutes, { prefix: "/api/v1" });
 
   // Liveness probe for the combined server / uptime pings (admin has its own).
   app.get("/healthz", async () => {

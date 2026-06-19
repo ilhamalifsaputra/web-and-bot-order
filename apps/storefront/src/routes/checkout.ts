@@ -153,6 +153,68 @@ function payState(order: OrderRow) {
   return "closed"; // cancelled / rejected / refunded / underpaid
 }
 
+/**
+ * Validate the chosen payment method, then run the order-creation transaction
+ * (countUserPendingOrders → createOrderFromCart → finalizeOrderPayment) — the
+ * SAME logic the HTML POST /checkout route and the JSON API's POST /checkout
+ * both need, so there is exactly one implementation of checkout's business
+ * rules. Throws ValidationError (unavailable method, too many pending orders,
+ * generic failure) exactly as the inline code used to.
+ */
+export async function performCheckout(
+  customer: Customer,
+  method: string,
+  voucherCode: string | null,
+): Promise<{ orderCode: string }> {
+  const [fxRate, tokopay, bybit, binance] = await Promise.all([
+    getUsdIdrRate(prisma),
+    getTokopayCreds(prisma),
+    resolveBybitConfig(prisma),
+    resolveBinanceInternalConfig(prisma),
+  ]);
+
+  // Map the chosen method token → (currency, paymentMethod), each gated.
+  // Stricter than PaymentChoice: method is required and BINANCE_PAY is excluded (web-only constraint).
+  type Choice =
+    | {
+        currency: typeof OrderCurrency.USDT;
+        rate: NonNullable<typeof fxRate>;
+        method: typeof PaymentMethod.BINANCE_INTERNAL | typeof PaymentMethod.BYBIT;
+      }
+    | { currency: typeof OrderCurrency.IDR };
+  let choice: Choice;
+  if (method === "binance") {
+    if (!fxRate || !binance.enabled) throw new ValidationError("web.pay_method_unavailable");
+    choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BINANCE_INTERNAL };
+  } else if (method === "bybit") {
+    if (!fxRate || !bybit.enabled) throw new ValidationError("web.pay_method_unavailable");
+    choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BYBIT };
+  } else if (method === "qris") {
+    if (!tokopay) throw new ValidationError("web.pay_method_unavailable");
+    choice = { currency: OrderCurrency.IDR };
+  } else {
+    throw new ValidationError("web.pay_method_unavailable");
+  }
+
+  const order = await prisma.$transaction(async (tx) => {
+    if ((await countUserPendingOrders(tx, customer.userId)) >= MAX_PENDING_ORDERS) {
+      throw new ValidationError("error.too_many_pending");
+    }
+    const created = await createOrderFromCart(tx, {
+      user: {
+        id: customer.userId,
+        role: customer.user.role,
+        walletBalance: customer.user.walletBalance,
+      },
+      voucherCode,
+      walletAmount: 0, // wallet is hidden on the web (plan.md §17.1 #5)
+    });
+    if (!created) throw new ValidationError("error.generic");
+    return finalizeOrderPayment(tx, created.id, choice);
+  });
+  return { orderCode: order!.orderCode };
+}
+
 const checkoutRoutes: FastifyPluginAsync = async (app) => {
   // ---- Checkout summary + method choice ----
   app.get("/checkout", { preHandler: currentCustomer }, async (req, reply) => {
@@ -177,54 +239,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).view("checkout.njk", { ...ctx, ...view });
       };
 
-      const [fxRate, tokopay, bybit, binance] = await Promise.all([
-        getUsdIdrRate(prisma),
-        getTokopayCreds(prisma),
-        resolveBybitConfig(prisma),
-        resolveBinanceInternalConfig(prisma),
-      ]);
-
-      // Map the chosen method token → (currency, paymentMethod), each gated.
-      // Stricter than PaymentChoice: method is required and BINANCE_PAY is excluded (web-only constraint).
-      type Choice =
-        | {
-            currency: typeof OrderCurrency.USDT;
-            rate: NonNullable<typeof fxRate>;
-            method: typeof PaymentMethod.BINANCE_INTERNAL | typeof PaymentMethod.BYBIT;
-          }
-        | { currency: typeof OrderCurrency.IDR };
-      let choice: Choice;
-      if (method === "binance") {
-        if (!fxRate || !binance.enabled) return rerender("web.pay_method_unavailable");
-        choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BINANCE_INTERNAL };
-      } else if (method === "bybit") {
-        if (!fxRate || !bybit.enabled) return rerender("web.pay_method_unavailable");
-        choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BYBIT };
-      } else if (method === "qris") {
-        if (!tokopay) return rerender("web.pay_method_unavailable");
-        choice = { currency: OrderCurrency.IDR };
-      } else {
-        return rerender("web.pay_method_unavailable");
-      }
-
       try {
-        const order = await prisma.$transaction(async (tx) => {
-          if ((await countUserPendingOrders(tx, customer.userId)) >= MAX_PENDING_ORDERS) {
-            throw new ValidationError("error.too_many_pending");
-          }
-          const created = await createOrderFromCart(tx, {
-            user: {
-              id: customer.userId,
-              role: customer.user.role,
-              walletBalance: customer.user.walletBalance,
-            },
-            voucherCode,
-            walletAmount: 0, // wallet is hidden on the web (plan.md §17.1 #5)
-          });
-          if (!created) throw new ValidationError("error.generic");
-          return finalizeOrderPayment(tx, created.id, choice);
-        });
-        return reply.code(303).redirect(`/checkout/${order!.orderCode}/pay`);
+        const { orderCode } = await performCheckout(customer, method, voucherCode);
+        return reply.code(303).redirect(`/checkout/${orderCode}/pay`);
       } catch (e) {
         if (e instanceof ValidationError) return rerender(e.key);
         throw e;

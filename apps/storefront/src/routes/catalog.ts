@@ -78,8 +78,10 @@ const catalogRoutes: FastifyPluginAsync = async (app) => {
     const [stock, bulkRules, reviews] = await Promise.all([
       stockStatusCounts(prisma),
       activeBulkPricingByDenomination(prisma),
-      // Reviews are tied to the (lead) denomination the customer bought.
-      listReviews(prisma, { productId: product.denominations[0]!.id, hidden: false, limit: 10 }),
+      // Reviews are tied to the specific denomination the customer bought —
+      // gather across every active denomination of this Product, not just
+      // the cheapest, or reviews left on other plans silently disappear.
+      listReviews(prisma, { productId: product.denominations.map((d) => d.id), hidden: false, limit: 10 }),
     ]);
 
     const catName = product.category.name;

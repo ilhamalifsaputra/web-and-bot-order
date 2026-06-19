@@ -38,8 +38,11 @@ type BulkMap = Record<number, { minQuantity: number; discountPercent: string }>;
 /**
  * Shape a `CatalogProduct[]` (Product + its active denominations, price asc)
  * into product cards. Stock/rating/bulk maps are keyed by denomination id, so
- * each product aggregates across its denominations: stock = sum, rating = the
- * cheapest (lead) denomination's summary, bulk badge = the best discount found.
+ * each product aggregates across its denominations: stock = sum, rating =
+ * count-weighted average across every denomination's summary (a review is
+ * left against the specific plan bought — picking only the lead/cheapest
+ * plan would silently drop every review left on the others), bulk badge =
+ * the best discount found.
  */
 export function shapeProducts(
   products: CatalogProduct[],
@@ -51,7 +54,7 @@ export function shapeProducts(
   for (const p of products) {
     const denoms = p.denominations; // active, price-asc (cheapest first)
     if (denoms.length === 0) continue; // listCatalogProducts already filters these out
-    const lead = denoms[0]!; // cheapest → the "starting price" + lead rating
+    const lead = denoms[0]!; // cheapest → the "starting price"
     const fromPrice = denoms.reduce(
       (min, d) => Decimal.min(min, new Decimal(d.price)),
       new Decimal(lead.price),
@@ -67,6 +70,18 @@ export function shapeProducts(
         bulkMinQty = rule.minQuantity;
       }
     }
+    // Weighted average rating across every denomination (a review is left
+    // against the specific plan bought, not the product), so the card's star
+    // rating reflects the WHOLE product, never just its cheapest plan.
+    let ratingCount = 0;
+    let weightedSum = 0;
+    for (const d of denoms) {
+      const r = ratings.get(d.id);
+      if (r && r.count > 0 && r.avg != null) {
+        ratingCount += r.count;
+        weightedSum += r.avg * r.count;
+      }
+    }
     cards.push({
       slug: p.slug,
       name: p.name,
@@ -75,8 +90,8 @@ export function shapeProducts(
       variant_count: denoms.length,
       image: p.webImageUrl ?? productImage(p, p.category.name),
       available,
-      rating: ratings.get(lead.id)?.avg ?? null,
-      rating_count: ratings.get(lead.id)?.count ?? 0,
+      rating: ratingCount > 0 ? weightedSum / ratingCount : null,
+      rating_count: ratingCount,
       bulk_discount: bulkDiscount,
       bulk_min_qty: bulkMinQty,
     });

@@ -108,14 +108,17 @@ export async function overallRating(db: Db): Promise<{ avg: number | null; count
 // ---- Reviews moderation (web admin) --------------------------------------
 
 export interface ReviewFilter {
-  productId?: number | null;
+  /** A single denomination id, or every denomination id of a Product (a
+   * review is keyed by the specific plan bought, not the parent Product —
+   * pass an array to gather every review across all of a Product's plans). */
+  productId?: number | number[] | null;
   hidden?: boolean | null;
   userId?: number | null;
 }
 
 function reviewWhere(f: ReviewFilter) {
   const where: Record<string, unknown> = {};
-  if (f.productId != null) where.productId = f.productId;
+  if (f.productId != null) where.productId = Array.isArray(f.productId) ? { in: f.productId } : f.productId;
   if (f.hidden != null) where.hidden = f.hidden;
   if (f.userId != null) where.userId = f.userId;
   return where;

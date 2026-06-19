@@ -192,6 +192,63 @@ describe("category page — product cards only", () => {
     expect(res.body).toContain("Buy now");
   });
 
+  it("renders reviews left on ANY denomination, not just the cheapest", async () => {
+    // Regression: reviews are keyed by denomination, but the product detail
+    // page must aggregate across every plan — a review left on a non-lead
+    // (non-cheapest) denomination must still surface here.
+    const cat = await prisma.category.create({ data: { name: "ReviewCat", slug: "review-cat", sortOrder: 7 } });
+    const { product, members } = await seedProduct(cat.id, "Reviewed Product", [
+      { name: "1 Week", price: "11000", duration: "1 Week" }, // cheapest — zero reviews
+      { name: "1 Month", price: "31000", duration: "1 Month" }, // has the only review
+    ]);
+    const [, monthPlan] = members;
+    const user = await prisma.user.create({
+      data: { telegramId: BigInt(Math.floor(Math.random() * 1e15)), referralCode: `r${Math.random()}` },
+    });
+    const order = await prisma.order.create({
+      data: { orderCode: `ORD-${Math.random()}`, userId: user.id, subtotalAmount: "31000", totalAmount: "31000", status: "DELIVERED" },
+    });
+    await prisma.review.create({
+      data: { userId: user.id, orderId: order.id, productId: monthPlan!.id, rating: 5, hidden: false, comment: "great-1-month-plan" },
+    });
+
+    const res = await app.inject({ method: "GET", url: `/p/${product.slug}` });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("great-1-month-plan");
+  });
+
+  it("aggregates the grid-card rating across every denomination, not just the cheapest", async () => {
+    const cat = await prisma.category.create({ data: { name: "RatingCat", slug: "rating-cat", sortOrder: 6 } });
+    const { product, members } = await seedProduct(cat.id, "Rated Product", [
+      { name: "1 Week", price: "11000", duration: "1 Week" }, // cheapest — zero reviews
+      { name: "1 Month", price: "31000", duration: "1 Month" }, // both reviews live here
+    ]);
+    const [, monthPlan] = members;
+    // Two reviews (4★ + 5★ → avg 4.5) on the non-cheapest plan only. A
+    // fractional average makes the rendered text unambiguous (an exact 5
+    // would round-trip through the `round(1)` template filter as plain "5",
+    // not "5.0", which would make this assertion pass even on the old bug —
+    // ANY single review on the lead/cheapest plan would also show "5").
+    for (const rating of [4, 5]) {
+      const user = await prisma.user.create({
+        data: { telegramId: BigInt(Math.floor(Math.random() * 1e15)), referralCode: `r${Math.random()}` },
+      });
+      const order = await prisma.order.create({
+        data: { orderCode: `ORD-${Math.random()}`, userId: user.id, subtotalAmount: "31000", totalAmount: "31000", status: "DELIVERED" },
+      });
+      await prisma.review.create({
+        data: { userId: user.id, orderId: order.id, productId: monthPlan!.id, rating, hidden: false, comment: null },
+      });
+    }
+
+    const res = await app.inject({ method: "GET", url: `/c/${cat.slug}` });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(product.name);
+    // The card must show the aggregated rating (4.5, 2 reviews) rather than
+    // the cheapest plan's empty (rating_count = 0) summary.
+    expect(res.body).toContain("4.5");
+  });
+
   it("renders product detail stock badge for the Netflix product", async () => {
     const res = await app.inject({ method: "GET", url: `/p/${productSlug}` });
     expect(res.statusCode).toBe(200);

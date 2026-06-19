@@ -47,6 +47,15 @@ export async function setVoucherActive(db: Db, voucherId: number, isActive: bool
   await db.voucher.update({ where: { id: voucherId }, data: { isActive } });
 }
 
+/** Refuses once a code has been used at least once — deactivate it instead. */
+export async function deleteVoucher(db: Db, voucherId: number): Promise<void> {
+  const voucher = await db.voucher.findUnique({ where: { id: voucherId } });
+  if (voucher && voucher.usedCount > 0) {
+    throw new Error("cannot delete a voucher that has been used");
+  }
+  await db.voucher.delete({ where: { id: voucherId } });
+}
+
 /** Shape of the fields applyVoucherToSubtotal reads (Prisma Voucher subset). */
 export interface VoucherLike {
   isActive: boolean;

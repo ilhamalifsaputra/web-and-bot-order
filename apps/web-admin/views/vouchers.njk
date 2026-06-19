@@ -43,11 +43,17 @@
         <td class="text-ink-soft">{{ v.expiresAt | localdt if v.expiresAt else '—' }}</td>
         <td>{{ ui.status_badge('active' if v.isActive else 'inactive') }}</td>
         <td class="text-right">
-          <form method="post" action="/vouchers/{{ v.id }}/toggle" class="inline">
-            {{ ui.csrf_field(admin) }}
-            <input type="hidden" name="is_active" value="{{ 'false' if v.isActive else 'true' }}">
-            <button class="btn btn-soft btn-sm">{{ 'Turn off' if v.isActive else 'Turn on' }}</button>
-          </form>
+          <div class="flex gap-2 justify-end">
+            <form method="post" action="/vouchers/{{ v.id }}/toggle" class="inline">
+              {{ ui.csrf_field(admin) }}
+              <input type="hidden" name="is_active" value="{{ 'false' if v.isActive else 'true' }}">
+              <button class="btn btn-soft btn-sm">{{ 'Turn off' if v.isActive else 'Turn on' }}</button>
+            </form>
+            <form method="post" action="/vouchers/{{ v.id }}/delete" data-confirm="Delete code &quot;{{ v.code }}&quot;? This cannot be undone.">
+              {{ ui.csrf_field(admin) }}
+              {{ ui.btn('Delete', 'trash-2', 'danger', cls='btn-sm') }}
+            </form>
+          </div>
         </td>
       </tr>
       {% else %}

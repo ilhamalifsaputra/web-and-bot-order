@@ -12,6 +12,7 @@ import {
   getVoucher,
   createVoucher,
   setVoucherActive,
+  deleteVoucher,
   logAdminAction,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../plugins/auth";
@@ -108,5 +109,30 @@ export default async function vouchersRoutes(app: FastifyInstance): Promise<void
       details: `is_active=${active}`,
     });
     return redirectWithFlash(reply, "/vouchers", "Voucher updated.", "success");
+  });
+
+  app.post("/vouchers/:voucherId/delete", { preHandler: csrfProtect }, async (req, reply) => {
+    const voucherId = Number((req.params as { voucherId: string }).voucherId);
+    if ((await getVoucher(prisma, voucherId)) === null) {
+      return redirectWithFlash(reply, "/vouchers", "Voucher not found.", "error");
+    }
+    try {
+      await deleteVoucher(prisma, voucherId);
+    } catch (err) {
+      // Only the crud's specific "has been used" guard gets the friendly
+      // flash — exact message match, not substring (mirrors the catalog
+      // delete routes' rationale for the same discrimination).
+      if (err instanceof Error && err.message === "cannot delete a voucher that has been used") {
+        return redirectWithFlash(reply, "/vouchers", "Cannot delete: this code has already been used.", "error");
+      }
+      throw err;
+    }
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "voucher_delete",
+      targetType: "voucher",
+      targetId: voucherId,
+    });
+    return redirectWithFlash(reply, "/vouchers", "Discount code deleted.", "success");
   });
 }

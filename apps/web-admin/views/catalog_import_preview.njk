@@ -20,9 +20,8 @@
         <th>Line</th>
         <th>Status</th>
         <th>Category</th>
-        <th>Name</th>
-        <th>Kind</th>
-        <th>Duration</th>
+        <th>Product</th>
+        <th>Denomination</th>
         <th class="text-right">Price</th>
       </tr>
     </thead>
@@ -35,9 +34,8 @@
           {% else %}<span class="text-rust">✗ {{ r.error }}</span>{% endif %}
         </td>
         <td>{{ r.category or '—' }}</td>
-        <td>{{ r.name or '—' }}</td>
-        <td>{{ r.type or '—' }}</td>
-        <td>{{ r.durationLabel or '—' }}</td>
+        <td>{{ r.product or '—' }}</td>
+        <td>{{ r.denomination or '—' }}</td>
         <td class="text-right tabular">{{ r.price or '—' }}</td>
       </tr>
       {% endfor %}
@@ -50,7 +48,7 @@
   <form method="post" action="/catalog/products/import/apply">
     {{ ui.csrf_field(admin) }}
     <input type="hidden" name="csv" value="{{ csv }}">
-    <button class="btn btn-primary">Add {{ valid_count }} product(s)</button>
+    <button class="btn btn-primary">Add {{ valid_count }} denomination(s)</button>
   </form>
   {% endif %}
   <a href="/catalog" class="btn btn-ghost">Cancel</a>

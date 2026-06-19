@@ -6,9 +6,9 @@ import type { FastifyInstance } from "fastify";
 import { logger } from "@app/core/logger";
 import {
   prisma,
-  listAllProducts,
+  listAllDenominations,
   stockStatusCounts,
-  getProduct,
+  getDenominationWithProduct,
   listStockItemsForProduct,
   countAvailableStock,
   bulkAddStock,
@@ -28,14 +28,14 @@ import { redirectWithFlash, renderError, safeReturnTo } from "../flash";
 export default async function stockRoutes(app: FastifyInstance): Promise<void> {
   app.get("/stock", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
-    const products = await listAllProducts(prisma);
+    const products = await listAllDenominations(prisma);
     const counts = await stockStatusCounts(prisma);
     const waiting = await restockSubscriberCounts(prisma);
 
     // Group products by category name for the table.
     const groups: Record<string, typeof products> = {};
     for (const p of products) {
-      const catName = p.category ? p.category.name : "Uncategorized";
+      const catName = p.product?.category ? p.product.category.name : "Uncategorized";
       (groups[catName] ??= []).push(p);
     }
 
@@ -54,7 +54,7 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
   app.get("/stock/:productId", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const productId = Number((req.params as { productId: string }).productId);
-    const product = await getProduct(prisma, productId);
+    const product = await getDenominationWithProduct(prisma, productId);
     if (!product) {
       return renderError(reply, { statusCode: 404, title: "Not found", message: "Product not found." });
     }
@@ -85,7 +85,7 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
     if (creds.length === 0) {
       return redirectWithFlash(reply, back, "No credentials provided.", "error");
     }
-    const product = await getProduct(prisma, productId);
+    const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return redirectWithFlash(reply, "/stock", "Product not found.", "error");
 
     const added = await bulkAddStock(prisma, productId, creds);
@@ -160,7 +160,7 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
   // logged.
   app.get("/stock/:productId/download", { preHandler: currentAdmin }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
-    const product = await getProduct(prisma, productId);
+    const product = await getDenominationWithProduct(prisma, productId);
     if (!product) {
       return renderError(reply, { statusCode: 404, title: "Not found", message: "Product not found." });
     }

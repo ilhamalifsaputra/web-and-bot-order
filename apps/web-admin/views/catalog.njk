@@ -3,7 +3,7 @@
 {% block title %}Products · Shop Admin{% endblock %}
 
 {% block content %}
-{{ ui.page_header('Products', 'Atur produk per kategori, denominasi, dan harganya.', 'package', 'products') }}
+{{ ui.page_header('Products', 'Atur kategori dan produk. Harga & stok diatur per denominasi di dalam tiap produk.', 'package', 'products') }}
 {{ ui.flash(msg, kind) }}
 
 <!-- Categories -->
@@ -22,11 +22,23 @@
           <td class="tabular">{{ c.sortOrder }}</td>
           <td>{{ ui.status_badge('active' if c.isActive else 'inactive') }}</td>
           <td class="text-right">
-            <form method="post" action="/catalog/category/{{ c.id }}/toggle" class="inline">
+            {% call ui.dropdown('', 'ellipsis-vertical') %}
+            <form method="post" action="/catalog/category/{{ c.id }}/update" class="flex flex-col gap-2 px-3 py-2 w-64">
+              {{ ui.csrf_field(admin) }}
+              <input name="name" value="{{ c.name }}" required class="field text-xs" placeholder="Name">
+              <input name="emoji" value="{{ c.emoji or '' }}" class="field text-xs" placeholder="Icon">
+              <textarea name="description" rows="2" class="field text-xs" placeholder="Description">{{ c.description or '' }}</textarea>
+              <input name="image" value="{{ c.image or '' }}" class="field text-xs" placeholder="Image URL">
+              <input name="sort_order" type="number" value="{{ c.sortOrder }}" class="field text-xs" placeholder="Order">
+              <label class="flex items-center gap-2 text-xs"><input type="checkbox" name="is_active" value="true" {% if c.isActive %}checked{% endif %}> Shown to customers</label>
+              <button class="btn btn-soft btn-sm">Save</button>
+            </form>
+            <form method="post" action="/catalog/category/{{ c.id }}/toggle" class="px-3 py-2 border-t border-line">
               {{ ui.csrf_field(admin) }}
               <input type="hidden" name="is_active" value="{{ 'false' if c.isActive else 'true' }}">
-              <button class="btn btn-soft btn-sm">{{ 'Hide' if c.isActive else 'Show' }}</button>
+              <button class="btn btn-ghost btn-sm w-full">{{ 'Hide' if c.isActive else 'Show' }}</button>
             </form>
+            {% endcall %}
           </td>
         </tr>
         {% else %}
@@ -39,71 +51,21 @@
     <summary class="cursor-pointer select-none font-medium text-sm text-ink-soft flex items-center gap-1.5 list-none">
       <i data-lucide="chevron-right" class="w-4 h-4 transition-transform group-open:rotate-90"></i>
       <i data-lucide="plus" class="w-4 h-4 text-pine"></i> Add a category</summary>
-    <form method="post" action="/catalog/category" class="mt-4 flex flex-wrap gap-3 items-end">
+    <form method="post" action="/catalog/category" class="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
       {{ ui.csrf_field(admin) }}
       <div><label class="field-label">Name</label><input name="name" required class="field"></div>
       <div><label class="field-label">Icon</label><input name="emoji" class="field w-20"></div>
       <div><label class="field-label">Order</label><input name="sort_order" type="number" value="0" class="field w-20"></div>
-      <button class="btn btn-primary">Add</button>
+      <div><label class="field-label">Image URL (optional)</label><input name="image" type="url" class="field"></div>
+      <div class="sm:col-span-2"><label class="field-label">Description (optional)</label><textarea name="description" rows="2" class="field"></textarea></div>
+      <div><button class="btn btn-primary">Add</button></div>
     </form>
   </details>
-</section>
-
-<!-- Product groups (denominations) -->
-<section class="mb-10">
-  <h2 class="section-title mb-3">Denominasi</h2>
-  <div class="card overflow-x-auto mb-4">
-    <table class="data-table">
-      <thead>
-        <tr><th>Denominasi</th><th>Category</th><th>Members</th><th>Active</th><th></th></tr>
-      </thead>
-      <tbody>
-        {% for g in groups %}
-        <tr>
-          <td class="font-medium">{{ g.emoji or '' }} {{ g.name }}</td>
-          <td>{{ g.category.name if g.category else '—' }}</td>
-          <td class="tabular">{{ g._count.products }}</td>
-          <td>{{ ui.status_badge('active' if g.isActive else 'inactive') }}</td>
-          <td class="text-right">
-            <form method="post" action="/catalog/group/{{ g.id }}/delete" class="inline"
-                  onsubmit="return confirm('Hapus denominasi? Produk tetap ada.');">
-              {{ ui.csrf_field(admin) }}
-              <button class="btn btn-soft btn-sm">Delete</button>
-            </form>
-          </td>
-        </tr>
-        {% else %}
-        {{ ui.empty_row(5, 'Belum ada denominasi.') }}
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-
-  <details class="card card-pad mb-4 group">
-    <summary class="cursor-pointer select-none font-medium text-sm text-ink-soft flex items-center gap-1.5 list-none">
-      <i data-lucide="chevron-right" class="w-4 h-4 transition-transform group-open:rotate-90"></i>
-      <i data-lucide="plus" class="w-4 h-4 text-pine"></i> Tambah denominasi</summary>
-    <form method="post" action="/catalog/group" class="mt-4 flex flex-wrap gap-3 items-end">
-      {{ ui.csrf_field(admin) }}
-      <div><label class="field-label">Category</label>
-        <select name="category_id" required class="field">
-          {% for c in categories %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
-        </select></div>
-      <div><label class="field-label">Name</label><input name="name" required placeholder="e.g. Capcut" class="field"></div>
-      <div><label class="field-label">Icon</label><input name="emoji" class="field w-20" placeholder="emoji (optional)"></div>
-      <div><label class="field-label">Order</label><input name="sort_order" type="number" value="0" class="field w-20"></div>
-      <button class="btn btn-primary">Tambah denominasi</button>
-    </form>
-  </details>
-
-  {% if groups %}
-  <p class="text-xs text-ink-faint">Untuk memasukkan produk ke denominasi: buka produk di <b>Items for sale</b>, klik <b>Manage</b>, lalu pilih <b>Denominasi</b> di tab <b>General</b>.</p>
-  {% endif %}
 </section>
 
 <!-- Products -->
 <section>
-  <h2 class="section-title mb-3">Items for sale</h2>
+  <h2 class="section-title mb-3">Products</h2>
 
   <details class="card card-pad mb-4 group">
     <summary class="cursor-pointer select-none font-medium text-sm text-ink-soft flex items-center gap-1.5 list-none">
@@ -115,16 +77,9 @@
         <select name="category_id" required class="field">
           {% for c in categories %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
         </select></div>
-      <div><label class="field-label">Kind</label>
-        <select name="type" class="field">
-          {% for t in product_types %}<option value="{{ t }}">{{ t | lower | title }}</option>{% endfor %}
-        </select></div>
-      <div><label class="field-label">Name</label><input name="name" required class="field"></div>
-      <div><label class="field-label">Duration</label><input name="duration_label" required placeholder="1 Month" class="field"></div>
-      <div><label class="field-label">Price (Rupiah)</label><input name="price" required class="field js-idr-price">
-        <div class="text-xs text-ink-faint mt-1 js-usdt-preview"></div></div>
-      <div><label class="field-label">Reseller price (Rupiah)</label><input name="reseller_price" class="field"></div>
-      <div><label class="field-label">Warranty (days)</label><input name="warranty_days" type="number" class="field"></div>
+      <div><label class="field-label">Name</label><input name="name" required placeholder="e.g. CapCut Pro" class="field"></div>
+      <div><label class="field-label">Icon (optional)</label><input name="emoji" class="field w-20"></div>
+      <div><label class="field-label">Order</label><input name="sort_order" type="number" value="0" class="field w-20"></div>
       <div><label class="field-label">Bot photo ID (optional)</label><input name="image_file_id" class="field" placeholder="Telegram file_id"></div>
       <div><label class="field-label">Web photo URL (optional)</label><input name="web_image_url" type="url" placeholder="https://… (or upload after saving)" class="field"></div>
       <div class="sm:col-span-2"><label class="field-label">Description</label><textarea name="description" rows="2" class="field"></textarea></div>
@@ -139,12 +94,14 @@
     <form method="post" action="/catalog/products/import" class="mt-4">
       {{ ui.csrf_field(admin) }}
       <p class="text-xs text-ink-soft mb-3">
-        One product per line, separated by the "|" symbol. The <b>category</b> must already exist.<br>
-        <code class="codeish">category | name | kind | duration | price | reseller price | warranty days | description</code><br>
-        Required: category, name, kind (shared/private), duration, price. The rest are optional. You'll see a preview before anything is saved.
+        One denomination per line, separated by the "|" symbol. The <b>category</b> must already exist; the
+        <b>product</b> is created automatically if it doesn't exist yet.<br>
+        <code class="codeish">category | product | denomination | kind | duration | price | cost | reseller price | warranty days | description</code><br>
+        Required: category, product, denomination, kind (shared/private), duration, price. The rest are optional.
+        You'll see a preview before anything is saved.
       </p>
       <textarea name="csv" rows="6" required class="field font-mono text-xs"
-        placeholder="Streaming | Netflix 1 Month | shared | 1 Month | 5.00 | 4.00 | 30 | Shared profile"></textarea>
+        placeholder="Streaming | Netflix Premium | 1 Month | shared | 1 Month | 5.00 | 3.00 | 4.00 | 30 | Shared profile"></textarea>
       <button type="submit" class="btn btn-soft mt-3"><i data-lucide="eye" class="w-4 h-4"></i> Preview</button>
     </form>
   </details>
@@ -158,39 +115,25 @@
     <span class="text-line">·</span>
     <button type="button" onclick="bulkProducts('activate')" class="btn btn-soft btn-sm">Show selected</button>
     <button type="button" onclick="bulkProducts('deactivate')" class="btn btn-ghost btn-sm">Hide selected</button>
-    <span class="text-line">·</span>
-    <select name="mode" class="field w-auto py-1.5">
-      <option value="set">Set price to</option>
-      <option value="percent">Change by %</option>
-    </select>
-    <input type="text" name="value" id="bp-value" placeholder="e.g. 9.99 or -10" class="field w-28 py-1.5">
-    <button type="button" onclick="bulkPriceProducts()" class="btn btn-soft btn-sm"><i data-lucide="eye" class="w-4 h-4"></i> Preview price</button>
   </form>
   {% endif %}
 
   <div class="space-y-3">
     {% for p in products %}
-    {% set rule = rules_by_product[p.id] %}
     <div class="card card-pad flex items-start justify-between gap-3">
       <div class="flex items-start gap-3 min-w-0">
         <input type="checkbox" class="bp-cb mt-1.5" value="{{ p.id }}">
         {% if p.webImageUrl %}<img src="{{ p.webImageUrl }}" alt="" class="w-11 h-11 rounded-lg object-cover border border-sand shrink-0">{% endif %}
         <div class="min-w-0">
-          <div class="font-medium text-ink truncate">{{ p.name }}</div>
+          <div class="font-medium text-ink truncate">{{ p.emoji or '' }} {{ p.name }}</div>
           <div class="flex flex-wrap items-center gap-2 mt-1.5">
             {{ ui.status_badge('active' if p.isActive else 'inactive') }}
-            <span class="text-ink-faint text-xs">{{ p.category.name if p.category else '—' }} · {{ p.durationLabel }} · #{{ p.id }}</span>
-            {% if p.productGroup %}{{ ui.badge(p.productGroup.name, 'info') }}{% endif %}
-            {% if rule %}{{ ui.badge(rule.minQuantity ~ '+ → ' ~ rule.discountPercent ~ '%', 'success') }}{% endif %}
+            <span class="text-ink-faint text-xs">{{ p.category.name if p.category else '—' }} · #{{ p.id }}</span>
+            {{ ui.badge(p._count.denominations ~ ' denomination' ~ ('s' if p._count.denominations != 1), 'info') }}
           </div>
         </div>
       </div>
       <div class="flex flex-col items-end gap-2 shrink-0">
-        <div class="text-right text-sm">
-          <div class="font-semibold tabular">{{ p.price | idr }}
-            {% if usd_idr_rate %}<span class="text-ink-faint font-normal text-xs">≈ {{ p.price | usdt(usd_idr_rate) }}</span>{% endif %}</div>
-          {% if p.resellerPrice %}<div class="text-ink-faint text-xs">reseller {{ p.resellerPrice | idr }}</div>{% endif %}
-        </div>
         {{ ui.btn('Manage', 'sliders-horizontal', 'soft', href='/catalog/product/' ~ p.id, cls='btn-sm') }}
       </div>
     </div>
@@ -213,33 +156,5 @@ function bulkProducts(action) {
   f.action = '/catalog/products/bulk';
   f.submit();
 }
-function bulkPriceProducts() {
-  const ids = selectedProductIds();
-  if (!ids.length) { alert('Select at least one product.'); return; }
-  if (!document.getElementById('bp-value').value.trim()) { alert('Enter a price or percent value.'); return; }
-  document.getElementById('bp-ids').value = ids.join(',');
-  const f = document.getElementById('bulk-products-form');
-  f.action = '/catalog/products/bulk-price';
-  f.submit();
-}
-
-// Read-only USDT preview next to Rupiah price inputs — the same rounded figure
-// customers see ($ = price / usd_idr_rate, nearest 0.1). Rate comes from
-// Settings → Payments; no rate = no preview.
-(function () {
-  const rate = Number({{ usd_idr_rate | default("null") }});
-  document.querySelectorAll('.js-idr-price').forEach((input) => {
-    const out = input.parentElement.querySelector('.js-usdt-preview');
-    if (!out) return;
-    const update = () => {
-      const idr = Number(String(input.value).replace(/[^\d.]/g, ''));
-      out.textContent = rate > 0 && idr > 0
-        ? 'Customers also see ≈ $' + (Math.round((idr / rate) * 10) / 10)
-        : (rate > 0 ? '' : 'Set the USDT rate in Settings → Payments to show a USDT figure.');
-    };
-    input.addEventListener('input', update);
-    update();
-  });
-})();
 </script>
 {% endblock %}

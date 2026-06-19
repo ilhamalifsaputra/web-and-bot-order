@@ -9,7 +9,7 @@ import {
   prisma,
   getOrderByCode,
   searchUsers,
-  searchProducts,
+  searchDenominations,
 } from "@app/db";
 import { currentAdmin } from "../plugins/auth";
 
@@ -30,7 +30,7 @@ export default async function searchRoutes(app: FastifyInstance): Promise<void> 
     if (order) return reply.redirect(`/orders/${order.id}`, 302);
 
     const users = await searchUsers(prisma, q, 25);
-    const products = await searchProducts(prisma, q, 25);
+    const products = await searchDenominations(prisma, q, 25);
 
     return reply.view("search.njk", {
       admin: req.admin,

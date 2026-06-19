@@ -40,15 +40,21 @@ const dispatchMenu: DomainDispatcher = async (ctx, parts) => {
 };
 
 const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
-  // prods/page → flat Product list; prod → a Product's denomination picker;
+  // prods/page → flat Product list; pick → a Product's denomination picker;
   // denom → a Denomination detail bubble. The pre-rename `group` action was
-  // renamed to `prod` (and the old `prod`, which meant a SKU, to `denom`); an
-  // old in-flight bubble carrying `v1:browse:group:*` therefore lands in the
-  // default branch below and degrades to the stale-screen toast, never a crash.
+  // renamed to `pick`, and the old `prod` (which meant a SKU) to `denom` —
+  // deliberately NOT reusing `prod` for the picker, because that token already
+  // meant something else pre-rename (open SKU `<id>`, an id from the OLD
+  // products/now-denominations id space) and old Telegram bubbles can stay
+  // tappable for years. Reusing it would silently route a stale tap to
+  // whatever unrelated Product now happens to share that numeric id, instead
+  // of degrading. Any `v1:browse:group:*` or pre-rename `v1:browse:prod:*` tap
+  // therefore lands in the default branch below and degrades to the
+  // stale-screen toast, never a crash and never a wrong product.
   const action = parts[2];
   if (action === "prods") await customer.browseProductsFlat(ctx);
   else if (action === "page") await customer.browseProductsFlat(ctx, parseInt(parts[3]!, 10));
-  else if (action === "prod") await customer.browseProduct(ctx, parseInt(parts[3]!, 10));
+  else if (action === "pick") await customer.browseProduct(ctx, parseInt(parts[3]!, 10));
   else if (action === "denom") await customer.browseDenomination(ctx, parseInt(parts[3]!, 10));
   else {
     logger.warn({ event: "dead_tap", action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, "stale browse callback");

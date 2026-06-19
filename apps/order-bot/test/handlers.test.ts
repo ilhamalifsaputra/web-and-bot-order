@@ -132,7 +132,7 @@ describe("customer handlers", () => {
 
   it("a collapsed single-denomination detail's Back returns to the product list (no loop)", async () => {
     // Regression: a 1-denomination collapse used to set viewingProductId and so
-    // its Back emitted browse:prod → browseProduct → re-collapsed to the SAME
+    // its Back emitted browse:pick → browseProduct → re-collapsed to the SAME
     // detail, stranding the user. Back must point at the product LIST.
     const { ctx, sink } = customerCtx();
     await customer.browseProduct(ctx, sample.parentProduct.id);
@@ -141,7 +141,7 @@ describe("customer handlers", () => {
     const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
     const flat = (markup.inline_keyboard ?? []).flat();
     expect(flat.some((b) => b.callback_data === "v1:browse:prods")).toBe(true);
-    expect(flat.some((b) => b.callback_data === `v1:browse:prod:${sample.parentProduct.id}`)).toBe(false);
+    expect(flat.some((b) => b.callback_data === `v1:browse:pick:${sample.parentProduct.id}`)).toBe(false);
 
     // (b) reply-keyboard Back (handleBackButton) escapes to the product list,
     // not back into the collapsed detail.
@@ -666,13 +666,32 @@ describe("callback router", () => {
   });
 
   it("degrades an old in-flight v1:browse:group tap to the stale-screen toast (no crash)", async () => {
-    // `group` was renamed to `prod`; a pre-migration bubble must not crash — it
+    // `group` was renamed to `pick`; a pre-migration bubble must not crash — it
     // answers with the stale-screen toast instead.
     const { ctx, sink } = customerCtx({ callbackData: `v1:browse:group:${sample.parentProduct.id}` });
     await routeCallback(ctx);
     expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
     // No detail/picker was rendered for the stale tap.
     expect((ctx.session.scratch as { viewingDenomId?: number }).viewingDenomId).toBeUndefined();
+  });
+
+  it("degrades an old in-flight v1:browse:prod tap to the stale-screen toast, never opens the wrong product (no crash)", async () => {
+    // Regression: pre-rename, `v1:browse:prod:<id>` meant "open SKU <id>" (an
+    // id from the OLD products/now-denominations space). The picker-open verb
+    // was deliberately given a NEW name (`pick`), not the recycled `prod`, so
+    // a years-old cached Telegram bubble carrying this exact string can never
+    // be silently misrouted to an unrelated mid-tier Product that happens to
+    // share the same numeric id post-migration — it must degrade like `group`.
+    const other = await createCatalogProduct(prisma, {
+      categoryId: sample.parentProduct.categoryId,
+      name: "Unrelated Product",
+    });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:prod:${other.id}` });
+    await routeCallback(ctx);
+    expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
+    // No picker/detail for the unrelated product was ever rendered.
+    expect((ctx.session.scratch as { viewingProductId?: number }).viewingProductId).toBeUndefined();
+    expect(JSON.stringify(sink)).not.toContain("Unrelated Product");
   });
 
   it("routes v1:adm:* to the admin sub-router (admin only)", async () => {

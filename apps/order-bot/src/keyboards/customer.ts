@@ -263,7 +263,7 @@ export function denominationDetailKb(
   }
   const back: Btn =
     parentProductId != null
-      ? { text: coreT("menu.back", lang), data: cb("browse", "prod", parentProductId) }
+      ? { text: coreT("menu.back", lang), data: cb("browse", "pick", parentProductId) }
       : { text: coreT("menu.back", lang), data: cb("browse", "prods") };
   rows.push([back]);
   return ik(rows);
@@ -330,7 +330,7 @@ export function productsPageKb(page: number, totalPages: number, lang: string): 
 /** Inline keyboard for /search results — each mid-tier Product opens its picker. */
 export function searchResultsKb(products: Array<{ id: number; name: string }>, lang: string): InlineKeyboard {
   const rows: Btn[][] = products.map((p) => [
-    { text: truncLabel(p.name, 30), data: cb("browse", "prod", p.id) },
+    { text: truncLabel(p.name, 30), data: cb("browse", "pick", p.id) },
   ]);
   rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
   return ik(rows);

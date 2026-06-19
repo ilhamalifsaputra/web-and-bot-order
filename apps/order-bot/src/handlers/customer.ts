@@ -361,7 +361,7 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   // Single-denomination collapse threshold: exactly 1 active denomination skips
   // the picker and lands on the detail bubble. Leave viewingProductId UNSET —
   // no picker was rendered, so the detail's Back must escape to the product list
-  // (a browse:prod Back would re-collapse to this same detail and strand the user).
+  // (a browse:pick Back would re-collapse to this same detail and strand the user).
   if (active.length === 1) {
     delete sc(ctx).viewingProductId;
     await browseDenomination(ctx, active[0]!.id);

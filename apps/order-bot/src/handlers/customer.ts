@@ -129,15 +129,15 @@ async function buildDashboardText(ctx: MyContext): Promise<string> {
 async function backToMainFromPersistent(ctx: MyContext): Promise<void> {
   delete sc(ctx).viewingProductId;
   delete sc(ctx).viewingDenomId;
-  ctx.session.awaitingQtyProductId = undefined;
+  ctx.session.awaitingQtyDenomId = undefined;
   const text = await buildDashboardText(ctx);
   await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
 }
 
 async function handleBackButton(ctx: MyContext): Promise<void> {
-  const qtyDenomId = ctx.session.awaitingQtyProductId;
+  const qtyDenomId = ctx.session.awaitingQtyDenomId;
   if (qtyDenomId != null) {
-    ctx.session.awaitingQtyProductId = undefined;
+    ctx.session.awaitingQtyDenomId = undefined;
     await browseDenomination(ctx, qtyDenomId);
     return;
   }
@@ -162,7 +162,7 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
 
 export async function startCommand(ctx: MyContext): Promise<void> {
   const tg = ctx.from!;
-  ctx.session.awaitingQtyProductId = undefined;
+  ctx.session.awaitingQtyDenomId = undefined;
 
   const args = (ctx.match && typeof ctx.match === "string" ? ctx.match : "").trim().split(/\s+/).filter(Boolean);
   if (args.length && args[0]!.startsWith("ref_")) {
@@ -200,7 +200,7 @@ export async function showMainMenu(ctx: MyContext): Promise<void> {
 // Universal /cancel when no conversation is active.
 export async function cancelCommand(ctx: MyContext): Promise<void> {
   ctx.session.scratch = {};
-  ctx.session.awaitingQtyProductId = undefined;
+  ctx.session.awaitingQtyDenomId = undefined;
   await ctx.reply(t(ctx, "conv.cancelled_idle"));
   await startCommand(ctx);
 }
@@ -263,9 +263,9 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   const action = ckb.matchPersistentLabel(text);
 
   // Manual quantity input mode — only divert free text, never a menu button.
-  const qtyProductId = ctx.session.awaitingQtyProductId;
-  if (qtyProductId != null && action === null) {
-    await handleQtyTextInput(ctx, qtyProductId, text);
+  const qtyDenomId = ctx.session.awaitingQtyDenomId;
+  if (qtyDenomId != null && action === null) {
+    await handleQtyTextInput(ctx, qtyDenomId, text);
     return;
   }
 
@@ -275,7 +275,7 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   }
 
   if (action !== null) {
-    ctx.session.awaitingQtyProductId = undefined;
+    ctx.session.awaitingQtyDenomId = undefined;
     delete sc(ctx).viewingProductId;
     delete sc(ctx).viewingDenomId;
   }
@@ -463,11 +463,11 @@ export async function qtyInputStart(ctx: MyContext, denominationId: number): Pro
     return;
   }
   await smartEdit(ctx, t(ctx, "browse.qty_input_prompt", { max: stock }), ckb.qtyInputCancelKb(denominationId, lang));
-  ctx.session.awaitingQtyProductId = denominationId;
+  ctx.session.awaitingQtyDenomId = denominationId;
 }
 
 export async function qtyInputCancel(ctx: MyContext, denominationId: number): Promise<void> {
-  ctx.session.awaitingQtyProductId = undefined;
+  ctx.session.awaitingQtyDenomId = undefined;
   await browseDenomination(ctx, denominationId);
 }
 
@@ -475,7 +475,7 @@ async function handleQtyTextInput(ctx: MyContext, denominationId: number, rawTex
   const lang = ctx.session.lang;
   const d = await getDenomination(prisma, denominationId);
   if (d === null) {
-    ctx.session.awaitingQtyProductId = undefined;
+    ctx.session.awaitingQtyDenomId = undefined;
     await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
     return;
   }
@@ -484,11 +484,11 @@ async function handleQtyTextInput(ctx: MyContext, denominationId: number, rawTex
   const isValid = /^\d+$/.test(rawText) && parseInt(rawText, 10) >= 1;
   if (!isValid || parseInt(rawText, 10) > stock) {
     await smartEdit(ctx, t(ctx, "browse.qty_input_invalid", { max: stock }), ckb.qtyInputCancelKb(denominationId, lang));
-    ctx.session.awaitingQtyProductId = denominationId;
+    ctx.session.awaitingQtyDenomId = denominationId;
     return;
   }
 
-  ctx.session.awaitingQtyProductId = undefined;
+  ctx.session.awaitingQtyDenomId = undefined;
   await browseDenomination(ctx, denominationId, parseInt(rawText, 10));
 }
 
@@ -765,12 +765,12 @@ export async function viewMyTicket(ctx: MyContext, ticketId: number): Promise<vo
 // ---------------------------------------------------------------------------
 
 export async function listprodukCommand(ctx: MyContext): Promise<void> {
-  ctx.session.awaitingQtyProductId = undefined;
+  ctx.session.awaitingQtyDenomId = undefined;
   await browseProductsFlat(ctx, 0);
 }
 
 export async function languageCommand(ctx: MyContext): Promise<void> {
-  ctx.session.awaitingQtyProductId = undefined;
+  ctx.session.awaitingQtyDenomId = undefined;
   await showLanguageMenu(ctx);
 }
 

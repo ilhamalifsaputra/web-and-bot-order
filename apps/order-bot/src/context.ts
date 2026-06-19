@@ -29,7 +29,7 @@ export interface SessionData {
   /** Message id of the QR code photo sent alongside payment instructions. */
   qrMsgId?: number;
   /** Set while waiting for a free-text quantity reply (browse flow). */
-  awaitingQtyProductId?: number;
+  awaitingQtyDenomId?: number;
   /** Transient scratch for multi-step flows (mirrors context.user_data extras). */
   scratch: Record<string, unknown>;
 }

@@ -689,18 +689,18 @@ describe("callback router", () => {
 
   // §8.9 — quantity-input mode must end on any button tap, even one whose
   // dispatcher never re-renders (so smartEdit's own clear doesn't run).
-  it("clears awaitingQtyProductId on a callback that never re-renders (§8.9)", async () => {
+  it("clears awaitingQtyDenomId on a callback that never re-renders (§8.9)", async () => {
     const { ctx } = customerCtx({ callbackData: "v1:noop:x" });
-    ctx.session.awaitingQtyProductId = sample.product.id;
+    ctx.session.awaitingQtyDenomId = sample.product.id;
     await routeCallback(ctx);
-    expect(ctx.session.awaitingQtyProductId).toBeUndefined();
+    expect(ctx.session.awaitingQtyDenomId).toBeUndefined();
   });
 
   // …but the button that *starts* qty-input mode keeps it set.
-  it("keeps awaitingQtyProductId for the qty:input callback that starts it (§8.9)", async () => {
+  it("keeps awaitingQtyDenomId for the qty:input callback that starts it (§8.9)", async () => {
     const { ctx } = customerCtx({ callbackData: `v1:qty:input:${sample.product.id}` });
     await routeCallback(ctx);
-    expect(ctx.session.awaitingQtyProductId).toBe(sample.product.id);
+    expect(ctx.session.awaitingQtyDenomId).toBe(sample.product.id);
   });
 
   // §8.6 — a dispatcher crash surfaces a quotable correlation ref to the user.

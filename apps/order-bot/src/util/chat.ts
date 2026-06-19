@@ -70,7 +70,7 @@ export async function consumeInput(ctx: MyContext): Promise<void> {
 /** Render the next customer screen (edit on tap, send on typed input). */
 export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Markup): Promise<void> {
   // Clear qty-input mode on any navigation so it doesn't leak.
-  ctx.session.awaitingQtyProductId = undefined;
+  ctx.session.awaitingQtyDenomId = undefined;
   const body = truncateText(text);
 
   // Reply keyboards can't attach to an edit — only edit when the markup is
@@ -125,7 +125,7 @@ export async function renderMenu(
   photo?: string | InputFile,
   onPhotoSent?: (fileId: string) => void | Promise<void>,
 ): Promise<void> {
-  ctx.session.awaitingQtyProductId = undefined;
+  ctx.session.awaitingQtyDenomId = undefined;
   const body = truncateText(text);
 
   if (photo && body.length <= MAX_CAPTION_LEN) {
@@ -220,7 +220,7 @@ async function editAnchor(
 /** Render a customer wizard step into the anchor bubble (edit-in-place). */
 export async function menuAnchor(ctx: MyContext, text: string, replyMarkup?: Markup): Promise<void> {
   if (ctx.callbackQuery) return smartEdit(ctx, text, replyMarkup);
-  ctx.session.awaitingQtyProductId = undefined;
+  ctx.session.awaitingQtyDenomId = undefined;
   ctx.session.menuMsgId = await editAnchor(ctx, ctx.session.menuMsgId, text, replyMarkup);
 }
 

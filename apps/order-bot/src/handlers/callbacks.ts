@@ -186,7 +186,7 @@ export async function routeCallback(ctx: MyContext): Promise<void> {
 
   const domain = parts[1];
 
-  // Quantity-input mode (awaitingQtyProductId) is a text-capture state: any
+  // Quantity-input mode (awaitingQtyDenomId) is a text-capture state: any
   // inline-button tap means the user navigated away by button, so the mode must
   // end here — otherwise a number typed later is misread as a quantity (§8.9).
   // smartEdit already clears it on every screen render; this is the structural
@@ -194,7 +194,7 @@ export async function routeCallback(ctx: MyContext): Promise<void> {
   // The one exception is the button that *starts* the mode (qty:input), which
   // sets the flag itself just after rendering its prompt.
   if (!(domain === "qty" && parts[2] === "input")) {
-    ctx.session.awaitingQtyProductId = undefined;
+    ctx.session.awaitingQtyDenomId = undefined;
   }
 
   if (domain === "adm") {

@@ -86,14 +86,14 @@ describe("wizard anchors", () => {
   it("menuAnchor on typed input edits the menu anchor and clears qty mode", async () => {
     const { ctx, sink } = makeCtx({
       text: "BADCODE",
-      session: { menuMsgId: 60, awaitingQtyProductId: 3 },
+      session: { menuMsgId: 60, awaitingQtyDenomId: 3 },
     });
     await menuAnchor(ctx, "⚠️ voucher not found", kb());
 
     const edits = calls(sink, "editMessageText");
     expect(edits.length).toBe(1);
     expect(edits[0]!.args[1]).toBe(60);
-    expect(ctx.session.awaitingQtyProductId).toBeUndefined();
+    expect(ctx.session.awaitingQtyDenomId).toBeUndefined();
   });
 
   it("menuAnchor delegates to smartEdit on a tap", async () => {

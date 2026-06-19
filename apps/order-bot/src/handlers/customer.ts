@@ -151,6 +151,12 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
     await browseProductsFlat(ctx);
     return;
   }
+  // Viewing a collapsed/deep-link detail (denomination but no parent picker) →
+  // back to the product list, not the main menu (don't strand the user).
+  if (sc(ctx).viewingDenomId != null) {
+    await browseProductsFlat(ctx);
+    return;
+  }
   await backToMainFromPersistent(ctx);
 }
 
@@ -353,9 +359,11 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   }
 
   // Single-denomination collapse threshold: exactly 1 active denomination skips
-  // the picker and lands on the detail bubble.
+  // the picker and lands on the detail bubble. Leave viewingProductId UNSET —
+  // no picker was rendered, so the detail's Back must escape to the product list
+  // (a browse:prod Back would re-collapse to this same detail and strand the user).
   if (active.length === 1) {
-    sc(ctx).viewingProductId = productId;
+    delete sc(ctx).viewingProductId;
     await browseDenomination(ctx, active[0]!.id);
     return;
   }
@@ -429,9 +437,11 @@ export async function browseDenomination(ctx: MyContext, denominationId: number,
       });
   }
 
-  // Parent product for Back navigation: the picker we came from, or the
-  // denomination's own product (deep-link case where no picker was shown).
-  const parentProductId = sc(ctx).viewingProductId ?? d.product.id;
+  // Parent product for Back navigation: the picker we came from, or null when no
+  // picker was shown (collapse / deep-link) so Back falls through to the flat
+  // product list per denominationDetailKb's contract — never to a product that
+  // would immediately re-collapse to this same detail.
+  const parentProductId = sc(ctx).viewingProductId ?? null;
   await smartEdit(ctx, text, ckb.denominationDetailKb(d, stock, lang, qty, parentProductId));
   sc(ctx).viewingDenomId = denominationId;
 }

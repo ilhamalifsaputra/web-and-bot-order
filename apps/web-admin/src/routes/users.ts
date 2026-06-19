@@ -9,6 +9,7 @@ import { ValidationError } from "@app/core/errors";
 import {
   prisma,
   searchUsers,
+  listRecentUsers,
   getUser,
   userTotalSpent,
   listUserOrders,
@@ -29,12 +30,14 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
   app.get("/users", { preHandler: currentAdmin }, async (req, reply) => {
     const query = req.query as Record<string, string | undefined>;
     const q = (query.q ?? "").trim();
-    const results = q ? await searchUsers(prisma, q, 50) : [];
+    const browsing = !q;
+    const results = browsing ? await listRecentUsers(prisma, 20) : await searchUsers(prisma, q, 50);
     return reply.view("users.njk", {
       admin: req.admin,
       active_nav: "/users",
       q: query.q ?? "",
       results,
+      browsing,
       msg: query.msg ?? null,
       kind: query.kind ?? "info",
     });

@@ -183,6 +183,11 @@ export function searchUsers(db: Db, query: string, limit = 20) {
   return db.user.findMany({ where: { OR: or }, take: limit });
 }
 
+/** Most recently registered users — the Customers page's default browse list. */
+export function listRecentUsers(db: Db, limit = 20) {
+  return db.user.findMany({ orderBy: { createdAt: "desc" }, take: limit });
+}
+
 /** This user's DELIVERED-order totals, split per transaction currency (orders
  * predating the currency column count as USDT — their snapshot unit). */
 export async function userTotalSpent(

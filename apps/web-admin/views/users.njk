@@ -14,7 +14,9 @@
   <button class="btn btn-primary"><i data-lucide="search" class="w-4 h-4"></i> Search</button>
 </form>
 
-{% if q %}
+{% if browsing %}
+<p class="text-xs text-ink-faint mb-2">Showing the {{ results | length }} most recently registered customer{{ 's' if results | length != 1 }}.</p>
+{% endif %}
 <div class="card overflow-x-auto">
   <table class="data-table">
     <thead>
@@ -31,12 +33,9 @@
         <td class="text-right"><a class="link" href="/users/{{ u.id }}">Open →</a></td>
       </tr>
       {% else %}
-      {{ ui.empty_row(6, 'No customers match "' + q + '".') }}
+      {{ ui.empty_row(6, 'No customers yet.' if browsing else 'No customers match "' + q + '".') }}
       {% endfor %}
     </tbody>
   </table>
 </div>
-{% else %}
-<p class="text-ink-faint">Type something above to find a customer.</p>
-{% endif %}
 {% endblock %}

@@ -1,0 +1,62 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+
+{% block title %}{{ t('web.settings_title', lang) }} — {{ shop_name }}{% endblock %}
+
+{% block content %}
+<h1 class="page-title mb-6">{{ t('web.settings_title', lang) }}</h1>
+
+{% if error %}<div class="mb-4 max-w-md">{{ ui.flash(error, 'error') }}</div>{% endif %}
+{% if saved %}<div class="mb-4 max-w-md">{{ ui.flash(t('web.settings_saved', lang), 'info') }}</div>{% endif %}
+{% if linked %}<div class="mb-4 max-w-md">{{ ui.flash(t('web.settings_tg_done', lang), 'info') }}</div>{% endif %}
+
+<div class="grid lg:grid-cols-2 gap-6 items-start">
+  <div class="card card-pad">
+    <h2 class="font-display text-lg font-semibold mb-4">{{ t('web.settings_login_section', lang) }}</h2>
+    <form method="post" action="/account/settings/credentials" class="space-y-4">
+      {{ ui.csrf_field(customer) }}
+      <div>
+        <label class="text-sm font-semibold" for="username">{{ t('web.register_username', lang) }}</label>
+        <input class="field mt-1" type="text" id="username" name="username" value="{{ values.username }}"
+               autocomplete="username" minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]+">
+        <p class="text-xs text-ink-faint mt-1">{{ t('web.register_username_help', lang) }}</p>
+      </div>
+      <div>
+        <label class="text-sm font-semibold" for="email">{{ t('web.register_email', lang) }}</label>
+        <input class="field mt-1" type="email" id="email" name="email" value="{{ values.email }}" autocomplete="email">
+      </div>
+      {% if has_password %}
+      <div>
+        <label class="text-sm font-semibold" for="current_password">{{ t('web.settings_current_password', lang) }}</label>
+        <input class="field mt-1" type="password" id="current_password" name="current_password" autocomplete="current-password">
+      </div>
+      {% endif %}
+      <div>
+        <label class="text-sm font-semibold" for="new_password">{{ t('web.settings_new_password', lang) }}</label>
+        <input class="field mt-1" type="password" id="new_password" name="new_password" autocomplete="new-password" minlength="8">
+      </div>
+      <button type="submit" class="btn btn-primary">{{ t('web.settings_save', lang) }}</button>
+    </form>
+  </div>
+
+  <div class="card card-pad">
+    <h2 class="font-display text-lg font-semibold mb-4">{{ t('web.settings_tg_section', lang) }}</h2>
+    {% if tg_linked %}
+    <p class="text-sm text-ink-soft flex items-center gap-2">
+      {{ ui.ic('check-circle', 'w-4 h-4 text-pine') }}
+      {{ t('web.settings_tg_linked', lang, {name: tg_name}) }}
+    </p>
+    {% else %}
+    <p class="text-sm text-ink-soft mb-4">{{ t('web.settings_tg_hint', lang) }}</p>
+    {% if bot_username %}
+    <script async src="https://telegram.org/js/telegram-widget.js?22"
+            data-telegram-login="{{ bot_username }}"
+            data-size="large"
+            data-radius="12"
+            data-auth-url="/account/settings/link-telegram"
+            data-request-access="write"></script>
+    {% endif %}
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

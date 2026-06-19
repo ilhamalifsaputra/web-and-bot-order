@@ -1,0 +1,164 @@
+/* Clean Modern — plain-CSS layer.
+   Tailwind (Play CDN) handles utilities + the component @layer in base.njk;
+   this file holds what Tailwind can't: backdrop, scrollbar, native-control
+   theming, and a quiet page-load reveal. */
+
+:root {
+  --paper:      #f6f8fb;
+  --card:       #ffffff;
+  --sand:       #eef1f6;
+  --line:       #e3e8ef;
+  --ink:        #1b2330;
+  --ink-soft:   #5a6473;
+  --ink-faint:  #97a1b1;
+  --pine:       #2563eb;
+  --pine-dark:  #1d4ed8;
+  --pine-tint:  #e6effe;
+  --grass:      #16a34a;
+  --grass-dark: #15803d;
+  --grass-tint: #e7f6ec;
+  --amberx:     #b45c0a;
+  --amberx-tint:#fdedcf;
+  --rust:       #dc2626;
+  --rust-dark:  #b91c1c;
+  --rust-tint:  #fde7e7;
+  --accent:     #2563eb;
+}
+
+/* A barely-there cool wash for depth, not decoration. */
+body {
+  background-image:
+    radial-gradient(48rem 32rem at 100% -8%, rgba(37, 99, 235, .05), transparent 60%);
+  background-attachment: fixed;
+}
+
+/* JS-free dropdown nav: hide the default <details> disclosure marker. */
+nav summary { list-style: none; }
+nav summary::-webkit-details-marker { display: none; }
+
+/* Slim, cool scrollbar. */
+* { scrollbar-width: thin; scrollbar-color: #c5cbd6 transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+  background: #c5cbd6;
+  border-radius: 999px;
+  border: 3px solid var(--paper);
+}
+*::-webkit-scrollbar-thumb:hover { background: #aab2c2; }
+
+/* Selection + focus polish. */
+::selection { background: rgba(37, 99, 235, .16); }
+:focus-visible { outline: 2px solid rgba(37, 99, 235, .4); outline-offset: 2px; }
+
+/* Native controls pick up the brand accent. */
+input, select, textarea, button { accent-color: var(--accent); }
+
+/* Numeric tabular alignment for money/counts in tables. */
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* Quiet entrance: main content fades + lifts on load. Respects reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  main { animation: rise .5s cubic-bezier(.22, 1, .36, 1) both; }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+}
+
+/* ---- Component classes (authoritative CSS — overrides @layer components from CDN) ----
+   Defined here as unlayered CSS so they always win over Tailwind's @layer output. */
+
+/* Base typography */
+body { font-family: 'Manrope', system-ui, sans-serif; background-color: var(--paper); color: var(--ink); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+h1, h2, h3 { font-family: 'Outfit', system-ui, sans-serif; }
+
+/* Surfaces */
+.card     { background: var(--card); border-radius: 1rem; border: 1px solid var(--line); box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px -14px rgba(16,24,40,.12); }
+.card-pad { padding: 1.25rem; }
+@media (min-width: 640px) { .card-pad { padding: 1.5rem; } }
+
+/* Page headings */
+.page-title    { font-family: 'Outfit', system-ui, sans-serif; font-size: 1.875rem; font-weight: 600; letter-spacing: -0.025em; color: var(--ink); display: flex; align-items: center; gap: 0.625rem; }
+.page-lead     { font-size: 0.875rem; color: var(--ink-soft); margin-top: 0.25rem; }
+.section-title { font-family: 'Outfit', system-ui, sans-serif; font-size: 1.125rem; font-weight: 600; color: var(--ink); }
+
+/* Buttons */
+.btn         { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; border-radius: 0.75rem; padding: 0.5rem 1rem; font-size: 0.875rem; font-weight: 600; transition: background-color .15s, color .15s, box-shadow .15s; cursor: pointer; border: none; text-decoration: none; line-height: 1.25; }
+.btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(37,99,235,.35); }
+.btn-primary { background: var(--pine); color: #fff; box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px -14px rgba(16,24,40,.12); }
+.btn-primary:hover { background: var(--pine-dark); }
+.btn-soft    { background: var(--pine-tint); color: var(--pine-dark); }
+.btn-soft:hover { background: rgba(37,99,235,.15); }
+.btn-ghost   { color: var(--ink-soft); background: transparent; }
+.btn-ghost:hover { background: var(--sand); color: var(--ink); }
+.btn-danger  { background: var(--rust); color: #fff; }
+.btn-danger:hover { background: var(--rust-dark); }
+.btn-sm      { padding: .375rem .75rem; font-size: .75rem; border-radius: .5rem; }
+
+/* Forms */
+.field-label { display: block; font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); margin-bottom: .375rem; }
+.field       { display: block; width: 100%; border-radius: .75rem; border: 1px solid var(--line); background: #fff; padding: .5rem .75rem; font-size: .875rem; color: var(--ink); transition: border-color .15s, box-shadow .15s; outline: none; font-family: inherit; box-sizing: border-box; }
+.field::placeholder { color: var(--ink-faint); }
+.field:focus { border-color: var(--pine); box-shadow: 0 0 0 3px rgba(37,99,235,.2); outline: none; }
+select.field { -webkit-appearance: auto; appearance: auto; }
+input[type="file"].field { -webkit-appearance: auto; appearance: auto; padding: .25rem .5rem; }
+textarea.field { resize: vertical; }
+
+/* Stats */
+.stat-label { font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); }
+.stat-value { font-family: 'Outfit', system-ui, sans-serif; font-size: 1.875rem; font-weight: 600; color: var(--ink); margin-top: .5rem; line-height: 1; }
+.stat-sub   { font-size: .75rem; color: var(--ink-soft); margin-top: .5rem; }
+
+/* Tables */
+.data-table          { min-width: 100%; font-size: .875rem; border-collapse: collapse; }
+.data-table thead th { padding: .75rem 1rem; text-align: left; font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); background: rgba(238,241,246,.5); }
+.data-table tbody td { padding: .75rem 1rem; vertical-align: middle; }
+.data-table tbody tr { border-top: 1px solid var(--line); }
+.data-table tbody tr:hover { background: rgba(238,241,246,.3); }
+
+/* Misc */
+.link    { color: var(--pine); font-weight: 600; text-decoration: none; text-underline-offset: .125rem; }
+.link:hover { color: var(--pine-dark); text-decoration: underline; }
+.codeish { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .75rem; background: rgba(238,241,246,.6); border-radius: .25rem; padding: .125rem .375rem; color: var(--ink); }
+.chip    { display: inline-flex; align-items: center; gap: .25rem; border-radius: 9999px; padding: .125rem .625rem; font-size: .75rem; font-weight: 600; }
+
+/* ---- Component-layer support (web-admin only) -------------------------------
+   Styling the interactive macros in _macros.njk (tabs, AlertDialog, tooltip,
+   dropdown chevron, sticky table header, dropzone). Tailwind utilities cover the
+   rest in the macro markup; these are the bits utilities can't express. */
+
+/* Tabs: the active tab gets a pine underline + ink text. */
+.tab-btn[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--pine); }
+.tab-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(37,99,235,.25); border-radius: .5rem .5rem 0 0; }
+
+/* Dropdown: rotate the chevron while the menu is open. */
+details.dropdown[open] > summary .dd-chevron { transform: rotate(180deg); }
+details.dropdown summary { list-style: none; }
+details.dropdown summary::-webkit-details-marker { display: none; }
+
+/* Hide the default disclosure triangle on our custom (chevron-led) summaries. */
+summary.list-none::-webkit-details-marker { display: none; }
+
+/* AlertDialog: centred card + dimmed backdrop, with a quiet entrance. */
+dialog.alert { border: none; border-radius: 1rem; padding: 0; max-width: 26rem; width: calc(100% - 2rem);
+  background: var(--card); color: var(--ink); box-shadow: 0 2px 4px rgba(16,24,40,.06), 0 16px 36px -18px rgba(16,24,40,.3); }
+dialog.alert::backdrop { background: rgba(16,24,40,.45); }
+@media (prefers-reduced-motion: no-preference) {
+  dialog.alert[open] { animation: alert-in .16s cubic-bezier(.22,1,.36,1) both; }
+  @keyframes alert-in { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
+}
+
+/* Tooltip: a small label on hover/focus of any [data-tip] control. */
+[data-tip] { position: relative; }
+[data-tip]:hover::after, [data-tip]:focus-visible::after {
+  content: attr(data-tip);
+  position: absolute; bottom: calc(100% + .35rem); left: 50%; transform: translateX(-50%);
+  background: var(--ink); color: #fff; font-size: .68rem; font-weight: 600; line-height: 1;
+  padding: .3rem .45rem; border-radius: .375rem; white-space: nowrap; pointer-events: none; z-index: 50;
+}
+
+/* Sticky table header: pin <thead> inside a scrolling container. */
+.data-table--sticky thead th { position: sticky; top: 0; z-index: 1; }
+
+/* Dropzone: highlight while a file is dragged over it. */
+.dropzone.is-dragover { border-color: var(--pine); background: var(--pine-tint); }

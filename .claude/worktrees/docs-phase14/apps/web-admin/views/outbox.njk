@@ -1,0 +1,73 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}Notifications · Shop Admin{% endblock %}
+
+{% block content %}
+{{ ui.page_header('Customer Notifications', "Messages your shop sends to customers (order ready, payment confirmed, and so on). If one didn't send, you can try again here.", 'bell', 'sales') }}
+
+{{ ui.flash(msg, kind) }}
+
+<section class="grid grid-cols-3 gap-4 mb-8">
+  {% set cards = [['PENDING','Waiting to send','text-pine'], ['SENT','Sent','text-grass'], ['FAILED','Didn’t send','text-rust']] %}
+  {% for c in cards %}
+  <div class="card card-pad">
+    <div class="stat-label">{{ c[1] }}</div>
+    <div class="stat-value tabular {% if counts[c[0]] %}{{ c[2] }}{% endif %}">{{ counts[c[0]] or 0 }}</div>
+  </div>
+  {% endfor %}
+</section>
+
+<form method="get" action="/outbox" class="flex gap-2 items-center text-sm mb-3">
+  <select name="status" class="field" onchange="this.form.submit()">
+    <option value="">All</option>
+    {% for s in statuses %}<option value="{{ s }}" {% if f.status == s %}selected{% endif %}>{{ s | lower | title }}</option>{% endfor %}
+  </select>
+  <noscript><button class="btn btn-primary btn-sm">Filter</button></noscript>
+</form>
+
+<div class="card overflow-x-auto">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>When</th><th>Message</th><th>Order</th>
+        <th>Status</th><th>Tries</th>
+        <th>Details</th><th class="text-right"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr class="align-top">
+        <td class="text-ink-soft whitespace-nowrap" title="{{ tzname }}">{{ r.createdAt | localdt('yyyy-LL-dd HH:mm:ss') }}</td>
+        <td class="font-medium">{{ r.event | replace('_', ' ') | title }}</td>
+        <td>
+          {% if r.order %}<a class="link font-mono text-xs" href="/orders/{{ r.order.id }}">{{ r.order.orderCode }}</a>
+          {% else %}<span class="text-ink-faint">—</span>{% endif %}
+        </td>
+        <td>{{ ui.status_badge(r.status) }}</td>
+        <td class="tabular {% if r.attempts > 0 %}text-amberx{% endif %}">{{ r.attempts }}</td>
+        <td class="text-ink-soft max-w-md">
+          {% if r.lastError %}<div class="text-rust break-all mb-1">{{ r.lastError }}</div>{% endif %}
+          <details>
+            <summary class="cursor-pointer text-xs text-ink-faint hover:text-ink-soft">show details</summary>
+            <pre class="text-xs bg-sand/60 rounded p-2 mt-1 overflow-x-auto whitespace-pre-wrap break-all">{{ r.payloadJson }}</pre>
+          </details>
+        </td>
+        <td class="text-right">
+          {% if r.status != 'SENT' %}
+          <form method="post" action="/outbox/{{ r.id }}/retry" class="inline">
+            {{ ui.csrf_field(admin) }}
+            <button class="btn btn-soft btn-sm">Try again</button>
+          </form>
+          {% else %}<span class="text-ink-faint text-xs">—</span>{% endif %}
+        </td>
+      </tr>
+      {% else %}
+      {{ ui.empty_row(7, 'No notifications match.') }}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% set qbase = '/outbox?status=' + f.status %}
+{{ ui.pager(qbase, page, has_next, total, 'message(s)') }}
+{% endblock %}

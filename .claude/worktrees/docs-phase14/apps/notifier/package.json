@@ -1,0 +1,19 @@
+{
+  "name": "@app/notifier",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./dispatcher": "./src/dispatcher.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@app/core": "workspace:*",
+    "@app/db": "workspace:*",
+    "grammy": "^1.30.0"
+  }
+}

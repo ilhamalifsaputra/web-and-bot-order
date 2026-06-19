@@ -1,0 +1,47 @@
+# --- dependencies ---
+node_modules/
+
+# --- secrets / local env (NEVER commit) ---
+.env
+.env.*
+!.env.example
+
+# --- local MCP server config (token via ${HOSTINGER_API_TOKEN} env var) ---
+.mcp.json
+
+# --- runtime data: DB (+ WAL/SHM/backups), logs (any nesting) ---
+data/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.db.bak-*
+*.log
+.tmp/
+
+# --- Python (legacy stack) ---
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- build output ---
+dist/
+build/
+*.tsbuildinfo
+coverage/
+
+# --- Prisma generated client (regenerated via prisma generate) ---
+**/generated/
+
+# --- local working dirs (audit reports / execution scratch) ---
+/execution/
+/audit/
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

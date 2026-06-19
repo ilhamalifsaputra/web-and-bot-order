@@ -1,0 +1,184 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}{{ product.name }} · Product{% endblock %}
+
+{% set return_to = '/catalog/product/' + product.id | string %}
+
+{% block content %}
+<div class="mb-5">
+  {{ ui.btn('Products', 'arrow-left', 'ghost', href='/catalog', cls='btn-sm') }}
+</div>
+
+{# ── Header ───────────────────────────────────────────────────────────────── #}
+<header class="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-6">
+  <div class="min-w-0">
+    <h1 class="font-display text-3xl font-semibold tracking-tight text-ink flex items-center gap-2.5">
+      <i data-lucide="package" class="w-7 h-7 text-violet-500 shrink-0"></i>
+      <span class="truncate">{{ product.emoji }} {{ product.name }}</span>
+    </h1>
+    <div class="flex flex-wrap items-center gap-2 mt-3">
+      {{ ui.badge('#' + product.id | string, 'neutral') }}
+      {{ ui.badge(product.denominations | length ~ ' denomination' ~ ('s' if product.denominations | length != 1), 'info') }}
+      {{ ui.status_badge('active' if product.isActive else 'inactive') }}
+    </div>
+    <p class="page-lead mt-2">{{ product.category.name if product.category else 'Uncategorized' }}</p>
+  </div>
+</header>
+
+{{ ui.flash(msg, kind) }}
+
+{# ── Tabs ──────────────────────────────────────────────────────────────────── #}
+{{ ui.tabs('product', [
+  { key: 'denominations', label: 'Denominations', icon: 'layers' },
+  { key: 'general',   label: 'General',   icon: 'sliders-horizontal' },
+  { key: 'photos',    label: 'Photos',    icon: 'image' }
+]) }}
+
+{# Denominations — price/cost/stock/discount/auto-delivery all live here #}
+{% call ui.tab_panel('product', 'denominations', first=true) %}
+<div class="space-y-5">
+  <details class="card card-pad group">
+    <summary class="cursor-pointer select-none font-medium text-sm text-ink-soft flex items-center gap-1.5 list-none">
+      <i data-lucide="chevron-right" class="w-4 h-4 transition-transform group-open:rotate-90"></i>
+      <i data-lucide="plus" class="w-4 h-4 text-pine"></i> Add a denomination</summary>
+    <form method="post" action="/catalog/product/{{ product.id }}/denomination" class="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {{ ui.csrf_field(admin) }}
+      <input type="hidden" name="return_to" value="{{ return_to }}">
+      <div><label class="field-label">Name</label><input name="name" required placeholder="e.g. 1 Month" class="field"></div>
+      <div><label class="field-label">Duration label</label><input name="duration_label" required placeholder="e.g. 1 Month" class="field"></div>
+      <div><label class="field-label">Type</label>
+        <select name="type" required class="field">
+          {% for t in product_types %}<option value="{{ t }}">{{ t | lower | title }}</option>{% endfor %}
+        </select></div>
+      <div><label class="field-label">Price (Rupiah)</label><input name="price" required class="field"></div>
+      <div><label class="field-label">Cost price (optional)</label><input name="cost_price" class="field"></div>
+      <div><label class="field-label">Reseller price (optional)</label><input name="reseller_price" class="field"></div>
+      <div><label class="field-label">Warranty (days)</label><input name="warranty_days" type="number" class="field"></div>
+      <div><label class="field-label">Auto-delivery source (optional)</label><input name="auto_delivery_source" class="field" placeholder="e.g. stock-pool name"></div>
+      <div class="sm:col-span-2"><label class="field-label">Description (optional)</label><textarea name="description" rows="2" class="field"></textarea></div>
+      <div><button class="btn btn-primary">Add denomination</button></div>
+    </form>
+  </details>
+
+  {% for d in product.denominations %}
+  {% set stats = stats_by_denom[d.id] %}
+  <section class="card card-pad">
+    <div class="flex flex-wrap items-start justify-between gap-3 mb-4">
+      <div>
+        <h3 class="font-semibold text-ink flex items-center gap-2">{{ d.name }} {{ ui.status_badge('active' if d.isActive else 'inactive') }}</h3>
+        <div class="flex flex-wrap items-center gap-2 mt-1.5 text-xs text-ink-faint">
+          <span>#{{ d.id }}</span>
+          {{ ui.badge(d.type | lower | title, 'info') }}
+          <span>{{ d.durationLabel }}</span>
+          <span class="tabular font-semibold text-ink">{{ d.price | idr }}</span>
+          {% if usd_idr_rate %}<span>≈ {{ d.price | usdt(usd_idr_rate) }}</span>{% endif %}
+          {% if stats %}<span>Ready: <b class="tabular">{{ stats.available }}</b></span>{% endif %}
+          {% if stats and stats.rule %}{{ ui.badge(stats.rule.minQuantity ~ '+ → ' ~ stats.rule.discountPercent ~ '%', 'success') }}{% endif %}
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <form method="post" action="/catalog/denomination/{{ d.id }}/update" class="inline">
+          {{ ui.csrf_field(admin) }}
+          <input type="hidden" name="return_to" value="{{ return_to }}">
+          <input type="hidden" name="name" value="{{ d.name }}">
+          <input type="hidden" name="duration_label" value="{{ d.durationLabel }}">
+          <input type="hidden" name="price" value="{{ d.price }}">
+          <input type="hidden" name="is_active" value="{{ 'false' if d.isActive else 'true' }}">
+          <button class="btn btn-ghost btn-sm">{{ 'Hide' if d.isActive else 'Show' }}</button>
+        </form>
+        {{ ui.btn('Stock', 'boxes', 'soft', href='/stock/' + d.id | string, cls='btn-sm') }}
+        {% call ui.dropdown('', 'ellipsis-vertical') %}
+        <form method="post" action="/catalog/denomination/{{ d.id }}/update" class="flex flex-col gap-2 px-3 py-2 w-72">
+          {{ ui.csrf_field(admin) }}
+          <input type="hidden" name="return_to" value="{{ return_to }}">
+          <input name="name" value="{{ d.name }}" required class="field text-xs" placeholder="Name">
+          <input name="duration_label" value="{{ d.durationLabel }}" required class="field text-xs" placeholder="Duration">
+          <select name="type" class="field text-xs">
+            {% for t in product_types %}<option value="{{ t }}" {% if d.type == t %}selected{% endif %}>{{ t | lower | title }}</option>{% endfor %}
+          </select>
+          <input name="price" value="{{ d.price }}" required class="field text-xs" placeholder="Price">
+          <input name="cost_price" value="{{ d.costPrice or '' }}" class="field text-xs" placeholder="Cost price">
+          <input name="reseller_price" value="{{ d.resellerPrice or '' }}" class="field text-xs" placeholder="Reseller price">
+          <input name="warranty_days" type="number" value="{{ d.warrantyDays }}" class="field text-xs" placeholder="Warranty days">
+          <input name="auto_delivery_source" value="{{ d.autoDeliverySource or '' }}" class="field text-xs" placeholder="Auto-delivery source">
+          <input name="sort_order" type="number" value="{{ d.sortOrder }}" class="field text-xs" placeholder="Sort order">
+          <textarea name="description" rows="2" class="field text-xs" placeholder="Description">{{ d.description or '' }}</textarea>
+          {% if d.isActive %}<input type="hidden" name="is_active" value="true">{% endif %}
+          <button class="btn btn-soft btn-sm">Save</button>
+        </form>
+        <form method="post" action="/catalog/denomination/{{ d.id }}/delete" class="px-3 py-2 border-t border-line"
+              data-confirm="Delete denomination '{{ d.name }}'? This cannot be undone.">
+          {{ ui.csrf_field(admin) }}
+          <input type="hidden" name="return_to" value="{{ return_to }}">
+          <button class="btn btn-ghost btn-sm w-full text-red-600">Delete</button>
+        </form>
+        {% endcall %}
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <form method="post" action="/catalog/denomination/{{ d.id }}/bulk-pricing" class="flex flex-wrap gap-2 items-end">
+        {{ ui.csrf_field(admin) }}
+        <input type="hidden" name="return_to" value="{{ return_to }}">
+        <div><label class="field-label">Buy at least</label><input name="min_quantity" type="number" value="{{ stats.rule.minQuantity if stats and stats.rule else '' }}" class="field w-24"></div>
+        <div><label class="field-label">Discount %</label><input name="discount_percent" value="{{ stats.rule.discountPercent if stats and stats.rule else '' }}" class="field w-24"></div>
+        {{ ui.btn('Save', 'save', 'soft', cls='btn-sm') }}
+      </form>
+      <form method="post" action="/stock/{{ d.id }}/add" class="flex flex-wrap gap-2 items-end">
+        {{ ui.csrf_field(admin) }}
+        <input type="hidden" name="return_to" value="{{ return_to }}">
+        <div class="flex-1 min-w-[12rem]"><label class="field-label">Add stock (one per line)</label>
+          <input name="credentials" class="field" placeholder="email:password"></div>
+        {{ ui.btn('Add', 'plus', 'soft', cls='btn-sm') }}
+      </form>
+    </div>
+  </section>
+  {% else %}
+  <p class="text-ink-faint">No denominations yet — add one above before this product is visible to customers.</p>
+  {% endfor %}
+</div>
+{% endcall %}
+
+{# General #}
+{% call ui.tab_panel('product', 'general') %}
+<form method="post" action="/catalog/product/{{ product.id }}/update" class="card card-pad grid grid-cols-1 sm:grid-cols-2 gap-4">
+  {{ ui.csrf_field(admin) }}
+  <input type="hidden" name="return_to" value="{{ return_to }}">
+  <div><label class="field-label">Name</label><input name="name" value="{{ product.name }}" required class="field"></div>
+  <div><label class="field-label">Icon (optional)</label><input name="emoji" value="{{ product.emoji or '' }}" class="field"></div>
+  <div><label class="field-label">Order</label><input name="sort_order" type="number" value="{{ product.sortOrder }}" class="field w-28"></div>
+  <div><label class="field-label">Bot photo ID</label><input name="image_file_id" value="{{ product.imageFileId or '' }}" class="field" placeholder="Telegram file_id (set from bot)"></div>
+  <div class="sm:col-span-2"><label class="field-label">Description</label><textarea name="description" rows="3" class="field">{{ product.description or '' }}</textarea></div>
+  <label class="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" name="is_active" value="true" {% if product.isActive %}checked{% endif %}> Shown to customers</label>
+  <div class="sm:col-span-2">{{ ui.btn('Save changes', 'save', 'primary') }}</div>
+</form>
+{% endcall %}
+
+{# Photos #}
+{% call ui.tab_panel('product', 'photos') %}
+<div class="card card-pad space-y-4">
+  <div>
+    <h2 class="section-title">Web photo</h2>
+    <p class="text-sm text-ink-soft mt-1">Shown on the storefront. Uploading a new one replaces the current image.</p>
+  </div>
+  {{ ui.dropzone('photo', '/catalog/product/' + product.id | string + '/photo', admin.csrf, current_url=product.webImageUrl, return_to=return_to) }}
+  <div>
+    <label class="field-label">Or paste an external URL</label>
+    <form method="post" action="/catalog/product/{{ product.id }}/update" class="flex flex-wrap items-end gap-2">
+      {{ ui.csrf_field(admin) }}
+      <input type="hidden" name="return_to" value="{{ return_to }}">
+      {# Re-send the required fields so the update validates and nothing else changes. #}
+      <input type="hidden" name="name" value="{{ product.name }}">
+      <input type="hidden" name="emoji" value="{{ product.emoji or '' }}">
+      <input type="hidden" name="image_file_id" value="{{ product.imageFileId or '' }}">
+      <input type="hidden" name="description" value="{{ product.description or '' }}">
+      {% if product.isActive %}<input type="hidden" name="is_active" value="true">{% endif %}
+      <input name="web_image_url" type="url" value="{{ product.webImageUrl or '' }}" placeholder="https://…" class="field flex-1 min-w-[16rem]">
+      {{ ui.btn('Save URL', 'link', 'soft', cls='btn-sm') }}
+    </form>
+  </div>
+</div>
+{% endcall %}
+
+{{ ui.tabs_end() }}
+{% endblock %}

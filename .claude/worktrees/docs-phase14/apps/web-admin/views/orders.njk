@@ -1,0 +1,69 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}Orders · Shop Admin{% endblock %}
+
+{% block content %}
+{{ ui.page_header('Orders', 'Every order placed in your shop.', 'shopping-cart', 'sales') }}
+{{ ui.flash(msg, kind) }}
+
+<form method="get" action="/orders" class="card card-pad mb-6 flex flex-wrap gap-4 items-end">
+  <div>
+    <label class="field-label">Status</label>
+    <select name="status" class="field">
+      <option value="">All</option>
+      {% for s in statuses %}
+      <option value="{{ s }}" {% if f.status == s %}selected{% endif %}>{{ s | lower | replace('_', ' ') | title }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div>
+    <label class="field-label">Order code</label>
+    <input type="text" name="q" value="{{ f.q }}" placeholder="ORD-..." class="field">
+  </div>
+  <div>
+    <label class="field-label">From date</label>
+    <input type="date" name="since" value="{{ f.since }}" class="field">
+  </div>
+  <div>
+    <label class="field-label">To date</label>
+    <input type="date" name="until" value="{{ f.until }}" class="field">
+  </div>
+  <button class="btn btn-primary"><i data-lucide="search" class="w-4 h-4"></i> Search</button>
+  <a href="/orders" class="btn btn-ghost">Clear</a>
+</form>
+
+<div class="card overflow-x-auto">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Code</th>
+        <th>Customer</th>
+        <th>Status</th>
+        <th class="text-right">Total</th>
+        <th>Placed</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for o in orders %}
+      <tr>
+        <td class="font-mono text-xs">{{ o.orderCode }}</td>
+        <td>
+          <div class="text-ink">{{ o.user.fullName or o.user.username or o.user.loginUsername or o.user.email or '—' }}</div>
+          <div class="text-ink-faint text-xs">{% if o.user.telegramId %}Telegram {{ o.user.telegramId }}{% else %}Web-only{% endif %}</div>
+        </td>
+        <td>{{ ui.status_badge(o.status) }}</td>
+        <td class="text-right tabular">{{ o.totalAmount | idr }}</td>
+        <td class="text-ink-soft whitespace-nowrap" title="{{ tzname }}">{{ o.createdAt | localdt }}</td>
+        <td class="text-right"><a class="link" href="/orders/{{ o.id }}">Open →</a></td>
+      </tr>
+      {% else %}
+      {{ ui.empty_row(6, 'No orders match your search.') }}
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% set qbase = '/orders?status=' + f.status + '&q=' + f.q + '&since=' + f.since + '&until=' + f.until %}
+{{ ui.pager(qbase, page, has_next, total, 'order(s)') }}
+{% endblock %}

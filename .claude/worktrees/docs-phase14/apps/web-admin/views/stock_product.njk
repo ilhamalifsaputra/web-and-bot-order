@@ -1,0 +1,102 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}{{ product.name }} · Stock{% endblock %}
+
+{% block content %}
+<div class="mb-5">
+  {{ ui.btn('All stock', 'arrow-left', 'ghost', href='/stock', cls='btn-sm') }}
+</div>
+
+<header class="flex items-start justify-between gap-3 flex-wrap mb-6">
+  <div>
+    <h1 class="page-title flex items-center gap-2.5"><i data-lucide="boxes" class="w-7 h-7 text-violet-500"></i> {{ product.name }}</h1>
+    <p class="page-lead">{{ product.durationLabel }} · {{ available }} ready to sell</p>
+  </div>
+  <div class="flex items-center gap-2 shrink-0">
+    {% if available %}{{ ui.btn('Download remaining (' + available | string + ')', 'download', 'soft', href='/stock/' + product.id | string + '/download', cls='btn-sm') }}{% endif %}
+    {{ ui.btn('Open product', 'sliders-horizontal', 'soft', href='/catalog/product/' + product.product.id | string, cls='btn-sm') }}
+  </div>
+</header>
+{{ ui.flash(msg, kind) }}
+
+<section class="card card-pad mb-6">
+  <h2 class="section-title mb-2">Add stock</h2>
+  {% if waiting %}
+  <p class="text-sm mb-3 text-amberx bg-amberx-tint border border-amberx/30 rounded-xl px-3 py-2">
+    <strong>{{ waiting }}</strong> customer{{ 's' if waiting != 1 }} waiting on restock — they'll be notified automatically once you add stock.
+  </p>
+  {% endif %}
+  <p class="text-xs text-ink-soft mb-3">One login per line, for example <code class="codeish">email:password</code> or <code class="codeish">email|password|extra</code>.</p>
+  <form method="post" action="/stock/{{ product.id }}/add">
+    {{ ui.csrf_field(admin) }}
+    <textarea name="credentials" rows="6" required class="field font-mono text-sm"
+      placeholder="user1@example.com:pass1&#10;user2@example.com:pass2"></textarea>
+    <div class="mt-3">{{ ui.btn('Add stock', 'plus', 'primary') }}</div>
+  </form>
+</section>
+
+{% if items %}
+<form id="bulk-stock-form" method="post" action="/stock/{{ product.id }}/bulk-dead"
+      class="card p-3 mb-3 flex flex-wrap items-center gap-2 text-sm" onsubmit="return collectBulkStock();">
+  {{ ui.csrf_field(admin) }}
+  <input type="hidden" name="ids" id="bs-ids">
+  <label class="flex items-center gap-1 text-ink-soft"><input type="checkbox" onclick="document.querySelectorAll('.bs-cb').forEach(c=>c.checked=this.checked)"> Select all</label>
+  <input type="text" name="note" placeholder="reason (optional)" class="field w-auto py-1.5">
+  {{ ui.btn('Mark bad', 'circle-slash', 'danger', cls='btn-sm', attrs='data-confirm="Mark the selected items as bad (no longer usable)?"') }}
+  {{ ui.btn('Delete', 'trash-2', 'danger', cls='btn-sm', attrs='formaction="/stock/' + product.id | string + '/bulk-delete" data-confirm="Permanently delete the selected items? This cannot be undone. Sold items are kept."') }}
+</form>
+{% endif %}
+
+<section class="card overflow-hidden">
+  <div class="max-h-[32rem] overflow-y-auto">
+    <table class="data-table data-table--sticky">
+      <thead>
+        <tr>
+          <th></th><th>#</th><th>Status</th><th>Login</th><th>Order</th><th>Added</th><th>Note</th><th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for it in items %}
+        <tr>
+          <td>{% if (it.status | lower) != 'sold' %}<input type="checkbox" class="bs-cb" value="{{ it.id }}">{% endif %}</td>
+          <td class="text-ink-faint tabular">{{ it.id }}</td>
+          <td>{{ ui.status_badge(it.status) }}</td>
+          <td class="font-mono text-xs break-all max-w-xs">{{ it.credentials }}</td>
+          <td class="text-ink-soft">{{ it.orderId or '—' }}</td>
+          <td class="text-ink-soft whitespace-nowrap" title="{{ tzname }}">{{ it.addedAt | localdt }}</td>
+          <td class="text-ink-soft">{{ it.note or '—' }}</td>
+          <td class="text-right">
+            {% call ui.dropdown('', 'ellipsis-vertical') %}
+            <form method="post" action="/stock/item/{{ it.id }}/note" class="flex gap-1 px-3 py-2">
+              {{ ui.csrf_field(admin) }}
+              <input type="text" name="note" value="{{ it.note or '' }}" placeholder="note" class="field text-xs w-40 py-1">
+              {{ ui.icon_button('save', 'Save note', 'soft') }}
+            </form>
+            {% if (it.status | lower) not in ['sold', 'dead'] %}
+            <form method="post" action="/stock/item/{{ it.id }}/dead" class="flex gap-1 px-3 py-2 border-t border-line"
+                  data-confirm="Mark item #{{ it.id }} as bad?">
+              {{ ui.csrf_field(admin) }}
+              <input type="text" name="note" placeholder="reason" class="field text-xs w-40 py-1">
+              {{ ui.icon_button('circle-slash', 'Mark as bad', 'danger') }}
+            </form>
+            {% endif %}
+            {% endcall %}
+          </td>
+        </tr>
+        {% else %}
+        {{ ui.empty_row(8, 'No stock added yet.') }}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+function collectBulkStock() {
+  const ids = [...document.querySelectorAll('.bs-cb:checked')].map(c => c.value);
+  if (!ids.length) { alert('Select at least one item.'); return false; }
+  document.getElementById('bs-ids').value = ids.join(',');
+  return true;
+}
+</script>
+{% endblock %}

@@ -1,0 +1,91 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+{% block title %}Team · Shop Admin{% endblock %}
+
+{% block content %}
+{% set role_label = { 'super': 'Owner', 'support': 'Support', 'readonly': 'View only' } %}
+{{ ui.page_header('Team', '', 'users-round', 'settings') }}
+<p class="text-ink-soft text-sm mb-6 max-w-2xl">
+  Who can sign in to this dashboard and what they're allowed to do.
+  <b>Owner</b> can do everything · <b>Support</b> can handle orders, payments, support and reviews ·
+  <b>View only</b> can look but not change anything. Everyone can change their own password.
+</p>
+{{ ui.flash(msg, kind) }}
+
+<div class="card overflow-x-auto">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Telegram ID</th>
+        <th>Name</th>
+        <th>Password</th>
+        <th>Two-step</th>
+        <th>Can do</th>
+        <th>Sign-in</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in admins %}
+      <tr>
+        <td class="font-mono">{{ a.telegramId or "—" }}{% if a.isSelf %}<span class="text-ink-faint text-xs"> (you)</span>{% endif %}{% if a.from_env %}<span class="text-ink-faint text-xs"> (env)</span>{% endif %}</td>
+        <td>{{ a.name or '—' }}</td>
+        <td>{% if a.passwordSet %}<span class="chip bg-grass-tint text-grass-dark">Set</span>{% else %}<span class="text-ink-faint text-xs">Not set</span>{% endif %}</td>
+        <td>{% if a.twoFa %}<span class="chip bg-grass-tint text-grass-dark">On</span>{% else %}<span class="text-ink-faint text-xs">Off</span>{% endif %}</td>
+        <td>
+          {% if a.from_env %}
+          <form method="post" action="/admins/{{ a.telegramId }}/role" class="flex gap-2 items-center">
+            {{ ui.csrf_field(admin) }}
+            <select name="role" class="field w-auto py-1.5" {% if a.isSelf %}disabled title="Ask another owner to change your access"{% endif %}>
+              {% for r in roles %}<option value="{{ r }}" {% if a.role == r %}selected{% endif %}>{{ role_label[r] or r }}</option>{% endfor %}
+            </select>
+            {% if not a.isSelf %}<button class="btn btn-soft btn-sm">Save</button>{% endif %}
+          </form>
+          {% else %}
+          <span class="text-ink-faint text-xs">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if a.isSelf %}<span class="text-ink-faint text-xs">—</span>
+          {% elif a.from_env %}
+          <form method="post" action="/admins/{{ a.telegramId }}/logout" onsubmit="return confirm('Sign out {{ a.telegramId }} from all devices?');">
+            {{ ui.csrf_field(admin) }}
+            <button class="btn btn-sm bg-amberx-tint text-amberx hover:bg-amberx/15">Sign out everywhere</button>
+          </form>
+          {% else %}
+          <span class="text-ink-faint text-xs">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if not a.from_env and not a.isSelf %}
+          <form method="post" action="/admins/remove" onsubmit="return confirm('Remove {{ a.telegramId }} from the admin list?');">
+            {{ ui.csrf_field(admin) }}
+            <input type="hidden" name="telegram_id" value="{{ a.telegramId }}">
+            <button class="btn btn-sm bg-red-50 text-red-600 hover:bg-red-100">Remove</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card mt-6">
+  <h2 class="text-base font-semibold mb-4">Add admin by Telegram ID</h2>
+  <form method="post" action="/admins/add" class="flex gap-2 items-end">
+    {{ ui.csrf_field(admin) }}
+    <div>
+      <label class="label" for="new_tg_id">Telegram ID</label>
+      <input id="new_tg_id" name="telegram_id" type="number" class="field" placeholder="e.g. 123456789" required>
+    </div>
+    <button class="btn btn-primary">Add admin</button>
+  </form>
+  <p class="text-ink-faint text-xs mt-2">The person must also set a password before they can sign in.</p>
+  <p class="text-ink-faint text-xs mt-1 flex items-start gap-1.5">
+    <i data-lucide="rotate-cw" class="w-3.5 h-3.5 mt-0.5 shrink-0"></i>
+    <span>If your Telegram bot runs as a separate process (e.g. Docker/VPS), restart the bot
+    for it to recognize admins you add or remove here. (Single-process deploys pick it up live.)</span>
+  </p>
+</div>
+{% endblock %}

@@ -1,0 +1,26 @@
+{
+  "name": "@app/order-bot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./main": "./src/main.ts",
+    "./jobs": "./src/jobs/index.ts",
+    "./payments/binanceInternal": "./src/payments/binanceInternal.ts",
+    "./payments/bybitDeposit": "./src/payments/bybitDeposit.ts",
+    "./payments/tokopayReconcile": "./src/payments/tokopayReconcile.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@app/core": "workspace:*",
+    "@app/db": "workspace:*",
+    "@grammyjs/conversations": "^1.2.0",
+    "@grammyjs/runner": "^2.0.3",
+    "croner": "^8.1.2",
+    "grammy": "^1.30.0"
+  }
+}

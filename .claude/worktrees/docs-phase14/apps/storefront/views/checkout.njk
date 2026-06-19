@@ -1,0 +1,99 @@
+{% extends "base.njk" %}
+{% import "_shop.njk" as shop %}
+
+{% block title %}{{ t('web.checkout_title', lang) }} — {{ shop_name }}{% endblock %}
+
+{% block content %}
+{{ shop.stepper(2, lang) }}
+<h1 class="page-title !text-2xl mb-5">{{ t('web.checkout_title', lang) }}</h1>
+
+{% if error_key %}
+<div class="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mb-5">
+  <i data-lucide="alert-triangle" class="w-4 h-4"></i> {{ t(error_key, lang) }}
+</div>
+{% endif %}
+
+<form method="post" action="/checkout" data-submit-once class="grid lg:grid-cols-3 gap-6 items-start">
+  <input type="hidden" name="csrf_token" value="{{ customer.csrf }}">
+
+  <div class="lg:col-span-2 space-y-6">
+    {# Payment method = transaction currency (design.md §8b) #}
+    <div class="card card-pad">
+      <h2 class="section-title mb-3">{{ t('web.pay_method', lang) }}</h2>
+      <div class="space-y-3">
+        <label class="flex items-start gap-3 p-3 rounded-xl border {% if idr_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
+          <input type="radio" name="method" value="qris" class="mt-1" {% if not idr_enabled %}disabled{% else %}checked{% endif %}>
+          <img src="/static/pay/qris.png" alt="QRIS" class="h-7 w-auto max-w-[80px] object-contain shrink-0 mt-0.5">
+          <span>
+            <span class="font-semibold text-sm block">{{ t('web.pay_idr_title', lang) }}</span>
+            <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_idr_sub', lang) }}</span>
+            {% if not idr_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_idr_disabled', lang) }}</span>{% endif %}
+          </span>
+        </label>
+        <label class="flex items-start gap-3 p-3 rounded-xl border {% if binance_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
+          <input type="radio" name="method" value="binance" class="mt-1" {% if not binance_enabled %}disabled{% elif not idr_enabled %}checked{% endif %}>
+          <img src="/static/pay/binance.png" alt="Binance" class="h-7 w-7 object-contain shrink-0 mt-0.5">
+          <span>
+            <span class="font-semibold text-sm block">{{ t('web.pay_usdt_title', lang) }}</span>
+            <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_usdt_sub', lang) }}</span>
+            {% if not binance_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_usdt_disabled', lang) }}</span>{% endif %}
+          </span>
+        </label>
+        <label class="flex items-start gap-3 p-3 rounded-xl border {% if bybit_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
+          <input type="radio" name="method" value="bybit" class="mt-1" {% if not bybit_enabled %}disabled{% elif not idr_enabled and not binance_enabled %}checked{% endif %}>
+          <img src="/static/pay/bybit.png" alt="Bybit" class="h-7 w-7 rounded object-contain shrink-0 mt-0.5">
+          <span>
+            <span class="font-semibold text-sm block">{{ t('web.pay_bybit_title', lang) }}</span>
+            <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_bybit_sub', lang) }}</span>
+            {% if not bybit_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_bybit_disabled', lang) }}</span>{% endif %}
+          </span>
+        </label>
+      </div>
+    </div>
+
+    {# Voucher #}
+    <div class="card card-pad">
+      <label class="field-label" for="voucher_code">{{ t('web.voucher_label', lang) }}</label>
+      <div class="flex gap-2">
+        <input id="voucher_code" name="voucher_code" value="{{ voucher_code }}" class="field uppercase"
+               placeholder="{{ t('web.voucher_placeholder', lang) }}" maxlength="32">
+        <button type="submit" class="btn btn-soft shrink-0">{{ t('web.voucher_apply', lang) }}</button>
+      </div>
+    </div>
+  </div>
+
+  {# Totals #}
+  <div class="card card-pad">
+    <h2 class="section-title mb-3">{{ t('web.summary', lang) }}</h2>
+    <div class="text-sm divide-y divide-line">
+      <div class="flex justify-between py-2">
+        <span class="text-ink-soft">{{ t('web.subtotal', lang) }}</span>
+        <span>{{ subtotal | idr }}</span>
+      </div>
+      {% if bulk_discount != "0" %}
+      <div class="flex justify-between py-2 text-grass-dark">
+        <span>{{ t('web.bulk_discount', lang) }}</span>
+        <span>−{{ bulk_discount | idr }}</span>
+      </div>
+      {% endif %}
+      {% if voucher_discount != "0" %}
+      <div class="flex justify-between py-2 text-grass-dark">
+        <span>{{ t('web.voucher_discount', lang) }}</span>
+        <span>−{{ voucher_discount | idr }}</span>
+      </div>
+      {% endif %}
+      <div class="flex justify-between py-3 items-baseline">
+        <span class="font-semibold">{{ t('web.order_total', lang) }}</span>
+        {{ shop.price(total, fx, "text-lg") }}
+      </div>
+    </div>
+    {% if fx %}
+    <p class="text-xs text-ink-faint">{{ t('web.usdt_note', lang) }}</p>
+    {% endif %}
+    <button type="submit" class="btn btn-primary w-full mt-4">
+      {{ t('web.place_order', lang) }} <i data-lucide="chevron-right" class="w-4 h-4"></i>
+    </button>
+    <a href="/cart" class="btn btn-ghost w-full mt-2">{{ t('web.back_to_cart', lang) }}</a>
+  </div>
+</form>
+{% endblock %}

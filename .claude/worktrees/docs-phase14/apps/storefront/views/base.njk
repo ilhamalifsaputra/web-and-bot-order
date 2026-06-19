@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ shop_name }}{% endblock %}</title>
+  {% block meta %}{% endblock %}
+  <link rel="icon" href="{{ favicon_url }}">
+
+  {# Design tokens + component classes come from the SHARED theme partial
+     (packages/web-ui/views/_theme.njk) — identical to web-admin. #}
+  {% include "_theme.njk" %}
+</head>
+<body class="min-h-screen"
+      {% if customer %}hx-headers='{"x-csrf-token": "{{ customer.csrf }}"}'{% endif %}>
+
+{% block nav %}
+{# Shop header (design.md §4.1): brand · search · account · cart. Sticky like
+   the admin nav, but customer-facing and jargon-free. #}
+<nav class="sticky top-0 z-30 bg-card/85 backdrop-blur border-b border-line">
+  <div class="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3 sm:gap-4">
+    <a href="/" class="flex items-center gap-2 font-display text-lg font-semibold text-pine whitespace-nowrap">
+      {% if logo_url %}
+      <img src="{{ logo_url }}" alt="{{ shop_name }}" class="h-7 w-auto max-w-[10rem] object-contain">
+      {% else %}
+      <i data-lucide="store" class="w-5 h-5"></i>
+      {% endif %}
+      <span class="hidden xs:inline sm:inline">{{ shop_name }}</span>
+    </a>
+
+    <form method="get" action="/search" class="flex-1 max-w-xl mx-auto hidden sm:block">
+      <div class="relative">
+        <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint"></i>
+        <input type="search" name="q" value="{{ q }}" placeholder="{{ t('web.search_placeholder', lang) }}"
+               class="field !pl-9" aria-label="{{ t('web.search_placeholder', lang) }}">
+      </div>
+    </form>
+
+    <div class="flex items-center gap-1 sm:gap-2 text-sm whitespace-nowrap ml-auto">
+      {# Language toggle — the only switcher in the header (no currency picker:
+         every buyer sees IDR + USDT side by side, design.md §8b). #}
+      {% set other_lang = 'en' if lang == 'id' else 'id' %}
+      <a href="/lang?to={{ other_lang }}&back={{ path | default('/') | urlencode }}"
+         class="btn btn-ghost btn-sm uppercase" aria-label="{{ t('web.lang_label', lang) }}">
+        <i data-lucide="globe" class="w-4 h-4"></i> {{ other_lang }}
+      </a>
+
+      {% if customer %}
+      <a href="/account" class="btn btn-ghost btn-sm {% if active_nav == '/account' %}text-pine{% endif %}">
+        <i data-lucide="user" class="w-4 h-4"></i>
+        <span class="hidden sm:inline">{{ t('web.nav_account', lang) }}</span>
+      </a>
+      {% else %}
+      <a href="/login" class="btn btn-ghost btn-sm">
+        <i data-lucide="log-in" class="w-4 h-4"></i>
+        <span class="hidden sm:inline">{{ t('web.nav_login', lang) }}</span>
+      </a>
+      {% endif %}
+
+      <a href="/cart" class="btn btn-soft btn-sm relative" aria-label="{{ t('web.nav_cart', lang) }}">
+        <i data-lucide="shopping-cart" class="w-4 h-4"></i>
+        <span class="hidden sm:inline">{{ t('web.nav_cart', lang) }}</span>
+        {% if cart_count and cart_count > 0 %}
+        <span class="chip bg-pine text-white !px-1.5 !py-0 text-[0.65rem] absolute -top-1.5 -right-1.5">{{ cart_count }}</span>
+        {% endif %}
+      </a>
+    </div>
+  </div>
+
+  {# Mobile search — second row below the brand bar. #}
+  <div class="sm:hidden border-t border-line px-4 py-2">
+    <form method="get" action="/search">
+      <div class="relative">
+        <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint"></i>
+        <input type="search" name="q" value="{{ q }}" placeholder="{{ t('web.search_placeholder', lang) }}"
+               class="field !pl-9" aria-label="{{ t('web.search_placeholder', lang) }}">
+      </div>
+    </form>
+  </div>
+</nav>
+{% endblock %}
+
+<main class="max-w-6xl mx-auto px-4 py-8 sm:py-10">
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="border-t border-line mt-12">
+  <div class="max-w-6xl mx-auto px-4 py-8 text-sm text-ink-soft flex flex-col sm:flex-row items-center justify-between gap-3">
+    <div class="flex items-center gap-2 font-display font-semibold text-ink">
+      <i data-lucide="store" class="w-4 h-4 text-pine"></i> {{ shop_name }}
+    </div>
+    <div class="text-ink-faint text-xs">{{ t('web.footer_note', lang) }}</div>
+  </div>
+</footer>
+
+<script>
+  // Render Lucide icons on load, and again after HTMX swaps content.
+  function renderIcons() { if (window.lucide) window.lucide.createIcons(); }
+  renderIcons();
+  document.addEventListener('htmx:afterSettle', renderIcons);
+</script>
+
+<script>
+  // M-1 (execution/04): guard checkout/pay forms against double-submit. Pure
+  // progressive enhancement — with JS off the form posts normally. The first
+  // submit goes through; we then disable the clicked button and show a spinner,
+  // and block any further submit of the same form until the page navigates.
+  document.addEventListener('submit', function (e) {
+    var form = e.target;
+    if (!form || !form.matches || !form.matches('form[data-submit-once]')) return;
+    if (form.dataset.submitting === '1') { e.preventDefault(); return; }
+    form.dataset.submitting = '1';
+    var btn = e.submitter;
+    if (!btn) return;
+    // Defer so the submitter's name/value is still included in the POST body.
+    setTimeout(function () {
+      btn.disabled = true;
+      btn.setAttribute('aria-busy', 'true');
+      btn.classList.add('opacity-70', 'cursor-wait');
+      var spin = document.createElement('span');
+      spin.setAttribute('aria-hidden', 'true');
+      spin.className = 'inline-block w-3.5 h-3.5 mr-1.5 align-[-2px] rounded-full border-2 border-current border-r-transparent animate-spin';
+      btn.prepend(spin);
+    }, 0);
+  });
+</script>
+
+</body>
+</html>

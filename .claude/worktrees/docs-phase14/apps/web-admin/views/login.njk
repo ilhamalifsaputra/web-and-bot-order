@@ -1,0 +1,44 @@
+{% extends "base.njk" %}
+{% block title %}Sign in · Shop Admin{% endblock %}
+{% block nav %}{% endblock %}
+
+{% block content %}
+<div class="min-h-[70vh] flex items-center justify-center">
+  <div class="w-full max-w-sm">
+    <div class="text-center mb-8">
+      <span class="inline-flex items-center gap-2 font-display text-2xl font-semibold text-pine">
+        <i data-lucide="store" class="w-6 h-6"></i>
+        Shop Admin
+      </span>
+      <p class="page-lead">Sign in to manage your shop</p>
+    </div>
+
+    <div class="card card-pad">
+      {% if error %}
+        <div class="mb-4 rounded-xl border border-rust/30 bg-rust-tint px-4 py-3 text-sm text-rust-dark">{{ error }}</div>
+      {% endif %}
+
+      <form method="post" action="/login" class="space-y-4">
+        <div>
+          <label class="field-label" for="telegram_id">Your Telegram ID</label>
+          <input id="telegram_id" name="telegram_id" type="number" required class="field">
+        </div>
+        <div>
+          <label class="field-label" for="password">Password</label>
+          <input id="password" name="password" type="password" required autocomplete="current-password" class="field">
+        </div>
+        <div>
+          <label class="field-label" for="totp_code">Security code <span class="text-ink-faint font-normal normal-case">— only if you turned it on</span></label>
+          <input id="totp_code" name="totp_code" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code"
+                 placeholder="6-digit code" class="field">
+        </div>
+        <button type="submit" class="btn btn-primary w-full"><i data-lucide="log-in" class="w-4 h-4"></i> Sign in</button>
+      </form>
+    </div>
+
+    <p class="mt-5 text-center text-sm">
+      <a href="/forgot" class="link">Forgot your password?</a>
+    </p>
+  </div>
+</div>
+{% endblock %}

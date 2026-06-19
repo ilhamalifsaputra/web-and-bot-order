@@ -22,6 +22,7 @@ export * from "./crud/broadcasts";
 export * from "./crud/pricing";
 export * from "./crud/tokopay";
 export * from "./crud/paydisini";
+export * from "./crud/nowpayments";
 export * from "./crud/credentials";
 export * from "./crud/webauth";
 export * from "./crud/admins";

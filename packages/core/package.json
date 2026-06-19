@@ -19,7 +19,8 @@
     "./mailer": "./src/mailer.ts",
     "./delivery": "./src/delivery.ts",
     "./payments/tokopay": "./src/payments/tokopay.ts",
-    "./payments/paydisini": "./src/payments/paydisini.ts"
+    "./payments/paydisini": "./src/payments/paydisini.ts",
+    "./payments/nowpayments": "./src/payments/nowpayments.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

@@ -40,6 +40,12 @@ coverage/
 /execution/
 /audit/
 
+# --- git worktrees (isolated workspaces for parallel feature work) ---
+/.worktrees/
+
+# --- subagent-driven-development scratch (task briefs, reports, progress ledger) ---
+/.superpowers/
+
 # --- OS / editor ---
 .DS_Store
 Thumbs.db

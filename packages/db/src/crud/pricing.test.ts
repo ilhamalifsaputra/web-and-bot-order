@@ -1,11 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { Decimal } from "@app/core/money";
+import { config } from "@app/core/config";
+import { PaymentMethod } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
+import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
+import { addToCart, createOrderFromCart } from "@app/db";
 import { getSetting, setSetting } from "./settings";
 import {
   refreshUsdIdrRate,
   setFxRateFetcher,
+  finalizeOrderPayment,
   USD_IDR_RATE_KEY,
   USD_IDR_RATE_AUTO_KEY,
   USD_IDR_RATE_ROUNDING_KEY,
@@ -60,5 +65,50 @@ describe("refreshUsdIdrRate (market rate + rounding — plan.md §15.8)", () => 
     });
     await expect(refreshUsdIdrRate(prisma, { force: true })).rejects.toThrow();
     expect(await getSetting(prisma, USD_IDR_RATE_KEY)).toBe("16000");
+  });
+});
+
+describe("finalizeOrderPayment — PaymentChoice widening (PAYDISINI/NOWPAYMENTS)", () => {
+  let sample: SampleData;
+  let orderId: number;
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+    await addToCart(prisma, sample.user.id, sample.product.id, 1);
+    const created = await createOrderFromCart(prisma, { user: sample.user });
+    orderId = created!.id;
+  });
+
+  it("regression: IDR with no method still stamps TOKOPAY (existing callers unaffected)", async () => {
+    const order = await finalizeOrderPayment(prisma, orderId, { currency: "IDR" });
+    expect(order!.paymentMethod).toBe(PaymentMethod.TOKOPAY);
+    expect(new Decimal(order!.uniqueCents).equals(0)).toBe(true);
+  });
+
+  it("IDR + method: PAYDISINI stamps PAYDISINI with unique cents stripped", async () => {
+    const order = await finalizeOrderPayment(prisma, orderId, {
+      currency: "IDR",
+      method: PaymentMethod.PAYDISINI,
+    });
+    expect(order!.paymentMethod).toBe(PaymentMethod.PAYDISINI);
+    expect(new Decimal(order!.uniqueCents).equals(0)).toBe(true);
+  });
+
+  it("USDT + method: NOWPAYMENTS stamps NOWPAYMENTS, sets the NOWPayments window, no paymentRef", async () => {
+    const before = Date.now();
+    const order = await finalizeOrderPayment(prisma, orderId, {
+      currency: "USDT",
+      rate: "16000",
+      method: PaymentMethod.NOWPAYMENTS,
+    });
+    expect(order!.paymentMethod).toBe(PaymentMethod.NOWPAYMENTS);
+    expect(order!.paymentRef).toBeNull();
+    expect(order!.expiresAt).not.toBeNull();
+    const expectedMs =
+      before + config.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES * 60_000;
+    const actualMs = order!.expiresAt!.getTime();
+    // Allow a small skew for test execution time between `before` and the call.
+    expect(Math.abs(actualMs - expectedMs)).toBeLessThan(5_000);
   });
 });

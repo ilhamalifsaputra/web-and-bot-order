@@ -83,6 +83,14 @@ export const PaymentMethod = {
   BYBIT: "BYBIT",
   /** Rupiah gateway (QRIS/VA/e-wallet) — confirmed by webhook callback (plan.md §15.5). */
   TOKOPAY: "TOKOPAY",
+  /** Indonesian QRIS/e-wallet aggregator (one admin-configured default channel,
+   *  e.g. QRIS) — confirmed by webhook callback + reconcile poller, same shape
+   *  as TOKOPAY. */
+  PAYDISINI: "PAYDISINI",
+  /** USDT crypto via NOWPayments hosted invoice (one admin-configured rail,
+   *  e.g. USDT-TRC20) — confirmed by IPN webhook + reconcile poller, same shape
+   *  as the other auto-confirm methods. */
+  NOWPAYMENTS: "NOWPAYMENTS",
 } as const;
 export type PaymentMethod = (typeof PaymentMethod)[keyof typeof PaymentMethod];
 export const zPaymentMethod = z.nativeEnum(PaymentMethod);

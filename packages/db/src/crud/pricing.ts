@@ -90,21 +90,27 @@ export async function getUsdIdrRate(db: Db): Promise<Decimal | null> {
 }
 
 export type PaymentChoice =
-  /** Pay in Rupiah via TokoPay — charged the exact central price. */
-  | { currency: typeof OrderCurrency.IDR }
+  | {
+      currency: typeof OrderCurrency.IDR;
+      /** TOKOPAY (default jika tidak diisi — caller existing TIDAK pass ini,
+       *  jadi perilaku TokoPay byte-identik) atau PAYDISINI. */
+      method?: typeof PaymentMethod.TOKOPAY | typeof PaymentMethod.PAYDISINI;
+    }
   /** Pay in USDT via Binance — charged the derived, rounded USDT total. */
   | {
       currency: typeof OrderCurrency.USDT;
       rate: Decimal.Value;
       /**
        * BINANCE_INTERNAL (auto-confirm via note, default), BYBIT (auto-confirm
-       * via on-chain BSC deposit, matched by unique amount), or BINANCE_PAY
-       * (manual proof, bot only).
+       * via on-chain BSC deposit, matched by unique amount), BINANCE_PAY
+       * (manual proof, bot only), or NOWPAYMENTS (auto-confirm via hosted
+       * invoice IPN webhook).
        */
       method?:
         | typeof PaymentMethod.BINANCE_INTERNAL
         | typeof PaymentMethod.BYBIT
-        | typeof PaymentMethod.BINANCE_PAY;
+        | typeof PaymentMethod.BINANCE_PAY
+        | typeof PaymentMethod.NOWPAYMENTS;
     };
 
 /**
@@ -135,7 +141,7 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
       data: {
         currency: OrderCurrency.IDR,
         fxRate: null,
-        paymentMethod: PaymentMethod.TOKOPAY,
+        paymentMethod: choice.method ?? PaymentMethod.TOKOPAY,
         uniqueCents: new Decimal(0),
         totalAmount: quantizeMoney(baseIdr, 0),
       },
@@ -166,6 +172,11 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
     expiresAt = addMinutes(new Date(), config.INTERNAL_PAYMENT_WINDOW_MINUTES);
   } else if (method === PaymentMethod.BYBIT) {
     expiresAt = addMinutes(new Date(), config.BYBIT_PAYMENT_WINDOW_MINUTES);
+  } else if (method === PaymentMethod.NOWPAYMENTS) {
+    expiresAt = addMinutes(new Date(), config.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES);
+    // tidak ada paymentRef di sini — NOWPayments invoice id dibuat & dicache di
+    // order.paymentRef oleh caller storefront/bot setelah finalizeOrderPayment,
+    // sama seperti TokoPay/PayDisini melakukannya untuk paymentRef JSON cache.
   }
 
   await db.order.update({

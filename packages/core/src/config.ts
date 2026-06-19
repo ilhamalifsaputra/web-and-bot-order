@@ -107,6 +107,12 @@ export const Env = z.object({
   // Optional USDT→IDR rate; if set, instructions show an IDR equivalent.
   USDT_IDR_RATE: z.coerce.number().optional(),
 
+  // ---- NOWPayments USDT hosted invoice (auto-confirmed by IPN webhook) ----
+  // Hosted-invoice crypto needs a looser window than on-chain matching: the
+  // buyer has to leave Telegram/the browser, open their wallet app, then come
+  // back, before even broadcasting the transfer.
+  NOWPAYMENTS_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(30),
+
   // ---- Database ----
   DATABASE_URL_PRISMA: z.string().default("file:../data/bot.db"),
 

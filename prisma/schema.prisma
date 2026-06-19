@@ -529,3 +529,33 @@ model ProcessedTokopayTx {
   @@index([orderId], map: "ix_processed_tokopay_tx_order_id")
   @@map("processed_tokopay_tx")
 }
+
+/// Idempotency ledger for PayDisini (QRIS/e-wallet, IDR) webhook callbacks —
+/// same insert-first-on-unique pattern as ProcessedTokopayTx.
+model ProcessedPaydisiniTx {
+  id        Int      @id @default(autoincrement())
+  trxId     String   @unique(map: "ix_processed_paydisini_tx_trxid") @map("trx_id")
+  orderId   Int?     @map("order_id")
+  amount    Decimal?
+  // matched | unmatched | delivery_failed | stale
+  outcome   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([orderId], map: "ix_processed_paydisini_tx_order_id")
+  @@map("processed_paydisini_tx")
+}
+
+/// Idempotency ledger for NOWPayments (USDT crypto invoice) IPN callbacks —
+/// same insert-first-on-unique pattern. trxId stores NOWPayments' payment_id.
+model ProcessedNowpaymentsTx {
+  id        Int      @id @default(autoincrement())
+  trxId     String   @unique(map: "ix_processed_nowpayments_tx_trxid") @map("trx_id")
+  orderId   Int?     @map("order_id")
+  amount    Decimal?
+  // matched | unmatched | delivery_failed | stale
+  outcome   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([orderId], map: "ix_processed_nowpayments_tx_order_id")
+  @@map("processed_nowpayments_tx")
+}

@@ -9,7 +9,8 @@
     "./payments/binanceInternal": "./src/payments/binanceInternal.ts",
     "./payments/bybitDeposit": "./src/payments/bybitDeposit.ts",
     "./payments/tokopayReconcile": "./src/payments/tokopayReconcile.ts",
-    "./payments/paydisiniReconcile": "./src/payments/paydisiniReconcile.ts"
+    "./payments/paydisiniReconcile": "./src/payments/paydisiniReconcile.ts",
+    "./payments/nowpaymentsReconcile": "./src/payments/nowpaymentsReconcile.ts"
   },
   "scripts": {
     "dev": "tsx watch src/main.ts",

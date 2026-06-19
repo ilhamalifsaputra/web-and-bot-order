@@ -29,6 +29,7 @@ import { startPolling, stopPolling } from "@app/order-bot/payments/binanceIntern
 import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "@app/order-bot/payments/bybitDeposit";
 import { startPolling as startTokopayPolling, stopPolling as stopTokopayPolling } from "@app/order-bot/payments/tokopayReconcile";
 import { startPolling as startPaydisiniPolling, stopPolling as stopPaydisiniPolling } from "@app/order-bot/payments/paydisiniReconcile";
+import { startPolling as startNowpaymentsPolling, stopPolling as stopNowpaymentsPolling } from "@app/order-bot/payments/nowpaymentsReconcile";
 import { buildApp } from "@app/web-admin/server";
 import { buildApp as buildShopApp } from "@app/storefront/server";
 import { runDispatcher } from "@app/notifier/dispatcher";
@@ -196,6 +197,7 @@ export async function start(): Promise<void> {
     startBybitPolling(bot.api); // Bybit USDT-BSC deposits
     startTokopayPolling(bot.api); // TokoPay / QRIS reconcile (webhook safety net)
     startPaydisiniPolling(bot.api); // PayDisini / QRIS reconcile (webhook safety net)
+    startNowpaymentsPolling(bot.api); // NOWPayments / USDT invoice reconcile (webhook safety net)
   }
   // Market-rate auto-update needs no bot — runs even on a web-only boot.
   jobs = [...jobs, scheduleFxRefresh()];
@@ -274,6 +276,7 @@ export async function start(): Promise<void> {
       stopBybitPolling();
       stopTokopayPolling();
       stopPaydisiniPolling();
+      stopNowpaymentsPolling();
       notifierAbort.abort();
       await notifierDone; // let the drain loop unwind
       if (runner?.isRunning()) await runner.stop();

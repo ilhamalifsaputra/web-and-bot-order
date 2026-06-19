@@ -439,6 +439,12 @@ describe("orders", () => {
 // ---- catalog (acceptance #5) ----------------------------------------------
 
 describe("catalog", () => {
+  it("product list renders a Delete action per product", async () => {
+    const res = await get("/catalog", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(`/catalog/product/${seed.catalogProductId}/delete`);
+  });
+
   it("create category happy + audit", async () => {
     const res = await post("/catalog/category", seed.cookie, { csrf_token: seed.csrf, name: "VPNs", emoji: "🔒", sort_order: "1" });
     expect(res.statusCode).toBe(303);
@@ -827,6 +833,8 @@ describe("product detail page", () => {
     expect(res.body).toContain(`/catalog/product/${seed.catalogProductId}`);
     // The seeded denomination is listed with its price.
     expect(res.body).toContain("Rp5");
+    // Danger zone: a Delete-product action exists in the General tab.
+    expect(res.body).toContain(`/catalog/product/${seed.catalogProductId}/delete`);
   });
 
   it("redirects anon to /login", async () => {
@@ -998,6 +1006,25 @@ describe("stock", () => {
 // ---- users (acceptance #5) ------------------------------------------------
 
 describe("users", () => {
+  it("GET /users with no query shows the recent-customers list, not an empty prompt", async () => {
+    const res = await get("/users", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("cust"); // seeded customer's username
+    expect(res.body).not.toContain("Type something above");
+  });
+
+  it("GET /users?q= finds a customer by username substring", async () => {
+    const res = await get("/users?q=cust", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("cust");
+  });
+
+  it("GET /users?q= with no match shows the search-specific empty state", async () => {
+    const res = await get("/users?q=no-such-customer-xyz", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("No customers match");
+  });
+
   it("wallet adjust happy (+ audit row — L-9)", async () => {
     const before = (await getUser(prisma, seed.customerId))!.walletBalance;
     const res = await post(`/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "5.00", note: "goodwill" });
@@ -1074,6 +1101,34 @@ describe("vouchers", () => {
     const res = await post("/vouchers", seed.cookie, { csrf_token: "bad", code: "HAX2", type: "percent", value: "99" });
     expect(res.statusCode).toBe(403);
   });
+
+  it("delete voucher succeeds when never used, refuses once used", async () => {
+    await post("/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "del1", type: "percent", value: "5" });
+    const v = (await getVoucherByCode(prisma, "DEL1"))!;
+
+    await prisma.voucher.update({ where: { id: v.id }, data: { usedCount: 1 } });
+    const blocked = await post(`/vouchers/${v.id}/delete`, seed.cookie, { csrf_token: seed.csrf });
+    expect(blocked.statusCode).toBe(303);
+    expect(blocked.headers.location).toContain("kind=error");
+    expect(await prisma.voucher.findUnique({ where: { id: v.id } })).not.toBeNull();
+
+    await prisma.voucher.update({ where: { id: v.id }, data: { usedCount: 0 } });
+    const ok = await post(`/vouchers/${v.id}/delete`, seed.cookie, { csrf_token: seed.csrf });
+    expect(ok.statusCode).toBe(303);
+    expect(ok.headers.location).toContain("kind=success");
+    expect(await prisma.voucher.findUnique({ where: { id: v.id } })).toBeNull();
+  });
+
+  it("delete voucher requires auth", async () => {
+    const res = await post("/vouchers/99999/delete", null, { csrf_token: "x" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("delete voucher rejects bad CSRF", async () => {
+    const res = await post("/vouchers/99999/delete", seed.cookie, { csrf_token: "bad" });
+    expect(res.statusCode).toBe(403);
+  });
 });
 
 // ---- support (acceptance #5) ----------------------------------------------
@@ -1083,6 +1138,13 @@ describe("support", () => {
     const t = await createTicket(prisma, seed.customerId, "help me");
     return t.id;
   }
+
+  it("ticket detail page renders (Close ticket data-confirm button)", async () => {
+    const tid = await makeTicket();
+    const res = await get(`/support/${tid}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("data-confirm");
+  });
 
   it("reply records a message (never sent to Telegram)", async () => {
     const tid = await makeTicket();
@@ -2032,6 +2094,12 @@ describe("manage DB admins", () => {
 // ---- broadcast composer (Tier 3 §12) — web ENQUEUES, never sends ----------
 
 describe("broadcast", () => {
+  it("renders the composer page (Send announcement data-confirm button)", async () => {
+    const res = await get("/broadcast", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("data-confirm");
+  });
+
   it("enqueues a PENDING broadcast + audit, and sends nothing itself", async () => {
     const res = await post("/broadcast", seed.cookie, { csrf_token: seed.csrf, message: "New stock!", segment: "ALL" });
     expect(res.statusCode).toBe(303);

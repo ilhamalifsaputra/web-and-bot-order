@@ -26,7 +26,7 @@
           <label class="field-label">Send later (optional)</label>
           <input type="datetime-local" name="scheduled_at" class="field">
         </div>
-        <button class="btn btn-primary" onclick="return confirm('Send this announcement?');"><i data-lucide="send" class="w-4 h-4"></i> Send announcement</button>
+        <button class="btn btn-primary" data-confirm="Send this announcement?"><i data-lucide="send" class="w-4 h-4"></i> Send announcement</button>
       </div>
     </form>
   </section>
@@ -67,7 +67,7 @@
         <td class="text-ink-soft">{% if b.scheduledAt %}{{ b.scheduledAt | localdt }}{% else %}{{ b.createdAt | localdt }}{% endif %}</td>
         <td>
           {% if b.status == 'PENDING' %}
-          <form method="post" action="/broadcast/{{ b.id }}/cancel" onsubmit="return confirm('Cancel announcement #{{ b.id }}?');">
+          <form method="post" action="/broadcast/{{ b.id }}/cancel" data-confirm="Cancel announcement #{{ b.id }}?">
             {{ ui.csrf_field(admin) }}
             <button class="btn btn-danger btn-sm">Cancel</button>
           </form>

@@ -63,17 +63,17 @@
               <form method="post" action="/payments/order/{{ o.id }}/deliver">
                 {{ ui.csrf_field(admin) }}
                 <button class="btn btn-primary btn-sm"
-                        onclick="return confirm('Send {{ o.orderCode }} to the customer even though they paid less?')">Deliver anyway</button>
+                        data-confirm="Send {{ o.orderCode }} to the customer even though they paid less?">Deliver anyway</button>
               </form>
               <form method="post" action="/payments/order/{{ o.id }}/refund">
                 {{ ui.csrf_field(admin) }}
                 <button class="btn btn-soft btn-sm"
-                        onclick="return confirm('Put the amount they paid back into {{ o.orderCode }}\'s wallet and mark it refunded?')">Refund to wallet</button>
+                        data-confirm="Put the amount they paid back into {{ o.orderCode }}'s wallet and mark it refunded?">Refund to wallet</button>
               </form>
               <form method="post" action="/payments/order/{{ o.id }}/cancel">
                 {{ ui.csrf_field(admin) }}
                 <button class="btn btn-danger btn-sm"
-                        onclick="return confirm('Cancel {{ o.orderCode }} (no refund)?')">Cancel</button>
+                        data-confirm="Cancel {{ o.orderCode }} (no refund)?">Cancel</button>
               </form>
             </div>
           </td>
@@ -114,7 +114,7 @@
   <h2 class="section-title mb-1">Add to a buyer's credit balance</h2>
   <p class="text-xs text-ink-soft mb-4">If a payment came in for an order you can no longer fulfil (it expired or the stock is gone), add it to that buyer's credit balance instead. The amount lands in the order's currency for them to spend on a future purchase — the order is then closed.</p>
   <form method="post" action="/payments/credit" class="flex flex-wrap gap-3 items-end"
-        onsubmit="return confirm('Add this payment to the buyer\'s credit balance and close the order?')">
+        data-confirm="Add this payment to the buyer's credit balance and close the order?">
     {{ ui.csrf_field(admin) }}
     <div>
       <label class="field-label">Payment reference</label>
@@ -177,7 +177,7 @@
               {{ ui.csrf_field(admin) }}
               <input type="hidden" name="binance_tx_id" value="{{ r.binanceTxId }}">
               <button class="btn btn-ghost btn-sm"
-                      onclick="return confirm('Dismiss this payment? Use this only when it belongs to no order (e.g. a test deposit). It will be marked “dismissed” and kept in the history.')">Dismiss</button>
+                      data-confirm="Dismiss this payment? Use this only when it belongs to no order (e.g. a test deposit). It will be marked “dismissed” and kept in the history.">Dismiss</button>
             </form>
           </div>
           {% else %}<span class="text-ink-faint">—</span>{% endif %}

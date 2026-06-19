@@ -48,7 +48,7 @@
         <td>
           {% if a.isSelf %}<span class="text-ink-faint text-xs">—</span>
           {% elif a.from_env %}
-          <form method="post" action="/admins/{{ a.telegramId }}/logout" onsubmit="return confirm('Sign out {{ a.telegramId }} from all devices?');">
+          <form method="post" action="/admins/{{ a.telegramId }}/logout" data-confirm="Sign out {{ a.telegramId }} from all devices?">
             {{ ui.csrf_field(admin) }}
             <button class="btn btn-sm bg-amberx-tint text-amberx hover:bg-amberx/15">Sign out everywhere</button>
           </form>
@@ -58,10 +58,10 @@
         </td>
         <td>
           {% if not a.from_env and not a.isSelf %}
-          <form method="post" action="/admins/remove" onsubmit="return confirm('Remove {{ a.telegramId }} from the admin list?');">
+          <form method="post" action="/admins/remove" data-confirm="Remove {{ a.telegramId }} from the admin list?">
             {{ ui.csrf_field(admin) }}
             <input type="hidden" name="telegram_id" value="{{ a.telegramId }}">
-            <button class="btn btn-sm bg-red-50 text-red-600 hover:bg-red-100">Remove</button>
+            {{ ui.btn('Remove', variant='danger', cls='btn-sm') }}
           </form>
           {% endif %}
         </td>

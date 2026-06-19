@@ -42,4 +42,24 @@ describe("payment method menu", () => {
     expect(d.some((x) => x.startsWith("v1:pay:"))).toBe(true);
     expect(d.some((x) => x.startsWith("v1:usdt:"))).toBe(false);
   });
+
+  it("shows the PayDisini button only when paydisiniEnabled is true", () => {
+    const withPaydisini = data(orderConfirmKb(1, 1, "en", "", false, false, false, true));
+    expect(withPaydisini.some((x) => x.startsWith("v1:payd:"))).toBe(true);
+    // No fallback plain-confirm button once a payment rail is available.
+    expect(withPaydisini.some((x) => x.startsWith("v1:pay:"))).toBe(false);
+
+    const withoutPaydisini = data(orderConfirmKb(1, 1, "en", "", false, false, false, false));
+    expect(withoutPaydisini.some((x) => x.startsWith("v1:payd:"))).toBe(false);
+  });
+
+  it("lists QRIS before PayDisini before USDT when all rails are configured", () => {
+    const d = data(orderConfirmKb(1, 1, "en", "", true, true, true, true));
+    const qris = d.findIndex((x) => x.startsWith("v1:payq:"));
+    const paydisini = d.findIndex((x) => x.startsWith("v1:payd:"));
+    const usdt = d.findIndex((x) => x.startsWith("v1:usdt:"));
+    expect(qris).toBeGreaterThanOrEqual(0);
+    expect(paydisini).toBeGreaterThan(qris);
+    expect(usdt).toBeGreaterThan(paydisini);
+  });
 });

@@ -387,6 +387,7 @@ export function orderConfirmKb(
   internalEnabled = false,
   bybitEnabled = false,
   tokopayEnabled = false,
+  paydisiniEnabled = false,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   if (voucherCode) {
@@ -399,10 +400,12 @@ export function orderConfirmKb(
     ]);
   }
   const hasUsdt = internalEnabled || bybitEnabled;
-  if (tokopayEnabled || hasUsdt) {
-    // Top-level methods: QRIS first, then a single USDT entry that opens a
-    // submenu (Binance / Bybit). The legacy manual Binance Pay method is retired.
+  if (tokopayEnabled || paydisiniEnabled || hasUsdt) {
+    // Top-level methods: QRIS first, then PayDisini (second IDR rail), then a
+    // single USDT entry that opens a submenu (Binance / Bybit). The legacy
+    // manual Binance Pay method is retired.
     if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: cb("payq", productId, qty) }]);
+    if (paydisiniEnabled) rows.push([{ text: coreT("checkout.pay_paydisini_btn", lang), data: cb("payd", productId, qty) }]);
     if (hasUsdt) rows.push([{ text: coreT("checkout.pay_usdt_btn", lang), data: cb("usdt", productId, qty) }]);
   } else {
     // No payment method configured at all — fall back to a plain confirm.

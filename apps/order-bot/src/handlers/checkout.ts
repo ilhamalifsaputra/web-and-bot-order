@@ -40,8 +40,10 @@ import {
   cancelOrder,
   finalizeOrderPayment,
   getTokopayCreds,
+  getPaydisiniCreds,
 } from "@app/db";
 import { createTransaction } from "@app/core/payments/tokopay";
+import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
@@ -266,6 +268,7 @@ export async function showOrderConfirmation(
   const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
   const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
+  const paydisiniEnabled = (await getPaydisiniCreds(prisma)) != null;
   await smartEdit(
     ctx,
     t(ctx, "checkout.confirm_order", {
@@ -275,7 +278,7 @@ export async function showOrderConfirmation(
       voucher_line: r.voucherLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, binanceEnabled && rate !== null, bybitEnabled && rate !== null, tokopayEnabled),
+    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, binanceEnabled && rate !== null, bybitEnabled && rate !== null, tokopayEnabled, paydisiniEnabled),
   );
 }
 
@@ -292,6 +295,7 @@ export async function renderOrderConfirmation(
   const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
   const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
+  const paydisiniEnabled = (await getPaydisiniCreds(prisma)) != null;
   const msg = await ctx.api.sendMessage(
     ctx.chat!.id,
     t(ctx, "checkout.confirm_order", {
@@ -301,7 +305,7 @@ export async function renderOrderConfirmation(
       voucher_line: r.voucherLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, binanceEnabled && rate !== null, bybitEnabled && rate !== null, tokopayEnabled) },
+    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, binanceEnabled && rate !== null, bybitEnabled && rate !== null, tokopayEnabled, paydisiniEnabled) },
   );
   ctx.session.menuMsgId = msg.message_id;
 }
@@ -613,6 +617,110 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
       }
     } catch (err) {
       logger.error({ err }, "Failed to send QRIS photo");
+      // QR image failed — fall back to a text-only instructions bubble.
+      await smartEdit(ctx, caption, waitingKb);
+    }
+  } else {
+    await smartEdit(ctx, caption, waitingKb);
+  }
+  setActivePayment(chatId, order.id);
+}
+
+/**
+ * PayDisini (QRIS / e-wallet) — second IDR auto-confirm rail alongside TokoPay.
+ * Same shape as {@link buyNowTokopay}: create an IDR order, draw the QR inside
+ * Telegram, and let the storefront's PayDisini webhook (or the bot's reconcile
+ * poller, `payments/paydisiniReconcile.ts`) auto-confirm. No proof upload.
+ * ⚠ Needs the public callback URL configured (DOCS §15.5) or the order will
+ * stall then auto-cancel unless the reconcile poller catches it.
+ */
+export async function buyNowPaydisini(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+  const info = requireUser(ctx);
+  const lang = ctx.session.lang;
+  const chatId = ctx.chat!.id;
+
+  const creds = await getPaydisiniCreds(prisma);
+  if (!creds) {
+    await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
+    return;
+  }
+  const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+  delete ctx.session.scratch.appliedVoucherCode;
+
+  const user = await getUser(prisma, info.id);
+  if (user === null) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+  if ((await countUserPendingOrders(prisma, info.id)) >= MAX_PENDING_ORDERS) {
+    await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
+    return;
+  }
+
+  let order: Awaited<ReturnType<typeof createOrderDirect>>;
+  try {
+    order = await prisma.$transaction(async (tx) => {
+      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode });
+      if (!created) return created;
+      return finalizeOrderPayment(tx, created.id, { currency: OrderCurrency.IDR, method: PaymentMethod.PAYDISINI });
+    });
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      return;
+    }
+    throw e;
+  }
+  if (!order) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+
+  // Create (idempotent on ref_id) the gateway transaction + cache it.
+  let gateway;
+  try {
+    gateway = await createPaydisiniTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
+    // Tagged `gateway: "paydisini"` to match the cache shape the storefront's own
+    // cache-write sites produce (apps/storefront/src/routes/checkout.ts) — its
+    // parseCachedPaydisiniGateway() requires this discriminator before trusting the cache.
+    await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify({ gateway: "paydisini", ...gateway }) } });
+  } catch (err) {
+    logger.error({ err }, `PayDisini create failed for ${order.orderCode}`);
+    await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
+    return;
+  }
+
+  const expiry = order.expiresAt
+    ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
+    : `${config.PAYMENT_WINDOW_MINUTES}m`;
+  const caption = t(ctx, "checkout.paydisini_instructions", {
+    code: order.orderCode,
+    amount: formatIdr(order.totalAmount),
+    expiry,
+  });
+
+  // Unify the QR image and the payment instructions into ONE photo+caption
+  // bubble (image + caption + waiting keyboard), so the QR reads as part of the
+  // same screen instead of a detached photo below. A text confirm bubble can't
+  // morph into a photo via edit, so delete it and send the QR fresh, then track
+  // it as menuMsgId — smartEdit edits a photo bubble's caption in place, so the
+  // cancel/expiry transitions still land on this same bubble.
+  const confirmMsgId = ctx.callbackQuery?.message?.message_id ?? ctx.session.menuMsgId;
+  ctx.session.qrMsgId = undefined;
+  const waitingKb = ckb.qrisWaitingKb(order.id, lang);
+  if (gateway.qrUrl) {
+    try {
+      const qrMsg = await ctx.replyWithPhoto(gateway.qrUrl, {
+        caption,
+        parse_mode: "HTML",
+        reply_markup: waitingKb,
+      });
+      ctx.session.menuMsgId = qrMsg.message_id;
+      if (confirmMsgId && confirmMsgId !== qrMsg.message_id) {
+        try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
+      }
+    } catch (err) {
+      logger.error({ err }, "Failed to send PayDisini QR photo");
       // QR image failed — fall back to a text-only instructions bubble.
       await smartEdit(ctx, caption, waitingKb);
     }

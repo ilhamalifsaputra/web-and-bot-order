@@ -101,6 +101,7 @@
           <input name="reseller_price" value="{{ d.resellerPrice or '' }}" class="field text-xs" placeholder="Reseller price">
           <input name="warranty_days" type="number" value="{{ d.warrantyDays }}" class="field text-xs" placeholder="Warranty days">
           <input name="auto_delivery_source" value="{{ d.autoDeliverySource or '' }}" class="field text-xs" placeholder="Auto-delivery source">
+          <input name="sort_order" type="number" value="{{ d.sortOrder }}" class="field text-xs" placeholder="Sort order">
           <textarea name="description" rows="2" class="field text-xs" placeholder="Description">{{ d.description or '' }}</textarea>
           {% if d.isActive %}<input type="hidden" name="is_active" value="true">{% endif %}
           <button class="btn btn-soft btn-sm">Save</button>

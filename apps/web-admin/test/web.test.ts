@@ -14,8 +14,10 @@ import {
   createCategory,
   createProduct,
   getCatalogProduct,
+  getCatalogProductWithDenominations,
   getDenomination,
   createDenomination,
+  updateDenomination,
   bulkAddStock,
   getUser,
   getUserByTelegramId,
@@ -539,6 +541,18 @@ describe("catalog", () => {
     expect(await getCatalogProduct(prisma, seed.catalogProductId)).toBeNull();
   });
 
+  it("delete product on an unrelated failure does NOT flash the 'move or delete denominations' message", async () => {
+    // Deleting a non-existent product throws Prisma's "record to delete does
+    // not exist" (P2025) — a real Error, but NOT the crud's specific "product
+    // not empty: move or delete its denominations first" message. The route
+    // must not mislabel this as the denominations-not-empty case; it should
+    // rethrow into the app's generic 500 error page instead.
+    const missingId = 999999;
+    const res = await post(`/catalog/product/${missingId}/delete`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(500);
+    expect(res.body).not.toContain("move or delete its denominations first");
+  });
+
   it("delete product requires auth", async () => {
     const res = await post(`/catalog/product/${seed.catalogProductId}/delete`, null, { csrf_token: "x" });
     expect(res.statusCode).toBe(303);
@@ -598,6 +612,91 @@ describe("denominations (leaf SKU, inside product detail)", () => {
     expect(Number(d!.price)).toBeCloseTo(7);
     const audit = await prisma.auditLog.findMany({ where: { action: "denomination_update" } });
     expect(audit.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("quick toggle (Hide/Show) only sends name/duration_label/price/is_active and must not null other columns", async () => {
+    // Give the denomination cost/reseller/auto-delivery/description first, the
+    // way the full edit dropdown would.
+    await updateDenomination(prisma, seed.productId, {
+      costPrice: new Decimal("3.00"),
+      resellerPrice: new Decimal("4.00"),
+      autoDeliverySource: "stock-pool-a",
+      description: "Shared profile",
+    });
+    // The quick Hide/Show toggle form (product_detail.njk) posts ONLY these 4
+    // fields — it must not be treated as "the rest are cleared".
+    const res = await post(`/catalog/denomination/${seed.productId}/update`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: "Renamed Denom",
+      duration_label: "1 Month",
+      price: "7.00",
+      is_active: "false",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    const d = await getDenomination(prisma, seed.productId);
+    expect(d!.isActive).toBe(false);
+    expect(d!.name).toBe("Renamed Denom");
+    // The columns absent from the toggle's body must survive untouched.
+    expect(Number(d!.costPrice)).toBeCloseTo(3);
+    expect(Number(d!.resellerPrice)).toBeCloseTo(4);
+    expect(d!.autoDeliverySource).toBe("stock-pool-a");
+    expect(d!.description).toBe("Shared profile");
+  });
+
+  it("full edit form CAN clear cost_price/reseller_price/auto_delivery_source/description by sending them empty", async () => {
+    await updateDenomination(prisma, seed.productId, {
+      costPrice: new Decimal("3.00"),
+      resellerPrice: new Decimal("4.00"),
+      autoDeliverySource: "stock-pool-a",
+      description: "Shared profile",
+    });
+    const res = await post(`/catalog/denomination/${seed.productId}/update`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: "Renamed Denom",
+      duration_label: "1 Month",
+      price: "7.00",
+      cost_price: "",
+      reseller_price: "",
+      auto_delivery_source: "",
+      description: "",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    const d = await getDenomination(prisma, seed.productId);
+    expect(d!.costPrice).toBeNull();
+    expect(d!.resellerPrice).toBeNull();
+    expect(d!.autoDeliverySource).toBeNull();
+    expect(d!.description).toBeNull();
+  });
+
+  it("update denomination accepts sort_order and the list re-orders by it", async () => {
+    const other = await createDenomination(prisma, {
+      productId: seed.catalogProductId,
+      name: "OtherDenom",
+      type: ProductType.SHARED,
+      durationLabel: "1 Month",
+      price: "9.00",
+      sortOrder: 0,
+    });
+    // seed.productId's denomination currently has sortOrder 0 (default) too;
+    // price-asc tiebreak would put it before `other` (price 9 > 5). Push it
+    // after `other` purely via sort_order.
+    const res = await post(`/catalog/denomination/${seed.productId}/update`, seed.cookie, {
+      csrf_token: seed.csrf,
+      name: "Renamed Denom",
+      duration_label: "1 Month",
+      price: "7.00",
+      sort_order: "10",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    const d = await getDenomination(prisma, seed.productId);
+    expect(d!.sortOrder).toBe(10);
+
+    const product = await getCatalogProductWithDenominations(prisma, seed.catalogProductId);
+    const ids = product!.denominations.map((x) => x.id);
+    expect(ids.indexOf(other.id)).toBeLessThan(ids.indexOf(seed.productId));
   });
 
   it("update denomination requires auth", async () => {

@@ -417,7 +417,16 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
     try {
       await deleteCatalogProduct(prisma, productId);
     } catch (err) {
-      if (err instanceof Error) {
+      // Only the crud's specific "not empty" guard gets the friendly flash —
+      // mirror how the re-parent path discriminates CategoryMismatchError
+      // rather than catching every Error. Anything else (e.g. a missing
+      // product, which Prisma reports as a PrismaClientKnownRequestError
+      // whose pretty-printed message embeds a source-code snippet — and that
+      // snippet can itself contain the substring "product not empty" from
+      // the line above the failing call — so match the EXACT message our own
+      // throw uses, not a substring) is a genuine unexpected failure and
+      // must not be mislabeled.
+      if (err instanceof Error && err.message === "product not empty: move or delete its denominations first") {
         return redirectWithFlash(reply, "/catalog", "Cannot delete: move or delete its denominations first.", "error");
       }
       throw err;
@@ -583,19 +592,25 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
     if (!durationLabel) {
       return redirectWithFlash(reply, back, "Duration is required.", "error");
     }
+    // Only the quick Hide/Show toggle (product_detail.njk) posts a body with
+    // just name/duration_label/price/is_active; the full edit dropdown posts
+    // every optional field every time (clearing one to empty means "set
+    // null"). So patch optional fields by PRESENCE in the body, not
+    // truthiness — an absent key must leave the existing column untouched,
+    // while a present-but-empty key must null it out.
     const fields: Record<string, unknown> = {
       name,
       durationLabel,
       price: priceDec,
-      costPrice: dec(body.cost_price),
-      resellerPrice: dec(body.reseller_price),
-      autoDeliverySource: (body.auto_delivery_source ?? "").trim() || null,
-      description: (body.description ?? "").trim() || null,
-      imageFileId: (body.image_file_id ?? "").trim() || null,
-      webImageUrl: (body.web_image_url ?? "").trim() || null,
-      sortOrder: Number(body.sort_order) || 0,
       isActive: truthy(body.is_active),
     };
+    if ("cost_price" in body) fields.costPrice = dec(body.cost_price);
+    if ("reseller_price" in body) fields.resellerPrice = dec(body.reseller_price);
+    if ("auto_delivery_source" in body) fields.autoDeliverySource = (body.auto_delivery_source ?? "").trim() || null;
+    if ("description" in body) fields.description = (body.description ?? "").trim() || null;
+    if ("image_file_id" in body) fields.imageFileId = (body.image_file_id ?? "").trim() || null;
+    if ("web_image_url" in body) fields.webImageUrl = (body.web_image_url ?? "").trim() || null;
+    if ("sort_order" in body) fields.sortOrder = Number(body.sort_order) || 0;
     if ((body.warranty_days ?? "").trim()) {
       const n = Number(body.warranty_days);
       if (!Number.isInteger(n)) {

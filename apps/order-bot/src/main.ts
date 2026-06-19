@@ -37,6 +37,7 @@ import { scheduleJobs, scheduleFxRefresh } from "./jobs";
 import { startPolling, stopPolling } from "./payments/binanceInternal";
 import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "./payments/bybitDeposit";
 import { startPolling as startTokopayPolling, stopPolling as stopTokopayPolling } from "./payments/tokopayReconcile";
+import { startPolling as startPaydisiniPolling, stopPolling as stopPaydisiniPolling } from "./payments/paydisiniReconcile";
 
 /**
  * Build a fully-wired bot. Pure construction — no network/DB side effects.
@@ -253,12 +254,14 @@ export async function start(): Promise<void> {
   startPolling(bot.api); // Binance Internal Transfer
   startBybitPolling(bot.api); // Bybit USDT-BSC deposits
   startTokopayPolling(bot.api); // TokoPay / QRIS reconcile (webhook safety net)
+  startPaydisiniPolling(bot.api); // PayDisini / QRIS reconcile (webhook safety net)
 
   const stop = async () => {
     logger.info("Shutting down…");
     stopPolling();
     stopBybitPolling();
     stopTokopayPolling();
+    stopPaydisiniPolling();
     if (runner.isRunning()) await runner.stop();
   };
   process.once("SIGINT", stop);

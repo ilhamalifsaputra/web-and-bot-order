@@ -62,4 +62,33 @@ describe("payment method menu", () => {
     expect(paydisini).toBeGreaterThan(qris);
     expect(usdt).toBeGreaterThan(paydisini);
   });
+
+  it("shows the top-level USDT button when NOWPayments is the only USDT rail enabled", () => {
+    // internalEnabled=false, bybitEnabled=false, tokopayEnabled=false,
+    // paydisiniEnabled=false, nowpaymentsEnabled=true — USDT must still show.
+    const d = data(orderConfirmKb(1, 1, "en", "", false, false, false, false, true));
+    expect(d.some((x) => x.startsWith("v1:usdt:"))).toBe(true);
+    // No fallback plain-confirm button once a payment rail is available.
+    expect(d.some((x) => x.startsWith("v1:pay:"))).toBe(false);
+
+    const withoutNowpayments = data(orderConfirmKb(1, 1, "en", "", false, false, false, false, false));
+    expect(withoutNowpayments.some((x) => x.startsWith("v1:usdt:"))).toBe(false);
+    expect(withoutNowpayments.some((x) => x.startsWith("v1:pay:"))).toBe(true);
+  });
+
+  it("USDT submenu lists NOWPayments only when nowpaymentsEnabled is true", () => {
+    const withNowpayments = data(usdtMethodsKb(1, 1, "en", false, false, true));
+    expect(withNowpayments.some((x) => x.startsWith("v1:payn:"))).toBe(true);
+    expect(withNowpayments.some((x) => x.startsWith("v1:buy:"))).toBe(true); // Back → confirmation
+
+    const withoutNowpayments = data(usdtMethodsKb(1, 1, "en", false, false, false));
+    expect(withoutNowpayments.some((x) => x.startsWith("v1:payn:"))).toBe(false);
+  });
+
+  it("USDT submenu lists Binance + Bybit + NOWPayments together when all three are enabled", () => {
+    const d = data(usdtMethodsKb(1, 1, "en", true, true, true));
+    expect(d.some((x) => x.startsWith("v1:payx:"))).toBe(true);
+    expect(d.some((x) => x.startsWith("v1:payb:"))).toBe(true);
+    expect(d.some((x) => x.startsWith("v1:payn:"))).toBe(true);
+  });
 });

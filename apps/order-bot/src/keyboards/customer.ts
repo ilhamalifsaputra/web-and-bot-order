@@ -388,6 +388,7 @@ export function orderConfirmKb(
   bybitEnabled = false,
   tokopayEnabled = false,
   paydisiniEnabled = false,
+  nowpaymentsEnabled = false,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   if (voucherCode) {
@@ -399,7 +400,7 @@ export function orderConfirmKb(
       { text: coreT("checkout.use_voucher", lang), data: cb("voucher", "start", productId, qty) },
     ]);
   }
-  const hasUsdt = internalEnabled || bybitEnabled;
+  const hasUsdt = internalEnabled || bybitEnabled || nowpaymentsEnabled;
   if (tokopayEnabled || paydisiniEnabled || hasUsdt) {
     // Top-level methods: QRIS first, then PayDisini (second IDR rail), then a
     // single USDT entry that opens a submenu (Binance / Bybit). The legacy
@@ -419,8 +420,9 @@ export function orderConfirmKb(
 
 /**
  * USDT payment submenu — reached from the "USDT" entry on the order confirmation.
- * Lists the configured auto-confirm USDT rails (Binance Transfer, Bybit/BSC) and
- * a Back action that returns to the confirmation screen.
+ * Lists the configured auto-confirm USDT rails (Binance Transfer, Bybit/BSC,
+ * NOWPayments hosted invoice) and a Back action that returns to the
+ * confirmation screen.
  */
 export function usdtMethodsKb(
   productId: number,
@@ -428,10 +430,12 @@ export function usdtMethodsKb(
   lang: string,
   internalEnabled = false,
   bybitEnabled = false,
+  nowpaymentsEnabled = false,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   if (internalEnabled) rows.push([{ text: coreT("checkout.pay_internal_btn", lang), data: cb("payx", productId, qty) }]);
   if (bybitEnabled) rows.push([{ text: coreT("checkout.pay_bybit_btn", lang), data: cb("payb", productId, qty) }]);
+  if (nowpaymentsEnabled) rows.push([{ text: coreT("checkout.pay_nowpayments_btn", lang), data: cb("payn", productId, qty) }]);
   rows.push([{ text: coreT("menu.back", lang), data: cb("buy", productId, qty) }]);
   return ik(rows);
 }

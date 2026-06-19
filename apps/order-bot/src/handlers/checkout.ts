@@ -11,7 +11,7 @@
  * keyed by order id, plus an `activePaymentByChat` map reproducing the
  * `payment_order_id` guard (only tick while the user is on that screen).
  */
-import { InputFile } from "grammy";
+import { InlineKeyboard, InputFile } from "grammy";
 import fs from "node:fs";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
@@ -41,9 +41,11 @@ import {
   finalizeOrderPayment,
   getTokopayCreds,
   getPaydisiniCreds,
+  getNowpaymentsCreds,
 } from "@app/db";
 import { createTransaction } from "@app/core/payments/tokopay";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
+import { createInvoice as createNowpaymentsInvoice } from "@app/core/payments/nowpayments";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
@@ -269,6 +271,7 @@ export async function showOrderConfirmation(
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
   const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
   const paydisiniEnabled = (await getPaydisiniCreds(prisma)) != null;
+  const nowpaymentsEnabled = (await getNowpaymentsCreds(prisma)) != null;
   await smartEdit(
     ctx,
     t(ctx, "checkout.confirm_order", {
@@ -278,7 +281,17 @@ export async function showOrderConfirmation(
       voucher_line: r.voucherLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, binanceEnabled && rate !== null, bybitEnabled && rate !== null, tokopayEnabled, paydisiniEnabled),
+    ckb.orderConfirmKb(
+      productId,
+      quantity,
+      lang,
+      r.voucherCode,
+      binanceEnabled && rate !== null,
+      bybitEnabled && rate !== null,
+      tokopayEnabled,
+      paydisiniEnabled,
+      nowpaymentsEnabled && rate !== null,
+    ),
   );
 }
 
@@ -296,6 +309,7 @@ export async function renderOrderConfirmation(
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
   const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
   const paydisiniEnabled = (await getPaydisiniCreds(prisma)) != null;
+  const nowpaymentsEnabled = (await getNowpaymentsCreds(prisma)) != null;
   const msg = await ctx.api.sendMessage(
     ctx.chat!.id,
     t(ctx, "checkout.confirm_order", {
@@ -305,7 +319,20 @@ export async function renderOrderConfirmation(
       voucher_line: r.voucherLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    { parse_mode: "HTML", reply_markup: ckb.orderConfirmKb(productId, quantity, lang, r.voucherCode, binanceEnabled && rate !== null, bybitEnabled && rate !== null, tokopayEnabled, paydisiniEnabled) },
+    {
+      parse_mode: "HTML",
+      reply_markup: ckb.orderConfirmKb(
+        productId,
+        quantity,
+        lang,
+        r.voucherCode,
+        binanceEnabled && rate !== null,
+        bybitEnabled && rate !== null,
+        tokopayEnabled,
+        paydisiniEnabled,
+        nowpaymentsEnabled && rate !== null,
+      ),
+    },
   );
   ctx.session.menuMsgId = msg.message_id;
 }
@@ -330,6 +357,7 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
   const rate = await currentUsdtRate();
   const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
+  const nowpaymentsEnabled = (await getNowpaymentsCreds(prisma)) != null;
   await smartEdit(
     ctx,
     t(ctx, "checkout.confirm_order", {
@@ -339,7 +367,14 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
       voucher_line: r.voucherLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    ckb.usdtMethodsKb(productId, quantity, lang, binanceEnabled && rate !== null, bybitEnabled && rate !== null),
+    ckb.usdtMethodsKb(
+      productId,
+      quantity,
+      lang,
+      binanceEnabled && rate !== null,
+      bybitEnabled && rate !== null,
+      nowpaymentsEnabled && rate !== null,
+    ),
   );
 }
 
@@ -522,6 +557,115 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   });
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang));
   // Anchor the instructions message so the poller can flip it to success.
+  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+}
+
+/** Public origin used for the NOWPayments IPN callback URL (storefront route). */
+const shopPublicUrl = (): string | null => config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null;
+
+/**
+ * NOWPayments (hosted USDT invoice) — third USDT-rail auto-confirm option
+ * alongside Binance Internal / Bybit. Same order-creation shape as
+ * {@link buyNowInternal}/{@link buyNowBybit} (USDT finalize), but the
+ * confirmation screen is a hosted invoice page rather than an address/QR: we
+ * render an `InlineKeyboard.url(...)` button that opens it, instead of
+ * `sendPhoto`. ⚠ Needs the public callback URL configured (DOCS §15.5) or
+ * the order will stall then auto-cancel unless the reconcile poller
+ * (`payments/nowpaymentsReconcile.ts`) catches it.
+ */
+export async function buyNowNowpayments(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+  const info = requireUser(ctx);
+  const lang = ctx.session.lang;
+
+  const creds = await getNowpaymentsCreds(prisma);
+  const rate = await currentUsdtRate();
+  const publicUrl = shopPublicUrl();
+  if (!creds || !rate || !publicUrl) {
+    await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
+    return;
+  }
+  const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+  delete ctx.session.scratch.appliedVoucherCode;
+
+  const user = await getUser(prisma, info.id);
+  if (user === null) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+  const pendingCount = await countUserPendingOrders(prisma, info.id);
+  if (pendingCount >= MAX_PENDING_ORDERS) {
+    await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
+    return;
+  }
+
+  let order: Awaited<ReturnType<typeof createOrderDirect>>;
+  try {
+    order = await prisma.$transaction(async (tx) => {
+      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode });
+      if (!created) return created;
+      return finalizeOrderPayment(tx, created.id, {
+        currency: OrderCurrency.USDT,
+        rate,
+        method: PaymentMethod.NOWPAYMENTS,
+      });
+    });
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      return;
+    }
+    throw e;
+  }
+  if (!order) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+
+  // Create the hosted invoice + cache it. order.totalAmount is ALREADY in USDT
+  // (finalizeOrderPayment's USDT branch) — pass it straight through as
+  // amountUsd, no second conversion.
+  let gateway;
+  try {
+    gateway = await createNowpaymentsInvoice(creds, {
+      orderId: order.orderCode,
+      amountUsd: order.totalAmount,
+      ipnCallbackUrl: `${publicUrl.replace(/\/+$/, "")}/pay/nowpayments/callback`,
+    });
+    // Tagged `gateway: "nowpayments"` to match the cache shape the storefront's
+    // own cache-write site produces (apps/storefront/src/routes/checkout.ts) —
+    // its parseCachedNowpaymentsGateway() AND the bot's reconcile poller's
+    // extractInvoiceId() (payments/nowpaymentsReconcile.ts) both require this
+    // discriminator before trusting the cache.
+    await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify({ gateway: "nowpayments", ...gateway }) } });
+  } catch (err) {
+    logger.error({ err }, `NOWPayments create failed for ${order.orderCode}`);
+    await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
+    return;
+  }
+
+  const expiry = order.expiresAt
+    ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
+    : `${config.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES}m`;
+  const text = t(ctx, "checkout.nowpayments_instructions", {
+    code: order.orderCode,
+    amount: price(order.totalAmount, 4),
+    expiry,
+  });
+
+  // No QR/address to render — a hosted invoice is a redirect-UX page, so the
+  // payment action is a URL button rather than sendPhoto (the QR/TokoPay/
+  // PayDisini pattern doesn't apply here).
+  const kb = new InlineKeyboard()
+    .url(t(ctx, "checkout.nowpayments_open_invoice"), gateway.invoiceUrl)
+    .row()
+    .text(t(ctx, "checkout.cancel_order"), ckb.cb("checkout", "cancel", order.id))
+    .row()
+    .text(t(ctx, "menu.main"), ckb.cb("menu", "main"));
+  await smartEdit(ctx, text, kb);
+  // Anchor the instructions message so the reconcile poller's admin alerts
+  // (and any future success-flip) target the right bubble — mirrors
+  // buyNowInternal/buyNowBybit (no setActivePayment/countdown ticking here;
+  // that's only for the manual Binance Pay screen).
   if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
 }
 

@@ -62,6 +62,7 @@
   "browse.buy_now": "🛒 Beli Sekarang",
   "browse.choose_denomination": "<b>{name}</b>\n\nPilih paket:",
   "browse.denomination_btn": "{duration} — {price}",
+  "browse.denomination_detail": "<b>{product}</b>\nPaket: <b>{plan}</b>\n\nHarga: <b>{price}</b>\nDurasi: {duration}\nTipe: {type}\nGaransi: {warranty} hari\nStok tersedia: <b>{stock}</b>\nRating: {rating}",
   "browse.invalid_number": "Masukkan angka antara 1 dan {max}.",
   "browse.list_decorated": "📦 <b>Daftar Produk</b>\n\n{items}\n\n📄 Halaman {page}/{total}\n💡 Masukkan nomor untuk lanjut.",
   "browse.nav_next": "Lanjut ▶️",

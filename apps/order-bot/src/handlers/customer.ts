@@ -19,11 +19,12 @@ import {
   upsertUser,
   botOverallStats,
   userTotalSpent,
-  listCatalogEntries,
-  getGroupWithActiveProducts,
-  getProduct,
+  listCatalogProducts,
+  getCatalogProductWithDenominations,
+  getDenomination,
+  getDenominationWithProduct,
   countAvailableStock,
-  getBulkPricingForProduct,
+  getBulkPricingForDenomination,
   countUserOrders,
   listUserOrders,
   getOrder,
@@ -33,7 +34,7 @@ import {
   productRating,
   getSetting,
   setSetting,
-  searchProducts,
+  searchCatalog,
   listUserTickets,
   getTicket,
   listTicketMessages,
@@ -54,10 +55,16 @@ const PAGE_SIZE = 10;
 const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimals);
 
 // --- session scratch accessors (mirror context.user_data keys) -------------
+// browseEntries snapshots the mid-tier Product ids on the current page (the new
+// flat catalog has no "group vs product" kind — every list row is a Product).
+// viewingDenomId tracks which Denomination's detail bubble is currently shown,
+// and viewingProductId the parent Product whose picker we came from (so Back on
+// the detail bubble returns to the picker, not all the way to the list).
 interface BrowseScratch {
   browsePage?: number;
-  browseEntries?: Array<{ kind: "group" | "product"; id: number }>;
+  browseEntries?: number[];
   viewingProductId?: number;
+  viewingDenomId?: number;
 }
 const sc = (ctx: MyContext) => ctx.session.scratch as BrowseScratch & Record<string, unknown>;
 
@@ -121,18 +128,25 @@ async function buildDashboardText(ctx: MyContext): Promise<string> {
 
 async function backToMainFromPersistent(ctx: MyContext): Promise<void> {
   delete sc(ctx).viewingProductId;
+  delete sc(ctx).viewingDenomId;
   ctx.session.awaitingQtyProductId = undefined;
   const text = await buildDashboardText(ctx);
   await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
 }
 
 async function handleBackButton(ctx: MyContext): Promise<void> {
-  const qtyPid = ctx.session.awaitingQtyProductId;
-  if (qtyPid != null) {
+  const qtyDenomId = ctx.session.awaitingQtyProductId;
+  if (qtyDenomId != null) {
     ctx.session.awaitingQtyProductId = undefined;
-    await browseProduct(ctx, qtyPid);
+    await browseDenomination(ctx, qtyDenomId);
     return;
   }
+  // Viewing a denomination detail → step back to its parent product's picker.
+  if (sc(ctx).viewingDenomId != null && sc(ctx).viewingProductId != null) {
+    await browseProduct(ctx, sc(ctx).viewingProductId!);
+    return;
+  }
+  // Viewing a picker (product but no denomination) → back to the product list.
   if (sc(ctx).viewingProductId != null) {
     await browseProductsFlat(ctx);
     return;
@@ -155,11 +169,12 @@ export async function startCommand(ctx: MyContext): Promise<void> {
     });
   }
 
-  // Deep-link: t.me/<bot>?start=prod_<id> → open product detail directly.
+  // Deep-link: t.me/<bot>?start=prod_<id> → open a denomination detail bubble
+  // directly (the id is a Denomination/SKU id, as used in share links).
   if (args.length && args[0]!.startsWith("prod_")) {
-    const productId = parseInt(args[0]!.slice(5), 10);
-    if (!isNaN(productId)) {
-      await browseProduct(ctx, productId);
+    const denomId = parseInt(args[0]!.slice(5), 10);
+    if (!isNaN(denomId)) {
+      await browseDenomination(ctx, denomId);
       return;
     }
   }
@@ -191,28 +206,26 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
 export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void> {
   const lang = ctx.session.lang;
 
-  const entries = await listCatalogEntries(prisma);
-  if (!entries.length) {
+  // Flat list of mid-tier Products (each with ≥1 active denomination). No
+  // category browsing and no group/product collapse — every row is a Product.
+  const products = await listCatalogProducts(prisma);
+  if (!products.length) {
     await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
     return;
   }
 
-  const totalPages = Math.max(1, Math.ceil(entries.length / PAGE_SIZE));
+  const totalPages = Math.max(1, Math.ceil(products.length / PAGE_SIZE));
   page = Math.max(0, Math.min(page, totalPages - 1));
   const start = page * PAGE_SIZE;
-  const pageEntries = entries.slice(start, start + PAGE_SIZE);
+  const pageProducts = products.slice(start, start + PAGE_SIZE);
 
   sc(ctx).browsePage = page;
-  sc(ctx).browseEntries = pageEntries.map((e) =>
-    e.kind === "group" ? { kind: "group" as const, id: e.group.id } : { kind: "product" as const, id: e.product.id },
-  );
+  sc(ctx).browseEntries = pageProducts.map((p) => p.id);
   delete sc(ctx).viewingProductId;
+  delete sc(ctx).viewingDenomId;
 
   // Selection is resolved against the browseEntries snapshot (see handleProductNumber).
-  const itemLines = pageEntries.map((e, i) => {
-    const label = e.kind === "group" ? `${e.group.name} ›` : e.product.name;
-    return `${i + 1}. ${esc(label)}`;
-  });
+  const itemLines = pageProducts.map((p, i) => `${i + 1}. ${esc(p.name)}`);
 
   const text = t(ctx, "browse.list_decorated", {
     page: page + 1,
@@ -226,7 +239,7 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   await renderMenuBanner(
     ctx,
     text,
-    ckb.productsPersistentKb(pageEntries.length, lang, {
+    ckb.productsPersistentKb(pageProducts.length, lang, {
       showPrev: page > 0,
       showNext: page < totalPages - 1,
       showBack: false,
@@ -258,6 +271,7 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   if (action !== null) {
     ctx.session.awaitingQtyProductId = undefined;
     delete sc(ctx).viewingProductId;
+    delete sc(ctx).viewingDenomId;
   }
 
   switch (action) {
@@ -293,15 +307,14 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   if (!/^\d+$/.test(text) || text.length > 4) return;
 
   // Resolve against the SNAPSHOT captured when the list was rendered, so a
-  // catalog change between render and tap can't shift the numbering.
+  // catalog change between render and tap can't shift the numbering. Each entry
+  // is a mid-tier Product id.
   let entries = sc(ctx).browseEntries ?? [];
   if (!entries.length) {
-    const all = await listCatalogEntries(prisma);
+    const all = await listCatalogProducts(prisma);
     const page = sc(ctx).browsePage ?? 0;
     const startIdx = page * PAGE_SIZE;
-    entries = all.slice(startIdx, startIdx + PAGE_SIZE).map((e) =>
-      e.kind === "group" ? { kind: "group" as const, id: e.group.id } : { kind: "product" as const, id: e.product.id },
-    );
+    entries = all.slice(startIdx, startIdx + PAGE_SIZE).map((p) => p.id);
     sc(ctx).browseEntries = entries;
   }
 
@@ -316,40 +329,78 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
     return;
   }
 
-  const entry = entries[idx - 1]!;
-  logger.debug(`handle_product_number: user selected idx=${idx} ${entry.kind}=${entry.id}`);
-  if (entry.kind === "group") await browseGroup(ctx, entry.id);
-  else await browseProduct(ctx, entry.id);
+  const productId = entries[idx - 1]!;
+  logger.debug(`handle_product_number: user selected idx=${idx} product=${productId}`);
+  await browseProduct(ctx, productId);
 }
 
-export async function browseProduct(ctx: MyContext, productId: number, qty = 1): Promise<void> {
+/**
+ * Tap a mid-tier Product → its Denomination picker. A Product with exactly ONE
+ * active denomination collapses straight to that denomination's detail bubble
+ * (skip a pointless 1-item picker, mirroring the old single-member group
+ * collapse); ≥2 active denominations render the picker.
+ */
+export async function browseProduct(ctx: MyContext, productId: number): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
 
-  let p: Awaited<ReturnType<typeof getProduct>>;
+  const product = await getCatalogProductWithDenominations(prisma, productId);
+  const active = (product?.denominations ?? []).filter((d) => d.isActive);
+  if (!product || active.length === 0) {
+    // Product emptied/deactivated between render and tap — don't strand the user.
+    await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
+    return;
+  }
+
+  // Single-denomination collapse threshold: exactly 1 active denomination skips
+  // the picker and lands on the detail bubble.
+  if (active.length === 1) {
+    sc(ctx).viewingProductId = productId;
+    await browseDenomination(ctx, active[0]!.id);
+    return;
+  }
+
+  sc(ctx).viewingProductId = productId;
+  delete sc(ctx).viewingDenomId;
+  const isReseller = info.role === UserRole.RESELLER;
+  const rate = await currentUsdtRate();
+  const text = t(ctx, "browse.choose_denomination", { name: esc(product.name) });
+  await smartEdit(ctx, text, ckb.denominationPickerKb(active, lang, rate, isReseller));
+}
+
+/**
+ * Denomination detail bubble (the leaf SKU): Product / Plan / Price / Stock +
+ * qty stepper + Buy + Back. Back returns to the parent Product's picker when we
+ * came from one (`viewingProductId`), else to the flat product list. The `buy`,
+ * `qty` and `restock` callbacks all key off the denomination id (= the SKU the
+ * money/stock flow uses).
+ */
+export async function browseDenomination(ctx: MyContext, denominationId: number, qty = 1): Promise<void> {
+  const info = requireUser(ctx);
+  const lang = ctx.session.lang;
+
+  let d: Awaited<ReturnType<typeof getDenominationWithProduct>>;
   let stock: number;
   let ratingStr: string;
-  let bulkRule: Awaited<ReturnType<typeof getBulkPricingForProduct>>;
+  let bulkRule: Awaited<ReturnType<typeof getBulkPricingForDenomination>>;
   try {
-    p = await getProduct(prisma, productId);
-    if (p === null) {
-      logger.warn(`browse_product: product_id=${productId} not found`);
-      // Expected-but-rare (product deleted/deactivated between render and tap) —
-      // transient copy, no ref. Leave a forward action so the screen isn't a
-      // dead end (§8.6/§8.7).
+    d = await getDenominationWithProduct(prisma, denominationId);
+    if (d === null) {
+      logger.warn(`browse_denomination: denomination_id=${denominationId} not found`);
+      // Expected-but-rare (denomination deleted/deactivated between render and
+      // tap) — transient copy, no ref. Forward action so it isn't a dead end.
       if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.try_again"), show_alert: true });
       else await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
       return;
     }
-    stock = await countAvailableStock(prisma, p.id);
-    const { avg, count } = await productRating(prisma, p.id);
+    stock = await countAvailableStock(prisma, d.id);
+    const { avg, count } = await productRating(prisma, d.id);
     ratingStr = avg ? `${avg.toFixed(1)}/5 (${count})` : "—";
-    bulkRule = await getBulkPricingForProduct(prisma, p.id);
+    bulkRule = await getBulkPricingForDenomination(prisma, d.id);
   } catch (err) {
     // Hard failure (unexpected DB error) — log under a ref and quote it so a
-    // customer report maps to the stack trace (§8.6). Forward action so the
-    // user isn't stranded (§8.7).
-    const ref = logErrorRef(err, `browse_product: DB error for product_id=${productId}`);
+    // customer report maps to the stack trace (§8.6). Forward action (§8.7).
+    const ref = logErrorRef(err, `browse_denomination: DB error for denomination_id=${denominationId}`);
     const text = t(ctx, "error.generic_ref", { ref });
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text, show_alert: true });
     else await smartEdit(ctx, text, ckb.backToMain(lang));
@@ -357,14 +408,15 @@ export async function browseProduct(ctx: MyContext, productId: number, qty = 1):
   }
 
   const isReseller = info.role === UserRole.RESELLER;
-  const unit = isReseller && p.resellerPrice != null ? p.resellerPrice : p.price;
+  const unit = isReseller && d.resellerPrice != null ? d.resellerPrice : d.price;
 
-  let text = t(ctx, "browse.product_detail", {
-    name: esc(p.name),
+  let text = t(ctx, "browse.denomination_detail", {
+    product: esc(d.product.name),
+    plan: esc(d.name),
     price: priceIdr(unit, await currentUsdtRate()),
-    duration: esc(p.durationLabel),
-    type: p.type.toLowerCase(),
-    warranty: p.warrantyDays,
+    duration: esc(d.durationLabel),
+    type: d.type.toLowerCase(),
+    warranty: d.warrantyDays,
     stock,
     rating: ratingStr,
   });
@@ -377,89 +429,73 @@ export async function browseProduct(ctx: MyContext, productId: number, qty = 1):
       });
   }
 
-  await smartEdit(ctx, text, ckb.productDetailKb(p, stock, lang, qty));
-  sc(ctx).viewingProductId = productId;
-}
-
-export async function browseGroup(ctx: MyContext, groupId: number): Promise<void> {
-  const info = requireUser(ctx);
-  const lang = ctx.session.lang;
-  const group = await getGroupWithActiveProducts(prisma, groupId);
-  if (!group || group.products.length === 0) {
-    // Group emptied/deactivated between render and tap — don't strand the user.
-    await smartEdit(ctx, t(ctx, "browse.no_products"), ckb.backToMain(lang));
-    return;
-  }
-  if (group.products.length === 1) {
-    await browseProduct(ctx, group.products[0]!.id);
-    return;
-  }
-  const isReseller = info.role === UserRole.RESELLER;
-  const rate = await currentUsdtRate();
-  const text = t(ctx, "browse.choose_denomination", { name: esc(group.name) });
-  await smartEdit(ctx, text, ckb.groupDenominationsKb(group.products, lang, rate, isReseller));
+  // Parent product for Back navigation: the picker we came from, or the
+  // denomination's own product (deep-link case where no picker was shown).
+  const parentProductId = sc(ctx).viewingProductId ?? d.product.id;
+  await smartEdit(ctx, text, ckb.denominationDetailKb(d, stock, lang, qty, parentProductId));
+  sc(ctx).viewingDenomId = denominationId;
 }
 
 // ---------------------------------------------------------------------------
 // Manual quantity input
 // ---------------------------------------------------------------------------
 
-export async function qtyInputStart(ctx: MyContext, productId: number): Promise<void> {
+export async function qtyInputStart(ctx: MyContext, denominationId: number): Promise<void> {
   const lang = ctx.session.lang;
-  const p = await getProduct(prisma, productId);
-  if (p === null) {
+  const d = await getDenomination(prisma, denominationId);
+  if (d === null) {
     await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
     return;
   }
-  const stock = await countAvailableStock(prisma, p.id);
+  const stock = await countAvailableStock(prisma, d.id);
   if (stock <= 0) {
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "browse.out_of_stock"), show_alert: true });
     return;
   }
-  await smartEdit(ctx, t(ctx, "browse.qty_input_prompt", { max: stock }), ckb.qtyInputCancelKb(productId, lang));
-  ctx.session.awaitingQtyProductId = productId;
+  await smartEdit(ctx, t(ctx, "browse.qty_input_prompt", { max: stock }), ckb.qtyInputCancelKb(denominationId, lang));
+  ctx.session.awaitingQtyProductId = denominationId;
 }
 
-export async function qtyInputCancel(ctx: MyContext, productId: number): Promise<void> {
+export async function qtyInputCancel(ctx: MyContext, denominationId: number): Promise<void> {
   ctx.session.awaitingQtyProductId = undefined;
-  await browseProduct(ctx, productId);
+  await browseDenomination(ctx, denominationId);
 }
 
-async function handleQtyTextInput(ctx: MyContext, productId: number, rawText: string): Promise<void> {
+async function handleQtyTextInput(ctx: MyContext, denominationId: number, rawText: string): Promise<void> {
   const lang = ctx.session.lang;
-  const p = await getProduct(prisma, productId);
-  if (p === null) {
+  const d = await getDenomination(prisma, denominationId);
+  if (d === null) {
     ctx.session.awaitingQtyProductId = undefined;
     await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
     return;
   }
-  const stock = await countAvailableStock(prisma, p.id);
+  const stock = await countAvailableStock(prisma, d.id);
 
   const isValid = /^\d+$/.test(rawText) && parseInt(rawText, 10) >= 1;
   if (!isValid || parseInt(rawText, 10) > stock) {
-    await smartEdit(ctx, t(ctx, "browse.qty_input_invalid", { max: stock }), ckb.qtyInputCancelKb(productId, lang));
-    ctx.session.awaitingQtyProductId = productId;
+    await smartEdit(ctx, t(ctx, "browse.qty_input_invalid", { max: stock }), ckb.qtyInputCancelKb(denominationId, lang));
+    ctx.session.awaitingQtyProductId = denominationId;
     return;
   }
 
   ctx.session.awaitingQtyProductId = undefined;
-  await browseProduct(ctx, productId, parseInt(rawText, 10));
+  await browseDenomination(ctx, denominationId, parseInt(rawText, 10));
 }
 
 export async function qtyChange(
   ctx: MyContext,
-  productId: number,
+  denominationId: number,
   qty: number,
   action: string,
 ): Promise<void> {
-  const p = await getProduct(prisma, productId);
-  if (p === null) {
+  const d = await getDenomination(prisma, denominationId);
+  if (d === null) {
     if (ctx.callbackQuery) await ctx.answerCallbackQuery();
     return;
   }
-  const stock = await countAvailableStock(prisma, p.id);
+  const stock = await countAvailableStock(prisma, d.id);
   const newQty = action === "inc" ? Math.min(qty + 1, stock) : Math.max(qty - 1, 1);
-  await browseProduct(ctx, productId, newQty);
+  await browseDenomination(ctx, denominationId, newQty);
 }
 
 // ---------------------------------------------------------------------------
@@ -643,15 +679,15 @@ export async function setLanguage(ctx: MyContext, code: string): Promise<void> {
   await showMainMenu(ctx);
 }
 
-export async function subscribeRestock(ctx: MyContext, productId: number): Promise<void> {
+export async function subscribeRestock(ctx: MyContext, denominationId: number): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
-  const isNew = await subscribeToRestock(prisma, info.id, productId);
+  const isNew = await subscribeToRestock(prisma, info.id, denominationId);
   const msg = t(ctx, isNew ? "browse.subscribed_restock" : "browse.already_subscribed");
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: msg });
-  // Edit the product bubble into a confirmation so the tap leaves a visible
+  // Edit the denomination bubble into a confirmation so the tap leaves a visible
   // trace, instead of an ephemeral toast that vanishes on the next interaction.
-  await smartEdit(ctx, msg, ckb.restockSubscribedKb(productId, lang));
+  await smartEdit(ctx, msg, ckb.restockSubscribedKb(denominationId, lang));
 }
 
 // ---------------------------------------------------------------------------
@@ -735,7 +771,7 @@ export async function searchCommand(ctx: MyContext): Promise<void> {
     await smartEdit(ctx, t(ctx, "search.no_query"), ckb.backToMain(lang));
     return;
   }
-  const products = await searchProducts(prisma, query);
+  const products = await searchCatalog(prisma, query);
   if (!products.length) {
     await smartEdit(ctx, t(ctx, "search.no_results", { query: esc(query) }), ckb.backToMain(lang));
     return;

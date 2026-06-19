@@ -32,7 +32,7 @@ import {
   updateProduct,
   listStockItemsForProduct,
   markStockDead,
-  getBulkPricingForProduct,
+  getBulkPricingForDenomination,
   deleteBulkPricing,
   listOpenTickets,
   closeTicket,
@@ -434,7 +434,7 @@ async function showBulkPricing(ctx: MyContext, productId: number): Promise<void>
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.product_not_found"), show_alert: true });
     return;
   }
-  const rule = await getBulkPricingForProduct(prisma, productId);
+  const rule = await getBulkPricingForDenomination(prisma, productId);
   let text: string;
   if (rule) {
     text =

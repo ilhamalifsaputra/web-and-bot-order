@@ -18,11 +18,12 @@ import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, creat
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
+import { Decimal } from "@app/core/money";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, sentIncludes, offersForwardAction, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
-import { groupDenominationsKb } from "../src/keyboards/customer";
+import { denominationPickerKb } from "../src/keyboards/customer";
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
@@ -97,12 +98,13 @@ async function makeOrder(qty = 1) {
 // ===========================================================================
 
 describe("customer handlers", () => {
-  it("browseProductsFlat lists active products and records the page slice", async () => {
+  it("browseProductsFlat lists active products and records the page slice (parent Product ids)", async () => {
     const { ctx, sink } = customerCtx();
     await customer.browseProductsFlat(ctx);
     expect(sink.length).toBeGreaterThan(0);
-    expect((ctx.session.scratch as { browseEntries?: Array<{ kind: string; id: number }> }).browseEntries).toEqual([
-      { kind: "product", id: sample.product.id },
+    // browseEntries now snapshots mid-tier Product ids (no group/product kind).
+    expect((ctx.session.scratch as { browseEntries?: number[] }).browseEntries).toEqual([
+      sample.parentProduct.id,
     ]);
   });
 
@@ -111,37 +113,49 @@ describe("customer handlers", () => {
     await customer.browseProductsFlat(ctx);
     const dump = JSON.stringify(sink);
     // Compact numbered layout: "1. <name>" per line. The price is not on the
-    // list line — it lives on the product detail screen ("Enter a number to
-    // view details").
-    expect(dump).toContain(`1. ${sample.product.name}`);
+    // list line — it lives on the denomination detail screen.
+    expect(dump).toContain(`1. ${sample.parentProduct.name}`);
   });
 
-  it("browseProduct shows detail and sets the viewing breadcrumb", async () => {
+  it("browseProduct collapses a single-denomination Product to its detail bubble", async () => {
+    // The sample Product wraps exactly one denomination → tapping it skips the
+    // 1-item picker and lands on the denomination detail (Product/Plan/Price/Stock).
     const { ctx, sink } = customerCtx();
-    await customer.browseProduct(ctx, sample.product.id);
-    expect((ctx.session.scratch as { viewingProductId?: number }).viewingProductId).toBe(sample.product.id);
+    await customer.browseProduct(ctx, sample.parentProduct.id);
+    const scratch = ctx.session.scratch as { viewingProductId?: number; viewingDenomId?: number };
+    expect(scratch.viewingProductId).toBe(sample.parentProduct.id);
+    expect(scratch.viewingDenomId).toBe(sample.product.id);
     expect(JSON.stringify(sink)).toContain("Netflix");
   });
 
-  it("handleProductNumber resolves a digit to the page-local product", async () => {
+  it("browseDenomination shows detail and sets the viewing breadcrumb", async () => {
+    const { ctx, sink } = customerCtx();
+    await customer.browseDenomination(ctx, sample.product.id);
+    expect((ctx.session.scratch as { viewingDenomId?: number }).viewingDenomId).toBe(sample.product.id);
+    expect(JSON.stringify(sink)).toContain("Netflix");
+  });
+
+  it("handleProductNumber resolves a digit to the page-local Product (collapses to detail)", async () => {
     const { ctx } = customerCtx({ text: "1", session: { ...userSession(), scratch: { browsePage: 0 } } });
     await customer.handleProductNumber(ctx);
-    expect((ctx.session.scratch as { viewingProductId?: number }).viewingProductId).toBe(sample.product.id);
+    const scratch = ctx.session.scratch as { viewingProductId?: number; viewingDenomId?: number };
+    expect(scratch.viewingProductId).toBe(sample.parentProduct.id);
+    expect(scratch.viewingDenomId).toBe(sample.product.id);
   });
 
   it("handleProductNumber honors the rendered snapshot over a fresh query (stale-catalog race)", async () => {
-    // A second product exists; the snapshot points only at it. Tapping "1" must
-    // open the snapshot's product, not whatever a fresh query would rank first.
-    const otherParent = await createCatalogProduct(prisma, { categoryId: sample.product.categoryId, name: "Other" });
-    const other = await createDenomination(prisma, {
+    // A second Product exists; the snapshot points only at it. Tapping "1" must
+    // open the snapshot's Product, not whatever a fresh query would rank first.
+    const otherParent = await createCatalogProduct(prisma, { categoryId: sample.parentProduct.categoryId, name: "Other" });
+    await createDenomination(prisma, {
       productId: otherParent.id, name: "Other", type: "SHARED", durationLabel: "1 Month", price: "9",
     });
     const { ctx } = customerCtx({
       text: "1",
-      session: { ...userSession(), scratch: { browsePage: 0, browseEntries: [{ kind: "product", id: other.id }] } },
+      session: { ...userSession(), scratch: { browsePage: 0, browseEntries: [otherParent.id] } },
     });
     await customer.handleProductNumber(ctx);
-    expect((ctx.session.scratch as { viewingProductId?: number }).viewingProductId).toBe(other.id);
+    expect((ctx.session.scratch as { viewingProductId?: number }).viewingProductId).toBe(otherParent.id);
   });
 
   it("setLanguage persists the choice and updates the session", async () => {
@@ -216,25 +230,25 @@ describe("customer handlers", () => {
 });
 
 // ===========================================================================
-// Product groups (denominations)
+// Product → Denomination picker (mid-tier Product with multiple denominations)
 // ===========================================================================
 
-describe("denomination groups", () => {
-  async function makeGroupWithTwo() {
+describe("denomination picker", () => {
+  async function makeProductWithTwo() {
     const cat = await prisma.category.create({ data: { name: `gc${Math.random()}`, slug: `gc-${Math.random()}` } });
-    // "group" is now the mid-tier Product; its members are denominations.
-    const group = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Capcut" });
+    // The mid-tier Product holds ≥2 denominations → it renders a picker.
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Capcut" });
     const m1 = await createDenomination(prisma, {
-      productId: group.id, name: "Capcut 7 day", type: "SHARED", durationLabel: "7 day", price: "30000",
+      productId: product.id, name: "Capcut 7 day", type: "SHARED", durationLabel: "7 day", price: "30000",
     });
     const m2 = await createDenomination(prisma, {
-      productId: group.id, name: "Capcut 1 Month", type: "SHARED", durationLabel: "1 Month", price: "75000",
+      productId: product.id, name: "Capcut 1 Month", type: "SHARED", durationLabel: "1 Month", price: "75000",
     });
-    return { group, m1, m2 };
+    return { product, m1, m2 };
   }
 
-  it("groupDenominationsKb renders one button per member + back", () => {
-    const kb = groupDenominationsKb(
+  it("denominationPickerKb renders one button per denomination (browse:denom) + back", () => {
+    const kb = denominationPickerKb(
       [
         { id: 1, name: "A", durationLabel: "7 day", price: "30000" },
         { id: 2, name: "B", durationLabel: "1 Month", price: "75000" },
@@ -242,54 +256,59 @@ describe("denomination groups", () => {
       "en",
     );
     const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
-    expect(flat.some((b) => b.callback_data === "v1:browse:prod:1")).toBe(true);
-    expect(flat.some((b) => b.callback_data === "v1:browse:prod:2")).toBe(true);
-    expect(flat.some((b) => b.callback_data === "v1:browse:prods")).toBe(true); // back
+    expect(flat.some((b) => b.callback_data === "v1:browse:denom:1")).toBe(true);
+    expect(flat.some((b) => b.callback_data === "v1:browse:denom:2")).toBe(true);
+    expect(flat.some((b) => b.callback_data === "v1:browse:prods")).toBe(true); // back to list
 
     // Catalog prices are central Rupiah — the button text must render IDR
     // (priceIdr), never the USDT-only formatPrice (Finding 1).
-    const member1 = flat.find((b) => b.callback_data === "v1:browse:prod:1")!;
+    const member1 = flat.find((b) => b.callback_data === "v1:browse:denom:1")!;
     expect(member1.text).toContain("Rp30.000");
     expect(member1.text).not.toContain("USDT");
-    const member2 = flat.find((b) => b.callback_data === "v1:browse:prod:2")!;
+    const member2 = flat.find((b) => b.callback_data === "v1:browse:denom:2")!;
     expect(member2.text).toContain("Rp75.000");
     expect(member2.text).not.toContain("USDT");
   });
 
-  it("groupDenominationsKb uses resellerPrice for reseller users when present", () => {
-    const kb = groupDenominationsKb(
+  it("denominationPickerKb uses resellerPrice for reseller users when present", () => {
+    const kb = denominationPickerKb(
       [{ id: 1, name: "A", durationLabel: "7 day", price: "30000", resellerPrice: "20000" }],
       "en",
       null,
       true,
     );
     const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
-    const member1 = flat.find((b) => b.callback_data === "v1:browse:prod:1")!;
+    const member1 = flat.find((b) => b.callback_data === "v1:browse:denom:1")!;
     expect(member1.text).toContain("Rp20.000");
     expect(member1.text).not.toContain("Rp30.000");
     expect(member1.text).not.toContain("USDT");
   });
 
-  it("browseGroup shows the denomination picker for the group", async () => {
-    const { group, m1 } = await makeGroupWithTwo();
+  it("browseProduct surfaces the denomination picker for a multi-denomination Product", async () => {
+    const { product, m1, m2 } = await makeProductWithTwo();
     const { ctx, sink } = customerCtx();
-    await customer.browseGroup(ctx, group.id);
+    await customer.browseProduct(ctx, product.id);
     expect(sentIncludes(sink, "Capcut")).toBe(true);
-    // members reachable via browse:prod buttons
+    // ≥2 denominations → picker (no collapse): viewingProductId set, no denom yet.
+    const scratch = ctx.session.scratch as { viewingProductId?: number; viewingDenomId?: number };
+    expect(scratch.viewingProductId).toBe(product.id);
+    expect(scratch.viewingDenomId).toBeUndefined();
+    // Both denominations reachable via browse:denom buttons.
     const sent = sink as SentCall[];
     const markup = JSON.stringify(sent.map((c) => c.args[c.args.length - 1]));
-    expect(markup).toContain(`v1:browse:prod:${m1.id}`);
+    expect(markup).toContain(`v1:browse:denom:${m1.id}`);
+    expect(markup).toContain(`v1:browse:denom:${m2.id}`);
     // Picker buttons render the Rupiah price (Finding 1), never USDT.
     expect(markup).toContain("Rp30.000");
     expect(markup).not.toContain("USDT");
   });
 
-  it("browseProductsFlat records a group entry and the number opens the picker", async () => {
-    const { group } = await makeGroupWithTwo();
+  it("browseProductsFlat records the parent Product id and the number opens its picker", async () => {
+    const { product } = await makeProductWithTwo();
     const { ctx } = customerCtx();
     await customer.browseProductsFlat(ctx);
-    const entries = (ctx.session.scratch as { browseEntries?: Array<{ kind: string; id: number }> }).browseEntries ?? [];
-    expect(entries.some((e) => e.kind === "group" && e.id === group.id)).toBe(true);
+    const entries = (ctx.session.scratch as { browseEntries?: number[] }).browseEntries ?? [];
+    expect(entries).toContain(product.id);
   });
 });
 
@@ -320,6 +339,31 @@ describe("checkout handlers", () => {
       calls(sink, "editMessageText").length + calls(sink, "sendMessage").length + calls(sink, "reply").length,
     ).toBeGreaterThan(0);
     checkout.cancelPaymentJobs(orders[0]!.id); // clear the countdown timer
+  });
+
+  it("buying a denomination creates an order at its price keyed off the denomination id", async () => {
+    // The whole point of the rename: `buy`/`pay` callbacks carry the DENOMINATION
+    // id (= the SKU the money/stock flow keys off). Buying it must create an order
+    // whose line points at that denomination and prices it at the denomination price.
+    await setSetting(prisma, "usd_idr_rate", "1");
+    const { ctx } = customerCtx({ callbackData: `v1:pay:${sample.product.id}:2` });
+    await checkout.buyNow(ctx, sample.product.id, 2);
+
+    const order = (await prisma.order.findFirst({ include: { items: true } }))!;
+    expect(order.status).toBe(OrderStatus.PENDING_PAYMENT);
+    // One order item per unit, each pointing at the denomination (physical
+    // product_id column) and priced at the denomination unit price ("5.00").
+    expect(order.items).toHaveLength(2);
+    expect(order.items.every((i) => i.productId === sample.product.id)).toBe(true);
+    expect(order.items.every((i) => new Decimal(i.unitPrice).toString() === "5")).toBe(true);
+    // Subtotal reflects 2 × 5 before any unique-cents/total finalization.
+    expect(new Decimal(order.subtotalAmount).toString()).toBe("10");
+    // Stock is only reserved at approval — buying must not exceed availability
+    // (5 units), so the order is allowed and the units remain AVAILABLE for now.
+    expect(
+      await prisma.stockItem.count({ where: { productId: sample.product.id, status: StockStatus.AVAILABLE } }),
+    ).toBe(5);
+    checkout.cancelPaymentJobs(order.id);
   });
 
   it("buyNow unifies the Binance QR + instructions into one photo+caption bubble when a QR is set", async () => {
@@ -581,6 +625,23 @@ describe("callback router", () => {
     const { ctx, sink } = customerCtx({ callbackData: "v1:bogus:thing" });
     await routeCallback(ctx);
     expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
+  });
+
+  it("routes v1:browse:denom to the denomination detail bubble", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:denom:${sample.product.id}` });
+    await routeCallback(ctx);
+    expect(sink.length).toBeGreaterThan(0);
+    expect((ctx.session.scratch as { viewingDenomId?: number }).viewingDenomId).toBe(sample.product.id);
+  });
+
+  it("degrades an old in-flight v1:browse:group tap to the stale-screen toast (no crash)", async () => {
+    // `group` was renamed to `prod`; a pre-migration bubble must not crash — it
+    // answers with the stale-screen toast instead.
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:group:${sample.parentProduct.id}` });
+    await routeCallback(ctx);
+    expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
+    // No detail/picker was rendered for the stale tap.
+    expect((ctx.session.scratch as { viewingDenomId?: number }).viewingDenomId).toBeUndefined();
   });
 
   it("routes v1:adm:* to the admin sub-router (admin only)", async () => {

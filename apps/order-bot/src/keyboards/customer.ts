@@ -78,11 +78,11 @@ export function backToMain(lang: string): InlineKeyboard {
   return ik([[{ text: coreT("menu.main", lang), data: cb("menu", "main") }]]);
 }
 
-/** Confirmation footer after a restock subscription: back to the product + menu. */
-export function restockSubscribedKb(productId: number, lang: string): InlineKeyboard {
+/** Confirmation footer after a restock subscription: back to the denomination + menu. */
+export function restockSubscribedKb(denominationId: number, lang: string): InlineKeyboard {
   return ik([
     [
-      { text: coreT("menu.back", lang), data: cb("browse", "prod", productId) },
+      { text: coreT("menu.back", lang), data: cb("browse", "denom", denominationId) },
       { text: coreT("menu.main", lang), data: cb("menu", "main") },
     ],
   ]);
@@ -223,36 +223,49 @@ export function removeReplyKb(): { remove_keyboard: true } {
   return { remove_keyboard: true };
 }
 
-export function productDetailKb(
-  product: ProductLike,
+/**
+ * Detail bubble for a single Denomination (leaf SKU): qty stepper, Buy, Back.
+ * `denom` is the Denomination (carries the SKU id used by the qty/buy/restock
+ * callbacks); `parentProductId` is its mid-tier Product so Back returns to that
+ * product's picker, not all the way to the flat list. Pass `parentProductId`
+ * null only when the detail was reached outside a picker (e.g. a deep-link),
+ * where Back falls through to the product list.
+ */
+export function denominationDetailKb(
+  denom: ProductLike,
   availableStock: number,
   lang: string,
   qty = 1,
+  parentProductId: number | null = null,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   if (availableStock > 0) {
     qty = Math.max(1, Math.min(qty, availableStock));
     const dec: Btn =
       qty > 1
-        ? { text: "−", data: cb("qty", product.id, qty, "dec") }
+        ? { text: "−", data: cb("qty", denom.id, qty, "dec") }
         : { text: "−", data: cb("noop") };
     const inc: Btn =
       qty < availableStock
-        ? { text: "+", data: cb("qty", product.id, qty, "inc") }
+        ? { text: "+", data: cb("qty", denom.id, qty, "inc") }
         : { text: "+", data: cb("noop") };
     rows.push([dec, { text: String(qty), data: cb("noop") }, inc]);
     rows.push([
-      { text: coreT("browse.qty_input_btn", lang), data: cb("qty", "input", product.id) },
+      { text: coreT("browse.qty_input_btn", lang), data: cb("qty", "input", denom.id) },
     ]);
     rows.push([
-      { text: coreT("browse.buy_now", lang), data: cb("buy", product.id, qty) },
+      { text: coreT("browse.buy_now", lang), data: cb("buy", denom.id, qty) },
     ]);
   } else {
     rows.push([
-      { text: coreT("browse.notify_restock", lang), data: cb("restock", "sub", product.id) },
+      { text: coreT("browse.notify_restock", lang), data: cb("restock", "sub", denom.id) },
     ]);
   }
-  rows.push([{ text: coreT("menu.back", lang), data: cb("browse", "prods") }]);
+  const back: Btn =
+    parentProductId != null
+      ? { text: coreT("menu.back", lang), data: cb("browse", "prod", parentProductId) }
+      : { text: coreT("menu.back", lang), data: cb("browse", "prods") };
+  rows.push([back]);
   return ik(rows);
 }
 
@@ -265,27 +278,27 @@ interface DenominationLike {
 }
 
 /**
- * Picker shown when a customer taps a product group: one button per member.
- * Catalog prices are central Rupiah (CLAUDE.md) — render with `priceIdr`,
- * never `formatPrice` (USDT-only). Mirrors the unit-price selection used on
- * the product detail screen (browseProduct): reseller price when present for
- * reseller users, else the regular price.
+ * Denomination picker shown when a customer taps a mid-tier Product with ≥2
+ * active denominations: one button per denomination (tapping opens its detail
+ * bubble via `browse:denom`). Catalog prices are central Rupiah (CLAUDE.md) —
+ * render with `priceIdr`, never `formatPrice` (USDT-only). Reseller price wins
+ * for reseller users when present, mirroring the detail screen.
  */
-export function groupDenominationsKb(
-  members: DenominationLike[],
+export function denominationPickerKb(
+  denominations: DenominationLike[],
   lang: string,
   rate: Decimal | null = null,
   isReseller = false,
 ): InlineKeyboard {
-  const rows: Btn[][] = members.map((m) => {
-    const unitPrice = isReseller && m.resellerPrice != null ? m.resellerPrice : m.price;
+  const rows: Btn[][] = denominations.map((d) => {
+    const unitPrice = isReseller && d.resellerPrice != null ? d.resellerPrice : d.price;
     return [
       {
         text: coreT("browse.denomination_btn", lang, {
-          duration: m.durationLabel || m.name,
+          duration: d.durationLabel || d.name,
           price: priceIdr(unitPrice, rate),
         }),
-        data: cb("browse", "prod", m.id),
+        data: cb("browse", "denom", d.id),
       },
     ];
   });
@@ -293,9 +306,9 @@ export function groupDenominationsKb(
   return ik(rows);
 }
 
-export function qtyInputCancelKb(productId: number, lang: string): InlineKeyboard {
+export function qtyInputCancelKb(denominationId: number, lang: string): InlineKeyboard {
   return ik([
-    [{ text: coreT("browse.qty_input_cancel", lang), data: cb("qty", "cancel", productId) }],
+    [{ text: coreT("browse.qty_input_cancel", lang), data: cb("qty", "cancel", denominationId) }],
   ]);
 }
 
@@ -314,8 +327,8 @@ export function productsPageKb(page: number, totalPages: number, lang: string): 
   return ik(rows);
 }
 
-/** Inline keyboard for /search results — each product is a button. */
-export function searchResultsKb(products: ProductLike[], lang: string): InlineKeyboard {
+/** Inline keyboard for /search results — each mid-tier Product opens its picker. */
+export function searchResultsKb(products: Array<{ id: number; name: string }>, lang: string): InlineKeyboard {
   const rows: Btn[][] = products.map((p) => [
     { text: truncLabel(p.name, 30), data: cb("browse", "prod", p.id) },
   ]);
@@ -396,7 +409,7 @@ export function orderConfirmKb(
     rows.push([{ text: coreT("checkout.confirm_btn", lang), data: cb("pay", productId, qty) }]);
   }
   rows.push([
-    { text: coreT("checkout.cancel_btn", lang), data: cb("browse", "prod", productId) },
+    { text: coreT("checkout.cancel_btn", lang), data: cb("browse", "denom", productId) },
   ]);
   return ik(rows);
 }

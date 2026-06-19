@@ -40,11 +40,20 @@ const dispatchMenu: DomainDispatcher = async (ctx, parts) => {
 };
 
 const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
+  // prods/page → flat Product list; prod → a Product's denomination picker;
+  // denom → a Denomination detail bubble. The pre-rename `group` action was
+  // renamed to `prod` (and the old `prod`, which meant a SKU, to `denom`); an
+  // old in-flight bubble carrying `v1:browse:group:*` therefore lands in the
+  // default branch below and degrades to the stale-screen toast, never a crash.
   const action = parts[2];
   if (action === "prods") await customer.browseProductsFlat(ctx);
   else if (action === "page") await customer.browseProductsFlat(ctx, parseInt(parts[3]!, 10));
   else if (action === "prod") await customer.browseProduct(ctx, parseInt(parts[3]!, 10));
-  else if (action === "group") await customer.browseGroup(ctx, parseInt(parts[3]!, 10));
+  else if (action === "denom") await customer.browseDenomination(ctx, parseInt(parts[3]!, 10));
+  else {
+    logger.warn({ event: "dead_tap", action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, "stale browse callback");
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+  }
 };
 
 const dispatchQty: DomainDispatcher = async (ctx, parts) => {

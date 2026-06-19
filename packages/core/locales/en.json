@@ -62,6 +62,7 @@
   "browse.buy_now": "🛒 Buy Now",
   "browse.choose_denomination": "<b>{name}</b>\n\nChoose a plan:",
   "browse.denomination_btn": "{duration} — {price}",
+  "browse.denomination_detail": "<b>{product}</b>\nPlan: <b>{plan}</b>\n\nPrice: <b>{price}</b>\nDuration: {duration}\nType: {type}\nWarranty: {warranty} days\nIn stock: <b>{stock}</b>\nRating: {rating}",
   "browse.invalid_number": "Enter a number between 1 and {max}.",
   "browse.list_decorated": "📦 <b>Product List</b>\n\n{items}\n\n📄 Page {page}/{total}\n💡 Enter a number to view details.",
   "browse.nav_next": "Next ▶️",

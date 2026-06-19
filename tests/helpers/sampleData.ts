@@ -45,7 +45,12 @@ export async function buildSampleData(prisma: PrismaClient) {
     usageLimit: 100,
     minPurchase: "3",
   });
-  return { user, category, product, voucher };
+  // `createProduct` (deprecated shim) auto-creates a 1:1 wrapper mid-tier Product
+  // over the denomination. `product` is the Denomination/SKU (id used by the
+  // order/stock flow); `parentProduct` is that wrapper Product (the row the bot's
+  // flat list now shows and whose picker collapses to this single denomination).
+  const parentProduct = await prisma.product.findUniqueOrThrow({ where: { id: product.productId } });
+  return { user, category, product, parentProduct, voucher };
 }
 
 export type SampleData = Awaited<ReturnType<typeof buildSampleData>>;

@@ -24,9 +24,9 @@ import {
   getOrder,
   getSetting,
   setSetting,
-  getProduct,
+  getDenomination,
   countAvailableStock,
-  getBulkPricingForProduct,
+  getBulkPricingForDenomination,
   getVoucherByCode,
   applyVoucherToSubtotal,
   getUser,
@@ -190,9 +190,9 @@ async function computeConfirmation(
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
 
-  const product = await getProduct(prisma, productId);
+  const product = await getDenomination(prisma, productId);
   if (product === null) return null;
-  const bulkRule = await getBulkPricingForProduct(prisma, productId);
+  const bulkRule = await getBulkPricingForDenomination(prisma, productId);
 
   const isReseller = info.role === UserRole.RESELLER;
   const unitPrice = new Decimal(
@@ -235,7 +235,7 @@ export async function showOrderConfirmation(
 ): Promise<void> {
   const lang = ctx.session.lang;
 
-  const product = await getProduct(prisma, productId);
+  const product = await getDenomination(prisma, productId);
   if (product === null) {
     // Product vanished between render and tap. Toast for immediacy, then edit
     // the stale "Confirm & Pay" bubble into a recovery screen so the dead
@@ -314,7 +314,7 @@ export async function renderOrderConfirmation(
 export async function showUsdtMethods(ctx: MyContext, productId: number, quantity: number): Promise<void> {
   const lang = ctx.session.lang;
 
-  const product = await getProduct(prisma, productId);
+  const product = await getDenomination(prisma, productId);
   if (product === null) {
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.try_again"), show_alert: true });
     await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));

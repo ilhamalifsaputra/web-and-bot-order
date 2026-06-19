@@ -15,7 +15,7 @@ import {
   resolveBinanceInternalConfig,
   botOverallStats,
   revenueSummary,
-  lowStockProducts,
+  lowStockDenominations,
   listPendingVerifications,
   listAuditLogs,
   listOrdersAgingInVerification,
@@ -69,7 +69,8 @@ export default async function dashboardRoutes(app: FastifyInstance): Promise<voi
     const rev24h = await revenueSummary(prisma, addDays(now, -1));
     const rev7d = await revenueSummary(prisma, addDays(now, -7));
     const rev30d = await revenueSummary(prisma, addDays(now, -30));
-    const lowStock = await lowStockProducts(prisma, config.LOW_STOCK_THRESHOLD);
+    const lowStockRows = await lowStockDenominations(prisma, config.LOW_STOCK_THRESHOLD);
+    const lowStock = lowStockRows.map((r) => ({ product: r.denomination, available: r.available }));
     const pending = await listPendingVerifications(prisma);
     const recentAudit = await listAuditLogs(prisma, { limit: 10 });
     const sla = await slaContext(prisma);

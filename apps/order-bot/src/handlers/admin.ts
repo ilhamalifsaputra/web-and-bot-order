@@ -18,7 +18,7 @@ import {
   prisma,
   listPendingVerifications,
   revenueSummary,
-  lowStockProducts,
+  lowStockDenominations,
   countAvailableStock,
   listVouchers,
   getUser,
@@ -29,7 +29,7 @@ import {
   getSetting,
   setSetting,
   deleteSetting,
-  updateProduct,
+  updateDenomination,
   listStockItemsForProduct,
   markStockDead,
   getBulkPricingForDenomination,
@@ -75,7 +75,7 @@ async function showDashboard(ctx: MyContext): Promise<void> {
 
   const today = await revenueSummary(prisma, todayStart);
   const pending = await listPendingVerifications(prisma, 200);
-  const lowStock = await lowStockProducts(prisma, config.LOW_STOCK_THRESHOLD);
+  const lowStock = await lowStockDenominations(prisma, config.LOW_STOCK_THRESHOLD);
 
   let text = t(ctx, "admin.dashboard_text", {
     today_revenue: mixedAmount(today.revenue_idr, today.revenue_usdt),
@@ -85,8 +85,8 @@ async function showDashboard(ctx: MyContext): Promise<void> {
   });
   if (lowStock.length) {
     text += "\n\n<b>Low stock:</b>\n";
-    for (const { product, available } of lowStock.slice(0, 10)) {
-      if (product) text += `• ${esc(product.name)} — ${available}\n`;
+    for (const { denomination, available } of lowStock.slice(0, 10)) {
+      if (denomination) text += `• ${esc(denomination.name)} — ${available}\n`;
     }
   }
   await adminEdit(ctx, text, akb.backToAdminKb(lang));
@@ -363,27 +363,27 @@ async function viewProductAdmin(ctx: MyContext, productId: number): Promise<void
   await adminEdit(ctx, text, akb.productViewKb(productId, p.isActive, lang));
 }
 
-async function toggleProduct(ctx: MyContext, productId: number): Promise<void> {
+async function toggleProduct(ctx: MyContext, denominationId: number): Promise<void> {
   const adminTg = ctx.from!.id;
-  const p = await prisma.denomination.findUnique({ where: { id: productId } });
+  const p = await prisma.denomination.findUnique({ where: { id: denominationId } });
   if (p === null) {
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.not_found"), show_alert: true });
     return;
   }
   const newState = !p.isActive;
   await prisma.$transaction(async (tx) => {
-    await updateProduct(tx, productId, { isActive: newState });
+    await updateDenomination(tx, denominationId, { isActive: newState });
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
       adminId: adminId(admin),
       action: "product_toggle",
       targetType: "product",
-      targetId: productId,
+      targetId: denominationId,
       details: `is_active=${newState}`,
     });
   });
   await ctx.answerCallbackQuery({ text: t(ctx, newState ? "admin.toast.product_activated" : "admin.toast.product_deactivated") });
-  await viewProductAdmin(ctx, productId);
+  await viewProductAdmin(ctx, denominationId);
 }
 
 // ===========================================================================

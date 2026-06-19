@@ -18,7 +18,7 @@ import { logger } from "@app/core/logger";
 import { NotificationEvent } from "@app/core/enums";
 import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
-import { getBulkPricingForProduct } from "./catalog";
+import { getBulkPricingForDenomination } from "./catalog";
 import { getVoucherByCode, applyVoucherToSubtotal } from "./vouchers";
 import { countAvailableStock, allocateOneAvailableStock } from "./stock";
 import { adjustWallet, getUser } from "./users";
@@ -116,7 +116,7 @@ export async function createOrderFromCart(
   // 2. Bulk discount
   const bulkRules: Record<number, BulkRule> = {};
   for (const ci of cart) {
-    const rule = await getBulkPricingForProduct(db, ci.productId);
+    const rule = await getBulkPricingForDenomination(db, ci.productId);
     if (rule) bulkRules[ci.productId] = rule;
   }
   const bulkDiscount = computeBulkDiscountForCart(cart, bulkRules, isReseller);
@@ -229,7 +229,7 @@ export async function createOrderDirect(
 
   // Bulk discount
   let bulkDiscount = ZERO;
-  const rule = await getBulkPricingForProduct(db, args.productId);
+  const rule = await getBulkPricingForDenomination(db, args.productId);
   if (rule && args.quantity >= rule.minQuantity) {
     bulkDiscount = q4(subtotal.times(rule.discountPercent).div(100));
   }

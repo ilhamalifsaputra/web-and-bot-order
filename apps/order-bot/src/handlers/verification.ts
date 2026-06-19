@@ -18,7 +18,7 @@ import {
   getUserByTelegramId,
   approveOrder,
   logAdminAction,
-  lowStockProducts,
+  lowStockDenominations,
 } from "@app/db";
 import type { MyContext } from "../context";
 import { adminEdit } from "../util/chat";
@@ -235,15 +235,15 @@ export async function resendCredentials(ctx: MyContext, orderId: number): Promis
 // ---------------------------------------------------------------------------
 
 async function maybeAlertLowStock(ctx: MyContext, _userId: number): Promise<void> {
-  const rows = await lowStockProducts(prisma, config.LOW_STOCK_THRESHOLD);
+  const rows = await lowStockDenominations(prisma, config.LOW_STOCK_THRESHOLD);
   if (!rows.length) return;
-  for (const { product, available } of rows) {
-    if (!product) continue;
+  for (const { denomination, available } of rows) {
+    if (!denomination) continue;
     for (const adminId of adminIds()) {
       try {
         await ctx.api.sendMessage(
           adminId,
-          coreT("admin.low_stock_alert", "en", { product: esc(product.name), count: available }),
+          coreT("admin.low_stock_alert", "en", { product: esc(denomination.name), count: available }),
           { parse_mode: "HTML" },
         );
       } catch (err) {

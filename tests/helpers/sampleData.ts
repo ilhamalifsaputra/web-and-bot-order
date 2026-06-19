@@ -10,7 +10,8 @@ import type { PrismaClient } from "@prisma/client";
 import {
   upsertUser,
   createCategory,
-  createProduct,
+  createCatalogProduct,
+  createDenomination,
   bulkAddStock,
   createVoucher,
 } from "@app/db";
@@ -23,15 +24,20 @@ export async function buildSampleData(prisma: PrismaClient) {
     fullName: "Test User",
   });
   const category = await createCategory(prisma, "Streaming", "🎬");
-  const product = await createProduct(prisma, {
+  const parentProduct = await createCatalogProduct(prisma, {
     categoryId: category.id,
     name: "Netflix Premium 1M",
     description: "Shared profile",
+  });
+  const product = await createDenomination(prisma, {
+    productId: parentProduct.id,
+    name: "Netflix Premium 1M",
     type: ProductType.SHARED,
     durationLabel: "1 Month",
     price: "5.00",
     resellerPrice: "4.00",
     warrantyDays: 30,
+    description: "Shared profile",
   });
   await bulkAddStock(
     prisma,
@@ -45,11 +51,9 @@ export async function buildSampleData(prisma: PrismaClient) {
     usageLimit: 100,
     minPurchase: "3",
   });
-  // `createProduct` (deprecated shim) auto-creates a 1:1 wrapper mid-tier Product
-  // over the denomination. `product` is the Denomination/SKU (id used by the
-  // order/stock flow); `parentProduct` is that wrapper Product (the row the bot's
-  // flat list now shows and whose picker collapses to this single denomination).
-  const parentProduct = await prisma.product.findUniqueOrThrow({ where: { id: product.productId } });
+  // `product` is the Denomination/SKU (id used by the order/stock flow);
+  // `parentProduct` is the mid-tier Product wrapper (the row the bot's flat
+  // list shows and whose picker collapses to this single denomination).
   return { user, category, product, parentProduct, voucher };
 }
 

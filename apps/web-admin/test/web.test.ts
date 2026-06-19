@@ -12,7 +12,7 @@ import {
   initDb,
   upsertUser,
   createCategory,
-  createProduct,
+  createCatalogProduct,
   getCatalogProduct,
   getCatalogProductWithDenominations,
   getDenomination,
@@ -106,13 +106,18 @@ beforeEach(async () => {
   const admin = await upsertUser(prisma, { telegramId: ADMIN_TG, username: "admin", fullName: "Admin" });
   const customer = await upsertUser(prisma, { telegramId: CUSTOMER_TG, username: "cust", fullName: "Customer" });
   const cat = await createCategory(prisma, `Cat${counter++}`);
-  const product = await createProduct(prisma, {
+  const parentProduct = await createCatalogProduct(prisma, {
     categoryId: cat.id,
     name: `Prod${counter}`,
     description: "x",
+  });
+  const product = await createDenomination(prisma, {
+    productId: parentProduct.id,
+    name: `Prod${counter}`,
     type: ProductType.SHARED,
     durationLabel: "1 Month",
     price: "5.00",
+    description: "x",
   });
   await bulkAddStock(prisma, product.id, Array.from({ length: 4 }, (_, i) => `a${counter}_${i}@e.com:p`));
 

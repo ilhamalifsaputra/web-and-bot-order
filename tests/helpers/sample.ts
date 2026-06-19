@@ -6,7 +6,8 @@ import type { PrismaClient } from "@prisma/client";
 import {
   upsertUser,
   createCategory,
-  createProduct,
+  createCatalogProduct,
+  createDenomination,
   bulkAddStock,
   createVoucher,
 } from "../../packages/db/src/index";
@@ -19,15 +20,20 @@ export async function seedSampleData(prisma: PrismaClient) {
     fullName: "Test User",
   });
   const category = await createCategory(prisma, "Streaming", "🎬");
-  const product = await createProduct(prisma, {
+  const parentProduct = await createCatalogProduct(prisma, {
     categoryId: category.id,
     name: "Netflix Premium 1M",
     description: "Shared profile",
+  });
+  const product = await createDenomination(prisma, {
+    productId: parentProduct.id,
+    name: "Netflix Premium 1M",
     type: ProductType.SHARED,
     durationLabel: "1 Month",
     price: "5.00",
     resellerPrice: "4.00",
     warrantyDays: 30,
+    description: "Shared profile",
   });
   await bulkAddStock(
     prisma,

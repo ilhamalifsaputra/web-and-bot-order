@@ -28,10 +28,11 @@ import {
   getSetting,
   setSetting,
   deleteSetting,
-  createProduct,
+  createCatalogProduct,
+  createDenomination,
   listAllCategories,
   createCategory,
-  updateProduct,
+  updateDenomination,
   upsertBulkPricing,
   getTicket,
   replyToTicket,
@@ -692,25 +693,35 @@ export async function productCreateConversation(conversation: MyConversation, ct
   const productName = await prisma.$transaction(async (tx) => {
     const cats = await listAllCategories(tx);
     const catId = cats.length ? cats[0]!.id : (await createCategory(tx, "General", "📦")).id;
-    const product = await createProduct(tx, {
+    const parent = await createCatalogProduct(tx, {
       categoryId: catId,
       name: name!,
       description: null,
+      webImageUrl: null,
+      imageFileId: null,
+    });
+    const denom = await createDenomination(tx, {
+      productId: parent.id,
+      name: name!,
       type: ptype!,
       durationLabel: duration!,
       price: priceVal!,
+      costPrice: null,
       resellerPrice: resellerVal,
       warrantyDays: warranty,
+      description: null,
+      imageFileId: null,
+      webImageUrl: null,
     });
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
       adminId: adminIdOf(admin),
       action: "product_create",
       targetType: "product",
-      targetId: product.id,
-      details: `name=${product.name}`,
+      targetId: denom.id,
+      details: `name=${denom.name}`,
     });
-    return product.name;
+    return denom.name;
   });
 
   clearDraft(); // Created successfully — discard the draft.
@@ -726,7 +737,7 @@ export async function productEditConversation(conversation: MyConversation, ctx:
   const lang = ctx.session.lang;
   const parts = (ctx.callbackQuery?.data ?? "").split(":");
   const field = parts[3]!; // rename | price
-  const productId = parseInt(parts[4]!, 10);
+  const denominationId = parseInt(parts[4]!, 10);
 
   const prompts: Record<string, string> = {
     rename: t(ctx, "admin.prod_ask_rename"),
@@ -749,13 +760,13 @@ export async function productEditConversation(conversation: MyConversation, ctx:
         continue;
       }
       await prisma.$transaction(async (tx) => {
-        await updateProduct(tx, productId, { name: raw });
+        await updateDenomination(tx, denominationId, { name: raw });
         const admin = await getUserByTelegramId(tx, adminTg);
         await logAdminAction(tx, {
           adminId: adminIdOf(admin),
           action: "product_rename",
           targetType: "product",
-          targetId: productId,
+          targetId: denominationId,
           details: `name=${raw}`,
         });
       });
@@ -773,13 +784,13 @@ export async function productEditConversation(conversation: MyConversation, ctx:
         continue;
       }
       await prisma.$transaction(async (tx) => {
-        await updateProduct(tx, productId, { price: p });
+        await updateDenomination(tx, denominationId, { price: p });
         const admin = await getUserByTelegramId(tx, adminTg);
         await logAdminAction(tx, {
           adminId: adminIdOf(admin),
           action: "product_price",
           targetType: "product",
-          targetId: productId,
+          targetId: denominationId,
           details: `price=${p}`,
         });
       });

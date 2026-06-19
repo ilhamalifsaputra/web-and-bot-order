@@ -43,11 +43,14 @@ database SQLite** (`data/bot.db`, mode WAL).
 - **Web tak pernah kirim Telegram** — enqueue ke `notification_outbox`, notifier/bot
   yang mengirim.
 - **SQLite single-writer** — tiap `$transaction` dijaga pendek.
-- **Group-aware (denominasi).** Produk bisa dikelompokkan jadi satu **grup**
-  (mis. "Netflix" → 1 bulan / 1 tahun). Grid (home, kategori, search) menampilkan
-  **kartu grup** yang drill ke `/g/:id` untuk memilih denominasi, lewat satu
-  shaper bersama `shapeEntries` (`apps/storefront/src/cards.ts`); grup
-  ber-anggota tunggal otomatis kolaps jadi kartu produk biasa.
+- **Katalog 3-tier: Category → Product → Denomination.** `Product` (mis.
+  "Netflix") adalah satu-satunya kartu di grid (home, kategori `/c/:slug`,
+  search) — TIDAK punya harga/stok sendiri. Tiap Product punya satu/lebih
+  `Denomination` (mis. "1 bulan" / "1 tahun") yang menyimpan harga, stok, dan
+  auto-delivery; dipilih di halaman detail produk `/p/:slug`. Satu shaper
+  bersama `shapeProducts` (`apps/storefront/src/cards.ts`) membentuk kartu grid
+  dari denominasi aktif termurah ("starting price") + agregat stok/rating
+  lintas denominasi.
 - **Server-rendered, TIDAK ada API publik.** Admin & storefront mengembalikan
   HTML (Nunjucks + HTMX), bukan JSON. Tidak ada REST/GraphQL untuk konsumsi
   pihak ketiga; satu-satunya endpoint non-HTML adalah webhook internal
@@ -123,8 +126,9 @@ Banner bot dikirim sebagai `InputFile` lalu file_id Telegram-nya di-cache
 
 ## 4. Harga: IDR pusat + USDT turunan
 
-**Rupiah adalah sumber kebenaran harga.** `Product.price` / `resellerPrice` dalam
-IDR. USDT diturunkan: `idrPrice / usd_idr_rate`, dibulatkan ke 0,1, dan **tampil
+**Rupiah adalah sumber kebenaran harga.** `Denomination.price` / `resellerPrice`
+(bukan `Product` — mid-tier itu tidak punya kolom harga) dalam IDR. USDT
+diturunkan: `idrPrice / usd_idr_rate`, dibulatkan ke 0,1, dan **tampil
 bersisian** dengan IDR di storefront dan bot (mis. `Rp79.000 ≈ $4,9`). Tidak ada
 deteksi IP atau preferensi mata uang per-user — mata uang transaksi dipilih **saat
 bayar** (IDR → TokoPay, USDT → Binance/Bybit).
@@ -261,7 +265,7 @@ server-rendered (Tailwind CDN + HTMX, bukan SPA).
 (habis/batal); latar `paper` `#f6f8fb`, kartu `#fff`, teks `ink` `#1b2330`.
 **Font:** Outfit (judul), Manrope (isi), JetBrains Mono (kredensial). Ikon Lucide.
 
-**Peta halaman:** `/` beranda · `/c/:slug` & `/search` daftar/cari · `/p/:id`
+**Peta halaman:** `/` beranda · `/c/:slug` & `/search` daftar/cari · `/p/:slug`
 detail · `/cart` · `/checkout` (pilih metode = pilih mata uang) ·
 `/checkout/:code/pay` (instruksi + status HTMX polling) · `/account` +
 `/orders`/`/orders/:code` (kredensial bila DELIVERED) / `/referral` / `/reviews` /
@@ -278,8 +282,9 @@ SQL mentah; jangan ubah nama kolom/skema (DB dipakai bersama).
 
 Semua konfigurasi lewat **`.env`** (salin dari [`.env.example`](.env.example)) +
 sebagian via **web-admin → Settings**. Acuan kebenaran:
-`packages/core/src/config.ts`. Referensi tabel variabel ada di
-[`README.md` bagian 9](README.md#9-referensi-variabel-env).
+`packages/core/src/config.ts`. **`.env.example`** sendiri adalah referensi
+lengkap tiap variabel (dikomentari per kelompok); lihat juga
+[`README.md` bagian 9](README.md#9-untuk-developer) untuk struktur proyek.
 
 ### Setup lewat wizard (default)
 

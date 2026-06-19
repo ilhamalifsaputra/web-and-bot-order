@@ -245,7 +245,17 @@ pm2 restart bot-order
 ```
 
 > ⚠️ Bila ada perubahan struktur database, jalankan `prisma db push` **dulu** baru
-> kode baru — kalau terbalik muncul `P2022: column does not exist`.
+> kode baru — kalau terbalik muncul `P2022: column does not exist` (atau
+> `P2021: table does not exist` bila tabelnya berganti nama).
+
+> 🛠️ **Cek dulu `scripts/migrate-*.ts` sebelum `git pull` dieksekusi ulang ke
+> produksi.** Beberapa rilis menyertakan migrasi data **sekali-jalan** (bukan
+> `prisma db push` biasa) — mis. `migrate-catalog-rename` (Category → Product →
+> Denomination). Skrip ini **tidak idempotent**: matikan semua service dulu,
+> backup `data/bot.db` (+ `-wal`/`-shm`), baru jalankan `pnpm <nama-skrip>`
+> sesuai komentar di kepala filenya, lalu `pnpm prisma generate` sebelum start
+> ulang. Lewati langkah ini kalau skrip yang sama sudah pernah dijalankan di DB
+> ini.
 
 **Backup database** (rutin — semua data di satu file SQLite):
 

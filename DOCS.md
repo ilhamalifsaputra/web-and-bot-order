@@ -16,6 +16,7 @@ Arsitektur, fitur, dan setup environment proyek. Konvensi koding ada di
 9. [Desain storefront](#9-desain-storefront)
 10. [Setup env & checklist fitur](#10-setup-env--checklist-fitur)
 11. [Banyak toko dalam satu VPS](#11-banyak-toko-dalam-satu-vps)
+12. [API & Webhook](#12-api--webhook)
 
 ---
 
@@ -54,9 +55,10 @@ database SQLite** (`data/bot.db`, mode WAL).
   lintas denominasi.
 - **Server-rendered, TIDAK ada API publik.** Admin & storefront mengembalikan
   HTML (Nunjucks + HTMX), bukan JSON. Tidak ada REST/GraphQL untuk konsumsi
-  pihak ketiga; satu-satunya endpoint non-HTML adalah webhook internal
-  (`/pay/tokopay/callback`, `/tg/<secret>` saat `BOT_MODE=webhook`) dan
-  `/healthz`. Integrasi = lewat DB/CRUD, bukan HTTP.
+  pihak ketiga; satu-satunya endpoint non-HTML adalah webhook (`/pay/{tokopay,
+  paydisini,nowpayments}/callback`, `/tg/<secret>` saat `BOT_MODE=webhook`) dan
+  `/healthz` — daftar lengkap + kontrak request/respons di §12. Integrasi =
+  lewat DB/CRUD, bukan HTTP.
 
 **Topologi listen** (`apps/server/src/index.ts`):
 
@@ -146,32 +148,44 @@ Tiap order menyimpan snapshot: `Order.currency` (`IDR`/`USDT`), `Order.fxRate`
 
 ## 5. Pembayaran
 
-**Tiga metode auto-confirm, simetris di bot & storefront:**
+**Lima metode auto-confirm, simetris di bot & storefront:**
 
 | Metode | Mata uang | Mekanisme | Kelola |
 |---|---|---|---|
 | **Binance Internal** (UID + nominal unik) | USDT | poller auto-confirm (`payments/binanceInternal`) | env / Settings |
 | **TokoPay (QRIS)** | IDR | webhook `POST /pay/tokopay/callback` (verifikasi signature + idempoten `ProcessedTokopayTx`) | Settings |
+| **PayDisini (QRIS/e-wallet)** | IDR | webhook `POST /pay/paydisini/callback` + reconcile poller fallback; idempoten `ProcessedPaydisiniTx` | Settings |
+| **NOWPayments (hosted invoice)** | USDT | IPN webhook `POST /pay/nowpayments/callback` (HMAC-SHA512, header `x-nowpayments-sig`) + reconcile poller fallback; idempoten `ProcessedNowpaymentsTx` | Settings |
 | **Bybit USDT-BEP20** (on-chain) | USDT | poller cocokkan **nominal unik** (BEP20 tanpa memo); tak cocok → "unmatched" untuk review; idempoten `processed_bybit_tx` | Settings |
 
-Klien TokoPay ada di `@app/core/payments/tokopay` (resolver `getTokopayCreds` di
-`@app/db`), dipakai storefront dan bot. Bot menggambar QR QRIS di dalam Telegram
-(`buyNowTokopay`, callback `payq`).
+Kontrak webhook + reconcile poller ketiga gateway IDR/USDT di atas (TokoPay,
+PayDisini, NOWPayments) didokumentasikan lengkap di **§12**.
+
+Klien TokoPay & PayDisini ada di `@app/core/payments/{tokopay,paydisini}`,
+NOWPayments di `@app/core/payments/nowpayments` (resolver `getTokopayCreds` /
+`getPaydisiniCreds` / `getNowpaymentsCreds` di `@app/db`), dipakai storefront
+dan bot. Bot menggambar QR di dalam Telegram untuk TokoPay & PayDisini
+(`buyNowTokopay` / `buyNowPaydisini`, callback `payq`); NOWPayments membuka
+tautan hosted invoice (`buyNowNowpayments`) karena pembayarannya di luar
+Telegram.
 
 **Storefront:** pembeli pilih metode saat bayar
 (`apps/storefront/src/routes/checkout.ts`). Status di halaman bayar via **HTMX
 polling** `/checkout/:code/status` ~5 dtk; saat `DELIVERED` redirect ke kredensial.
 Web **tanpa upload bukti** dan **tanpa wallet**.
 
-**QRIS butuh Callback URL publik** (`https://<host>/pay/tokopay/callback`) di
-dashboard TokoPay — tanpa itu order QRIS mentok sampai jendela bayar habis.
-Binance & Bybit (poller) tak terpengaruh.
+**QRIS/e-wallet butuh Callback URL publik** di dashboard merchant —
+TokoPay (`https://<host>/pay/tokopay/callback`) dan PayDisini
+(`https://<host>/pay/paydisini/callback`) — tanpa itu order mentok sampai
+jendela bayar habis. NOWPayments **tidak perlu** didaftarkan manual: callback
+URL dikirim otomatis per-invoice (`ipn_callback_url`). Binance & Bybit (poller)
+tak terpengaruh sama sekali.
 
 **Binance Pay manual** (upload bukti, approve manual di bot) hanya muncul sebagai
 fallback zero-config bila tak ada metode otomatis. Perlu `BINANCE_PAY_ID`.
 
-Menu bayar: **QRIS / Binance / Bybit-BSC**. Tes koneksi API:
-`pnpm binance-probe`, `pnpm bybit-probe`.
+Menu bayar: **QRIS / PayDisini / NOWPayments / Binance / Bybit-BSC**. Tes koneksi
+API: `pnpm binance-probe`, `pnpm bybit-probe`.
 
 ---
 
@@ -425,3 +439,81 @@ nginx -t && systemctl reload nginx
   (bukan beberapa writer ke satu DB), jadi tidak memicu kebutuhan pindah Postgres.
 - **Batas praktis**: N toko = 4×N container; yang membatasi adalah RAM/CPU VPS
   (kira-kira ~1 GB per toko), bukan arsitektur DB.
+
+---
+
+## 12. API & Webhook
+
+Proyek ini **server-rendered, tidak punya REST/GraphQL API publik** untuk
+konsumsi pihak ketiga (lihat §1) — admin & storefront selalu balas HTML
+(Nunjucks + HTMX). Daftar di bawah adalah **satu-satunya** endpoint non-HTML:
+health check, webhook Telegram, dan webhook gateway pembayaran. Integrasi
+eksternal lain harus lewat DB + `packages/db/src/crud/*`, bukan HTTP.
+
+### 12.1 Health check
+
+| Endpoint | Proses | Auth | Respons |
+|---|---|---|---|
+| `GET /healthz` | web-admin (`apps/web-admin/src/routes/auth.ts`) | tidak ada (di-exclude dari setup-gate) | `{"status":"ok"}` setelah satu ping DB (`getSetting`) |
+| `GET /healthz` | storefront (`apps/storefront/src/server.ts`) | tidak ada | sama, untuk domain toko sendiri |
+
+Dipakai uptime monitor / reverse proxy; tetap menjawab walau setup wizard
+belum selesai atau bot OFF (token kosong).
+
+### 12.2 Webhook Telegram
+
+`POST /tg/<WEBHOOK_SECRET>` — hanya didaftarkan saat `BOT_MODE=webhook` dan
+token bot terisi (`apps/server/src/index.ts`). Default transport tetap
+`polling`; endpoint ini tidak ada sama sekali bila mode ≠ `webhook`.
+
+Auth dua lapis: path harus cocok `WEBHOOK_SECRET`, lalu grammY (`webhookCallback`)
+memverifikasi header `X-Telegram-Bot-Api-Secret-Token` sebelum update
+diteruskan ke bot — mismatch dibalas `401` sebelum logic bot jalan sama sekali.
+
+### 12.3 Webhook gateway pembayaran (storefront, public)
+
+Tiga gateway auto-confirm (lihat §5) punya webhook dengan kontrak request/respons
+yang sengaja dibuat seragam (`apps/storefront/src/routes/checkout.ts`):
+
+| Endpoint | Mata uang | Auth (signature) | Ledger idempoten |
+|---|---|---|---|
+| `POST /pay/tokopay/callback` | IDR | field di body, `md5(merchantId:secret:refId)` | `ProcessedTokopayTx` |
+| `POST /pay/paydisini/callback` | IDR | field di body (skema sejenis TokoPay) | `ProcessedPaydisiniTx` |
+| `POST /pay/nowpayments/callback` | USDT | header `x-nowpayments-sig`, HMAC-SHA512 atas body yang key-nya di-sort rekursif | `ProcessedNowpaymentsTx` |
+
+**Kontrak respons identik untuk ketiganya** — supaya gateway berhenti retry
+terlepas dari hasilnya:
+
+- `403` — gateway dimatikan (kredensial/`*_enabled` kosong) atau signature tidak valid.
+- `200` untuk **semua** outcome lain: `ignored` (status belum final, mis.
+  `waiting`/`confirming`), `unmatched` (refId/orderId tak ketemu order yang
+  cocok → tetap dicatat ke ledger untuk review admin), `amount mismatch`
+  (dibayar kurang dari `order.totalAmount`), `delivered`, atau
+  `delivery failed` (pembayaran sudah tercatat tapi auto-delivery gagal —
+  diselesaikan manual dari panel order, ditandai `delivery_failed` di ledger).
+
+**Pendaftaran callback URL per gateway:**
+
+- **TokoPay & PayDisini** — didaftarkan manual di dashboard merchant masing-masing:
+  `https://<SHOP_PUBLIC_URL>/pay/tokopay/callback` /
+  `https://<SHOP_PUBLIC_URL>/pay/paydisini/callback`.
+- **NOWPayments** — dikirim otomatis per-invoice sebagai `ipn_callback_url`
+  saat invoice dibuat (`createInvoice`,
+  `packages/core/src/payments/nowpayments.ts`); tidak perlu didaftarkan manual.
+
+**Fallback bila webhook tidak sampai:** ketiga gateway juga punya reconcile
+poller di bot (`apps/order-bot/src/payments/{tokopay,paydisini,nowpayments}Reconcile.ts`)
+yang polling status gateway untuk order `PENDING` yang masih dalam jendela
+bayar, idempoten lewat ledger yang sama dengan webhook-nya.
+
+> ⚠ **Belum sepenuhnya terverifikasi ke dashboard live:** nama field/endpoint
+> PayDisini, dan sebagian detail NOWPayments (slug `pay_currency`, endpoint
+> status-check) — lihat komentar `ASSUMPTION (flagged)` di
+> `packages/core/src/payments/{paydisini,nowpayments}.ts`. Verifikasi sebelum
+> go-live.
+
+### 12.4 Endpoint internal lain (bukan API publik)
+
+- `GET /checkout/:code/status` — partial HTMX yang di-poll halaman bayar
+  storefront tiap ~5 detik (§5); butuh sesi pembeli pemilik order, jadi bukan
+  endpoint yang bisa dipanggil pihak ketiga.

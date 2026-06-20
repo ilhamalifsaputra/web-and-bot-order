@@ -289,6 +289,19 @@ describe("Home screen (inline keyboard)", () => {
     expect(flat).toContain("v1:help:open");
   });
 
+  it("router wires v1:wallet:view to viewWallet", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:wallet:view" });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, "Credit balance")).toBe(true);
+    expect(offersForwardAction(sink)).toBe(true);
+  });
+
+  it("router wires v1:browse:popular to browsePopular", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:browse:popular" });
+    await routeCallback(ctx);
+    expect(offersForwardAction(sink)).toBe(true);
+  });
+
   it("startCommand and the persistent-keyboard 'main' back-action also render the inline Home", async () => {
     const start = customerCtx({ callbackData: "v1:menu:main" });
     await customer.startCommand(start.ctx);

@@ -138,6 +138,10 @@ const dispatchRef: DomainDispatcher = async (ctx, parts) => {
   if (parts[2] === "view") await customer.viewReferral(ctx);
 };
 
+const dispatchWallet: DomainDispatcher = async (ctx, parts) => {
+  if (parts[2] === "view") await customer.viewWallet(ctx);
+};
+
 const dispatchLang: DomainDispatcher = async (ctx, parts) => {
   const action = parts[2];
   if (action === "menu") await customer.showLanguageMenu(ctx);
@@ -189,6 +193,7 @@ const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
   restock: dispatchRestock,
   ticket: dispatchTicket,
   voucher: dispatchVoucher,
+  wallet: dispatchWallet,
 };
 
 // ---------------------------------------------------------------------------

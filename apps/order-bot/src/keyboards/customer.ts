@@ -106,6 +106,15 @@ export function notificationKb(lang: string): InlineKeyboard {
   ]);
 }
 
+/** Success-screen footer after an auto-confirmed payment: shop again / history / home. */
+export function paymentSuccessKb(lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("checkout.buy_again_btn", lang), data: cb("browse", "prods") }],
+    [{ text: coreT("order.all_history_btn", lang), data: cb("order", "list") }],
+    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+  ]);
+}
+
 // ---------------------------------------------------------------------------
 // Browse — persistent numbered reply keyboard
 // ---------------------------------------------------------------------------

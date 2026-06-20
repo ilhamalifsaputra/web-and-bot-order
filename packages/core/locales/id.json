@@ -98,6 +98,7 @@
   "cart.title": "<b>Keranjang</b>\n\n{lines}\n\nSubtotal: <b>{subtotal}</b>",
   "checkout.ask_screenshot": "Kirim screenshot pembayaran sebagai foto.",
   "checkout.ask_txid": "Screenshot diterima. Sekarang tempel Binance Transaction ID (TxID).",
+  "checkout.buy_again_btn": "🔁 Beli Lagi",
   "checkout.cancel_btn": "✕ Batal",
   "checkout.cancel_order": "✕ Batalkan Pesanan",
   "checkout.bybit_instructions": "<b>USDT via BSC (konfirmasi otomatis)</b>\n\nOrder: <code>{code}</code>\nKirim <b>tepat {amount}</b>{idr_line} <b>USDT</b> di jaringan <b>BNB Smart Chain (BEP20)</b> ke:\n\n<code>{address}</code>\n\n⚠ <b>Kirim jumlah PERSIS</b> seperti di atas — konfirmasi otomatis mencocokkan nominal, jadi jumlah yang dibulatkan tidak akan dikenali.\n⚠ Gunakan jaringan <b>BEP20 / BNB Smart Chain</b> saja. Jaringan lain akan hilang.\n⏳ Bayar sebelum <b>{expiry}</b>. Pengiriman otomatis setelah deposit terkonfirmasi (~1–2 menit) — tanpa screenshot.",

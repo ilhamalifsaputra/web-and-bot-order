@@ -11,6 +11,7 @@ import {
   resolveBybitConfig,
   setSetting,
   deleteSetting,
+  setOrderPaymentMessage,
   BYBIT_ADDRESS_KEY,
   BYBIT_API_KEY_KEY,
   BYBIT_API_SECRET_KEY,
@@ -129,19 +130,41 @@ describe("deliverPaidBybitOrder (idempotency + delivery)", () => {
 describe("processDeposits (poll-loop wiring)", () => {
   function fakeApi() {
     const sent: Array<{ chatId: number | string; text: string }> = [];
+    const edits: Array<{ chatId: number | string; messageId: number; text: string; extra?: unknown }> = [];
     const api = {
       sendMessage: async (chatId: number | string, text: string) => {
         sent.push({ chatId, text });
         return { message_id: 1 };
       },
-      editMessageText: async () => ({}),
+      sendDocument: async () => ({ message_id: 1 }),
+      editMessageText: async (chatId: number | string, messageId: number, text: string, extra?: unknown) => {
+        edits.push({ chatId, messageId, text, extra });
+        return {};
+      },
     } as unknown as Api;
-    return { api, sent };
+    return { api, sent, edits };
   }
 
   const pending = () => listPendingBybitOrders(prisma, new Date());
   const dep = (over: Partial<BybitDeposit> & { txId: string; amount: number }): BybitDeposit => ({
     chain: "BSC", ...over,
+  });
+
+  it("flips the anchored payment bubble to the success message with paymentSuccessKb (§9.1)", async () => {
+    const order = (await makeBybitOrder())!;
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const { api, edits } = fakeApi();
+    await processDeposits(api, [dep({ txId: "0xFLIP", amount: Number(order.totalAmount) })], await pending());
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
+
+    expect(edits).toHaveLength(1);
+    expect(edits[0]!.chatId).toBe(555);
+    expect(edits[0]!.messageId).toBe(777);
+    const markup = (edits[0]!.extra as { reply_markup?: { inline_keyboard?: Array<Array<{ callback_data?: string }>> } })
+      .reply_markup;
+    const flat = (markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
+    expect(flat).toContain("v1:browse:prods");
+    expect(flat).toContain("v1:order:list");
   });
 
   it("delivers on a unique-amount match", async () => {

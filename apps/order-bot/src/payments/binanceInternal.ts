@@ -38,7 +38,7 @@ import {
 } from "@app/db";
 import { coreT } from "../util/i18n";
 import { esc } from "../util/format";
-import { notificationKb } from "../keyboards/customer";
+import { paymentSuccessKb } from "../keyboards/customer";
 import { sendAccountFile } from "../util/delivery";
 
 const AMOUNT_TOLERANCE = 0.01; // USDT
@@ -187,7 +187,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
         Number(order.paymentMsgChatId),
         order.paymentMsgId,
         coreT("checkout.internal_paid", lang, { code: order.orderCode }),
-        { parse_mode: "HTML", reply_markup: notificationKb(lang) },
+        { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
       );
     } catch {
       /* bubble may be gone/uneditable — the credential DM already informed the buyer */

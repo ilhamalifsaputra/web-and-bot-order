@@ -23,7 +23,7 @@ import { buildSampleData, resetDb, type SampleData } from "../../../tests/helper
 import { makeCtx, calls, sentIncludes, offersForwardAction, lastMarkup, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
-import { denominationPickerKb, denominationDetailKb, persistentLabel } from "../src/keyboards/customer";
+import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuccessKb } from "../src/keyboards/customer";
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
@@ -507,6 +507,20 @@ describe("denomination picker", () => {
     await customer.browseProductsFlat(ctx);
     const entries = (ctx.session.scratch as { browseEntries?: number[] }).browseEntries ?? [];
     expect(entries).toContain(product.id);
+  });
+});
+
+// ===========================================================================
+// paymentSuccessKb (§9.1 — auto-confirm payment-bubble success footer)
+// ===========================================================================
+
+describe("paymentSuccessKb", () => {
+  it("renders Beli Lagi / Riwayat / Menu with three distinct callbacks (no duplicates)", () => {
+    const kb = paymentSuccessKb("en");
+    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    const datas = flat.map((b) => b.callback_data);
+    expect(datas).toEqual(["v1:browse:prods", "v1:order:list", "v1:menu:main"]);
+    expect(new Set(datas).size).toBe(datas.length); // no duplicate callback_data
   });
 });
 

@@ -98,6 +98,7 @@
   "cart.title": "<b>Your Cart</b>\n\n{lines}\n\nSubtotal: <b>{subtotal}</b>",
   "checkout.ask_screenshot": "Send the payment screenshot as a photo.",
   "checkout.ask_txid": "Screenshot received. Now paste the Binance Transaction ID (TxID).",
+  "checkout.buy_again_btn": "🔁 Buy Again",
   "checkout.cancel_btn": "✕ Cancel",
   "checkout.cancel_order": "✕ Cancel Order",
   "checkout.bybit_instructions": "<b>USDT on BSC (auto-confirm)</b>\n\nOrder: <code>{code}</code>\nSend <b>exactly {amount}</b>{idr_line} of <b>USDT</b> on the <b>BNB Smart Chain (BEP20)</b> network to:\n\n<code>{address}</code>\n\n⚠ <b>Send the EXACT amount</b> above — we auto-confirm by matching it, so an even-rounded amount won't be recognised.\n⚠ Use the <b>BEP20 / BNB Smart Chain</b> network only. Other networks are lost.\n⏳ Pay before <b>{expiry}</b>. Delivery is automatic once the deposit confirms (~1–2 min) — no screenshot needed.",

@@ -15,81 +15,71 @@
       {% if customer %}hx-headers='{"x-csrf-token": "{{ customer.csrf }}"}'{% endif %}>
 
 {% block nav %}
-{# Shop header (design.md §4.1): brand · search · account · cart. Sticky like
-   the admin nav, but customer-facing and jargon-free. #}
-<nav class="sticky top-0 z-30 bg-card/85 backdrop-blur border-b border-line">
-  <div class="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3 sm:gap-4">
-    <a href="/" class="flex items-center gap-2 font-display text-lg font-semibold text-pine whitespace-nowrap">
+{# Shop header: brand · search · account · cart. Sticky like the admin nav. #}
+<header class="sticky top-0 z-30 border-b border-line bg-card/90 backdrop-blur">
+  <div class="mx-auto flex h-16 max-w-6xl items-center gap-4 px-4 lg:px-6">
+    <a href="/" class="flex shrink-0 items-center gap-2 text-pine">
       {% if logo_url %}
       <img src="{{ logo_url }}" alt="{{ shop_name }}" class="h-7 w-auto max-w-[10rem] object-contain">
       {% else %}
-      <i data-lucide="store" class="w-5 h-5"></i>
+      <i data-lucide="store" class="h-6 w-6"></i>
       {% endif %}
-      <span class="hidden xs:inline sm:inline">{{ shop_name }}</span>
+      <span class="text-lg font-display font-semibold text-ink">{{ shop_name }}</span>
     </a>
 
-    <form method="get" action="/search" class="flex-1 max-w-xl mx-auto hidden sm:block">
-      <div class="relative">
-        <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint"></i>
-        <input type="search" name="q" value="{{ q }}" placeholder="{{ t('web.search_placeholder', lang) }}"
-               class="field !pl-9" aria-label="{{ t('web.search_placeholder', lang) }}">
-      </div>
+    <form method="get" action="/search" class="relative hidden flex-1 sm:block mx-4 max-w-xl">
+      <i data-lucide="search" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-faint"></i>
+      <input type="search" name="q" value="{{ q }}" placeholder="{{ t('web.search_placeholder', lang) }}"
+             class="h-10 w-full rounded-full border border-line bg-paper pl-9 pr-4 text-sm focus:border-pine focus:bg-card focus:outline-none focus:ring-2 focus:ring-pine-tint" aria-label="{{ t('web.search_placeholder', lang) }}">
     </form>
 
-    <div class="flex items-center gap-1 sm:gap-2 text-sm whitespace-nowrap ml-auto">
-      {# Language toggle — the only switcher in the header (no currency picker:
-         every buyer sees IDR + USDT side by side, design.md §8b). #}
+    <nav class="ml-auto flex items-center gap-1 text-sm text-ink-soft sm:ml-0">
+      {# Language toggle #}
       {% set other_lang = 'en' if lang == 'id' else 'id' %}
-      <a href="/lang?to={{ other_lang }}&back={{ path | default('/') | urlencode }}"
-         class="btn btn-ghost btn-sm uppercase" aria-label="{{ t('web.lang_label', lang) }}">
-        <i data-lucide="globe" class="w-4 h-4"></i> {{ other_lang }}
+      <a href="/lang?to={{ other_lang }}&back={{ path | default('/') | urlencode }}" class="hidden items-center gap-1 rounded-lg px-2.5 py-2 hover:bg-sand sm:flex uppercase" aria-label="{{ t('web.lang_label', lang) }}">
+        <i data-lucide="globe" class="h-4 w-4"></i> {{ other_lang }}
       </a>
 
       {% if customer %}
-      <a href="/account" class="btn btn-ghost btn-sm {% if active_nav == '/account' %}text-pine{% endif %}">
-        <i data-lucide="user" class="w-4 h-4"></i>
-        <span class="hidden sm:inline">{{ t('web.nav_account', lang) }}</span>
+      <a href="/account" class="flex items-center gap-1 rounded-lg px-2.5 py-2 hover:bg-sand {% if active_nav == '/account' %}text-pine{% endif %}">
+        <i data-lucide="user" class="h-4 w-4"></i> <span class="hidden sm:inline">{{ t('web.nav_account', lang) }}</span>
       </a>
       {% else %}
-      <a href="/login" class="btn btn-ghost btn-sm">
-        <i data-lucide="log-in" class="w-4 h-4"></i>
-        <span class="hidden sm:inline">{{ t('web.nav_login', lang) }}</span>
+      <a href="/login" class="flex items-center gap-1 rounded-lg px-2.5 py-2 hover:bg-sand">
+        <i data-lucide="log-in" class="h-4 w-4"></i> <span class="hidden sm:inline">{{ t('web.nav_login', lang) }}</span>
       </a>
       {% endif %}
 
-      <a href="/cart" class="btn btn-soft btn-sm relative" aria-label="{{ t('web.nav_cart', lang) }}">
-        <i data-lucide="shopping-cart" class="w-4 h-4"></i>
-        <span class="hidden sm:inline">{{ t('web.nav_cart', lang) }}</span>
+      <a href="/cart" class="flex items-center gap-1.5 rounded-full bg-pine-tint px-3 py-2 font-medium text-pine-dark hover:bg-pine-tint/80 relative" aria-label="{{ t('web.nav_cart', lang) }}">
+        <i data-lucide="shopping-cart" class="h-4 w-4"></i> <span class="hidden sm:inline">{{ t('web.nav_cart', lang) }}</span>
         {% if cart_count and cart_count > 0 %}
-        <span class="chip bg-pine text-white !px-1.5 !py-0 text-[0.65rem] absolute -top-1.5 -right-1.5">{{ cart_count }}</span>
+        <span class="absolute -top-1 -right-1 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-pine px-1 text-[0.65rem] font-bold text-white">{{ cart_count }}</span>
         {% endif %}
       </a>
-    </div>
+    </nav>
   </div>
 
   {# Mobile search — second row below the brand bar. #}
-  <div class="sm:hidden border-t border-line px-4 py-2">
-    <form method="get" action="/search">
-      <div class="relative">
-        <i data-lucide="search" class="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint"></i>
-        <input type="search" name="q" value="{{ q }}" placeholder="{{ t('web.search_placeholder', lang) }}"
-               class="field !pl-9" aria-label="{{ t('web.search_placeholder', lang) }}">
-      </div>
+  <div class="sm:hidden border-t border-line px-4 py-2 bg-card">
+    <form method="get" action="/search" class="relative">
+      <i data-lucide="search" class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-faint"></i>
+      <input type="search" name="q" value="{{ q }}" placeholder="{{ t('web.search_placeholder', lang) }}"
+             class="h-10 w-full rounded-full border border-line bg-paper pl-9 pr-4 text-sm focus:border-pine focus:bg-card focus:outline-none focus:ring-2 focus:ring-pine-tint" aria-label="{{ t('web.search_placeholder', lang) }}">
     </form>
   </div>
-</nav>
+</header>
 {% endblock %}
 
-<main class="max-w-6xl mx-auto px-4 py-8 sm:py-10">
+<main class="max-w-6xl mx-auto px-4 py-8 lg:px-6">
   {% block content %}{% endblock %}
 </main>
 
-<footer class="border-t border-line mt-12">
-  <div class="max-w-6xl mx-auto px-4 py-8 text-sm text-ink-soft flex flex-col sm:flex-row items-center justify-between gap-3">
-    <div class="flex items-center gap-2 font-display font-semibold text-ink">
-      <i data-lucide="store" class="w-4 h-4 text-pine"></i> {{ shop_name }}
-    </div>
-    <div class="text-ink-faint text-xs">{{ t('web.footer_note', lang) }}</div>
+<footer class="mt-16 border-t border-line bg-card">
+  <div class="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-4 py-6 text-sm sm:flex-row lg:px-6">
+    <span class="flex items-center gap-2 font-display font-semibold text-pine">
+      <i data-lucide="store" class="h-5 w-5"></i> {{ shop_name }}
+    </span>
+    <span class="text-ink-faint text-xs sm:text-sm">{{ t('web.footer_note', lang) }}</span>
   </div>
 </footer>
 

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Trustance — storefront (mockup perbaikan)</title>
+  <title>Trustance — toko digital (mockup)</title>
 
   <!--
     HANDOFF UNTUK CLAUDE CODE — stack: Nunjucks + Tailwind + Fastify
@@ -16,6 +16,12 @@
       3. HARGA: format perkiraan USD 2 desimal; sembunyikan "≈ $.." bila < 0.01.
          Lihat helper fmtUsd() di bawah — pindahkan ke filter Nunjucks.
       4. "Why us" dirampingkan dari 6 -> 4 kartu, tanpa duplikasi chip hero.
+      5. BAHASA: seluruh teks UI kini Bahasa Indonesia (konsisten dengan lang="id").
+      6. SECTION #sosmed & #topup = mockup form rencana integrasi API
+         (Layanan Sosmed / SMM & Top Up Game). Semua field DISABLED, opsi & harga
+         hanya ILUSTRASI — wajib dirender dari API provider saat integrasi.
+         Harga tetap pakai Decimal + filter `money` saat di-port ke Nunjucks;
+         jangan hardcode angka.
     Catatan: harga produk & gambar di sini hanya ilustrasi — render dari data Anda.
     Warna 'blue-600' silakan ganti ke token brand.
   -->
@@ -46,7 +52,7 @@
       </a>
       <div class="relative hidden flex-1 sm:block">
         <svg class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" /></svg>
-        <input placeholder="Search products…" class="h-10 w-full rounded-full border border-slate-200 bg-slate-50 pl-9 pr-4 text-sm focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100" />
+        <input placeholder="Cari produk…" class="h-10 w-full rounded-full border border-slate-200 bg-slate-50 pl-9 pr-4 text-sm focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-100" />
       </div>
       <nav class="ml-auto flex items-center gap-1 text-sm text-slate-600 sm:ml-0">
         <button class="hidden items-center gap-1 rounded-lg px-2.5 py-2 hover:bg-slate-100 sm:flex">
@@ -55,11 +61,11 @@
         </button>
         <button class="flex items-center gap-1 rounded-lg px-2.5 py-2 hover:bg-slate-100">
           <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15m3 0 3-3m0 0-3-3m3 3H9" /></svg>
-          Sign in
+          Masuk
         </button>
         <button class="flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-2 font-medium text-blue-700 hover:bg-blue-100">
           <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 3h1.386c.51 0 .955.343 1.087.835l.383 1.437M7.5 14.25a3 3 0 0 0-3 3h15.75m-12.75-3h11.218c1.121-2.3 2.1-4.684 2.924-7.138a60.114 60.114 0 0 0-16.536-1.84M7.5 14.25 5.106 5.272M6 20.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Zm12.75 0a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Z" /></svg>
-          Cart
+          Keranjang
         </button>
       </nav>
     </div>
@@ -76,52 +82,52 @@
           <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>
           Garansi · Cepat · Aman
         </span>
-        <h1 class="mt-5 text-4xl font-bold leading-tight text-white sm:text-5xl">Digital products, delivered instantly</h1>
+        <h1 class="mt-5 text-4xl font-bold leading-tight text-white sm:text-5xl">Produk digital, dikirim seketika</h1>
         <p class="mt-4 text-lg text-slate-300">Bayar dengan QRIS atau USDT — kredensial Anda dikirim otomatis tepat setelah pembayaran terverifikasi.</p>
         <div class="mt-7 flex flex-wrap gap-3">
           <a href="#products" class="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-3 font-medium text-white hover:bg-blue-700">
             <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 10.5V6a3.75 3.75 0 1 0-7.5 0v4.5m11.356-1.993 1.263 12c.07.665-.45 1.243-1.119 1.243H4.25a1.125 1.125 0 0 1-1.12-1.243l1.264-12A1.125 1.125 0 0 1 5.513 7.5h12.974c.576 0 1.059.435 1.119 1.007Z" /></svg>
-            Browse products
+            Lihat produk
           </a>
           <a href="#contact" class="inline-flex items-center gap-2 rounded-xl border border-white/20 px-5 py-3 font-medium text-white hover:bg-white/10">
             <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" /></svg>
-            Contact support
+            Hubungi kami
           </a>
         </div>
         <!-- honest trust chips: capabilities/guarantees, no customer-count claims -->
         <div class="mt-8 flex flex-wrap gap-x-6 gap-y-2 border-t border-white/10 pt-5 text-sm text-slate-300">
-          <span class="inline-flex items-center gap-1.5"><svg class="h-4 w-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m3.75 13.5 10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75Z" /></svg>Instant delivery</span>
+          <span class="inline-flex items-center gap-1.5"><svg class="h-4 w-4 text-amber-400" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m3.75 13.5 10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75Z" /></svg>Pengiriman instan</span>
           <span class="inline-flex items-center gap-1.5"><svg class="h-4 w-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" /></svg>QRIS &amp; USDT</span>
-          <span class="inline-flex items-center gap-1.5"><svg class="h-4 w-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" /></svg>Warranty included</span>
-          <span class="inline-flex items-center gap-1.5"><svg class="h-4 w-4 text-violet-400" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 21v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21M3.75 21h16.5M3.75 21H1.5m18.75 0h2.25m-2.25 0V8.25c0-.621-.504-1.125-1.125-1.125h-2.25c-.621 0-1.125.504-1.125 1.125V21" /></svg>24/7 support</span>
+          <span class="inline-flex items-center gap-1.5"><svg class="h-4 w-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" /></svg>Bergaransi</span>
+          <span class="inline-flex items-center gap-1.5"><svg class="h-4 w-4 text-violet-400" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 21v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21M3.75 21h16.5M3.75 21H1.5m18.75 0h2.25m-2.25 0V8.25c0-.621-.504-1.125-1.125-1.125h-2.25c-.621 0-1.125.504-1.125 1.125V21" /></svg>Dukungan 24/7</span>
         </div>
       </div>
     </section>
 
     <!-- ===== WHY US (trimmed to 4, no inflated claims, no dupes) ===== -->
     <section class="mt-16">
-      <p class="text-center text-sm font-semibold uppercase tracking-wide text-blue-600">Why us</p>
-      <h2 class="mt-1 text-center text-3xl font-bold text-slate-900">Why shop with us?</h2>
-      <p class="mt-2 text-center text-slate-500">Safe, fast, and pleasant digital shopping.</p>
+      <p class="text-center text-sm font-semibold uppercase tracking-wide text-blue-600">Kenapa kami</p>
+      <h2 class="mt-1 text-center text-3xl font-bold text-slate-900">Kenapa belanja di sini?</h2>
+      <p class="mt-2 text-center text-slate-500">Belanja produk digital yang aman, cepat, dan nyaman.</p>
       <div class="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <span class="grid h-11 w-11 place-items-center rounded-xl bg-blue-50 text-blue-600"><svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m3.75 13.5 10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75Z" /></svg></span>
-          <h3 class="mt-4 font-semibold text-slate-900">Instant delivery</h3>
+          <h3 class="mt-4 font-semibold text-slate-900">Pengiriman instan</h3>
           <p class="mt-1 text-sm text-slate-500">Pesanan terkirim otomatis dalam hitungan menit setelah pembayaran.</p>
         </div>
         <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <span class="grid h-11 w-11 place-items-center rounded-xl bg-emerald-50 text-emerald-600"><svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" /></svg></span>
-          <h3 class="mt-4 font-semibold text-slate-900">Secure payments</h3>
+          <h3 class="mt-4 font-semibold text-slate-900">Pembayaran aman</h3>
           <p class="mt-1 text-sm text-slate-500">Pembayaran QRIS &amp; USDT diverifikasi otomatis oleh sistem.</p>
         </div>
         <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <span class="grid h-11 w-11 place-items-center rounded-xl bg-amber-50 text-amber-600"><svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" /></svg></span>
-          <h3 class="mt-4 font-semibold text-slate-900">Warranty included</h3>
+          <h3 class="mt-4 font-semibold text-slate-900">Bergaransi</h3>
           <p class="mt-1 text-sm text-slate-500">Setiap produk bergaransi — kalau bermasalah, kami perbaiki atau ganti.</p>
         </div>
         <div class="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <span class="grid h-11 w-11 place-items-center rounded-xl bg-violet-50 text-violet-600"><svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 8.511c.884.284 1.5 1.128 1.5 2.097v4.286c0 1.136-.847 2.1-1.98 2.193-.34.027-.68.052-1.02.072v3.091l-3-3c-1.354 0-2.694-.055-4.02-.163a2.115 2.115 0 0 1-.825-.242m9.345-8.334a2.126 2.126 0 0 0-.476-.095 48.64 48.64 0 0 0-8.048 0c-1.131.094-1.976 1.057-1.976 2.192v4.286c0 .837.46 1.58 1.155 1.951m9.345-8.334V6.637c0-1.621-1.152-3.026-2.76-3.235A48.455 48.455 0 0 0 11.25 3c-2.115 0-4.198.137-6.24.402-1.608.209-2.76 1.614-2.76 3.235v6.226c0 1.621 1.152 3.026 2.76 3.235.577.075 1.157.14 1.74.194V21l4.155-4.155" /></svg></span>
-          <h3 class="mt-4 font-semibold text-slate-900">Fast human support</h3>
+          <h3 class="mt-4 font-semibold text-slate-900">Respons cepat</h3>
           <p class="mt-1 text-sm text-slate-500">Tim kami siap dihubungi via Telegram &amp; WhatsApp.</p>
         </div>
       </div>
@@ -129,21 +135,35 @@
 
     <!-- ===== CATEGORIES ===== -->
     <section class="mt-16">
-      <p class="text-sm font-semibold uppercase tracking-wide text-blue-600">Categories</p>
-      <h2 class="mt-1 text-2xl font-bold text-slate-900">Find your service</h2>
-      <div class="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <p class="text-sm font-semibold uppercase tracking-wide text-blue-600">Kategori</p>
+      <h2 class="mt-1 text-2xl font-bold text-slate-900">Temukan layanan Anda</h2>
+      <div class="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <a href="#" class="group flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-blue-300 hover:shadow">
           <span class="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-amber-50 text-2xl">🎨</span>
           <div class="min-w-0">
             <h3 class="font-semibold text-slate-900">Editing</h3>
-            <span class="text-sm font-medium text-blue-600">View products →</span>
+            <span class="inline-flex items-center gap-1 text-sm font-medium text-blue-600">Lihat produk<svg class="h-4 w-4 transition-transform group-hover:translate-x-0.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg></span>
           </div>
         </a>
         <a href="#" class="group flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-blue-300 hover:shadow">
           <span class="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-blue-50 text-2xl">🎬</span>
           <div class="min-w-0">
             <h3 class="font-semibold text-slate-900">Streaming</h3>
-            <span class="text-sm font-medium text-blue-600">View products →</span>
+            <span class="inline-flex items-center gap-1 text-sm font-medium text-blue-600">Lihat produk<svg class="h-4 w-4 transition-transform group-hover:translate-x-0.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg></span>
+          </div>
+        </a>
+        <a href="#sosmed" class="group flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-blue-300 hover:shadow">
+          <span class="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-sky-50 text-2xl">📈</span>
+          <div class="min-w-0">
+            <h3 class="font-semibold text-slate-900">Layanan Sosmed</h3>
+            <span class="inline-flex items-center gap-1 text-sm font-medium text-blue-600">Pesan sekarang<svg class="h-4 w-4 transition-transform group-hover:translate-x-0.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg></span>
+          </div>
+        </a>
+        <a href="#topup" class="group flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-blue-300 hover:shadow">
+          <span class="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-fuchsia-50 text-2xl">🎮</span>
+          <div class="min-w-0">
+            <h3 class="font-semibold text-slate-900">Top Up Game</h3>
+            <span class="inline-flex items-center gap-1 text-sm font-medium text-blue-600">Top up sekarang<svg class="h-4 w-4 transition-transform group-hover:translate-x-0.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg></span>
           </div>
         </a>
       </div>
@@ -153,10 +173,10 @@
     <section id="products" class="mt-16">
       <div class="flex items-end justify-between">
         <div>
-          <p class="text-sm font-semibold uppercase tracking-wide text-blue-600">New</p>
-          <h2 class="mt-1 text-2xl font-bold text-slate-900">Latest products</h2>
+          <p class="text-sm font-semibold uppercase tracking-wide text-blue-600">Baru</p>
+          <h2 class="mt-1 text-2xl font-bold text-slate-900">Produk terbaru</h2>
         </div>
-        <a href="#" class="text-sm font-medium text-blue-600 hover:text-blue-700">Browse by category ↑</a>
+        <a href="#" class="group inline-flex items-center gap-1 text-sm font-medium text-blue-600 hover:text-blue-700">Lihat semua kategori<svg class="h-4 w-4 transition-transform group-hover:translate-x-0.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg></a>
       </div>
 
       <div class="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
@@ -164,14 +184,14 @@
         <a href="#" class="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md">
           <div class="relative grid h-44 place-items-center bg-gradient-to-br from-slate-800 to-slate-700">
             <span class="text-2xl font-bold text-white/90">Netflix</span>
-            <span class="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-black/55 px-2.5 py-1 text-xs font-medium text-amber-300"><svg class="h-3 w-3" fill="currentColor" viewBox="0 0 24 24"><path d="M3.75 13.5 14.25 2.25 12 10.5h8.25L9.75 21.75 12 13.5z"/></svg>Instant delivery</span>
+            <span class="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-black/55 px-2.5 py-1 text-xs font-medium text-amber-300"><svg class="h-3 w-3" fill="currentColor" viewBox="0 0 24 24"><path d="M3.75 13.5 14.25 2.25 12 10.5h8.25L9.75 21.75 12 13.5z"/></svg>Pengiriman instan</span>
           </div>
           <div class="p-4">
             <h3 class="font-semibold text-slate-900">Netflix</h3>
             <p class="text-sm text-slate-400">Streaming</p>
             <div class="mt-3 flex items-center justify-between">
-              <p class="text-sm text-slate-500">from <span class="font-semibold text-blue-600">Rp45.000</span> <span class="text-slate-400">≈ $2.74</span></p>
-              <span class="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600">Available</span>
+              <p class="text-sm text-slate-500">mulai <span class="font-semibold text-blue-600">Rp45.000</span> <span class="text-slate-400">≈ $2.74</span></p>
+              <span class="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600">Tersedia</span>
             </div>
           </div>
         </a>
@@ -179,14 +199,14 @@
         <a href="#" class="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md">
           <div class="relative grid h-44 place-items-center bg-gradient-to-br from-blue-700 to-indigo-600">
             <span class="text-2xl font-bold text-white/90">CapCut</span>
-            <span class="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-black/40 px-2.5 py-1 text-xs font-medium text-amber-300"><svg class="h-3 w-3" fill="currentColor" viewBox="0 0 24 24"><path d="M3.75 13.5 14.25 2.25 12 10.5h8.25L9.75 21.75 12 13.5z"/></svg>Instant delivery</span>
+            <span class="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-black/40 px-2.5 py-1 text-xs font-medium text-amber-300"><svg class="h-3 w-3" fill="currentColor" viewBox="0 0 24 24"><path d="M3.75 13.5 14.25 2.25 12 10.5h8.25L9.75 21.75 12 13.5z"/></svg>Pengiriman instan</span>
           </div>
           <div class="p-4">
             <h3 class="font-semibold text-slate-900">CapCut</h3>
-            <p class="text-sm text-slate-400">Editing · <span class="text-blue-600">2 options</span></p>
+            <p class="text-sm text-slate-400">Editing · <span class="text-blue-600">2 pilihan</span></p>
             <div class="mt-3 flex items-center justify-between">
-              <p class="text-sm text-slate-500">from <span class="font-semibold text-blue-600">Rp25.000</span> <span class="text-slate-400">≈ $1.52</span></p>
-              <span class="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600">Available</span>
+              <p class="text-sm text-slate-500">mulai <span class="font-semibold text-blue-600">Rp25.000</span> <span class="text-slate-400">≈ $1.52</span></p>
+              <span class="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600">Tersedia</span>
             </div>
           </div>
         </a>
@@ -194,43 +214,169 @@
         <a href="#" class="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:shadow-md">
           <div class="relative grid h-44 place-items-center bg-gradient-to-br from-emerald-700 to-green-600">
             <span class="text-2xl font-bold text-white/90">Spotify</span>
-            <span class="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-black/40 px-2.5 py-1 text-xs font-medium text-amber-300"><svg class="h-3 w-3" fill="currentColor" viewBox="0 0 24 24"><path d="M3.75 13.5 14.25 2.25 12 10.5h8.25L9.75 21.75 12 13.5z"/></svg>Instant delivery</span>
+            <span class="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-black/40 px-2.5 py-1 text-xs font-medium text-amber-300"><svg class="h-3 w-3" fill="currentColor" viewBox="0 0 24 24"><path d="M3.75 13.5 14.25 2.25 12 10.5h8.25L9.75 21.75 12 13.5z"/></svg>Pengiriman instan</span>
           </div>
           <div class="p-4">
             <h3 class="font-semibold text-slate-900">Spotify Premium</h3>
             <p class="text-sm text-slate-400">Streaming</p>
             <div class="mt-3 flex items-center justify-between">
-              <p class="text-sm text-slate-500">from <span class="font-semibold text-blue-600">Rp30.000</span> <span class="text-slate-400">≈ $1.83</span></p>
-              <span class="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600">Available</span>
+              <p class="text-sm text-slate-500">mulai <span class="font-semibold text-blue-600">Rp30.000</span> <span class="text-slate-400">≈ $1.83</span></p>
+              <span class="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-600">Tersedia</span>
             </div>
           </div>
         </a>
       </div>
     </section>
 
+    <!-- ===== LAYANAN SOSMED (mockup form — render opsi & harga dari API SMM) ===== -->
+    <section id="sosmed" class="mt-16">
+      <p class="text-sm font-semibold uppercase tracking-wide text-blue-600">Layanan Sosmed</p>
+      <div class="mt-1 flex flex-wrap items-center gap-3">
+        <h2 class="text-2xl font-bold text-slate-900">Pesan layanan sosial media</h2>
+        <span class="inline-flex items-center gap-1 rounded-full bg-sky-50 px-2.5 py-1 text-xs font-medium text-sky-600">
+          <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>
+          Segera hadir
+        </span>
+      </div>
+      <p class="mt-2 text-slate-500">Followers, likes, views, dan komentar — tinggal tempel tautan, atur jumlah, bayar.</p>
+
+      <!-- MOCKUP: semua field disabled; platform/layanan/harga dirender dari API saat integrasi. -->
+      <form class="mt-6 max-w-2xl space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div>
+          <label class="text-sm font-medium text-slate-700">Pilih platform</label>
+          <div class="mt-2 flex flex-wrap gap-2">
+            <button type="button" class="rounded-full border border-blue-500 bg-blue-50 px-4 py-1.5 text-sm font-medium text-blue-700">Instagram</button>
+            <button type="button" class="rounded-full border border-slate-200 px-4 py-1.5 text-sm font-medium text-slate-600 hover:border-blue-300">TikTok</button>
+            <button type="button" class="rounded-full border border-slate-200 px-4 py-1.5 text-sm font-medium text-slate-600 hover:border-blue-300">YouTube</button>
+            <button type="button" class="rounded-full border border-slate-200 px-4 py-1.5 text-sm font-medium text-slate-600 hover:border-blue-300">Facebook</button>
+          </div>
+        </div>
+        <div>
+          <label class="text-sm font-medium text-slate-700">Jenis layanan</label>
+          <select disabled class="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600">
+            <option>Followers</option>
+            <option>Likes</option>
+            <option>Views</option>
+            <option>Komentar</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-sm font-medium text-slate-700">Target (tautan atau username)</label>
+          <input disabled placeholder="https://instagram.com/username" class="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600 placeholder:text-slate-400" />
+        </div>
+        <div>
+          <label class="text-sm font-medium text-slate-700">Jumlah</label>
+          <input disabled type="number" placeholder="1000" class="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600 placeholder:text-slate-400" />
+        </div>
+        <div class="flex items-center justify-between border-t border-slate-100 pt-4 text-sm">
+          <span class="text-slate-500">Harga per 1.000 <span class="font-semibold text-slate-700">Rp15.000</span></span>
+          <span class="text-slate-500">Estimasi total <span class="font-semibold text-blue-600">Rp15.000</span></span>
+        </div>
+        <button type="button" disabled class="inline-flex w-full cursor-not-allowed items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 font-medium text-white opacity-90">
+          Pesan sekarang
+        </button>
+      </form>
+    </section>
+
+    <!-- ===== TOP UP GAME (mockup form — render daftar game & nominal dari API provider) ===== -->
+    <section id="topup" class="mt-16">
+      <p class="text-sm font-semibold uppercase tracking-wide text-blue-600">Top Up Game</p>
+      <div class="mt-1 flex flex-wrap items-center gap-3">
+        <h2 class="text-2xl font-bold text-slate-900">Top up game favoritmu</h2>
+        <span class="inline-flex items-center gap-1 rounded-full bg-fuchsia-50 px-2.5 py-1 text-xs font-medium text-fuchsia-600">
+          <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>
+          Segera hadir
+        </span>
+      </div>
+      <p class="mt-2 text-slate-500">Pilih game, pilih nominal, masukkan ID — diamond &amp; voucher masuk otomatis.</p>
+
+      <!-- MOCKUP: daftar game, nominal, dan harga dirender dari API provider top-up saat integrasi. -->
+      <form class="mt-6 max-w-2xl space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div>
+          <label class="text-sm font-medium text-slate-700">Pilih game</label>
+          <div class="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <button type="button" class="overflow-hidden rounded-xl border-2 border-blue-500 text-left">
+              <span class="grid h-16 place-items-center bg-gradient-to-br from-indigo-700 to-blue-600 text-xs font-bold text-white/90">ML</span>
+              <span class="block px-2 py-1.5 text-xs font-medium text-slate-700">Mobile Legends</span>
+            </button>
+            <button type="button" class="overflow-hidden rounded-xl border border-slate-200 text-left hover:border-blue-300">
+              <span class="grid h-16 place-items-center bg-gradient-to-br from-orange-600 to-amber-500 text-xs font-bold text-white/90">FF</span>
+              <span class="block px-2 py-1.5 text-xs font-medium text-slate-700">Free Fire</span>
+            </button>
+            <button type="button" class="overflow-hidden rounded-xl border border-slate-200 text-left hover:border-blue-300">
+              <span class="grid h-16 place-items-center bg-gradient-to-br from-slate-800 to-slate-600 text-xs font-bold text-white/90">PUBG</span>
+              <span class="block px-2 py-1.5 text-xs font-medium text-slate-700">PUBG Mobile</span>
+            </button>
+            <button type="button" class="overflow-hidden rounded-xl border border-slate-200 text-left hover:border-blue-300">
+              <span class="grid h-16 place-items-center bg-gradient-to-br from-violet-700 to-purple-500 text-xs font-bold text-white/90">GI</span>
+              <span class="block px-2 py-1.5 text-xs font-medium text-slate-700">Genshin Impact</span>
+            </button>
+          </div>
+        </div>
+        <div>
+          <label class="text-sm font-medium text-slate-700">Pilih nominal</label>
+          <div class="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <button type="button" class="rounded-xl border-2 border-blue-500 bg-blue-50 px-3 py-2.5 text-left">
+              <span class="block text-sm font-medium text-slate-900">86 Diamond</span>
+              <span class="block text-xs font-semibold text-blue-600">Rp22.000</span>
+            </button>
+            <button type="button" class="rounded-xl border border-slate-200 px-3 py-2.5 text-left hover:border-blue-300">
+              <span class="block text-sm font-medium text-slate-900">172 Diamond</span>
+              <span class="block text-xs font-semibold text-blue-600">Rp43.000</span>
+            </button>
+            <button type="button" class="rounded-xl border border-slate-200 px-3 py-2.5 text-left hover:border-blue-300">
+              <span class="block text-sm font-medium text-slate-900">257 Diamond</span>
+              <span class="block text-xs font-semibold text-blue-600">Rp64.000</span>
+            </button>
+            <button type="button" class="rounded-xl border border-slate-200 px-3 py-2.5 text-left hover:border-blue-300">
+              <span class="block text-sm font-medium text-slate-900">Weekly Pass</span>
+              <span class="block text-xs font-semibold text-blue-600">Rp28.000</span>
+            </button>
+          </div>
+        </div>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label class="text-sm font-medium text-slate-700">User ID</label>
+            <input disabled placeholder="123456789" class="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600 placeholder:text-slate-400" />
+          </div>
+          <div>
+            <label class="text-sm font-medium text-slate-700">Server / Zone ID</label>
+            <input disabled placeholder="2001" class="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600 placeholder:text-slate-400" />
+          </div>
+        </div>
+        <div class="flex items-center justify-between border-t border-slate-100 pt-4 text-sm">
+          <span class="text-slate-500">Total</span>
+          <span class="text-lg font-semibold text-blue-600">Rp22.000</span>
+        </div>
+        <button type="button" disabled class="inline-flex w-full cursor-not-allowed items-center justify-center gap-2 rounded-xl bg-blue-600 px-5 py-3 font-medium text-white opacity-90">
+          Top up sekarang
+        </button>
+      </form>
+    </section>
+
     <!-- ===== OUR PROMISE (replaces vanity "Numbers that speak") ===== -->
     <section class="mt-16 overflow-hidden rounded-3xl bg-blue-600 px-6 py-10 text-white sm:px-10">
-      <h2 class="text-center text-2xl font-bold sm:text-3xl">What every order comes with</h2>
+      <h2 class="text-center text-2xl font-bold sm:text-3xl">Yang Anda dapatkan di setiap pesanan</h2>
       <p class="mt-1 text-center text-blue-100">Bukan janji jumlah pelanggan — ini yang benar-benar Anda dapatkan.</p>
       <div class="mt-8 grid gap-6 text-center sm:grid-cols-2 lg:grid-cols-4">
         <div>
           <div class="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-white/15"><svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m3.75 13.5 10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75Z" /></svg></div>
-          <p class="mt-3 font-semibold">Delivered in minutes</p>
+          <p class="mt-3 font-semibold">Dikirim dalam hitungan menit</p>
           <p class="text-sm text-blue-100">Otomatis, tanpa antre</p>
         </div>
         <div>
           <div class="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-white/15"><svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></div>
-          <p class="mt-3 font-semibold">Auto-verified payment</p>
+          <p class="mt-3 font-semibold">Pembayaran terverifikasi otomatis</p>
           <p class="text-sm text-blue-100">QRIS &amp; USDT</p>
         </div>
         <div>
           <div class="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-white/15"><svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" /></svg></div>
-          <p class="mt-3 font-semibold">Warranty on every order</p>
+          <p class="mt-3 font-semibold">Garansi di setiap pesanan</p>
           <p class="text-sm text-blue-100">Rusak? Kami ganti</p>
         </div>
         <div>
           <div class="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-white/15"><svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg></div>
-          <p class="mt-3 font-semibold">Replies under 1 hour</p>
+          <p class="mt-3 font-semibold">Dibalas di bawah 1 jam</p>
           <p class="text-sm text-blue-100">Telegram &amp; WhatsApp</p>
         </div>
       </div>
@@ -239,19 +385,19 @@
     <!-- ===== FAQ ===== -->
     <section class="mt-16">
       <p class="text-center text-sm font-semibold uppercase tracking-wide text-blue-600">FAQ</p>
-      <h2 class="mt-1 text-center text-3xl font-bold text-slate-900">Frequently asked questions</h2>
-      <p class="mt-2 text-center text-slate-500">Answers to the questions we hear most often.</p>
+      <h2 class="mt-1 text-center text-3xl font-bold text-slate-900">Pertanyaan yang sering diajukan</h2>
+      <p class="mt-2 text-center text-slate-500">Jawaban untuk pertanyaan yang paling sering kami terima.</p>
       <div class="mx-auto mt-8 max-w-3xl space-y-3">
         <details class="faq rounded-2xl border border-slate-200 bg-white px-5 py-1" open>
-          <summary class="flex cursor-pointer items-center justify-between py-4 font-medium text-slate-900">How does delivery work?<svg class="faq-chev h-5 w-5 text-slate-400 transition-transform" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg></summary>
+          <summary class="flex cursor-pointer items-center justify-between py-4 font-medium text-slate-900">Bagaimana proses pengiriman?<svg class="faq-chev h-5 w-5 text-slate-400 transition-transform" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg></summary>
           <p class="pb-4 text-sm text-slate-500">Setelah pembayaran terverifikasi otomatis, kredensial dikirim langsung ke halaman pesanan dan ke chat Telegram Anda dalam hitungan menit.</p>
         </details>
         <details class="faq rounded-2xl border border-slate-200 bg-white px-5 py-1">
-          <summary class="flex cursor-pointer items-center justify-between py-4 font-medium text-slate-900">Is there a warranty?<svg class="faq-chev h-5 w-5 text-slate-400 transition-transform" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg></summary>
+          <summary class="flex cursor-pointer items-center justify-between py-4 font-medium text-slate-900">Apakah ada garansi?<svg class="faq-chev h-5 w-5 text-slate-400 transition-transform" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg></summary>
           <p class="pb-4 text-sm text-slate-500">Ya. Setiap produk bergaransi sesuai masa aktifnya — jika ada kendala, hubungi kami dan akan kami perbaiki atau ganti.</p>
         </details>
         <details class="faq rounded-2xl border border-slate-200 bg-white px-5 py-1">
-          <summary class="flex cursor-pointer items-center justify-between py-4 font-medium text-slate-900">What payment methods are accepted?<svg class="faq-chev h-5 w-5 text-slate-400 transition-transform" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg></summary>
+          <summary class="flex cursor-pointer items-center justify-between py-4 font-medium text-slate-900">Metode pembayaran apa saja yang diterima?<svg class="faq-chev h-5 w-5 text-slate-400 transition-transform" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="m19.5 8.25-7.5 7.5-7.5-7.5" /></svg></summary>
           <p class="pb-4 text-sm text-slate-500">QRIS (Rupiah) dan USDT melalui Binance atau Bybit (BNB Smart Chain). Semuanya dikonfirmasi otomatis.</p>
         </details>
       </div>
@@ -259,24 +405,24 @@
 
     <!-- ===== CONTACT ===== -->
     <section id="contact" class="mt-16">
-      <p class="text-center text-sm font-semibold uppercase tracking-wide text-blue-600">Contact</p>
-      <h2 class="mt-1 text-center text-3xl font-bold text-slate-900">Questions?</h2>
-      <p class="mt-2 text-center text-slate-500">We're here to help — pick whichever way is easiest.</p>
+      <p class="text-center text-sm font-semibold uppercase tracking-wide text-blue-600">Kontak</p>
+      <h2 class="mt-1 text-center text-3xl font-bold text-slate-900">Ada pertanyaan?</h2>
+      <p class="mt-2 text-center text-slate-500">Kami siap membantu — pilih cara yang paling mudah.</p>
       <div class="mx-auto mt-8 grid max-w-4xl gap-4 sm:grid-cols-3">
         <a href="#" class="rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm transition hover:border-emerald-300 hover:shadow">
           <span class="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-emerald-50 text-emerald-600"><svg class="h-6 w-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12.04 2c-5.46 0-9.91 4.45-9.91 9.91 0 1.75.46 3.45 1.32 4.95L2 22l5.25-1.38a9.9 9.9 0 0 0 4.79 1.22c5.46 0 9.91-4.45 9.91-9.91S17.5 2 12.04 2Zm5.8 14.18c-.24.68-1.42 1.31-1.95 1.36-.5.05-1.13.07-1.82-.11-.42-.13-.96-.31-1.65-.61-2.9-1.25-4.79-4.17-4.94-4.37-.14-.19-1.18-1.57-1.18-2.99 0-1.42.74-2.12 1.01-2.41.27-.29.58-.36.78-.36l.56.01c.18.01.42-.07.66.5.24.58.82 2 .89 2.14.07.14.12.31.02.5-.09.19-.14.31-.28.48l-.42.49c-.14.14-.28.29-.12.57.16.27.71 1.17 1.52 1.9 1.05.93 1.93 1.22 2.2 1.36.27.14.43.12.59-.07.16-.19.68-.79.86-1.07.18-.27.36-.22.6-.13.24.09 1.55.73 1.81.86.27.14.45.2.51.31.07.11.07.64-.17 1.32Z"/></svg></span>
           <h3 class="mt-3 font-semibold text-slate-900">WhatsApp</h3>
-          <p class="text-sm text-slate-500">Fast replies via chat</p>
+          <p class="text-sm text-slate-500">Balasan cepat via chat</p>
         </a>
         <a href="#" class="rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm transition hover:border-blue-300 hover:shadow">
           <span class="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-blue-50 text-blue-600"><svg class="h-6 w-6" fill="currentColor" viewBox="0 0 24 24"><path d="M21.94 4.66 18.9 19.01c-.23 1.02-.84 1.27-1.7.79l-4.7-3.47-2.27 2.18c-.25.25-.46.46-.95.46l.34-4.8 8.74-7.9c.38-.34-.08-.53-.59-.19L6.31 13.2l-4.65-1.45c-1.01-.32-1.03-1.01.21-1.5l18.18-7c.84-.31 1.58.19 1.31 1.41Z"/></svg></span>
           <h3 class="mt-3 font-semibold text-slate-900">Telegram</h3>
-          <p class="text-sm text-slate-500">Chat &amp; order notifications</p>
+          <p class="text-sm text-slate-500">Chat &amp; notifikasi pesanan</p>
         </a>
         <a href="#" class="rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm transition hover:border-violet-300 hover:shadow">
           <span class="mx-auto grid h-12 w-12 place-items-center rounded-xl bg-violet-50 text-violet-600"><svg class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 6v.75m0 3v.75m0 3v.75m0 3V18m-9-5.25h5.25M7.5 15h3M3.375 5.25c-.621 0-1.125.504-1.125 1.125v3.026a2.999 2.999 0 0 1 0 5.198v3.026c0 .621.504 1.125 1.125 1.125h17.25c.621 0 1.125-.504 1.125-1.125v-3.026a2.999 2.999 0 0 1 0-5.198V6.375c0-.621-.504-1.125-1.125-1.125H3.375Z" /></svg></span>
-          <h3 class="mt-3 font-semibold text-slate-900">Support ticket</h3>
-          <p class="text-sm text-slate-500">Open a ticket on the site</p>
+          <h3 class="mt-3 font-semibold text-slate-900">Tiket bantuan</h3>
+          <p class="text-sm text-slate-500">Buka tiket di situs</p>
         </a>
       </div>
       <div class="mx-auto mt-5 flex max-w-4xl items-center justify-center gap-2 rounded-2xl bg-blue-50 px-4 py-3 text-sm text-blue-700">
@@ -290,7 +436,7 @@
   <footer class="mt-16 border-t border-slate-200 bg-white">
     <div class="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-4 py-6 text-sm sm:flex-row lg:px-6">
       <span class="flex items-center gap-2 font-semibold text-blue-600"><svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke-width="1.8" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M13.5 21v-7.5a.75.75 0 0 1 .75-.75h3a.75.75 0 0 1 .75.75V21m-4.5 0H2.36m11.14 0H18m0 0h3.64m-1.39 0V9.349m-16.5 0a3.001 3.001 0 0 0 3.75-.614 2.993 2.993 0 0 0 2.25 1.016c.896 0 1.7-.393 2.25-1.016a2.993 2.993 0 0 0 2.25 1.016c.896 0 1.7-.393 2.25-1.016a3.001 3.001 0 0 0 3.75.614m-16.5 0a3.004 3.004 0 0 1-.621-4.72l1.189-1.19A1.5 1.5 0 0 1 5.378 3h13.243a1.5 1.5 0 0 1 1.06.44l1.19 1.189a3 3 0 0 1-.621 4.72m0 0V21" /></svg>Trustance</span>
-      <span class="text-slate-400">Instant delivery · QRIS &amp; USDT payments</span>
+      <span class="text-slate-400">Pengiriman instan · Pembayaran QRIS &amp; USDT</span>
     </div>
   </footer>
 

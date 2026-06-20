@@ -59,7 +59,8 @@ function usdtFilter(value: unknown, rate: unknown): string {
   if (value === null || value === undefined || value === "" || !rate) return "";
   try {
     const usdt = usdtFromIdr(value as Decimal.Value, new Decimal(rate as Decimal.Value));
-    return `$${usdt.toString()}`;
+    if (usdt.lessThan(0.01)) return "";
+    return `≈ $${usdt.toFixed(2)}`;
   } catch {
     return "";
   }

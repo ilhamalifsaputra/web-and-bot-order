@@ -387,11 +387,11 @@ export function listCatalogProducts(db: Db, categoryId?: number): Promise<Catalo
     where: {
       isActive: true,
       ...(categoryId != null ? { categoryId } : {}),
-      denominations: { some: { isActive: true } },
+      denominations: { some: { isActive: true, price: { gt: 0 } } },
     },
     include: {
       category: true,
-      denominations: { where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
+      denominations: { where: { isActive: true, price: { gt: 0 } }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
     },
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
   });
@@ -400,10 +400,10 @@ export function listCatalogProducts(db: Db, categoryId?: number): Promise<Catalo
 /** Newest active products (by newest active denomination) for the home grid. */
 export async function listNewestCatalogProducts(db: Db, limit = 12): Promise<CatalogProduct[]> {
   const products = await db.product.findMany({
-    where: { isActive: true, denominations: { some: { isActive: true } } },
+    where: { isActive: true, denominations: { some: { isActive: true, price: { gt: 0 } } } },
     include: {
       category: true,
-      denominations: { where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
+      denominations: { where: { isActive: true, price: { gt: 0 } }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
     },
   });
   const recency = (p: CatalogProduct) =>
@@ -422,12 +422,12 @@ export function searchCatalog(db: Db, query: string, limit = 24): Promise<Catalo
   return db.product.findMany({
     where: {
       isActive: true,
-      denominations: { some: { isActive: true } },
+      denominations: { some: { isActive: true, price: { gt: 0 } } },
       OR: [{ name: { contains: q } }, { description: { contains: q } }],
     },
     include: {
       category: true,
-      denominations: { where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
+      denominations: { where: { isActive: true, price: { gt: 0 } }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
     },
     orderBy: { name: "asc" },
     take: limit,

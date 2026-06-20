@@ -141,16 +141,33 @@ describe("customer handlers", () => {
     expect(flat.length).toBe(0);
   });
 
-  it("browseProductsFlat sets a numbered persistent keyboard on a fresh (non-callback) entry", async () => {
+  it("browseProductsFlat sets a numbered persistent keyboard sized to the active product count on a fresh (non-callback) entry", async () => {
     const { ctx, sink } = customerCtx();
     await customer.browseProductsFlat(ctx);
     // No callbackData → reached the way the typed "Products" label does, not
     // a Prev/Next tap — should set the tappable persistent keyboard, not the
-    // inline productsNavKb.
+    // inline productsNavKb. The sample fixture has exactly 1 active product,
+    // so the keyboard must offer only "1" — no dead 2..10 buttons.
     const markup = lastMarkup(sink) as
       | { keyboard?: Array<Array<{ text: string }>>; inline_keyboard?: unknown[][] }
       | undefined;
     expect(markup?.inline_keyboard).toBeUndefined();
+    const flat = (markup?.keyboard ?? []).flat().map((b) => b.text);
+    expect(flat).toEqual(["1", persistentLabel("main", "en")]);
+  });
+
+  it("browseProductsFlat caps the persistent keyboard at PAGE_SIZE when the catalog spans multiple pages", async () => {
+    // 11 active products → page 0 is a full 10-item page, so the keyboard
+    // should still offer the full 1..10 grid (unchanged from today).
+    for (let i = 0; i < 10; i++) {
+      const p = await createCatalogProduct(prisma, { categoryId: sample.parentProduct.categoryId, name: `Extra ${i}` });
+      await createDenomination(prisma, {
+        productId: p.id, name: "Plan", type: "SHARED", durationLabel: "1 Month", price: "9",
+      });
+    }
+    const { ctx, sink } = customerCtx();
+    await customer.browseProductsFlat(ctx);
+    const markup = lastMarkup(sink) as { keyboard?: Array<Array<{ text: string }>> } | undefined;
     const flat = (markup?.keyboard ?? []).flat().map((b) => b.text);
     expect(flat.slice(0, 10)).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
     expect(flat).toContain(persistentLabel("main", "en"));

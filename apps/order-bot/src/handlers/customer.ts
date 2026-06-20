@@ -259,13 +259,14 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   // stay on the existing inline productsNavKb — reached only via that inline
   // tap (a callback), so it keeps editing the bubble in place. A fresh entry
   // (the typed "Products" label, a deep link, etc. — no callback) instead sets
-  // the numbered persistent keyboard, which a reply keyboard can only do via a
-  // fresh send; productsPersistentKb's fixed page-size grid means that send
-  // happens once per Browse entry, not on every page turn. The banner (if set)
-  // rides on top as a photo+caption, unless the list is too long.
+  // the numbered persistent keyboard, sized to this page's product count so a
+  // small catalog doesn't get padded with dead buttons; a reply keyboard can
+  // only be set via a fresh send, which happens once per Browse entry, not on
+  // every page turn. The banner (if set) rides on top as a photo+caption,
+  // unless the list is too long.
   const replyMarkup = ctx.callbackQuery
     ? ckb.productsNavKb(page, totalPages, lang)
-    : ckb.productsPersistentKb(PAGE_SIZE, lang);
+    : ckb.productsPersistentKb(pageProducts.length, lang);
   await renderMenuBanner(ctx, text, replyMarkup);
 }
 

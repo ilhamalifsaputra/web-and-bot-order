@@ -101,6 +101,7 @@
   "checkout.cancel_btn": "✕ Cancel",
   "checkout.cancel_order": "✕ Cancel Order",
   "checkout.bybit_instructions": "<b>USDT on BSC (auto-confirm)</b>\n\nOrder: <code>{code}</code>\nSend <b>exactly {amount}</b>{idr_line} of <b>USDT</b> on the <b>BNB Smart Chain (BEP20)</b> network to:\n\n<code>{address}</code>\n\n⚠ <b>Send the EXACT amount</b> above — we auto-confirm by matching it, so an even-rounded amount won't be recognised.\n⚠ Use the <b>BEP20 / BNB Smart Chain</b> network only. Other networks are lost.\n⏳ Pay before <b>{expiry}</b>. Delivery is automatic once the deposit confirms (~1–2 min) — no screenshot needed.",
+  "checkout.cancelled_prefix": "✕ Order cancelled.",
   "checkout.cancelled_toast": "Order cancelled",
   "checkout.confirm": "Confirm & Pay",
   "checkout.confirm_btn": "✓ Confirm & Pay",

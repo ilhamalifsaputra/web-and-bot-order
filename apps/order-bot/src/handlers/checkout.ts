@@ -53,6 +53,7 @@ import { esc, formatPrice, formatIdr, priceIdr } from "../util/format";
 import { currentUsdtRate } from "../util/rate";
 import { QR_FILEID_KEY, qrPhotoArg as resolveQrPhotoArg } from "../util/qr";
 import * as ckb from "../keyboards/customer";
+import * as customer from "./customer";
 import {
   setActivePayment,
   clearActivePayment,
@@ -878,10 +879,6 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
 // Order cancellation (user-initiated, before delivery)
 // ---------------------------------------------------------------------------
 
-// How long the "order cancelled" bubble lingers before it deletes itself. Short
-// enough to read, long enough not to feel like a flicker.
-const CANCEL_NOTICE_MS = 2000;
-
 export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promise<void> {
   const info = requireUser(ctx);
 
@@ -913,19 +910,33 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
 
   if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.cancelled_toast") });
 
-  // The QRIS/payment screen is a single photo+caption bubble (the QR image), so
-  // editing it in place leaves the QR stuck on screen under the "cancelled"
-  // text. Instead show a brief confirmation, then delete the whole bubble after
-  // a short beat so nothing lingers. The persistent reply keyboard still offers
-  // a way forward, so removing the bubble never strands the user.
-  await smartEdit(ctx, t(ctx, "checkout.order_cancelled", { code: order.orderCode }));
-  const cancelledMsgId = ctx.session.menuMsgId;
-  ctx.session.menuMsgId = undefined;
-  if (cancelledMsgId !== undefined) {
-    setTimeout(() => {
-      void ctx.api.deleteMessage(chatId, cancelledMsgId).catch(() => {
-        /* already gone or too old to delete */
-      });
-    }, CANCEL_NOTICE_MS);
+  // Land the user back on the cancelled order's Product Detail bubble (fresh
+  // stock) instead of a transient "cancelled" notice — no stray message, no QR
+  // left hanging.
+  const denominationId = order.items[0]?.productId;
+  if (denominationId === undefined || denominationId === null) {
+    // Defensive — an order with no items shouldn't happen. Don't strand the user.
+    await customer.showMainMenu(ctx);
+    return;
   }
+
+  // The QRIS/payment wait screen is a photo+caption bubble (the QR image); it
+  // can't morph into the text Product Detail via edit (smartEdit would
+  // editMessageCaption, leaving the QR stuck above the Detail text). Delete it
+  // and clear the anchor so Detail sends fresh. A text wait screen (Binance
+  // manual / Internal / Bybit / NOWPayments) edits straight to Detail in place.
+  const cqMsg = ctx.callbackQuery?.message;
+  const wasPhoto = !!(cqMsg && "photo" in cqMsg && cqMsg.photo);
+  if (wasPhoto && cqMsg) {
+    try {
+      await ctx.api.deleteMessage(chatId, cqMsg.message_id);
+    } catch {
+      /* gone/too old */
+    }
+    ctx.session.menuMsgId = undefined;
+  }
+
+  await customer.browseDenomination(ctx, denominationId, 1, {
+    noticePrefix: t(ctx, "checkout.cancelled_prefix"),
+  });
 }

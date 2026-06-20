@@ -101,6 +101,7 @@
   "checkout.cancel_btn": "✕ Batal",
   "checkout.cancel_order": "✕ Batalkan Pesanan",
   "checkout.bybit_instructions": "<b>USDT via BSC (konfirmasi otomatis)</b>\n\nOrder: <code>{code}</code>\nKirim <b>tepat {amount}</b>{idr_line} <b>USDT</b> di jaringan <b>BNB Smart Chain (BEP20)</b> ke:\n\n<code>{address}</code>\n\n⚠ <b>Kirim jumlah PERSIS</b> seperti di atas — konfirmasi otomatis mencocokkan nominal, jadi jumlah yang dibulatkan tidak akan dikenali.\n⚠ Gunakan jaringan <b>BEP20 / BNB Smart Chain</b> saja. Jaringan lain akan hilang.\n⏳ Bayar sebelum <b>{expiry}</b>. Pengiriman otomatis setelah deposit terkonfirmasi (~1–2 menit) — tanpa screenshot.",
+  "checkout.cancelled_prefix": "✕ Pesanan dibatalkan.",
   "checkout.cancelled_toast": "Pesanan dibatalkan",
   "checkout.confirm": "Konfirmasi & Bayar",
   "checkout.confirm_btn": "✓ Konfirmasi & Bayar",

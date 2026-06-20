@@ -777,25 +777,46 @@ describe("checkout handlers", () => {
     expect(await prisma.order.count()).toBe(before); // no new order
   });
 
-  it("cancelPendingOrder cancels the order and removes the lingering bubble after a beat", async () => {
+  it("cancelPendingOrder on a photo wait screen (QRIS) deletes the QR bubble and sends a fresh Product Detail", async () => {
     const order = await makeOrder();
-    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:cancel:${order!.id}` });
+    const { ctx, sink } = customerCtx({
+      callbackData: `v1:checkout:cancel:${order!.id}`,
+      cbMessage: { message_id: 5001, chat: { id: 42, type: "private" }, date: 0, photo: [{ file_id: "qr" }] },
+    });
 
-    vi.useFakeTimers();
-    try {
-      await checkout.cancelPendingOrder(ctx, order!.id);
-      // A confirmation is shown immediately, but the bubble must not vanish yet.
-      expect(calls(sink, "deleteMessage").length).toBe(0);
-      // After the notice window the whole payment/QR bubble is deleted so it
-      // doesn't stay stuck on screen under the "cancelled" text.
-      await vi.advanceTimersByTimeAsync(2000);
-      expect(calls(sink, "deleteMessage").length).toBeGreaterThan(0);
-    } finally {
-      vi.useRealTimers();
-    }
+    await checkout.cancelPendingOrder(ctx, order!.id);
+
+    // The order is cancelled (the unchanged cancelOrder transaction did its job).
+    const after = await getOrder(prisma, order!.id);
+    expect(after!.status).toBe(OrderStatus.CANCELLED);
+
+    // The photo (QR) bubble itself is deleted — no QR left hanging.
+    const deletes = calls(sink, "deleteMessage");
+    expect(deletes.some((c) => c.args[1] === 5001)).toBe(true);
+
+    // No setTimeout-based delayed delete of a separate "cancelled" notice — the
+    // old behavior is gone; the render lands directly on Product Detail.
+    expect(sentIncludes(sink, sample.parentProduct.name)).toBe(true);
+    expect(sentIncludes(sink, "✕")).toBe(true); // checkout.cancelled_prefix stamp
+  });
+
+  it("cancelPendingOrder on a text wait screen (e.g. Binance manual) edits straight to Product Detail in place", async () => {
+    const order = await makeOrder();
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:cancel:${order!.id}` }); // default cbMessage: no photo
+
+    await checkout.cancelPendingOrder(ctx, order!.id);
 
     const after = await getOrder(prisma, order!.id);
     expect(after!.status).toBe(OrderStatus.CANCELLED);
+
+    // The text bubble is edited in place — never deleted.
+    expect(calls(sink, "deleteMessage").length).toBe(0);
+    const edits = calls(sink, "editMessageText");
+    expect(edits.length).toBeGreaterThan(0);
+    const lastEdit = edits[edits.length - 1]!;
+    const editedText = JSON.stringify(lastEdit.args);
+    expect(editedText).toContain(sample.parentProduct.name);
+    expect(editedText).toContain("✕"); // checkout.cancelled_prefix stamp
   });
 });
 

@@ -415,7 +415,12 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
  * `qty` and `restock` callbacks all key off the denomination id (= the SKU the
  * money/stock flow uses).
  */
-export async function browseDenomination(ctx: MyContext, denominationId: number, qty = 1): Promise<void> {
+export async function browseDenomination(
+  ctx: MyContext,
+  denominationId: number,
+  qty = 1,
+  opts?: { noticePrefix?: string },
+): Promise<void> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
 
@@ -471,6 +476,10 @@ export async function browseDenomination(ctx: MyContext, denominationId: number,
         min_qty: bulkRule.minQuantity,
         percent: bulkRule.discountPercent,
       });
+  }
+
+  if (opts?.noticePrefix) {
+    text = opts.noticePrefix + "\n\n" + text;
   }
 
   // Parent product for Back navigation: the picker we came from, or null when no

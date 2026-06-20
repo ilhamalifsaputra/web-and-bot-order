@@ -14,7 +14,7 @@
  * migrated to the Category/Product/Denomination names directly.
  */
 import { config } from "@app/core/config";
-import { ProductType, StockStatus } from "@app/core/enums";
+import { OrderStatus, ProductType, StockStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import type { Category, Denomination, Product } from "@prisma/client";
@@ -483,4 +483,47 @@ export async function activeBulkPricingByDenomination(
     out[r.productId] = { minQuantity: r.minQuantity, discountPercent: r.discountPercent.toString() };
   }
   return out;
+}
+
+// ---- Sold-count aggregates (§4.2) — Produk Populer screen ----
+
+/**
+ * Top-selling Products (mid-tier) by units delivered, summed across each
+ * product's active denominations. Drops zero-sale products (a "Populer" list
+ * has nothing to say about something nobody bought) and caps to `limit`.
+ *
+ * Queries `orderItem.groupBy` directly (mirrors `soldCountsByDenomination` in
+ * `./orders`) instead of importing it — `orders.ts` already imports from
+ * `./catalog` (`getBulkPricingForDenomination`), so catalog → orders would be
+ * circular.
+ */
+export async function soldCountsByProduct(
+  db: Db,
+  limit = 10,
+): Promise<Array<{ product: Product; sold: number }>> {
+  const products = await listCatalogProducts(db);
+  if (!products.length) return [];
+
+  const denominationIds = products.flatMap((p) => p.denominations.map((d) => d.id));
+  if (!denominationIds.length) return [];
+
+  const rows = await db.orderItem.groupBy({
+    by: ["productId"],
+    where: { productId: { in: denominationIds }, order: { status: OrderStatus.DELIVERED } },
+    _sum: { quantity: true },
+  });
+  const soldByDenomination = new Map<number, number>();
+  for (const r of rows) {
+    const sum = r._sum.quantity ?? 0;
+    if (sum > 0) soldByDenomination.set(r.productId, sum);
+  }
+
+  return products
+    .map((p) => ({
+      product: p as Product,
+      sold: p.denominations.reduce((acc, d) => acc + (soldByDenomination.get(d.id) ?? 0), 0),
+    }))
+    .filter((r) => r.sold > 0)
+    .sort((a, b) => b.sold - a.sold)
+    .slice(0, limit);
 }

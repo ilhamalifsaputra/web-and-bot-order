@@ -764,3 +764,40 @@ export function listOrders(
 export function countOrders(db: Db, opts: OrderFilter = {}) {
   return db.order.count({ where: orderWhere(opts) });
 }
+
+// ---- Sold-count aggregates (§4.1) — Product Detail "X Terjual" + Produk Populer ----
+
+/**
+ * Sparse map: denominationId → units delivered (DELIVERED orders only), for
+ * denominations with ≥1 sale. `OrderItem.productId` holds the Denomination
+ * id (same convention as `StockItem.productId`) — see `lowStockDenominations`
+ * in `catalog.ts` for the analogous in-memory grouping pattern.
+ *
+ * Prisma 5.22 + SQLite accepts a relation filter (`order: { status }`) inside
+ * `groupBy`'s `where`, so the single-query groupBy below is used directly
+ * (verified by this file's test suite exercising it against a real DB).
+ */
+export async function soldCountsByDenomination(
+  db: Db,
+  denominationIds: number[],
+): Promise<Map<number, number>> {
+  const map = new Map<number, number>();
+  if (!denominationIds.length) return map;
+
+  const rows = await db.orderItem.groupBy({
+    by: ["productId"],
+    where: { productId: { in: denominationIds }, order: { status: OrderStatus.DELIVERED } },
+    _sum: { quantity: true },
+  });
+  for (const r of rows) {
+    const sum = r._sum.quantity ?? 0;
+    if (sum > 0) map.set(r.productId, sum);
+  }
+  return map;
+}
+
+/** Units delivered for one denomination (DELIVERED orders only). */
+export async function soldCountForDenomination(db: Db, denominationId: number): Promise<number> {
+  const map = await soldCountsByDenomination(db, [denominationId]);
+  return map.get(denominationId) ?? 0;
+}

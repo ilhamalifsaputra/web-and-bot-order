@@ -15,6 +15,7 @@ Arsitektur, fitur, dan setup environment proyek. Konvensi koding ada di
 8. [Credit balance (IDR + USDT)](#8-credit-balance-idr--usdt)
 9. [Desain storefront](#9-desain-storefront)
 10. [Setup env & checklist fitur](#10-setup-env--checklist-fitur)
+11. [Banyak toko dalam satu VPS](#11-banyak-toko-dalam-satu-vps)
 
 ---
 
@@ -341,3 +342,86 @@ DEFAULT_LANGUAGE=id
 | **Kurs USDT↔IDR** | `usd_idr_rate` di **Settings** | Auto-update pasar ON default. |
 | **Lupa password toko** | `SMTP_HOST` + `SMTP_FROM` (+ `SMTP_USER`/`SMTP_PASS`) | Aktif bila host & from terisi. |
 | **Produksi** | `WEB_COOKIE_SECURE=true` di balik HTTPS | Reverse proxy. |
+
+---
+
+## 11. Banyak toko dalam satu VPS
+
+Aplikasi ini **single-tenant**: `satu deploy = satu bot = satu toko = satu DB`.
+Untuk menjalankan **beberapa bisnis yang benar-benar terpisah** (produk, stok,
+order, admin, dan bot Telegram berbeda) di satu VPS, jalankan **beberapa instance
+penuh yang berdiri sendiri** — tiap toko dari direktori repo sendiri dengan `.env`,
+folder `./data` (DB sendiri), bot, dan port sendiri. nginx me-route tiap domain ke
+port loopback instance yang sesuai.
+
+> **Apakah bot order & notifier bentrok antar-toko?** Tidak — **selama tiap
+> instance pakai bot @BotFather yang berbeda.** Error Telegram 409 ("terminated by
+> other getUpdates") hanya muncul kalau dua proses polling memakai **token yang
+> sama**. Notifier hanya mengirim pesan (bukan `getUpdates`), jadi notifier yang
+> memakai ulang token utama instance-nya sendiri tetap aman. **Aturan emas: jangan
+> pernah pakai satu token bot di dua instance.**
+
+### Pola port (skala ke N toko)
+
+| | Shop A | Shop B | Shop ke-N |
+|---|---|---|---|
+| Direktori | `/opt/shop-a` | `/opt/shop-b` | `/opt/shop-<n>` |
+| `COMPOSE_PROJECT_NAME` | `shopa` | `shopb` | unik |
+| Admin → toko | `admin.shop-a.com` / `shop-a.com` | `admin.shop-b.com` / `shop-b.com` | per-domain |
+| `WEB_PORT` | `8000` | `8001` | `8000+n` |
+| `STOREFRONT_PORT` | `8100` | `8101` | `8100+n` |
+
+### `.env` per instance — yang **WAJIB beda** antar-toko
+
+```ini
+COMPOSE_PROJECT_NAME=shopa                 # ← beda (dipakai Compose untuk nama container)
+BOT_TOKEN=<token-bot-dari-BotFather>       # ← beda (bot berbeda per toko)
+ADMIN_IDS=<id-admin-toko-ini>
+WEB_PORT=8000                              # ← beda (8001, 8002, …)
+STOREFRONT_PORT=8100                       # ← beda (8101, 8102, …)
+WEB_COOKIE_SECRET=<openssl rand -hex 32>   # ← beda (acak, min 32 char)
+SHOP_PUBLIC_URL=https://shop-a.com         # ← domain toko ini (link DM + callback gateway)
+WEB_COOKIE_SECURE=true                     # produksi di balik HTTPS
+BOT_MODE=polling                           # default; tidak butuh domain untuk bot
+DATABASE_URL_PRISMA=file:/app/data/bot.db  # Docker: path ABSOLUT; ./data-nya beda per direktori
+```
+
+Gateway pembayaran (TokoPay / PayDisini / NOWPayments) **tidak** diisi di `.env` —
+diisi di web-admin → Settings tiap instance (tersimpan di DB masing-masing, jadi
+otomatis terpisah). Pakai akun gateway berbeda per toko.
+
+### Langkah (ulangi per toko)
+
+```bash
+git clone <repo-url> /opt/shop-a && cd /opt/shop-a
+cp .env.example .env                                      # isi sesuai tabel di atas
+docker compose run --rm web-admin pnpm prisma db push     # skema sebelum start (hindari P2022)
+docker compose up -d                                      # nama container otomatis dari COMPOSE_PROJECT_NAME
+```
+
+`docker-compose.yml` repo ini sudah siap multi-instance: nama container diturunkan
+dari `COMPOSE_PROJECT_NAME` (tidak hardcoded) dan port hanya dipublish ke
+`127.0.0.1` — jadi dua instance tidak saling bentrok dan tetap di balik nginx.
+
+### nginx + TLS
+
+Pakai `deploy/nginx/telegram-shop.conf` sebagai pola, lalu untuk **tiap toko**
+salin satu pasang server block (admin + storefront), ganti `server_name`, path
+sertifikat, dan port `proxy_pass` (`8000+n` admin, `8100+n` storefront). Satu
+`certbot` bisa mencakup semua domain sekaligus:
+
+```bash
+certbot --nginx -d shop-a.com -d admin.shop-a.com \
+                -d shop-b.com -d admin.shop-b.com
+nginx -t && systemctl reload nginx
+```
+
+### Backup & batas
+
+- **Backup per instance**: satu cron per toko memakai `deploy/backup/backup.sh`
+  dengan path DB berbeda (`/opt/shop-a/data/bot.db`, …). WAL-safe via
+  `sqlite3 .backup`; lihat `deploy/backup/README.md`.
+- **Single-writer SQLite tetap aman**: tiap instance menulis ke DB-nya **sendiri**
+  (bukan beberapa writer ke satu DB), jadi tidak memicu kebutuhan pindah Postgres.
+- **Batas praktis**: N toko = 4×N container; yang membatasi adalah RAM/CPU VPS
+  (kira-kira ~1 GB per toko), bukan arsitektur DB.

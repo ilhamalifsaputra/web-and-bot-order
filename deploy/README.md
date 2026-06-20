@@ -14,6 +14,11 @@ docker-compose: order-bot · notifier · web-admin · storefront  (one image, on
 
 Apps stay bound to **127.0.0.1** (never exposed directly). nginx terminates TLS.
 
+> **Running more than one shop on this host?** This file covers a single
+> instance. To host several **independent** shops (each its own bot, DB, domain,
+> and ports) on one VPS, see the **"Banyak toko dalam satu VPS"** section in
+> `DOCS.md`.
+
 ## H-2 — TLS + reverse proxy
 
 1. DNS: point `admin.` and `shop.` subdomains at the host.

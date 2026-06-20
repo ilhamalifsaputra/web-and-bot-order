@@ -4,7 +4,7 @@ Toko digital lengkap dalam satu aplikasi:
 
 - **Bot Telegram** — katalog, pemesanan, dan pembayaran untuk pelanggan.
 - **Panel admin web** — kelola produk, stok, pesanan, dan pengaturan.
-- **Toko web** (opsional) — etalase untuk berjualan lewat website/domain sendiri.
+- **Toko web** — etalase untuk berjualan lewat website/domain sendiri.
 
 Pembayaran lewat **QRIS (TokoPay)**, **Binance Internal**, atau **Bybit
 (USDT-BEP20)** — ketiganya **terkonfirmasi otomatis**, akun langsung terkirim
@@ -282,6 +282,13 @@ tandai rusak. Item terjual otomatis dilindungi dari penghapusan.
 nginx + TLS (terminasi HTTPS, proxy ke app), lalu set `WEB_COOKIE_SECURE=true`.
 Config nginx siap pakai + checklist deploy + **runbook 502** ada di
 **`deploy/README.md`** dan **`deploy/nginx/telegram-shop.conf`**.
+
+**Banyak toko dalam satu VPS:** bisa menjalankan beberapa bisnis **independen**
+(masing-masing bot, DB, domain, dan port sendiri) di satu server — tiap toko =
+satu instance penuh dari direktori repo sendiri. Aturan emasnya: **tiap instance
+wajib pakai token bot @BotFather yang berbeda.** Langkah lengkap (`.env`, port,
+nginx multi-domain) ada di [`DOCS.md`](DOCS.md) bagian **"Banyak toko dalam satu
+VPS"**.
 
 ---
 

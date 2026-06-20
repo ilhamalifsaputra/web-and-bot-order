@@ -11,6 +11,12 @@
 # IMPORTANT (migrate.md §14.12): never run the Python order-bot and the Node
 # order-bot against the same DB simultaneously — two order-flow writers corrupt
 # state. notifier (status-only writes) is safe to parallel-run during Fase 1.
+#
+# MULTI-INSTANCE: container names are NOT hardcoded — Compose derives them from
+# COMPOSE_PROJECT_NAME (set per .env), so two independent shops can run on one
+# host from two repo directories (e.g. /opt/trustance + /opt/trustoriax) with
+# their own .env, ./data DB, ports, and bot tokens. Published ports bind to
+# 127.0.0.1 only; nginx is the sole public surface (deploy/README.md).
 
 x-app: &app
   build:
@@ -30,23 +36,21 @@ x-app: &app
 services:
   order-bot:
     <<: *app
-    container_name: bot-order
     command: ["pnpm", "--filter", "@app/order-bot", "start"]
 
   notifier:
     <<: *app
-    container_name: bot-notifier
     command: ["pnpm", "--filter", "@app/notifier", "start"]
 
   web-admin:
     <<: *app
-    container_name: bot-web-admin
     command: ["pnpm", "--filter", "@app/web-admin", "start"]
     # Must bind 0.0.0.0 inside the container (config default is 127.0.0.1).
     environment:
       WEB_HOST: "0.0.0.0"
+    # Publish to the host loopback ONLY — nginx terminates TLS and proxies in.
     ports:
-      - "${WEB_PORT:-8000}:${WEB_PORT:-8000}"
+      - "127.0.0.1:${WEB_PORT:-8000}:${WEB_PORT:-8000}"
     healthcheck:
       test:
         - CMD
@@ -63,13 +67,13 @@ services:
   # admin, so it is one more SQLite writer (see RUN.md §9 / CLAUDE.md).
   storefront:
     <<: *app
-    container_name: bot-storefront
     command: ["pnpm", "--filter", "@app/storefront", "start"]
     # Same as web-admin: bind 0.0.0.0 inside the container (default is 127.0.0.1).
     environment:
       WEB_HOST: "0.0.0.0"
+    # Publish to the host loopback ONLY — nginx terminates TLS and proxies in.
     ports:
-      - "${STOREFRONT_PORT:-8100}:${STOREFRONT_PORT:-8100}"
+      - "127.0.0.1:${STOREFRONT_PORT:-8100}:${STOREFRONT_PORT:-8100}"
     healthcheck:
       test:
         - CMD

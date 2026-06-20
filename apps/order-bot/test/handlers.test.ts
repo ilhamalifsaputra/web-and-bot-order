@@ -122,16 +122,16 @@ describe("customer handlers", () => {
     // 1-item picker and lands on the denomination detail (Product/Plan/Price/Stock).
     const { ctx, sink } = customerCtx();
     await customer.browseProduct(ctx, sample.parentProduct.id);
-    const scratch = ctx.session.scratch as { viewingProductId?: number; viewingDenomId?: number };
-    // Collapsed detail: viewingProductId is NOT set (there was no picker), so the
+    const scratch = ctx.session.scratch as { productId?: number; variantId?: number };
+    // Collapsed detail: productId is NOT set (there was no picker), so the
     // detail's Back escapes to the product list rather than re-collapsing.
-    expect(scratch.viewingProductId).toBeUndefined();
-    expect(scratch.viewingDenomId).toBe(sample.product.id);
+    expect(scratch.productId).toBeUndefined();
+    expect(scratch.variantId).toBe(sample.product.id);
     expect(JSON.stringify(sink)).toContain("Netflix");
   });
 
   it("a collapsed single-denomination detail's Back returns to the product list (no loop)", async () => {
-    // Regression: a 1-denomination collapse used to set viewingProductId and so
+    // Regression: a 1-denomination collapse used to set productId and so
     // its Back emitted browse:pick → browseProduct → re-collapsed to the SAME
     // detail, stranding the user. Back must point at the product LIST.
     const { ctx, sink } = customerCtx();
@@ -149,24 +149,24 @@ describe("customer handlers", () => {
     await customer.handleProductNumber(back.ctx);
     // Landing on the list re-snapshots browseEntries (the picker/detail never does).
     expect((back.ctx.session.scratch as { browseEntries?: number[] }).browseEntries).toBeDefined();
-    expect((back.ctx.session.scratch as { viewingDenomId?: number }).viewingDenomId).toBeUndefined();
+    expect((back.ctx.session.scratch as { variantId?: number }).variantId).toBeUndefined();
   });
 
   it("browseDenomination shows detail and sets the viewing breadcrumb", async () => {
     const { ctx, sink } = customerCtx();
     await customer.browseDenomination(ctx, sample.product.id);
-    expect((ctx.session.scratch as { viewingDenomId?: number }).viewingDenomId).toBe(sample.product.id);
+    expect((ctx.session.scratch as { variantId?: number }).variantId).toBe(sample.product.id);
     expect(JSON.stringify(sink)).toContain("Netflix");
   });
 
   it("handleProductNumber resolves a digit to the page-local Product (collapses to detail)", async () => {
-    const { ctx } = customerCtx({ text: "1", session: { ...userSession(), scratch: { browsePage: 0 } } });
+    const { ctx } = customerCtx({ text: "1", session: { ...userSession(), scratch: { page: 0 } } });
     await customer.handleProductNumber(ctx);
-    const scratch = ctx.session.scratch as { viewingProductId?: number; viewingDenomId?: number };
-    // Single-denomination collapse leaves viewingProductId UNSET (no picker was
+    const scratch = ctx.session.scratch as { productId?: number; variantId?: number };
+    // Single-denomination collapse leaves productId UNSET (no picker was
     // rendered), so the detail's Back escapes to the list rather than looping.
-    expect(scratch.viewingProductId).toBeUndefined();
-    expect(scratch.viewingDenomId).toBe(sample.product.id);
+    expect(scratch.productId).toBeUndefined();
+    expect(scratch.variantId).toBe(sample.product.id);
   });
 
   it("handleProductNumber honors the rendered snapshot over a fresh query (stale-catalog race)", async () => {
@@ -178,15 +178,15 @@ describe("customer handlers", () => {
     });
     const { ctx } = customerCtx({
       text: "1",
-      session: { ...userSession(), scratch: { browsePage: 0, browseEntries: [otherParent.id] } },
+      session: { ...userSession(), scratch: { page: 0, browseEntries: [otherParent.id] } },
     });
     await customer.handleProductNumber(ctx);
-    // otherParent is 1-denomination, so it collapses: viewingProductId stays UNSET
-    // (no picker rendered), and viewingDenomId is the snapshot product's denomination
+    // otherParent is 1-denomination, so it collapses: productId stays UNSET
+    // (no picker rendered), and variantId is the snapshot product's denomination
     // — proving the snapshot was honored, not whatever a fresh query ranks first.
-    const scratch = ctx.session.scratch as { viewingProductId?: number; viewingDenomId?: number };
-    expect(scratch.viewingProductId).toBeUndefined();
-    expect(scratch.viewingDenomId).toBe(otherDenom.id);
+    const scratch = ctx.session.scratch as { productId?: number; variantId?: number };
+    expect(scratch.productId).toBeUndefined();
+    expect(scratch.variantId).toBe(otherDenom.id);
   });
 
   it("setLanguage persists the choice and updates the session", async () => {
@@ -320,10 +320,10 @@ describe("denomination picker", () => {
     const { ctx, sink } = customerCtx();
     await customer.browseProduct(ctx, product.id);
     expect(sentIncludes(sink, "Capcut")).toBe(true);
-    // ≥2 denominations → picker (no collapse): viewingProductId set, no denom yet.
-    const scratch = ctx.session.scratch as { viewingProductId?: number; viewingDenomId?: number };
-    expect(scratch.viewingProductId).toBe(product.id);
-    expect(scratch.viewingDenomId).toBeUndefined();
+    // ≥2 denominations → picker (no collapse): productId set, no denom yet.
+    const scratch = ctx.session.scratch as { productId?: number; variantId?: number };
+    expect(scratch.productId).toBe(product.id);
+    expect(scratch.variantId).toBeUndefined();
     // Both denominations reachable via browse:denom buttons.
     const sent = sink as SentCall[];
     const markup = JSON.stringify(sent.map((c) => c.args[c.args.length - 1]));
@@ -668,7 +668,7 @@ describe("callback router", () => {
     const { ctx, sink } = customerCtx({ callbackData: `v1:browse:denom:${sample.product.id}` });
     await routeCallback(ctx);
     expect(sink.length).toBeGreaterThan(0);
-    expect((ctx.session.scratch as { viewingDenomId?: number }).viewingDenomId).toBe(sample.product.id);
+    expect((ctx.session.scratch as { variantId?: number }).variantId).toBe(sample.product.id);
   });
 
   it("degrades an old in-flight v1:browse:group tap to the stale-screen toast (no crash)", async () => {
@@ -678,7 +678,7 @@ describe("callback router", () => {
     await routeCallback(ctx);
     expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
     // No detail/picker was rendered for the stale tap.
-    expect((ctx.session.scratch as { viewingDenomId?: number }).viewingDenomId).toBeUndefined();
+    expect((ctx.session.scratch as { variantId?: number }).variantId).toBeUndefined();
   });
 
   it("degrades an old in-flight v1:browse:prod tap to the stale-screen toast, never opens the wrong product (no crash)", async () => {
@@ -696,7 +696,7 @@ describe("callback router", () => {
     await routeCallback(ctx);
     expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
     // No picker/detail for the unrelated product was ever rendered.
-    expect((ctx.session.scratch as { viewingProductId?: number }).viewingProductId).toBeUndefined();
+    expect((ctx.session.scratch as { productId?: number }).productId).toBeUndefined();
     expect(JSON.stringify(sink)).not.toContain("Unrelated Product");
   });
 

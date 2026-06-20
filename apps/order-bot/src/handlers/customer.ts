@@ -39,7 +39,7 @@ import {
   getTicket,
   listTicketMessages,
 } from "@app/db";
-import type { MyContext } from "../context";
+import { BotState, type MyContext } from "../context";
 import { smartEdit, renderMenu } from "../util/chat";
 import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/banner";
 import { t } from "../util/i18n";
@@ -57,14 +57,21 @@ const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimal
 // --- session scratch accessors (mirror context.user_data keys) -------------
 // browseEntries snapshots the mid-tier Product ids on the current page (the new
 // flat catalog has no "group vs product" kind — every list row is a Product).
-// viewingDenomId tracks which Denomination's detail bubble is currently shown,
-// and viewingProductId the parent Product whose picker we came from (so Back on
-// the detail bubble returns to the picker, not all the way to the list).
+// variantId tracks which Denomination's (SKU/"variant") detail bubble is shown,
+// and productId the parent Product whose picker we came from (so Back on the
+// detail bubble returns to the picker, not all the way to the list). The order-
+// flow fields (quantity/paymentMethod/invoiceId/orderId) mirror the single-bubble
+// UX spec (botui.txt) — set when a buyNow* creates the order, source of truth for
+// redraws not driven by a fresh callback (e.g. cancel→detail).
 interface BrowseScratch {
-  browsePage?: number;
+  page?: number;
   browseEntries?: number[];
-  viewingProductId?: number;
-  viewingDenomId?: number;
+  productId?: number;
+  variantId?: number;
+  quantity?: number;
+  paymentMethod?: string;
+  invoiceId?: string;
+  orderId?: number;
 }
 const sc = (ctx: MyContext) => ctx.session.scratch as BrowseScratch & Record<string, unknown>;
 
@@ -127,8 +134,9 @@ async function buildDashboardText(ctx: MyContext): Promise<string> {
 }
 
 async function backToMainFromPersistent(ctx: MyContext): Promise<void> {
-  delete sc(ctx).viewingProductId;
-  delete sc(ctx).viewingDenomId;
+  ctx.session.state = BotState.HOME;
+  delete sc(ctx).productId;
+  delete sc(ctx).variantId;
   ctx.session.awaitingQtyDenomId = undefined;
   const text = await buildDashboardText(ctx);
   await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
@@ -142,18 +150,18 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
     return;
   }
   // Viewing a denomination detail → step back to its parent product's picker.
-  if (sc(ctx).viewingDenomId != null && sc(ctx).viewingProductId != null) {
-    await browseProduct(ctx, sc(ctx).viewingProductId!);
+  if (sc(ctx).variantId != null && sc(ctx).productId != null) {
+    await browseProduct(ctx, sc(ctx).productId!);
     return;
   }
   // Viewing a picker (product but no denomination) → back to the product list.
-  if (sc(ctx).viewingProductId != null) {
+  if (sc(ctx).productId != null) {
     await browseProductsFlat(ctx);
     return;
   }
   // Viewing a collapsed/deep-link detail (denomination but no parent picker) →
   // back to the product list, not the main menu (don't strand the user).
-  if (sc(ctx).viewingDenomId != null) {
+  if (sc(ctx).variantId != null) {
     await browseProductsFlat(ctx);
     return;
   }
@@ -186,13 +194,15 @@ export async function startCommand(ctx: MyContext): Promise<void> {
   }
 
   delete sc(ctx).browseEntries;
-  delete sc(ctx).browsePage;
+  delete sc(ctx).page;
 
+  ctx.session.state = BotState.HOME;
   const text = await buildDashboardText(ctx);
   await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
 }
 
 export async function showMainMenu(ctx: MyContext): Promise<void> {
+  ctx.session.state = BotState.HOME;
   const text = await buildDashboardText(ctx);
   await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
 }
@@ -225,10 +235,11 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   const start = page * PAGE_SIZE;
   const pageProducts = products.slice(start, start + PAGE_SIZE);
 
-  sc(ctx).browsePage = page;
+  ctx.session.state = BotState.PRODUCT_LIST;
+  sc(ctx).page = page;
   sc(ctx).browseEntries = pageProducts.map((p) => p.id);
-  delete sc(ctx).viewingProductId;
-  delete sc(ctx).viewingDenomId;
+  delete sc(ctx).productId;
+  delete sc(ctx).variantId;
 
   // Selection is resolved against the browseEntries snapshot (see handleProductNumber).
   const itemLines = pageProducts.map((p, i) => `${i + 1}. ${esc(p.name)}`);
@@ -276,15 +287,15 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
 
   if (action !== null) {
     ctx.session.awaitingQtyDenomId = undefined;
-    delete sc(ctx).viewingProductId;
-    delete sc(ctx).viewingDenomId;
+    delete sc(ctx).productId;
+    delete sc(ctx).variantId;
   }
 
   switch (action) {
     case "prev":
-      return void (await browseProductsFlat(ctx, Math.max(0, (sc(ctx).browsePage ?? 0) - 1)));
+      return void (await browseProductsFlat(ctx, Math.max(0, (sc(ctx).page ?? 0) - 1)));
     case "next":
-      return void (await browseProductsFlat(ctx, (sc(ctx).browsePage ?? 0) + 1));
+      return void (await browseProductsFlat(ctx, (sc(ctx).page ?? 0) + 1));
     case "browse":
       return void (await browseProductsFlat(ctx));
     case "orders":
@@ -318,7 +329,7 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   let entries = sc(ctx).browseEntries ?? [];
   if (!entries.length) {
     const all = await listCatalogProducts(prisma);
-    const page = sc(ctx).browsePage ?? 0;
+    const page = sc(ctx).page ?? 0;
     const startIdx = page * PAGE_SIZE;
     entries = all.slice(startIdx, startIdx + PAGE_SIZE).map((p) => p.id);
     sc(ctx).browseEntries = entries;
@@ -363,13 +374,13 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   // no picker was rendered, so the detail's Back must escape to the product list
   // (a browse:pick Back would re-collapse to this same detail and strand the user).
   if (active.length === 1) {
-    delete sc(ctx).viewingProductId;
+    delete sc(ctx).productId;
     await browseDenomination(ctx, active[0]!.id);
     return;
   }
 
-  sc(ctx).viewingProductId = productId;
-  delete sc(ctx).viewingDenomId;
+  sc(ctx).productId = productId;
+  delete sc(ctx).variantId;
   const isReseller = info.role === UserRole.RESELLER;
   const rate = await currentUsdtRate();
   const text = t(ctx, "browse.choose_denomination", { name: esc(product.name) });
@@ -441,9 +452,11 @@ export async function browseDenomination(ctx: MyContext, denominationId: number,
   // picker was shown (collapse / deep-link) so Back falls through to the flat
   // product list per denominationDetailKb's contract — never to a product that
   // would immediately re-collapse to this same detail.
-  const parentProductId = sc(ctx).viewingProductId ?? null;
+  const parentProductId = sc(ctx).productId ?? null;
   await smartEdit(ctx, text, ckb.denominationDetailKb(d, stock, lang, qty, parentProductId));
-  sc(ctx).viewingDenomId = denominationId;
+  ctx.session.state = BotState.PRODUCT_DETAIL;
+  sc(ctx).variantId = denominationId;
+  sc(ctx).quantity = qty;
 }
 
 // ---------------------------------------------------------------------------
@@ -513,6 +526,7 @@ export async function qtyChange(
 // ---------------------------------------------------------------------------
 
 export async function listMyOrders(ctx: MyContext): Promise<void> {
+  ctx.session.state = BotState.HISTORY;
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
 
@@ -642,6 +656,7 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
 // ---------------------------------------------------------------------------
 
 export async function viewWallet(ctx: MyContext): Promise<void> {
+  ctx.session.state = BotState.BALANCE;
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const user = await getUser(prisma, info.id);

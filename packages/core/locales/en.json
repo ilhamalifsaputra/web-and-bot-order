@@ -119,6 +119,7 @@
   "checkout.pay_bybit_btn": "Bybit",
   "checkout.pay_internal_btn": "Binance",
   "checkout.pay_nowpayments_btn": "NOWPayments",
+  "checkout.qris_paid": "✅ <b>Payment received!</b>\n\nOrder <code>{code}</code> is confirmed and your items are being delivered now.",
   "checkout.pay_paydisini_btn": "QRIS / E-Wallet",
   "checkout.pay_qris_btn": "QRIS",
   "checkout.pay_usdt_btn": "USDT",

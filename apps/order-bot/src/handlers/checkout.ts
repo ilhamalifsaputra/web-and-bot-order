@@ -775,6 +775,9 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   } else {
     await smartEdit(ctx, caption, waitingKb);
   }
+  // Anchor whichever bubble (photo or text-fallback) became the wait screen, so
+  // the reconcile poller's success-flip sweep can edit it once delivered.
+  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, chatId, ctx.session.menuMsgId);
   setActivePayment(chatId, order.id);
 }
 
@@ -879,6 +882,9 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   } else {
     await smartEdit(ctx, caption, waitingKb);
   }
+  // Anchor whichever bubble (photo or text-fallback) became the wait screen, so
+  // the reconcile poller's success-flip sweep can edit it once delivered.
+  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, chatId, ctx.session.menuMsgId);
   setActivePayment(chatId, order.id);
 }
 

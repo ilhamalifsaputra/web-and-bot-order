@@ -7,11 +7,13 @@ import {
   createOrderDirect,
   finalizeOrderPayment,
   listPendingTokopayOrders,
+  setOrderPaymentMessage,
+  deliverPaidTokopayOrder,
 } from "@app/db";
 import type { Api } from "grammy";
 import { OrderStatus, OrderCurrency } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { reconcileOrder } from "../src/payments/tokopayReconcile";
+import { reconcileOrder, sweepDeliveredAwaitingEdit } from "../src/payments/tokopayReconcile";
 
 let sample: SampleData;
 
@@ -30,7 +32,12 @@ afterAll(async () => {
 });
 
 const CREDS = { merchantId: "M", secret: "s", channel: "QRIS" };
-const fakeApi = () => ({ sendMessage: vi.fn().mockResolvedValue(undefined) }) as unknown as Api;
+const fakeApi = () =>
+  ({
+    sendMessage: vi.fn().mockResolvedValue(undefined),
+    editMessageCaption: vi.fn().mockResolvedValue(undefined),
+    editMessageText: vi.fn().mockResolvedValue(undefined),
+  }) as unknown as Api;
 
 /** Stub the gateway status call. */
 function stubStatus(data: Record<string, unknown>) {
@@ -86,5 +93,52 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
 
     const [stillPending] = await listPendingTokopayOrders(prisma, new Date());
     expect(stillPending).toBeDefined();
+  });
+
+  it("immediately flips the anchored QR bubble to success when it delivers the order", async () => {
+    const created = await makeTokopayOrder();
+    const [pending] = await listPendingTokopayOrders(prisma, new Date());
+    await setOrderPaymentMessage(prisma, created!.id, 555, 777);
+    stubStatus({ status: "Paid", trx_id: "TRX-FLIP", total_bayar: pending!.totalAmount.toString() });
+
+    const api = fakeApi();
+    await reconcileOrder(api, CREDS, pending!);
+
+    expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
+    const [chatId, msgId, payload] = (api.editMessageCaption as ReturnType<typeof vi.fn>).mock.calls[0]!;
+    expect(chatId).toBe(555);
+    expect(msgId).toBe(777);
+    const flat = (payload.reply_markup.inline_keyboard as Array<Array<{ callback_data?: string }>>).flat().map((b) => b.callback_data);
+    expect(flat).toContain("v1:browse:prods");
+
+    const after = await prisma.order.findUnique({ where: { id: created!.id } });
+    expect(after?.paymentMsgChatId).toBeNull();
+    expect(after?.paymentMsgId).toBeNull();
+  });
+});
+
+describe("sweepDeliveredAwaitingEdit (TokoPay webhook-delivered bubbles)", () => {
+  it("flips a webhook-delivered order's bubble exactly once, then is a no-op", async () => {
+    const created = await makeTokopayOrder();
+    await setOrderPaymentMessage(prisma, created!.id, 555, 777);
+    const r = await deliverPaidTokopayOrder(prisma, {
+      orderId: created!.id,
+      trxId: "TRX-WEBHOOK",
+      amount: created!.totalAmount,
+      shopUrl: null,
+    });
+    expect(r.status).toBe("delivered");
+
+    const api = fakeApi();
+    await sweepDeliveredAwaitingEdit(api);
+
+    expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
+    const after = await prisma.order.findUnique({ where: { id: created!.id } });
+    expect(after?.paymentMsgChatId).toBeNull();
+    expect(after?.paymentMsgId).toBeNull();
+
+    // Second sweep: the anchor is cleared, so this must be a no-op.
+    await sweepDeliveredAwaitingEdit(api);
+    expect(api.editMessageCaption).toHaveBeenCalledTimes(1);
   });
 });

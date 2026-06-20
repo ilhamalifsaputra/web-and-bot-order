@@ -20,18 +20,65 @@
 import type { Api } from "grammy";
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
+import { PaymentMethod, langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
+import { t as coreT } from "@app/core/i18n";
 import { checkTransaction } from "@app/core/payments/paydisini";
 import {
   prisma,
   getPaydisiniCreds,
   listPendingPaydisiniOrders,
   deliverPaidPaydisiniOrder,
+  listDeliveredOrdersAwaitingEdit,
+  clearOrderPaymentMessage,
 } from "@app/db";
 import { esc } from "../util/format";
+import { paymentSuccessKb } from "../keyboards/customer";
 
 type PendingOrder = Awaited<ReturnType<typeof listPendingPaydisiniOrders>>[number];
+
+type AnchoredOrder = {
+  id: number;
+  orderCode: string;
+  paymentMsgChatId: bigint | null;
+  paymentMsgId: number | null;
+  user: { language: string };
+};
+
+/**
+ * Flip the anchored QR bubble to a success message. Best-effort: a photo
+ * bubble edits its caption; a text-fallback bubble edits its text. Never throws.
+ */
+async function editBubbleToSuccess(api: Api, order: AnchoredOrder): Promise<void> {
+  if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
+  const lang = langCode(order.user.language);
+  const chatId = Number(order.paymentMsgChatId);
+  const text = coreT("checkout.qris_paid", lang, { code: order.orderCode });
+  const markup = paymentSuccessKb(lang);
+  try {
+    await api.editMessageCaption(chatId, order.paymentMsgId, { caption: text, parse_mode: "HTML", reply_markup: markup });
+  } catch {
+    try {
+      await api.editMessageText(chatId, order.paymentMsgId, text, { parse_mode: "HTML", reply_markup: markup });
+    } catch {
+      /* bubble gone/uneditable — the credential DM already informed the buyer */
+    }
+  }
+}
+
+/**
+ * Sweep DELIVERED PayDisini orders whose bubble hasn't been flipped yet
+ * (catches webhook deliveries). Idempotent: clears the anchor after editing so
+ * a re-run is a no-op.
+ */
+export async function sweepDeliveredAwaitingEdit(api: Api): Promise<void> {
+  const orders = await listDeliveredOrdersAwaitingEdit(prisma, PaymentMethod.PAYDISINI);
+  for (const order of orders) {
+    await editBubbleToSuccess(api, order);
+    await clearOrderPaymentMessage(prisma, order.id);
+  }
+}
 
 async function alertAdmins(api: Api, text: string): Promise<void> {
   for (const adminId of adminIds()) {
@@ -74,6 +121,8 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
     });
     if (r.status === "delivered") {
       logger.info(`PayDisini reconcile → delivered ${order.orderCode} (notifier will DM the account file)`);
+      await editBubbleToSuccess(api, r.order);
+      await clearOrderPaymentMessage(prisma, r.order.id);
     } else if (r.status === "stale") {
       logger.warn(`PayDisini reconcile: ${order.orderCode} no longer pending (already handled?)`);
     }
@@ -95,6 +144,10 @@ export async function pollOnce(api: Api): Promise<void> {
   for (const order of orders) {
     await reconcileOrder(api, creds, order);
   }
+
+  // Catches orders the storefront webhook delivered (the bubble flip never
+  // happens on the web — CLAUDE.md "never send Telegram from the web").
+  await sweepDeliveredAwaitingEdit(api);
 }
 
 // ---------------------------------------------------------------------------

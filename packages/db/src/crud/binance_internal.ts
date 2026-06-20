@@ -116,6 +116,24 @@ export async function setOrderPaymentMessage(db: Db, orderId: number, chatId: nu
   });
 }
 
+/** Clear the anchored payment-message pointer (idempotency gate for the success sweep). */
+export async function clearOrderPaymentMessage(db: Db, orderId: number): Promise<void> {
+  await db.order.update({ where: { id: orderId }, data: { paymentMsgChatId: null, paymentMsgId: null } });
+}
+
+/** DELIVERED orders of `method` that still carry an un-edited payment-message anchor. */
+export function listDeliveredOrdersAwaitingEdit(db: Db, method: PaymentMethod) {
+  return db.order.findMany({
+    where: {
+      status: OrderStatus.DELIVERED,
+      paymentMethod: method,
+      paymentMsgChatId: { not: null },
+      paymentMsgId: { not: null },
+    },
+    include: { user: true },
+  });
+}
+
 /** PENDING, not-yet-expired internal-transfer orders the poller should match against. */
 export function listPendingInternalOrders(db: Db, now: Date) {
   return db.order.findMany({

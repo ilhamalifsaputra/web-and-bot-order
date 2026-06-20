@@ -119,6 +119,7 @@
   "checkout.pay_bybit_btn": "Bybit",
   "checkout.pay_internal_btn": "Binance",
   "checkout.pay_nowpayments_btn": "NOWPayments",
+  "checkout.qris_paid": "✅ <b>Pembayaran diterima!</b>\n\nPesanan <code>{code}</code> terkonfirmasi dan item Anda sedang dikirim sekarang.",
   "checkout.pay_paydisini_btn": "QRIS / E-Wallet",
   "checkout.pay_qris_btn": "QRIS",
   "checkout.pay_usdt_btn": "USDT",

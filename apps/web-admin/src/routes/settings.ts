@@ -3,7 +3,6 @@
  * Port of routers/settings.py. The `settings` table is shared with the bot, so
  * only whitelisted keys may be edited and secret-bearing keys are never shown.
  */
-import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { logger } from "@app/core/logger";
 import {
@@ -28,27 +27,14 @@ import {
 import { currentAdmin, csrfProtect } from "../plugins/auth";
 import { redirectWithFlash } from "../flash";
 import { setTokenValidator, getTokenValidator, setChannelValidator, getChannelValidator } from "../lib/telegramCheck";
-import { handleUpload, deleteOldUpload } from "../lib/upload";
-import { UPLOADS_DIR } from "../paths";
-
-// Payment QR upload (twin of branding's banner upload — see branding.ts).
-const QR_DIR = join(UPLOADS_DIR, "qr");
-const QR_URL_PREFIX = "/uploads/qr";
-const QR_RASTER_MIME: Record<string, string> = {
-  "image/jpeg": "jpg",
-  "image/png": "png",
-  "image/webp": "webp",
-};
 
 // Re-exported for tests that import setTokenValidator from this module.
 export { setTokenValidator, setChannelValidator };
 
 // Whitelisted runtime keys the web may edit, with human labels.
 const EDITABLE: Record<string, string> = {
-  binance_pay_id: "Binance Pay ID shown at checkout",
   support_contact: "Support contact handle/text",
   welcome: "Welcome message",
-  qr: "Payment QR image — upload below, or paste a Telegram file_id",
   // Banner shown on top of the bot's main menu + product list. Placeholder for
   // now: paste a Telegram file_id, or (easier) set the image from the bot's
   // Settings → Banner image. Clear this field to turn the banner off.
@@ -99,7 +85,6 @@ const WEBSITE_KEYS = new Set(["support_whatsapp"]);
 const BOT_MESSAGE_KEYS = new Set(["support_contact"]);
 const BRANDING_KEYS = new Set(["shop_name", "shop_tagline", "welcome", "banner_image"]);
 const BOT_TOKEN_FIELD_KEYS = new Set(["bot_token", "bot_username", "notif_bot_token", "public_channel_id"]);
-const PAY_BINANCE_KEYS = new Set(["binance_pay_id", "qr"]);
 const PAY_RATE_KEYS = new Set(["usd_idr_rate", "usd_idr_rate_auto", "usd_idr_rate_rounding"]);
 const PAY_QRIS_KEYS = new Set(["tokopay_merchant_id", "tokopay_secret", "tokopay_enabled"]);
 const PAY_PAYDISINI_KEYS = new Set(["paydisini_userkey", "paydisini_apikey", "paydisini_enabled", "paydisini_default_channel"]);
@@ -155,7 +140,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     const pick = (keys: Set<string>) => allFields.filter((f) => keys.has(f.key));
     const grouped = new Set([
       ...WEBSITE_KEYS, ...BOT_MESSAGE_KEYS, ...BOT_TOKEN_FIELD_KEYS,
-      ...PAY_BINANCE_KEYS, ...PAY_RATE_KEYS, ...PAY_QRIS_KEYS, ...PAY_PAYDISINI_KEYS, ...PAY_NOWPAYMENTS_KEYS, ...PAY_BYBIT_KEYS,
+      ...PAY_RATE_KEYS, ...PAY_QRIS_KEYS, ...PAY_PAYDISINI_KEYS, ...PAY_NOWPAYMENTS_KEYS, ...PAY_BYBIT_KEYS,
       ...PAY_BINANCE_INTERNAL_KEYS, ...BRANDING_KEYS,
     ]);
     // Leftover guard: an EDITABLE key missing from every group still shows up.
@@ -171,11 +156,6 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       ? { secret: pendingSecret, uri: otpauthUri(pendingSecret, String(tg)) }
       : null;
 
-    // QR preview: the field's value may be a web upload (/uploads/qr/...) or a
-    // legacy Telegram file_id; only the former can be rendered as an <img>.
-    const qrValue = currentValues["qr"] ?? "";
-    const qrIsUpload = qrValue.startsWith("/uploads/");
-
     return reply.view("settings.njk", {
       admin: req.admin,
       active_nav: "/settings",
@@ -183,15 +163,12 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       website_fields: websiteFields,
       bot_message_fields: pick(BOT_MESSAGE_KEYS),
       bot_token_fields: pick(BOT_TOKEN_FIELD_KEYS),
-      pay_binance_fields: pick(PAY_BINANCE_KEYS),
       pay_rate_fields: pick(PAY_RATE_KEYS),
       pay_qris_fields: pick(PAY_QRIS_KEYS),
       pay_paydisini_fields: pick(PAY_PAYDISINI_KEYS),
       pay_nowpayments_fields: pick(PAY_NOWPAYMENTS_KEYS),
       pay_bybit_fields: pick(PAY_BYBIT_KEYS),
       pay_binance_internal_fields: pick(PAY_BINANCE_INTERNAL_KEYS),
-      qr_is_upload: qrIsUpload,
-      qr_url: qrIsUpload ? qrValue : "",
       is_owner: req.admin!.role === "super",
       two_fa_enabled: twoFaEnabled,
       two_fa_pending: twoFaPending,
@@ -199,25 +176,6 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       kind: q.kind ?? "info",
     });
   });
-
-  // Payment QR image upload — twin of branding.ts's /branding/banner. Multipart,
-  // so it can't use csrfProtect (which reads req.body); handleUpload does its
-  // own CSRF + role check. Clears qr_fileid so the bot uploads the new image
-  // fresh once and caches the resulting Telegram file_id (CLAUDE.md: money path).
-  app.post("/settings/qr", { preHandler: currentAdmin }, (req, reply) =>
-    handleUpload(req, reply, {
-      kind: "qr",
-      field: "qr_image",
-      allowed: QR_RASTER_MIME,
-      maxBytes: 5 * 1024 * 1024,
-      destDir: QR_DIR,
-      urlPrefix: QR_URL_PREFIX,
-      settingKey: "qr",
-      auditAction: "settings_qr_upload",
-      redirectPath: "/settings",
-      afterSave: () => deleteSetting(prisma, "qr_fileid").then(() => undefined),
-    }),
-  );
 
   // ---- 2FA (TOTP) — self-service for every admin (see canMutate) ----
   app.post("/settings/2fa/begin", { preHandler: csrfProtect }, async (req, reply) => {

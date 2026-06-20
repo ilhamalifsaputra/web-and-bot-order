@@ -162,10 +162,12 @@ describe("checkout conversations", () => {
     const conv = new FakeConversation([msg(sink, { callbackData: "v1:menu:main" })]);
     await proofConversation(conv.asMyConversation(), entry);
 
-    // Escaped to the dashboard (a fresh reply carrying the persistent keyboard),
-    // and the callback was answered so no loading spinner hangs. Under the bug
+    // Escaped to the dashboard — Home is an inline keyboard (§2), so this edits
+    // the existing bubble in place rather than sending a fresh reply — and the
+    // callback was answered so no loading spinner hangs. Under the original bug
     // this fell through to a re-prompt → a 2nd wait() → "queue empty" throw.
-    expect(calls(sink, "reply").length).toBeGreaterThan(0);
+    expect(calls(sink, "editMessageText").length).toBeGreaterThan(0);
+    expect(calls(sink, "reply").length).toBe(0);
     expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
     // Non-destructive: the order is untouched (still pending, under My Orders).
     expect((await getOrder(prisma, order!.id))!.status).toBe(before);

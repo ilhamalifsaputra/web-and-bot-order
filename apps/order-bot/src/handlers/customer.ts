@@ -20,6 +20,7 @@ import {
   botOverallStats,
   userTotalSpent,
   listCatalogProducts,
+  soldCountsByProduct,
   getCatalogProductWithDenominations,
   getDenomination,
   getDenominationWithProduct,
@@ -133,13 +134,14 @@ async function buildDashboardText(ctx: MyContext): Promise<string> {
   });
 }
 
-async function backToMainFromPersistent(ctx: MyContext): Promise<void> {
+async function backToHome(ctx: MyContext): Promise<void> {
   ctx.session.state = BotState.HOME;
   delete sc(ctx).productId;
   delete sc(ctx).variantId;
   ctx.session.awaitingQtyDenomId = undefined;
   const text = await buildDashboardText(ctx);
-  await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
+  const balanceLabel = formatIdr(requireUser(ctx).walletBalance);
+  await renderMenuBanner(ctx, text, ckb.mainMenu(ctx.session.lang, balanceLabel));
 }
 
 async function handleBackButton(ctx: MyContext): Promise<void> {
@@ -165,7 +167,7 @@ async function handleBackButton(ctx: MyContext): Promise<void> {
     await browseProductsFlat(ctx);
     return;
   }
-  await backToMainFromPersistent(ctx);
+  await backToHome(ctx);
 }
 
 export async function startCommand(ctx: MyContext): Promise<void> {
@@ -198,13 +200,15 @@ export async function startCommand(ctx: MyContext): Promise<void> {
 
   ctx.session.state = BotState.HOME;
   const text = await buildDashboardText(ctx);
-  await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
+  const balanceLabel = formatIdr(requireUser(ctx).walletBalance);
+  await renderMenuBanner(ctx, text, ckb.mainMenu(ctx.session.lang, balanceLabel));
 }
 
 export async function showMainMenu(ctx: MyContext): Promise<void> {
   ctx.session.state = BotState.HOME;
   const text = await buildDashboardText(ctx);
-  await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
+  const balanceLabel = formatIdr(requireUser(ctx).walletBalance);
+  await renderMenuBanner(ctx, text, ckb.mainMenu(ctx.session.lang, balanceLabel));
 }
 
 // Universal /cancel when no conversation is active.
@@ -264,6 +268,28 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
   );
 }
 
+/**
+ * §5 — Produk Populer: top-10 best-selling mid-tier Products (by delivered
+ * units), reached from Home. Reuses the Product List's BotState since it's a
+ * picker-style list of Products, not a distinct nav state.
+ */
+export async function browsePopular(ctx: MyContext): Promise<void> {
+  const lang = ctx.session.lang;
+  ctx.session.state = BotState.PRODUCT_LIST;
+
+  const rows = await soldCountsByProduct(prisma, 10);
+  if (!rows.length) {
+    await smartEdit(ctx, t(ctx, "browse.popular_empty"), ckb.backToMain(lang));
+    return;
+  }
+
+  const itemLines = rows.map(
+    (r, i) => `${i + 1}. ${esc(r.product.name)} — ${t(ctx, "browse.sold_count", { count: r.sold })}`,
+  );
+  const text = `${t(ctx, "browse.popular_title")}\n\n${itemLines.join("\n")}`;
+  await smartEdit(ctx, text, ckb.popularKb(rows.map((r) => r.product), lang));
+}
+
 export async function handleProductNumber(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   const text = (ctx.message?.text ?? "").trim();
@@ -313,7 +339,7 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
     case "tickets":
       return void (await listMyTickets(ctx));
     case "main":
-      return void (await backToMainFromPersistent(ctx));
+      return void (await backToHome(ctx));
     case "support":
       // Support is entered via the conversation `hears` trigger in main.ts, not
       // here; if it ever reaches this handler, ignore it (no number selection).
@@ -693,6 +719,16 @@ export async function viewReferral(ctx: MyContext): Promise<void> {
 
 export async function showLanguageMenu(ctx: MyContext): Promise<void> {
   await smartEdit(ctx, t(ctx, "language.choose"), ckb.languageKb());
+}
+
+/**
+ * §10 — Help Center hub ("Pusat Bantuan"): a Home destination that fans out to
+ * every support/info screen (referral, language, FAQ, terms, support, my
+ * tickets) without crowding Home itself with six buttons.
+ */
+export async function showHelpCenter(ctx: MyContext): Promise<void> {
+  ctx.session.state = BotState.HELP;
+  await smartEdit(ctx, t(ctx, "help.title"), ckb.helpCenterKb(ctx.session.lang));
 }
 
 export async function setLanguage(ctx: MyContext, code: string): Promise<void> {

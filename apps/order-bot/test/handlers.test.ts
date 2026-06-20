@@ -261,6 +261,97 @@ describe("customer handlers", () => {
 });
 
 // ===========================================================================
+// Home (inline) + Produk Populer + Help Center (§2/§5/§10)
+// ===========================================================================
+
+describe("Home screen (inline keyboard)", () => {
+  // Regression for the reported bug: Home used to attach a reply Keyboard
+  // (mainPersistentKb), so chat.ts's isInline() guard always failed and a Home
+  // tap spawned a fresh message instead of editing the bubble in place. Home
+  // is now an inline keyboard, so a callback-driven render must edit.
+  it("showMainMenu via a callback edits the existing bubble, never sends a fresh message", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:menu:main" });
+    await customer.showMainMenu(ctx);
+    expect(calls(sink, "editMessageText").length).toBeGreaterThan(0);
+    expect(calls(sink, "reply").length).toBe(0);
+  });
+
+  it("Home's keyboard is inline and carries all five buttons", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:menu:main" });
+    await customer.showMainMenu(ctx);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    expect(markup?.inline_keyboard).toBeDefined();
+    const flat = (markup!.inline_keyboard ?? []).flat().map((b) => b.callback_data);
+    expect(flat).toContain("v1:browse:prods");
+    expect(flat).toContain("v1:wallet:view");
+    expect(flat).toContain("v1:order:list");
+    expect(flat).toContain("v1:browse:popular");
+    expect(flat).toContain("v1:help:open");
+  });
+
+  it("startCommand and the persistent-keyboard 'main' back-action also render the inline Home", async () => {
+    const start = customerCtx({ callbackData: "v1:menu:main" });
+    await customer.startCommand(start.ctx);
+    expect(calls(start.sink, "editMessageText").length).toBeGreaterThan(0);
+
+    const back = customerCtx({ text: persistentLabel("main", "en") });
+    await customer.handleProductNumber(back.ctx);
+    const markup = lastMarkup(back.sink) as { inline_keyboard?: unknown[][] };
+    expect(markup?.inline_keyboard).toBeDefined();
+  });
+});
+
+describe("browsePopular (§5 Produk Populer)", () => {
+  it("empty case (no delivered orders) renders browse.popular_empty with a Menu back row", async () => {
+    const { ctx, sink } = customerCtx();
+    await customer.browsePopular(ctx);
+    expect(sentIncludes(sink, "No products have sold yet")).toBe(true);
+    expect(offersForwardAction(sink)).toBe(true);
+  });
+
+  it("renders a numbered list + a pick button per product once an order is delivered", async () => {
+    const order = await makeOrder(2);
+    await attachPaymentProof(prisma, order!.id, { fileId: "proof-file", txid: "TXPOPULAR1" });
+    await verification.approve(adminCtx({ callbackData: `v1:adm:verif:approve:${order!.id}` }).ctx, order!.id);
+
+    const { ctx, sink } = customerCtx();
+    await customer.browsePopular(ctx);
+
+    expect(sentIncludes(sink, sample.parentProduct.name)).toBe(true);
+    expect(sentIncludes(sink, "2")).toBe(true); // sold count
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    expect(flat.some((b) => b.callback_data === `v1:browse:pick:${sample.parentProduct.id}`)).toBe(true);
+    expect(flat.some((b) => b.callback_data === "v1:menu:main")).toBe(true);
+  });
+});
+
+describe("showHelpCenter (§10 Help Center hub)", () => {
+  it("renders the help title with the six feature buttons + Menu back row", async () => {
+    const { ctx, sink } = customerCtx();
+    await customer.showHelpCenter(ctx);
+
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
+    expect(flat).toContain("v1:ref:view");
+    expect(flat).toContain("v1:lang:menu");
+    expect(flat).toContain("v1:page:faq");
+    expect(flat).toContain("v1:page:terms");
+    expect(flat).toContain("v1:support:open");
+    expect(flat).toContain("v1:ticket:list");
+    expect(flat).toContain("v1:menu:main");
+  });
+
+  it("router wires v1:help:open to showHelpCenter", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:help:open" });
+    await routeCallback(ctx);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat = (markup?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
+    expect(flat).toContain("v1:ref:view");
+  });
+});
+
+// ===========================================================================
 // Product → Denomination picker (mid-tier Product with multiple denominations)
 // ===========================================================================
 
@@ -645,10 +736,12 @@ describe("admin handlers", () => {
 // ===========================================================================
 
 describe("callback router", () => {
-  it("dispatches v1:menu:main to the customer dashboard", async () => {
+  it("dispatches v1:menu:main to the customer dashboard, editing the bubble in place (regression — Home is now inline, not a reply keyboard)", async () => {
     const { ctx, sink } = customerCtx({ callbackData: "v1:menu:main" });
     await routeCallback(ctx);
     expect(sink.length).toBeGreaterThan(0);
+    expect(calls(sink, "editMessageText").length).toBeGreaterThan(0);
+    expect(calls(sink, "reply").length).toBe(0);
   });
 
   it("dispatches v1:order:list", async () => {

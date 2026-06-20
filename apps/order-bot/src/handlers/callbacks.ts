@@ -56,6 +56,7 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
   else if (action === "page") await customer.browseProductsFlat(ctx, parseInt(parts[3]!, 10));
   else if (action === "pick") await customer.browseProduct(ctx, parseInt(parts[3]!, 10));
   else if (action === "denom") await customer.browseDenomination(ctx, parseInt(parts[3]!, 10));
+  else if (action === "popular") await customer.browsePopular(ctx);
   else {
     logger.warn({ event: "dead_tap", action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, "stale browse callback");
     await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
@@ -162,10 +163,15 @@ const dispatchPage: DomainDispatcher = async (ctx, parts) => {
   else if (action === "howtopay") await staticPages.showHowtopay(ctx);
 };
 
+const dispatchHelp: DomainDispatcher = async (ctx, parts) => {
+  if (parts[2] === "open") await customer.showHelpCenter(ctx);
+};
+
 const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
   browse: dispatchBrowse,
   buy: dispatchBuy,
   checkout: dispatchCheckout,
+  help: dispatchHelp,
   lang: dispatchLang,
   menu: dispatchMenu,
   noop: dispatchNoop,

@@ -53,23 +53,21 @@ interface TicketLike {
 // Main menu
 // ---------------------------------------------------------------------------
 
-export function mainMenu(lang: string): InlineKeyboard {
+/**
+ * Home (main menu) — an INLINE keyboard so a Home tap edits the existing
+ * bubble in place via smartEdit/renderMenu's isInline check (chat.ts), instead
+ * of spawning a fresh message the way the old reply-keyboard `mainPersistentKb`
+ * did. Layout: catalog entry point, wallet balance, order history, then a
+ * Populer/Bantuan row that opens the two new Home destinations.
+ */
+export function mainMenu(lang: string, balanceLabel: string): InlineKeyboard {
   return ik([
+    [{ text: coreT("menu.browse", lang), data: cb("browse", "prods") }],
+    [{ text: coreT("menu.wallet_inline", lang, { balance: balanceLabel }), data: cb("wallet", "view") }],
+    [{ text: coreT("menu.my_orders", lang), data: cb("order", "list") }],
     [
-      { text: coreT("menu.browse", lang), data: cb("browse", "prods") },
-      { text: coreT("menu.my_orders", lang), data: cb("order", "list") },
-    ],
-    [
-      { text: coreT("menu.referral", lang), data: cb("ref", "view") },
-      { text: coreT("menu.language", lang), data: cb("lang", "menu") },
-    ],
-    [
-      { text: coreT("menu.faq", lang), data: cb("page", "faq") },
-      { text: coreT("menu.terms", lang), data: cb("page", "terms") },
-    ],
-    [
-      { text: coreT("menu.my_tickets", lang), data: cb("ticket", "list") },
-      { text: coreT("menu.support", lang), data: cb("support", "open") },
+      { text: coreT("menu.popular", lang), data: cb("browse", "popular") },
+      { text: coreT("menu.help_center", lang), data: cb("help", "open") },
     ],
   ]);
 }
@@ -336,6 +334,15 @@ export function searchResultsKb(products: Array<{ id: number; name: string }>, l
   return ik(rows);
 }
 
+/** Inline keyboard for the Produk Populer list — one `browse:pick` button per product + Menu row. */
+export function popularKb(products: Array<{ id: number; name: string }>, lang: string): InlineKeyboard {
+  const rows: Btn[][] = products.map((p) => [
+    { text: truncLabel(p.name, 30), data: cb("browse", "pick", p.id) },
+  ]);
+  rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
+  return ik(rows);
+}
+
 // ---------------------------------------------------------------------------
 // Orders
 // ---------------------------------------------------------------------------
@@ -536,6 +543,23 @@ export function languageKb(): InlineKeyboard {
       { text: "🇬🇧 English", data: cb("lang", "set", "en") },
       { text: "🇮🇩 Indonesia", data: cb("lang", "set", "id") },
     ],
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// Help Center hub
+// ---------------------------------------------------------------------------
+
+/** Help Center hub keyboard — one feature button per row + a Menu back row. */
+export function helpCenterKb(lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("help.referral_btn", lang), data: cb("ref", "view") }],
+    [{ text: coreT("help.language_btn", lang), data: cb("lang", "menu") }],
+    [{ text: coreT("help.faq_btn", lang), data: cb("page", "faq") }],
+    [{ text: coreT("help.terms_btn", lang), data: cb("page", "terms") }],
+    [{ text: coreT("help.support_btn", lang), data: cb("support", "open") }],
+    [{ text: coreT("help.tickets_btn", lang), data: cb("ticket", "list") }],
+    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
   ]);
 }
 

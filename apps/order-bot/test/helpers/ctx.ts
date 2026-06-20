@@ -49,9 +49,39 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
   const from = { ...DEFAULT_FROM, ...opts.from };
   const chat = { id: from.id, type: "private" as const };
 
+  // Message ids deleted via deleteMessage in THIS ctx. Mirrors real Telegram:
+  // editing a deleted message throws, which is what makes smartEdit's catch
+  // fall through to a fresh send instead of "successfully" editing a bubble
+  // that no longer exists.
+  const deletedIds = new Set<number>();
+
   const rec =
     (method: string) =>
     (...args: unknown[]) => {
+      sink.push({ method, args });
+      return Promise.resolve({ message_id: ++msgSeq, chat, date: 0 });
+    };
+
+  const recDelete =
+    (method: string) =>
+    (...args: unknown[]) => {
+      sink.push({ method, args });
+      const messageId = args[1] as number | undefined;
+      if (typeof messageId === "number") deletedIds.add(messageId);
+      return Promise.resolve(true);
+    };
+
+  // ctx-level editors implicitly target ctx.callbackQuery.message — used by
+  // smartEdit/adminEdit. If that message id was deleted in this ctx, behave
+  // like real Telegram ("message to edit not found") so callers' fallback
+  // logic (fresh send) actually gets exercised instead of silently "succeeding".
+  const recCtxEdit =
+    (method: string) =>
+    (...args: unknown[]) => {
+      const cqMsgId = (callbackQuery?.message as { message_id?: number } | undefined)?.message_id;
+      if (cqMsgId !== undefined && deletedIds.has(cqMsgId)) {
+        return Promise.reject(new Error("message to edit not found"));
+      }
       sink.push({ method, args });
       return Promise.resolve({ message_id: ++msgSeq, chat, date: 0 });
     };
@@ -64,7 +94,7 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
     editMessageText: rec("editMessageText"),
     editMessageCaption: rec("editMessageCaption"),
     editMessageReplyMarkup: rec("editMessageReplyMarkup"),
-    deleteMessage: rec("deleteMessage"),
+    deleteMessage: recDelete("deleteMessage"),
     setMyCommands: rec("setMyCommands"),
     deleteWebhook: rec("deleteWebhook"),
     getFile: (..._a: unknown[]) => Promise.resolve({ file_id: "f", file_path: "docs/file.txt" }),
@@ -117,8 +147,8 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
         }
       : rec("replyWithPhoto"),
     replyWithDocument: rec("replyWithDocument"),
-    editMessageText: rec("editMessageText"),
-    editMessageCaption: rec("editMessageCaption"),
+    editMessageText: recCtxEdit("editMessageText"),
+    editMessageCaption: recCtxEdit("editMessageCaption"),
     editMessageReplyMarkup: rec("editMessageReplyMarkup"),
     answerCallbackQuery: rec("answerCallbackQuery"),
   } as unknown as MyContext;

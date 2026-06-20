@@ -798,6 +798,12 @@ describe("checkout handlers", () => {
     // old behavior is gone; the render lands directly on Product Detail.
     expect(sentIncludes(sink, sample.parentProduct.name)).toBe(true);
     expect(sentIncludes(sink, "✕")).toBe(true); // checkout.cancelled_prefix stamp
+
+    // Pin the render METHOD, not just substrings: the deleted photo bubble
+    // must NOT be edited in place (its caption was never touched) — Detail
+    // must land via a fresh send instead.
+    expect(calls(sink, "editMessageCaption").length).toBe(0);
+    expect(calls(sink, "reply").length + calls(sink, "sendMessage").length).toBeGreaterThan(0);
   });
 
   it("cancelPendingOrder on a text wait screen (e.g. Binance manual) edits straight to Product Detail in place", async () => {

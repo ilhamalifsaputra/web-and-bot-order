@@ -687,80 +687,6 @@ describe("checkout handlers", () => {
     expect(await prisma.order.count()).toBe(0);
   });
 
-  it("buyNow creates a PENDING_PAYMENT order and shows payment instructions", async () => {
-    // The USDT/Binance path needs the admin-set rate; 1 keeps the USDT total
-    // equal to the fixture's central-IDR price.
-    await setSetting(prisma, "usd_idr_rate", "1");
-    const { ctx, sink } = customerCtx({ callbackData: "v1:pay:1:1" });
-    await checkout.buyNow(ctx, sample.product.id, 1);
-    const orders = await prisma.order.findMany();
-    expect(orders).toHaveLength(1);
-    expect(orders[0]!.status).toBe(OrderStatus.PENDING_PAYMENT);
-    // payment instructions now EDIT the confirm bubble (callback path) rather
-    // than posting a new message.
-    expect(
-      calls(sink, "editMessageText").length + calls(sink, "sendMessage").length + calls(sink, "reply").length,
-    ).toBeGreaterThan(0);
-    checkout.cancelPaymentJobs(orders[0]!.id); // clear the countdown timer
-  });
-
-  it("buying a denomination creates an order at its price keyed off the denomination id", async () => {
-    // The whole point of the rename: `buy`/`pay` callbacks carry the DENOMINATION
-    // id (= the SKU the money/stock flow keys off). Buying it must create an order
-    // whose line points at that denomination and prices it at the denomination price.
-    await setSetting(prisma, "usd_idr_rate", "1");
-    const { ctx } = customerCtx({ callbackData: `v1:pay:${sample.product.id}:2` });
-    await checkout.buyNow(ctx, sample.product.id, 2);
-
-    const order = (await prisma.order.findFirst({ include: { items: true } }))!;
-    expect(order.status).toBe(OrderStatus.PENDING_PAYMENT);
-    // One order item per unit, each pointing at the denomination (physical
-    // product_id column) and priced at the denomination unit price ("5.00").
-    expect(order.items).toHaveLength(2);
-    expect(order.items.every((i) => i.productId === sample.product.id)).toBe(true);
-    expect(order.items.every((i) => new Decimal(i.unitPrice).toString() === "5")).toBe(true);
-    // Subtotal reflects 2 × 5 before any unique-cents/total finalization.
-    expect(new Decimal(order.subtotalAmount).toString()).toBe("10");
-    // Stock is only reserved at approval — buying must not exceed availability
-    // (5 units), so the order is allowed and the units remain AVAILABLE for now.
-    expect(
-      await prisma.stockItem.count({ where: { productId: sample.product.id, status: StockStatus.AVAILABLE } }),
-    ).toBe(5);
-    checkout.cancelPaymentJobs(order.id);
-  });
-
-  it("buyNow unifies the Binance QR + instructions into one photo+caption bubble when a QR is set", async () => {
-    await setSetting(prisma, "usd_idr_rate", "1");
-    await setSetting(prisma, "qr", "QR_FILE_ID"); // stored QR file_id
-    const { ctx, sink } = customerCtx({ callbackData: "v1:pay:1:1" });
-    await checkout.buyNow(ctx, sample.product.id, 1);
-    const orders = await prisma.order.findMany();
-    expect(orders).toHaveLength(1);
-    // QR + instructions ride in ONE photo+caption bubble — no separate sendPhoto.
-    expect(calls(sink, "sendPhoto").length).toBe(0);
-    const photoCalls = calls(sink, "replyWithPhoto");
-    expect(photoCalls.length).toBe(1);
-    expect((photoCalls[0]!.args[1] as { caption?: string }).caption).toBeTruthy();
-    checkout.cancelPaymentJobs(orders[0]!.id); // clear the countdown timer
-  });
-
-  it("buyNow sends an uploaded QR via InputFile and caches the resulting file_id once", async () => {
-    await setSetting(prisma, "usd_idr_rate", "1");
-    await setSetting(prisma, "qr", "/uploads/qr/qr-test.png"); // web upload, no cache yet
-    const { ctx, sink } = customerCtx({
-      callbackData: "v1:pay:1:1",
-      replyWithPhotoResult: { photo: [{ file_id: "CACHED_FROM_UPLOAD" }] },
-    });
-    await checkout.buyNow(ctx, sample.product.id, 1);
-    const orders = await prisma.order.findMany();
-    expect(orders).toHaveLength(1);
-    const photoCalls = calls(sink, "replyWithPhoto");
-    expect(photoCalls.length).toBe(1);
-    // Cached after the first send so a re-render won't re-upload the same file.
-    expect(await getSetting(prisma, "qr_fileid")).toBe("CACHED_FROM_UPLOAD");
-    checkout.cancelPaymentJobs(orders[0]!.id); // clear the countdown timer
-  });
-
   it("buyNowTokopay creates an IDR/TOKOPAY order and sends the QR as one photo+caption bubble", async () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
@@ -783,11 +709,13 @@ describe("checkout handlers", () => {
     expect(cached.trxId).toBe("TP-TEST");
   });
 
-  it("buyNow refuses past the pending-order limit", async () => {
+  it("buyNowTokopay refuses past the pending-order limit", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
     for (let i = 0; i < 10; i++) await makeOrder();
     const before = await prisma.order.count();
-    const { ctx } = customerCtx({ callbackData: "v1:pay:1:1" });
-    await checkout.buyNow(ctx, sample.product.id, 1);
+    const { ctx } = customerCtx({ callbackData: "v1:payq:1:1" });
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
     expect(await prisma.order.count()).toBe(before); // no new order
   });
 
@@ -859,7 +787,7 @@ describe("Refresh Status button (§7)", () => {
       expect(flat.some((b) => b.callback_data === "v1:checkout:refresh:1")).toBe(true);
     });
 
-    it("proofCancelKb default (no showRefresh arg) has NO Refresh button — protects the manual proof flow", () => {
+    it("proofCancelKb default (no showRefresh arg) has NO Refresh button", () => {
       const kb = proofCancelKb(1, "en");
       const flat = kb.inline_keyboard.flat() as Array<{ callback_data?: string }>;
       expect(flat.some((b) => b.callback_data?.startsWith("v1:checkout:refresh"))).toBe(false);

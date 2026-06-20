@@ -16,7 +16,7 @@ import { buildSampleData, resetDb, type SampleData } from "../../../tests/helper
 import { makeCtx, FakeConversation, calls, sentIncludes, offersForwardAction, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { ticketUserReplyConversation } from "../src/conversations/customer";
-import { proofConversation, voucherConversation } from "../src/conversations/checkout";
+import { voucherConversation } from "../src/conversations/checkout";
 import { supportConversation } from "../src/conversations/support";
 import { rejectConversation } from "../src/conversations/reject";
 import {
@@ -133,46 +133,6 @@ describe("customer conversations", () => {
 // ===========================================================================
 
 describe("checkout conversations", () => {
-  it("proof: screenshot + txid moves the order to PENDING_VERIFICATION and DMs admins", async () => {
-    const order = await prisma.$transaction((tx) =>
-      createOrderDirect(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1 }),
-    );
-    const sink: SentCall[] = [];
-    const entry = entryCust(sink, `v1:checkout:proof:${order!.id}`);
-    const conv = new FakeConversation([
-      msg(sink, { photo: [{ file_id: "shot-1" }] }),
-      msg(sink, { text: "TXABCDEF1234" }),
-    ]);
-    await proofConversation(conv.asMyConversation(), entry);
-
-    const after = await getOrder(prisma, order!.id);
-    expect(after!.status).toBe(OrderStatus.PENDING_VERIFICATION);
-    expect(after!.binanceTxid).toBe("TXABCDEF1234");
-    expect(after!.paymentProofFileId).toBe("shot-1");
-    expect(calls(sink, "sendMessage").some((c) => c.args[0] === 999)).toBe(true); // admin notified
-  });
-
-  it("proof: '🏠 Menu' escapes to the dashboard, answers the callback, leaves the order pending (§8.7)", async () => {
-    const order = await prisma.$transaction((tx) =>
-      createOrderDirect(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1 }),
-    );
-    const before = (await getOrder(prisma, order!.id))!.status;
-    const sink: SentCall[] = [];
-    const entry = entryCust(sink, `v1:checkout:proof:${order!.id}`);
-    const conv = new FakeConversation([msg(sink, { callbackData: "v1:menu:main" })]);
-    await proofConversation(conv.asMyConversation(), entry);
-
-    // Escaped to the dashboard — Home is an inline keyboard (§2), so this edits
-    // the existing bubble in place rather than sending a fresh reply — and the
-    // callback was answered so no loading spinner hangs. Under the original bug
-    // this fell through to a re-prompt → a 2nd wait() → "queue empty" throw.
-    expect(calls(sink, "editMessageText").length).toBeGreaterThan(0);
-    expect(calls(sink, "reply").length).toBe(0);
-    expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
-    // Non-destructive: the order is untouched (still pending, under My Orders).
-    expect((await getOrder(prisma, order!.id))!.status).toBe(before);
-  });
-
   it("voucher: a valid code is applied and the confirmation re-renders with it", async () => {
     const sink: SentCall[] = [];
     const entry = entryCust(sink, `v1:voucher:start:${sample.product.id}:2`);

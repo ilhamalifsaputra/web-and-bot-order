@@ -351,7 +351,6 @@ export function ordersListKb(orders: OrderLike[], lang: string): InlineKeyboard 
 export function orderDetailKb(order: OrderLike, lang: string): InlineKeyboard {
   const rows: Btn[][] = [];
   if (order.status === OrderStatus.PENDING_PAYMENT) {
-    rows.push([{ text: coreT("checkout.i_paid", lang), data: cb("checkout", "proof", order.id) }]);
     rows.push([
       { text: coreT("checkout.cancel_order", lang), data: cb("checkout", "cancel", order.id) },
     ]);
@@ -389,17 +388,14 @@ export function orderConfirmKb(
     ]);
   }
   const hasUsdt = internalEnabled || bybitEnabled || nowpaymentsEnabled;
-  if (tokopayEnabled || paydisiniEnabled || hasUsdt) {
-    // Top-level methods: QRIS first, then PayDisini (second IDR rail), then a
-    // single USDT entry that opens a submenu (Binance / Bybit). The legacy
-    // manual Binance Pay method is retired.
-    if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: cb("payq", productId, qty) }]);
-    if (paydisiniEnabled) rows.push([{ text: coreT("checkout.pay_paydisini_btn", lang), data: cb("payd", productId, qty) }]);
-    if (hasUsdt) rows.push([{ text: coreT("checkout.pay_usdt_btn", lang), data: cb("usdt", productId, qty) }]);
-  } else {
-    // No payment method configured at all — fall back to a plain confirm.
-    rows.push([{ text: coreT("checkout.confirm_btn", lang), data: cb("pay", productId, qty) }]);
-  }
+  // Top-level methods: QRIS first, then PayDisini (second IDR rail), then a
+  // single USDT entry that opens a submenu (Binance / Bybit / NOWPayments). The
+  // legacy manual Binance Pay method is retired, so an unconfigured shop offers
+  // no payable action here (voucher + cancel only) until an admin enables a
+  // gateway in Settings.
+  if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: cb("payq", productId, qty) }]);
+  if (paydisiniEnabled) rows.push([{ text: coreT("checkout.pay_paydisini_btn", lang), data: cb("payd", productId, qty) }]);
+  if (hasUsdt) rows.push([{ text: coreT("checkout.pay_usdt_btn", lang), data: cb("usdt", productId, qty) }]);
   rows.push([
     { text: coreT("checkout.cancel_btn", lang), data: cb("browse", "denom", productId) },
   ]);
@@ -435,30 +431,17 @@ export function voucherCancelKb(productId: number, qty: number, lang: string): I
 }
 
 /**
- * Shown during the screenshot / TxID prompts. 'Cancel Order' is the only
- * destructive action; '🏠 Menu' is a non-destructive escape that leaves the
- * order pending (it stays reachable under My Orders), so the user is never
- * stranded on a cancel-or-nothing screen.
- *
- * This keyboard is SHARED between the auto USDT rails (Binance Internal,
- * Bybit) and the manual Binance-Pay proof conversation. Only the auto rails
- * have an on-demand reconcile to trigger, so `showRefresh` defaults to
- * `false` — the 5 conversation call sites (conversations/checkout.ts) must
- * stay on the default and NEVER pass `true`.
+ * Auto USDT rails' waiting screen (Binance Internal, Bybit). 'Cancel Order' is
+ * the only destructive action; '🏠 Menu' is a non-destructive escape that leaves
+ * the order pending (it stays reachable under My Orders), so the user is never
+ * stranded on a cancel-or-nothing screen. `showRefresh` adds the on-demand
+ * reconcile button the auto rails pass `true` for.
  */
 export function proofCancelKb(orderId: number, lang: string, showRefresh = false): InlineKeyboard {
   return ik([
     ...(showRefresh
       ? [[{ text: coreT("checkout.refresh_status_btn", lang), data: cb("checkout", "refresh", orderId) }]]
       : []),
-    [{ text: coreT("checkout.cancel_order", lang), data: cb("checkout", "cancel", orderId) }],
-    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
-  ]);
-}
-
-export function paymentInstructionsKb(orderId: number, lang: string): InlineKeyboard {
-  return ik([
-    [{ text: coreT("checkout.i_paid", lang), data: cb("checkout", "proof", orderId) }],
     [{ text: coreT("checkout.cancel_order", lang), data: cb("checkout", "cancel", orderId) }],
     [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
   ]);

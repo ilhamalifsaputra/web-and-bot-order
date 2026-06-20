@@ -1,29 +1,23 @@
 /**
- * Checkout flow — port of checkout.py (navigation + payment instructions +
- * countdown/reminder timers). The proof and voucher conversations live in
- * src/conversations/ (they need @grammyjs/conversations).
+ * Checkout flow — port of checkout.py (navigation + the auto-confirm payment
+ * rails). The voucher conversation lives in src/conversations/ (it needs
+ * @grammyjs/conversations).
  *
- * Flow: browse product → pick qty → show_order_confirmation → confirm (pay) →
- * buy_now creates the order → payment instructions → proof upload → admin
- * verification.
- *
- * PTB's JobQueue per-order countdown/reminder jobs become module-level timers
- * keyed by order id, plus an `activePaymentByChat` map reproducing the
- * `payment_order_id` guard (only tick while the user is on that screen).
+ * Flow: browse product → pick qty → show_order_confirmation → pick a gateway
+ * (QRIS/PayDisini/USDT) → buyNow<Rail> creates the order and shows that rail's
+ * instructions. Every rail auto-confirms and delivers on its own; the legacy
+ * manual Binance-Pay proof/verification path is retired.
  */
-import { InlineKeyboard, InputFile } from "grammy";
-import fs from "node:fs";
+import { InlineKeyboard } from "grammy";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
-import { ensureUtc, localize } from "@app/core/datetime";
+import { localize } from "@app/core/datetime";
 import { OrderCurrency, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import {
   prisma,
   getOrder,
-  getSetting,
-  setSetting,
   getDenomination,
   countAvailableStock,
   getBulkPricingForDenomination,
@@ -56,15 +50,12 @@ import { smartEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
 import { esc, formatPrice, formatIdr, priceIdr } from "../util/format";
 import { currentUsdtRate } from "../util/rate";
-import { QR_FILEID_KEY, qrPhotoArg as resolveQrPhotoArg } from "../util/qr";
 import * as ckb from "../keyboards/customer";
 import * as customer from "./customer";
 import {
   setActivePayment,
   clearActivePayment,
   cancelPaymentJobs,
-  schedulePaymentJobs,
-  formatCountdown,
 } from "./checkout/timers";
 
 // Re-export the timer surface so `import * as checkout` callers (callbacks,
@@ -80,103 +71,6 @@ function requireUser(ctx: MyContext) {
   const u = ctx.session.dbUser;
   if (!u) throw new Error("checkout handler reached without a registered user");
   return u;
-}
-
-// ---------------------------------------------------------------------------
-// Payment instructions
-// ---------------------------------------------------------------------------
-
-/**
- * Show payment instructions. When reached from a button tap (e.g. the "Confirm"
- * button → buyNow), this EDITS the existing bubble in place rather than posting
- * a new message; on a non-callback path (e.g. /cancel during proof) smartEdit
- * falls back to a fresh send. Schedules the countdown + reminder timers.
- */
-export async function sendPaymentInstructions(ctx: MyContext, orderId: number): Promise<void> {
-  const info = requireUser(ctx);
-  const lang = ctx.session.lang;
-  const chatId = ctx.chat!.id;
-
-  const order = await getOrder(prisma, orderId);
-  if (order === null || order.userId !== info.id) {
-    const msg = await ctx.api.sendMessage(chatId, t(ctx, "error.order_not_found"), { parse_mode: "HTML" });
-    ctx.session.menuMsgId = msg.message_id;
-    return;
-  }
-
-  const binanceId = (await getSetting(prisma, "binance_pay_id")) || config.BINANCE_PAY_ID;
-  const expiresAt = order.expiresAt ? ensureUtc(order.expiresAt).toJSDate() : null;
-  const countdown = expiresAt ? formatCountdown(expiresAt) : `${config.PAYMENT_WINDOW_MINUTES}:00`;
-
-  const text = t(ctx, "checkout.payment_instructions", {
-    code: order.orderCode,
-    total: price(order.totalAmount, 4),
-    binance_id: esc(binanceId),
-    countdown,
-  });
-
-  cancelPaymentJobs(orderId);
-  // Clear any stale QR tracking from a previous payment screen before sending a fresh one.
-  ctx.session.qrMsgId = undefined;
-
-  const kb = ckb.paymentInstructionsKb(orderId, lang);
-  // Resolve the QR source: a web upload (cached file_id if any) or a legacy
-  // file_id setting wins, else fall back to the bundled image.
-  const qrArg = resolveQrPhotoArg(await getSetting(prisma, "qr"), await getSetting(prisma, QR_FILEID_KEY));
-  let qrPhotoArg: string | InputFile | undefined;
-  let needsCache = false;
-  if (qrArg) {
-    qrPhotoArg = qrArg.photo;
-    needsCache = qrArg.needsCache;
-  } else if (config.BINANCE_QR_PATH && fs.existsSync(config.BINANCE_QR_PATH)) {
-    qrPhotoArg = new InputFile(config.BINANCE_QR_PATH);
-  }
-
-  // Unify the QR image and the instructions into ONE photo+caption bubble
-  // (image + caption + payment keyboard), so the QR reads as part of the same
-  // screen instead of a detached photo below. A text confirm bubble can't morph
-  // into a photo via edit, so delete it and send the QR fresh, then track it as
-  // menuMsgId. The countdown/reminder jobs edit this bubble's caption (qrPhoto).
-  let qrPhoto = false;
-  if (qrPhotoArg) {
-    const confirmMsgId = ctx.callbackQuery?.message?.message_id ?? ctx.session.menuMsgId;
-    try {
-      const qrMsg = await ctx.replyWithPhoto(qrPhotoArg, {
-        caption: text,
-        parse_mode: "HTML",
-        reply_markup: kb,
-      });
-      ctx.session.menuMsgId = qrMsg.message_id;
-      qrPhoto = true;
-      if (confirmMsgId && confirmMsgId !== qrMsg.message_id) {
-        try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
-      }
-      // Cache the Telegram file_id for a fresh upload so the bot re-uploads the
-      // same image at most once; a cache failure must never break checkout.
-      if (needsCache) {
-        try {
-          const fileId = qrMsg.photo?.at(-1)?.file_id;
-          if (fileId) await setSetting(prisma, QR_FILEID_KEY, fileId);
-        } catch (err) {
-          logger.warn({ err }, "Failed to cache QR file_id");
-        }
-      }
-    } catch (err) {
-      logger.error({ err }, "Failed to send QR photo");
-      // QR image failed — fall back to a text-only instructions bubble.
-      await smartEdit(ctx, text, kb);
-    }
-  } else {
-    // No QR configured — keep the text-only instructions bubble.
-    await smartEdit(ctx, text, kb);
-  }
-  const menuMsgId = ctx.session.menuMsgId;
-
-  // Mark this order as the chat's active payment view + schedule jobs.
-  setActivePayment(chatId, orderId);
-  if (expiresAt && menuMsgId) {
-    schedulePaymentJobs({ api: ctx.api, orderId, chatId, lang, expiresAt, binanceId, menuMsgId, qrPhoto });
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -382,57 +276,6 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
       nowpaymentsEnabled && rate !== null,
     ),
   );
-}
-
-// ---------------------------------------------------------------------------
-// Direct buy: create order → show payment instructions
-// ---------------------------------------------------------------------------
-
-export async function buyNow(ctx: MyContext, productId: number, quantity: number): Promise<void> {
-  const info = requireUser(ctx);
-  const lang = ctx.session.lang;
-  const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
-  delete ctx.session.scratch.appliedVoucherCode;
-
-  const user = await getUser(prisma, info.id);
-  if (user === null) {
-    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
-    return;
-  }
-  const pendingCount = await countUserPendingOrders(prisma, info.id);
-  if (pendingCount >= MAX_PENDING_ORDERS) {
-    await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
-    return;
-  }
-
-  // Binance Pay charges USDT — the central-IDR total converts once at the
-  // usd_idr_rate (plan.md §15.4). No rate ⇒ the USDT path is off.
-  const rate = await currentUsdtRate();
-  if (!rate) {
-    await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
-    return;
-  }
-
-  let order: Awaited<ReturnType<typeof createOrderDirect>>;
-  try {
-    order = await prisma.$transaction(async (tx) => {
-      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode });
-      if (!created) return created;
-      return finalizeOrderPayment(tx, created.id, {
-        currency: OrderCurrency.USDT,
-        rate,
-        method: PaymentMethod.BINANCE_PAY,
-      });
-    });
-  } catch (e) {
-    if (e instanceof ValidationError) {
-      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
-      return;
-    }
-    throw e;
-  }
-
-  if (order) await sendPaymentInstructions(ctx, order.id);
 }
 
 /**

@@ -37,9 +37,12 @@ describe("payment method menu", () => {
     expect(d.some((x) => x.startsWith("v1:buy:"))).toBe(true); // Back → confirmation
   });
 
-  it("falls back to a plain confirm when nothing is configured", () => {
+  it("offers no payable action when nothing is configured (manual fallback retired)", () => {
     const d = data(orderConfirmKb(1, 1, "en", "", false, false, false));
-    expect(d.some((x) => x.startsWith("v1:pay:"))).toBe(true);
+    // No gateway → no pay button at all (the legacy manual Binance Pay fallback
+    // was removed); only the voucher + cancel actions remain.
+    expect(d.some((x) => x.startsWith("v1:pay:"))).toBe(false);
+    expect(d.some((x) => x.startsWith("v1:payq:"))).toBe(false);
     expect(d.some((x) => x.startsWith("v1:usdt:"))).toBe(false);
   });
 
@@ -73,7 +76,8 @@ describe("payment method menu", () => {
 
     const withoutNowpayments = data(orderConfirmKb(1, 1, "en", "", false, false, false, false, false));
     expect(withoutNowpayments.some((x) => x.startsWith("v1:usdt:"))).toBe(false);
-    expect(withoutNowpayments.some((x) => x.startsWith("v1:pay:"))).toBe(true);
+    // Nothing configured → no payable action (the manual fallback was retired).
+    expect(withoutNowpayments.some((x) => x.startsWith("v1:pay:"))).toBe(false);
   });
 
   it("USDT submenu lists NOWPayments only when nowpaymentsEnabled is true", () => {

@@ -77,11 +77,6 @@ const dispatchBuy: DomainDispatcher = async (ctx, parts) => {
   await checkout.showOrderConfirmation(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
 };
 
-const dispatchPay: DomainDispatcher = async (ctx, parts) => {
-  // v1:pay:<pid>:<qty> → Binance Pay order (manual proof)
-  await checkout.buyNow(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
-};
-
 const dispatchUsdt: DomainDispatcher = async (ctx, parts) => {
   // v1:usdt:<pid>:<qty> → USDT payment submenu (Binance Transfer / Bybit)
   await checkout.showUsdtMethods(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
@@ -124,9 +119,6 @@ const dispatchCheckout: DomainDispatcher = async (ctx, parts) => {
   const action = parts[2];
   if (action === "cancel") await checkout.cancelPendingOrder(ctx, parseInt(parts[3]!, 10));
   else if (action === "refresh") await checkout.refreshPaymentStatus(ctx, parseInt(parts[3]!, 10));
-  // checkout:proof is the entry point for the proof conversation (handled by
-  // the conversations plugin). It only reaches here if the conversation didn't
-  // capture it — in that case re-entry is handled by the conversation itself.
 };
 
 const dispatchOrder: DomainDispatcher = async (ctx, parts) => {
@@ -184,7 +176,6 @@ const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
   noop: dispatchNoop,
   order: dispatchOrder,
   page: dispatchPage,
-  pay: dispatchPay,
   usdt: dispatchUsdt,
   payx: dispatchPayInternal,
   payb: dispatchPayBybit,

@@ -458,6 +458,11 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
               nowpaymentsGatewayError = true;
             }
           } else {
+            logger.warn(
+              `NOWPayments unavailable for ${order.orderCode}: ${
+                !creds ? "no creds configured" : "no public URL configured (SHOP_PUBLIC_URL/PUBLIC_URL)"
+              }`,
+            );
             nowpaymentsGatewayError = true;
           }
         }

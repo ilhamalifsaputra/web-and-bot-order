@@ -135,8 +135,16 @@ export function normalizeTx(raw: Record<string, unknown>): BinanceTx | null {
   return { txId: String(txId), note, amount, currency };
 }
 
-/** Fetch recent incoming transfers (last hour). Throws RateLimitedError on 429/418. */
-async function fetchIncomingTransfers(cfg: BinanceInternalConfig): Promise<BinanceTx[]> {
+const CONNECT_RETRY_ATTEMPTS = 3;
+const CONNECT_RETRY_DELAY_MS = 1500;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * One signed GET against /sapi/v1/pay/transactions. Split out of
+ * fetchIncomingTransfers so each retry attempt below gets a fresh
+ * timestamp/signature (Binance rejects a stale timestamp outside recvWindow).
+ */
+async function requestIncomingTransfers(cfg: BinanceInternalConfig): Promise<Response> {
   const params = new URLSearchParams({
     startTime: String(Date.now() - 60 * 60 * 1000),
     limit: "100",
@@ -145,14 +153,42 @@ async function fetchIncomingTransfers(cfg: BinanceInternalConfig): Promise<Binan
   });
   const qs = params.toString();
   const url = `${cfg.apiBase}/sapi/v1/pay/transactions?${qs}&signature=${sign(qs, cfg.apiSecret)}`;
-  const res = await fetch(url, { headers: { "X-MBX-APIKEY": cfg.apiKey } });
-  if (res.status === 429 || res.status === 418) {
-    throw new RateLimitedError(`Binance rate limited (HTTP ${res.status})`);
+  return fetch(url, { headers: { "X-MBX-APIKEY": cfg.apiKey } });
+}
+
+/**
+ * Fetch recent incoming transfers (last hour). Throws RateLimitedError on
+ * 429/418. Retries a couple of times on a connect-level failure (e.g. an
+ * occasional bad DNS answer for api.binance.com) before giving up — each
+ * retry re-resolves DNS from scratch, so a one-off bad answer rarely survives
+ * three tries. HTTP-level responses (including 429/418) are never retried
+ * here; those already have their own handling below / in pollOnce's backoff.
+ */
+async function fetchIncomingTransfers(cfg: BinanceInternalConfig): Promise<BinanceTx[]> {
+  let res: Response | undefined;
+  let connectErr: unknown;
+  for (let attempt = 1; attempt <= CONNECT_RETRY_ATTEMPTS; attempt++) {
+    try {
+      res = await requestIncomingTransfers(cfg);
+      connectErr = undefined;
+      break;
+    } catch (err) {
+      connectErr = err;
+      if (attempt < CONNECT_RETRY_ATTEMPTS) {
+        logger.warn(`Binance connect attempt ${attempt} failed, retrying — ${(err as Error).message}`);
+        await sleep(CONNECT_RETRY_DELAY_MS);
+      }
+    }
   }
-  if (!res.ok) {
-    throw new Error(`Binance pay/transactions HTTP ${res.status}: ${await res.text().catch(() => "")}`);
+  if (connectErr) throw connectErr;
+
+  if (res!.status === 429 || res!.status === 418) {
+    throw new RateLimitedError(`Binance rate limited (HTTP ${res!.status})`);
   }
-  const body = (await res.json()) as { data?: Record<string, unknown>[] };
+  if (!res!.ok) {
+    throw new Error(`Binance pay/transactions HTTP ${res!.status}: ${await res!.text().catch(() => "")}`);
+  }
+  const body = (await res!.json()) as { data?: Record<string, unknown>[] };
   const rows = body.data ?? [];
   return rows
     .map(normalizeTx)

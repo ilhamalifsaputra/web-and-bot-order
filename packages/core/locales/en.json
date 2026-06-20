@@ -414,6 +414,8 @@
   "web.nowpayments_auto_note": "Open the payment page to pay with any supported crypto — this page updates by itself once you've paid.",
   "web.pay_idr_down_title": "Rupiah payment is briefly unavailable",
   "web.pay_idr_down_body": "Our QRIS provider is having a short outage. Please try again in a moment — your order is saved and the price won't change.",
+  "web.pay_nowpayments_down_title": "Crypto payment is briefly unavailable",
+  "web.pay_nowpayments_down_body": "Our NOWPayments provider is having a short outage. Please try again in a moment — your order is saved and the price won't change.",
   "web.pay_retry": "Try again",
   "web.pay_trust": "Secure payment · your product is delivered automatically — no screenshots needed.",
   "web.pay_countdown": "Time left to pay:",

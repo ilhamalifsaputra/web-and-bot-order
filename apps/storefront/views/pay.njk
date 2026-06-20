@@ -149,13 +149,14 @@
       {% endif %}
       <p class="text-xs text-ink-faint mt-3">{{ t('web.nowpayments_auto_note', lang) }}</p>
     {% elif nowpayments_gateway_error %}
-      {# Same friendly, recoverable error treatment as the TokoPay/PayDisini branches. #}
+      {# Same friendly, recoverable error treatment as the TokoPay/PayDisini branches,
+         but with its own copy — NOWPayments is a USDT/crypto gateway, not Rupiah/QRIS. #}
       <div class="mt-4 rounded-xl border border-amberx/30 bg-amberx-tint/60 p-4">
         <div class="flex items-start gap-3">
           <i data-lucide="alert-triangle" class="w-5 h-5 text-amberx flex-shrink-0 mt-0.5"></i>
           <div class="text-sm">
-            <p class="font-semibold text-ink">{{ t('web.pay_idr_down_title', lang) }}</p>
-            <p class="text-ink-soft mt-0.5 leading-relaxed">{{ t('web.pay_idr_down_body', lang) }}</p>
+            <p class="font-semibold text-ink">{{ t('web.pay_nowpayments_down_title', lang) }}</p>
+            <p class="text-ink-soft mt-0.5 leading-relaxed">{{ t('web.pay_nowpayments_down_body', lang) }}</p>
           </div>
         </div>
         <div class="flex flex-wrap gap-2 mt-4">

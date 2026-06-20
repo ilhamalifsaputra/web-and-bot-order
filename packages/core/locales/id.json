@@ -414,6 +414,8 @@
   "web.nowpayments_auto_note": "Buka halaman pembayaran untuk bayar dengan kripto yang didukung — halaman ini memperbarui sendiri setelah kamu bayar.",
   "web.pay_idr_down_title": "Pembayaran Rupiah sedang gangguan sebentar",
   "web.pay_idr_down_body": "Penyedia QRIS kami sedang ada gangguan sesaat. Coba lagi sebentar lagi — pesananmu tersimpan dan harganya tidak berubah.",
+  "web.pay_nowpayments_down_title": "Pembayaran kripto sedang gangguan sebentar",
+  "web.pay_nowpayments_down_body": "Penyedia NOWPayments kami sedang ada gangguan sesaat. Coba lagi sebentar lagi — pesananmu tersimpan dan harganya tidak berubah.",
   "web.pay_retry": "Coba lagi",
   "web.pay_trust": "Pembayaran aman · produk dikirim otomatis — tanpa perlu kirim bukti.",
   "web.pay_countdown": "Sisa waktu bayar:",

@@ -1,0 +1,39 @@
+{# Admin topbar — sticky. Hamburger opens the mobile drawer (#menuBtn handled by
+   admin-ui.js). Breadcrumb (section / page) is derived from `active_nav` over
+   `nav_sections`. Right side: role chip + Telegram id + Sign out (moved here
+   from the old top nav). #}
+<header class="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-slate-200 bg-white px-4 lg:px-6">
+  <button type="button" id="menuBtn"
+    class="grid h-9 w-9 place-items-center rounded-lg text-slate-500 hover:bg-slate-100 lg:hidden" aria-label="Open menu">
+    <i data-lucide="menu" class="h-5 w-5"></i>
+  </button>
+
+  <div class="min-w-0">
+    {% for s in nav_sections %}
+      {% if s.single and active_nav == s.href %}
+        <h1 class="truncate text-[15px] font-semibold text-slate-900">{{ s.label }}</h1>
+      {% endif %}
+      {% for it in (s.items or []) %}
+        {% if active_nav == it.href %}
+          <p class="text-[11px] text-slate-400">{{ s.label }}</p>
+          <h1 class="truncate text-[15px] font-semibold text-slate-900">{{ it.label }}</h1>
+        {% endif %}
+      {% endfor %}
+    {% endfor %}
+  </div>
+
+  <div class="ml-auto flex items-center gap-2 text-sm sm:gap-3">
+    {% if admin.role %}
+    <span class="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
+      <i data-lucide="shield-check" class="h-3.5 w-3.5"></i> {{ role_label[admin.role] or admin.role }}
+    </span>
+    {% endif %}
+    {% if admin.telegramId %}<span class="hidden text-xs text-slate-400 md:inline">Telegram {{ admin.telegramId }}</span>{% endif %}
+    <form method="post" action="/logout" class="inline">
+      <input type="hidden" name="csrf_token" value="{{ admin.csrf }}">
+      <button type="submit" class="inline-flex h-9 items-center gap-1.5 rounded-lg px-2.5 text-slate-500 hover:bg-slate-100">
+        <i data-lucide="log-out" class="h-4 w-4"></i> <span class="hidden sm:inline">Sign out</span>
+      </button>
+    </form>
+  </div>
+</header>

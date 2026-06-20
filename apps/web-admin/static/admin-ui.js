@@ -198,6 +198,35 @@
     });
   }
 
+  // ── Sidebar (mobile drawer + collapsible nav groups) ────────────────────────
+  // Bound once: the sidebar is rendered server-side and never HTMX-swapped.
+  function initSidebar() {
+    if (document.__sbBound) return; document.__sbBound = true;
+
+    // Collapsible nav groups: each [data-group] button toggles the <ul> after
+    // it. The chevron rotation is pure CSS off aria-expanded (admin-theme.css).
+    document.querySelectorAll("[data-group]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var panel = btn.nextElementSibling;
+        var open = btn.getAttribute("aria-expanded") === "true";
+        btn.setAttribute("aria-expanded", String(!open));
+        if (panel) panel.classList.toggle("hidden", open);
+      });
+    });
+
+    // Mobile drawer: #menuBtn (topbar) opens it; the overlay closes it.
+    var sb = document.getElementById("sidebar");
+    var ov = document.getElementById("overlay");
+    var btn = document.getElementById("menuBtn");
+    if (!sb || !ov || !btn) return;
+    function setOpen(open) {
+      sb.classList.toggle("-translate-x-full", !open);
+      ov.classList.toggle("hidden", !open);
+    }
+    btn.addEventListener("click", function () { setOpen(sb.classList.contains("-translate-x-full")); });
+    ov.addEventListener("click", function () { setOpen(false); });
+  }
+
   function initAll(root) {
     root = root || document;
     initTabs(root);
@@ -208,6 +237,7 @@
 
   ready(function () {
     initDropdowns();
+    initSidebar();
     initAll(document);
   });
   // Re-init swapped-in HTMX content (matches base.njk's icon hook).

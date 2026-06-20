@@ -1,0 +1,71 @@
+{# Admin sidebar — data-driven from `nav_sections` / `nav_integrations` /
+   `role_label` (set in base.njk) + `active_nav` (per route). Off-canvas drawer
+   on mobile (toggled by #menuBtn in the topbar); fixed on lg+. Group panels
+   collapse/expand via admin-ui.js ([data-group] + aria-expanded). #}
+<aside id="sidebar"
+  class="fixed inset-y-0 left-0 z-40 flex w-64 -translate-x-full flex-col border-r border-slate-200 bg-white lg:translate-x-0">
+
+  {# brand #}
+  <a href="/" class="flex h-16 shrink-0 items-center gap-2.5 border-b border-slate-200 px-5">
+    <span class="grid h-8 w-8 place-items-center rounded-lg bg-blue-600 text-white">
+      <i data-lucide="store" class="h-5 w-5"></i>
+    </span>
+    <span class="text-[15px] font-semibold text-slate-900">Shop Admin</span>
+  </a>
+
+  {# nav #}
+  <nav class="flex-1 space-y-1 overflow-y-auto px-3 py-4 text-sm">
+    {% for s in nav_sections %}
+      {% if s.single %}
+        <a href="{{ s.href }}"
+           class="flex items-center gap-3 rounded-lg px-3 py-2 font-medium {% if active_nav == s.href %}bg-blue-50 text-blue-700{% else %}text-slate-600 hover:bg-slate-100{% endif %}">
+          <i data-lucide="{{ s.icon }}" class="h-5 w-5 {% if active_nav == s.href %}text-blue-600{% else %}text-slate-400{% endif %}"></i>
+          {{ s.label }}
+        </a>
+      {% else %}
+        {% set is_open = active_nav in s.match %}
+        <div>
+          <button type="button" data-group aria-expanded="{{ 'true' if is_open else 'false' }}"
+            class="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-medium text-slate-600 hover:bg-slate-100">
+            <i data-lucide="{{ s.icon }}" class="h-5 w-5 text-slate-400"></i>
+            <span class="flex-1 text-left">{{ s.label }}</span>
+            <i data-lucide="chevron-down" class="nav-chev h-4 w-4 text-slate-400"></i>
+          </button>
+          <ul class="mt-1 space-y-0.5 pl-11 {% if not is_open %}hidden{% endif %}">
+            {% for it in s.items %}
+              {% if not it.super or admin.role == 'super' %}
+              <li>
+                <a href="{{ it.href }}"
+                   class="block rounded-lg px-3 py-2 {% if active_nav == it.href %}bg-blue-50 font-medium text-blue-700{% else %}text-slate-600 hover:bg-slate-100{% endif %}">
+                  {{ it.label }}
+                </a>
+              </li>
+              {% endif %}
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+    {% endfor %}
+
+    {# Integrations — future providers, non-clickable previews #}
+    <div class="pt-2">
+      <p class="px-3 pb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">{{ nav_integrations.heading }}</p>
+      <button type="button" data-group aria-expanded="false"
+        class="flex w-full items-center gap-3 rounded-lg px-3 py-2 font-medium text-slate-600 hover:bg-slate-100">
+        <i data-lucide="{{ nav_integrations.icon }}" class="h-5 w-5 text-slate-400"></i>
+        <span class="flex-1 text-left">{{ nav_integrations.label }}</span>
+        <i data-lucide="chevron-down" class="nav-chev h-4 w-4 text-slate-400"></i>
+      </button>
+      <ul class="mt-1 hidden space-y-0.5 pl-11">
+        {% for it in nav_integrations.items %}
+        <li>
+          <span class="flex cursor-not-allowed items-center justify-between rounded-lg px-3 py-2 text-slate-400">
+            {{ it.label }}
+            <span class="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-500">segera</span>
+          </span>
+        </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </nav>
+</aside>

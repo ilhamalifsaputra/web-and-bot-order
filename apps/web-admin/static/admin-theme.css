@@ -1,0 +1,38 @@
+/* admin-theme.css — admin-only visual layer on top of the shared _theme.njk.
+   Linked in base.njk <head> AFTER {% include "_theme.njk" %} so it wins the
+   cascade. The storefront never links this file, so its look is unaffected.
+
+   Goal: match admin-sidebar-mockup.html — Inter type, slate/blue surfaces, a
+   left sidebar shell. The shared component classes (.card/.btn/.data-table/…)
+   already render blue/off-white via _theme.njk; here we only retune the type
+   and a few surfaces toward the mockup's slate palette. */
+
+/* ── Type: Inter everywhere (mockup) ───────────────────────────────────────── */
+body,
+h1, h2, h3,
+.page-title, .section-title, .stat-value, .stat-label, .field-label {
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+/* ── Surfaces tuned toward the mockup's slate palette ──────────────────────── */
+body { background-color: #f8fafc; color: #334155; }            /* slate-50 / slate-700 */
+
+.card { border-color: #e2e8f0; border-radius: 1rem; }           /* slate-200, rounded-2xl */
+
+.data-table thead th { background: #f8fafc; color: #94a3b8; }   /* slate-50 / slate-400 */
+.data-table tbody tr { border-top-color: #f1f5f9; }             /* slate-100 */
+.data-table tbody tr:hover { background: #f8fafc; }
+
+.field { border-color: #e2e8f0; border-radius: 0.5rem; }        /* slate-200, rounded-lg */
+
+/* ── Slate scrollbar (mockup) ──────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ── Sidebar drawer (mobile off-canvas) ────────────────────────────────────── */
+#sidebar { transition: transform 0.2s ease; }
+
+/* Nav group chevron flips when its panel is open (driven by aria-expanded). */
+[data-group][aria-expanded="true"] .nav-chev { transform: rotate(180deg); }
+.nav-chev { transition: transform 0.15s ease; }

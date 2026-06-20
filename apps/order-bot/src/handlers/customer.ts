@@ -221,7 +221,7 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Browse — flat product list with persistent reply keyboard
+// Browse — flat product list with inline pagination + tap-select
 // ---------------------------------------------------------------------------
 
 export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void> {

@@ -5,7 +5,7 @@
  * colon-separated path (see customer_kb.py for the full schema). The `v1`
  * prefix lets us evolve the schema later without breaking in-flight buttons.
  */
-import { InlineKeyboard, Keyboard } from "grammy";
+import { InlineKeyboard } from "grammy";
 import type { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { OrderStatus, StockStatus, TicketStatus } from "@app/core/enums";
@@ -116,15 +116,17 @@ export function paymentSuccessKb(lang: string): InlineKeyboard {
 }
 
 // ---------------------------------------------------------------------------
-// Browse — persistent numbered reply keyboard
+// Persistent-label typed-text guards
 // ---------------------------------------------------------------------------
 
 /**
- * Persistent reply-keyboard buttons. Each action has a STABLE key (used by the
- * handler to decide what to do) mapped to a locale key (used to render the label
- * in the user's language). Because the label is localized, the keyboard text
- * differs per language — so matching typed input must go through
- * `matchPersistentLabel` (which checks BOTH languages), never a literal compare.
+ * Stable action keys for the bot's main-menu shortcuts, each mapped to a locale
+ * key. The reply keyboard that once rendered these was retired in favour of inline
+ * keyboards; the machinery survives only as a *typed-text guard* — conversations
+ * (checkout / support / review) call `isPersistentLabel` to detect when a user
+ * types a former menu label instead of answering a prompt, and bail out to the
+ * navigation handler. Matching is language-aware (checks BOTH languages) because
+ * the labels are localized, so a literal compare would miss the other language.
  */
 export type PersistentAction =
   | "browse" | "orders" | "wallet" | "referral" | "language"
@@ -175,59 +177,6 @@ export function matchPersistentLabel(text: string): PersistentAction | null {
 /** True when the text is any persistent-keyboard label (in any language). */
 export function isPersistentLabel(text: string): boolean {
   return matchPersistentLabel(text) !== null;
-}
-
-/** Compact persistent reply keyboard with all main-menu shortcuts. */
-export function mainPersistentKb(lang: string): Keyboard {
-  const L = (a: PersistentAction) => persistentLabel(a, lang);
-  return new Keyboard()
-    .text(L("browse")).text(L("orders")).text(L("wallet")).row()
-    .text(L("referral")).text(L("language")).text(L("support")).row()
-    .text(L("faq")).text(L("terms")).text(L("tickets"))
-    .resized();
-}
-
-/**
- * Persistent reply keyboard: number buttons 1..count (rows of 5) + nav rows.
- * show_prev/show_next render a catalog pagination row; show_back adds a
- * context-aware "← Back" handled in handleProductNumber.
- */
-export function productsPersistentKb(
-  count: number,
-  lang: string,
-  opts: { showPrev?: boolean; showNext?: boolean; showBack?: boolean } = {},
-): Keyboard {
-  const kb = new Keyboard();
-  let inRow = 0;
-  for (let n = 1; n <= count; n++) {
-    kb.text(String(n));
-    inRow++;
-    if (inRow === 5) {
-      kb.row();
-      inRow = 0;
-    }
-  }
-  if (inRow > 0) kb.row();
-
-  if (opts.showPrev || opts.showNext) {
-    if (opts.showPrev) kb.text(persistentLabel("prev", lang));
-    if (opts.showNext) kb.text(persistentLabel("next", lang));
-    kb.row();
-  }
-
-  if (opts.showBack) kb.text(persistentLabel("back", lang)).text(persistentLabel("main", lang));
-  else kb.text(persistentLabel("main", lang));
-  return kb.resized();
-}
-
-/** Support-button labels across all languages — for the startup `hears` trigger. */
-export function supportLabels(): string[] {
-  return MATCH_LANGS.map((lang) => persistentLabel("support", lang));
-}
-
-/** ReplyKeyboardRemove payload. */
-export function removeReplyKb(): { remove_keyboard: true } {
-  return { remove_keyboard: true };
 }
 
 /**

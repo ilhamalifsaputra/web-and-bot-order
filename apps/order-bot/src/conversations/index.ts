@@ -34,16 +34,14 @@ export interface ConvSpec {
   hears?: string | string[];
 }
 
-import { supportLabels } from "../keyboards/customer";
-
 export const CONVERSATIONS: ConvSpec[] = [
   // customer
   { name: "ticketUserReply", fn: ticketUserReplyConversation, callback: /^v1:ticket:reply:\d+$/ },
   // checkout
   { name: "proof", fn: proofConversation, callback: /^v1:checkout:proof:\d+$/ },
   { name: "voucher", fn: voucherConversation, callback: /^v1:voucher:start:\d+:\d+$/ },
-  // support (3 entry triggers)
-  { name: "support", fn: supportConversation, callback: /^v1:support:open$/, command: "support", hears: supportLabels() },
+  // support (entry via the inline Help Center button + /support command)
+  { name: "support", fn: supportConversation, callback: /^v1:support:open$/, command: "support" },
   // admin
   { name: "reject", fn: rejectConversation, callback: /^v1:adm:verif:reject:\d+$/ },
   { name: "stockUpload", fn: stockUploadConversation, callback: /^v1:adm:stock:add:\d+$/ },

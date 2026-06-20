@@ -114,7 +114,6 @@
   "checkout.internal_paid": "✅ <b>Pembayaran diterima!</b>\n\nPesanan <code>{code}</code> terkonfirmasi dan item Anda sedang dikirim sekarang.",
   "checkout.nowpayments_instructions": "<b>USDT via NOWPayments (konfirmasi otomatis)</b>\n\nOrder: <code>{code}</code>\nJumlah: <b>{amount}</b>\n\nTap tombol di bawah untuk membuka halaman pembayaran dan bayar dengan kripto yang didukung.\n\n⏳ Bayar sebelum <b>{expiry}</b>. Pengiriman otomatis setelah pembayaran terkonfirmasi — tanpa screenshot.",
   "checkout.nowpayments_open_invoice": "🔗 Buka Halaman Pembayaran",
-  "checkout.order_cancelled": "Pesanan <code>{code}</code> dibatalkan.",
   "checkout.pay_binance_pay_btn": "Binance Pay",
   "checkout.pay_bybit_btn": "Bybit",
   "checkout.pay_internal_btn": "Binance",

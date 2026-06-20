@@ -123,6 +123,7 @@ const dispatchVoucher: DomainDispatcher = async (ctx, parts) => {
 const dispatchCheckout: DomainDispatcher = async (ctx, parts) => {
   const action = parts[2];
   if (action === "cancel") await checkout.cancelPendingOrder(ctx, parseInt(parts[3]!, 10));
+  else if (action === "refresh") await checkout.refreshPaymentStatus(ctx, parseInt(parts[3]!, 10));
   // checkout:proof is the entry point for the proof conversation (handled by
   // the conversations plugin). It only reaches here if the conversation didn't
   // capture it — in that case re-entry is handled by the conversation itself.

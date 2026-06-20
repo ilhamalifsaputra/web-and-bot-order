@@ -16,7 +16,7 @@ import fs from "node:fs";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { ensureUtc, localize } from "@app/core/datetime";
-import { OrderCurrency, PaymentMethod, UserRole } from "@app/core/enums";
+import { OrderCurrency, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import {
@@ -46,6 +46,11 @@ import {
 import { createTransaction } from "@app/core/payments/tokopay";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
 import { createInvoice as createNowpaymentsInvoice } from "@app/core/payments/nowpayments";
+import { pollOnce as tokopayPoll } from "../payments/tokopayReconcile";
+import { pollOnce as paydisiniPoll } from "../payments/paydisiniReconcile";
+import { pollOnce as internalPoll } from "../payments/binanceInternal";
+import { pollOnce as bybitPoll } from "../payments/bybitDeposit";
+import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
@@ -491,7 +496,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     idr_line: idrLine,
     expiry,
   });
-  await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang));
+  await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
   // Anchor the instructions message so the poller can flip it to success.
   if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
 }
@@ -556,7 +561,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
     idr_line: idrLine,
     expiry,
   });
-  await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang));
+  await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
   // Anchor the instructions message so the poller can flip it to success.
   if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
 }
@@ -658,6 +663,8 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   // PayDisini pattern doesn't apply here).
   const kb = new InlineKeyboard()
     .url(t(ctx, "checkout.nowpayments_open_invoice"), gateway.invoiceUrl)
+    .row()
+    .text(t(ctx, "checkout.refresh_status_btn"), ckb.cb("checkout", "refresh", order.id))
     .row()
     .text(t(ctx, "checkout.cancel_order"), ckb.cb("checkout", "cancel", order.id))
     .row()
@@ -939,4 +946,58 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
   await customer.browseDenomination(ctx, denominationId, 1, {
     noticePrefix: t(ctx, "checkout.cancelled_prefix"),
   });
+}
+
+// ---------------------------------------------------------------------------
+// On-demand reconcile ("Refresh Status" button on auto-confirm wait screens)
+// ---------------------------------------------------------------------------
+
+/**
+ * Trigger an on-demand reconcile for a pending auto-confirm order and toast
+ * the result. All five pollers are idempotent (they re-list pending orders
+ * and guard on status), so calling one out-of-band of its timer is always
+ * safe. This does NOT edit the wait-screen bubble itself — for Internal/Bybit
+ * the poller's own onDelivered already flips it (paymentSuccessKb); for
+ * TokoPay/PayDisini the live-edit-to-success lands in a later task; NOWPayments
+ * never flips. The toast is the immediate feedback in every case.
+ */
+export async function refreshPaymentStatus(ctx: MyContext, orderId: number): Promise<void> {
+  const info = requireUser(ctx);
+  const order = await getOrder(prisma, orderId);
+  if (!order || order.userId !== info.id) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_found"), show_alert: true });
+    return;
+  }
+  if (order.status !== OrderStatus.PENDING_PAYMENT) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.refresh_delivered_toast") });
+    return;
+  }
+  switch (order.paymentMethod) {
+    case PaymentMethod.TOKOPAY:
+      await tokopayPoll(ctx.api);
+      break;
+    case PaymentMethod.PAYDISINI:
+      await paydisiniPoll(ctx.api);
+      break;
+    case PaymentMethod.BINANCE_INTERNAL:
+      await internalPoll(ctx.api);
+      break;
+    case PaymentMethod.BYBIT:
+      await bybitPoll(ctx.api);
+      break;
+    case PaymentMethod.NOWPAYMENTS:
+      await nowpaymentsPoll(ctx.api);
+      break;
+    default:
+      // Manual Binance Pay has no on-demand check; shouldn't reach here (no button).
+      if (ctx.callbackQuery) await ctx.answerCallbackQuery();
+      return;
+  }
+  const after = await getOrder(prisma, orderId);
+  const stillPending = !after || after.status === OrderStatus.PENDING_PAYMENT;
+  if (ctx.callbackQuery) {
+    await ctx.answerCallbackQuery({
+      text: t(ctx, stillPending ? "checkout.still_pending_toast" : "checkout.refresh_delivered_toast"),
+    });
+  }
 }

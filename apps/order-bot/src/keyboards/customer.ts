@@ -490,9 +490,18 @@ export function voucherCancelKb(productId: number, qty: number, lang: string): I
  * destructive action; '🏠 Menu' is a non-destructive escape that leaves the
  * order pending (it stays reachable under My Orders), so the user is never
  * stranded on a cancel-or-nothing screen.
+ *
+ * This keyboard is SHARED between the auto USDT rails (Binance Internal,
+ * Bybit) and the manual Binance-Pay proof conversation. Only the auto rails
+ * have an on-demand reconcile to trigger, so `showRefresh` defaults to
+ * `false` — the 5 conversation call sites (conversations/checkout.ts) must
+ * stay on the default and NEVER pass `true`.
  */
-export function proofCancelKb(orderId: number, lang: string): InlineKeyboard {
+export function proofCancelKb(orderId: number, lang: string, showRefresh = false): InlineKeyboard {
   return ik([
+    ...(showRefresh
+      ? [[{ text: coreT("checkout.refresh_status_btn", lang), data: cb("checkout", "refresh", orderId) }]]
+      : []),
     [{ text: coreT("checkout.cancel_order", lang), data: cb("checkout", "cancel", orderId) }],
     [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
   ]);
@@ -506,9 +515,10 @@ export function paymentInstructionsKb(orderId: number, lang: string): InlineKeyb
   ]);
 }
 
-/** QRIS payment screen: auto-confirm via webhook, so only Cancel + Menu (no proof). */
+/** QRIS payment screen: auto-confirm via webhook, so Refresh (on-demand reconcile) + Cancel + Menu (no proof). */
 export function qrisWaitingKb(orderId: number, lang: string): InlineKeyboard {
   return ik([
+    [{ text: coreT("checkout.refresh_status_btn", lang), data: cb("checkout", "refresh", orderId) }],
     [{ text: coreT("checkout.cancel_order", lang), data: cb("checkout", "cancel", orderId) }],
     [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
   ]);

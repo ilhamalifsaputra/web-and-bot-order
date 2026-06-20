@@ -14,16 +14,16 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
-import { prisma, createOrderDirect, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination, bulkAddStock } from "@app/db";
+import { prisma, createOrderDirect, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders } from "@app/db";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
-import { OrderStatus, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, PaymentMethod, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, sentIncludes, offersForwardAction, lastMarkup, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
-import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuccessKb } from "../src/keyboards/customer";
+import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuccessKb, qrisWaitingKb, proofCancelKb } from "../src/keyboards/customer";
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
@@ -837,6 +837,140 @@ describe("checkout handlers", () => {
     const editedText = JSON.stringify(lastEdit.args);
     expect(editedText).toContain(sample.parentProduct.name);
     expect(editedText).toContain("✕"); // checkout.cancelled_prefix stamp
+  });
+});
+
+// ===========================================================================
+// Refresh Status (§7 — on-demand reconcile on auto-confirm wait screens)
+// ===========================================================================
+
+describe("Refresh Status button (§7)", () => {
+  // --- Keyboard boundary (the key risk) -------------------------------------
+  describe("keyboard boundary", () => {
+    it("qrisWaitingKb (TokoPay/PayDisini, always auto-confirm) carries a Refresh button", () => {
+      const kb = qrisWaitingKb(1, "en");
+      const flat = kb.inline_keyboard.flat() as Array<{ callback_data?: string }>;
+      expect(flat.some((b) => b.callback_data === "v1:checkout:refresh:1")).toBe(true);
+    });
+
+    it("proofCancelKb(orderId, lang, true) — the auto USDT-rail opt-in — carries a Refresh button", () => {
+      const kb = proofCancelKb(1, "en", true);
+      const flat = kb.inline_keyboard.flat() as Array<{ callback_data?: string }>;
+      expect(flat.some((b) => b.callback_data === "v1:checkout:refresh:1")).toBe(true);
+    });
+
+    it("proofCancelKb default (no showRefresh arg) has NO Refresh button — protects the manual proof flow", () => {
+      const kb = proofCancelKb(1, "en");
+      const flat = kb.inline_keyboard.flat() as Array<{ callback_data?: string }>;
+      expect(flat.some((b) => b.callback_data?.startsWith("v1:checkout:refresh"))).toBe(false);
+    });
+  });
+
+  // --- refreshPaymentStatus ownership/state guards ---------------------------
+  async function makeTokopayPendingOrder() {
+    return prisma.$transaction(async (tx) => {
+      const created = await createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: sample.product.id,
+        quantity: 1,
+      });
+      return finalizeOrderPayment(tx, created!.id, { currency: OrderCurrency.IDR });
+    });
+  }
+
+  it("ownership: a DIFFERENT user's order → order_not_found alert, no poller side effects, order unchanged", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const order = await makeTokopayPendingOrder();
+
+    // Gateway would report "Paid" — if the poller ran, this order would be delivered.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ status: "success", data: { status: "Paid", trx_id: "TRX-X", total_bayar: order!.totalAmount.toString() } }),
+      }),
+    );
+
+    const stranger = makeCtx({
+      from: { id: 777 },
+      callbackData: `v1:checkout:refresh:${order!.id}`,
+      session: { lang: "en", scratch: {}, dbUser: { id: 99999, telegramId: "777", role: "CUSTOMER", language: "EN", referralCode: "X", walletBalance: "0" } },
+    });
+
+    await checkout.refreshPaymentStatus(stranger.ctx, order!.id);
+
+    const alert = calls(stranger.sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+    // No poller ran on this order — it must still be PENDING_PAYMENT, untouched.
+    const after = await getOrder(prisma, order!.id);
+    expect(after!.status).toBe(OrderStatus.PENDING_PAYMENT);
+    vi.unstubAllGlobals();
+  });
+
+  it("still-pending: a PENDING TokoPay order whose gateway reports unpaid stays pending and toasts still_pending_toast", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const order = await makeTokopayPendingOrder();
+    expect(order!.paymentMethod).toBe(PaymentMethod.TOKOPAY);
+
+    // Gateway-mock pattern from tokopay-reconcile.test.ts: stub global fetch so
+    // tokopayReconcile.pollOnce's checkTransaction() call reports unpaid.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ status: "success", data: { status: "Unpaid" } }) }),
+    );
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order!.id}` });
+    await checkout.refreshPaymentStatus(ctx, order!.id);
+
+    const after = await getOrder(prisma, order!.id);
+    expect(after!.status).toBe(OrderStatus.PENDING_PAYMENT);
+    const [stillPending] = await listPendingTokopayOrders(prisma, new Date());
+    expect(stillPending).toBeDefined();
+
+    const toast = calls(sink, "answerCallbackQuery").at(-1);
+    expect((toast!.args[0] as { text?: string }).text).toBe("Payment not received yet. Still waiting…");
+    vi.unstubAllGlobals();
+  });
+
+  it("a non-pending order (already delivered) short-circuits without polling and toasts refresh_delivered_toast", async () => {
+    const order = await makeOrder();
+    await attachPaymentProof(prisma, order!.id, { fileId: "proof-file", txid: "TXALREADY" });
+    await verification.approve(adminCtx({ callbackData: `v1:adm:verif:approve:${order!.id}` }).ctx, order!.id);
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order!.id}` });
+    await checkout.refreshPaymentStatus(ctx, order!.id);
+
+    const toast = calls(sink, "answerCallbackQuery").at(-1);
+    expect((toast!.args[0] as { text?: string }).text).toBe("✅ Payment confirmed!");
+  });
+
+  // --- Router round-trip ------------------------------------------------------
+  it("router: v1:checkout:refresh:<id> through routeCallback reaches refreshPaymentStatus", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const order = await makeTokopayPendingOrder();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ status: "success", data: { status: "Unpaid" } }) }),
+    );
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order!.id}` });
+    await routeCallback(ctx);
+
+    // routeCallback issues its own trailing answerCallbackQuery() (empty toast)
+    // after the dispatcher returns, so find the call carrying text rather than
+    // assuming position.
+    const toast = calls(sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { text?: string } | undefined)?.text,
+    );
+    expect((toast!.args[0] as { text?: string }).text).toBe("Payment not received yet. Still waiting…");
+    vi.unstubAllGlobals();
   });
 });
 

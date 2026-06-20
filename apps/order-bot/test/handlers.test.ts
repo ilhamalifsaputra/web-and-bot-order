@@ -14,7 +14,7 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
-import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination } from "@app/db";
+import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination, bulkAddStock } from "@app/db";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
@@ -23,7 +23,7 @@ import { buildSampleData, resetDb, type SampleData } from "../../../tests/helper
 import { makeCtx, calls, sentIncludes, offersForwardAction, lastMarkup, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
-import { denominationPickerKb, persistentLabel } from "../src/keyboards/customer";
+import { denominationPickerKb, denominationDetailKb, persistentLabel } from "../src/keyboards/customer";
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
@@ -507,6 +507,103 @@ describe("denomination picker", () => {
     await customer.browseProductsFlat(ctx);
     const entries = (ctx.session.scratch as { browseEntries?: number[] }).browseEntries ?? [];
     expect(entries).toContain(product.id);
+  });
+});
+
+// ===========================================================================
+// Qty stepper (±5)
+// ===========================================================================
+
+describe("qty stepper", () => {
+  /** Top up sample.product's stock to `total` available items (it starts at 5). */
+  async function ensureStock(total: number) {
+    const have = await prisma.stockItem.count({ where: { productId: sample.product.id } });
+    const need = total - have;
+    if (need > 0) {
+      await bulkAddStock(
+        prisma,
+        sample.product.id,
+        Array.from({ length: need }, (_, i) => `extra${i + 1}@example.com:pwd${i + 1}`),
+      );
+    }
+  }
+
+  it("qtyChange inc5 raises qty by 5 from a mid-range qty", async () => {
+    await ensureStock(20);
+    const { ctx, sink } = customerCtx({ callbackData: `v1:qty:${sample.product.id}:10:inc5` });
+    await customer.qtyChange(ctx, sample.product.id, 10, "inc5");
+    expect(sentIncludes(sink, `v1:buy:${sample.product.id}:15`)).toBe(true);
+  });
+
+  it("qtyChange dec5 lowers qty by 5 from a mid-range qty", async () => {
+    await ensureStock(20);
+    const { ctx, sink } = customerCtx({ callbackData: `v1:qty:${sample.product.id}:10:dec5` });
+    await customer.qtyChange(ctx, sample.product.id, 10, "dec5");
+    expect(sentIncludes(sink, `v1:buy:${sample.product.id}:5`)).toBe(true);
+  });
+
+  it("qtyChange inc5 clamps to stock near the top", async () => {
+    await ensureStock(12);
+    const { ctx, sink } = customerCtx({ callbackData: `v1:qty:${sample.product.id}:10:inc5` });
+    await customer.qtyChange(ctx, sample.product.id, 10, "inc5");
+    // 10 + 5 = 15, clamped to stock (12).
+    expect(sentIncludes(sink, `v1:buy:${sample.product.id}:12`)).toBe(true);
+  });
+
+  it("qtyChange dec5 clamps to 1 near the bottom", async () => {
+    await ensureStock(20);
+    const { ctx, sink } = customerCtx({ callbackData: `v1:qty:${sample.product.id}:3:dec5` });
+    await customer.qtyChange(ctx, sample.product.id, 3, "dec5");
+    // 3 - 5 = -2, clamped to 1.
+    expect(sentIncludes(sink, `v1:buy:${sample.product.id}:1`)).toBe(true);
+  });
+
+  it("denominationDetailKb emits an active dec5/inc5 stepper row for a mid-range qty", () => {
+    const kb = denominationDetailKb(
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      20,
+      "en",
+      10,
+    );
+    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    expect(flat.some((b) => b.callback_data === `v1:qty:${sample.product.id}:10:dec5`)).toBe(true);
+    expect(flat.some((b) => b.callback_data === `v1:qty:${sample.product.id}:10:inc5`)).toBe(true);
+    expect(flat.some((b) => b.callback_data === `v1:qty:${sample.product.id}:10:dec`)).toBe(true);
+    expect(flat.some((b) => b.callback_data === `v1:qty:${sample.product.id}:10:inc`)).toBe(true);
+    expect(flat.some((b) => b.text === "10")).toBe(true);
+  });
+
+  it("denominationDetailKb no-ops dec/dec5 at qty=1", () => {
+    const kb = denominationDetailKb(
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      20,
+      "en",
+      1,
+    );
+    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    const dec5 = flat.find((b) => b.text === "−5")!;
+    const dec = flat.find((b) => b.text === "−")!;
+    expect(dec5.callback_data).toBe("v1:noop");
+    expect(dec.callback_data).toBe("v1:noop");
+    // inc/inc5 stay active since stock (20) > qty (1).
+    expect(flat.some((b) => b.callback_data === `v1:qty:${sample.product.id}:1:inc`)).toBe(true);
+    expect(flat.some((b) => b.callback_data === `v1:qty:${sample.product.id}:1:inc5`)).toBe(true);
+  });
+
+  it("denominationDetailKb no-ops inc/inc5 at qty=stock", () => {
+    const kb = denominationDetailKb(
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      5,
+      "en",
+      5,
+    );
+    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    const inc5 = flat.find((b) => b.text === "+5")!;
+    const inc = flat.find((b) => b.text === "+")!;
+    expect(inc5.callback_data).toBe("v1:noop");
+    expect(inc.callback_data).toBe("v1:noop");
+    expect(flat.some((b) => b.callback_data === `v1:qty:${sample.product.id}:5:dec`)).toBe(true);
+    expect(flat.some((b) => b.callback_data === `v1:qty:${sample.product.id}:5:dec5`)).toBe(true);
   });
 });
 

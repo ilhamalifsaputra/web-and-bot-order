@@ -239,6 +239,10 @@ export function denominationDetailKb(
   const rows: Btn[][] = [];
   if (availableStock > 0) {
     qty = Math.max(1, Math.min(qty, availableStock));
+    const dec5: Btn =
+      qty > 1
+        ? { text: "−5", data: cb("qty", denom.id, qty, "dec5") }
+        : { text: "−5", data: cb("noop") };
     const dec: Btn =
       qty > 1
         ? { text: "−", data: cb("qty", denom.id, qty, "dec") }
@@ -247,7 +251,11 @@ export function denominationDetailKb(
       qty < availableStock
         ? { text: "+", data: cb("qty", denom.id, qty, "inc") }
         : { text: "+", data: cb("noop") };
-    rows.push([dec, { text: String(qty), data: cb("noop") }, inc]);
+    const inc5: Btn =
+      qty < availableStock
+        ? { text: "+5", data: cb("qty", denom.id, qty, "inc5") }
+        : { text: "+5", data: cb("noop") };
+    rows.push([dec5, dec, { text: String(qty), data: cb("noop") }, inc, inc5]);
     rows.push([
       { text: coreT("browse.qty_input_btn", lang), data: cb("qty", "input", denom.id) },
     ]);

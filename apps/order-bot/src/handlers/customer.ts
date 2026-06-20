@@ -537,7 +537,9 @@ export async function qtyChange(
     return;
   }
   const stock = await countAvailableStock(prisma, d.id);
-  const newQty = action === "inc" ? Math.min(qty + 1, stock) : Math.max(qty - 1, 1);
+  const delta =
+    action === "inc" ? 1 : action === "dec" ? -1 : action === "inc5" ? 5 : action === "dec5" ? -5 : 0;
+  const newQty = Math.max(1, Math.min(qty + delta, stock));
   await browseDenomination(ctx, denominationId, newQty);
 }
 

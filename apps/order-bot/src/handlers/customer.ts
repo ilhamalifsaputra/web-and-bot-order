@@ -254,18 +254,12 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     items: itemLines.join("\n"),
   });
 
-  // The numbered keyboard is a reply keyboard; renderMenu sends a fresh message
-  // carrying it (an edit can't bear a reply keyboard). The banner (if set) rides
-  // on top as a photo+caption, unless the list is too long for a caption.
-  await renderMenuBanner(
-    ctx,
-    text,
-    ckb.productsPersistentKb(pageProducts.length, lang, {
-      showPrev: page > 0,
-      showNext: page < totalPages - 1,
-      showBack: false,
-    }),
-  );
+  // Inline keyboard (tap-select per product + Prev/Next + Menu) so a tap edits
+  // the existing bubble in place via renderMenuBanner/smartEdit's isInline
+  // check (chat.ts), instead of spawning a fresh message the way the old
+  // reply-keyboard productsPersistentKb did. The banner (if set) rides on top
+  // as a photo+caption, unless the list is too long for a caption.
+  await renderMenuBanner(ctx, text, ckb.productsPageKb(pageProducts, page, totalPages, lang));
 }
 
 /**

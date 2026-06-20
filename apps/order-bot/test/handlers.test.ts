@@ -117,6 +117,69 @@ describe("customer handlers", () => {
     expect(dump).toContain(`1. ${sample.parentProduct.name}`);
   });
 
+  // Regression for the reported bug: the Product List used to attach a reply
+  // Keyboard (productsPersistentKb), so chat.ts's isInline() guard always
+  // failed and a Prev/Next or page tap spawned a fresh message instead of
+  // editing the bubble in place. The list now renders an inline keyboard, so
+  // a callback-driven page render must edit (mirrors the Home regression test
+  // above).
+  it("browseProductsFlat via a callback (page nav) edits the existing bubble, never sends a fresh message", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:browse:page:0" });
+    await customer.browseProductsFlat(ctx, 0);
+    expect(calls(sink, "editMessageText").length).toBeGreaterThan(0);
+    expect(calls(sink, "reply").length).toBe(0);
+    expect(calls(sink, "replyWithPhoto").length).toBe(0);
+  });
+
+  it("Product List's keyboard is inline with a pick button per product and a Menu row (single-page fixture)", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:browse:page:0" });
+    await customer.browseProductsFlat(ctx, 0);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    expect(markup?.inline_keyboard).toBeDefined();
+    const flat = (markup!.inline_keyboard ?? []).flat().map((b) => b.callback_data);
+    expect(flat).toContain(`v1:browse:pick:${sample.parentProduct.id}`);
+    expect(flat).toContain("v1:menu:main");
+    // Single page → no Prev/Next nav button at all.
+    expect(flat.some((d) => d?.startsWith("v1:browse:page:"))).toBe(false);
+  });
+
+  it("Product List paginates with Prev/Next nav buttons across multiple pages", async () => {
+    // PAGE_SIZE is 10; the sample fixture has 1 product, so create 10 more to
+    // force a second page (11 products total → page 0 has 10, page 1 has 1).
+    const extraIds: number[] = [];
+    for (let i = 0; i < 10; i++) {
+      const p = await createCatalogProduct(prisma, { categoryId: sample.parentProduct.categoryId, name: `Extra ${i}` });
+      await createDenomination(prisma, {
+        productId: p.id, name: "Plan", type: "SHARED", durationLabel: "1 Month", price: "9",
+      });
+      extraIds.push(p.id);
+    }
+
+    const page0 = customerCtx({ callbackData: "v1:browse:page:0" });
+    await customer.browseProductsFlat(page0.ctx, 0);
+    const markup0 = lastMarkup(page0.sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat0 = (markup0?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
+    // Page 0: no Prev (first page), but Next is present.
+    expect(flat0.some((d) => d === "v1:browse:page:-1")).toBe(false);
+    expect(flat0).toContain("v1:browse:page:1");
+    expect(flat0.filter((d) => d?.startsWith("v1:browse:pick:")).length).toBe(10);
+
+    const page1 = customerCtx({ callbackData: "v1:browse:page:1" });
+    await customer.browseProductsFlat(page1.ctx, 1);
+    const markup1 = lastMarkup(page1.sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
+    const flat1 = (markup1?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
+    // Page 1 (last page): Prev present, Next absent.
+    expect(flat1).toContain("v1:browse:page:0");
+    expect(flat1.some((d) => d === "v1:browse:page:2")).toBe(false);
+    expect(flat1.filter((d) => d?.startsWith("v1:browse:pick:")).length).toBe(1);
+  });
+
+  it("tap-select: v1:browse:pick:<id> through routeCallback reaches the product/denomination detail", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:pick:${sample.parentProduct.id}` });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, sample.product.name)).toBe(true);
+  });
+
   it("browseProduct collapses a single-denomination Product to its detail bubble", async () => {
     // The sample Product wraps exactly one denomination → tapping it skips the
     // 1-item picker and lands on the denomination detail (Product/Plan/Price/Stock).

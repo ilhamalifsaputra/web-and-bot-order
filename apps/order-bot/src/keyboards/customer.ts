@@ -310,17 +310,29 @@ export function qtyInputCancelKb(denominationId: number, lang: string): InlineKe
   ]);
 }
 
-/** Navigation keyboard for the paginated product list. */
-export function productsPageKb(page: number, totalPages: number, lang: string): InlineKeyboard {
-  const rows: Btn[][] = [];
-  if (totalPages > 1) {
-    const nav: Btn[] = [];
-    if (page > 0)
-      nav.push({ text: coreT("browse.nav_prev", lang), data: cb("browse", "page", page - 1) });
-    if (page < totalPages - 1)
-      nav.push({ text: coreT("browse.nav_next", lang), data: cb("browse", "page", page + 1) });
-    if (nav.length) rows.push(nav);
-  }
+/**
+ * Inline keyboard for the Product List (§3): one tappable button per product
+ * on the page (mirrors searchResultsKb), then a Prev/Next nav row, then a
+ * Menu back row. The button label's `i+1` prefix matches the caption's
+ * numbered list line so the tap shortcut and the typed-number entry
+ * (handleProductNumber) agree on the same index.
+ */
+export function productsPageKb(
+  products: Array<{ id: number; name: string }>,
+  page: number,
+  totalPages: number,
+  lang: string,
+): InlineKeyboard {
+  const rows: Btn[][] = products.map((p, i) => [
+    { text: `${i + 1}. ${truncLabel(p.name, 28)}`, data: cb("browse", "pick", p.id) },
+  ]);
+
+  const nav: Btn[] = [];
+  if (page > 0) nav.push({ text: coreT("browse.nav_prev", lang), data: cb("browse", "page", page - 1) });
+  if (page < totalPages - 1)
+    nav.push({ text: coreT("browse.nav_next", lang), data: cb("browse", "page", page + 1) });
+  if (nav.length) rows.push(nav);
+
   rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
   return ik(rows);
 }

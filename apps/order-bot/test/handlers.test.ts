@@ -14,7 +14,7 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
-import { prisma, createOrderDirect, attachPaymentProof, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination, bulkAddStock } from "@app/db";
+import { prisma, createOrderDirect, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination, bulkAddStock } from "@app/db";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
@@ -604,6 +604,60 @@ describe("qty stepper", () => {
     expect(inc.callback_data).toBe("v1:noop");
     expect(flat.some((b) => b.callback_data === `v1:qty:${sample.product.id}:5:dec`)).toBe(true);
     expect(flat.some((b) => b.callback_data === `v1:qty:${sample.product.id}:5:dec5`)).toBe(true);
+  });
+});
+
+// ===========================================================================
+// Product Detail: sold-count line + Refresh (§4.3/§4.4)
+// ===========================================================================
+
+describe("product detail: sold count + refresh", () => {
+  /** Create + deliver an order for sample.product at `quantity` (Task 2's pattern). */
+  async function deliverOrder(quantity: number) {
+    return prisma.$transaction(async (tx) => {
+      const created = await createOrderDirect(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: sample.product.id,
+        quantity,
+      });
+      await attachPaymentProof(tx, created!.id, { fileId: "proof-file", txid: `TXSOLD${created!.id}` });
+      return approveOrder(tx, created!.id, { adminId: sample.user.id });
+    });
+  }
+
+  it("browseDenomination renders a sold-count line reflecting delivered quantity", async () => {
+    await deliverOrder(3);
+    const { ctx, sink } = customerCtx();
+    await customer.browseDenomination(ctx, sample.product.id);
+    expect(sentIncludes(sink, "3")).toBe(true);
+    expect(sentIncludes(sink, "Sold")).toBe(true);
+  });
+
+  it("denominationDetailKb includes a Refresh button above Back for in-stock and out-of-stock cases", () => {
+    const inStock = denominationDetailKb(
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      20,
+      "en",
+      1,
+    );
+    const inStockFlat = inStock.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    expect(inStockFlat.some((b) => b.callback_data === `v1:browse:refresh:${sample.product.id}:1`)).toBe(true);
+
+    const outOfStock = denominationDetailKb(
+      { id: sample.product.id, name: "Netflix Premium 1M", price: "5.00" },
+      0,
+      "en",
+      1,
+    );
+    const outFlat = outOfStock.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
+    expect(outFlat.some((b) => b.callback_data === `v1:browse:refresh:${sample.product.id}:1`)).toBe(true);
+  });
+
+  it("routes v1:browse:refresh through routeCallback and re-renders the detail bubble", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: `v1:browse:refresh:${sample.product.id}:1` });
+    await routeCallback(ctx);
+    expect(sentIncludes(sink, sample.product.name)).toBe(true);
+    expect(calls(sink, "editMessageText").length).toBeGreaterThan(0);
   });
 });
 

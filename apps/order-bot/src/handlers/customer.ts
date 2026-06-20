@@ -33,6 +33,7 @@ import {
   setUserLanguage,
   subscribeToRestock,
   productRating,
+  soldCountForDenomination,
   getSetting,
   setSetting,
   searchCatalog,
@@ -421,6 +422,7 @@ export async function browseDenomination(ctx: MyContext, denominationId: number,
   let d: Awaited<ReturnType<typeof getDenominationWithProduct>>;
   let stock: number;
   let ratingStr: string;
+  let sold: number;
   let bulkRule: Awaited<ReturnType<typeof getBulkPricingForDenomination>>;
   try {
     d = await getDenominationWithProduct(prisma, denominationId);
@@ -435,6 +437,7 @@ export async function browseDenomination(ctx: MyContext, denominationId: number,
     stock = await countAvailableStock(prisma, d.id);
     const { avg, count } = await productRating(prisma, d.id);
     ratingStr = avg ? `${avg.toFixed(1)}/5 (${count})` : "—";
+    sold = await soldCountForDenomination(prisma, d.id);
     bulkRule = await getBulkPricingForDenomination(prisma, d.id);
   } catch (err) {
     // Hard failure (unexpected DB error) — log under a ref and quote it so a
@@ -457,7 +460,9 @@ export async function browseDenomination(ctx: MyContext, denominationId: number,
     type: d.type.toLowerCase(),
     warranty: d.warrantyDays,
     stock,
+    sold,
     rating: ratingStr,
+    updated: localize(new Date(), "HH:mm:ss"),
   });
   if (bulkRule) {
     text +=

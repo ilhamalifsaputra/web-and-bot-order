@@ -56,6 +56,8 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
   else if (action === "page") await customer.browseProductsFlat(ctx, parseInt(parts[3]!, 10));
   else if (action === "pick") await customer.browseProduct(ctx, parseInt(parts[3]!, 10));
   else if (action === "denom") await customer.browseDenomination(ctx, parseInt(parts[3]!, 10));
+  else if (action === "refresh")
+    await customer.browseDenomination(ctx, parseInt(parts[3]!, 10), parts[4] ? parseInt(parts[4]!, 10) : 1);
   else if (action === "popular") await customer.browsePopular(ctx);
   else {
     logger.warn({ event: "dead_tap", action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, "stale browse callback");

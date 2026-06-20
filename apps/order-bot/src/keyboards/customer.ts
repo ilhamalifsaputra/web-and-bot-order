@@ -267,6 +267,9 @@ export function denominationDetailKb(
       { text: coreT("browse.notify_restock", lang), data: cb("restock", "sub", denom.id) },
     ]);
   }
+  rows.push([
+    { text: coreT("browse.refresh_btn", lang), data: cb("browse", "refresh", denom.id, qty) },
+  ]);
   const back: Btn =
     parentProductId != null
       ? { text: coreT("menu.back", lang), data: cb("browse", "pick", parentProductId) }

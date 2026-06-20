@@ -219,7 +219,7 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Browse — flat product list with inline pagination + tap-select
+// Browse — flat product list, numbered selection (type or tap)
 // ---------------------------------------------------------------------------
 
 export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void> {
@@ -253,12 +253,20 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     items: itemLines.join("\n"),
   });
 
-  // No per-product inline buttons: the user selects by typing the number shown
-  // in the caption (handleProductNumber resolves it against browseEntries), and
-  // the persistent reply keyboard carries top-level navigation. A slim Prev/Next
-  // row is attached only when the catalog spans multiple pages. The banner (if
-  // set) rides on top as a photo+caption, unless the list is too long.
-  await renderMenuBanner(ctx, text, ckb.productsNavKb(page, totalPages, lang));
+  // No per-product inline buttons: the user picks the number shown in the
+  // caption (handleProductNumber resolves it against browseEntries), either
+  // by typing it or by tapping it on the persistent keyboard below. Prev/Next
+  // stay on the existing inline productsNavKb — reached only via that inline
+  // tap (a callback), so it keeps editing the bubble in place. A fresh entry
+  // (the typed "Products" label, a deep link, etc. — no callback) instead sets
+  // the numbered persistent keyboard, which a reply keyboard can only do via a
+  // fresh send; productsPersistentKb's fixed page-size grid means that send
+  // happens once per Browse entry, not on every page turn. The banner (if set)
+  // rides on top as a photo+caption, unless the list is too long.
+  const replyMarkup = ctx.callbackQuery
+    ? ckb.productsNavKb(page, totalPages, lang)
+    : ckb.productsPersistentKb(PAGE_SIZE, lang);
+  await renderMenuBanner(ctx, text, replyMarkup);
 }
 
 /**
@@ -429,7 +437,7 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
     plans: planLines.join("\n"),
     updated: localize(new Date(), "HH:mm:ss"),
   });
-  await smartEdit(ctx, text, ckb.denominationPickerKb(active, productId, lang));
+  await renderMenuBanner(ctx, text, ckb.denominationPickerKb(active, productId, lang));
 }
 
 /**

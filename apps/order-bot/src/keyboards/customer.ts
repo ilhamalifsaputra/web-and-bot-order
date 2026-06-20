@@ -77,6 +77,33 @@ export function mainPersistentKb(lang: string): Keyboard {
     .persistent();
 }
 
+/**
+ * Persistent reply keyboard shown while browsing the product list: digits
+ * 1..pageSize (rows of 5) so a customer can tap a number instead of typing
+ * it, plus a Menu button back to `mainPersistentKb`. Always renders the full
+ * page-size grid regardless of how many products are actually on the current
+ * page — an out-of-range tap already resolves to "browse.invalid_number" in
+ * `handleProductNumber` — so this keyboard never needs to change between
+ * pages. That matters because a reply keyboard can only be set via a fresh
+ * message, never an edit; keeping it page-size-stable means Prev/Next can
+ * stay on the existing inline `productsNavKb` (edits in place) instead of
+ * forcing a fresh send on every page turn.
+ */
+export function productsPersistentKb(pageSize: number, lang: string): Keyboard {
+  const kb = new Keyboard();
+  let inRow = 0;
+  for (let n = 1; n <= pageSize; n++) {
+    kb.text(String(n));
+    if (++inRow === 5) {
+      kb.row();
+      inRow = 0;
+    }
+  }
+  if (inRow > 0) kb.row();
+  kb.text(persistentLabel("main", lang));
+  return kb.resized().persistent();
+}
+
 export function backToMain(lang: string): InlineKeyboard {
   return ik([[{ text: coreT("menu.main", lang), data: cb("menu", "main") }]]);
 }

@@ -141,6 +141,21 @@ describe("customer handlers", () => {
     expect(flat.length).toBe(0);
   });
 
+  it("browseProductsFlat sets a numbered persistent keyboard on a fresh (non-callback) entry", async () => {
+    const { ctx, sink } = customerCtx();
+    await customer.browseProductsFlat(ctx);
+    // No callbackData → reached the way the typed "Products" label does, not
+    // a Prev/Next tap — should set the tappable persistent keyboard, not the
+    // inline productsNavKb.
+    const markup = lastMarkup(sink) as
+      | { keyboard?: Array<Array<{ text: string }>>; inline_keyboard?: unknown[][] }
+      | undefined;
+    expect(markup?.inline_keyboard).toBeUndefined();
+    const flat = (markup?.keyboard ?? []).flat().map((b) => b.text);
+    expect(flat.slice(0, 10)).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
+    expect(flat).toContain(persistentLabel("main", "en"));
+  });
+
   it("Product List paginates with Prev/Next nav buttons across multiple pages", async () => {
     // PAGE_SIZE is 10; the sample fixture has 1 product, so create 10 more to
     // force a second page (11 products total → page 0 has 10, page 1 has 1).

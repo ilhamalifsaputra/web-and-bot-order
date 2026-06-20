@@ -801,3 +801,19 @@ export async function soldCountForDenomination(db: Db, denominationId: number): 
   const map = await soldCountsByDenomination(db, [denominationId]);
   return map.get(denominationId) ?? 0;
 }
+
+/**
+ * Units delivered for a whole mid-tier Product (DELIVERED orders only) — the
+ * sum across its denominations. Feeds the Product picker's "X sold" line.
+ * `OrderItem.productId` is a Denomination id, so we resolve the product's
+ * denomination ids first, then reuse {@link soldCountsByDenomination}.
+ */
+export async function soldCountForProduct(db: Db, productId: number): Promise<number> {
+  const denoms = await db.denomination.findMany({ where: { productId }, select: { id: true } });
+  const ids = denoms.map((d) => d.id);
+  if (!ids.length) return 0;
+  const map = await soldCountsByDenomination(db, ids);
+  let total = 0;
+  for (const id of ids) total += map.get(id) ?? 0;
+  return total;
+}

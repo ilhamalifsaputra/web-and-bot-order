@@ -34,6 +34,7 @@ import {
   subscribeToRestock,
   productRating,
   soldCountForDenomination,
+  soldCountForProduct,
   getSetting,
   setSetting,
   searchCatalog,
@@ -141,8 +142,7 @@ async function backToHome(ctx: MyContext): Promise<void> {
   delete sc(ctx).variantId;
   ctx.session.awaitingQtyDenomId = undefined;
   const text = await buildDashboardText(ctx);
-  const balanceLabel = formatIdr(requireUser(ctx).walletBalance);
-  await renderMenuBanner(ctx, text, ckb.mainMenu(ctx.session.lang, balanceLabel));
+  await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
 }
 
 async function handleBackButton(ctx: MyContext): Promise<void> {
@@ -201,15 +201,13 @@ export async function startCommand(ctx: MyContext): Promise<void> {
 
   ctx.session.state = BotState.HOME;
   const text = await buildDashboardText(ctx);
-  const balanceLabel = formatIdr(requireUser(ctx).walletBalance);
-  await renderMenuBanner(ctx, text, ckb.mainMenu(ctx.session.lang, balanceLabel));
+  await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
 }
 
 export async function showMainMenu(ctx: MyContext): Promise<void> {
   ctx.session.state = BotState.HOME;
   const text = await buildDashboardText(ctx);
-  const balanceLabel = formatIdr(requireUser(ctx).walletBalance);
-  await renderMenuBanner(ctx, text, ckb.mainMenu(ctx.session.lang, balanceLabel));
+  await renderMenuBanner(ctx, text, ckb.mainPersistentKb(ctx.session.lang));
 }
 
 // Universal /cancel when no conversation is active.
@@ -255,12 +253,12 @@ export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void
     items: itemLines.join("\n"),
   });
 
-  // Inline keyboard (tap-select per product + Prev/Next + Menu) so a tap edits
-  // the existing bubble in place via renderMenuBanner/smartEdit's isInline
-  // check (chat.ts), instead of spawning a fresh message the way the old
-  // reply-keyboard productsPersistentKb did. The banner (if set) rides on top
-  // as a photo+caption, unless the list is too long for a caption.
-  await renderMenuBanner(ctx, text, ckb.productsPageKb(pageProducts, page, totalPages, lang));
+  // No per-product inline buttons: the user selects by typing the number shown
+  // in the caption (handleProductNumber resolves it against browseEntries), and
+  // the persistent reply keyboard carries top-level navigation. A slim Prev/Next
+  // row is attached only when the catalog spans multiple pages. The banner (if
+  // set) rides on top as a photo+caption, unless the list is too long.
+  await renderMenuBanner(ctx, text, ckb.productsNavKb(page, totalPages, lang));
 }
 
 /**
@@ -323,6 +321,10 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
       return void (await listMyOrders(ctx));
     case "wallet":
       return void (await viewWallet(ctx));
+    case "popular":
+      return void (await browsePopular(ctx));
+    case "help":
+      return void (await showHelpCenter(ctx));
     case "referral":
       return void (await viewReferral(ctx));
     case "language":
@@ -404,8 +406,30 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   delete sc(ctx).variantId;
   const isReseller = info.role === UserRole.RESELLER;
   const rate = await currentUsdtRate();
-  const text = t(ctx, "browse.choose_denomination", { name: esc(product.name) });
-  await smartEdit(ctx, text, ckb.denominationPickerKb(active, lang, rate, isReseller));
+
+  // Per-plan price + stock live in the message body now (the picker buttons
+  // carry only the plan name). Reseller price wins for reseller users when set,
+  // mirroring the detail screen. Stock is read per denomination in parallel.
+  const planLines = await Promise.all(
+    active.map(async (d) => {
+      const unitPrice = isReseller && d.resellerPrice != null ? d.resellerPrice : d.price;
+      const stock = await countAvailableStock(prisma, d.id);
+      return t(ctx, "browse.denomination_line", {
+        duration: esc(d.durationLabel || d.name),
+        price: priceIdr(unitPrice, rate),
+        stock,
+      });
+    }),
+  );
+  const sold = await soldCountForProduct(prisma, productId);
+
+  const text = t(ctx, "browse.choose_denomination", {
+    name: esc(product.name),
+    sold: t(ctx, "browse.sold_count", { count: sold }),
+    plans: planLines.join("\n"),
+    updated: localize(new Date(), "HH:mm:ss"),
+  });
+  await smartEdit(ctx, text, ckb.denominationPickerKb(active, productId, lang));
 }
 
 /**

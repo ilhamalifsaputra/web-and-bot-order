@@ -131,16 +131,14 @@ describe("customer handlers", () => {
     expect(calls(sink, "replyWithPhoto").length).toBe(0);
   });
 
-  it("Product List's keyboard is inline with a pick button per product and a Menu row (single-page fixture)", async () => {
+  it("Product List has no inline keyboard on a single page (selection is by typed number)", async () => {
     const { ctx, sink } = customerCtx({ callbackData: "v1:browse:page:0" });
     await customer.browseProductsFlat(ctx, 0);
-    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
-    expect(markup?.inline_keyboard).toBeDefined();
-    const flat = (markup!.inline_keyboard ?? []).flat().map((b) => b.callback_data);
-    expect(flat).toContain(`v1:browse:pick:${sample.parentProduct.id}`);
-    expect(flat).toContain("v1:menu:main");
-    // Single page → no Prev/Next nav button at all.
-    expect(flat.some((d) => d?.startsWith("v1:browse:page:"))).toBe(false);
+    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> } | undefined;
+    // No per-product pick buttons, no Menu row, no Prev/Next — the persistent
+    // reply keyboard navigates and the user picks by typing the listed number.
+    const flat = (markup?.inline_keyboard ?? []).flat();
+    expect(flat.length).toBe(0);
   });
 
   it("Product List paginates with Prev/Next nav buttons across multiple pages", async () => {
@@ -159,19 +157,20 @@ describe("customer handlers", () => {
     await customer.browseProductsFlat(page0.ctx, 0);
     const markup0 = lastMarkup(page0.sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
     const flat0 = (markup0?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
-    // Page 0: no Prev (first page), but Next is present.
+    // Page 0: no Prev (first page), but Next is present. No per-product pick
+    // buttons — the slim nav row is the only inline keyboard now.
     expect(flat0.some((d) => d === "v1:browse:page:-1")).toBe(false);
     expect(flat0).toContain("v1:browse:page:1");
-    expect(flat0.filter((d) => d?.startsWith("v1:browse:pick:")).length).toBe(10);
+    expect(flat0.filter((d) => d?.startsWith("v1:browse:pick:")).length).toBe(0);
 
     const page1 = customerCtx({ callbackData: "v1:browse:page:1" });
     await customer.browseProductsFlat(page1.ctx, 1);
     const markup1 = lastMarkup(page1.sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
     const flat1 = (markup1?.inline_keyboard ?? []).flat().map((b) => b.callback_data);
-    // Page 1 (last page): Prev present, Next absent.
+    // Page 1 (last page): Prev present, Next absent. Still no pick buttons.
     expect(flat1).toContain("v1:browse:page:0");
     expect(flat1.some((d) => d === "v1:browse:page:2")).toBe(false);
-    expect(flat1.filter((d) => d?.startsWith("v1:browse:pick:")).length).toBe(1);
+    expect(flat1.filter((d) => d?.startsWith("v1:browse:pick:")).length).toBe(0);
   });
 
   it("tap-select: v1:browse:pick:<id> through routeCallback reaches the product/denomination detail", async () => {
@@ -327,29 +326,31 @@ describe("customer handlers", () => {
 // Home (inline) + Produk Populer + Help Center (§2/§5/§10)
 // ===========================================================================
 
-describe("Home screen (inline keyboard)", () => {
-  // Regression for the reported bug: Home used to attach a reply Keyboard
-  // (mainPersistentKb), so chat.ts's isInline() guard always failed and a Home
-  // tap spawned a fresh message instead of editing the bubble in place. Home
-  // is now an inline keyboard, so a callback-driven render must edit.
-  it("showMainMenu via a callback edits the existing bubble, never sends a fresh message", async () => {
+describe("Home screen (persistent keyboard)", () => {
+  // Home now pins a persistent reply keyboard (mainPersistentKb) to the bottom
+  // of the chat. A reply keyboard can't ride a message edit (chat.ts's isInline
+  // guard), so a callback-driven Home render always sends a fresh message — by
+  // design, not the old bug. The five top-level destinations are typed-text
+  // labels routed by matchPersistentLabel / handleProductNumber.
+  it("showMainMenu via a callback sends a fresh message (a reply keyboard can't ride an edit)", async () => {
     const { ctx, sink } = customerCtx({ callbackData: "v1:menu:main" });
     await customer.showMainMenu(ctx);
-    expect(calls(sink, "editMessageText").length).toBeGreaterThan(0);
-    expect(calls(sink, "reply").length).toBe(0);
+    expect(calls(sink, "reply").length).toBeGreaterThan(0);
+    expect(calls(sink, "editMessageText").length).toBe(0);
   });
 
-  it("Home's keyboard is inline and carries all five buttons", async () => {
+  it("Home's keyboard is a persistent reply keyboard carrying all five buttons", async () => {
     const { ctx, sink } = customerCtx({ callbackData: "v1:menu:main" });
     await customer.showMainMenu(ctx);
-    const markup = lastMarkup(sink) as { inline_keyboard?: Array<Array<{ callback_data?: string }>> };
-    expect(markup?.inline_keyboard).toBeDefined();
-    const flat = (markup!.inline_keyboard ?? []).flat().map((b) => b.callback_data);
-    expect(flat).toContain("v1:browse:prods");
-    expect(flat).toContain("v1:wallet:view");
-    expect(flat).toContain("v1:order:list");
-    expect(flat).toContain("v1:browse:popular");
-    expect(flat).toContain("v1:help:open");
+    const markup = lastMarkup(sink) as { keyboard?: Array<Array<{ text: string }>>; is_persistent?: boolean };
+    expect(markup?.keyboard).toBeDefined();
+    expect(markup?.is_persistent).toBe(true);
+    const labels = (markup!.keyboard ?? []).flat().map((b) => b.text);
+    expect(labels).toContain(persistentLabel("browse", "en"));
+    expect(labels).toContain(persistentLabel("wallet", "en"));
+    expect(labels).toContain(persistentLabel("orders", "en"));
+    expect(labels).toContain(persistentLabel("popular", "en"));
+    expect(labels).toContain(persistentLabel("help", "en"));
   });
 
   it("router wires v1:wallet:view to viewWallet", async () => {
@@ -365,15 +366,15 @@ describe("Home screen (inline keyboard)", () => {
     expect(offersForwardAction(sink)).toBe(true);
   });
 
-  it("startCommand and the persistent-keyboard 'main' back-action also render the inline Home", async () => {
+  it("startCommand and the persistent-keyboard 'main' back-action render Home with the persistent keyboard", async () => {
     const start = customerCtx({ callbackData: "v1:menu:main" });
     await customer.startCommand(start.ctx);
-    expect(calls(start.sink, "editMessageText").length).toBeGreaterThan(0);
+    expect(calls(start.sink, "reply").length).toBeGreaterThan(0);
 
     const back = customerCtx({ text: persistentLabel("main", "en") });
     await customer.handleProductNumber(back.ctx);
-    const markup = lastMarkup(back.sink) as { inline_keyboard?: unknown[][] };
-    expect(markup?.inline_keyboard).toBeDefined();
+    const markup = lastMarkup(back.sink) as { keyboard?: unknown[][] };
+    expect(markup?.keyboard).toBeDefined();
   });
 });
 
@@ -445,41 +446,41 @@ describe("denomination picker", () => {
     return { product, m1, m2 };
   }
 
-  it("denominationPickerKb renders one button per denomination (browse:denom) + back", () => {
+  it("denominationPickerKb renders plain plan-name buttons (browse:denom) + refresh + back", () => {
     const kb = denominationPickerKb(
       [
-        { id: 1, name: "A", durationLabel: "7 day", price: "30000" },
-        { id: 2, name: "B", durationLabel: "1 Month", price: "75000" },
+        { id: 1, name: "A", durationLabel: "7 day" },
+        { id: 2, name: "B", durationLabel: "1 Month" },
       ],
+      99,
       "en",
     );
     const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
     expect(flat.some((b) => b.callback_data === "v1:browse:denom:1")).toBe(true);
     expect(flat.some((b) => b.callback_data === "v1:browse:denom:2")).toBe(true);
+    expect(flat.some((b) => b.callback_data === "v1:browse:pick:99")).toBe(true); // Perbarui (refresh)
     expect(flat.some((b) => b.callback_data === "v1:browse:prods")).toBe(true); // back to list
 
-    // Catalog prices are central Rupiah — the button text must render IDR
-    // (priceIdr), never the USDT-only formatPrice (Finding 1).
+    // Buttons carry only the plan name now — price/stock live in the message
+    // body (browseProduct), never on the button.
     const member1 = flat.find((b) => b.callback_data === "v1:browse:denom:1")!;
-    expect(member1.text).toContain("Rp30.000");
-    expect(member1.text).not.toContain("USDT");
-    const member2 = flat.find((b) => b.callback_data === "v1:browse:denom:2")!;
-    expect(member2.text).toContain("Rp75.000");
-    expect(member2.text).not.toContain("USDT");
+    expect(member1.text).toBe("7 day");
+    expect(member1.text).not.toContain("Rp");
   });
 
-  it("denominationPickerKb uses resellerPrice for reseller users when present", () => {
+  it("denominationPickerKb lays plan buttons out two per row", () => {
     const kb = denominationPickerKb(
-      [{ id: 1, name: "A", durationLabel: "7 day", price: "30000", resellerPrice: "20000" }],
+      [
+        { id: 1, name: "A", durationLabel: "7 day" },
+        { id: 2, name: "B", durationLabel: "1 Month" },
+        { id: 3, name: "C", durationLabel: "3 Months" },
+      ],
+      99,
       "en",
-      null,
-      true,
     );
-    const flat = kb.inline_keyboard.flat() as Array<{ text: string; callback_data?: string }>;
-    const member1 = flat.find((b) => b.callback_data === "v1:browse:denom:1")!;
-    expect(member1.text).toContain("Rp20.000");
-    expect(member1.text).not.toContain("Rp30.000");
-    expect(member1.text).not.toContain("USDT");
+    const rows = kb.inline_keyboard as Array<Array<{ callback_data?: string }>>;
+    expect(rows[0]!.map((b) => b.callback_data)).toEqual(["v1:browse:denom:1", "v1:browse:denom:2"]);
+    expect(rows[1]!.map((b) => b.callback_data)).toEqual(["v1:browse:denom:3"]);
   });
 
   it("browseProduct surfaces the denomination picker for a multi-denomination Product", async () => {
@@ -496,9 +497,10 @@ describe("denomination picker", () => {
     const markup = JSON.stringify(sent.map((c) => c.args[c.args.length - 1]));
     expect(markup).toContain(`v1:browse:denom:${m1.id}`);
     expect(markup).toContain(`v1:browse:denom:${m2.id}`);
-    // Picker buttons render the Rupiah price (Finding 1), never USDT.
-    expect(markup).toContain("Rp30.000");
-    expect(markup).not.toContain("USDT");
+    // The Rupiah price now lives in the message body (priceIdr), not on the
+    // button, and is never the USDT-only formatPrice (Finding 1).
+    expect(sentIncludes(sink, "Rp30.000")).toBe(true);
+    expect(sentIncludes(sink, "USDT")).toBe(false);
   });
 
   it("browseProductsFlat records the parent Product id and the number opens its picker", async () => {
@@ -1066,12 +1068,12 @@ describe("admin handlers", () => {
 // ===========================================================================
 
 describe("callback router", () => {
-  it("dispatches v1:menu:main to the customer dashboard, editing the bubble in place (regression — Home is now inline, not a reply keyboard)", async () => {
+  it("dispatches v1:menu:main to the customer dashboard, sending a fresh message (Home now pins a persistent reply keyboard, which can't ride an edit)", async () => {
     const { ctx, sink } = customerCtx({ callbackData: "v1:menu:main" });
     await routeCallback(ctx);
     expect(sink.length).toBeGreaterThan(0);
-    expect(calls(sink, "editMessageText").length).toBeGreaterThan(0);
-    expect(calls(sink, "reply").length).toBe(0);
+    expect(calls(sink, "reply").length).toBeGreaterThan(0);
+    expect(calls(sink, "editMessageText").length).toBe(0);
   });
 
   it("dispatches v1:order:list", async () => {

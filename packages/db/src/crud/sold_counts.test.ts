@@ -17,6 +17,7 @@ import {
   cancelOrder,
   rejectOrder,
   soldCountForDenomination,
+  soldCountForProduct,
   soldCountsByDenomination,
   soldCountsByProduct,
 } from "@app/db";
@@ -185,5 +186,46 @@ describe("soldCountsByProduct", () => {
   it("returns an empty array when no products have sales", async () => {
     const results = await soldCountsByProduct(prisma, 10);
     expect(results).toEqual([]);
+  });
+});
+
+describe("soldCountForProduct", () => {
+  it("zero case: no delivered orders → 0", async () => {
+    const { parentProduct } = sample;
+    expect(await soldCountForProduct(prisma, parentProduct.id)).toBe(0);
+  });
+
+  it("unknown product id → 0 (no denominations)", async () => {
+    expect(await soldCountForProduct(prisma, 999999)).toBe(0);
+  });
+
+  it("sums delivered units across the product's denominations", async () => {
+    const { parentProduct, product, user } = sample;
+
+    // A second denomination under the SAME mid-tier product.
+    const denom2 = await prisma.denomination.create({
+      data: {
+        productId: parentProduct.id,
+        name: "Netflix 3M",
+        slug: "netflix-3m",
+        type: "SHARED",
+        durationLabel: "3 Months",
+        price: "9.0000",
+        warrantyDays: 90,
+      },
+    });
+    await prisma.stockItem.createMany({
+      data: Array.from({ length: 5 }, (_, i) => ({
+        productId: denom2.id,
+        credentials: `nf3m_cred_${i}`,
+        status: "AVAILABLE" as const,
+      })),
+    });
+
+    await deliverOrder(product.id, 3);
+    await deliverOrder(denom2.id, 2);
+
+    // 3 (denomination `product`) + 2 (denom2) = 5 for the parent product.
+    expect(await soldCountForProduct(prisma, parentProduct.id)).toBe(5);
   });
 });

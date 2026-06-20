@@ -5,12 +5,12 @@
  * colon-separated path (see customer_kb.py for the full schema). The `v1`
  * prefix lets us evolve the schema later without breaking in-flight buttons.
  */
-import { InlineKeyboard } from "grammy";
+import { InlineKeyboard, Keyboard } from "grammy";
 import type { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { OrderStatus, StockStatus, TicketStatus } from "@app/core/enums";
 import { t as coreT } from "@app/core/i18n";
-import { formatPrice, priceIdr, truncLabel } from "../util/format";
+import { formatPrice, truncLabel } from "../util/format";
 
 export const CB_PREFIX = "v1";
 
@@ -54,22 +54,27 @@ interface TicketLike {
 // ---------------------------------------------------------------------------
 
 /**
- * Home (main menu) — an INLINE keyboard so a Home tap edits the existing
- * bubble in place via smartEdit/renderMenu's isInline check (chat.ts), instead
- * of spawning a fresh message the way the old reply-keyboard `mainPersistentKb`
- * did. Layout: catalog entry point, wallet balance, order history, then a
- * Populer/Bantuan row that opens the two new Home destinations.
+ * Home (main menu) — a PERSISTENT reply keyboard pinned to the bottom of the
+ * chat from `/start`, so the primary navigation is always one tap away while the
+ * user types product/quantity numbers. Each label is routed back to its action
+ * by the typed-text guard (`matchPersistentLabel` + the switch in
+ * `handleProductNumber`). The Saldo label is intentionally static (no balance)
+ * — a reply keyboard is set once and can't auto-update, and the live balance is
+ * shown in the dashboard text; a static label also keeps typed-text matching
+ * exact. Layout mirrors the inline menu it replaces.
  */
-export function mainMenu(lang: string, balanceLabel: string): InlineKeyboard {
-  return ik([
-    [{ text: coreT("menu.browse", lang), data: cb("browse", "prods") }],
-    [{ text: coreT("menu.wallet_inline", lang, { balance: balanceLabel }), data: cb("wallet", "view") }],
-    [{ text: coreT("menu.my_orders", lang), data: cb("order", "list") }],
-    [
-      { text: coreT("menu.popular", lang), data: cb("browse", "popular") },
-      { text: coreT("menu.help_center", lang), data: cb("help", "open") },
-    ],
-  ]);
+export function mainPersistentKb(lang: string): Keyboard {
+  return new Keyboard()
+    .text(coreT("menu.browse", lang))
+    .row()
+    .text(coreT("menu.wallet", lang))
+    .row()
+    .text(coreT("menu.my_orders", lang))
+    .row()
+    .text(coreT("menu.popular", lang))
+    .text(coreT("menu.help_center", lang))
+    .resized()
+    .persistent();
 }
 
 export function backToMain(lang: string): InlineKeyboard {
@@ -129,7 +134,7 @@ export function paymentSuccessKb(lang: string): InlineKeyboard {
  * the labels are localized, so a literal compare would miss the other language.
  */
 export type PersistentAction =
-  | "browse" | "orders" | "wallet" | "referral" | "language"
+  | "browse" | "orders" | "wallet" | "popular" | "help" | "referral" | "language"
   | "support" | "faq" | "terms" | "tickets"
   | "back" | "main" | "prev" | "next";
 
@@ -137,6 +142,8 @@ const PERSISTENT_LABEL_KEYS: Record<PersistentAction, string> = {
   browse: "menu.browse",
   orders: "menu.my_orders",
   wallet: "menu.wallet",
+  popular: "menu.popular",
+  help: "menu.help_center",
   referral: "menu.referral",
   language: "menu.language",
   support: "menu.support",
@@ -240,35 +247,32 @@ interface DenominationLike {
   id: number;
   name: string;
   durationLabel: string;
-  price: Decimal.Value;
-  resellerPrice?: Decimal.Value | null;
 }
 
 /**
  * Denomination picker shown when a customer taps a mid-tier Product with ≥2
  * active denominations: one button per denomination (tapping opens its detail
- * bubble via `browse:denom`). Catalog prices are central Rupiah (CLAUDE.md) —
- * render with `priceIdr`, never `formatPrice` (USDT-only). Reseller price wins
- * for reseller users when present, mirroring the detail screen.
+ * bubble via `browse:denom`), laid out 2 per row. The buttons carry only the
+ * plan name — price and stock live in the message body (built by
+ * `browseProduct`), so the keyboard stays a clean list of plan types. A
+ * `Perbarui`/Refresh row re-renders the picker (re-reads stock + the "updated"
+ * timestamp) and a Back row returns to the flat product list.
  */
 export function denominationPickerKb(
   denominations: DenominationLike[],
+  productId: number,
   lang: string,
-  rate: Decimal | null = null,
-  isReseller = false,
 ): InlineKeyboard {
-  const rows: Btn[][] = denominations.map((d) => {
-    const unitPrice = isReseller && d.resellerPrice != null ? d.resellerPrice : d.price;
-    return [
-      {
-        text: coreT("browse.denomination_btn", lang, {
-          duration: d.durationLabel || d.name,
-          price: priceIdr(unitPrice, rate),
-        }),
+  const rows: Btn[][] = [];
+  for (let i = 0; i < denominations.length; i += 2) {
+    rows.push(
+      denominations.slice(i, i + 2).map((d) => ({
+        text: d.durationLabel || d.name,
         data: cb("browse", "denom", d.id),
-      },
-    ];
-  });
+      })),
+    );
+  }
+  rows.push([{ text: coreT("browse.refresh_btn", lang), data: cb("browse", "pick", productId) }]);
   rows.push([{ text: coreT("menu.back", lang), data: cb("browse", "prods") }]);
   return ik(rows);
 }
@@ -280,30 +284,20 @@ export function qtyInputCancelKb(denominationId: number, lang: string): InlineKe
 }
 
 /**
- * Inline keyboard for the Product List (§3): one tappable button per product
- * on the page (mirrors searchResultsKb), then a Prev/Next nav row, then a
- * Menu back row. The button label's `i+1` prefix matches the caption's
- * numbered list line so the tap shortcut and the typed-number entry
- * (handleProductNumber) agree on the same index.
+ * Slim pagination keyboard for the Product List (§3). The list itself is now
+ * driven by typed numbers (handleProductNumber resolves the caption's numbered
+ * lines), so the per-product tap buttons and the Menu row were dropped — the
+ * persistent reply keyboard carries navigation. Only a Prev/Next row remains,
+ * and only when the catalog spans more than one page; a single page renders no
+ * inline keyboard at all (returns undefined).
  */
-export function productsPageKb(
-  products: Array<{ id: number; name: string }>,
-  page: number,
-  totalPages: number,
-  lang: string,
-): InlineKeyboard {
-  const rows: Btn[][] = products.map((p, i) => [
-    { text: `${i + 1}. ${truncLabel(p.name, 28)}`, data: cb("browse", "pick", p.id) },
-  ]);
-
+export function productsNavKb(page: number, totalPages: number, lang: string): InlineKeyboard | undefined {
+  if (totalPages <= 1) return undefined;
   const nav: Btn[] = [];
   if (page > 0) nav.push({ text: coreT("browse.nav_prev", lang), data: cb("browse", "page", page - 1) });
   if (page < totalPages - 1)
     nav.push({ text: coreT("browse.nav_next", lang), data: cb("browse", "page", page + 1) });
-  if (nav.length) rows.push(nav);
-
-  rows.push([{ text: coreT("menu.main", lang), data: cb("menu", "main") }]);
-  return ik(rows);
+  return nav.length ? ik([nav]) : undefined;
 }
 
 /** Inline keyboard for /search results — each mid-tier Product opens its picker. */

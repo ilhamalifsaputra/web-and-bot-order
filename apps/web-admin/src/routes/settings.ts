@@ -63,10 +63,12 @@ const EDITABLE: Record<string, string> = {
   bybit_deposit_address: "Bybit BEP20 (BSC) USDT deposit address shown to buyers",
   bybit_api_key: "Bybit API key — Wallet READ-ONLY (no Withdraw)",
   bybit_api_secret: "Bybit API secret",
+  bybit_enabled: "Bybit USDT deposits on the website — true / false",
   // ---- Binance Internal Transfer (UID-based auto-confirm; leave blank to disable) ----
   binance_receive_uid: "Binance UID buyers transfer to (Internal Transfer)",
   binance_api_key: "Binance API key — READ-ONLY (no trading/withdraw)",
   binance_api_secret: "Binance API secret",
+  binance_internal_enabled: "Binance Internal Transfer on the website — true / false",
   // ---- Bot & notifications (plan.md §16.1) ----
   bot_token: "Order Bot token — the main @YourBot that receives customer orders (get from BotFather → /mybots → API Token); restart the app after saving",
   bot_username: "Bot username without the @ — filled in automatically when you save the Order Bot token above",
@@ -89,8 +91,34 @@ const PAY_RATE_KEYS = new Set(["usd_idr_rate", "usd_idr_rate_auto", "usd_idr_rat
 const PAY_QRIS_KEYS = new Set(["tokopay_merchant_id", "tokopay_secret", "tokopay_enabled"]);
 const PAY_PAYDISINI_KEYS = new Set(["paydisini_userkey", "paydisini_apikey", "paydisini_enabled", "paydisini_default_channel"]);
 const PAY_NOWPAYMENTS_KEYS = new Set(["nowpayments_api_key", "nowpayments_ipn_secret", "nowpayments_enabled", "nowpayments_pay_currency"]);
-const PAY_BYBIT_KEYS = new Set(["bybit_deposit_address", "bybit_api_key", "bybit_api_secret"]);
-const PAY_BINANCE_INTERNAL_KEYS = new Set(["binance_receive_uid", "binance_api_key", "binance_api_secret"]);
+const PAY_BYBIT_KEYS = new Set(["bybit_deposit_address", "bybit_api_key", "bybit_api_secret", "bybit_enabled"]);
+const PAY_BINANCE_INTERNAL_KEYS = new Set(["binance_receive_uid", "binance_api_key", "binance_api_secret", "binance_internal_enabled"]);
+
+// Per-method on/off toggle — the whitelist guardrail for POST /settings/payments/toggle.
+// `enabledKey` is the *_enabled settings key; `credKeys` are the credential keys whose
+// presence means the method is "configured". `label` is for the audit/flash copy.
+// The toggle is rendered as a button per method (mirroring 2FA), so these *_enabled
+// keys are filtered out of the raw text-field lists below — they stay in EDITABLE only
+// so the read-only "all options" table + the generic /settings/edit fallback still work.
+const PAYMENT_METHODS: Record<string, { enabledKey: string; credKeys: string[]; label: string }> = {
+  tokopay: { enabledKey: "tokopay_enabled", credKeys: ["tokopay_merchant_id", "tokopay_secret"], label: "TokoPay" },
+  paydisini: { enabledKey: "paydisini_enabled", credKeys: ["paydisini_userkey", "paydisini_apikey"], label: "PayDisini" },
+  nowpayments: { enabledKey: "nowpayments_enabled", credKeys: ["nowpayments_api_key", "nowpayments_ipn_secret"], label: "NOWPayments" },
+  bybit: { enabledKey: "bybit_enabled", credKeys: ["bybit_deposit_address", "bybit_api_key", "bybit_api_secret"], label: "Bybit" },
+  binance_internal: { enabledKey: "binance_internal_enabled", credKeys: ["binance_receive_uid", "binance_api_key", "binance_api_secret"], label: "Binance Internal Transfer" },
+};
+
+// The *_enabled keys are surfaced as toggles, not raw text fields.
+const ENABLED_KEYS = new Set(Object.values(PAYMENT_METHODS).map((m) => m.enabledKey));
+
+// Default ON: only the literal "false" (trimmed, lowercased) disables — matches
+// the crud getters byte-for-byte. `configured` = all credential keys present.
+function paymentMethodState(method: { enabledKey: string; credKeys: string[] }, currentValues: Record<string, string>) {
+  const flag = currentValues[method.enabledKey];
+  const enabled = (flag ?? "").trim().toLowerCase() !== "false";
+  const configured = method.credKeys.every((k) => Boolean((currentValues[k] ?? "").trim()));
+  return { enabled, configured };
+}
 
 // Write-only editable secrets: never echoed back into the form, hidden in the
 // "All saved options" table, audited as "(updated)" without the value.
@@ -137,7 +165,8 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       // is read live via getSetting, so it applies immediately.
       needs_restart: BOT_TOKEN_FIELD_KEYS.has(key),
     }));
-    const pick = (keys: Set<string>) => allFields.filter((f) => keys.has(f.key));
+    // The *_enabled keys render as on/off toggles (below), never as raw text fields.
+    const pick = (keys: Set<string>) => allFields.filter((f) => keys.has(f.key) && !ENABLED_KEYS.has(f.key));
     const grouped = new Set([
       ...WEBSITE_KEYS, ...BOT_MESSAGE_KEYS, ...BOT_TOKEN_FIELD_KEYS,
       ...PAY_RATE_KEYS, ...PAY_QRIS_KEYS, ...PAY_PAYDISINI_KEYS, ...PAY_NOWPAYMENTS_KEYS, ...PAY_BYBIT_KEYS,
@@ -148,6 +177,13 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       ...pick(WEBSITE_KEYS),
       ...allFields.filter((f) => !grouped.has(f.key)),
     ];
+
+    // Per-method on/off state for the toggle pill + "add keys to go live" hint.
+    // Read flag + creds-present straight off currentValues (no extra queries).
+    const payMethodState: Record<string, { enabled: boolean; configured: boolean }> = {};
+    for (const [id, m] of Object.entries(PAYMENT_METHODS)) {
+      payMethodState[id] = paymentMethodState(m, currentValues);
+    }
 
     const tg = req.admin!.telegramId;
     const twoFaEnabled = (await getSetting(prisma, twoFaSecretKey(tg))) !== null;
@@ -169,6 +205,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       pay_nowpayments_fields: pick(PAY_NOWPAYMENTS_KEYS),
       pay_bybit_fields: pick(PAY_BYBIT_KEYS),
       pay_binance_internal_fields: pick(PAY_BINANCE_INTERNAL_KEYS),
+      pay_method_state: payMethodState,
       is_owner: req.admin!.role === "super",
       two_fa_enabled: twoFaEnabled,
       two_fa_pending: twoFaPending,
@@ -271,6 +308,30 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       "Couldn't reach the exchange-rate service — the saved rate is unchanged. Try again in a bit.",
       "error",
     );
+  });
+
+  // Per-method on/off toggle for the 5 active payment methods. The switch is
+  // independent of credentials (it never exposes a method with missing keys —
+  // the crud getters AND the checkout still require creds). Whitelist-guarded:
+  // an unknown `method` is rejected so an arbitrary settings key is never written.
+  app.post("/settings/payments/toggle", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, string>;
+    const method = PAYMENT_METHODS[body.method ?? ""];
+    if (!method) {
+      return redirectWithFlash(reply, "/settings", "Unknown payment method.", "error");
+    }
+    // Anything other than the literal "true" turns the method off (default-ON
+    // semantics: we still write the explicit flag so the state is unambiguous).
+    const value = (body.enabled ?? "").trim().toLowerCase() === "true" ? "true" : "false";
+    await setSetting(prisma, method.enabledKey, value);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "payment_method_toggle",
+      targetType: "setting",
+      details: `${method.enabledKey}=${value}`,
+    });
+    const verb = value === "true" ? "on" : "off";
+    return redirectWithFlash(reply, "/settings", `${method.label} turned ${verb}.`, "success");
   });
 
   app.post("/settings/edit", { preHandler: csrfProtect }, async (req, reply) => {

@@ -34,6 +34,32 @@
 </form>
 {% endmacro %}
 
+{# On/off switch for a payment method — mirrors the 2FA on/off pattern. `state`
+   is { enabled, configured }; `method` is the toggle id; `label` for the form. #}
+{% macro payment_toggle(method, label, state) %}
+<div class="flex flex-wrap items-center gap-2 mb-3">
+  {% if state.enabled %}<span class="chip bg-grass-tint text-grass-dark">On</span>
+  {% else %}<span class="chip bg-sand text-ink-soft">Off</span>{% endif %}
+  <form method="post" action="/settings/payments/toggle" class="inline">
+    {{ ui.csrf_field(admin) }}
+    <input type="hidden" name="method" value="{{ method }}">
+    <input type="hidden" name="enabled" value="{% if state.enabled %}false{% else %}true{% endif %}">
+    {% if state.enabled %}<button class="btn btn-soft btn-sm">Turn off</button>
+    {% else %}<button class="btn btn-primary btn-sm">Turn on</button>{% endif %}
+  </form>
+  {% if state.enabled and not state.configured %}
+  <span class="chip bg-amberx-tint text-amberx text-[11px] flex items-center gap-1">
+    <i data-lucide="alert-triangle" class="w-3 h-3"></i> Add the keys below to go live.
+  </span>
+  {% endif %}
+</div>
+<p class="text-[11px] text-ink-soft mb-3 flex items-start gap-1.5">
+  <i data-lucide="info" class="w-3 h-3 mt-0.5 shrink-0"></i>
+  Turning a method off stops new orders on it. Drain any pending orders on this
+  method first — an in-flight order stops auto-confirming once it's off.
+</p>
+{% endmacro %}
+
 {# ── Tab bar: one topic on screen at a time, nothing piled up. ── #}
 {% set tabs = [
   { id: "website",  icon: "globe",     label: "Website" },
@@ -96,6 +122,7 @@
       <p class="text-xs text-ink-soft mb-4">
         The TokoPay keys turn on Rupiah (QRIS) payments at checkout on the website.
       </p>
+      {{ payment_toggle("tokopay", "TokoPay", pay_method_state.tokopay) }}
       <div class="space-y-3">
         {% for fld in pay_qris_fields %}{{ setting_form(fld) }}{% endfor %}
       </div>
@@ -110,6 +137,7 @@
     <p class="text-xs text-ink-soft mb-4">
       The PayDisini keys turn on Rupiah (QRIS/e-wallet) payments at checkout on the website.
     </p>
+    {{ payment_toggle("paydisini", "PayDisini", pay_method_state.paydisini) }}
     <div class="space-y-3">
       {% for fld in pay_paydisini_fields %}{{ setting_form(fld) }}{% endfor %}
     </div>
@@ -124,6 +152,7 @@
       hosted crypto invoice. The pay currency selects the underlying crypto
       network/rail (e.g. <span class="codeish">usdttrc20</span> for USDT on TRON).
     </p>
+    {{ payment_toggle("nowpayments", "NOWPayments", pay_method_state.nowpayments) }}
     <div class="space-y-3">
       {% for fld in pay_nowpayments_fields %}{{ setting_form(fld) }}{% endfor %}
     </div>
@@ -145,6 +174,7 @@
         Takes effect within seconds, no restart needed.
       </p>
     </div>
+    {{ payment_toggle("bybit", "Bybit", pay_method_state.bybit) }}
     <div class="space-y-3">
       {% for fld in pay_bybit_fields %}{{ setting_form(fld) }}{% endfor %}
     </div>
@@ -166,6 +196,7 @@
         Takes effect within seconds, no restart needed.
       </p>
     </div>
+    {{ payment_toggle("binance_internal", "Binance Internal Transfer", pay_method_state.binance_internal) }}
     <div class="space-y-3">
       {% for fld in pay_binance_internal_fields %}{{ setting_form(fld) }}{% endfor %}
     </div>

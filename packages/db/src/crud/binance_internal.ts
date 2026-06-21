@@ -29,6 +29,8 @@ import { finalizeOrderPayment } from "./pricing";
 export const BINANCE_UID_KEY = "binance_receive_uid";
 export const BINANCE_API_KEY_KEY = "binance_api_key";
 export const BINANCE_API_SECRET_KEY = "binance_api_secret";
+// On/off toggle (web admin). Default ON: only the literal "false" disables.
+export const BINANCE_INTERNAL_ENABLED_KEY = "binance_internal_enabled";
 
 export interface BinanceInternalConfig {
   /** True only when receiveUid + apiKey + apiSecret are all present. */
@@ -57,16 +59,19 @@ function pick(dbVal: string | null, envVal?: string): string {
  * web-editable.
  */
 export async function resolveBinanceInternalConfig(db: Db): Promise<BinanceInternalConfig> {
-  const [uid, key, secret] = await Promise.all([
+  const [uid, key, secret, flag] = await Promise.all([
     getSetting(db, BINANCE_UID_KEY),
     getSetting(db, BINANCE_API_KEY_KEY),
     getSetting(db, BINANCE_API_SECRET_KEY),
+    getSetting(db, BINANCE_INTERNAL_ENABLED_KEY),
   ]);
   const receiveUid = pick(uid, config.BINANCE_RECEIVE_UID);
   const apiKey = pick(key, config.BINANCE_API_KEY);
   const apiSecret = pick(secret, config.BINANCE_API_SECRET);
   return {
-    enabled: Boolean(receiveUid && apiKey && apiSecret),
+    // Default ON: an unset/empty flag means enabled; only the literal "false"
+    // (trimmed, case-insensitive) disables the method without touching creds.
+    enabled: Boolean(receiveUid && apiKey && apiSecret) && (flag ?? "").trim().toLowerCase() !== "false",
     receiveUid,
     apiKey,
     apiSecret,

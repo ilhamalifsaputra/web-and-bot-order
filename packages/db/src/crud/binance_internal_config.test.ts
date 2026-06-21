@@ -107,6 +107,38 @@ describe("resolveBinanceInternalConfig", () => {
     expect(cfg.enabled).toBe(false);
   });
 
+  // ---- On/off toggle flag matrix (binance_internal_enabled) ----
+  const CREDS = {
+    binance_receive_uid: "db-uid",
+    binance_api_key: "db-api-key",
+    binance_api_secret: "db-api-secret",
+  };
+
+  it("enabled when creds present and flag is unset (default ON)", async () => {
+    const cfg = await resolveBinanceInternalConfig(stubDb({ ...CREDS }));
+    expect(cfg.enabled).toBe(true);
+  });
+
+  it('enabled when creds present and flag is "true"', async () => {
+    const cfg = await resolveBinanceInternalConfig(stubDb({ ...CREDS, binance_internal_enabled: "true" }));
+    expect(cfg.enabled).toBe(true);
+  });
+
+  it('disabled when flag is "false" even with creds present', async () => {
+    const cfg = await resolveBinanceInternalConfig(stubDb({ ...CREDS, binance_internal_enabled: "false" }));
+    expect(cfg.enabled).toBe(false);
+  });
+
+  it('disabled when flag is "FALSE " (trimmed + case-insensitive)', async () => {
+    const cfg = await resolveBinanceInternalConfig(stubDb({ ...CREDS, binance_internal_enabled: "FALSE " }));
+    expect(cfg.enabled).toBe(false);
+  });
+
+  it("enabled when flag is blank (empty string is still default ON)", async () => {
+    const cfg = await resolveBinanceInternalConfig(stubDb({ ...CREDS, binance_internal_enabled: "" }));
+    expect(cfg.enabled).toBe(true);
+  });
+
   it("enabled is false when the apiSecret is missing", async () => {
     vi.doMock("@app/core/config", () => ({
       config: {

@@ -32,6 +32,8 @@ import { finalizeOrderPayment } from "./pricing";
 export const BYBIT_ADDRESS_KEY = "bybit_deposit_address";
 export const BYBIT_API_KEY_KEY = "bybit_api_key";
 export const BYBIT_API_SECRET_KEY = "bybit_api_secret";
+// On/off toggle (web admin). Default ON: only the literal "false" disables.
+export const BYBIT_ENABLED_KEY = "bybit_enabled";
 
 export interface BybitConfig {
   /** True only when address + apiKey + apiSecret are all present. */
@@ -58,16 +60,19 @@ function pick(dbVal: string | null, envVal?: string): string {
  * and the API key/secret are web-editable.
  */
 export async function resolveBybitConfig(db: Db): Promise<BybitConfig> {
-  const [addr, key, secret] = await Promise.all([
+  const [addr, key, secret, flag] = await Promise.all([
     getSetting(db, BYBIT_ADDRESS_KEY),
     getSetting(db, BYBIT_API_KEY_KEY),
     getSetting(db, BYBIT_API_SECRET_KEY),
+    getSetting(db, BYBIT_ENABLED_KEY),
   ]);
   const depositAddress = pick(addr, config.BYBIT_DEPOSIT_ADDRESS);
   const apiKey = pick(key, config.BYBIT_API_KEY);
   const apiSecret = pick(secret, config.BYBIT_API_SECRET);
   return {
-    enabled: Boolean(depositAddress && apiKey && apiSecret),
+    // Default ON: an unset/empty flag means enabled; only the literal "false"
+    // (trimmed, case-insensitive) disables the method without touching creds.
+    enabled: Boolean(depositAddress && apiKey && apiSecret) && (flag ?? "").trim().toLowerCase() !== "false",
     depositAddress,
     apiKey,
     apiSecret,

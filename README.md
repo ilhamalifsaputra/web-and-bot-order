@@ -7,7 +7,7 @@ Toko digital lengkap dalam satu aplikasi:
 - **Toko web** — etalase untuk berjualan lewat website/domain sendiri.
 
 Pembayaran lewat **QRIS (TokoPay)**, **Binance Internal**, atau **Bybit
-(USDT-BEP20)** — ketiganya **terkonfirmasi otomatis**, akun langsung terkirim
+(UID Internal Transfer)** — ketiganya **terkonfirmasi otomatis**, akun langsung terkirim
 tanpa cek manual.
 
 Dibangun dengan **Node.js + TypeScript** (monorepo pnpm). Bot, panel admin, dan
@@ -213,11 +213,11 @@ saat membeli, di bot maupun website. Ketiganya auto-confirm:
 |---|---|---|---|
 | **QRIS (TokoPay)** | Rupiah | Otomatis (webhook) | Merchant ID + Secret |
 | **Binance Internal** | USDT | Otomatis (transfer antar-UID) | UID + API key/secret read-only |
-| **Bybit USDT-BEP20** | USDT | Otomatis (deposit on-chain BEP20) | Alamat deposit + API key/secret |
+| **Bybit Internal Transfer** | USDT | Otomatis (transfer antar-UID, instant off-chain) | UID + API key/secret |
 
 > **Binance Pay manual** (upload bukti, approve manual) hanya muncul sebagai
 > *fallback* bila belum ada metode otomatis. **Bybit:** API key harus **Wallet
-> READ-ONLY**; tes koneksi `pnpm bybit-probe`. BEP20 tanpa memo → pencocokan pakai
+> READ-ONLY**; tes koneksi `pnpm bybit-probe`. Pencocokan by
 > **nominal unik**, jaga `USE_UNIQUE_CENTS=1` dan pembeli kirim **jumlah persis**.
 
 **Branding** (Settings → Branding): upload favicon, logo, hero toko, banner bot,
@@ -300,7 +300,7 @@ VPS"**.
 | Bot crash: `String must contain at least 20 character(s)` | Hapus/comment baris `BOT_TOKEN=` di `.env` (jangan dikosongkan) |
 | Bot tak membalas `/start` | Cek `BOT_TOKEN`; cek `docker compose logs server` / `pm2 logs` |
 | Tak bisa login / loop login | HTTP lokal: `WEB_COOKIE_SECURE=false`; produksi: HTTPS + `WEB_COOKIE_SECURE=true` |
-| Pembayaran Bybit tak otomatis | Kirim **jumlah persis** via **BEP20**; pastikan `USE_UNIQUE_CENTS=1` |
+| Pembayaran Bybit tak otomatis | Kirim **jumlah persis** via Bybit Internal Transfer; pastikan `USE_UNIQUE_CENTS=1` |
 | Panel tak bisa diakses dari luar | Non-Docker set `WEB_HOST=0.0.0.0` (di balik HTTPS); Docker sudah `0.0.0.0` |
 
 Masih bingung? Lihat log: `docker compose logs -f server` atau

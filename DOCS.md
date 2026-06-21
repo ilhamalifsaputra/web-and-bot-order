@@ -134,7 +134,7 @@ Banner bot dikirim sebagai `InputFile` lalu file_id Telegram-nya di-cache
 diturunkan: `idrPrice / usd_idr_rate`, dibulatkan ke 0,1, dan **tampil
 bersisian** dengan IDR di storefront dan bot (mis. `Rp79.000 ≈ $4,9`). Tidak ada
 deteksi IP atau preferensi mata uang per-user — mata uang transaksi dipilih **saat
-bayar** (IDR → TokoPay, USDT → Binance/Bybit).
+bayar** (IDR → TokoPay, USDT → Binance Internal / Bybit Internal Transfer).
 
 `usd_idr_rate` **auto-update dari pasar** (`scheduleFxRefresh`,
 `packages/core/src/fx.ts`), dibulatkan ke kelipatan `usd_idr_rate_rounding`
@@ -156,7 +156,7 @@ Tiap order menyimpan snapshot: `Order.currency` (`IDR`/`USDT`), `Order.fxRate`
 | **TokoPay (QRIS)** | IDR | webhook `POST /pay/tokopay/callback` (verifikasi signature + idempoten `ProcessedTokopayTx`) | Settings |
 | **PayDisini (QRIS/e-wallet)** | IDR | webhook `POST /pay/paydisini/callback` + reconcile poller fallback; idempoten `ProcessedPaydisiniTx` | Settings |
 | **NOWPayments (hosted invoice)** | USDT | IPN webhook `POST /pay/nowpayments/callback` (HMAC-SHA512, header `x-nowpayments-sig`) + reconcile poller fallback; idempoten `ProcessedNowpaymentsTx` | Settings |
-| **Bybit USDT-BEP20** (on-chain) | USDT | poller cocokkan **nominal unik** (BEP20 tanpa memo); tak cocok → "unmatched" untuk review; idempoten `processed_bybit_tx` | Settings |
+| **Bybit Internal Transfer** (UID-based, instant off-chain) | USDT | poller cocokkan **nominal unik**; tak cocok → "unmatched" untuk review; idempoten `processed_bybit_tx` | Settings |
 
 Kontrak webhook + reconcile poller ketiga gateway IDR/USDT di atas (TokoPay,
 PayDisini, NOWPayments) didokumentasikan lengkap di **§12**.
@@ -184,7 +184,7 @@ tak terpengaruh sama sekali.
 **Binance Pay manual** (upload bukti, approve manual di bot) hanya muncul sebagai
 fallback zero-config bila tak ada metode otomatis. Perlu `BINANCE_PAY_ID`.
 
-Menu bayar: **QRIS / PayDisini / NOWPayments / Binance / Bybit-BSC**. Tes koneksi
+Menu bayar: **QRIS / PayDisini / NOWPayments / Binance / Bybit**. Tes koneksi
 API: `pnpm binance-probe`, `pnpm bybit-probe`.
 
 ---
@@ -198,7 +198,7 @@ Kredensial & setelan terpusat di **web-admin → Settings**
   (divalidasi `getMe` sebelum simpan; **perlu restart**).
 - **Kurs:** `usd_idr_rate`, `usd_idr_rate_auto`, `usd_idr_rate_rounding`.
 - **QRIS/TokoPay:** `tokopay_merchant_id`, `tokopay_secret`, `tokopay_enabled`.
-- **Bybit:** `bybit_deposit_address`, `bybit_api_key`, `bybit_api_secret`.
+- **Bybit:** `bybit_uid`, `bybit_api_key`, `bybit_api_secret`.
 - **Branding:** identitas toko + upload aset (halaman `/branding` terpisah).
 
 **Aturan umum: DB (Setting) menang, `.env` = bootstrap/pemulihan** — tapi ada
@@ -350,7 +350,7 @@ DEFAULT_LANGUAGE=id
 | **Transport bot** | `BOT_MODE=webhook` + `PUBLIC_URL` + `WEBHOOK_SECRET` | Default `polling`. Webhook butuh domain HTTPS. |
 | **Channel testimoni** | `PUBLIC_CHANNEL_ID` (+ `NOTIF_BOT_TOKEN` opsional) | Bot harus jadi admin channel. |
 | **Binance Internal (auto)** | `BINANCE_RECEIVE_UID` + `BINANCE_API_KEY` + `BINANCE_API_SECRET` | API **read-only**. Tes: `pnpm binance-probe`. |
-| **Bybit USDT-BEP20 (auto)** | `bybit_deposit_address` + `bybit_api_key` + `bybit_api_secret` di **Settings** | Wallet **read-only**, jaga `USE_UNIQUE_CENTS=1`. Tes: `pnpm bybit-probe`. |
+| **Bybit Internal Transfer (auto)** | `bybit_uid` + `bybit_api_key` + `bybit_api_secret` di **Settings** | Wallet **read-only**, jaga `USE_UNIQUE_CENTS=1`. Tes: `pnpm bybit-probe`. |
 | **QRIS Rupiah (TokoPay)** | `tokopay_merchant_id` + `tokopay_secret` + `tokopay_enabled` di **Settings** | Butuh Callback URL publik. |
 | **Binance Pay manual** | `BINANCE_PAY_ID` | Fallback; admin approve manual di bot. |
 | **Kurs USDT↔IDR** | `usd_idr_rate` di **Settings** | Auto-update pasar ON default. |

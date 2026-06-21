@@ -3,7 +3,7 @@
  * error parts of deps.py. A flash is a one-shot message carried in the query
  * string of a 303 redirect (`?msg=...&kind=...`).
  */
-import type { FastifyReply } from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 
 /** 303 redirect carrying a one-shot flash message in the query string. */
 export function redirectWithFlash(
@@ -16,6 +16,26 @@ export function redirectWithFlash(
   const sep = path.includes("?") ? "&" : "?";
   void reply.code(303).redirect(`${path}${sep}${qs}`);
   return reply;
+}
+
+/**
+ * htmx-aware flash. When the request comes from htmx (`HX-Request` header), the
+ * caller wants an in-place update: return JUST the toast partial (200) so the
+ * page never reloads or scrolls. Otherwise fall back to the classic
+ * Post/Redirect/Get flash — so forms still work with JavaScript disabled.
+ */
+export function flashOrRedirect(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  path: string,
+  msg: string,
+  kind: "success" | "error" | "info" = "success",
+): FastifyReply {
+  if (req.headers["hx-request"] === "true") {
+    void reply.code(200).view("_flash.njk", { msg, kind });
+    return reply;
+  }
+  return redirectWithFlash(reply, path, msg, kind);
 }
 
 /**

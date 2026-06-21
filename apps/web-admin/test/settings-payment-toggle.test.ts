@@ -76,6 +76,24 @@ describe("POST /settings/payments/toggle", () => {
     expect(await getSetting(prisma, "binance_internal_enabled")).toBe("true");
   });
 
+  it("htmx request: returns the flash partial in place (200, no redirect) and still writes + audits", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/settings/payments/toggle",
+      headers: { "content-type": "application/x-www-form-urlencoded", "hx-request": "true" },
+      cookies: { [COOKIE]: cookie },
+      payload: new URLSearchParams({ csrf_token: csrf, method: "bybit", enabled: "false" }).toString(),
+    });
+    // No navigation — htmx swaps the toast partial in place.
+    expect(res.statusCode).toBe(200);
+    expect(res.headers.location).toBeUndefined();
+    expect(res.body).toContain("turned off");
+    // The save still happens and is audited, same as the redirect path.
+    expect(await getSetting(prisma, "bybit_enabled")).toBe("false");
+    const row = await prisma.auditLog.findFirst({ where: { action: "payment_method_toggle" } });
+    expect(row?.details).toBe("bybit_enabled=false");
+  });
+
   it("rejects an unknown method (whitelist guardrail) without writing anything", async () => {
     const res = await postForm("/settings/payments/toggle", cookie, {
       csrf_token: csrf,

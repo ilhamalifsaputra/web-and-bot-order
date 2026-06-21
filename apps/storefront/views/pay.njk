@@ -40,13 +40,13 @@
     </ol>
     <p class="text-xs text-ink-faint mt-4">{{ t('web.binance_auto_note', lang) }}</p>
     {% elif is_bybit %}
-    {# ---- Bybit USDT-BSC deposit — auto-confirm (amount match) ---- #}
+    {# ---- Bybit Internal Transfer (UID) — auto-confirm (amount match) ---- #}
     <h2 class="section-title mb-3">{{ t('web.pay_bybit_title', lang) }}</h2>
     <p class="text-sm text-ink-soft mt-2">{{ t('web.pay_bybit_amount', lang) }}</p>
     <div class="font-display font-semibold text-pine text-2xl mt-1">${{ order.total }}</div>
-    {% if bybit_address %}
-    <p class="text-sm text-ink-soft mt-3">{{ t('web.pay_bybit_address', lang) }}</p>
-    <div class="codeish !text-base mt-1 select-all break-all">{{ bybit_address }}</div>
+    {% if bybit_uid %}
+    <p class="text-sm text-ink-soft mt-3">{{ t('web.pay_bybit_uid', lang) }}</p>
+    <div class="codeish !text-base mt-1 select-all break-all">{{ bybit_uid }}</div>
     {% endif %}
     <p class="text-xs text-ink-faint mt-4">{{ t('web.pay_bybit_note', lang) }}</p>
     {% elif is_qris %}

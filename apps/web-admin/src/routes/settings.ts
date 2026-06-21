@@ -59,8 +59,8 @@ const EDITABLE: Record<string, string> = {
   nowpayments_ipn_secret: "NOWPayments IPN secret (verifies payment callbacks)",
   nowpayments_enabled: "USDT payments via NOWPayments on the website — true / false",
   nowpayments_pay_currency: "Underlying crypto network for NOWPayments — e.g. usdttrc20 (USDT on TRON), usdtbsc, usdterc20",
-  // ---- Bybit USDT-BSC deposit (auto-confirmed; leave blank to disable) ----
-  bybit_deposit_address: "Bybit BEP20 (BSC) USDT deposit address shown to buyers",
+  // ---- Bybit Internal Transfer (UID-based auto-confirm; leave blank to disable) ----
+  bybit_uid: "Bybit UID for Internal Transfer shown to buyers",
   bybit_api_key: "Bybit API key — Wallet READ-ONLY (no Withdraw)",
   bybit_api_secret: "Bybit API secret",
   bybit_enabled: "Bybit USDT deposits on the website — true / false",
@@ -91,7 +91,7 @@ const PAY_RATE_KEYS = new Set(["usd_idr_rate", "usd_idr_rate_auto", "usd_idr_rat
 const PAY_QRIS_KEYS = new Set(["tokopay_merchant_id", "tokopay_secret", "tokopay_enabled"]);
 const PAY_PAYDISINI_KEYS = new Set(["paydisini_userkey", "paydisini_apikey", "paydisini_enabled", "paydisini_default_channel"]);
 const PAY_NOWPAYMENTS_KEYS = new Set(["nowpayments_api_key", "nowpayments_ipn_secret", "nowpayments_enabled", "nowpayments_pay_currency"]);
-const PAY_BYBIT_KEYS = new Set(["bybit_deposit_address", "bybit_api_key", "bybit_api_secret", "bybit_enabled"]);
+const PAY_BYBIT_KEYS = new Set(["bybit_uid", "bybit_api_key", "bybit_api_secret", "bybit_enabled"]);
 const PAY_BINANCE_INTERNAL_KEYS = new Set(["binance_receive_uid", "binance_api_key", "binance_api_secret", "binance_internal_enabled"]);
 
 // Per-method on/off toggle — the whitelist guardrail for POST /settings/payments/toggle.
@@ -104,7 +104,7 @@ const PAYMENT_METHODS: Record<string, { enabledKey: string; credKeys: string[]; 
   tokopay: { enabledKey: "tokopay_enabled", credKeys: ["tokopay_merchant_id", "tokopay_secret"], label: "TokoPay" },
   paydisini: { enabledKey: "paydisini_enabled", credKeys: ["paydisini_userkey", "paydisini_apikey"], label: "PayDisini" },
   nowpayments: { enabledKey: "nowpayments_enabled", credKeys: ["nowpayments_api_key", "nowpayments_ipn_secret"], label: "NOWPayments" },
-  bybit: { enabledKey: "bybit_enabled", credKeys: ["bybit_deposit_address", "bybit_api_key", "bybit_api_secret"], label: "Bybit" },
+  bybit: { enabledKey: "bybit_enabled", credKeys: ["bybit_uid", "bybit_api_key", "bybit_api_secret"], label: "Bybit" },
   binance_internal: { enabledKey: "binance_internal_enabled", credKeys: ["binance_receive_uid", "binance_api_key", "binance_api_secret"], label: "Binance Internal Transfer" },
 };
 

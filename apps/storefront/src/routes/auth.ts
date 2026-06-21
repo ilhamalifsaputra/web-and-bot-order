@@ -11,7 +11,6 @@
  */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
-import { botUsername } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { t } from "@app/core/i18n";
 import { verifyPassword, hashPassword } from "@app/core/password";
@@ -34,7 +33,7 @@ import {
   SHOP_COOKIE_NAME,
   SHOP_SESSION_TTL_HOURS,
 } from "../auth";
-import { shopContext, readGuestCart, writeGuestCart } from "../shop";
+import { shopContext, readGuestCart, writeGuestCart, resolveBotUsername } from "../shop";
 
 /** Only ever redirect to a local path (open-redirect guard). */
 export const safeNext = (raw: unknown): string => {
@@ -80,7 +79,7 @@ async function renderLogin(
   if (opts.ref) params.set("ref", opts.ref.slice(0, 16));
   return reply.code(opts.code ?? 200).view("login.njk", {
     ...ctx,
-    bot_username: botUsername() ?? "",
+    bot_username: await resolveBotUsername(),
     auth_url: `/auth/telegram?${params.toString()}`,
     next: safeNext(opts.next),
     error: opts.error ?? null,

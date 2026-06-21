@@ -297,6 +297,7 @@
   "web.settings_tg_linked": "Tertaut ke Telegram sebagai {name}.",
   "web.settings_tg_section": "Telegram",
   "web.settings_tg_taken": "Akun Telegram itu sudah tertaut ke member lain.",
+  "web.settings_tg_unconfigured": "Login Telegram belum diaktifkan.",
   "web.settings_title": "Pengaturan akun",
   "web.settings_wrong_password": "Kata sandi sekarang salah.",
   "web.signed_in_as": "Masuk sebagai",

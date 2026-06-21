@@ -4,7 +4,6 @@
  */
 import type { FastifyPluginAsync } from "fastify";
 import { config } from "@app/core/config";
-import { botUsername } from "@app/core/runtime";
 import {
   prisma,
   getSetting,
@@ -18,7 +17,7 @@ import {
   shopFulfilmentStats,
 } from "@app/db";
 import { categoryImage, HERO_IMAGE } from "../images";
-import { shopContext, LANG_COOKIE } from "../shop";
+import { shopContext, LANG_COOKIE, resolveBotUsername } from "../shop";
 import { shapeProducts } from "../cards";
 
 /**
@@ -90,7 +89,7 @@ const homeRoutes: FastifyPluginAsync = async (app) => {
       stats,
       testimonials,
       low_threshold: config.LOW_STOCK_THRESHOLD,
-      bot_username: botUsername() ?? "",
+      bot_username: await resolveBotUsername(),
       wa_number: (waNumber ?? "").replace(/[^0-9]/g, ""),
     });
   });

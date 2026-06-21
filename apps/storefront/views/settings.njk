@@ -55,6 +55,8 @@
             data-radius="12"
             data-auth-url="/account/settings/link-telegram"
             data-request-access="write"></script>
+    {% else %}
+    <p class="text-sm text-ink-faint">{{ t('web.settings_tg_unconfigured', lang) }}</p>
     {% endif %}
     {% endif %}
   </div>

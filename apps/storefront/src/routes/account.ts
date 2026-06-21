@@ -6,7 +6,6 @@
  * order (design.md §9).
  */
 import type { FastifyPluginAsync } from "fastify";
-import { botUsername } from "@app/core/runtime";
 import { SenderType, OrderStatus, TicketStatus } from "@app/core/enums";
 import { t } from "@app/core/i18n";
 import { ValidationError } from "@app/core/errors";
@@ -27,7 +26,7 @@ import {
   getDenominationWithProduct,
 } from "@app/db";
 import { currentCustomer, csrfProtect } from "../plugins/auth";
-import { shopContext } from "../shop";
+import { shopContext, resolveBotUsername } from "../shop";
 
 const accountRoutes: FastifyPluginAsync = async (app) => {
   // ---- Overview ----
@@ -109,7 +108,7 @@ const accountRoutes: FastifyPluginAsync = async (app) => {
     const ctx = await shopContext(req, "/account");
     const customer = req.customer!;
     const code = customer.user.referralCode;
-    const username = botUsername();
+    const username = await resolveBotUsername();
     return reply.view("referral.njk", {
       ...ctx,
       customer,

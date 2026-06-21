@@ -43,6 +43,7 @@ import {
   createDenomination,
 } from "@app/db";
 import { buildApp } from "../src/server";
+import { verifyTelegramLoginResult } from "../src/auth";
 
 /** Seed a mid-tier Product with N denominations (the 3-tier shape). */
 async function seedProduct(
@@ -563,6 +564,63 @@ describe("telegram login is lookup-only", () => {
     expect(res.statusCode).toBe(403);
     expect(res.body).toContain("isn&#39;t registered yet");
     expect(await prisma.user.count()).toBe(before);
+  });
+
+  // The login uses the LIVE bot token (DB `bot_token` setting wins). A payload
+  // signed by a DIFFERENT bot than the one we verify with fails as "bad_hash" —
+  // this is the real-world cause of a 403 after the widget bot username and the
+  // configured bot token belong to different bots.
+  it("accepts a payload signed with the live DB bot_token and rejects a mismatched bot", async () => {
+    const { createHash, createHmac } = require("node:crypto") as typeof import("node:crypto");
+    const LIVE_TOKEN = "987654:LIVE_BOT_TOKEN_xyz"; // different from env BOT_TOKEN
+    const sign = (token: string) => {
+      const fields: Record<string, string> = { id: "770077", first_name: "Tg", auth_date: String(Math.floor(Date.now() / 1000)) };
+      const checkString = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join("\n");
+      const hash = createHmac("sha256", createHash("sha256").update(token).digest()).update(checkString).digest("hex");
+      return { ...fields, hash };
+    };
+    await prisma.user.create({ data: { telegramId: 770077n, referralCode: "TGLIVE7" } });
+    await setSetting(prisma, "bot_token", LIVE_TOKEN);
+    try {
+      // Signed by the live bot → verification (which now reads the live token) passes.
+      const ok = await app.inject({ method: "GET", url: `/auth/telegram?${new URLSearchParams({ ...sign(LIVE_TOKEN), next: "/account" })}` });
+      expect(ok.statusCode).toBe(303);
+      expect(ok.headers.location).toBe("/account");
+      // Signed by a different bot (the env token) → bad hash → rejected.
+      const bad = await app.inject({ method: "GET", url: `/auth/telegram?${new URLSearchParams(sign(process.env.BOT_TOKEN!))}` });
+      expect(bad.statusCode).toBe(403);
+    } finally {
+      await deleteSetting(prisma, "bot_token"); // don't leak into later tests
+    }
+  });
+
+  // The rejection reason is now explicit (was an ambiguous "bad hash or stale").
+  describe("verifyTelegramLoginResult reports a precise reason", () => {
+    const { createHash, createHmac } = require("node:crypto") as typeof import("node:crypto");
+    const TOKEN_A = "111111:botA";
+    const sign = (token: string, authDateSec = Math.floor(Date.now() / 1000)) => {
+      const fields: Record<string, string> = { id: "555", first_name: "Tg", auth_date: String(authDateSec) };
+      const checkString = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join("\n");
+      const hash = createHmac("sha256", createHash("sha256").update(token).digest()).update(checkString).digest("hex");
+      return { ...fields, hash };
+    };
+    it("ok with the matching token", () => {
+      expect(verifyTelegramLoginResult(sign(TOKEN_A), TOKEN_A).ok).toBe(true);
+    });
+    it("bad_hash with a different bot token", () => {
+      expect(verifyTelegramLoginResult(sign(TOKEN_A), "222222:botB")).toEqual({ ok: false, reason: "bad_hash" });
+    });
+    it("stale when auth_date is past the freshness window", () => {
+      const old = Math.floor(Date.now() / 1000) - 16 * 60; // > 15 min
+      expect(verifyTelegramLoginResult(sign(TOKEN_A, old), TOKEN_A)).toEqual({ ok: false, reason: "stale" });
+    });
+    it("malformed when required fields are missing", () => {
+      expect(verifyTelegramLoginResult({ hash: "x" }, TOKEN_A)).toEqual({ ok: false, reason: "malformed" });
+    });
+    it("no_bot_token when no token is configured", () => {
+      // Pass "" (not undefined — that would trigger the runtime-token default).
+      expect(verifyTelegramLoginResult(sign(TOKEN_A), "")).toEqual({ ok: false, reason: "no_bot_token" });
+    });
   });
 });
 

@@ -29,11 +29,11 @@ import {
   makeCustomerSession,
   newJti,
   shopSessionJtiKey,
-  verifyTelegramLogin,
+  verifyTelegramLoginResult,
   SHOP_COOKIE_NAME,
   SHOP_SESSION_TTL_HOURS,
 } from "../auth";
-import { shopContext, readGuestCart, writeGuestCart, resolveBotUsername } from "../shop";
+import { shopContext, readGuestCart, writeGuestCart, resolveBotUsername, resolveBotToken } from "../shop";
 
 /** Only ever redirect to a local path (open-redirect guard). */
 export const safeNext = (raw: unknown): string => {
@@ -126,11 +126,18 @@ const authRoutes: FastifyPluginAsync = async (app) => {
   app.get<{ Querystring: Record<string, string> }>("/auth/telegram", async (req, reply) => {
     const { next, ref, ...tgParams } = req.query;
     const ctx = await shopContext(req, "/login");
-    const auth = verifyTelegramLogin(tgParams);
-    if (!auth) {
-      logger.warn("Storefront: rejected Telegram login (bad hash or stale auth_date)");
+    // Verify with the LIVE bot token (DB setting wins) so it matches the live
+    // bot username the widget signed with — a mismatched bot = "bad_hash".
+    const result = verifyTelegramLoginResult(tgParams, await resolveBotToken());
+    if (!result.ok) {
+      logger.warn(
+        `Storefront: rejected Telegram login (${result.reason}). ` +
+          `bad_hash = the bot_token doesn't match the bot_username the widget uses; ` +
+          `stale = server clock skew or replay.`,
+      );
       return renderLogin(req, reply, { next, ref, error: t("web.error_message", ctx.lang), code: 403 });
     }
+    const auth = result.data;
     const user = await getUserByTelegramId(prisma, auth.id);
     if (!user) {
       return renderLogin(req, reply, { next, ref, error: t("web.login_tg_unlinked", ctx.lang), code: 403 });

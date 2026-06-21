@@ -16,7 +16,7 @@ import {
 } from "@app/db";
 import { verifyTelegramLogin } from "../auth";
 import { currentCustomer, csrfProtect } from "../plugins/auth";
-import { shopContext, resolveBotUsername } from "../shop";
+import { shopContext, resolveBotUsername, resolveBotToken } from "../shop";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -125,7 +125,7 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
     { preHandler: currentCustomer },
     async (req, reply) => {
       const customer = req.customer!;
-      const auth = verifyTelegramLogin(req.query);
+      const auth = verifyTelegramLogin(req.query, await resolveBotToken());
       if (!auth) return reply.code(303).redirect("/account/settings?err=tg_invalid");
       const fullName =
         [auth.first_name, auth.last_name].filter(Boolean).join(" ") || null;

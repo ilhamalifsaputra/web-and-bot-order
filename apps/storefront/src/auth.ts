@@ -38,18 +38,29 @@ export interface TelegramAuthData {
   auth_date: number;
 }
 
+/** Why a Telegram Login payload was rejected — surfaced in logs so a 403 is
+ *  debuggable (bad_hash = wrong/mismatched bot token vs the widget's bot;
+ *  stale = clock skew or a replay; malformed = missing/garbage fields;
+ *  no_bot_token = no bot configured to verify against). */
+export type TgLoginReject = "malformed" | "no_bot_token" | "bad_hash" | "stale";
+export type TgLoginResult =
+  | { ok: true; data: TelegramAuthData }
+  | { ok: false; reason: TgLoginReject };
+
 /**
  * Verify a Telegram Login payload (the query params Telegram appends to the
- * auth URL). Returns the parsed user data on success, null on any failure.
+ * auth URL) and report WHY it failed. The HMAC secret is SHA256(bot_token);
+ * the bot token MUST belong to the same bot as the widget's `data-telegram-login`
+ * username, or the hash never matches (reason "bad_hash").
  */
-export function verifyTelegramLogin(
+export function verifyTelegramLoginResult(
   params: Record<string, string>,
   botToken = botToken_(),
   now = Date.now(),
-): TelegramAuthData | null {
+): TgLoginResult {
   const { hash, ...fields } = params;
-  if (!hash || !fields.id || !fields.auth_date) return null;
-  if (!botToken) return null; // no bot configured → no way to verify the HMAC
+  if (!hash || !fields.id || !fields.auth_date) return { ok: false, reason: "malformed" };
+  if (!botToken) return { ok: false, reason: "no_bot_token" };
 
   const checkString = Object.keys(fields)
     .sort()
@@ -57,23 +68,39 @@ export function verifyTelegramLogin(
     .join("\n");
   const secretKey = createHash("sha256").update(botToken).digest();
   const expected = createHmac("sha256", secretKey).update(checkString).digest("hex");
-  if (!constantTimeEqual(expected, hash)) return null;
+  if (!constantTimeEqual(expected, hash)) return { ok: false, reason: "bad_hash" };
 
   const authDate = Number(fields.auth_date);
-  if (!Number.isFinite(authDate)) return null;
-  if (now / 1000 - authDate > TG_AUTH_MAX_AGE_SECONDS) return null; // stale = replay risk
+  if (!Number.isFinite(authDate)) return { ok: false, reason: "malformed" };
+  if (now / 1000 - authDate > TG_AUTH_MAX_AGE_SECONDS) return { ok: false, reason: "stale" }; // replay risk
 
   const id = Number(fields.id);
-  if (!Number.isInteger(id) || id <= 0) return null;
+  if (!Number.isInteger(id) || id <= 0) return { ok: false, reason: "malformed" };
 
   return {
-    id,
-    first_name: fields.first_name,
-    last_name: fields.last_name,
-    username: fields.username,
-    photo_url: fields.photo_url,
-    auth_date: authDate,
+    ok: true,
+    data: {
+      id,
+      first_name: fields.first_name,
+      last_name: fields.last_name,
+      username: fields.username,
+      photo_url: fields.photo_url,
+      auth_date: authDate,
+    },
   };
+}
+
+/**
+ * Back-compat wrapper: parsed user data on success, null on any failure.
+ * Prefer {@link verifyTelegramLoginResult} when you need the failure reason.
+ */
+export function verifyTelegramLogin(
+  params: Record<string, string>,
+  botToken = botToken_(),
+  now = Date.now(),
+): TelegramAuthData | null {
+  const r = verifyTelegramLoginResult(params, botToken, now);
+  return r.ok ? r.data : null;
 }
 
 // ---------------------------------------------------------------------------

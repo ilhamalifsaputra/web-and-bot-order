@@ -1,17 +1,19 @@
-# Compose for the migrated Node stack. All services share ONE image and ONE
-# SQLite file (./data/bot.db, WAL mode) via the mounted ./data volume.
+# Compose for the Node stack. ONE image, ONE SQLite file (./data/bot.db, WAL mode)
+# via the mounted ./data volume.
 #
-# Services: web-admin, order-bot, and the optional storefront (the
-# customer-facing web store). Bring them up one at a time if you like, e.g.
-#   docker compose up -d web-admin     # Fase 3
-#   docker compose up -d order-bot     # Fase 5  (stop the Python bot FIRST)
-#   docker compose up -d storefront    # opsional: hanya jika menjual via web
+# ONE combined process. `pnpm start` (apps/server) is the composition root: it
+# boots the web-admin, the storefront, the order-bot (polling/webhook), AND the
+# in-process workers — the outbox dispatcher (@app/outbox-dispatcher, which drains
+# notification_outbox → Telegram) and the payment-reconcile pollers. A single
+# process is the safe topology for the shared single-writer SQLite DB (one
+# PrismaClient, WAL) and guarantees each worker runs exactly once.
 #
-# OUTBOX DELIVERY: notification_outbox is drained IN-PROCESS by the dispatcher
-# (@app/outbox-dispatcher), which runs inside the combined server (apps/server,
-# `pnpm start`). The standalone notifier service is gone; this split-service
-# compose has no outbox drainer on its own — add a service that runs `pnpm start`
-# (the combined server) if you deploy with Compose instead of PM2.
+# This replaces the previous split per-app services (order-bot / web-admin /
+# storefront / notifier). Outbox delivery only happens inside this combined
+# process, so the standalone notifier service is gone.
+#
+#   docker compose up -d            # bring the whole stack up
+#   docker compose logs -f server   # tail logs
 #
 # IMPORTANT (migrate.md §14.12): never run the Python order-bot and the Node
 # order-bot against the same DB simultaneously — two order-flow writers corrupt
@@ -23,35 +25,27 @@
 # their own .env, ./data DB, ports, and bot tokens. Published ports bind to
 # 127.0.0.1 only; nginx is the sole public surface (deploy/README.md).
 
-x-app: &app
-  build:
-    context: .
-  image: bot-order-node:latest
-  restart: unless-stopped
-  env_file:
-    - .env
-  volumes:
-    - ./data:/app/data
-  logging:
-    driver: json-file
-    options:
-      max-size: "10m"
-      max-file: "5"
-
 services:
-  order-bot:
-    <<: *app
-    command: ["pnpm", "--filter", "@app/order-bot", "start"]
-
-  web-admin:
-    <<: *app
-    command: ["pnpm", "--filter", "@app/web-admin", "start"]
-    # Must bind 0.0.0.0 inside the container (config default is 127.0.0.1).
+  server:
+    build:
+      context: .
+    image: bot-order-node:latest
+    restart: unless-stopped
+    command: ["pnpm", "start"]
+    env_file:
+      - .env
+    # Bind 0.0.0.0 inside the container (config default is 127.0.0.1) so the
+    # published ports reach the app.
     environment:
       WEB_HOST: "0.0.0.0"
+    volumes:
+      - ./data:/app/data
     # Publish to the host loopback ONLY — nginx terminates TLS and proxies in.
+    # Admin always listens on WEB_PORT; the storefront listens on STOREFRONT_PORT
+    # (unless SHOP_PUBLIC_URL routes both through WEB_PORT by Host header).
     ports:
       - "127.0.0.1:${WEB_PORT:-8000}:${WEB_PORT:-8000}"
+      - "127.0.0.1:${STOREFRONT_PORT:-8100}:${STOREFRONT_PORT:-8100}"
     healthcheck:
       test:
         - CMD
@@ -61,27 +55,9 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
-
-  # Customer-facing web store. Optional: skip it (or never expose its port) if you
-  # only sell through the Telegram bot. Shares the same DB + ./data uploads as the
-  # admin, so it is one more SQLite writer (see RUN.md §9 / CLAUDE.md).
-  storefront:
-    <<: *app
-    command: ["pnpm", "--filter", "@app/storefront", "start"]
-    # Same as web-admin: bind 0.0.0.0 inside the container (default is 127.0.0.1).
-    environment:
-      WEB_HOST: "0.0.0.0"
-    # Publish to the host loopback ONLY — nginx terminates TLS and proxies in.
-    ports:
-      - "127.0.0.1:${STOREFRONT_PORT:-8100}:${STOREFRONT_PORT:-8100}"
-    healthcheck:
-      test:
-        - CMD
-        - node
-        - -e
-        - "fetch('http://127.0.0.1:'+(process.env.STOREFRONT_PORT||8100)+'/healthz').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 15s
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

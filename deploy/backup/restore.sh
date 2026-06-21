@@ -18,7 +18,7 @@ set -euo pipefail
 SRC="${1:-}"
 DB="${DB:-./data/bot.db}"
 WEB_PORT="${WEB_PORT:-8000}"
-SERVICES="${SERVICES:-order-bot notifier web-admin storefront}"
+SERVICES="${SERVICES:-server}"
 
 if [ -z "$SRC" ] || [ ! -f "$SRC" ]; then
   echo "Usage: $0 <backup.db|backup.db.gz>   (file must exist)" >&2
@@ -80,5 +80,5 @@ for i in $(seq 1 30); do
   if [ "$code" = "200" ]; then echo "OK (200)"; exit 0; fi
   echo -n "."; sleep 2
 done
-echo "FAILED — /healthz never returned 200; check logs (docker compose logs web-admin)." >&2
+echo "FAILED — /healthz never returned 200; check logs (docker compose logs server)." >&2
 exit 1

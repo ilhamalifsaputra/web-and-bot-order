@@ -409,7 +409,7 @@ otomatis terpisah). Pakai akun gateway berbeda per toko.
 ```bash
 git clone <repo-url> /opt/shop-a && cd /opt/shop-a
 cp .env.example .env                                      # isi sesuai tabel di atas
-docker compose run --rm web-admin pnpm prisma db push     # skema sebelum start (hindari P2022)
+docker compose run --rm server pnpm prisma db push        # skema sebelum start (hindari P2022)
 docker compose up -d                                      # nama container otomatis dari COMPOSE_PROJECT_NAME
 ```
 

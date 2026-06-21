@@ -101,25 +101,25 @@ cp .env.example .env   # lalu isi sesuai bagian 2
 
 ```bash
 docker compose build
-docker compose run --rm order-bot pnpm exec prisma db push
+docker compose run --rm server pnpm exec prisma db push
 ```
 
-**4. Nyalakan layanan** (urutan penting):
+**4. Nyalakan layanan** (satu proses gabungan: panel admin + toko web + bot +
+pengiriman notifikasi + poller pembayaran):
 
 ```bash
-docker compose up -d web-admin     # 1. panel admin (port 8000)
-docker compose up -d order-bot     # 2. bot Telegram (+ pengirim notifikasi in-process)
-docker compose up -d storefront    # 3. toko web (port 8100) — opsional
+docker compose up -d               # panel admin (8000) + toko web (8100) + bot
 ```
 
-> 🛍️ **`storefront` opsional** — nyalakan hanya kalau berjualan lewat website.
-> Atau nyalakan semua sekaligus: `docker compose up -d`.
+> 🛍️ Toko web (port 8100) ikut jalan dalam proses yang sama — tak perlu nyalakan
+> terpisah. Kalau hanya berjualan lewat bot Telegram, cukup jangan ekspos
+> port 8100 di nginx.
 
 **5. Cek:**
 
 ```bash
-docker compose ps                  # semua "running"/"healthy"
-docker compose logs -f order-bot   # log bot (Ctrl+C keluar)
+docker compose ps                  # "running"/"healthy"
+docker compose logs -f server      # log gabungan (Ctrl+C keluar)
 ```
 
 - Panel admin: `http://IP-VPS-KAMU:8000/login`
@@ -132,8 +132,8 @@ docker compose logs -f order-bot   # log bot (Ctrl+C keluar)
 > set `WEB_COOKIE_SECURE=true`. Toko web biasanya pakai domain sendiri via
 > `SHOP_PUBLIC_URL`.
 
-**Perintah harian:** `docker compose logs -f order-bot` (log) ·
-`docker compose restart order-bot` (restart, mis. setelah ganti token) ·
+**Perintah harian:** `docker compose logs -f server` (log) ·
+`docker compose restart server` (restart, mis. setelah ganti token) ·
 `docker compose down` / `up -d` (matikan / nyalakan).
 
 ---
@@ -195,7 +195,7 @@ Setelah aplikasi jalan dan panel admin bisa dibuka:
 > Lupa password? Jalankan pemulihan di server, lalu buka `/bootstrap` untuk set
 > password baru:
 > ```bash
-> docker compose run --rm order-bot pnpm reset-admin-password <ID-telegram>   # Docker
+> docker compose run --rm server pnpm reset-admin-password <ID-telegram>      # Docker
 > pnpm reset-admin-password <ID-telegram>                                     # non-Docker
 > ```
 
@@ -235,7 +235,7 @@ git pull
 
 # Docker:
 docker compose build
-docker compose run --rm order-bot pnpm exec prisma db push   # jika skema berubah
+docker compose run --rm server pnpm exec prisma db push      # jika skema berubah
 docker compose up -d
 
 # Non-Docker:
@@ -296,14 +296,14 @@ VPS"**.
 | Gejala | Solusi |
 |---|---|
 | `P2022: column does not exist` | `prisma db push` lalu restart |
-| HTTP 500 / `readonly database` | `sudo chown -R 999:999 data` lalu `docker compose restart web-admin order-bot` |
+| HTTP 500 / `readonly database` | `sudo chown -R 999:999 data` lalu `docker compose restart server` |
 | Bot crash: `String must contain at least 20 character(s)` | Hapus/comment baris `BOT_TOKEN=` di `.env` (jangan dikosongkan) |
-| Bot tak membalas `/start` | Cek `BOT_TOKEN`; cek `docker compose logs order-bot` / `pm2 logs` |
+| Bot tak membalas `/start` | Cek `BOT_TOKEN`; cek `docker compose logs server` / `pm2 logs` |
 | Tak bisa login / loop login | HTTP lokal: `WEB_COOKIE_SECURE=false`; produksi: HTTPS + `WEB_COOKIE_SECURE=true` |
 | Pembayaran Bybit tak otomatis | Kirim **jumlah persis** via **BEP20**; pastikan `USE_UNIQUE_CENTS=1` |
 | Panel tak bisa diakses dari luar | Non-Docker set `WEB_HOST=0.0.0.0` (di balik HTTPS); Docker sudah `0.0.0.0` |
 
-Masih bingung? Lihat log: `docker compose logs -f order-bot` atau
+Masih bingung? Lihat log: `docker compose logs -f server` atau
 `pm2 logs bot-order`.
 
 ---

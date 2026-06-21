@@ -9,7 +9,7 @@ rollback.
 ```
 Internet ──TLS──▶ nginx (443) ──http──▶ 127.0.0.1:8000  web-admin   (admin.example.com)
                                   └────▶ 127.0.0.1:8100  storefront  (shop.example.com)
-docker-compose: order-bot · web-admin · storefront  (one image, one ./data/bot.db)
+docker-compose: server (combined: admin + storefront + bot + workers)  (one image, one ./data/bot.db)
 ```
 
 Apps stay bound to **127.0.0.1** (never exposed directly). nginx terminates TLS.
@@ -45,18 +45,18 @@ execution/11. Until then, **nginx access logs are the request trail**
 
 ## M-8 — container surfaces
 
-`docker-compose.yml` runs **all** surfaces off one image, overriding the
-Dockerfile's default `CMD` (`order-bot start`) per service:
+`docker-compose.yml` runs **one combined `server` service** (`pnpm start`,
+apps/server) off the single image. That one process serves every surface and the
+in-process workers:
 
-| Service | command | port |
-|---|---|---|
-| order-bot | `@app/order-bot start` | — |
-| web-admin | `@app/web-admin start` | `${WEB_PORT:-8000}` |
-| storefront | `@app/storefront start` | `${STOREFRONT_PORT:-8100}` |
+| Service | command | surfaces | ports |
+|---|---|---|---|
+| server | `pnpm start` | web-admin + storefront + order-bot + outbox dispatcher + payment pollers | `${WEB_PORT:-8000}` (admin), `${STOREFRONT_PORT:-8100}` (storefront) |
 
-Verify after deploy: `docker compose config` (services resolve) and
-`docker compose ps` (web-admin + storefront healthchecks green). The Dockerfile
-`CMD` is only the fallback when no compose `command` is given — expected.
+The Dockerfile default `CMD` is also `pnpm start`, so `docker run` without a
+compose `command` runs the same combined server. Verify after deploy:
+`docker compose config` (service resolves) and `docker compose ps` (`server`
+healthcheck green on `/login`).
 
 ## Deployment checklist (public release)
 
@@ -80,7 +80,7 @@ A 502/504 from nginx means the upstream app didn't answer. Triage in order:
    app not bound (check `WEB_HOST=0.0.0.0` inside the container).
 3. **nginx logs:** `tail -f /var/log/nginx/error.log` — `connect() failed`
    (upstream down) vs `upstream timed out` (slow handler; timeouts are 5s/30s).
-4. **Recover:** `docker compose restart web-admin` (or the affected service).
+4. **Recover:** `docker compose restart server`.
    Confirm `/healthz` 200, then retry through nginx.
 
 ## Rollback

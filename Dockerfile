@@ -1,9 +1,10 @@
-# Multi-stage build for the pnpm monorepo
-# (order-bot / web-admin / notifier / storefront).
+# Multi-stage build for the pnpm monorepo. The runtime runs the combined server
+# (apps/server) which boots web-admin + storefront + order-bot + the in-process
+# workers (outbox dispatcher + payment pollers) in one process.
 #
 # The apps run via tsx (no compile step), so the runtime image ships the source
-# + node_modules + the generated Prisma client. One image serves every service;
-# docker-compose selects which app to run via `command`.
+# + node_modules + the generated Prisma client. The default CMD runs the combined
+# server (`pnpm start`); docker-compose uses the same command.
 
 # ---- Stage 1: builder ----
 FROM node:20-slim AS builder
@@ -63,5 +64,5 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # tini reaps zombies and forwards SIGTERM so runner.stop() can shut down cleanly.
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
-# Default service; overridden per-service in docker-compose.yml.
-CMD ["pnpm", "--filter", "@app/order-bot", "start"]
+# Combined composition root (web-admin + storefront + bot + in-process workers).
+CMD ["pnpm", "start"]

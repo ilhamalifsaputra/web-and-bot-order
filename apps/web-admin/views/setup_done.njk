@@ -20,7 +20,7 @@
           <div class="rounded-xl border border-line bg-sand/50 px-4 py-3 text-left text-sm text-ink-soft">
             <p class="mb-1 font-medium text-ink">Pakai Docker / VPS?</p>
             <p>Tombol ini hanya berlaku di hosting terkelola. Untuk Docker/VPS, restart prosesnya sendiri lalu coba <code>/start</code>:</p>
-            <pre class="mt-2 overflow-x-auto rounded-lg bg-ink/5 px-3 py-2 text-xs"><code>docker compose restart order-bot</code></pre>
+            <pre class="mt-2 overflow-x-auto rounded-lg bg-ink/5 px-3 py-2 text-xs"><code>docker compose restart server</code></pre>
             <p class="mt-1 text-xs">(atau <code>pm2 restart</code> jika pakai pm2).</p>
           </div>
         {% else %}
@@ -28,7 +28,7 @@
           <form method="post" action="/setup/restart">
             <button type="submit" class="btn btn-primary w-full"><i data-lucide="power" class="w-4 h-4"></i> Coba nyalakan otomatis (hosting terkelola)</button>
           </form>
-          <p class="text-xs text-ink-faint">Di Docker/VPS tombol ini tidak menyalakan bot — jalankan <code>docker compose restart order-bot</code> sendiri.</p>
+          <p class="text-xs text-ink-faint">Di Docker/VPS tombol ini tidak menyalakan bot — jalankan <code>docker compose restart server</code> sendiri.</p>
         {% endif %}
       {% else %}
         <p class="text-sm text-ink-soft">Belum menyambungkan bot? Kamu bisa mengaturnya nanti di <b>Settings → Bot token</b>.</p>

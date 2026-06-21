@@ -292,6 +292,7 @@
   "web.settings_new_password": "Kata sandi baru (kosongkan jika tetap)",
   "web.settings_save": "Simpan",
   "web.settings_saved": "Tersimpan.",
+  "web.settings_tg_connect_label": "Atau hubungkan dengan Telegram",
   "web.settings_tg_done": "Telegram tertaut!",
   "web.settings_tg_hint": "Tautkan Telegram-mu untuk masuk sekali tap dan dapat update pesanan di bot.",
   "web.settings_tg_linked": "Tertaut ke Telegram sebagai {name}.",

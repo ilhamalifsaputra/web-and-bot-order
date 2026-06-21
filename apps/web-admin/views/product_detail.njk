@@ -127,7 +127,7 @@
       <form method="post" action="/stock/{{ d.id }}/add" class="flex flex-wrap gap-2 items-end">
         {{ ui.csrf_field(admin) }}
         <input type="hidden" name="return_to" value="{{ return_to }}">
-        <div class="flex-1 min-w-[12rem]"><label class="field-label">Add stock (one per line)</label>
+        <div class="flex-1 min-w-0 w-full sm:min-w-[12rem] sm:w-auto"><label class="field-label">Add stock (one per line)</label>
           <input name="credentials" class="field" placeholder="email:password"></div>
         {{ ui.btn('Add', 'plus', 'soft', cls='btn-sm') }}
       </form>
@@ -186,7 +186,7 @@
       <input type="hidden" name="image_file_id" value="{{ product.imageFileId or '' }}">
       <input type="hidden" name="description" value="{{ product.description or '' }}">
       {% if product.isActive %}<input type="hidden" name="is_active" value="true">{% endif %}
-      <input name="web_image_url" type="url" value="{{ product.webImageUrl or '' }}" placeholder="https://…" class="field flex-1 min-w-[16rem]">
+      <input name="web_image_url" type="url" value="{{ product.webImageUrl or '' }}" placeholder="https://…" class="field flex-1 min-w-0 w-full sm:min-w-[16rem] sm:w-auto">
       {{ ui.btn('Save URL', 'link', 'soft', cls='btn-sm') }}
     </form>
   </div>

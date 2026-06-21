@@ -135,20 +135,17 @@
     </div>
   </div>
 
-  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-    <div class="card card-pad">
-      <h2 class="section-title mb-1 flex items-center gap-2">
-        <i data-lucide="qr-code" class="w-5 h-5 text-sky-500"></i> TokoPay
-      </h2>
-      <p class="text-xs text-ink-soft mb-4">
-        The TokoPay keys turn on Rupiah (QRIS) payments at checkout on the website.
-      </p>
-      {{ payment_toggle("tokopay", "TokoPay", pay_method_state.tokopay) }}
-      <div class="space-y-3">
-        {% for fld in pay_qris_fields %}{{ setting_form(fld) }}{% endfor %}
-      </div>
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center gap-2">
+      <i data-lucide="qr-code" class="w-5 h-5 text-sky-500"></i> TokoPay
+    </h2>
+    <p class="text-xs text-ink-soft mb-4">
+      The TokoPay keys turn on Rupiah (QRIS) payments at checkout on the website.
+    </p>
+    {{ payment_toggle("tokopay", "TokoPay", pay_method_state.tokopay) }}
+    <div class="space-y-3">
+      {% for fld in pay_qris_fields %}{{ setting_form(fld) }}{% endfor %}
     </div>
-
   </div>
 
   <div class="card card-pad">

@@ -3,45 +3,50 @@
 
 {% block title %}{{ t('web.register_title', lang) }} — {{ shop_name }}{% endblock %}
 
+{% block nav %}{% endblock %}
+{% block footer %}{% endblock %}
+
 {% block content %}
-<div class="card card-pad max-w-md mx-auto py-10">
-  <div class="text-center">
-    <i data-lucide="user-plus" class="w-10 h-10 text-pine mx-auto"></i>
-    <h1 class="font-display text-2xl font-semibold mt-4">{{ t('web.register_title', lang) }}</h1>
+<div class="min-h-[100svh] flex items-center justify-center -my-8">
+  <div class="w-full max-w-md card card-pad">
+    <a href="/" class="text-center block">
+      <i data-lucide="user-plus" class="w-8 h-8 text-pine mx-auto"></i>
+      <h1 class="font-display text-xl font-semibold mt-3">{{ t('web.register_title', lang) }}</h1>
+    </a>
+
+    {% if error %}
+    <div class="mt-4">{{ ui.flash(error, 'error') }}</div>
+    {% endif %}
+
+    <form method="post" action="/register" class="mt-6 space-y-4">
+      <input type="hidden" name="next" value="{{ next }}">
+      <input type="hidden" name="ref" value="{{ ref }}">
+      <div>
+        <label class="text-sm font-semibold" for="username">{{ t('web.register_username', lang) }}</label>
+        <input class="field mt-1" type="text" id="username" name="username" value="{{ values.username or '' }}"
+               autocomplete="username" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]+">
+        <p class="text-xs text-ink-faint mt-1">{{ t('web.register_username_help', lang) }}</p>
+      </div>
+      <div>
+        <label class="text-sm font-semibold" for="email">{{ t('web.register_email', lang) }}</label>
+        <input class="field mt-1" type="email" id="email" name="email" value="{{ values.email or '' }}"
+               autocomplete="email" required>
+      </div>
+      <div>
+        <label class="text-sm font-semibold" for="password">{{ t('web.login_password', lang) }}</label>
+        <input class="field mt-1" type="password" id="password" name="password"
+               autocomplete="new-password" required minlength="8">
+      </div>
+      <div>
+        <label class="text-sm font-semibold" for="password2">{{ t('web.register_password2', lang) }}</label>
+        <input class="field mt-1" type="password" id="password2" name="password2"
+               autocomplete="new-password" required minlength="8">
+      </div>
+      <button type="submit" class="btn btn-primary w-full">{{ t('web.register_submit', lang) }}</button>
+      <div class="text-center text-sm">
+        <a href="/login{% if next != '/' %}?next={{ next | urlencode }}{% endif %}" class="text-pine hover:underline">{{ t('web.register_have_account', lang) }}</a>
+      </div>
+    </form>
   </div>
-
-  {% if error %}
-  <div class="mt-4">{{ ui.flash(error, 'error') }}</div>
-  {% endif %}
-
-  <form method="post" action="/register" class="mt-6 space-y-4">
-    <input type="hidden" name="next" value="{{ next }}">
-    <input type="hidden" name="ref" value="{{ ref }}">
-    <div>
-      <label class="text-sm font-semibold" for="username">{{ t('web.register_username', lang) }}</label>
-      <input class="field mt-1" type="text" id="username" name="username" value="{{ values.username or '' }}"
-             autocomplete="username" required minlength="3" maxlength="32" pattern="[a-zA-Z0-9_]+">
-      <p class="text-xs text-ink-faint mt-1">{{ t('web.register_username_help', lang) }}</p>
-    </div>
-    <div>
-      <label class="text-sm font-semibold" for="email">{{ t('web.register_email', lang) }}</label>
-      <input class="field mt-1" type="email" id="email" name="email" value="{{ values.email or '' }}"
-             autocomplete="email" required>
-    </div>
-    <div>
-      <label class="text-sm font-semibold" for="password">{{ t('web.login_password', lang) }}</label>
-      <input class="field mt-1" type="password" id="password" name="password"
-             autocomplete="new-password" required minlength="8">
-    </div>
-    <div>
-      <label class="text-sm font-semibold" for="password2">{{ t('web.register_password2', lang) }}</label>
-      <input class="field mt-1" type="password" id="password2" name="password2"
-             autocomplete="new-password" required minlength="8">
-    </div>
-    <button type="submit" class="btn btn-primary w-full">{{ t('web.register_submit', lang) }}</button>
-    <div class="text-center text-sm">
-      <a href="/login{% if next != '/' %}?next={{ next | urlencode }}{% endif %}" class="text-pine hover:underline">{{ t('web.register_have_account', lang) }}</a>
-    </div>
-  </form>
 </div>
 {% endblock %}

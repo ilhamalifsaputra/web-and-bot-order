@@ -74,6 +74,7 @@
   {% block content %}{% endblock %}
 </main>
 
+{% block footer %}
 <footer class="mt-16 border-t border-line bg-card">
   <div class="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-4 py-6 text-sm sm:flex-row lg:px-6">
     <span class="flex items-center gap-2 font-display font-semibold text-pine">
@@ -82,6 +83,7 @@
     <span class="text-ink-faint text-xs sm:text-sm">{{ t('web.footer_note', lang) }}</span>
   </div>
 </footer>
+{% endblock %}
 
 <script>
   // Render Lucide icons on load, and again after HTMX swaps content.

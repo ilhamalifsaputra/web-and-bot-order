@@ -957,10 +957,33 @@ describe("checkout — PayDisini option (2nd IDR method, alongside TokoPay)", ()
     // The TokoPay (QRIS) option remains available too — additive, not exclusive.
     // The cart is now empty (the order above consumed it), so re-seed one item
     // before re-checking the checkout page (an empty cart 303-redirects to /cart).
+    // A disabled method is now HIDDEN (not greyed), so enable TokoPay to assert
+    // it shows alongside PayDisini, then clean up so later tests see IDR off.
     await addToCart(prisma, buyerId, productId, 1);
-    const checkoutPage = await app.inject({ method: "GET", url: "/checkout", headers: { cookie } });
-    expect(checkoutPage.body).toContain('value="qris"');
-    expect(checkoutPage.body).toContain('value="paydisini"');
+    await setSetting(prisma, "tokopay_merchant_id", "m-test");
+    await setSetting(prisma, "tokopay_secret", "s-test");
+    try {
+      const checkoutPage = await app.inject({ method: "GET", url: "/checkout", headers: { cookie } });
+      expect(checkoutPage.body).toContain('value="qris"');
+      expect(checkoutPage.body).toContain('value="paydisini"');
+    } finally {
+      await deleteSetting(prisma, "tokopay_merchant_id");
+      await deleteSetting(prisma, "tokopay_secret");
+    }
+  });
+
+  it("hides a disabled payment method from /checkout entirely (not greyed out)", async () => {
+    // Nothing configured here → PayDisini off, TokoPay off, all USDT rails off.
+    await disablePaydisini();
+    const cookie = await loginAs("paydisinibuyer", "paydisini-pass-99");
+    await addToCart(prisma, buyerId, productId, 1);
+    const res = await app.inject({ method: "GET", url: "/checkout", headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    // The radios for disabled methods must not be in the DOM at all.
+    expect(res.body).not.toContain('value="paydisini"');
+    expect(res.body).not.toContain('value="qris"');
+    // …and the "no methods available" notice is shown instead.
+    expect(res.body).toContain("No payment methods are available");
   });
 
   it("rejects method=paydisini when PayDisini is disabled", async () => {

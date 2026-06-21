@@ -394,6 +394,7 @@
   "web.pay_bybit_note": "Pengiriman otomatis begitu deposit masuk — tidak perlu unggah bukti.",
   "web.pay_method_elsewhere": "Selesaikan pembayaran pesanan ini di tempat kamu memulainya (bot Telegram kami).",
   "web.pay_method_unavailable": "Metode bayar itu lagi tidak tersedia — pilih yang lain ya.",
+  "web.pay_none_available": "Belum ada metode pembayaran yang tersedia saat ini. Coba lagi nanti atau hubungi admin ya.",
   "web.voucher_label": "Punya kode diskon?",
   "web.voucher_placeholder": "Kode",
   "web.voucher_apply": "Pakai",

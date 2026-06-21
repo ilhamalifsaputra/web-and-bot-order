@@ -25,7 +25,7 @@ import {
   otpauthUri,
 } from "../auth";
 import { currentAdmin, csrfProtect } from "../plugins/auth";
-import { redirectWithFlash } from "../flash";
+import { flashOrRedirect } from "../flash";
 import { setTokenValidator, getTokenValidator, setChannelValidator, getChannelValidator } from "../lib/telegramCheck";
 
 // Re-exported for tests that import setTokenValidator from this module.
@@ -218,26 +218,26 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
   app.post("/settings/2fa/begin", { preHandler: csrfProtect }, async (req, reply) => {
     const tg = req.admin!.telegramId;
     if ((await getSetting(prisma, twoFaSecretKey(tg))) !== null) {
-      return redirectWithFlash(reply, "/settings", "2FA is already enabled.", "error");
+      return flashOrRedirect(req, reply, "/settings", "2FA is already enabled.", "error");
     }
     await setSetting(prisma, twoFaPendingKey(tg), generateTotpSecret());
-    return redirectWithFlash(reply, "/settings", "Add the secret to your authenticator, then enter a code to finish.", "info");
+    return flashOrRedirect(req, reply, "/settings", "Add the secret to your authenticator, then enter a code to finish.", "info");
   });
 
   app.post("/settings/2fa/cancel", { preHandler: csrfProtect }, async (req, reply) => {
     await deleteSetting(prisma, twoFaPendingKey(req.admin!.telegramId));
-    return redirectWithFlash(reply, "/settings", "2FA setup cancelled.", "info");
+    return flashOrRedirect(req, reply, "/settings", "2FA setup cancelled.", "info");
   });
 
   app.post("/settings/2fa/enable", { preHandler: csrfProtect }, async (req, reply) => {
     const tg = req.admin!.telegramId;
     const pending = await getSetting(prisma, twoFaPendingKey(tg));
     if (!pending) {
-      return redirectWithFlash(reply, "/settings", "Start 2FA setup first.", "error");
+      return flashOrRedirect(req, reply, "/settings", "Start 2FA setup first.", "error");
     }
     const code = ((req.body as Record<string, string>).totp_code ?? "").trim();
     if (!verifyTotp(pending, code)) {
-      return redirectWithFlash(reply, "/settings", "That code is wrong — check your authenticator and try again.", "error");
+      return flashOrRedirect(req, reply, "/settings", "That code is wrong — check your authenticator and try again.", "error");
     }
     await setSetting(prisma, twoFaSecretKey(tg), pending);
     await deleteSetting(prisma, twoFaPendingKey(tg));
@@ -246,22 +246,22 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       action: "web_2fa_enable",
       targetType: "setting", // never log the secret
     });
-    return redirectWithFlash(reply, "/settings", "2FA enabled. You'll need a code at every login.", "success");
+    return flashOrRedirect(req, reply, "/settings", "2FA enabled. You'll need a code at every login.", "success");
   });
 
   app.post("/settings/2fa/disable", { preHandler: csrfProtect }, async (req, reply) => {
     const tg = req.admin!.telegramId;
     const secret = await getSetting(prisma, twoFaSecretKey(tg));
     if (!secret) {
-      return redirectWithFlash(reply, "/settings", "2FA isn't enabled.", "error");
+      return flashOrRedirect(req, reply, "/settings", "2FA isn't enabled.", "error");
     }
     const body = (req.body ?? {}) as Record<string, string>;
     const stored = await getSetting(prisma, passwordHashKey(tg));
     if (!stored || !verifyPassword(body.current_password ?? "", stored)) {
-      return redirectWithFlash(reply, "/settings", "Current password is incorrect.", "error");
+      return flashOrRedirect(req, reply, "/settings", "Current password is incorrect.", "error");
     }
     if (!verifyTotp(secret, body.totp_code ?? "")) {
-      return redirectWithFlash(reply, "/settings", "That 2FA code is wrong.", "error");
+      return flashOrRedirect(req, reply, "/settings", "That 2FA code is wrong.", "error");
     }
     await deleteSetting(prisma, twoFaSecretKey(tg));
     await logAdminAction(prisma, {
@@ -269,7 +269,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       action: "web_2fa_disable",
       targetType: "setting",
     });
-    return redirectWithFlash(reply, "/settings", "2FA disabled.", "success");
+    return flashOrRedirect(req, reply, "/settings", "2FA disabled.", "success");
   });
 
   // "Update the USDT rate now": pull the live market rate, round it, save it.
@@ -278,7 +278,8 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     try {
       const r = await refreshUsdIdrRate(prisma, { force: true });
       if (r.status === "unchanged") {
-        return redirectWithFlash(
+        return flashOrRedirect(
+          req,
           reply,
           "/settings",
           `Already up to date: Rp${r.rate.toString()} per 1 USDT (market ${r.market.toString()}).`,
@@ -292,7 +293,8 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
           targetType: "setting",
           details: `usd_idr_rate=${r.rate.toString()} (market refresh)`,
         });
-        return redirectWithFlash(
+        return flashOrRedirect(
+          req,
           reply,
           "/settings",
           `USDT rate updated to Rp${r.rate.toString()} per 1 USDT (market ${r.market.toString()}).`,
@@ -302,7 +304,8 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     } catch (err) {
       logger.warn({ err }, "Manual FX refresh failed");
     }
-    return redirectWithFlash(
+    return flashOrRedirect(
+      req,
       reply,
       "/settings",
       "Couldn't reach the exchange-rate service — the saved rate is unchanged. Try again in a bit.",
@@ -318,7 +321,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     const body = (req.body ?? {}) as Record<string, string>;
     const method = PAYMENT_METHODS[body.method ?? ""];
     if (!method) {
-      return redirectWithFlash(reply, "/settings", "Unknown payment method.", "error");
+      return flashOrRedirect(req, reply, "/settings", "Unknown payment method.", "error");
     }
     // Anything other than the literal "true" turns the method off (default-ON
     // semantics: we still write the explicit flag so the state is unambiguous).
@@ -331,27 +334,27 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       details: `${method.enabledKey}=${value}`,
     });
     const verb = value === "true" ? "on" : "off";
-    return redirectWithFlash(reply, "/settings", `${method.label} turned ${verb}.`, "success");
+    return flashOrRedirect(req, reply, "/settings", `${method.label} turned ${verb}.`, "success");
   });
 
   app.post("/settings/edit", { preHandler: csrfProtect }, async (req, reply) => {
     const body = (req.body ?? {}) as Record<string, string>;
     const key = body.key ?? "";
     if (!(key in EDITABLE)) {
-      return redirectWithFlash(reply, "/settings", "That setting is not editable here.", "error");
+      return flashOrRedirect(req, reply, "/settings", "That setting is not editable here.", "error");
     }
     const value = (body.value ?? "").trim();
     // Write-only secrets: an empty submit means "keep what's saved", and the
     // audit trail never records the value (CLAUDE.md: never log secrets).
     if (SECRET_KEYS.has(key) && value === "") {
-      return redirectWithFlash(reply, "/settings", `'${key}' left unchanged.`, "info");
+      return flashOrRedirect(req, reply, "/settings", `'${key}' left unchanged.`, "info");
     }
 
     // §16.4 "don't brick the bot": tokens are owner-only and must pass a live
     // getMe check before anything is stored. A bad token is rejected outright.
     if (TOKEN_KEYS.has(key)) {
       if (req.admin!.role !== "super") {
-        return redirectWithFlash(reply, "/settings", "Only the owner can change bot tokens.", "error");
+        return flashOrRedirect(req, reply, "/settings", "Only the owner can change bot tokens.", "error");
       }
       // Escape hatch: a single "-" removes the saved token so the server's own
       // config (env) is used again after a restart — the §16.4 recovery path.
@@ -363,7 +366,8 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
           targetType: "setting",
           details: key,
         });
-        return redirectWithFlash(
+        return flashOrRedirect(
+          req,
           reply,
           "/settings",
           "Saved token removed. After a restart the server's own configuration is used again.",
@@ -372,7 +376,8 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       }
       const check = await getTokenValidator()(value);
       if (!check.ok) {
-        return redirectWithFlash(
+        return flashOrRedirect(
+          req,
           reply,
           "/settings",
           "Telegram rejected that token, so nothing was saved. Check it in BotFather and try again.",
@@ -391,7 +396,8 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
         targetType: "setting",
         details: `${key}=(updated)`, // never the value
       });
-      return redirectWithFlash(
+      return flashOrRedirect(
+        req,
         reply,
         "/settings",
         "Token saved and checked with Telegram. Restart the app to start using it.",
@@ -403,7 +409,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     // Not a secret — the value is public and shown back in the form.
     if (key === "public_channel_id") {
       if (req.admin!.role !== "super") {
-        return redirectWithFlash(reply, "/settings", "Only the owner can change the channel.", "error");
+        return flashOrRedirect(req, reply, "/settings", "Only the owner can change the channel.", "error");
       }
       // Escape hatch: "-" removes the Setting so env config is used after restart.
       if (value === "-") {
@@ -411,7 +417,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
         await logAdminAction(prisma, {
           adminId: req.admin!.userId, action: "setting_clear", targetType: "setting", details: key,
         });
-        return redirectWithFlash(reply, "/settings", "Channel cleared. After a restart the server's own configuration is used again.", "success");
+        return flashOrRedirect(req, reply, "/settings", "Channel cleared. After a restart the server's own configuration is used again.", "success");
       }
       // getChat needs a bot token — notifier token if set, else the main token.
       // Read the raw Settings (not resolveBotCredentials' env fallback): this is
@@ -419,18 +425,18 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       // saved here, not a possibly-stale bootstrap value from the environment.
       const botToken = (await getSetting(prisma, "notif_bot_token")) ?? (await getSetting(prisma, "bot_token"));
       if (!botToken) {
-        return redirectWithFlash(reply, "/settings", "Set a bot token first, then add the channel.", "error");
+        return flashOrRedirect(req, reply, "/settings", "Set a bot token first, then add the channel.", "error");
       }
       const check = await getChannelValidator()(botToken, value);
       if (!check.ok || typeof check.id !== "number") {
-        return redirectWithFlash(reply, "/settings", "Couldn't find that channel. Check the link and that the bot is a member/admin of it.", "error");
+        return flashOrRedirect(req, reply, "/settings", "Couldn't find that channel. Check the link and that the bot is a member/admin of it.", "error");
       }
       await setSetting(prisma, key, String(check.id));
       await logAdminAction(prisma, {
         adminId: req.admin!.userId, action: "setting_set", targetType: "setting",
         details: `${key}=${check.id}`, // channel id is public, fine to log
       });
-      return redirectWithFlash(reply, "/settings", `Channel saved (resolved to ${check.id}). Restart the app to apply.`, "success");
+      return flashOrRedirect(req, reply, "/settings", `Channel saved (resolved to ${check.id}). Restart the app to apply.`, "success");
     }
 
     const displayValue = SECRET_KEYS.has(key)
@@ -443,7 +449,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       targetType: "setting",
       details: `${key}=${displayValue}`,
     });
-    return redirectWithFlash(reply, "/settings", `Setting '${key}' updated.`, "success");
+    return flashOrRedirect(req, reply, "/settings", `Setting '${key}' updated.`, "success");
   });
 
   app.post("/settings/password", { preHandler: csrfProtect }, async (req, reply) => {
@@ -453,16 +459,16 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     const confirmPassword = body.confirm_password ?? "";
 
     if (newPassword.length < 8) {
-      return redirectWithFlash(reply, "/settings", "New password must be at least 8 characters.", "error");
+      return flashOrRedirect(req, reply, "/settings", "New password must be at least 8 characters.", "error");
     }
     if (newPassword !== confirmPassword) {
-      return redirectWithFlash(reply, "/settings", "New passwords do not match.", "error");
+      return flashOrRedirect(req, reply, "/settings", "New passwords do not match.", "error");
     }
 
     const key = passwordHashKey(req.admin!.telegramId);
     const stored = await getSetting(prisma, key);
     if (!stored || !verifyPassword(currentPassword, stored)) {
-      return redirectWithFlash(reply, "/settings", "Current password is incorrect.", "error");
+      return flashOrRedirect(req, reply, "/settings", "Current password is incorrect.", "error");
     }
     await setSetting(prisma, key, hashPassword(newPassword));
     await logAdminAction(prisma, {
@@ -471,6 +477,6 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       targetType: "setting", // never log the password itself
     });
     logger.info(`Web admin password changed for telegram_id=${req.admin!.telegramId}`);
-    return redirectWithFlash(reply, "/settings", "Password changed.", "success");
+    return flashOrRedirect(req, reply, "/settings", "Password changed.", "success");
   });
 }

@@ -1,0 +1,20 @@
+{# Floating toast returned to htmx form posts (apps/web-admin/src/flash.ts
+   flashOrRedirect). Swapped into #toast-slot, so the page never reloads or
+   scrolls. Auto-dismisses; re-renders lucide icons in the swapped fragment. #}
+{% if msg %}
+<div class="card card-pad !py-3 shadow-lift border flex items-start gap-2 text-sm animate-[fadein_.15s_ease-out]
+            {% if kind == 'error' %}bg-rust-tint text-rust-dark border-rust/30
+            {% elif kind == 'success' %}bg-grass-tint text-grass-dark border-grass/30
+            {% else %}bg-pine-tint text-pine-dark border-pine/30{% endif %}"
+     role="status" aria-live="polite">
+  <i data-lucide="{% if kind == 'error' %}alert-triangle{% elif kind == 'success' %}check-circle-2{% else %}info{% endif %}" class="w-4 h-4 mt-0.5 shrink-0"></i>
+  <span class="flex-1">{{ msg }}</span>
+</div>
+<script>
+  (function () {
+    if (window.lucide) window.lucide.createIcons();
+    var slot = document.getElementById('toast-slot');
+    if (slot) setTimeout(function () { slot.innerHTML = ''; }, 3500);
+  })();
+</script>
+{% endif %}

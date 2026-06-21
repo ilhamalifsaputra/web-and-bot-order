@@ -96,8 +96,9 @@ export const Env = z.object({
   // carry no memo, so matching is by the order's unique total amount
   // (USE_UNIQUE_CENTS must stay on). All buyers share this one UID.
   BYBIT_UID: z.string().optional(),
-  // Deprecated on-chain BEP20 fields — kept optional so old .env files don't
-  // error on load; no longer read anywhere (superseded by BYBIT_UID above).
+  // Deprecated on-chain BEP20 fields (BYBIT_DEPOSIT_ADDRESS, BYBIT_DEPOSIT_CHAIN)
+  // — kept so old .env files don't error on load; neither is read anywhere
+  // anymore (superseded by BYBIT_UID above).
   BYBIT_DEPOSIT_ADDRESS: z.string().optional(),
   BYBIT_DEPOSIT_CHAIN: z.string().default("BSC"),
   // READ-ONLY API key/secret (Wallet read only — no Withdraw) to fetch deposits.

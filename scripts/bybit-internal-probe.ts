@@ -161,7 +161,7 @@ async function main(): Promise<void> {
     }
     console.log(
       "\n→ If rows DO appear here once you test, Bybit can be made INSTANT: point the\n" +
-        "  poller at this endpoint, map fields in normalizeDeposit(), deliver on status=2.",
+        "  poller at this endpoint, map fields in normalizeInternalDeposit(), deliver on status=2.",
     );
   } else {
     console.log("retCode", intl.retCode, intl.retMsg, "(HTTP", intl.httpStatus + ")", intl.raw ?? "");

@@ -217,7 +217,7 @@ saat membeli, di bot maupun website. Ketiganya auto-confirm:
 
 > **Binance Pay manual** (upload bukti, approve manual) hanya muncul sebagai
 > *fallback* bila belum ada metode otomatis. **Bybit:** API key harus **Wallet
-> READ-ONLY**; tes koneksi `pnpm bybit-probe`. Pencocokan by
+> READ-ONLY**; tes koneksi `pnpm bybit-probe`. Pencocokan pakai
 > **nominal unik**, jaga `USE_UNIQUE_CENTS=1` dan pembeli kirim **jumlah persis**.
 
 **Branding** (Settings → Branding): upload favicon, logo, hero toko, banner bot,

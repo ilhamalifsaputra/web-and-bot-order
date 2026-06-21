@@ -1694,6 +1694,32 @@ describe("payments", () => {
     expect(res.statusCode).toBe(403);
     expect((await getOrder(prisma, id))!.status).toBe("UNDERPAID");
   });
+
+  it("dismiss is atomic: audit-log failure rolls back the ledger flip too", async () => {
+    // dismissUnmatchedTx (no internal $transaction of its own — its contract
+    // requires the CALLER to wrap it) flips the ledger row unmatched→dismissed
+    // as its own write, separate from logAdminAction. Force the audit insert
+    // to fail (FK violation: the acting admin's User row no longer exists, so
+    // audit_logs.admin_id has nothing to reference) and prove the route's
+    // prisma.$transaction rolls the ledger flip back with it — not just the
+    // audit write — so the two can never diverge.
+    await recordUnmatchedTx(prisma, { binanceTxId: "ATOMTX1", amount: "1.00" });
+    await prisma.user.delete({ where: { id: seed.adminId } });
+
+    const res = await post("/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "ATOMTX1" });
+    // Not a ValidationError, so the route's catch rethrows → Fastify 500,
+    // not the usual redirect-with-flash.
+    expect(res.statusCode).toBe(500);
+
+    // The ledger row must still be "unmatched" — the dismiss write must have
+    // rolled back alongside the failed audit insert.
+    const tx = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "ATOMTX1" } });
+    expect(tx!.outcome).toBe("unmatched");
+
+    // And of course no audit row exists either.
+    const audit = await prisma.auditLog.findMany({ where: { action: "tx_dismiss", details: "tx=ATOMTX1" } });
+    expect(audit.length).toBe(0);
+  });
 });
 
 // ---- outbox monitor (acceptance #5) ---------------------------------------

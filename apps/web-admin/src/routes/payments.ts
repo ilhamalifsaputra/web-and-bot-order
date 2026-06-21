@@ -40,6 +40,19 @@ import { redirectWithFlash, humanizeValidationError } from "../flash";
 
 const PAGE_SIZE = 50;
 
+/**
+ * Carries a literal "not found" flash message out of a `prisma.$transaction`
+ * callback. Thrown instead of `return`ing early from inside the callback
+ * (Prisma rolls back cleanly on any throw — nothing commits), then unwrapped
+ * in the route's catch block to reproduce the exact pre-existing flash text
+ * (not `humanizeValidationError`'s generic key-to-text formatting).
+ */
+class NotFoundFlash extends Error {
+  constructor(public readonly flash: string) {
+    super(flash);
+  }
+}
+
 export default async function paymentsRoutes(app: FastifyInstance): Promise<void> {
   app.get("/payments", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
@@ -121,12 +134,14 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
   app.post("/payments/order/:orderId/cancel", { preHandler: csrfProtect }, async (req, reply) => {
     const orderId = Number((req.params as { orderId: string }).orderId);
     try {
-      await cancelOrder(prisma, orderId, `underpaid_cancelled by admin_id=${req.admin!.userId}`);
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "underpaid_cancel",
-        targetType: "order",
-        targetId: orderId,
+      await prisma.$transaction(async (tx) => {
+        await cancelOrder(tx, orderId, `underpaid_cancelled by admin_id=${req.admin!.userId}`);
+        await logAdminAction(tx, {
+          adminId: req.admin!.userId,
+          action: "underpaid_cancel",
+          targetType: "order",
+          targetId: orderId,
+        });
       });
     } catch (e) {
       if (e instanceof ValidationError) {
@@ -186,29 +201,34 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
       return redirectWithFlash(reply, "/payments", "Both a transfer id and an order code are required.", "error");
     }
     try {
-      const target = await getOrderByCode(prisma, orderCode);
-      if (!target) {
-        return redirectWithFlash(reply, "/payments", `Order ${orderCode} not found.`, "error");
-      }
-      // The amount actually received, from the unmatched ledger row.
-      const ledger = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId } });
-      if (!ledger) {
-        return redirectWithFlash(reply, "/payments", "Transfer not found.", "error");
-      }
-      const { credited, currency } = await creditOrderToBalance(prisma, {
-        orderId: target.id,
-        amount: ledger.amount ?? undefined,
-        adminId: req.admin!.userId,
-        binanceTxId,
-      });
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "tx_credit_balance",
-        targetType: "order",
-        targetId: target.id,
-        details: `tx=${binanceTxId} order_code=${target.orderCode} credited=${credited.toString()} ${currency}`,
+      await prisma.$transaction(async (tx) => {
+        const target = await getOrderByCode(tx, orderCode);
+        if (!target) {
+          throw new NotFoundFlash(`Order ${orderCode} not found.`);
+        }
+        // The amount actually received, from the unmatched ledger row.
+        const ledger = await tx.processedBinanceTx.findUnique({ where: { binanceTxId } });
+        if (!ledger) {
+          throw new NotFoundFlash("Transfer not found.");
+        }
+        const { credited, currency } = await creditOrderToBalance(tx, {
+          orderId: target.id,
+          amount: ledger.amount ?? undefined,
+          adminId: req.admin!.userId,
+          binanceTxId,
+        });
+        await logAdminAction(tx, {
+          adminId: req.admin!.userId,
+          action: "tx_credit_balance",
+          targetType: "order",
+          targetId: target.id,
+          details: `tx=${binanceTxId} order_code=${target.orderCode} credited=${credited.toString()} ${currency}`,
+        });
       });
     } catch (e) {
+      if (e instanceof NotFoundFlash) {
+        return redirectWithFlash(reply, "/payments", e.flash, "error");
+      }
       if (e instanceof ValidationError) {
         return redirectWithFlash(reply, "/payments", humanizeValidationError(e), "error");
       }
@@ -226,12 +246,14 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
       return redirectWithFlash(reply, "/payments", "A payment reference is required.", "error");
     }
     try {
-      await dismissUnmatchedTx(prisma, binanceTxId);
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "tx_dismiss",
-        targetType: "payment",
-        details: `tx=${binanceTxId}`,
+      await prisma.$transaction(async (tx) => {
+        await dismissUnmatchedTx(tx, binanceTxId);
+        await logAdminAction(tx, {
+          adminId: req.admin!.userId,
+          action: "tx_dismiss",
+          targetType: "payment",
+          details: `tx=${binanceTxId}`,
+        });
       });
     } catch (e) {
       if (e instanceof ValidationError) {

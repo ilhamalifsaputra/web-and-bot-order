@@ -8,7 +8,7 @@
 
 <form method="get" action="/users" class="card card-pad mb-6 flex gap-3 items-end">
   <div class="flex-1">
-    <label class="field-label">Search by Telegram ID, username, or name</label>
+    <label class="field-label">Search by Telegram ID, username, email, or name</label>
     <input type="text" name="q" value="{{ q }}" class="field">
   </div>
   <button class="btn btn-primary"><i data-lucide="search" class="w-4 h-4"></i> Search</button>
@@ -20,20 +20,21 @@
 <div class="card overflow-x-auto">
   <table class="data-table">
     <thead>
-      <tr><th>Name</th><th>Username</th><th>Telegram</th><th>Type</th><th>Blocked</th><th></th></tr>
+      <tr><th>Username</th><th>Email</th><th>Telegram ID</th><th>Telegram username</th><th>Type</th><th>Blocked</th><th></th></tr>
     </thead>
     <tbody>
       {% for u in results %}
       <tr>
-        <td>{{ u.fullName or '—' }}</td>
-        <td>{{ u.username or '—' }}</td>
-        <td class="font-mono text-xs">{{ u.telegramId or "—" }}</td>
+        <td>{{ u.loginUsername or '—' }}</td>
+        <td>{{ u.email or '—' }}</td>
+        <td class="font-mono text-xs">{{ u.telegramId or '—' }}</td>
+        <td>{% if u.username %}@{{ u.username }}{% else %}<span class="text-ink-faint">—</span>{% endif %}</td>
         <td>{{ ui.status_badge(u.role) }}</td>
         <td>{% if u.banned %}<span class="chip bg-rust-tint text-rust-dark">Blocked</span>{% else %}<span class="text-ink-faint">—</span>{% endif %}</td>
         <td class="text-right"><a class="link" href="/users/{{ u.id }}">Open →</a></td>
       </tr>
       {% else %}
-      {{ ui.empty_row(6, 'No customers yet.' if browsing else 'No customers match "' + q + '".') }}
+      {{ ui.empty_row(7, 'No customers yet.' if browsing else 'No customers match "' + q + '".') }}
       {% endfor %}
     </tbody>
   </table>

@@ -43,3 +43,21 @@ describe("searchUsers (existing behavior, unchanged)", () => {
     expect(await searchUsers(prisma, "   ")).toEqual([]);
   });
 });
+
+describe("searchUsers (website customers, no telegram link)", () => {
+  it("finds a website-only user by login username or email", async () => {
+    const webUser = await prisma.user.create({
+      data: {
+        loginUsername: "webby",
+        email: "webby@test.com",
+        referralCode: "WEBBYREF",
+      },
+    });
+
+    const byUsername = await searchUsers(prisma, "webby");
+    expect(byUsername.some((u) => u.id === webUser.id)).toBe(true);
+
+    const byEmail = await searchUsers(prisma, "webby@test.com");
+    expect(byEmail.some((u) => u.id === webUser.id)).toBe(true);
+  });
+});

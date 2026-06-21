@@ -178,6 +178,8 @@ export function searchUsers(db: Db, query: string, limit = 20) {
   const or: Record<string, unknown>[] = [
     { username: likeContains(q) },
     { fullName: likeContains(q) },
+    { loginUsername: likeContains(q) },
+    { email: likeContains(q) },
   ];
   if (/^\d+$/.test(q)) or.push({ telegramId: BigInt(q) });
   return db.user.findMany({ where: { OR: or }, take: limit });

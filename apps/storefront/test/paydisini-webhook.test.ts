@@ -200,6 +200,54 @@ describe("POST /pay/paydisini/callback", () => {
     expect(updated!.status).toBe("PENDING_PAYMENT"); // untouched
   });
 
+  it("overpaid: delivers, ledger outcome is overpaid, and enqueues ADMIN_OVERPAID rows for each ADMIN_IDS entry", async () => {
+    const order = await createPendingPaydisiniOrder("ORD-OVERPAY", "50000");
+    const payload = signedPayload({ refId: order.orderCode, amount: "75000", trxId: "TRX-OVERPAY-1" }); // 25000 over
+
+    const res = await app.inject({ method: "POST", url: "/pay/paydisini/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "delivered" });
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("DELIVERED");
+
+    const ledger = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "TRX-OVERPAY-1" } });
+    expect(ledger!.outcome).toBe("overpaid");
+
+    // ADMIN_IDS = "999,1000" (setup-env.ts) -> one ADMIN_OVERPAID row per admin.
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: "ADMIN_OVERPAID" },
+      orderBy: { id: "asc" },
+    });
+    expect(adminRows.length).toBe(2);
+    const chatIds = adminRows.map((r) => JSON.parse(r.payloadJson).chat_id).sort((a, b) => a - b);
+    expect(chatIds).toEqual([999, 1000]);
+    for (const row of adminRows) {
+      const p = JSON.parse(row.payloadJson) as Record<string, unknown>;
+      expect(p.order_code).toBe(order.orderCode);
+      expect(p.paid).toBe("75000");
+      expect(p.expected).toBe("50000");
+      expect(p.excess).toBe("25000");
+      expect(p.currency).toBe("IDR");
+    }
+  });
+
+  it("replaying an overpaid callback is idempotent — no duplicate ADMIN_OVERPAID rows", async () => {
+    const order = await createPendingPaydisiniOrder("ORD-OVERPAY-REPLAY", "50000");
+    const payload = signedPayload({ refId: order.orderCode, amount: "60000", trxId: "TRX-OVERPAY-REPLAY-1" });
+
+    const first = await app.inject({ method: "POST", url: "/pay/paydisini/callback", payload });
+    expect(first.json()).toEqual({ status: "delivered" });
+
+    const second = await app.inject({ method: "POST", url: "/pay/paydisini/callback", payload });
+    expect(second.json()).toEqual({ status: "already_processed" });
+
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: "ADMIN_OVERPAID" },
+    });
+    expect(adminRows.length).toBe(2); // still one per admin, not doubled by the replay
+  });
+
   it("never delivers a short/underpaid amount — records unmatched instead", async () => {
     const order = await createPendingPaydisiniOrder("ORD-SHORTPAY", "50000");
     const payload = signedPayload({ refId: order.orderCode, amount: "40000", trxId: "TRX-SHORT-1" }); // less than totalAmount

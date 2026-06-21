@@ -23,7 +23,7 @@ import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, approveOrder } from "./orders";
-import { enqueueNotification } from "./notifications";
+import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting } from "./settings";
 
 /** Read TokoPay gateway credentials from Settings; null = the IDR/QRIS path is off. */
@@ -87,7 +87,10 @@ export async function deliverPaidTokopayOrder(
         order.paymentMethod !== PaymentMethod.TOKOPAY
       ) {
         // Correct the audit row: the trx matched an order that's no longer payable.
-        await db.processedTokopayTx
+        // Use `tx` (not the outer `db`) — we're still inside db.$transaction, and a
+        // second connection writing the same row here would block on SQLite's
+        // single-writer lock until the surrounding transaction itself times out.
+        await tx.processedTokopayTx
           .update({ where: { trxId: args.trxId }, data: { outcome: "stale" } })
           .catch(() => undefined);
         return { status: "stale" as const };
@@ -108,6 +111,25 @@ export async function deliverPaidTokopayOrder(
           order_url: args.shopUrl ? `${args.shopUrl.replace(/\/+$/, "")}/account/orders/${delivered.orderCode}` : null,
           buyer_language: langCode(delivered.user.language),
         });
+      }
+      // Overpayment: the buyer paid more than the order total. Still deliver
+      // (handled above) but flag the ledger row and alert admins so the
+      // excess can be refunded/credited manually — never auto-refunded.
+      const paidAmount = new Decimal(args.amount);
+      const excess = paidAmount.minus(order.totalAmount);
+      if (excess.greaterThan(0)) {
+        await tx.processedTokopayTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } });
+        await enqueueAdminOverpaid(tx, {
+          orderId: delivered.id,
+          orderCode: delivered.orderCode,
+          paid: paidAmount,
+          expected: order.totalAmount,
+          excess,
+          currency: order.currency,
+        });
+        logger.warn(
+          `TokoPay order ${delivered.orderCode} overpaid: got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency})`,
+        );
       }
       logger.info(`Auto-delivered TokoPay order ${delivered.orderCode} (trx ${args.trxId})`);
       return { status: "delivered" as const, order: delivered, credentials };

@@ -43,6 +43,7 @@ import { render } from "./templates";
 // i.e. the main order-bot — so keep NOTIF_BOT_TOKEN unset for these to arrive.
 const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.ADMIN_PW_RESET,
+  NotificationEvent.ADMIN_OVERPAID, // admin DM (gateway webhook overpayment)
   NotificationEvent.ORDER_DELIVERED_DM, // buyer DM (web auto-delivery)
 ]);
 

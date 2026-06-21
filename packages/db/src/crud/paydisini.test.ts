@@ -4,9 +4,20 @@
  * there is no colocated tokopay.test.ts to mirror directly. Covers the three
  * deliverPaidPaydisiniOrder branches (delivered/already_processed/stale) plus
  * recordUnmatchedPaydisiniTx's claim-once semantics.
+ *
+ * This file carries the FULL overpayment suite (Task 5 / H-3) — the other two
+ * gateways (tokopay.test.ts, nowpayments.test.ts) only need a representative
+ * overpaid assertion since the three deliver functions are intentionally
+ * near-identical.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
+
+vi.mock("@app/core/config", async () => {
+  const actual = await vi.importActual<typeof import("@app/core/config")>("@app/core/config");
+  return { ...actual, config: { ...actual.config, ADMIN_IDS: [111, 222] } };
+});
+
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { createOrderDirect, deliverPaidPaydisiniOrder, recordUnmatchedPaydisiniTx } from "@app/db";
@@ -93,6 +104,98 @@ describe("deliverPaidPaydisiniOrder", () => {
     // Still only one ledger row and the order wasn't touched twice.
     const rows = await prisma.processedPaydisiniTx.findMany({ where: { trxId: "trx-dup-1" } });
     expect(rows.length).toBe(1);
+  });
+
+  it("overpaid: delivers, ledger outcome is overpaid, and enqueues one ADMIN_OVERPAID row per admin id", async () => {
+    const order = await makePendingPaydisiniOrder();
+    // Pricing applies USE_UNIQUE_CENTS jitter, so totalAmount isn't a round
+    // number — compute the expected excess from the actual total instead of
+    // assuming "5".
+    const expectedTotal = new Decimal(order.totalAmount);
+    const paid = expectedTotal.plus("2.50"); // overpay by 2.50
+
+    const result = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-overpaid-1",
+      amount: paid,
+      shopUrl: "https://shop.example.com",
+    });
+
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+
+    const ledgerRow = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "trx-overpaid-1" } });
+    expect(ledgerRow?.outcome).toBe("overpaid");
+
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+      orderBy: { id: "asc" },
+    });
+    expect(adminRows.length).toBe(2); // one per ADMIN_IDS entry ([111, 222])
+    const chatIds = adminRows.map((r) => JSON.parse(r.payloadJson).chat_id).sort((a, b) => a - b);
+    expect(chatIds).toEqual([111, 222]);
+    for (const row of adminRows) {
+      const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
+      expect(payload.order_code).toBe(result.order.orderCode);
+      expect(payload.paid).toBe(paid.toString());
+      expect(payload.expected).toBe(expectedTotal.toString());
+      expect(payload.excess).toBe("2.5");
+      expect(payload.currency).toBe(result.order.currency);
+    }
+
+    // Buyer DM is still enqueued — overpayment doesn't block delivery to the buyer.
+    const dmRow = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order.id, event: NotificationEvent.ORDER_DELIVERED_DM },
+    });
+    expect(dmRow).not.toBeNull();
+  });
+
+  it("exact amount: outcome stays matched, no ADMIN_OVERPAID rows", async () => {
+    const order = await makePendingPaydisiniOrder();
+
+    const result = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-exact-1",
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+
+    const ledgerRow = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "trx-exact-1" } });
+    expect(ledgerRow?.outcome).toBe("matched");
+
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    expect(adminRows.length).toBe(0);
+  });
+
+  it("replaying an overpaid callback is idempotent — no second delivery, no duplicate ADMIN_OVERPAID rows", async () => {
+    const order = await makePendingPaydisiniOrder();
+    const paid = new Decimal(order.totalAmount).plus("1");
+
+    const first = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-overpaid-replay-1",
+      amount: paid,
+    });
+    expect(first.status).toBe("delivered");
+
+    const second = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-overpaid-replay-1",
+      amount: paid,
+    });
+    expect(second.status).toBe("already_processed");
+
+    const ledgerRows = await prisma.processedPaydisiniTx.findMany({ where: { trxId: "trx-overpaid-replay-1" } });
+    expect(ledgerRows.length).toBe(1);
+    expect(ledgerRows[0]?.outcome).toBe("overpaid");
+
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    expect(adminRows.length).toBe(2); // still just one per admin id, not duplicated
   });
 
   it("an order that is no longer PENDING_PAYMENT/PAYDISINI is stale", async () => {

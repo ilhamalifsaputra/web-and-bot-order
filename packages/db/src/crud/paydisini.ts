@@ -22,7 +22,7 @@ import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, approveOrder } from "./orders";
-import { enqueueNotification } from "./notifications";
+import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting } from "./settings";
 
 /** Read PayDisini gateway credentials from Settings; null = the QRIS/e-wallet path is off. */
@@ -110,6 +110,25 @@ export async function deliverPaidPaydisiniOrder(
           order_url: args.shopUrl ? `${args.shopUrl.replace(/\/+$/, "")}/account/orders/${delivered.orderCode}` : null,
           buyer_language: langCode(delivered.user.language),
         });
+      }
+      // Overpayment: the buyer paid more than the order total. Still deliver
+      // (handled above) but flag the ledger row and alert admins so the
+      // excess can be refunded/credited manually — never auto-refunded.
+      const paidAmount = new Decimal(args.amount);
+      const excess = paidAmount.minus(order.totalAmount);
+      if (excess.greaterThan(0)) {
+        await tx.processedPaydisiniTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } });
+        await enqueueAdminOverpaid(tx, {
+          orderId: delivered.id,
+          orderCode: delivered.orderCode,
+          paid: paidAmount,
+          expected: order.totalAmount,
+          excess,
+          currency: order.currency,
+        });
+        logger.warn(
+          `PayDisini order ${delivered.orderCode} overpaid: got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency})`,
+        );
       }
       logger.info(`Auto-delivered PayDisini order ${delivered.orderCode} (trx ${args.trxId})`);
       return { status: "delivered" as const, order: delivered, credentials };

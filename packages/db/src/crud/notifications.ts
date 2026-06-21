@@ -13,6 +13,8 @@ import {
   NotificationEvent,
   NotificationStatus,
 } from "@app/core/enums";
+import { config } from "@app/core/config";
+import type { Decimal } from "@app/core/money";
 
 type Db = PrismaClient | Tx;
 
@@ -53,6 +55,42 @@ export async function enqueueAdminPasswordReset(
       }),
     },
   });
+}
+
+/**
+ * Enqueue one admin DM per configured admin (config.ADMIN_IDS) alerting that a
+ * payment-gateway webhook delivered an order whose paid amount exceeded the
+ * total. orderId is set (unlike ADMIN_PW_RESET) so the rows are visible from
+ * the order in the admin /outbox panel. No-op if ADMIN_IDS is empty. Numbers
+ * are carried as Decimal `.toString()` — never `number` — per money rules.
+ */
+export async function enqueueAdminOverpaid(
+  db: Db,
+  args: {
+    orderId: number;
+    orderCode: string;
+    paid: Decimal;
+    expected: Decimal;
+    excess: Decimal;
+    currency: string;
+  },
+): Promise<void> {
+  for (const adminId of config.ADMIN_IDS) {
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_OVERPAID,
+        orderId: args.orderId,
+        payloadJson: JSON.stringify({
+          chat_id: adminId,
+          order_code: args.orderCode,
+          paid: args.paid.toString(),
+          expected: args.expected.toString(),
+          excess: args.excess.toString(),
+          currency: args.currency,
+        }),
+      },
+    });
+  }
 }
 
 /** Oldest pending rows first, capped at `limit`. */

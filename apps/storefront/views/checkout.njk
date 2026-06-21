@@ -17,55 +17,70 @@
   <input type="hidden" name="csrf_token" value="{{ customer.csrf }}">
 
   <div class="lg:col-span-2 space-y-6">
-    {# Payment method = transaction currency (design.md §8b) #}
+    {# Payment method = transaction currency (design.md §8b). Only methods that
+       are turned ON (admin toggle) AND fully configured render — a disabled
+       method is hidden entirely, not greyed out. The first one shown is the
+       default selection (cascade in file/priority order). #}
+    {% set any_method = idr_enabled or paydisini_enabled or binance_enabled or bybit_enabled or nowpayments_enabled %}
     <div class="card card-pad">
       <h2 class="section-title mb-3">{{ t('web.pay_method', lang) }}</h2>
       <div class="space-y-3">
-        <label class="flex items-start gap-3 p-3 rounded-xl border {% if idr_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
-          <input type="radio" name="method" value="qris" class="mt-1" {% if not idr_enabled %}disabled{% else %}checked{% endif %}>
+        {% if idr_enabled %}
+        <label class="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
+          <input type="radio" name="method" value="qris" class="mt-1" checked>
           <img src="/static/pay/qris.png" alt="QRIS" class="h-7 w-auto max-w-[80px] object-contain shrink-0 mt-0.5">
           <span>
             <span class="font-semibold text-sm block">{{ t('web.pay_idr_title', lang) }}</span>
             <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_idr_sub', lang) }}</span>
-            {% if not idr_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_idr_disabled', lang) }}</span>{% endif %}
           </span>
         </label>
-        <label class="flex items-start gap-3 p-3 rounded-xl border {% if paydisini_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
-          <input type="radio" name="method" value="paydisini" class="mt-1" {% if not paydisini_enabled %}disabled{% elif not idr_enabled %}checked{% endif %}>
+        {% endif %}
+        {% if paydisini_enabled %}
+        <label class="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
+          <input type="radio" name="method" value="paydisini" class="mt-1" {% if not idr_enabled %}checked{% endif %}>
           <img src="/static/pay/qris.png" alt="PayDisini" class="h-7 w-auto max-w-[80px] object-contain shrink-0 mt-0.5">
           <span>
             <span class="font-semibold text-sm block">{{ t('web.pay_paydisini_title', lang) }}</span>
             <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_paydisini_sub', lang) }}</span>
-            {% if not paydisini_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_paydisini_disabled', lang) }}</span>{% endif %}
           </span>
         </label>
-        <label class="flex items-start gap-3 p-3 rounded-xl border {% if binance_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
-          <input type="radio" name="method" value="binance" class="mt-1" {% if not binance_enabled %}disabled{% elif not idr_enabled and not paydisini_enabled %}checked{% endif %}>
+        {% endif %}
+        {% if binance_enabled %}
+        <label class="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
+          <input type="radio" name="method" value="binance" class="mt-1" {% if not idr_enabled and not paydisini_enabled %}checked{% endif %}>
           <img src="/static/pay/binance.png" alt="Binance" class="h-7 w-7 object-contain shrink-0 mt-0.5">
           <span>
             <span class="font-semibold text-sm block">{{ t('web.pay_usdt_title', lang) }}</span>
             <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_usdt_sub', lang) }}</span>
-            {% if not binance_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_usdt_disabled', lang) }}</span>{% endif %}
           </span>
         </label>
-        <label class="flex items-start gap-3 p-3 rounded-xl border {% if bybit_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
-          <input type="radio" name="method" value="bybit" class="mt-1" {% if not bybit_enabled %}disabled{% elif not idr_enabled and not paydisini_enabled and not binance_enabled %}checked{% endif %}>
+        {% endif %}
+        {% if bybit_enabled %}
+        <label class="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
+          <input type="radio" name="method" value="bybit" class="mt-1" {% if not idr_enabled and not paydisini_enabled and not binance_enabled %}checked{% endif %}>
           <img src="/static/pay/bybit.png" alt="Bybit" class="h-7 w-7 rounded object-contain shrink-0 mt-0.5">
           <span>
             <span class="font-semibold text-sm block">{{ t('web.pay_bybit_title', lang) }}</span>
             <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_bybit_sub', lang) }}</span>
-            {% if not bybit_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_bybit_disabled', lang) }}</span>{% endif %}
           </span>
         </label>
-        <label class="flex items-start gap-3 p-3 rounded-xl border {% if nowpayments_enabled %}border-line hover:border-pine cursor-pointer{% else %}border-line opacity-50{% endif %}">
-          <input type="radio" name="method" value="nowpayments" class="mt-1" {% if not nowpayments_enabled %}disabled{% elif not idr_enabled and not paydisini_enabled and not binance_enabled and not bybit_enabled %}checked{% endif %}>
-          <img src="/static/pay/binance.png" alt="NOWPayments" class="h-7 w-7 rounded object-contain shrink-0 mt-0.5">
+        {% endif %}
+        {% if nowpayments_enabled %}
+        <label class="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
+          <input type="radio" name="method" value="nowpayments" class="mt-1" {% if not idr_enabled and not paydisini_enabled and not binance_enabled and not bybit_enabled %}checked{% endif %}>
+          <img src="/static/pay/nowpayments.png" alt="NOWPayments" class="h-7 w-7 rounded object-contain shrink-0 mt-0.5">
           <span>
             <span class="font-semibold text-sm block">{{ t('web.pay_nowpayments_title', lang) }}</span>
             <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_nowpayments_sub', lang) }}</span>
-            {% if not nowpayments_enabled %}<span class="text-xs text-rust block mt-0.5">{{ t('web.pay_nowpayments_disabled', lang) }}</span>{% endif %}
           </span>
         </label>
+        {% endif %}
+        {% if not any_method %}
+        <div class="text-center text-sm text-ink-soft border border-dashed border-line rounded-xl py-6 px-3">
+          <i data-lucide="wallet" class="w-5 h-5 mx-auto mb-1.5 text-ink-faint"></i>
+          <p>{{ t('web.pay_none_available', lang) }}</p>
+        </div>
+        {% endif %}
       </div>
     </div>
 
@@ -108,7 +123,7 @@
     {% if fx %}
     <p class="text-xs text-ink-faint">{{ t('web.usdt_note', lang) }}</p>
     {% endif %}
-    <button type="submit" class="btn btn-primary w-full mt-4">
+    <button type="submit" class="btn btn-primary w-full mt-4" {% if not any_method %}disabled style="opacity:.5;cursor:not-allowed"{% endif %}>
       {{ t('web.place_order', lang) }} <i data-lucide="chevron-right" class="w-4 h-4"></i>
     </button>
     <a href="/cart" class="btn btn-ghost w-full mt-2">{{ t('web.back_to_cart', lang) }}</a>

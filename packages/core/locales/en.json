@@ -394,6 +394,7 @@
   "web.pay_bybit_note": "Delivery is automatic once the deposit is credited — no proof needed.",
   "web.pay_method_elsewhere": "Finish paying for this order where you started it (in our Telegram bot).",
   "web.pay_method_unavailable": "That payment method isn't available right now — pick another one.",
+  "web.pay_none_available": "No payment methods are available right now. Please check back soon or contact support.",
   "web.voucher_label": "Have a discount code?",
   "web.voucher_placeholder": "Code",
   "web.voucher_apply": "Apply",

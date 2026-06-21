@@ -292,6 +292,7 @@
   "web.settings_new_password": "New password (leave blank to keep)",
   "web.settings_save": "Save",
   "web.settings_saved": "Saved.",
+  "web.settings_tg_connect_label": "Or connect with Telegram",
   "web.settings_tg_done": "Telegram linked!",
   "web.settings_tg_hint": "Link your Telegram to sign in with one tap and get order updates in the bot.",
   "web.settings_tg_linked": "Linked to Telegram as {name}.",

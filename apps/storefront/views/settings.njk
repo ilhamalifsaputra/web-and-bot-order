@@ -42,19 +42,28 @@
   <div class="card card-pad">
     <h2 class="font-display text-lg font-semibold mb-4">{{ t('web.settings_tg_section', lang) }}</h2>
     {% if tg_linked %}
-    <p class="text-sm text-ink-soft flex items-center gap-2">
-      {{ ui.ic('check-circle', 'w-4 h-4 text-pine') }}
-      {{ t('web.settings_tg_linked', lang, {name: tg_name}) }}
-    </p>
+    <div class="flex items-center gap-3 rounded-xl border border-grass/30 bg-grass-tint px-4 py-3">
+      <span class="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-card text-grass">
+        {{ ui.ic('check-circle', 'w-5 h-5') }}
+      </span>
+      <p class="text-sm text-grass-dark">
+        {{ t('web.settings_tg_linked', lang, {name: tg_name}) }}
+      </p>
+    </div>
     {% else %}
     <p class="text-sm text-ink-soft mb-4">{{ t('web.settings_tg_hint', lang) }}</p>
     {% if bot_username %}
-    <script async src="https://telegram.org/js/telegram-widget.js?22"
-            data-telegram-login="{{ bot_username }}"
-            data-size="large"
-            data-radius="12"
-            data-auth-url="/account/settings/link-telegram"
-            data-request-access="write"></script>
+    <div class="rounded-xl border border-line bg-paper px-4 py-4">
+      <p class="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-3 flex items-center gap-1.5">
+        {{ ui.ic('send', 'w-3.5 h-3.5') }} {{ t('web.settings_tg_connect_label', lang) }}
+      </p>
+      <script async src="https://telegram.org/js/telegram-widget.js?22"
+              data-telegram-login="{{ bot_username }}"
+              data-size="large"
+              data-radius="12"
+              data-auth-url="/account/settings/link-telegram"
+              data-request-access="write"></script>
+    </div>
     {% else %}
     <p class="text-sm text-ink-faint">{{ t('web.settings_tg_unconfigured', lang) }}</p>
     {% endif %}

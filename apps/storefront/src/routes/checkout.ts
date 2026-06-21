@@ -11,7 +11,6 @@
  */
 import type { FastifyPluginAsync } from "fastify";
 import { config } from "@app/core/config";
-import { botUsername } from "@app/core/runtime";
 import { OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { t } from "@app/core/i18n";
@@ -57,7 +56,7 @@ import {
   type NowpaymentsInvoice,
 } from "@app/core/payments/nowpayments";
 import { usdtFromIdr } from "../pricing";
-import { shopContext, requestLang } from "../shop";
+import { shopContext, requestLang, resolveBotUsername } from "../shop";
 import { loadCartLines } from "./cart";
 
 const MAX_PENDING_ORDERS = 10;
@@ -499,7 +498,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         nowpayments_gateway: nowpaymentsGateway,
         nowpayments_gateway_error: nowpaymentsGatewayError,
         wa_number: waNumber,
-        bot_username: botUsername() ?? "",
+        bot_username: await resolveBotUsername(),
       });
     },
   );

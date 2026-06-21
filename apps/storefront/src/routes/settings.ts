@@ -4,7 +4,6 @@
  * (which includes currentCustomer) on the POST route.
  */
 import type { FastifyPluginAsync } from "fastify";
-import { botUsername } from "@app/core/runtime";
 import { t } from "@app/core/i18n";
 import { ValidationError } from "@app/core/errors";
 import { hashPassword, verifyPassword } from "@app/core/password";
@@ -17,7 +16,7 @@ import {
 } from "@app/db";
 import { verifyTelegramLogin } from "../auth";
 import { currentCustomer, csrfProtect } from "../plugins/auth";
-import { shopContext } from "../shop";
+import { shopContext, resolveBotUsername } from "../shop";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -38,7 +37,7 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
       return reply.view("settings.njk", {
         ...ctx,
         customer,
-        bot_username: botUsername() ?? "",
+        bot_username: await resolveBotUsername(),
         values: {
           username: customer.user.loginUsername ?? "",
           email: customer.user.email ?? "",
@@ -80,7 +79,7 @@ const settingsRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).view("settings.njk", {
           ...ctx,
           customer,
-          bot_username: botUsername() ?? "",
+          bot_username: await resolveBotUsername(),
           values: { username, email },
           has_password: Boolean(fresh?.passwordHash),
           tg_linked: fresh?.telegramId != null,

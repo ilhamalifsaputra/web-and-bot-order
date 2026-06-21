@@ -5,9 +5,19 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
+import { botUsername } from "@app/core/runtime";
 import { prisma, getSetting } from "@app/db";
 import { getUsdIdrRate } from "./pricing";
 import { optionalCustomer, type Customer } from "./plugins/auth";
+
+const BOT_USERNAME_PLACEHOLDER = "yourbot"; // .env.example default; renders a broken widget
+/** Live bot username for the storefront: DB `bot_username` setting wins, runtime/env
+ *  fallback; the known placeholder and blank resolve to "" (treated as not configured). */
+export async function resolveBotUsername(): Promise<string> {
+  const fromDb = ((await getSetting(prisma, "bot_username")) ?? "").trim();
+  const v = (fromDb || (botUsername() ?? "")).trim();
+  return v.toLowerCase() === BOT_USERNAME_PLACEHOLDER ? "" : v;
+}
 
 export const LANG_COOKIE = "shop_lang";
 /**

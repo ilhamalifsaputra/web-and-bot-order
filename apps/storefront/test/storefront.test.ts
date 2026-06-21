@@ -566,6 +566,25 @@ describe("telegram login is lookup-only", () => {
   });
 });
 
+describe("login widget — live bot username, placeholder filtered", () => {
+  // BOT_USERNAME=TestBot in the test env (setup-env.ts), but the DB
+  // `bot_username` setting WINS in resolveBotUsername — so setting it here
+  // controls the rendered widget deterministically regardless of env.
+  it("renders the widget with the DB-configured bot username", async () => {
+    await setSetting(prisma, "bot_username", "realtoko_bot");
+    const res = await app.inject({ method: "GET", url: "/login" });
+    expect(res.body).toContain('data-telegram-login="realtoko_bot"');
+    await deleteSetting(prisma, "bot_username");
+  });
+
+  it("hides the widget when the DB setting is the .env.example placeholder", async () => {
+    await setSetting(prisma, "bot_username", "YourBot");
+    const res = await app.inject({ method: "GET", url: "/login" });
+    expect(res.body).not.toContain("telegram-widget.js");
+    await deleteSetting(prisma, "bot_username");
+  });
+});
+
 describe("register", () => {
   it("renders the form", async () => {
     const res = await app.inject({ method: "GET", url: "/register" });

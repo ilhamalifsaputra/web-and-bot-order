@@ -297,6 +297,7 @@
   "web.settings_tg_linked": "Linked to Telegram as {name}.",
   "web.settings_tg_section": "Telegram",
   "web.settings_tg_taken": "That Telegram account is already linked to another member.",
+  "web.settings_tg_unconfigured": "Telegram sign-in isn't set up yet.",
   "web.settings_title": "Account settings",
   "web.settings_wrong_password": "Current password is wrong.",
   "web.signed_in_as": "Signed in as",

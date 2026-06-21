@@ -68,12 +68,14 @@ export interface BuiltServer {
 /**
  * Which app should answer a request, by Host header (plan.md §2 decision F:
  * one process, one public listener, storefront vs admin split by subdomain).
- * The shop host wins; everything else — admin domain, bare IP, the Telegram
- * webhook POST — stays on the admin app. Exported for tests.
+ * The shop host (and its "www." variant — nginx forwards both to this same
+ * port) wins; everything else — admin domain, bare IP, the Telegram webhook
+ * POST — stays on the admin app. Exported for tests.
  */
 export function dispatchByHost(hostHeader: string | undefined, shopHost: string): "shop" | "admin" {
   const host = (hostHeader ?? "").split(":")[0]!.trim().toLowerCase();
-  return host !== "" && host === shopHost ? "shop" : "admin";
+  const isShop = host !== "" && (host === shopHost || host === `www.${shopHost}`);
+  return isShop ? "shop" : "admin";
 }
 
 /** Hostname of SHOP_PUBLIC_URL, or null when unset (→ separate-port mode). */

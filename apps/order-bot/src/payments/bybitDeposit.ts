@@ -223,7 +223,7 @@ export async function processDeposits(api: Api, deposits: BybitDeposit[], orders
       }
     } catch (err) {
       logger.error({ err }, `Delivery failed for Bybit order ${order.orderCode} tx ${dep.txId}`);
-      await alertAdmins(api, `⚠️ Paid but delivery FAILED for <code>${order.orderCode}</code> (out of stock?) tx ${esc(dep.txId)}. Manual action needed.`);
+      await alertAdmins(api, `⚠️ Paid but delivery FAILED for <code>${order.orderCode}</code> tx ${esc(dep.txId)} — ${esc(String(err).slice(0, 200))}. Manual action needed.`);
     }
   }
 }

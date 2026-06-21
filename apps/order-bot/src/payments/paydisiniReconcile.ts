@@ -129,7 +129,7 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
     // "already_processed" → another cycle/webhook handled it; nothing to do.
   } catch (err) {
     logger.error({ err }, `PayDisini reconcile delivery FAILED for ${order.orderCode}`);
-    await alertAdmins(api, `⚠️ PayDisini paid but delivery FAILED for <code>${esc(order.orderCode)}</code> (out of stock?). Manual action needed.`);
+    await alertAdmins(api, `⚠️ PayDisini paid but delivery FAILED for <code>${esc(order.orderCode)}</code> — ${esc(String(err).slice(0, 200))}. Manual action needed.`);
   }
 }
 

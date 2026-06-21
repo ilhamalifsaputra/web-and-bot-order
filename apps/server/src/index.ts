@@ -22,7 +22,7 @@ import { run } from "@grammyjs/runner";
 import { config } from "@app/core/config";
 import { botToken as runtimeBotToken, notifBotToken, publicChannelId, setBotIdentity, setAdminIds, setWebSecret } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
-import { initDb, prisma, resolveBotCredentials, resolveAdminIds, resolveWebCookieSecret } from "@app/db";
+import { initDb, prisma, resolveBotCredentials, resolveAdminIds, resolveWebCookieSecret, missingTables, PAYMENT_LEDGER_TABLES } from "@app/db";
 import { buildBot, setupCommandMenu } from "@app/order-bot/main";
 import { scheduleJobs, scheduleFxRefresh } from "@app/order-bot/jobs";
 import { startPolling, stopPolling } from "@app/order-bot/payments/binanceInternal";
@@ -163,7 +163,22 @@ async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal
 export async function start(): Promise<void> {
   await initDb(); // single PrismaClient, sets WAL + busy_timeout PRAGMAs
 
-  setAdminIds(await resolveAdminIds(prisma));
+  // Fail-loud on a drifted live DB: a missing payment-ledger table makes that
+  // gateway confirm-but-never-deliver (P2021 at the first ledger write), so the
+  // buyer pays and gets nothing. Non-fatal — the web must keep serving so an
+  // operator can fix it — but shout in the logs now and DM admins once the bot
+  // is up (below). Remediation: `pnpm prisma db push` against the live DB.
+  const missingLedgers = await missingTables(prisma, [...PAYMENT_LEDGER_TABLES]);
+  if (missingLedgers.length) {
+    logger.error(
+      `DB SCHEMA DRIFT: missing table(s) ${missingLedgers.join(", ")}. ` +
+        "Payment delivery WILL FAIL for the affected gateway(s). " +
+        "Run `pnpm prisma db push` against the live DB, then restart.",
+    );
+  }
+
+  const adminIdList = await resolveAdminIds(prisma);
+  setAdminIds(adminIdList);
   setWebSecret(await resolveWebCookieSecret(prisma));
 
   // Resolve bot credentials ONCE (Setting wins, env fallback — plan.md §16.3)
@@ -190,6 +205,22 @@ export async function start(): Promise<void> {
     }
     // Best-effort command menu (logs internally, never throws).
     await setupCommandMenu(bot);
+    // Surface DB schema drift to admins too (best-effort) — the log error above
+    // is easy to miss; a DM is not.
+    if (missingLedgers.length) {
+      const driftMsg =
+        "⚠️ <b>DB schema drift</b>\nMissing: <code>" +
+        missingLedgers.join(", ") +
+        "</code>\nPayment delivery will fail for the affected gateway(s). " +
+        "Run <code>pnpm prisma db push</code> against the live DB, then restart.";
+      for (const id of adminIdList) {
+        try {
+          await bot.api.sendMessage(id, driftMsg, { parse_mode: "HTML" });
+        } catch (err) {
+          logger.error({ err }, `startup drift alert to ${id} failed`);
+        }
+      }
+    }
     // In-process workers — exactly one instance each (single process). Each
     // poller is a no-op unless its creds are configured.
     jobs = scheduleJobs(bot.api);

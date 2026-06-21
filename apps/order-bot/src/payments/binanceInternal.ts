@@ -323,7 +323,7 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
         }
       } catch (err) {
         logger.error({ err }, `Delivery failed for order ${order.orderCode} tx ${tx.txId}`);
-        await alertAdmins(api, `⚠️ Paid but delivery FAILED for <code>${order.orderCode}</code> (out of stock?) tx ${esc(tx.txId)}. Manual action needed.`);
+        await alertAdmins(api, `⚠️ Paid but delivery FAILED for <code>${order.orderCode}</code> tx ${esc(tx.txId)} — ${esc(String(err).slice(0, 200))}. Manual action needed.`);
       }
     }
   }

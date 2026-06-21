@@ -12,14 +12,14 @@ import {
   setSetting,
   deleteSetting,
   setOrderPaymentMessage,
-  BYBIT_ADDRESS_KEY,
+  BYBIT_UID_KEY,
   BYBIT_API_KEY_KEY,
   BYBIT_API_SECRET_KEY,
 } from "@app/db";
 import type { Api } from "grammy";
 import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { normalizeDeposit, processDeposits, type BybitDeposit } from "../src/payments/bybitDeposit";
+import { normalizeInternalDeposit, processDeposits, type BybitDeposit } from "../src/payments/bybitDeposit";
 
 let sample: SampleData;
 
@@ -41,38 +41,49 @@ const makeBybitOrder = (qty = 1) =>
   );
 
 // ===========================================================================
-// normalizeDeposit — real Bybit /v5/asset/deposit/query-record row shape
+// normalizeInternalDeposit — Bybit /v5/asset/deposit/query-internal-record row shape
 // ===========================================================================
 
-describe("normalizeDeposit (real Bybit deposit payload shape)", () => {
-  // Captured (redacted) from scripts/bybit-probe.ts against the live account.
+describe("normalizeInternalDeposit (Bybit internal-deposit payload shape)", () => {
+  // Realistic internal-deposit row (off-chain UID→UID transfer) per Bybit V5 docs.
   const real = {
-    coin: "USDT", chain: "BSC", amount: "746.99",
-    txID: "0xf7de73e5a87ade81104ebc6912c073f2aba834f1b106cf742d9fe14e55363d31",
-    status: 3, tag: "", toAddress: "0x27dfb0aab6940bcfda706817a9310e24dea5fea4", depositType: "0",
+    id: "9000000000000000001",
+    txID: "9000000000000000001",
+    coin: "USDT",
+    amount: "746.99",
+    status: 2, // 1=Processing, 2=Success, 3=Failed (DIFFERS from on-chain mapping)
+    address: "uid:1234567",
+    createdTime: "1700000000000",
   };
 
-  it("maps a successful BSC USDT deposit", () => {
-    const d = normalizeDeposit(real)!;
+  it("maps a successful internal-transfer USDT deposit", () => {
+    const d = normalizeInternalDeposit(real)!;
     expect(d.txId).toBe(real.txID);
     expect(d.amount).toBeCloseTo(746.99);
-    expect(d.chain).toBe("BSC");
   });
 
-  it("skips deposits that are not yet credited (status != 3)", () => {
-    expect(normalizeDeposit({ ...real, status: 2 })).toBeNull(); // processing
-    expect(normalizeDeposit({ ...real, status: 1 })).toBeNull();
+  it("accepts status 2 (Success) and rejects 1 (Processing) and 3 (Failed)", () => {
+    expect(normalizeInternalDeposit({ ...real, status: 2 })).not.toBeNull();
+    expect(normalizeInternalDeposit({ ...real, status: 1 })).toBeNull();
+    expect(normalizeInternalDeposit({ ...real, status: 3 })).toBeNull();
   });
 
-  it("rejects the wrong chain or coin", () => {
-    expect(normalizeDeposit({ ...real, chain: "TRX" })).toBeNull();
-    expect(normalizeDeposit({ ...real, coin: "USDC" })).toBeNull();
+  it("rejects a non-USDT coin", () => {
+    expect(normalizeInternalDeposit({ ...real, coin: "USDC" })).toBeNull();
+  });
+
+  it("has no chain filtering (internal transfers carry no chain)", () => {
+    // A row with an arbitrary/absent chain field still maps successfully —
+    // there is no chain parameter or chain filter for internal deposits.
+    expect(normalizeInternalDeposit({ ...real, chain: "TRX" })).not.toBeNull();
+    const { chain, ...withoutChain } = real as typeof real & { chain?: string };
+    expect(normalizeInternalDeposit(withoutChain)).not.toBeNull();
   });
 
   it("rejects non-received / malformed rows", () => {
-    expect(normalizeDeposit({ ...real, amount: "0" })).toBeNull();
-    expect(normalizeDeposit({ ...real, amount: "-5" })).toBeNull();
-    expect(normalizeDeposit({ coin: "USDT", chain: "BSC", status: 3 })).toBeNull(); // no txID/amount
+    expect(normalizeInternalDeposit({ ...real, amount: "0" })).toBeNull();
+    expect(normalizeInternalDeposit({ ...real, amount: "-5" })).toBeNull();
+    expect(normalizeInternalDeposit({ coin: "USDT", status: 2 })).toBeNull(); // no txID/amount
   });
 });
 
@@ -81,7 +92,7 @@ describe("normalizeDeposit (real Bybit deposit payload shape)", () => {
 // ===========================================================================
 
 describe("createBybitOrder", () => {
-  it("creates a BYBIT order with an expiry and NO paymentRef (BEP20 has no memo)", async () => {
+  it("creates a BYBIT order with an expiry and NO paymentRef (internal transfer has no memo)", async () => {
     const order = await makeBybitOrder();
     expect(order).toBeTruthy();
     expect(order!.paymentMethod).toBe(PaymentMethod.BYBIT);
@@ -147,7 +158,7 @@ describe("processDeposits (poll-loop wiring)", () => {
 
   const pending = () => listPendingBybitOrders(prisma, new Date());
   const dep = (over: Partial<BybitDeposit> & { txId: string; amount: number }): BybitDeposit => ({
-    chain: "BSC", ...over,
+    ...over,
   });
 
   it("flips the anchored payment bubble to the success message with paymentSuccessKb (§9.1)", async () => {
@@ -201,7 +212,7 @@ describe("processDeposits (poll-loop wiring)", () => {
 
 describe("resolveBybitConfig (Settings-backed config)", () => {
   const clear = () => Promise.all([
-    deleteSetting(prisma, BYBIT_ADDRESS_KEY),
+    deleteSetting(prisma, BYBIT_UID_KEY),
     deleteSetting(prisma, BYBIT_API_KEY_KEY),
     deleteSetting(prisma, BYBIT_API_SECRET_KEY),
   ]);
@@ -212,22 +223,22 @@ describe("resolveBybitConfig (Settings-backed config)", () => {
     expect(cfg.enabled).toBe(false);
   });
 
-  it("is disabled until ALL THREE of address + key + secret are set", async () => {
+  it("is disabled until ALL THREE of uid + key + secret are set", async () => {
     await clear();
-    await setSetting(prisma, BYBIT_ADDRESS_KEY, "0xabc");
+    await setSetting(prisma, BYBIT_UID_KEY, "123456");
     await setSetting(prisma, BYBIT_API_KEY_KEY, "k");
     expect((await resolveBybitConfig(prisma)).enabled).toBe(false); // secret still missing
     await setSetting(prisma, BYBIT_API_SECRET_KEY, "s");
     const cfg = await resolveBybitConfig(prisma);
     expect(cfg.enabled).toBe(true);
-    expect(cfg.depositAddress).toBe("0xabc");
+    expect(cfg.uid).toBe("123456");
     expect(cfg.apiKey).toBe("k");
     expect(cfg.apiSecret).toBe("s");
   });
 
   it("treats a blank/whitespace setting as unset", async () => {
     await clear();
-    await setSetting(prisma, BYBIT_ADDRESS_KEY, "  ");
+    await setSetting(prisma, BYBIT_UID_KEY, "  ");
     await setSetting(prisma, BYBIT_API_KEY_KEY, "k");
     await setSetting(prisma, BYBIT_API_SECRET_KEY, "s");
     expect((await resolveBybitConfig(prisma)).enabled).toBe(false);

@@ -399,7 +399,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
 
   const text = t(ctx, "checkout.bybit_instructions", {
     code: order.orderCode,
-    address: esc(bybit.depositAddress),
+    uid: esc(bybit.uid),
     amount: price(order.totalAmount, 4),
     idr_line: idrLine,
     expiry,

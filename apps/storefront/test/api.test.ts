@@ -358,7 +358,7 @@ describe("POST /api/v1/checkout", () => {
     });
 
     it("creates an order on success (bybit) and returns order_code + pay_url", async () => {
-      await setSetting(prisma, "bybit_deposit_address", "0xDEADBEEF00000000000000000000000000000000");
+      await setSetting(prisma, "bybit_uid", "123456789");
       await setSetting(prisma, "bybit_api_key", "k");
       await setSetting(prisma, "bybit_api_secret", "s");
       await setSetting(prisma, "usd_idr_rate", "16000");
@@ -379,7 +379,7 @@ describe("POST /api/v1/checkout", () => {
         expect(order!.userId).toBe(buyerId);
         expect(order!.paymentMethod).toBe("BYBIT");
       } finally {
-        await deleteSetting(prisma, "bybit_deposit_address");
+        await deleteSetting(prisma, "bybit_uid");
         await deleteSetting(prisma, "bybit_api_key");
         await deleteSetting(prisma, "bybit_api_secret");
         await deleteSetting(prisma, "usd_idr_rate");

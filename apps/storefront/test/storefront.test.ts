@@ -899,13 +899,13 @@ describe("checkout — Bybit option", () => {
   });
 
   async function enableBybit() {
-    await setSetting(prisma, "bybit_deposit_address", "0xDEADBEEF00000000000000000000000000000000");
+    await setSetting(prisma, "bybit_uid", "123456789");
     await setSetting(prisma, "bybit_api_key", "k");
     await setSetting(prisma, "bybit_api_secret", "s");
     await setSetting(prisma, "usd_idr_rate", "16000");
   }
   async function disableBybit() {
-    await deleteSetting(prisma, "bybit_deposit_address");
+    await deleteSetting(prisma, "bybit_uid");
     await deleteSetting(prisma, "bybit_api_key");
     await deleteSetting(prisma, "bybit_api_secret");
     await deleteSetting(prisma, "usd_idr_rate");
@@ -936,7 +936,7 @@ describe("checkout — Bybit option", () => {
     expect(order!.currency).toBe("USDT");
   });
 
-  it("pay page for a BYBIT order shows the deposit address + USDT amount", async () => {
+  it("pay page for a BYBIT order shows the deposit UID + USDT amount", async () => {
     await enableBybit();
     const { cookie, csrf } = await checkoutSession();
     const created = await app.inject({
@@ -948,7 +948,7 @@ describe("checkout — Bybit option", () => {
     const code = created.headers.location!.split("/")[2]!; // /checkout/<code>/pay
     const res = await app.inject({ method: "GET", url: `/checkout/${code}/pay`, headers: { cookie } });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("0xDEADBEEF00000000000000000000000000000000");
+    expect(res.body).toContain("123456789");
     expect(res.body).toContain("$"); // USDT amount shown on the Bybit card
   });
 
@@ -1089,7 +1089,7 @@ describe("checkout — PayDisini option (2nd IDR method, alongside TokoPay)", ()
   // didn't exclude paydisini_enabled), so BOTH radios ended up checked here.
   it("checks exactly one radio (paydisini, not bybit) when bybit and paydisini are both enabled but idr/binance are not", async () => {
     await enablePaydisini();
-    await setSetting(prisma, "bybit_deposit_address", "0xDEADBEEF00000000000000000000000000000000");
+    await setSetting(prisma, "bybit_uid", "123456789");
     await setSetting(prisma, "bybit_api_key", "k");
     await setSetting(prisma, "bybit_api_secret", "s");
     await setSetting(prisma, "usd_idr_rate", "16000");
@@ -1110,7 +1110,7 @@ describe("checkout — PayDisini option (2nd IDR method, alongside TokoPay)", ()
       const checkedCount = (res.body.match(/<input type="radio" name="method"[^>]*\bchecked\b[^>]*>/g) ?? []).length;
       expect(checkedCount).toBe(1);
     } finally {
-      await deleteSetting(prisma, "bybit_deposit_address");
+      await deleteSetting(prisma, "bybit_uid");
       await deleteSetting(prisma, "bybit_api_key");
       await deleteSetting(prisma, "bybit_api_secret");
       await deleteSetting(prisma, "usd_idr_rate");

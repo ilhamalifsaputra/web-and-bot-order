@@ -1,21 +1,24 @@
 /**
- * Bybit USDT-BSC (BEP20) on-chain deposit auto-confirmation.
+ * Bybit Internal Transfer (UID→UID, off-chain, instant) deposit auto-confirmation.
  *
- * Buyers send USDT on BNB Smart Chain to our shared Bybit deposit address. A
- * polling loop pulls recent deposits from Bybit, matches each to a PENDING order
- * by its UNIQUE amount (BEP20 has no memo), and auto-delivers via the normal
- * approve path.
+ * Buyers send USDT via Bybit's own "Internal Transfer" (Bybit account to Bybit
+ * account, no blockchain hop) to our shared Bybit UID. A polling loop pulls
+ * recent internal deposits from Bybit, matches each to a PENDING order by its
+ * UNIQUE amount (internal transfers carry no memo), and auto-delivers via the
+ * normal approve path. Unlike the old on-chain BEP20 path, there is no
+ * blockchain-confirmation wait — delivery is effectively instant.
  *
  * ── READ-ONLY ──────────────────────────────────────────────────────────────
- * The ONLY Bybit endpoint this module calls is GET /v5/asset/deposit/query-record
- * (signed, read-only). It never touches trading or withdrawal endpoints. Use a
- * Wallet-read-only API key (no Withdraw permission). A live probe
- * (scripts/bybit-probe.ts) confirmed deposits surface here with a real `txID`,
- * `amount`, and `status` (3 = success), and an EMPTY `tag` on BSC — hence
- * amount-only matching.
+ * The ONLY Bybit endpoint this module calls is
+ * GET /v5/asset/deposit/query-internal-record (signed, read-only). It never
+ * touches trading or withdrawal endpoints. Use a Wallet-read-only API key (no
+ * Withdraw permission). A live probe (scripts/bybit-internal-probe.ts)
+ * confirmed the internal-deposit status mapping per Bybit V5 docs DIFFERS from
+ * the on-chain ledger: 1=Processing, 2=Success, 3=Failed (on-chain uses 3 for
+ * success) — deliver only on status 2.
  *
- * The row mapping in `normalizeDeposit()` stays isolated so the endpoint/fields
- * can be swapped without touching matching/delivery.
+ * The row mapping in `normalizeInternalDeposit()` stays isolated so the
+ * endpoint/fields can be swapped without touching matching/delivery.
  */
 import { createHmac } from "node:crypto";
 import type { Api } from "grammy";
@@ -40,13 +43,14 @@ import { paymentSuccessKb } from "../keyboards/customer";
 import { sendAccountFile } from "../util/delivery";
 
 const AMOUNT_TOLERANCE = 0.01; // USDT
-/** Bybit deposit status: 3 = success (credited). Deliver only on this. */
-const STATUS_SUCCESS = 3;
+/** Bybit internal-deposit status: 1=Processing, 2=Success, 3=Failed (per
+ * Bybit V5 docs — DIFFERS from the on-chain ledger, where 3=success). Deliver
+ * only on Success. */
+const STATUS_SUCCESS = 2;
 
 export interface BybitDeposit {
   txId: string;
   amount: number; // positive = received, in USDT
-  chain: string;
 }
 
 type PendingOrder = Awaited<ReturnType<typeof listPendingBybitOrders>>[number];
@@ -88,32 +92,32 @@ async function bybitGet(path: string, params: Record<string, string>, cfg: Bybit
   return body.result ?? {};
 }
 
-/** Map a raw deposit row to our normalized shape (the swappable bit). Only
- * SUCCESS (status 3) deposits on the configured chain are kept; exported so a
- * fixture test can pin the real Bybit payload shape. */
-export function normalizeDeposit(raw: Record<string, unknown>, chain = config.BYBIT_DEPOSIT_CHAIN): BybitDeposit | null {
-  const txId = raw.txID ?? raw.txid ?? raw.id;
+/** Map a raw internal-deposit row to our normalized shape (the swappable bit).
+ * Only SUCCESS (status 2) deposits are kept; exported so a fixture test can
+ * pin the real Bybit payload shape. Internal transfers have no chain, so there
+ * is no chain parameter or chain filter here (matching is amount-only). */
+export function normalizeInternalDeposit(raw: Record<string, unknown>): BybitDeposit | null {
+  const txId = raw.txID ?? raw.id;
   const amount = Number(raw.amount);
   const coin = String(raw.coin ?? "").toUpperCase();
-  const rowChain = String(raw.chain ?? "");
   const status = Number(raw.status);
   if (txId == null || !Number.isFinite(amount) || amount <= 0) return null; // received only
   if (coin !== config.CURRENCY.toUpperCase()) return null;
-  if (rowChain.toUpperCase() !== chain.toUpperCase()) return null;
-  if (status !== STATUS_SUCCESS) return null; // pending/processing → skip until credited
-  return { txId: String(txId), amount, chain: rowChain };
+  if (status !== STATUS_SUCCESS) return null; // processing/failed → skip until credited
+  return { txId: String(txId), amount };
 }
 
-/** Fetch recent successful USDT deposits on the configured chain (last 3 days).
+/** Fetch recent successful internal-transfer USDT deposits (last 3 days).
  * Throws RateLimitedError on 429/403/retCode rate limits. */
 async function fetchRecentDeposits(cfg: BybitConfig): Promise<BybitDeposit[]> {
-  const result = await bybitGet("/v5/asset/deposit/query-record", {
+  const result = await bybitGet("/v5/asset/deposit/query-internal-record", {
     coin: config.CURRENCY,
     startTime: String(Date.now() - 3 * 24 * 60 * 60 * 1000),
+    endTime: String(Date.now()),
     limit: "50",
   }, cfg);
   const rows = (result.rows ?? []) as Record<string, unknown>[];
-  return rows.map((r) => normalizeDeposit(r, cfg.chain)).filter((d): d is BybitDeposit => d !== null);
+  return rows.map(normalizeInternalDeposit).filter((d): d is BybitDeposit => d !== null);
 }
 
 // ---------------------------------------------------------------------------
@@ -196,8 +200,9 @@ export async function pollOnce(api: Api): Promise<void> {
 
 /**
  * Match a batch of fetched deposits against pending orders and act on each.
- * BEP20 has no memo, so matching is by UNIQUE amount only: a deposit maps to an
- * order iff exactly one pending order expects that amount (within tolerance).
+ * Internal Transfer has no memo, so matching is by UNIQUE amount only: a
+ * deposit maps to an order iff exactly one pending order expects that amount
+ * (within tolerance).
  * On a collision (≥2 candidates) or no candidate it is recorded "unmatched" and
  * left for manual review — never guessed. Extracted from pollOnce so it can be
  * integration-tested against the real DB without the API/env gate.
@@ -258,7 +263,7 @@ export function startPolling(api: Api): void {
   // boot log just reports the CURRENT state.
   void resolveBybitConfig(prisma).then((cfg) => {
     if (!cfg.enabled) {
-      logger.info("Bybit deposit auto-confirm disabled (no address/API creds in Settings or .env) — poller idle");
+      logger.info("Bybit deposit auto-confirm disabled (no UID/API creds in Settings or .env) — poller idle");
       return;
     }
     // Amount matching can only disambiguate orders when their totals are distinct.
@@ -267,7 +272,7 @@ export function startPolling(api: Api): void {
     if (!config.USE_UNIQUE_CENTS) {
       logger.warn(
         "⚠ Bybit deposit auto-confirm is ENABLED but USE_UNIQUE_CENTS is OFF — " +
-          "BEP20 has no memo, so equal-total orders cannot be matched by amount. " +
+          "Internal Transfer has no memo, so equal-total orders cannot be matched by amount. " +
           "Set USE_UNIQUE_CENTS=1 so every order has a distinct total.",
       );
     }

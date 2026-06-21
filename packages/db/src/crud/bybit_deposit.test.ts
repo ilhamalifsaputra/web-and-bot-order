@@ -3,11 +3,10 @@ import { describe, it, expect, vi } from "vitest";
 vi.mock("@app/core/config", () => ({
   config: {
     LOG_LEVEL: "info",
-    BYBIT_DEPOSIT_ADDRESS: "env-addr",
+    BYBIT_UID: "env-uid",
     BYBIT_API_KEY: "env-api-key",
     BYBIT_API_SECRET: "env-api-secret",
     BYBIT_API_BASE: "https://api.bybit.com",
-    BYBIT_DEPOSIT_CHAIN: "BSC",
     BYBIT_PAYMENT_WINDOW_MINUTES: 30,
   },
 }));
@@ -26,7 +25,7 @@ function stubDb(values: Record<string, string>): Db {
 }
 
 const CREDS = {
-  bybit_deposit_address: "db-addr",
+  bybit_uid: "db-uid",
   bybit_api_key: "db-api-key",
   bybit_api_secret: "db-api-secret",
 };
@@ -59,11 +58,11 @@ describe("resolveBybitConfig — enabled flag matrix", () => {
 
   it('disabled when creds missing regardless of flag "true"', async () => {
     const cfg = await resolveBybitConfig(
-      stubDb({ bybit_deposit_address: "", bybit_api_key: "", bybit_api_secret: "", bybit_enabled: "true" }),
+      stubDb({ bybit_uid: "", bybit_api_key: "", bybit_api_secret: "", bybit_enabled: "true" }),
     );
     // With no DB creds and the env fallback present, creds resolve from env, so
     // assert against an environment with the creds explicitly cleared instead.
-    expect(cfg.depositAddress).toBe("env-addr"); // env fallback fills it
+    expect(cfg.uid).toBe("env-uid"); // env fallback fills it
     expect(cfg.enabled).toBe(true);
   });
 
@@ -71,18 +70,17 @@ describe("resolveBybitConfig — enabled flag matrix", () => {
     vi.doMock("@app/core/config", () => ({
       config: {
         LOG_LEVEL: "info",
-        BYBIT_DEPOSIT_ADDRESS: undefined,
+        BYBIT_UID: undefined,
         BYBIT_API_KEY: undefined,
         BYBIT_API_SECRET: undefined,
         BYBIT_API_BASE: "https://api.bybit.com",
-        BYBIT_DEPOSIT_CHAIN: "BSC",
         BYBIT_PAYMENT_WINDOW_MINUTES: 30,
       },
     }));
     vi.resetModules();
     const { resolveBybitConfig: resolveNoCreds } = await import("./bybit_deposit");
     const cfg = await resolveNoCreds(stubDb({ bybit_enabled: "true" }));
-    expect(cfg.depositAddress).toBe("");
+    expect(cfg.uid).toBe("");
     expect(cfg.enabled).toBe(false);
   });
 });

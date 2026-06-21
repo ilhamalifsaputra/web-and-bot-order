@@ -360,8 +360,8 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       const isPaydisini = method === PaymentMethod.PAYDISINI;
       const isNowpayments = method === PaymentMethod.NOWPAYMENTS;
 
-      // Bybit deposit address (no API call — just the configured address).
-      const bybitAddress = isBybit ? (await resolveBybitConfig(prisma)).depositAddress : "";
+      // Bybit UID (no API call — just the configured UID).
+      const bybitAddress = isBybit ? (await resolveBybitConfig(prisma)).uid : "";
       const binanceUid = isBinance ? (await resolveBinanceInternalConfig(prisma)).receiveUid : "";
 
       // TokoPay transaction (QR / pay link) only while actually payable.

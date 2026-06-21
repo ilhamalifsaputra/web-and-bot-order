@@ -1,16 +1,17 @@
 /**
- * CRUD for the Bybit USDT-BSC (BEP20) on-chain deposit payment method.
+ * CRUD for the Bybit Internal Transfer (UID→UID, off-chain, instant) payment
+ * method.
  *
- * Mirrors binance_internal.ts but simpler: BEP20 deposits carry NO memo, so an
- * incoming deposit is matched to a PENDING order purely by its unique total
+ * Mirrors binance_internal.ts but simpler: internal transfers carry NO memo, so
+ * an incoming deposit is matched to a PENDING order purely by its unique total
  * amount (USE_UNIQUE_CENTS keeps every order distinct). There is therefore no
  * underpaid auto-path — a deposit whose amount matches no order is "unmatched"
  * and left for manual review.
  *
  * Idempotency on SQLite: the `processed_bybit_tx.bybit_tx_id` UNIQUE constraint
- * is the concurrency gate — claiming the on-chain txID is an atomic insert; a
- * duplicate insert throws and is treated as "already processed", so repeated
- * poll cycles never double-deliver.
+ * is the concurrency gate — claiming the internal-deposit txID is an atomic
+ * insert; a duplicate insert throws and is treated as "already processed", so
+ * repeated poll cycles never double-deliver.
  */
 import { config } from "@app/core/config";
 import { OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
@@ -29,20 +30,19 @@ import { finalizeOrderPayment } from "./pricing";
 // takes effect on the next cycle without a restart (like TokoPay).
 // ---------------------------------------------------------------------------
 
-export const BYBIT_ADDRESS_KEY = "bybit_deposit_address";
+export const BYBIT_UID_KEY = "bybit_uid";
 export const BYBIT_API_KEY_KEY = "bybit_api_key";
 export const BYBIT_API_SECRET_KEY = "bybit_api_secret";
 // On/off toggle (web admin). Default ON: only the literal "false" disables.
 export const BYBIT_ENABLED_KEY = "bybit_enabled";
 
 export interface BybitConfig {
-  /** True only when address + apiKey + apiSecret are all present. */
+  /** True only when uid + apiKey + apiSecret are all present. */
   enabled: boolean;
-  depositAddress: string;
+  uid: string;
   apiKey: string;
   apiSecret: string;
   apiBase: string;
-  chain: string;
   windowMinutes: number;
 }
 
@@ -54,30 +54,29 @@ function pick(dbVal: string | null, envVal?: string): string {
 }
 
 /**
- * Resolve the Bybit deposit config from Settings (with .env fallback). `enabled`
- * gates the poller, the watchdog, and the checkout option. The deposit chain,
- * API base, and payment window stay env-only (rarely change); only the address
- * and the API key/secret are web-editable.
+ * Resolve the Bybit Internal Transfer config from Settings (with .env
+ * fallback). `enabled` gates the poller, the watchdog, and the checkout
+ * option. The API base and payment window stay env-only (rarely change);
+ * only the UID and the API key/secret are web-editable.
  */
 export async function resolveBybitConfig(db: Db): Promise<BybitConfig> {
-  const [addr, key, secret, flag] = await Promise.all([
-    getSetting(db, BYBIT_ADDRESS_KEY),
+  const [uidSetting, key, secret, flag] = await Promise.all([
+    getSetting(db, BYBIT_UID_KEY),
     getSetting(db, BYBIT_API_KEY_KEY),
     getSetting(db, BYBIT_API_SECRET_KEY),
     getSetting(db, BYBIT_ENABLED_KEY),
   ]);
-  const depositAddress = pick(addr, config.BYBIT_DEPOSIT_ADDRESS);
+  const uid = pick(uidSetting, config.BYBIT_UID);
   const apiKey = pick(key, config.BYBIT_API_KEY);
   const apiSecret = pick(secret, config.BYBIT_API_SECRET);
   return {
     // Default ON: an unset/empty flag means enabled; only the literal "false"
     // (trimmed, case-insensitive) disables the method without touching creds.
-    enabled: Boolean(depositAddress && apiKey && apiSecret) && (flag ?? "").trim().toLowerCase() !== "false",
-    depositAddress,
+    enabled: Boolean(uid && apiKey && apiSecret) && (flag ?? "").trim().toLowerCase() !== "false",
+    uid,
     apiKey,
     apiSecret,
     apiBase: config.BYBIT_API_BASE,
-    chain: config.BYBIT_DEPOSIT_CHAIN,
     windowMinutes: config.BYBIT_PAYMENT_WINDOW_MINUTES,
   };
 }
@@ -85,7 +84,8 @@ export async function resolveBybitConfig(db: Db): Promise<BybitConfig> {
 /**
  * Create a direct order, then stamp it as a USDT/Bybit deposit payment: the
  * central-IDR total converts once at `rate` (rounded 0.1) + unique cents, with
- * the Bybit auto-confirm payment window. No transfer note (BEP20 has none).
+ * the Bybit auto-confirm payment window. No transfer note (internal transfers
+ * carry none).
  */
 export async function createBybitOrder(
   db: Db,

@@ -11,7 +11,9 @@
     <p class="text-sm text-ink-soft mt-2">{{ t('web.forgot_hint', lang) }}</p>
   </div>
 
-  {% if unavailable %}
+  {% if error %}
+  <div class="mt-6">{{ ui.flash(error, 'error') }}</div>
+  {% elif unavailable %}
   <div class="mt-6">{{ ui.flash(t('web.forgot_unavailable', lang), 'error') }}</div>
   {% elif sent %}
   <div class="mt-6">{{ ui.flash(t('web.forgot_sent', lang), 'info') }}</div>

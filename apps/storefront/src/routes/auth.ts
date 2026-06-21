@@ -33,6 +33,14 @@ import {
   SHOP_COOKIE_NAME,
   SHOP_SESSION_TTL_HOURS,
 } from "../auth";
+import {
+  clientIp,
+  loginRateLimited,
+  resetLoginAttempts,
+  accountLockedOut,
+  recordAccountFailure,
+  resetAccountFailures,
+} from "../rateLimit";
 import { shopContext, readGuestCart, writeGuestCart, resolveBotUsername, resolveBotToken } from "../shop";
 
 /** Only ever redirect to a local path (open-redirect guard). */
@@ -105,12 +113,38 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     "/login",
     async (req, reply) => {
       const ctx = await shopContext(req, "/login");
+      const ip = clientIp(req);
       const identifier = (req.body.identifier ?? "").trim();
+      const idKey = identifier.toLowerCase();
+
+      // Per-IP throttle, same generic response either way the request is
+      // capped (don't reveal which limiter tripped).
+      if (loginRateLimited(ip)) {
+        return renderLogin(req, reply, {
+          next: req.body.next,
+          error: t("error.rate_limited", ctx.lang),
+          identifier,
+          code: 429,
+        });
+      }
+      // Per-account lockout: stops an attacker rotating IPs against ONE
+      // account. Returns the SAME 429 rate-limited response as the IP
+      // throttle above — never reveal whether the account exists.
+      if (idKey && accountLockedOut(idKey)) {
+        return renderLogin(req, reply, {
+          next: req.body.next,
+          error: t("error.rate_limited", ctx.lang),
+          identifier,
+          code: 429,
+        });
+      }
+
       const password = req.body.password ?? "";
       const user = identifier ? await findUserByLoginIdentifier(prisma, identifier) : null;
       // Generic failure for every miss — no enumeration. Banned accounts also
       // get the generic error (don't reveal credential correctness).
       if (!user || user.banned || !user.passwordHash || !verifyPassword(password, user.passwordHash)) {
+        if (idKey) recordAccountFailure(idKey);
         return renderLogin(req, reply, {
           next: req.body.next,
           error: t("web.login_failed", ctx.lang),
@@ -119,6 +153,8 @@ const authRoutes: FastifyPluginAsync = async (app) => {
         });
       }
       await establishSession(req, reply, user);
+      resetLoginAttempts(ip);
+      if (idKey) resetAccountFailures(idKey);
       return reply.code(303).redirect(safeNext(req.body.next));
     },
   );

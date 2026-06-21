@@ -2,11 +2,12 @@
 
 Workspaces (pnpm: `apps/*` + `packages/*`): `apps/order-bot` (grammY),
 `apps/web-admin` (Fastify+Nunjucks+HTMX admin panel), `apps/storefront`
-(Fastify+Nunjucks+HTMX customer shop), `apps/notifier` (drains
-`notification_outbox`), `apps/server` (**composition root** — one process, one
-`PrismaClient`, `apps/server/src/index.ts`), `packages/core` (config zod, money
-Decimal, datetime luxon, i18n, password, mailer, fx), `packages/db` (Prisma +
-`crud/*`), `packages/web-ui` (shared Nunjucks theme `_theme.njk`/`_macros.njk`
+(Fastify+Nunjucks+HTMX customer shop), `apps/server` (**composition root** — one
+process, one `PrismaClient`, `apps/server/src/index.ts`), `packages/core` (config
+zod, money Decimal, datetime luxon, i18n, password, mailer, fx), `packages/db`
+(Prisma + `crud/*`), `packages/outbox-dispatcher` (drains `notification_outbox`
+→ Telegram; run in-process by `apps/server`), `packages/web-ui` (shared Nunjucks
+theme `_theme.njk`/`_macros.njk`
 included by admin & storefront). All share **one SQLite DB** `data/bot.db` (WAL);
 schema at `prisma/schema.prisma` (datasource `DATABASE_URL_PRISMA`). See `DOCS.md`
 (architecture/features), `README.md` (VPS install), and `docs/` for audit reports.

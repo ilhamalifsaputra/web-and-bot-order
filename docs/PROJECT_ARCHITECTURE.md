@@ -21,7 +21,7 @@ graph TD
         ServerRoot --> AdminApp[apps/web-admin]
         ServerRoot --> ShopApp[apps/storefront]
         ServerRoot --> BotApp[apps/order-bot]
-        ServerRoot --> NotifierApp[apps/notifier]
+        ServerRoot --> DispatcherPkg[packages/outbox-dispatcher]
     end
 
     subgraph "Shared Packages"
@@ -81,7 +81,7 @@ The repository organizes code into modular applications (`apps/`) and shared pac
 *   **[apps/order-bot](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/order-bot):** Handles Telegram updates. Contains chat menus, slash command routers, interactive dialog flows (conversations), database synchronization checks, and active background payment polling engines.
 *   **[apps/web-admin](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/web-admin):** The store administration interface. Handles catalog configurations, stock imports, payment configs, manual order resolutions, user audits, and ticket messaging.
 *   **[apps/storefront](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/storefront):** The public web shop. Serves product groups, processes user accounts (with local signup or Telegram Login Widget validation), supports shopping carts, processes orders, and handles gateway webhooks.
-*   **[apps/notifier](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/notifier):** The messaging subsystem. Regularly queries the `NotificationOutbox` table and delivers messages (e.g., transactional receipts, password resets, digital delivery DMs) to users via Telegram Bot.
+*   **[packages/outbox-dispatcher](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/outbox-dispatcher):** The messaging subsystem (library). Its polling loop (`runDispatcher`) regularly queries the `NotificationOutbox` table and delivers messages (e.g., transactional receipts, password resets, digital delivery DMs) to users via the Telegram Bot. Run in-process by `apps/server`.
 *   **[packages/core](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/core):** Enforces settings schema validations, manages application-wide enums, handles multi-language keys, currency conversions, and defines core business logic helpers.
 *   **[packages/db](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/db):** Holds database transaction scripts, database client singletons, and CRUD abstraction modules.
 *   **[packages/web-ui](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/web-ui):** Common CSS systems, global responsive layouts, typography templates, and macro functions.
@@ -108,7 +108,7 @@ For local debugging, standalone entry points bypass the unified server wrapper:
 *   **Telegram Bot Standalone:** [apps/order-bot/src/main.ts](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/order-bot/src/main.ts) (`pnpm dev:bot`)
 *   **Web Admin Standalone:** [apps/web-admin/src/server.ts](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/web-admin/src/server.ts) (`pnpm dev:web` / starts server on `WEB_PORT`)
 *   **Storefront Standalone:** [apps/storefront/src/server.ts](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/storefront/src/server.ts) (`pnpm dev:store` / starts storefront on `STOREFRONT_PORT`)
-*   **Notifier Daemon Standalone:** [apps/notifier/src/dispatcher.ts](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/apps/notifier/src/dispatcher.ts) (`pnpm dev:notifier`)
+*   **Outbox dispatcher:** [packages/outbox-dispatcher/src/dispatcher.ts](file:///c:/Users/manda/OneDrive/Dokumen/PROJECT%20BOT%20ORDER/BOT%20dan%20Web%20Admin/packages/outbox-dispatcher/src/dispatcher.ts) — a library (`runDispatcher`), not a standalone daemon; runs in-process inside `pnpm start`.
 
 ---
 
@@ -385,7 +385,7 @@ These pollers run on continuous interval loops as safety nets for payment gatewa
 *   **PayDisini Reconcile Poller (`paydisiniReconcile.ts`):** Polls the PayDisini gateway API to auto-resolve pending QRIS invoices.
 *   **NOWPayments Reconcile Poller (`nowpaymentsReconcile.ts`):** Polls the NOWPayments transaction statuses to reconcile crypto invoices.
 
-### Notification Outbox Dispatcher (`apps/notifier/src/dispatcher.ts`)
+### Notification Outbox Dispatcher (`packages/outbox-dispatcher/src/dispatcher.ts`)
 
 This background worker polls the `NotificationOutbox` table every 10 seconds:
 1.  Retrieves `PENDING` records.

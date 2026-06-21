@@ -2277,7 +2277,7 @@ describe("setup wizard — restart trigger", () => {
       // setup_done.njk restarted=true branch (topology-honest copy): confirms the
       // trigger was written AND surfaces the Docker/VPS manual-restart fallback.
       expect(res.body).toContain("Sinyal restart sudah ditulis");
-      expect(res.body).toContain("docker compose restart order-bot");
+      expect(res.body).toContain("docker compose restart server");
     } finally {
       if (existsSync(target)) rmSync(target);
       delete process.env.RESTART_TRIGGER_FILE;

@@ -1,14 +1,12 @@
 {
-  "name": "@app/notifier",
+  "name": "@app/outbox-dispatcher",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "exports": {
-    "./dispatcher": "./src/dispatcher.ts"
+    ".": "./src/index.ts"
   },
   "scripts": {
-    "dev": "tsx watch src/main.ts",
-    "start": "tsx src/main.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

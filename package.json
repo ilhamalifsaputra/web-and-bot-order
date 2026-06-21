@@ -18,7 +18,6 @@
     "start": "tsx apps/server/src/index.ts",
     "typecheck": "pnpm -r typecheck && tsc -p tsconfig.test.json",
     "test": "vitest run",
-    "dev:notifier": "pnpm --filter @app/notifier dev",
     "dev:web": "pnpm --filter @app/web-admin dev",
     "dev:store": "pnpm --filter @app/storefront dev",
     "dev:bot": "pnpm --filter @app/order-bot dev"

@@ -30,10 +30,10 @@ database SQLite** (`data/bot.db`, mode WAL).
 | `apps/order-bot` | Bot Telegram grammY (alur pelanggan + admin) |
 | `apps/web-admin` | Panel admin Fastify + Nunjucks + HTMX |
 | `apps/storefront` | Toko web pelanggan (Fastify + Nunjucks + HTMX) |
-| `apps/notifier` | Drain `notification_outbox` → channel/DM |
 | `apps/server` | **Composition root satu-proses**: gabung admin + storefront + bot + worker dengan **satu PrismaClient** (`apps/server/src/index.ts`) |
 | `packages/core` | Config (zod), money (Decimal), datetime (luxon), i18n, password, mailer, fx |
 | `packages/db` | Prisma client + semua CRUD (`packages/db/src/crud/*`) |
+| `packages/outbox-dispatcher` | Drain `notification_outbox` → channel/DM (`runDispatcher`, jalan in-process di `apps/server`) |
 | `packages/web-ui` | Tema bersama (`_theme.njk`, `_macros.njk`) yang di-`include` admin & storefront |
 
 **Prinsip inti:**
@@ -42,8 +42,8 @@ database SQLite** (`data/bot.db`, mode WAL).
   dan harga otomatis sinkron. Tidak ada SQL mentah di route — semua lewat
   `packages/db/src/crud/*`.
 - **Decimal untuk semua uang** (`@app/core/money`), tidak pernah `float`.
-- **Web tak pernah kirim Telegram** — enqueue ke `notification_outbox`, notifier/bot
-  yang mengirim.
+- **Web tak pernah kirim Telegram** — enqueue ke `notification_outbox`, dispatcher
+  outbox (`@app/outbox-dispatcher`, in-process di `apps/server`) yang mengirim.
 - **SQLite single-writer** — tiap `$transaction` dijaga pendek.
 - **Katalog 3-tier: Category → Product → Denomination.** `Product` (mis.
   "Netflix") adalah satu-satunya kartu di grid (home, kategori `/c/:slug`,
@@ -209,12 +209,12 @@ di-stamp ke `@app/core/runtime`):
 | Setting | env var | DB key | Yang menang | Resolver | Perubahan berlaku |
 |---|---|---|---|---|---|
 | Token bot/notif, username, channel | `BOT_TOKEN`, `BOT_USERNAME`, `NOTIF_BOT_TOKEN`, `PUBLIC_CHANNEL_ID` | `bot_token` dst | **DB > env** | `credentials.ts` | **perlu restart** (instance grammY sudah jalan) |
-| Admin ids | `ADMIN_IDS` | `admin_ids` | **union (env ∪ DB)** — keduanya berlaku, hapus dari satu sumber saja tak mencabut akses | `admins.ts` | proses web **langsung** (`setAdminIds`); bot/notifier (proses lain) **perlu restart** |
+| Admin ids | `ADMIN_IDS` | `admin_ids` | **union (env ∪ DB)** — keduanya berlaku, hapus dari satu sumber saja tak mencabut akses | `admins.ts` | proses web **langsung** (`setAdminIds`); bot (proses lain) **perlu restart** |
 | Web cookie secret | `WEB_COOKIE_SECRET` | `web_cookie_secret` | **env > DB > generated** (kebalikan; env = override operator; bila kosong, di-generate & disimpan ke DB) | `web_secret.ts` | **perlu restart** (mengganti → invalidasi semua sesi) |
 | Kurs USDT↔IDR | `USDT_IDR_RATE` | `usd_idr_rate` | **DB > env** | `pricing.ts` (`getUsdIdrRate`, dibaca **per-operasi**) | **langsung berlaku** |
 | `tokopay_*`, `bybit_*`, `binance_*`, setelan toko lain | — | Setting | **DB** (sumber tunggal, env tak ikut) | crud terkait | **langsung berlaku** (dibaca runtime) |
 
-> **Catatan multi-proses:** setiap proses (order-bot, notifier, web-admin,
+> **Catatan multi-proses:** setiap proses (order-bot, web-admin,
 > storefront — atau `apps/server` saat satu-proses) menyimpan snapshot runtime
 > sendiri. Setting yang "perlu restart" hanya menempel di proses yang dibaca
 > ulang; di deploy multi-proses, restart **proses yang relevan**, bukan hanya web.
@@ -368,12 +368,12 @@ penuh yang berdiri sendiri** — tiap toko dari direktori repo sendiri dengan `.
 folder `./data` (DB sendiri), bot, dan port sendiri. nginx me-route tiap domain ke
 port loopback instance yang sesuai.
 
-> **Apakah bot order & notifier bentrok antar-toko?** Tidak — **selama tiap
-> instance pakai bot @BotFather yang berbeda.** Error Telegram 409 ("terminated by
-> other getUpdates") hanya muncul kalau dua proses polling memakai **token yang
-> sama**. Notifier hanya mengirim pesan (bukan `getUpdates`), jadi notifier yang
-> memakai ulang token utama instance-nya sendiri tetap aman. **Aturan emas: jangan
-> pernah pakai satu token bot di dua instance.**
+> **Apakah bot order & pengiriman notifikasi bentrok antar-toko?** Tidak —
+> **selama tiap instance pakai bot @BotFather yang berbeda.** Error Telegram 409
+> ("terminated by other getUpdates") hanya muncul kalau dua proses polling memakai
+> **token yang sama**. Dispatcher outbox hanya mengirim pesan (bukan `getUpdates`),
+> jadi yang memakai ulang token utama instance-nya sendiri tetap aman. **Aturan
+> emas: jangan pernah pakai satu token bot di dua instance.**
 
 ### Pola port (skala ke N toko)
 
@@ -409,7 +409,7 @@ otomatis terpisah). Pakai akun gateway berbeda per toko.
 ```bash
 git clone <repo-url> /opt/shop-a && cd /opt/shop-a
 cp .env.example .env                                      # isi sesuai tabel di atas
-docker compose run --rm web-admin pnpm prisma db push     # skema sebelum start (hindari P2022)
+docker compose run --rm server pnpm prisma db push        # skema sebelum start (hindari P2022)
 docker compose up -d                                      # nama container otomatis dari COMPOSE_PROJECT_NAME
 ```
 

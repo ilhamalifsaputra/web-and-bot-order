@@ -55,7 +55,7 @@ deploy/backup/restore.sh ./data/backups/bot-2026-06-18-1200.db.gz   # .gz juga b
 
 Langkah (otomatis di skrip):
 1. `integrity_check` pada **backup** dulu — abort sebelum menyentuh DB live bila rusak.
-2. `docker compose stop order-bot notifier web-admin storefront` (hentikan semua writer).
+2. `docker compose stop server` (hentikan proses penulis DB).
 3. Simpan DB saat ini ke `bot.db.pre-restore-<stamp>` (restore pun reversibel).
 4. Salin backup → `bot.db`; **hapus `bot.db-wal`/`bot.db-shm` basi** (milik DB lama
    — bila dibiarkan akan merusak hasil restore).

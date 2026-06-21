@@ -320,6 +320,56 @@ describe("orders", () => {
     expect(audit.length).toBe(1);
   });
 
+  it("approve is atomic: mid-loop out-of-stock failure rolls back the FIRST item's allocation too", async () => {
+    // Quantity 2, but only 1 AVAILABLE stock item left: approveOrder's per-item
+    // loop allocates+SOLDs item #1, then throws on item #2
+    // (error.cannot_deliver_out_of_stock). Without a shared transaction, item
+    // #1's stock flip and the order/audit writes are separate statements on
+    // the raw client, so a non-atomic route would leave a SOLD stock row and
+    // an untouched PENDING_VERIFICATION order behind — an inconsistent state.
+    const user = (await getUser(prisma, seed.customerId))!;
+    // Seed has 4 AVAILABLE stock items already; create a qty=2 order against
+    // that healthy stock, then drain stock down to 1 item to simulate another
+    // sale consuming it between order creation and admin approval.
+    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 2 }))!;
+    await attachPaymentProof(prisma, order.id, { fileId: "proof123", txid: "TX1234567890" });
+    const orderId = order.id;
+
+    const remaining = await prisma.stockItem.findMany({
+      where: { productId: seed.productId, status: "AVAILABLE" },
+      orderBy: { id: "asc" },
+    });
+    // Keep exactly 1 AVAILABLE row so item #1 of the loop allocates fine and
+    // item #2 hits the out-of-stock branch.
+    await prisma.stockItem.deleteMany({
+      where: { id: { in: remaining.slice(1).map((s) => s.id) } },
+    });
+
+    const res = await post(`/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toMatch(new RegExp(`^/orders/${orderId}`));
+    expect(res.headers.location).toContain("kind=error");
+
+    // Order must be unchanged — the failed second allocation must not leave a
+    // partial DELIVERED/approve side-effect behind.
+    const reloaded = (await getOrder(prisma, orderId))!;
+    expect(reloaded.status).toBe("PENDING_VERIFICATION");
+
+    // The one stock item that DID get allocated+SOLD for item #1 must have
+    // been rolled back to AVAILABLE, not left dangling as SOLD/RESERVED.
+    const leftoverStock = await prisma.stockItem.count({
+      where: { productId: seed.productId, status: { in: ["RESERVED", "SOLD"] } },
+    });
+    expect(leftoverStock).toBe(0);
+    const stillAvailable = await countAvailableStock(prisma, seed.productId);
+    expect(stillAvailable).toBe(1);
+
+    // The audit write must have rolled back with the failed state change —
+    // proving approveOrder + logAdminAction share one transaction.
+    const audit = await prisma.auditLog.findMany({ where: { action: "approve_order", targetId: orderId } });
+    expect(audit.length).toBe(0);
+  });
+
   it("list shows a web buyer's login handle, not a dash", async () => {
     // Web-store buyers have no Telegram fullName/username — only loginUsername /
     // email. The list must fall back to those instead of rendering "—".

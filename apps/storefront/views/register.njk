@@ -3,13 +3,16 @@
 
 {% block title %}{{ t('web.register_title', lang) }} — {{ shop_name }}{% endblock %}
 
+{% block nav %}{% endblock %}
+{% block footer %}{% endblock %}
+
 {% block content %}
-<div class="min-h-[calc(100svh-4rem)] flex items-center justify-center">
+<div class="min-h-[100svh] flex items-center justify-center -my-8">
   <div class="w-full max-w-md card card-pad">
-    <div class="text-center">
+    <a href="/" class="text-center block">
       <i data-lucide="user-plus" class="w-8 h-8 text-pine mx-auto"></i>
       <h1 class="font-display text-xl font-semibold mt-3">{{ t('web.register_title', lang) }}</h1>
-    </div>
+    </a>
 
     {% if error %}
     <div class="mt-4">{{ ui.flash(error, 'error') }}</div>

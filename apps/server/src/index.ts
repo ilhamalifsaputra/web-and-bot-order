@@ -32,7 +32,7 @@ import { startPolling as startPaydisiniPolling, stopPolling as stopPaydisiniPoll
 import { startPolling as startNowpaymentsPolling, stopPolling as stopNowpaymentsPolling } from "@app/order-bot/payments/nowpaymentsReconcile";
 import { buildApp } from "@app/web-admin/server";
 import { buildApp as buildShopApp } from "@app/storefront/server";
-import { runDispatcher } from "@app/notifier/dispatcher";
+import { runDispatcher } from "@app/outbox-dispatcher";
 
 /** Update types we subscribe to — identical in polling and webhook mode. */
 const ALLOWED_UPDATES = ["message", "edited_message", "callback_query", "my_chat_member"] as const;

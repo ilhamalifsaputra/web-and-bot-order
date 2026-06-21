@@ -14,8 +14,8 @@
   "dependencies": {
     "@app/core": "workspace:*",
     "@app/db": "workspace:*",
-    "@app/notifier": "workspace:*",
     "@app/order-bot": "workspace:*",
+    "@app/outbox-dispatcher": "workspace:*",
     "@app/storefront": "workspace:*",
     "@app/web-admin": "workspace:*",
     "@grammyjs/runner": "^2.0.3",

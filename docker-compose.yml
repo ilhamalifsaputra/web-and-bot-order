@@ -1,16 +1,21 @@
 # Compose for the migrated Node stack. All services share ONE image and ONE
 # SQLite file (./data/bot.db, WAL mode) via the mounted ./data volume.
 #
-# Services: notifier, web-admin, order-bot, and the optional storefront (the
+# Services: web-admin, order-bot, and the optional storefront (the
 # customer-facing web store). Bring them up one at a time if you like, e.g.
-#   docker compose up -d notifier      # Fase 1
 #   docker compose up -d web-admin     # Fase 3
 #   docker compose up -d order-bot     # Fase 5  (stop the Python bot FIRST)
 #   docker compose up -d storefront    # opsional: hanya jika menjual via web
 #
+# OUTBOX DELIVERY: notification_outbox is drained IN-PROCESS by the dispatcher
+# (@app/outbox-dispatcher), which runs inside the combined server (apps/server,
+# `pnpm start`). The standalone notifier service is gone; this split-service
+# compose has no outbox drainer on its own — add a service that runs `pnpm start`
+# (the combined server) if you deploy with Compose instead of PM2.
+#
 # IMPORTANT (migrate.md §14.12): never run the Python order-bot and the Node
 # order-bot against the same DB simultaneously — two order-flow writers corrupt
-# state. notifier (status-only writes) is safe to parallel-run during Fase 1.
+# state.
 #
 # MULTI-INSTANCE: container names are NOT hardcoded — Compose derives them from
 # COMPOSE_PROJECT_NAME (set per .env), so two independent shops can run on one
@@ -37,10 +42,6 @@ services:
   order-bot:
     <<: *app
     command: ["pnpm", "--filter", "@app/order-bot", "start"]
-
-  notifier:
-    <<: *app
-    command: ["pnpm", "--filter", "@app/notifier", "start"]
 
   web-admin:
     <<: *app

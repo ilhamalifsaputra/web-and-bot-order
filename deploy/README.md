@@ -9,7 +9,7 @@ rollback.
 ```
 Internet ──TLS──▶ nginx (443) ──http──▶ 127.0.0.1:8000  web-admin   (admin.example.com)
                                   └────▶ 127.0.0.1:8100  storefront  (shop.example.com)
-docker-compose: order-bot · notifier · web-admin · storefront  (one image, one ./data/bot.db)
+docker-compose: order-bot · web-admin · storefront  (one image, one ./data/bot.db)
 ```
 
 Apps stay bound to **127.0.0.1** (never exposed directly). nginx terminates TLS.
@@ -51,7 +51,6 @@ Dockerfile's default `CMD` (`order-bot start`) per service:
 | Service | command | port |
 |---|---|---|
 | order-bot | `@app/order-bot start` | — |
-| notifier | `@app/notifier start` | — |
 | web-admin | `@app/web-admin start` | `${WEB_PORT:-8000}` |
 | storefront | `@app/storefront start` | `${STOREFRONT_PORT:-8100}` |
 

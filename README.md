@@ -10,9 +10,8 @@ Pembayaran lewat **QRIS (TokoPay)**, **Binance Internal**, atau **Bybit
 (USDT-BEP20)** — ketiganya **terkonfirmasi otomatis**, akun langsung terkirim
 tanpa cek manual.
 
-Dibangun dengan **Node.js + TypeScript** (monorepo pnpm). Bot, panel admin, toko
-web, dan notifier berbagi **satu database SQLite** — tanpa server database
-terpisah.
+Dibangun dengan **Node.js + TypeScript** (monorepo pnpm). Bot, panel admin, dan
+toko web berbagi **satu database SQLite** — tanpa server database terpisah.
 
 > 📌 Panduan ini ramah pemula: ikuti dari atas ke bawah. Alur cepat:
 > **Sebelum Mulai → pilih satu Jalur Instalasi → Buat Admin Pertama**.
@@ -108,10 +107,9 @@ docker compose run --rm order-bot pnpm exec prisma db push
 **4. Nyalakan layanan** (urutan penting):
 
 ```bash
-docker compose up -d notifier      # 1. pengirim notifikasi
-docker compose up -d web-admin     # 2. panel admin (port 8000)
-docker compose up -d order-bot     # 3. bot Telegram
-docker compose up -d storefront    # 4. toko web (port 8100) — opsional
+docker compose up -d web-admin     # 1. panel admin (port 8000)
+docker compose up -d order-bot     # 2. bot Telegram (+ pengirim notifikasi in-process)
+docker compose up -d storefront    # 3. toko web (port 8100) — opsional
 ```
 
 > 🛍️ **`storefront` opsional** — nyalakan hanya kalau berjualan lewat website.
@@ -159,14 +157,15 @@ cp .env.example .env            # isi sesuai bagian 2
 pnpm prisma:generate
 pnpm exec prisma db push
 
-# Jalankan (bot + panel admin + toko web + notifier dalam satu proses)
+# Jalankan (bot + panel admin + toko web + pengiriman notifikasi dalam satu proses)
 pnpm start
 ```
 
 - Panel admin: `http://IP-VPS-KAMU:8000/login` · Toko web: `…:8100/`
 
 > 🛍️ `pnpm start` menjalankan **satu proses** berisi bot + panel admin
-> (`WEB_PORT`, 8000) + toko web (`STOREFRONT_PORT`, 8100) + notifier. Agar diakses
+> (`WEB_PORT`, 8000) + toko web (`STOREFRONT_PORT`, 8100) + pengiriman notifikasi
+> (drain `notification_outbox` via `@app/outbox-dispatcher`). Agar diakses
 > dari luar VPS set `WEB_HOST=0.0.0.0` (default `127.0.0.1`; idealnya di balik
 > HTTPS). Punya domain toko? Set `SHOP_PUBLIC_URL` + `SHOP_HOST`.
 
@@ -314,8 +313,7 @@ Masih bingung? Lihat log: `docker compose logs -f order-bot` atau
 ```bash
 pnpm dev:bot        # bot Telegram (watch)
 pnpm dev:web        # panel admin → http://127.0.0.1:8000
-pnpm dev:notifier   # notifier
-pnpm start          # semua dalam satu proses
+pnpm start          # semua dalam satu proses (termasuk pengiriman notifikasi)
 
 pnpm typecheck      # cek TypeScript semua paket
 pnpm test           # seluruh tes (Vitest)
@@ -330,12 +328,12 @@ apps/
   order-bot/    Bot Telegram (grammY) — alur pelanggan + admin
   web-admin/    Panel admin (Fastify + Nunjucks + HTMX)
   storefront/   Website toko pelanggan
-  notifier/     Pengirim notifikasi (drain notification_outbox)
   server/       Composition root satu-proses (dipakai oleh pnpm start)
 packages/
-  core/         Config, money (Decimal), i18n, password, mailer, fx
-  db/           Prisma client + CRUD per-domain (+ tes Vitest)
-  web-ui/       Tema & template bersama
+  core/             Config, money (Decimal), i18n, password, mailer, fx
+  db/               Prisma client + CRUD per-domain (+ tes Vitest)
+  outbox-dispatcher/ Pengirim notifikasi (drain notification_outbox → Telegram)
+  web-ui/           Tema & template bersama
 prisma/schema.prisma   Skema database (SQLite, WAL)
 data/bot.db            Database (di-gitignore)
 ```

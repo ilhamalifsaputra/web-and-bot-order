@@ -42,7 +42,12 @@ import { matchByAmount } from "./binanceInternal";
 import { paymentSuccessKb } from "../keyboards/customer";
 import { sendAccountFile } from "../util/delivery";
 
-const AMOUNT_TOLERANCE = 0.01; // USDT
+// Internal transfers are exact off-chain ledger moves (no on-chain
+// slippage/fees) — the only error source is Number() float parsing of a
+// decimal string, far smaller than this. Tight on purpose: it lets the M-9
+// unique-cents offset (see computeUniqueCents) shrink to a much smaller
+// surcharge while still disambiguating same-amount orders.
+const AMOUNT_TOLERANCE = 0.001; // USDT
 /** Bybit internal-deposit status: 1=Processing, 2=Success, 3=Failed (per
  * Bybit V5 docs — DIFFERS from the on-chain ledger, where 3=success). Deliver
  * only on Success. */

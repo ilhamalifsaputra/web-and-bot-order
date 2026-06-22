@@ -59,13 +59,13 @@ describe("classifyTx / noteMatches", () => {
 
   it("exact / within-tolerance / overpaid → match", () => {
     expect(classifyTx({ note: "BCC1BDDE6F", amount: 5.0 }, order)).toBe("match");
-    expect(classifyTx({ note: "BCC1BDDE6F", amount: 5.005 }, order)).toBe("match"); // within 0.01
+    expect(classifyTx({ note: "BCC1BDDE6F", amount: 5.0005 }, order)).toBe("match"); // within 0.001
     expect(classifyTx({ note: "BCC1BDDE6F", amount: 5.5 }, order)).toBe("match"); // overpaid
   });
 
   it("short beyond tolerance → underpaid", () => {
     expect(classifyTx({ note: "BCC1BDDE6F", amount: 4.5 }, order)).toBe("underpaid");
-    expect(classifyTx({ note: "BCC1BDDE6F", amount: 4.985 }, order)).toBe("underpaid");
+    expect(classifyTx({ note: "BCC1BDDE6F", amount: 4.9985 }, order)).toBe("underpaid");
   });
 
   it("wrong note → none (regardless of amount)", () => {
@@ -142,7 +142,7 @@ describe("matchByAmount (note-less fallback)", () => {
 
   it("returns the sole order within tolerance", () => {
     expect(matchByAmount({ amount: 7.5 }, orders)?.id).toBe(2);
-    expect(matchByAmount({ amount: 12.345 }, orders)?.id).toBe(3); // within 0.01
+    expect(matchByAmount({ amount: 12.3401 }, orders)?.id).toBe(3); // within 0.001
   });
 
   it("refuses when no order matches", () => {

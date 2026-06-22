@@ -109,6 +109,8 @@ describe("combined server bootstrap", () => {
     it("routes the shop hostname to the storefront and everything else to admin", () => {
       expect(dispatchByHost("shop.example.com", "shop.example.com")).toBe("shop");
       expect(dispatchByHost("SHOP.example.com:443", "shop.example.com")).toBe("shop");
+      expect(dispatchByHost("www.shop.example.com", "shop.example.com")).toBe("shop");
+      expect(dispatchByHost("WWW.shop.example.com:443", "shop.example.com")).toBe("shop");
       expect(dispatchByHost("admin.example.com", "shop.example.com")).toBe("admin");
       expect(dispatchByHost("203.0.113.7", "shop.example.com")).toBe("admin");
       expect(dispatchByHost(undefined, "shop.example.com")).toBe("admin");

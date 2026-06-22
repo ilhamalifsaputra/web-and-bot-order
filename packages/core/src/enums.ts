@@ -128,6 +128,12 @@ export const zSenderType = z.nativeEnum(SenderType);
 
 export const NotificationEvent = {
   ORDER_DELIVERED: "ORDER_DELIVERED",
+  // Admin DM (not a channel post): a payment-gateway webhook (TokoPay/
+  // PayDisini/NOWPayments) delivered an order whose paid amount exceeded the
+  // order total. payload carries `chat_id` (the admin's telegram id) plus
+  // order_code/paid/expected/excess/currency so the dispatcher DMs each admin
+  // directly instead of posting to PUBLIC_CHANNEL_ID.
+  ADMIN_OVERPAID: "ADMIN_OVERPAID",
   // Admin DM (not a channel post): a one-time web-admin password-reset code.
   // payload carries `chat_id` (the admin's telegram id) so the dispatcher DMs
   // them directly instead of posting to PUBLIC_CHANNEL_ID.

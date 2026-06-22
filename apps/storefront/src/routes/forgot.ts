@@ -12,6 +12,7 @@ import {
   setLoginCredentials,
 } from "@app/db";
 import { newJti, shopSessionJtiKey } from "../auth";
+import { clientIp, loginRateLimited } from "../rateLimit";
 import { shopContext } from "../shop";
 
 function publicBase(req: FastifyRequest): string {
@@ -28,6 +29,15 @@ const forgotRoutes: FastifyPluginAsync = async (app) => {
 
   app.post<{ Body: { email?: string } }>("/forgot", async (req, reply) => {
     const ctx = await shopContext(req, "/login");
+    const ip = clientIp(req);
+    if (loginRateLimited(ip)) {
+      return reply.code(429).view("forgot.njk", {
+        ...ctx,
+        sent: false,
+        unavailable: false,
+        error: t("error.rate_limited", ctx.lang),
+      });
+    }
     if (!isSmtpEnabled()) {
       return reply.view("forgot.njk", { ...ctx, sent: false, unavailable: true });
     }

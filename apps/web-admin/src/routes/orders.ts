@@ -88,13 +88,15 @@ export default async function ordersRoutes(app: FastifyInstance): Promise<void> 
   app.post("/orders/:orderId/approve", { preHandler: csrfProtect }, async (req, reply) => {
     const orderId = Number((req.params as { orderId: string }).orderId);
     try {
-      const { order } = await approveOrder(prisma, orderId, { adminId: req.admin!.userId });
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "approve_order",
-        targetType: "order",
-        targetId: orderId,
-        details: `order_code=${order.orderCode}`,
+      await prisma.$transaction(async (tx) => {
+        const { order } = await approveOrder(tx, orderId, { adminId: req.admin!.userId });
+        await logAdminAction(tx, {
+          adminId: req.admin!.userId,
+          action: "approve_order",
+          targetType: "order",
+          targetId: orderId,
+          details: `order_code=${order.orderCode}`,
+        });
       });
     } catch (e) {
       if (e instanceof ValidationError) {
@@ -115,16 +117,18 @@ export default async function ordersRoutes(app: FastifyInstance): Promise<void> 
   app.post("/orders/:orderId/credit-balance", { preHandler: csrfProtect }, async (req, reply) => {
     const orderId = Number((req.params as { orderId: string }).orderId);
     try {
-      const { credited, currency } = await creditOrderToBalance(prisma, {
-        orderId,
-        adminId: req.admin!.userId,
-      });
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "order_credit_balance",
-        targetType: "order",
-        targetId: orderId,
-        details: `credited=${credited.toString()} ${currency}`,
+      await prisma.$transaction(async (tx) => {
+        const { credited, currency } = await creditOrderToBalance(tx, {
+          orderId,
+          adminId: req.admin!.userId,
+        });
+        await logAdminAction(tx, {
+          adminId: req.admin!.userId,
+          action: "order_credit_balance",
+          targetType: "order",
+          targetId: orderId,
+          details: `credited=${credited.toString()} ${currency}`,
+        });
       });
     } catch (e) {
       if (e instanceof ValidationError) {
@@ -148,13 +152,15 @@ export default async function ordersRoutes(app: FastifyInstance): Promise<void> 
       return redirectWithFlash(reply, `/orders/${orderId}`, "A rejection reason is required.", "error");
     }
     try {
-      await rejectOrder(prisma, orderId, { adminId: req.admin!.userId, reason });
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "reject_order",
-        targetType: "order",
-        targetId: orderId,
-        details: `reason=${reason.slice(0, 200)}`,
+      await prisma.$transaction(async (tx) => {
+        await rejectOrder(tx, orderId, { adminId: req.admin!.userId, reason });
+        await logAdminAction(tx, {
+          adminId: req.admin!.userId,
+          action: "reject_order",
+          targetType: "order",
+          targetId: orderId,
+          details: `reason=${reason.slice(0, 200)}`,
+        });
       });
     } catch (e) {
       if (e instanceof ValidationError) {

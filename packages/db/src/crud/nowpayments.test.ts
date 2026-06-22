@@ -4,9 +4,19 @@
  * colocated tokopay.test.ts to mirror directly. Covers the three
  * deliverPaidNowpaymentsOrder branches (delivered/already_processed/stale)
  * plus recordUnmatchedNowpaymentsTx's claim-once semantics.
+ *
+ * Overpayment (Task 5 / H-3): the full suite lives in crud/paydisini.test.ts
+ * (the three deliver functions are intentionally near-identical) — this file
+ * only carries a representative overpaid assertion.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
+
+vi.mock("@app/core/config", async () => {
+  const actual = await vi.importActual<typeof import("@app/core/config")>("@app/core/config");
+  return { ...actual, config: { ...actual.config, ADMIN_IDS: [333] } };
+});
+
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { createOrderDirect, deliverPaidNowpaymentsOrder, recordUnmatchedNowpaymentsTx } from "@app/db";
@@ -93,6 +103,38 @@ describe("deliverPaidNowpaymentsOrder", () => {
     // Still only one ledger row and the order wasn't touched twice.
     const rows = await prisma.processedNowpaymentsTx.findMany({ where: { trxId: "trx-dup-1" } });
     expect(rows.length).toBe(1);
+  });
+
+  it("overpaid: delivers, ledger outcome is overpaid, and enqueues an ADMIN_OVERPAID row with correct excess/currency", async () => {
+    const order = await makePendingNowpaymentsOrder();
+    // Pricing applies USE_UNIQUE_CENTS jitter, so totalAmount isn't a round
+    // number — compute the expected excess from the actual total instead of
+    // assuming "5".
+    const expectedTotal = new Decimal(order.totalAmount);
+    const paid = expectedTotal.plus("1.25");
+
+    const result = await deliverPaidNowpaymentsOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-overpaid-1",
+      amount: paid,
+    });
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+
+    const ledgerRow = await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "trx-overpaid-1" } });
+    expect(ledgerRow?.outcome).toBe("overpaid");
+
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    expect(adminRows.length).toBe(1); // one ADMIN_IDS entry ([333])
+    const payload = JSON.parse(adminRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.chat_id).toBe(333);
+    expect(payload.order_code).toBe(result.order.orderCode);
+    expect(payload.paid).toBe(paid.toString());
+    expect(payload.expected).toBe(expectedTotal.toString());
+    expect(payload.excess).toBe("1.25");
+    expect(payload.currency).toBe(result.order.currency);
   });
 
   it("an order that is no longer PENDING_PAYMENT/NOWPAYMENTS is stale", async () => {

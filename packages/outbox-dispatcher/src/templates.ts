@@ -89,6 +89,14 @@ interface AdminResetPayload {
   ttl_minutes?: unknown;
 }
 
+interface AdminOverpaidPayload {
+  order_code?: unknown;
+  paid?: unknown;
+  expected?: unknown;
+  excess?: unknown;
+  currency?: unknown;
+}
+
 interface DeliveredDmPayload {
   order_code?: unknown;
   order_url?: unknown;
@@ -97,8 +105,30 @@ interface DeliveredDmPayload {
 /** Return the message body for an outbox event, or "" to skip. */
 export function render(
   event: string,
-  payload: DeliveredPayload & AdminResetPayload & DeliveredDmPayload,
+  payload: DeliveredPayload & AdminResetPayload & DeliveredDmPayload & AdminOverpaidPayload,
 ): string {
+  if (event === NotificationEvent.ADMIN_OVERPAID) {
+    // Admin DM (not a channel post): a gateway webhook delivered an order
+    // whose paid amount exceeded the total. All values are escaped even
+    // though they originate from our own Decimal math, not gateway input.
+    const code = escape(String(payload.order_code ?? ""));
+    const paid = escape(String(payload.paid ?? "0"));
+    const expected = escape(String(payload.expected ?? "0"));
+    const excess = escape(String(payload.excess ?? "0"));
+    const currency = escape(String(payload.currency ?? ""));
+    return (
+      `⚠️ <b>Overpayment on order <code>${code}</code></b>\n` +
+      `Paid: <b>${paid} ${currency}</b>\n` +
+      `Expected: <b>${expected} ${currency}</b>\n` +
+      `Excess: <b>${excess} ${currency}</b>\n` +
+      `The order was delivered as usual — please review the excess for a refund/credit.\n\n` +
+      `⚠️ <b>Kelebihan bayar pada pesanan <code>${code}</code></b>\n` +
+      `Dibayar: <b>${paid} ${currency}</b>\n` +
+      `Seharusnya: <b>${expected} ${currency}</b>\n` +
+      `Kelebihan: <b>${excess} ${currency}</b>\n` +
+      `Pesanan tetap terkirim seperti biasa — tolong tinjau kelebihan bayar ini untuk refund/kredit.`
+    );
+  }
   if (event === NotificationEvent.ADMIN_PW_RESET) {
     // Admin DM (not a channel post). Bilingual + the code is escaped just in case.
     const code = escape(String(payload.code ?? ""));

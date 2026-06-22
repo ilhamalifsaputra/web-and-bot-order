@@ -66,6 +66,36 @@ describe("notifier templates.render", () => {
     expect(out).not.toContain("view on the website");
   });
 
+  it("renders ADMIN_OVERPAID as a bilingual admin DM with order code, amounts, excess and currency", () => {
+    const out = render("ADMIN_OVERPAID", {
+      order_code: "ORD-OVERPAY-1",
+      paid: "75000.0000",
+      expected: "50000.0000",
+      excess: "25000.0000",
+      currency: "IDR",
+    });
+    expect(out).toContain("<code>ORD-OVERPAY-1</code>");
+    expect(out).toContain("75000.0000");
+    expect(out).toContain("50000.0000");
+    expect(out).toContain("25000.0000");
+    expect(out).toContain("IDR");
+    expect(out).toMatch(/overpa(id|yment)/i);
+    expect(out).toMatch(/kelebihan|bayar lebih/i); // Indonesian line
+  });
+
+  it("HTML-escapes ADMIN_OVERPAID interpolated values", () => {
+    const out = render("ADMIN_OVERPAID", {
+      order_code: "<b>ORD</b>",
+      paid: "<script>",
+      expected: "50000",
+      excess: "0",
+      currency: "IDR",
+    });
+    expect(out).not.toContain("<script>");
+    expect(out).not.toContain("<b>ORD</b>");
+    expect(out).toContain("&lt;b&gt;ORD&lt;/b&gt;");
+  });
+
   it("returns empty string for unknown events", () => {
     expect(render("something.else", payload)).toBe("");
     // lowercase value form is NOT what is stored -> must not match

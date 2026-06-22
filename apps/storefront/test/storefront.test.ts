@@ -1,7 +1,7 @@
 // Storefront catalog smoke tests — drives the Fastify app with app.inject()
 // against an isolated temp DB (pattern: apps/web-admin/test/web.test.ts).
 import "./setup-env"; // FIRST import — sets env before @app/* load
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@app/core/mailer", () => ({
   sendMail: vi.fn().mockResolvedValue(undefined),
 }));
@@ -44,6 +44,7 @@ import {
 } from "@app/db";
 import { buildApp } from "../src/server";
 import { verifyTelegramLoginResult } from "../src/auth";
+import { resetLoginAttempts } from "../src/rateLimit";
 
 /** Seed a mid-tier Product with N denominations (the 3-tier shape). */
 async function seedProduct(
@@ -120,6 +121,15 @@ afterAll(async () => {
   await app.close();
   await prisma.$disconnect();
   cleanupTestDb();
+});
+
+// The login rate limiter is an in-process Map shared across this whole file's
+// app.inject() calls (all default to the same 127.0.0.1 "IP"). This suite logs
+// in far more than WEB_LOGIN_RATE_LIMIT_MAX times across its many checkout
+// fixtures, so clear the IP bucket between tests (mirrors
+// apps/web-admin/test/web.test.ts's beforeEach: resetLoginAttempts("127.0.0.1")).
+beforeEach(() => {
+  resetLoginAttempts("127.0.0.1");
 });
 
 async function loginAs(identifier: string, password: string): Promise<string> {

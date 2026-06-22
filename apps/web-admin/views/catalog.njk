@@ -23,7 +23,7 @@
           <td>{{ ui.status_badge('active' if c.isActive else 'inactive') }}</td>
           <td class="text-right">
             {% call ui.dropdown('', 'ellipsis-vertical') %}
-            <form method="post" action="/catalog/category/{{ c.id }}/update" class="flex flex-col gap-2 px-3 py-2 w-64">
+            <form method="post" action="/catalog/category/{{ c.id }}/update" class="flex flex-col gap-2 px-3 py-2 w-64 max-sm:!w-full">
               {{ ui.csrf_field(admin) }}
               <input name="name" value="{{ c.name }}" required class="field text-xs" placeholder="Name">
               <input name="emoji" value="{{ c.emoji or '' }}" class="field text-xs" placeholder="Icon">

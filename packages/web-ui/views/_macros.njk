@@ -187,7 +187,7 @@
     {% if icon %}<i data-lucide="{{ icon }}" class="w-4 h-4"></i>{% endif %}{% if label %} {{ label }}{% endif %}
     <i data-lucide="chevron-down" class="w-3.5 h-3.5 dd-chevron transition-transform"></i>
   </summary>
-  <div class="absolute {{ 'right-0' if align == 'right' else 'left-0' }} mt-2 min-w-[12rem] rounded-xl bg-card py-1.5 shadow-lift border border-line z-40 flex flex-col text-sm">
+  <div class="absolute {{ 'right-0' if align == 'right' else 'left-0' }} mt-2 min-w-[12rem] max-w-[calc(100vw-2rem)] rounded-xl bg-card py-1.5 shadow-lift border border-line z-40 flex flex-col text-sm max-sm:!fixed max-sm:!left-4 max-sm:!right-4 max-sm:!top-auto max-sm:!bottom-4 max-sm:!mt-0 max-sm:!w-auto max-sm:!max-h-[75vh] max-sm:!overflow-y-auto max-sm:!z-50">
     {{ caller() }}
   </div>
 </details>

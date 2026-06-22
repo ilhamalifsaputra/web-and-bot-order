@@ -7,7 +7,7 @@
 
 {{ ui.flash(msg, kind) }}
 
-<section class="grid grid-cols-3 gap-4 mb-8">
+<section class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
   {% set cards = [['PENDING','Waiting to send','text-pine'], ['SENT','Sent','text-grass'], ['FAILED','Didn’t send','text-rust']] %}
   {% for c in cards %}
   <div class="card card-pad">

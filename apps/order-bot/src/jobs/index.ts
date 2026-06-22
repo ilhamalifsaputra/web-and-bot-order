@@ -34,6 +34,37 @@ import {
 import { coreT } from "../util/i18n";
 import { notificationKb } from "../keyboards/customer";
 
+/**
+ * Flip the anchored payment-instructions bubble (if any) to the auto-cancelled
+ * notice in place — mirrors the reconcile pollers' success-bubble flip
+ * (tokopayReconcile.editBubbleToSuccess): try caption edit first (QR photo
+ * bubbles), fall back to text edit, and only send a fresh DM when no anchor
+ * exists or the bubble is gone, so the stale Refresh/Cancel buttons never
+ * survive next to a brand-new message.
+ */
+async function notifyAutoCancelled(
+  api: Api,
+  o: { tgId: bigint | null; lang: string; code: string; paymentMsgChatId: bigint | null; paymentMsgId: number | null },
+): Promise<void> {
+  const text = coreT("order.auto_cancelled", o.lang, { code: o.code });
+  const markup = notificationKb(o.lang);
+  if (o.paymentMsgChatId != null && o.paymentMsgId != null) {
+    const chatId = Number(o.paymentMsgChatId);
+    try {
+      await api.editMessageCaption(chatId, o.paymentMsgId, { caption: text, parse_mode: "HTML", reply_markup: markup });
+      return;
+    } catch {
+      try {
+        await api.editMessageText(chatId, o.paymentMsgId, text, { parse_mode: "HTML", reply_markup: markup });
+        return;
+      } catch {
+        /* bubble gone/uneditable — fall through to a fresh DM */
+      }
+    }
+  }
+  await api.sendMessage(Number(o.tgId), text, { parse_mode: "HTML", reply_markup: markup });
+}
+
 export async function autoCancelExpiredOrders(api: Api): Promise<void> {
   const now = new Date();
   const expired = await listExpiredPendingOrders(prisma, now);
@@ -42,6 +73,8 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
     code: o.orderCode,
     tgId: o.user.telegramId,
     lang: langCode(o.user.language),
+    paymentMsgChatId: o.paymentMsgChatId,
+    paymentMsgId: o.paymentMsgId,
   }));
 
   for (const o of orderData) {
@@ -49,10 +82,7 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
       await prisma.$transaction((tx) => cancelOrder(tx, o.id, "expired"));
       logger.info(`Auto-cancelled expired order ${o.code}`);
       try {
-        await api.sendMessage(Number(o.tgId), coreT("order.auto_cancelled", o.lang, { code: o.code }), {
-          parse_mode: "HTML",
-          reply_markup: notificationKb(o.lang),
-        });
+        await notifyAutoCancelled(api, o);
       } catch (err) {
         logger.error({ err }, `Failed to notify user about expired order ${o.id}`);
       }

@@ -79,22 +79,26 @@ export function generatePaymentRef(): string {
 }
 
 /**
- * Deterministic amount offset (0.02 … 0.98 USDT) keyed off order id, used to
+ * Deterministic amount offset (0.002 … 0.098 USDT) keyed off order id, used to
  * disambiguate simultaneous transfers of the same base amount (M-9).
  *
- * The step (0.02) is deliberately **larger than AMOUNT_TOLERANCE (0.01)** in the
- * payment matchers, which compare `|received − total| <= 0.01`. With a smaller
- * step two equal-base orders stayed within tolerance of each other (both matched
- * → refuse), so the offset never actually disambiguated them. A 0.02 step means
- * adjacent-id orders are ≥0.02 apart → only the intended order matches.
+ * The step (0.002) is deliberately **larger than AMOUNT_TOLERANCE (0.001)** in
+ * the payment matchers, which compare `|received − total| <= 0.001`. With a
+ * smaller step two equal-base orders stayed within tolerance of each other
+ * (both matched → refuse), so the offset never actually disambiguated them. A
+ * 0.002 step means adjacent-id orders are ≥0.002 apart → only the intended
+ * order matches.
  *
- * Trade-off (offset up to 0.98): orders whose *base* totals differ by < ~0.98
- * USDT can now alias within tolerance and refuse — still safe (manual, never a
- * mis-deliver). 49 buckets keep the surcharge under 1 USDT.
+ * Originally 0.02 .. 0.98 (step 0.02, tolerance 0.01): negligible on a
+ * big-ticket order but up to a 49% surcharge on a cheap ($2-ish) one. Both the
+ * step and the tolerance were shrunk 10x to cut the worst case to ~0.1 USDT
+ * while keeping the same 49 buckets and the same step/tolerance safety margin
+ * (still safe if collisions happen anyway — manual review, never a
+ * mis-deliver).
  */
 export function computeUniqueCents(orderIdOrSeed: number): Decimal {
   const bucket = (orderIdOrSeed % 49) + 1; // 1..49
-  return new Decimal(bucket).div(50).toDecimalPlaces(4); // 0.02 .. 0.98, step 0.02
+  return new Decimal(bucket).div(500).toDecimalPlaces(4); // 0.002 .. 0.098, step 0.002
 }
 
 /** Escape user text for Telegram HTML (quote=False — only & < >). */

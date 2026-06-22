@@ -2,11 +2,17 @@
  * Bybit Internal Transfer (UID→UID, off-chain, instant) deposit auto-confirmation.
  *
  * Buyers send USDT via Bybit's own "Internal Transfer" (Bybit account to Bybit
- * account, no blockchain hop) to our shared Bybit UID. A polling loop pulls
- * recent internal deposits from Bybit, matches each to a PENDING order by its
- * UNIQUE amount (internal transfers carry no memo), and auto-delivers via the
- * normal approve path. Unlike the old on-chain BEP20 path, there is no
+ * account, no blockchain hop) to our shared Bybit UID. A polling loop (every
+ * BYBIT_POLL_INTERVAL_SECONDS, independent of the Binance poller's interval)
+ * pulls recent internal deposits from Bybit, matches each to a PENDING order
+ * by its UNIQUE amount (internal transfers carry no memo), and auto-delivers
+ * via the normal approve path. Unlike the old on-chain BEP20 path, there is no
  * blockchain-confirmation wait — delivery is effectively instant.
+ *
+ * Rate-limit hits (429/403/retCode 10006/10018) use a bounded exponential
+ * backoff (`pollBackoff.ts`, base 3s doubling to a 30s cap, reset on the next
+ * successful call) instead of a flat fixed delay — a flat delay re-arms on
+ * every consecutive hit and can stack into multi-minute outages.
  *
  * ── READ-ONLY ──────────────────────────────────────────────────────────────
  * The ONLY Bybit endpoint this module calls is
@@ -39,6 +45,7 @@ import {
 import { coreT } from "../util/i18n";
 import { esc } from "../util/format";
 import { matchByAmount } from "./binanceInternal";
+import { createBackoffGate } from "./pollBackoff";
 import { paymentSuccessKb } from "../keyboards/customer";
 import { sendAccountFile } from "../util/delivery";
 
@@ -82,6 +89,16 @@ async function bybitGet(path: string, params: Record<string, string>, cfg: Bybit
       "X-BAPI-SIGN": sign,
     },
   });
+  // Bybit returns its rate-limit budget on every response (not just 429s) —
+  // logging it gives empirical data on real headroom instead of guessing.
+  const limit = res.headers.get("X-Bapi-Limit");
+  const limitStatus = res.headers.get("X-Bapi-Limit-Status");
+  if (limit != null || limitStatus != null) {
+    logger.debug(
+      `Bybit ${path} rate-limit budget: limit=${limit} remaining=${limitStatus} ` +
+        `resetAt=${res.headers.get("X-Bapi-Limit-Reset-Timestamp")}`,
+    );
+  }
   if (res.status === 429 || res.status === 403) {
     throw new RateLimitedError(`Bybit rate limited (HTTP ${res.status})`);
   }
@@ -174,27 +191,33 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
 // Poll cycle
 // ---------------------------------------------------------------------------
 
-let backoffUntil = 0;
+const backoff = createBackoffGate();
 
 export async function pollOnce(api: Api): Promise<void> {
   const cfg = await resolveBybitConfig(prisma);
   if (!cfg.enabled) return;
-  if (Date.now() < backoffUntil) return;
+  if (backoff.shouldSkip()) return;
 
   let deposits: BybitDeposit[];
   try {
     deposits = await fetchRecentDeposits(cfg);
   } catch (err) {
     if (err instanceof RateLimitedError) {
-      backoffUntil = Date.now() + 60_000;
-      logger.warn("Bybit rate-limited — backing off 60s");
+      const { hitCount, delayMs } = backoff.recordRateLimit();
+      logger.warn(`Bybit rate-limited (hit #${hitCount}) — backing off ${delayMs}ms`);
     } else {
       logger.error({ err }, "Bybit deposit fetch failed");
     }
-    await recordBybitPollHealth(prisma, { lastTxCount: 0, backoffUntil: backoffUntil || null }).catch(() => undefined);
+    await recordBybitPollHealth(prisma, {
+      lastTxCount: 0,
+      backoffUntil: backoff.backoffUntil || null,
+      consecutiveRateLimitHits: backoff.hitCount,
+      rateLimited: err instanceof RateLimitedError,
+    }).catch(() => undefined);
     return;
   }
 
+  backoff.recordSuccess();
   const now = new Date();
   const orders = await listPendingBybitOrders(prisma, now);
   if (deposits.length) logger.info(`Bybit poll: ${deposits.length} deposit(s) fetched, ${orders.length} pending order(s)`);
@@ -248,7 +271,7 @@ let stopped = false;
 
 export function startPolling(api: Api): void {
   stopped = false;
-  const intervalMs = config.POLL_INTERVAL_SECONDS * 1000;
+  const intervalMs = config.BYBIT_POLL_INTERVAL_SECONDS * 1000;
   const tick = async () => {
     if (stopped) return;
     if (!isRunning) {
@@ -281,7 +304,7 @@ export function startPolling(api: Api): void {
           "Set USE_UNIQUE_CENTS=1 so every order has a distinct total.",
       );
     }
-    logger.info(`Bybit deposit poller active (every ${config.POLL_INTERVAL_SECONDS}s)`);
+    logger.info(`Bybit deposit poller active (every ${config.BYBIT_POLL_INTERVAL_SECONDS}s)`);
   });
   timer = setTimeout(tick, intervalMs);
 }

@@ -429,29 +429,46 @@ export interface BinancePollHealth {
   lastRun: string | null;
   lastTxCount: number | null;
   backoffUntil: string | null;
+  /** Current consecutive rate-limit hit streak (0 when healthy). */
+  consecutiveRateLimitHits: number | null;
+  /** Sticky — last time a rate-limit hit occurred, even after recovery. */
+  lastRateLimitAt: string | null;
 }
+
+const EMPTY_BINANCE_HEALTH: BinancePollHealth = {
+  lastRun: null,
+  lastTxCount: null,
+  backoffUntil: null,
+  consecutiveRateLimitHits: null,
+  lastRateLimitAt: null,
+};
 
 /** Read the poller heartbeat; all-null when the poller has never run. */
 export async function getBinancePollHealth(db: Db): Promise<BinancePollHealth> {
   const raw = await getSetting(db, BINANCE_POLL_HEALTH_KEY);
-  if (!raw) return { lastRun: null, lastTxCount: null, backoffUntil: null };
+  if (!raw) return EMPTY_BINANCE_HEALTH;
   try {
     const p = JSON.parse(raw) as Partial<BinancePollHealth>;
     return {
       lastRun: p.lastRun ?? null,
       lastTxCount: typeof p.lastTxCount === "number" ? p.lastTxCount : null,
       backoffUntil: p.backoffUntil ?? null,
+      consecutiveRateLimitHits: typeof p.consecutiveRateLimitHits === "number" ? p.consecutiveRateLimitHits : null,
+      lastRateLimitAt: p.lastRateLimitAt ?? null,
     };
   } catch {
-    return { lastRun: null, lastTxCount: null, backoffUntil: null };
+    return EMPTY_BINANCE_HEALTH;
   }
 }
 
-/** Record one poll cycle's heartbeat. Called by the poller each tick. */
+/** Record one poll cycle's heartbeat. Called by the poller each tick.
+ * `lastRateLimitAt` is sticky (carried forward from the prior heartbeat) so a
+ * rare rate-limit hit stays visible after the poller recovers. */
 export async function recordBinancePollHealth(
   db: Db,
-  args: { lastTxCount: number; backoffUntil?: number | null },
+  args: { lastTxCount: number; backoffUntil?: number | null; consecutiveRateLimitHits?: number; rateLimited?: boolean },
 ): Promise<void> {
+  const lastRateLimitAt = args.rateLimited ? new Date().toISOString() : (await getBinancePollHealth(db)).lastRateLimitAt;
   await setSetting(
     db,
     BINANCE_POLL_HEALTH_KEY,
@@ -459,6 +476,8 @@ export async function recordBinancePollHealth(
       lastRun: new Date().toISOString(),
       lastTxCount: args.lastTxCount,
       backoffUntil: args.backoffUntil ? new Date(args.backoffUntil).toISOString() : null,
+      consecutiveRateLimitHits: args.consecutiveRateLimitHits ?? 0,
+      lastRateLimitAt,
     }),
   );
 }

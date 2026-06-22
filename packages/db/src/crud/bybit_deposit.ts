@@ -196,29 +196,46 @@ export interface BybitPollHealth {
   lastRun: string | null;
   lastTxCount: number | null;
   backoffUntil: string | null;
+  /** Current consecutive rate-limit hit streak (0 when healthy). */
+  consecutiveRateLimitHits: number | null;
+  /** Sticky — last time a rate-limit hit occurred, even after recovery. */
+  lastRateLimitAt: string | null;
 }
+
+const EMPTY_BYBIT_HEALTH: BybitPollHealth = {
+  lastRun: null,
+  lastTxCount: null,
+  backoffUntil: null,
+  consecutiveRateLimitHits: null,
+  lastRateLimitAt: null,
+};
 
 /** Read the Bybit poller heartbeat; all-null when it has never run. */
 export async function getBybitPollHealth(db: Db): Promise<BybitPollHealth> {
   const raw = await getSetting(db, BYBIT_POLL_HEALTH_KEY);
-  if (!raw) return { lastRun: null, lastTxCount: null, backoffUntil: null };
+  if (!raw) return EMPTY_BYBIT_HEALTH;
   try {
     const p = JSON.parse(raw) as Partial<BybitPollHealth>;
     return {
       lastRun: p.lastRun ?? null,
       lastTxCount: typeof p.lastTxCount === "number" ? p.lastTxCount : null,
       backoffUntil: p.backoffUntil ?? null,
+      consecutiveRateLimitHits: typeof p.consecutiveRateLimitHits === "number" ? p.consecutiveRateLimitHits : null,
+      lastRateLimitAt: p.lastRateLimitAt ?? null,
     };
   } catch {
-    return { lastRun: null, lastTxCount: null, backoffUntil: null };
+    return EMPTY_BYBIT_HEALTH;
   }
 }
 
-/** Record one Bybit poll cycle's heartbeat. Called by the poller each tick. */
+/** Record one Bybit poll cycle's heartbeat. Called by the poller each tick.
+ * `lastRateLimitAt` is sticky (carried forward from the prior heartbeat) so a
+ * rare rate-limit hit stays visible after the poller recovers. */
 export async function recordBybitPollHealth(
   db: Db,
-  args: { lastTxCount: number; backoffUntil?: number | null },
+  args: { lastTxCount: number; backoffUntil?: number | null; consecutiveRateLimitHits?: number; rateLimited?: boolean },
 ): Promise<void> {
+  const lastRateLimitAt = args.rateLimited ? new Date().toISOString() : (await getBybitPollHealth(db)).lastRateLimitAt;
   await setSetting(
     db,
     BYBIT_POLL_HEALTH_KEY,
@@ -226,6 +243,8 @@ export async function recordBybitPollHealth(
       lastRun: new Date().toISOString(),
       lastTxCount: args.lastTxCount,
       backoffUntil: args.backoffUntil ? new Date(args.backoffUntil).toISOString() : null,
+      consecutiveRateLimitHits: args.consecutiveRateLimitHits ?? 0,
+      lastRateLimitAt,
     }),
   );
 }

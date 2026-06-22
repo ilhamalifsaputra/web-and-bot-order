@@ -88,7 +88,7 @@
         </form>
         {{ ui.btn('Stock', 'boxes', 'soft', href='/stock/' + d.id | string, cls='btn-sm') }}
         {% call ui.dropdown('', 'ellipsis-vertical') %}
-        <form method="post" action="/catalog/denomination/{{ d.id }}/update" class="flex flex-col gap-2 px-3 py-2 w-72">
+        <form method="post" action="/catalog/denomination/{{ d.id }}/update" class="flex flex-col gap-2 px-3 py-2 w-72 max-sm:!w-full">
           {{ ui.csrf_field(admin) }}
           <input type="hidden" name="return_to" value="{{ return_to }}">
           <input name="name" value="{{ d.name }}" required class="field text-xs" placeholder="Name">

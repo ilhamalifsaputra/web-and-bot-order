@@ -57,9 +57,9 @@
           {{ ui.csrf_field(admin) }}
           <button class="btn btn-primary"><i data-lucide="check" class="w-4 h-4"></i> Approve &amp; deliver</button>
         </form>
-        <form method="post" action="/orders/{{ order.id }}/reject" class="flex gap-2 items-center">
+        <form method="post" action="/orders/{{ order.id }}/reject" class="flex flex-wrap gap-2 items-center">
           {{ ui.csrf_field(admin) }}
-          <input type="text" name="reason" required placeholder="Why are you rejecting it?" class="field w-64">
+          <input type="text" name="reason" required placeholder="Why are you rejecting it?" class="field w-full sm:w-64">
           <button class="btn btn-danger"><i data-lucide="x" class="w-4 h-4"></i> Reject</button>
         </form>
       </div>

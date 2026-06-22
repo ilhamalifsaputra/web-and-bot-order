@@ -17,6 +17,11 @@
  * (2) a unique-amount fallback (matchByAmount) so auto-confirm still works when
  * the note is absent. The row mapping in `normalizeTx()` stays isolated so the
  * endpoint/fields can be swapped without touching matching/delivery.
+ *
+ * Rate-limit hits (429/418) use a bounded exponential backoff (`pollBackoff.ts`,
+ * base 3s doubling to a 30s cap, reset on the next successful call) instead of
+ * a flat fixed delay — a flat delay re-arms on every consecutive hit and can
+ * stack into multi-minute outages.
  */
 import { createHmac } from "node:crypto";
 import type { Api } from "grammy";
@@ -38,6 +43,7 @@ import {
 } from "@app/db";
 import { coreT } from "../util/i18n";
 import { esc } from "../util/format";
+import { createBackoffGate } from "./pollBackoff";
 import { paymentSuccessKb } from "../keyboards/customer";
 import { sendAccountFile } from "../util/delivery";
 
@@ -250,28 +256,34 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
 // Poll cycle
 // ---------------------------------------------------------------------------
 
-let backoffUntil = 0;
+const backoff = createBackoffGate();
 
 export async function pollOnce(api: Api): Promise<void> {
   const cfg = await resolveBinanceInternalConfig(prisma);
   if (!cfg.enabled) return;
-  if (Date.now() < backoffUntil) return;
+  if (backoff.shouldSkip()) return;
 
   let txs: BinanceTx[];
   try {
     txs = await fetchIncomingTransfers(cfg);
   } catch (err) {
     if (err instanceof RateLimitedError) {
-      backoffUntil = Date.now() + 60_000;
-      logger.warn("Binance rate-limited — backing off 60s");
+      const { hitCount, delayMs } = backoff.recordRateLimit();
+      logger.warn(`Binance rate-limited (hit #${hitCount}) — backing off ${delayMs}ms`);
     } else {
       logger.error({ err }, "Binance transfer fetch failed");
     }
     // Heartbeat so the web ops panel shows the poller is alive (and backing off).
-    await recordBinancePollHealth(prisma, { lastTxCount: 0, backoffUntil: backoffUntil || null }).catch(() => undefined);
+    await recordBinancePollHealth(prisma, {
+      lastTxCount: 0,
+      backoffUntil: backoff.backoffUntil || null,
+      consecutiveRateLimitHits: backoff.hitCount,
+      rateLimited: err instanceof RateLimitedError,
+    }).catch(() => undefined);
     return;
   }
 
+  backoff.recordSuccess();
   const now = new Date();
   const orders = await listPendingInternalOrders(prisma, now);
   if (txs.length) logger.info(`Binance poll: ${txs.length} tx fetched, ${orders.length} pending order(s)`);

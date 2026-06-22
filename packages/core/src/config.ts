@@ -108,6 +108,11 @@ export const Env = z.object({
   // Window for the auto-confirm path. Internal transfers are instant, but keep
   // a little headroom for poll latency + the buyer's transfer time.
   BYBIT_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(30),
+  // Independent of POLL_INTERVAL_SECONDS (which governs Binance) so Bybit's
+  // cadence can be tuned without touching Binance's. 5s default is a
+  // conservative starting point pending real rate-limit headroom data (see
+  // the X-Bapi-Limit-* debug logs in bybitDeposit.ts's bybitGet()).
+  BYBIT_POLL_INTERVAL_SECONDS: z.coerce.number().default(5),
   // Optional USDT→IDR rate; if set, instructions show an IDR equivalent.
   USDT_IDR_RATE: z.coerce.number().optional(),
 

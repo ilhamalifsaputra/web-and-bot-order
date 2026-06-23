@@ -65,7 +65,7 @@ import {
   resetAccountFailures,
 } from "../src/auth";
 import { canMutate } from "../src/plugins/auth";
-import { isAdmin, adminIds, setAdminIds } from "@app/core/runtime";
+import { isAdmin, adminIds, setAdminIds, setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 
 const COOKIE = config.WEB_COOKIE_NAME;
 const ADMIN_TG = 999;
@@ -103,6 +103,7 @@ beforeEach(async () => {
   resetLoginAttempts("127.0.0.1");
   resetAccountFailures(ADMIN_TG);
   resetAccountFailures(1000);
+  resetBotIdentity();
   const admin = await upsertUser(prisma, { telegramId: ADMIN_TG, username: "admin", fullName: "Admin" });
   const customer = await upsertUser(prisma, { telegramId: CUSTOMER_TG, username: "cust", fullName: "Customer" });
   const cat = await createCategory(prisma, `Cat${counter++}`);
@@ -302,6 +303,9 @@ describe("account lockout", () => {
 
 describe("orders", () => {
   it("approve → DELIVERED + outbox row (buyer_language) + audit", async () => {
+    // The testimonial channel post (ORDER_DELIVERED) only gets enqueued when
+    // a public channel is configured.
+    setBotIdentity({ publicChannelId: -100123456789 });
     const orderId = await makePendingOrder();
     const res = await post(`/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
     expect(res.statusCode).toBe(303);
@@ -1580,6 +1584,9 @@ describe("payments", () => {
   });
 
   it("manual match unmatched tx → delivered + ledger updated", async () => {
+    // The testimonial channel post (ORDER_DELIVERED) only gets enqueued when
+    // a public channel is configured.
+    setBotIdentity({ publicChannelId: -100123456789 });
     const user = (await getUser(prisma, seed.customerId))!;
     const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
     await recordUnmatchedTx(prisma, { binanceTxId: "MTX1", amount: "5.00" });

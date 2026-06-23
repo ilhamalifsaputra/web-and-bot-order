@@ -24,6 +24,7 @@ import { buildSampleData, resetDb, type SampleData } from "../../../tests/helper
 import { makeCtx, calls, sentIncludes, offersForwardAction, lastMarkup, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
+import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuccessKb, qrisWaitingKb, proofCancelKb } from "../src/keyboards/customer";
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
@@ -38,6 +39,7 @@ let adminDbId: number;
 beforeEach(async () => {
   await resetDb(prisma);
   invalidateRateCache(); // settings were wiped — don't leak a cached rate across tests
+  resetBotIdentity();
   sample = await buildSampleData(prisma);
   const adminUser = await upsertUser(prisma, { telegramId: 999, username: "boss", fullName: "Admin Boss" });
   adminDbId = adminUser.id;
@@ -1082,6 +1084,10 @@ describe("verification handlers", () => {
   });
 
   it("approve delivers the order, marks stock SOLD, enqueues outbox + audit, DMs the buyer", async () => {
+    // The testimonial channel post (ORDER_DELIVERED) only gets enqueued when
+    // a public channel is configured — set one so this test still exercises
+    // that outbox row, not just the directly-sent DM.
+    setBotIdentity({ publicChannelId: -100123456789 });
     const order = await pendingVerificationOrder();
     const { ctx, sink } = adminCtx({ callbackData: `v1:adm:verif:approve:${order.id}` });
     await verification.approve(ctx, order.id);

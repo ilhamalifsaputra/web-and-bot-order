@@ -26,6 +26,11 @@
       {{ health.lastTxCount if health.lastTxCount is not none else '—' }} payment(s) seen last check
       {% if health.backoffUntil %}· <span class="text-amberx">paused until {{ health.backoffUntil | localdt('HH:mm:ss') }}</span>{% endif %}
     </div>
+    {% if health.consecutiveFailures %}
+    <div class="text-xs text-rust mt-1">
+      ⚠️ {{ health.consecutiveFailures }} consecutive failure(s) fetching from Binance{% if health.lastError %} — {{ health.lastError }}{% endif %}
+    </div>
+    {% endif %}
   </div>
   {% set cards = [['matched','Confirmed','text-grass'], ['underpaid','Paid too little','text-amberx'], ['unmatched','Couldn’t match','text-pine'], ['delivery_failed','Delivery failed','text-rust'], ['credited_to_balance','Added to credit balance','text-grass'], ['dismissed','Dismissed','text-ink-soft']] %}
   {% for c in cards %}

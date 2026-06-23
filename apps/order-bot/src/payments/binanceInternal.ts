@@ -148,14 +148,24 @@ export function normalizeTx(raw: Record<string, unknown>): BinanceTx | null {
 
 const CONNECT_RETRY_ATTEMPTS = 3;
 const CONNECT_RETRY_DELAY_MS = 1500;
+// Only applied to fallback-mirror attempts (see fallThroughMirrors) — the
+// primary host keeps relying on undici's implicit default, unchanged from
+// before fallback support existed. Bounds the worst case once there are
+// multiple mirrors to walk through: an unreachable host fails fast instead of
+// hanging on undici's longer implicit timeout per attempt.
+const FALLBACK_CONNECT_TIMEOUT_MS = 8_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * One signed GET against /sapi/v1/pay/transactions. Split out of
- * fetchIncomingTransfers so each retry attempt below gets a fresh
+ * One signed GET against /sapi/v1/pay/transactions against a given host. Split
+ * out of fetchIncomingTransfers so each retry/fallback attempt gets a fresh
  * timestamp/signature (Binance rejects a stale timestamp outside recvWindow).
+ * The signature covers only the query string, never the host, so calling this
+ * against a mirror host is safe. `timeoutMs` is only set for fallback attempts
+ * (see FALLBACK_CONNECT_TIMEOUT_MS) — omitted, the primary path behaves
+ * exactly as it always has.
  */
-async function requestIncomingTransfers(cfg: BinanceInternalConfig): Promise<Response> {
+async function requestIncomingTransfers(cfg: BinanceInternalConfig, apiBase: string, timeoutMs?: number): Promise<Response> {
   const params = new URLSearchParams({
     startTime: String(Date.now() - 60 * 60 * 1000),
     limit: "100",
@@ -163,26 +173,22 @@ async function requestIncomingTransfers(cfg: BinanceInternalConfig): Promise<Res
     recvWindow: "5000",
   });
   const qs = params.toString();
-  const url = `${cfg.apiBase}/sapi/v1/pay/transactions?${qs}&signature=${sign(qs, cfg.apiSecret)}`;
-  return fetch(url, { headers: { "X-MBX-APIKEY": cfg.apiKey } });
+  const url = `${apiBase}/sapi/v1/pay/transactions?${qs}&signature=${sign(qs, cfg.apiSecret)}`;
+  return fetch(url, {
+    headers: { "X-MBX-APIKEY": cfg.apiKey },
+    ...(timeoutMs != null ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+  });
 }
 
-/**
- * Fetch recent incoming transfers (last hour). Throws RateLimitedError on
- * 429/418. Retries a couple of times on a connect-level failure (e.g. an
- * occasional bad DNS answer for api.binance.com) before giving up — each
- * retry re-resolves DNS from scratch, so a one-off bad answer rarely survives
- * three tries. HTTP-level responses (including 429/418) are never retried
- * here; those already have their own handling below / in pollOnce's backoff.
- */
-async function fetchIncomingTransfers(cfg: BinanceInternalConfig): Promise<BinanceTx[]> {
-  let res: Response | undefined;
+/** Up to CONNECT_RETRY_ATTEMPTS tries against ONE host, CONNECT_RETRY_DELAY_MS
+ * apart — re-resolves DNS from scratch each attempt, so a one-off bad answer
+ * rarely survives three tries. Throws the last connect error if every attempt
+ * against this host fails. */
+async function requestWithRetries(cfg: BinanceInternalConfig, apiBase: string): Promise<Response> {
   let connectErr: unknown;
   for (let attempt = 1; attempt <= CONNECT_RETRY_ATTEMPTS; attempt++) {
     try {
-      res = await requestIncomingTransfers(cfg);
-      connectErr = undefined;
-      break;
+      return await requestIncomingTransfers(cfg, apiBase);
     } catch (err) {
       connectErr = err;
       if (attempt < CONNECT_RETRY_ATTEMPTS) {
@@ -191,15 +197,58 @@ async function fetchIncomingTransfers(cfg: BinanceInternalConfig): Promise<Binan
       }
     }
   }
-  if (connectErr) throw connectErr;
+  throw connectErr;
+}
 
-  if (res!.status === 429 || res!.status === 418) {
-    throw new RateLimitedError(`Binance rate limited (HTTP ${res!.status})`);
+/**
+ * Walk cfg.apiBaseFallbacks (official Binance mirror hosts) one attempt each,
+ * after the primary host's own retry budget is exhausted. Stops at the first
+ * connect-level success and logs which mirror recovered the cycle (visible in
+ * production if this ever actually fires). Rethrows the PRIMARY's error (more
+ * informative than the last mirror's) if every fallback also fails, or there
+ * are none configured — preserving today's exact error/behavior when
+ * BINANCE_API_BASE_FALLBACKS is empty.
+ */
+async function fallThroughMirrors(cfg: BinanceInternalConfig, primaryErr: unknown): Promise<Response> {
+  for (const mirror of cfg.apiBaseFallbacks) {
+    try {
+      const res = await requestIncomingTransfers(cfg, mirror, FALLBACK_CONNECT_TIMEOUT_MS);
+      logger.warn(`Binance primary host unreachable — recovered via fallback mirror ${mirror}`);
+      return res;
+    } catch {
+      // try the next mirror
+    }
   }
-  if (!res!.ok) {
-    throw new Error(`Binance pay/transactions HTTP ${res!.status}: ${await res!.text().catch(() => "")}`);
+  throw primaryErr;
+}
+
+/**
+ * Fetch recent incoming transfers (last hour). Throws RateLimitedError on
+ * 429/418. Retries a couple of times on a connect-level failure against the
+ * PRIMARY host (cfg.apiBase) — see requestWithRetries. Only once that budget
+ * is exhausted does it walk cfg.apiBaseFallbacks (official Binance mirror
+ * hosts), one attempt per fallback, stopping at the first connect-level
+ * success — automatic in-cycle escalation, not a config swap an admin has to
+ * make by hand. HTTP-level responses (including 429/418) are never retried/
+ * escalated here; those already have their own handling below / in
+ * pollOnce's backoff (an HTTP error from a host that DID connect is not a
+ * connectivity problem the fallback list can fix).
+ */
+export async function fetchIncomingTransfers(cfg: BinanceInternalConfig): Promise<BinanceTx[]> {
+  let res: Response;
+  try {
+    res = await requestWithRetries(cfg, cfg.apiBase);
+  } catch (primaryErr) {
+    res = await fallThroughMirrors(cfg, primaryErr);
   }
-  const body = (await res!.json()) as { data?: Record<string, unknown>[] };
+
+  if (res.status === 429 || res.status === 418) {
+    throw new RateLimitedError(`Binance rate limited (HTTP ${res.status})`);
+  }
+  if (!res.ok) {
+    throw new Error(`Binance pay/transactions HTTP ${res.status}: ${await res.text().catch(() => "")}`);
+  }
+  const body = (await res.json()) as { data?: Record<string, unknown>[] };
   const rows = body.data ?? [];
   return rows
     .map(normalizeTx)
@@ -267,7 +316,8 @@ export async function pollOnce(api: Api): Promise<void> {
   try {
     txs = await fetchIncomingTransfers(cfg);
   } catch (err) {
-    if (err instanceof RateLimitedError) {
+    const rateLimited = err instanceof RateLimitedError;
+    if (rateLimited) {
       const { hitCount, delayMs } = backoff.recordRateLimit();
       logger.warn(`Binance rate-limited (hit #${hitCount}) — backing off ${delayMs}ms`);
     } else {
@@ -278,7 +328,9 @@ export async function pollOnce(api: Api): Promise<void> {
       lastTxCount: 0,
       backoffUntil: backoff.backoffUntil || null,
       consecutiveRateLimitHits: backoff.hitCount,
-      rateLimited: err instanceof RateLimitedError,
+      rateLimited,
+      success: false,
+      error: String(err).slice(0, 300),
     }).catch(() => undefined);
     return;
   }
@@ -287,7 +339,7 @@ export async function pollOnce(api: Api): Promise<void> {
   const now = new Date();
   const orders = await listPendingInternalOrders(prisma, now);
   if (txs.length) logger.info(`Binance poll: ${txs.length} tx fetched, ${orders.length} pending order(s)`);
-  await recordBinancePollHealth(prisma, { lastTxCount: txs.length, backoffUntil: null }).catch(() => undefined);
+  await recordBinancePollHealth(prisma, { lastTxCount: txs.length, backoffUntil: null, success: true }).catch(() => undefined);
 
   await processTransfers(api, txs, orders);
 }

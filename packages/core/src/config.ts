@@ -87,6 +87,16 @@ export const Env = z.object({
   BINANCE_API_KEY: z.string().optional(),
   BINANCE_API_SECRET: z.string().optional(),
   BINANCE_API_BASE: z.string().default("https://api.binance.com"),
+  // Comma-separated official Binance mirror hosts, tried in order, ONLY after the
+  // primary BINANCE_API_BASE exhausts its own connect-retry budget within one poll
+  // cycle (see fetchIncomingTransfers in binanceInternal.ts). Purely defensive —
+  // unlike Bybit's api.bybit.com (network-blocked from Indonesia, see
+  // BYBIT_API_BASE below), nothing today suggests api.binance.com has the same
+  // problem. Defaults to Binance's own documented mirrors (same signed API, same
+  // account) so the fallback is armed without admin action. Set "" to disable.
+  BINANCE_API_BASE_FALLBACKS: z
+    .string()
+    .default("https://api1.binance.com,https://api2.binance.com,https://api3.binance.com,https://api4.binance.com,https://api-gcp.binance.com"),
   POLL_INTERVAL_SECONDS: z.coerce.number().default(10),
   INTERNAL_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(15),
 

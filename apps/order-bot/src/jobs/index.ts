@@ -188,10 +188,11 @@ export function pollWatchdogDecision(
 }
 
 /**
- * Alert admins if the Binance poller looks stuck — no completed cycle in
- * POLL_STALE_MINUTES, while NOT intentionally backing off (rate-limit). Fires
- * once per stale episode (state in a setting) and re-arms on recovery, so admins
- * aren't spammed every tick.
+ * Alert admins if the Binance poller looks unhealthy — either no completed
+ * cycle in POLL_STALE_MINUTES, or a live cycle that's failing every single
+ * time (consecutiveFailures past the threshold) — while NOT intentionally
+ * backing off (rate-limit). Fires once per unhealthy episode (state in a
+ * setting) and re-arms on recovery, so admins aren't spammed every tick.
  */
 export async function binancePollWatchdog(api: Api): Promise<void> {
   if (!(await resolveBinanceInternalConfig(prisma)).enabled) return;
@@ -202,17 +203,21 @@ export async function binancePollWatchdog(api: Api): Promise<void> {
   if (decision === "alert") {
     const lastRun = health.lastRun ? Date.parse(health.lastRun) : 0;
     const mins = lastRun ? Math.round((Date.now() - lastRun) / 60_000) : "∞";
-    logger.error(`Binance poller watchdog: no cycle in ${mins} min — alerting admins`);
+    const failing = (health.consecutiveFailures ?? 0) >= FAILURE_STREAK_ALERT_THRESHOLD;
+    const detail = failing
+      ? `${health.consecutiveFailures} consecutive cycle(s) failed (last error: ${health.lastError ?? "unknown"})`
+      : `no completed cycle in ${mins} min`;
+    logger.error(`Binance poller watchdog: ${detail} — alerting admins`);
     for (const adminId of adminIds()) {
       try {
         await api.sendMessage(
           adminId,
-          `⚠️ <b>Binance poller looks STUCK</b>\nNo completed cycle in <b>${mins}</b> min. ` +
+          `⚠️ <b>Binance poller looks unhealthy</b>\n${esc(detail)}. ` +
             `Auto-confirm is paused — check the order-bot process.`,
           { parse_mode: "HTML" },
         );
       } catch (err) {
-        logger.error({ err }, `Failed to alert admin ${adminId} about stuck poller`);
+        logger.error({ err }, `Failed to alert admin ${adminId} about unhealthy Binance poller`);
       }
     }
     await setSetting(prisma, POLL_ALERT_KEY, "1");

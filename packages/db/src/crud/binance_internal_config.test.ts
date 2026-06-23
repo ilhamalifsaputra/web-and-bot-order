@@ -7,6 +7,7 @@ vi.mock("@app/core/config", () => ({
     BINANCE_API_KEY: "env-api-key",
     BINANCE_API_SECRET: "env-api-secret",
     BINANCE_API_BASE: "https://api.binance.com",
+    BINANCE_API_BASE_FALLBACKS: "https://api1.binance.com,https://api2.binance.com,https://api3.binance.com,https://api4.binance.com,https://api-gcp.binance.com",
     CURRENCY: "USDT",
     POLL_INTERVAL_SECONDS: 10,
     INTERNAL_PAYMENT_WINDOW_MINUTES: 15,
@@ -62,6 +63,13 @@ describe("resolveBinanceInternalConfig", () => {
   it("carries env-only fields through unchanged", async () => {
     const cfg = await resolveBinanceInternalConfig(stubDb({}));
     expect(cfg.apiBase).toBe("https://api.binance.com");
+    expect(cfg.apiBaseFallbacks).toEqual([
+      "https://api1.binance.com",
+      "https://api2.binance.com",
+      "https://api3.binance.com",
+      "https://api4.binance.com",
+      "https://api-gcp.binance.com",
+    ]);
     expect(cfg.currency).toBe("USDT");
     expect(cfg.pollIntervalSeconds).toBe(10);
     expect(cfg.windowMinutes).toBe(15);
@@ -75,6 +83,7 @@ describe("resolveBinanceInternalConfig", () => {
         BINANCE_API_KEY: "env-api-key",
         BINANCE_API_SECRET: "env-api-secret",
         BINANCE_API_BASE: "https://api.binance.com",
+        BINANCE_API_BASE_FALLBACKS: "https://api1.binance.com,https://api2.binance.com",
         CURRENCY: "USDT",
         POLL_INTERVAL_SECONDS: 10,
         INTERNAL_PAYMENT_WINDOW_MINUTES: 15,
@@ -95,6 +104,7 @@ describe("resolveBinanceInternalConfig", () => {
         BINANCE_API_KEY: undefined,
         BINANCE_API_SECRET: "env-api-secret",
         BINANCE_API_BASE: "https://api.binance.com",
+        BINANCE_API_BASE_FALLBACKS: "https://api1.binance.com,https://api2.binance.com",
         CURRENCY: "USDT",
         POLL_INTERVAL_SECONDS: 10,
         INTERNAL_PAYMENT_WINDOW_MINUTES: 15,
@@ -147,6 +157,7 @@ describe("resolveBinanceInternalConfig", () => {
         BINANCE_API_KEY: "env-api-key",
         BINANCE_API_SECRET: undefined,
         BINANCE_API_BASE: "https://api.binance.com",
+        BINANCE_API_BASE_FALLBACKS: "https://api1.binance.com,https://api2.binance.com",
         CURRENCY: "USDT",
         POLL_INTERVAL_SECONDS: 10,
         INTERNAL_PAYMENT_WINDOW_MINUTES: 15,
@@ -157,5 +168,78 @@ describe("resolveBinanceInternalConfig", () => {
     const cfg = await resolveWithMissingSecret(stubDb({}));
     expect(cfg.apiSecret).toBe("");
     expect(cfg.enabled).toBe(false);
+  });
+});
+
+describe("resolveBinanceInternalConfig — apiBaseFallbacks CSV parsing", () => {
+  it("parses the default 5-mirror CSV into trimmed URLs, in order", async () => {
+    const cfg = await resolveBinanceInternalConfig(stubDb({}));
+    expect(cfg.apiBaseFallbacks).toEqual([
+      "https://api1.binance.com",
+      "https://api2.binance.com",
+      "https://api3.binance.com",
+      "https://api4.binance.com",
+      "https://api-gcp.binance.com",
+    ]);
+  });
+
+  it("trims whitespace around each entry", async () => {
+    vi.doMock("@app/core/config", () => ({
+      config: {
+        LOG_LEVEL: "info",
+        BINANCE_RECEIVE_UID: "env-uid",
+        BINANCE_API_KEY: "env-api-key",
+        BINANCE_API_SECRET: "env-api-secret",
+        BINANCE_API_BASE: "https://api.binance.com",
+        BINANCE_API_BASE_FALLBACKS: " https://a.com , https://b.com ",
+        CURRENCY: "USDT",
+        POLL_INTERVAL_SECONDS: 10,
+        INTERNAL_PAYMENT_WINDOW_MINUTES: 15,
+      },
+    }));
+    vi.resetModules();
+    const { resolveBinanceInternalConfig: resolveWithWhitespace } = await import("./binance_internal");
+    const cfg = await resolveWithWhitespace(stubDb({}));
+    expect(cfg.apiBaseFallbacks).toEqual(["https://a.com", "https://b.com"]);
+  });
+
+  it("parses an empty string into an empty array (fallback disabled)", async () => {
+    vi.doMock("@app/core/config", () => ({
+      config: {
+        LOG_LEVEL: "info",
+        BINANCE_RECEIVE_UID: "env-uid",
+        BINANCE_API_KEY: "env-api-key",
+        BINANCE_API_SECRET: "env-api-secret",
+        BINANCE_API_BASE: "https://api.binance.com",
+        BINANCE_API_BASE_FALLBACKS: "",
+        CURRENCY: "USDT",
+        POLL_INTERVAL_SECONDS: 10,
+        INTERNAL_PAYMENT_WINDOW_MINUTES: 15,
+      },
+    }));
+    vi.resetModules();
+    const { resolveBinanceInternalConfig: resolveWithEmpty } = await import("./binance_internal");
+    const cfg = await resolveWithEmpty(stubDb({}));
+    expect(cfg.apiBaseFallbacks).toEqual([]);
+  });
+
+  it("filters out empty segments from stray/double commas", async () => {
+    vi.doMock("@app/core/config", () => ({
+      config: {
+        LOG_LEVEL: "info",
+        BINANCE_RECEIVE_UID: "env-uid",
+        BINANCE_API_KEY: "env-api-key",
+        BINANCE_API_SECRET: "env-api-secret",
+        BINANCE_API_BASE: "https://api.binance.com",
+        BINANCE_API_BASE_FALLBACKS: "https://a.com,,https://b.com,",
+        CURRENCY: "USDT",
+        POLL_INTERVAL_SECONDS: 10,
+        INTERNAL_PAYMENT_WINDOW_MINUTES: 15,
+      },
+    }));
+    vi.resetModules();
+    const { resolveBinanceInternalConfig: resolveWithStrayCommas } = await import("./binance_internal");
+    const cfg = await resolveWithStrayCommas(stubDb({}));
+    expect(cfg.apiBaseFallbacks).toEqual(["https://a.com", "https://b.com"]);
   });
 });

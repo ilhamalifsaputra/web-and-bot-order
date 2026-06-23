@@ -1,7 +1,7 @@
 // setup-db MUST be first — temp DB + push before any @app import.
 import "./setup-db";
 
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   prisma,
   createInternalOrder,
@@ -11,6 +11,7 @@ import {
   dismissUnmatchedTx,
   listPendingInternalOrders,
   setOrderPaymentMessage,
+  type BinanceInternalConfig,
 } from "@app/db";
 import type { Api } from "grammy";
 import { config } from "@app/core/config";
@@ -22,9 +23,14 @@ import {
   matchByAmount,
   normalizeTx,
   processTransfers,
+  fetchIncomingTransfers,
   type BinanceTx,
 } from "../src/payments/binanceInternal";
 import { pollWatchdogDecision } from "../src/jobs";
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 let sample: SampleData;
 
@@ -365,4 +371,68 @@ describe("markUnderpaid / recordUnmatchedTx", () => {
     await expect(dismissUnmatchedTx(prisma, "TX-MTCH")).rejects.toThrow();
     expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "TX-MTCH" } }))!.outcome).toBe("matched");
   });
+});
+
+describe("fetchIncomingTransfers (connect-fallback escalation)", () => {
+  const baseCfg: BinanceInternalConfig = {
+    enabled: true,
+    receiveUid: "u",
+    apiKey: "k",
+    apiSecret: "s",
+    apiBase: "https://api.binance.com",
+    apiBaseFallbacks: ["https://api1.binance.com", "https://api2.binance.com"],
+    currency: "USDT",
+    pollIntervalSeconds: 10,
+    windowMinutes: 15,
+  };
+  const okResponse = (data: unknown[] = []) => ({ ok: true, status: 200, json: async () => ({ data }) }) as Response;
+
+  it("primary succeeds immediately — no fallback attempted, no behavior change", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(okResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchIncomingTransfers(baseCfg)).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toContain("api.binance.com");
+  });
+
+  it("primary exhausts its retry budget, then the first fallback succeeds", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("connect fail 1"))
+      .mockRejectedValueOnce(new Error("connect fail 2"))
+      .mockRejectedValueOnce(new Error("connect fail 3"))
+      .mockResolvedValueOnce(okResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchIncomingTransfers(baseCfg)).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(4); // 3 primary attempts + 1st fallback
+    expect(fetchMock.mock.calls[3]![0]).toContain("api1.binance.com");
+  }, 15_000);
+
+  it("primary + first fallback fail, second fallback succeeds", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("p1"))
+      .mockRejectedValueOnce(new Error("p2"))
+      .mockRejectedValueOnce(new Error("p3"))
+      .mockRejectedValueOnce(new Error("m1 fail"))
+      .mockResolvedValueOnce(okResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchIncomingTransfers(baseCfg)).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock.mock.calls[4]![0]).toContain("api2.binance.com");
+  }, 15_000);
+
+  it("all bases exhausted (primary + every fallback) throws the primary's error", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("always fails"));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchIncomingTransfers(baseCfg)).rejects.toThrow("always fails");
+    expect(fetchMock).toHaveBeenCalledTimes(5); // 3 primary + 2 fallbacks (1 each)
+  }, 15_000);
+
+  it("empty fallback list behaves exactly like today — no fallback attempted, same error", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error("connect refused"));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchIncomingTransfers({ ...baseCfg, apiBaseFallbacks: [] })).rejects.toThrow("connect refused");
+    expect(fetchMock).toHaveBeenCalledTimes(3); // primary's retry budget only
+  }, 15_000);
 });

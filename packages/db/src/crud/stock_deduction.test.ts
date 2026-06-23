@@ -21,6 +21,8 @@ import {
   getUser,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
+import { NotificationEvent } from "@app/core/enums";
+import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -36,6 +38,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
+  resetBotIdentity();
 });
 
 const count = (productId: number, status: string) =>
@@ -184,5 +187,38 @@ describe("stock deduction", () => {
     expect(new Decimal(u.walletBalance).equals("3.0000")).toBe(true);
     v = (await prisma.voucher.findUnique({ where: { id: voucher.id } }))!;
     expect(v.usedCount).toBe(0);
+  });
+
+  // Without a configured testimonial channel, the dispatcher just releases an
+  // ORDER_DELIVERED row back to PENDING forever (dispatcher.ts) — so
+  // approveOrder shouldn't create one in the first place, to avoid a dead
+  // "Waiting" row piling up per delivered order.
+  it("approve skips the ORDER_DELIVERED testimonial row when no PUBLIC_CHANNEL_ID is configured", async () => {
+    const { user, product } = sample;
+    await addToCart(prisma, user.id, product.id, 1);
+    const created = await createOrderFromCart(prisma, { user });
+    await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
+
+    await approveOrder(prisma, created!.id, { adminId: user.id });
+
+    const testimonialRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: created!.id, event: NotificationEvent.ORDER_DELIVERED },
+    });
+    expect(testimonialRows).toHaveLength(0);
+  });
+
+  it("approve enqueues the ORDER_DELIVERED testimonial row when a PUBLIC_CHANNEL_ID is configured", async () => {
+    setBotIdentity({ publicChannelId: -100123456789 });
+    const { user, product } = sample;
+    await addToCart(prisma, user.id, product.id, 1);
+    const created = await createOrderFromCart(prisma, { user });
+    await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
+
+    await approveOrder(prisma, created!.id, { adminId: user.id });
+
+    const testimonialRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: created!.id, event: NotificationEvent.ORDER_DELIVERED },
+    });
+    expect(testimonialRows).toHaveLength(1);
   });
 });

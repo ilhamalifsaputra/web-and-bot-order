@@ -39,6 +39,10 @@ export interface BinanceInternalConfig {
   apiKey: string;
   apiSecret: string;
   apiBase: string;
+  /** Official Binance mirror hosts tried, in order, only after apiBase's own
+   * retry budget is exhausted within one poll cycle. Empty = no fallback
+   * (today's behavior). Env-only — never web-editable. */
+  apiBaseFallbacks: string[];
   currency: string;
   pollIntervalSeconds: number;
   windowMinutes: number;
@@ -54,9 +58,9 @@ function pick(dbVal: string | null, envVal?: string): string {
 /**
  * Resolve the Binance Internal Transfer config from Settings (with .env
  * fallback). `enabled` gates the poller, the watchdog, and the checkout
- * option. The API base, currency, poll interval, and payment window stay
- * env-only (rarely change); only the receive UID and the API key/secret are
- * web-editable.
+ * option. The API base, its fallback mirror list, currency, poll interval,
+ * and payment window stay env-only (rarely change); only the receive UID and
+ * the API key/secret are web-editable.
  */
 export async function resolveBinanceInternalConfig(db: Db): Promise<BinanceInternalConfig> {
   const [uid, key, secret, flag] = await Promise.all([
@@ -76,6 +80,7 @@ export async function resolveBinanceInternalConfig(db: Db): Promise<BinanceInter
     apiKey,
     apiSecret,
     apiBase: config.BINANCE_API_BASE,
+    apiBaseFallbacks: config.BINANCE_API_BASE_FALLBACKS.split(",").map((s) => s.trim()).filter(Boolean),
     currency: config.CURRENCY,
     pollIntervalSeconds: config.POLL_INTERVAL_SECONDS,
     windowMinutes: config.INTERNAL_PAYMENT_WINDOW_MINUTES,
@@ -427,20 +432,32 @@ export const BINANCE_POLL_HEALTH_KEY = "binance_poll_health";
 
 export interface BinancePollHealth {
   lastRun: string | null;
+  /** Last cycle that completed WITHOUT error (0 new transfers still counts). */
+  lastSuccessAt: string | null;
   lastTxCount: number | null;
   backoffUntil: string | null;
   /** Current consecutive rate-limit hit streak (0 when healthy). */
   consecutiveRateLimitHits: number | null;
   /** Sticky — last time a rate-limit hit occurred, even after recovery. */
   lastRateLimitAt: string | null;
+  /** Consecutive non-rate-limit failures (network/HTTP errors); 0 when
+   * healthy. Tracked separately from rate limits, which already have their
+   * own backoff/counter above — `lastRun` alone can't surface this, since it
+   * advances on every cycle whether that cycle succeeded or failed. */
+  consecutiveFailures: number | null;
+  /** Sticky — last error message seen (any failure type), for diagnostics. */
+  lastError: string | null;
 }
 
 const EMPTY_BINANCE_HEALTH: BinancePollHealth = {
   lastRun: null,
+  lastSuccessAt: null,
   lastTxCount: null,
   backoffUntil: null,
   consecutiveRateLimitHits: null,
   lastRateLimitAt: null,
+  consecutiveFailures: null,
+  lastError: null,
 };
 
 /** Read the poller heartbeat; all-null when the poller has never run. */
@@ -451,10 +468,13 @@ export async function getBinancePollHealth(db: Db): Promise<BinancePollHealth> {
     const p = JSON.parse(raw) as Partial<BinancePollHealth>;
     return {
       lastRun: p.lastRun ?? null,
+      lastSuccessAt: p.lastSuccessAt ?? null,
       lastTxCount: typeof p.lastTxCount === "number" ? p.lastTxCount : null,
       backoffUntil: p.backoffUntil ?? null,
       consecutiveRateLimitHits: typeof p.consecutiveRateLimitHits === "number" ? p.consecutiveRateLimitHits : null,
       lastRateLimitAt: p.lastRateLimitAt ?? null,
+      consecutiveFailures: typeof p.consecutiveFailures === "number" ? p.consecutiveFailures : null,
+      lastError: p.lastError ?? null,
     };
   } catch {
     return EMPTY_BINANCE_HEALTH;
@@ -462,22 +482,42 @@ export async function getBinancePollHealth(db: Db): Promise<BinancePollHealth> {
 }
 
 /** Record one poll cycle's heartbeat. Called by the poller each tick.
- * `lastRateLimitAt` is sticky (carried forward from the prior heartbeat) so a
- * rare rate-limit hit stays visible after the poller recovers. */
+ * `lastRateLimitAt`/`lastError` are sticky (carried forward from the prior
+ * heartbeat) so a rare hit stays visible after the poller recovers.
+ * `consecutiveFailures` counts non-rate-limit failures only — a rate-limit
+ * hit neither increments nor resets it, since that streak already has its own
+ * dedicated counter/backoff above. */
 export async function recordBinancePollHealth(
   db: Db,
-  args: { lastTxCount: number; backoffUntil?: number | null; consecutiveRateLimitHits?: number; rateLimited?: boolean },
+  args: {
+    lastTxCount: number;
+    backoffUntil?: number | null;
+    consecutiveRateLimitHits?: number;
+    rateLimited?: boolean;
+    success: boolean;
+    error?: string | null;
+  },
 ): Promise<void> {
-  const lastRateLimitAt = args.rateLimited ? new Date().toISOString() : (await getBinancePollHealth(db)).lastRateLimitAt;
+  const prev = await getBinancePollHealth(db);
+  const lastRateLimitAt = args.rateLimited ? new Date().toISOString() : prev.lastRateLimitAt;
+  const consecutiveFailures = args.success
+    ? 0
+    : args.rateLimited
+      ? prev.consecutiveFailures ?? 0
+      : (prev.consecutiveFailures ?? 0) + 1;
+  const nowIso = new Date().toISOString();
   await setSetting(
     db,
     BINANCE_POLL_HEALTH_KEY,
     JSON.stringify({
-      lastRun: new Date().toISOString(),
+      lastRun: nowIso,
+      lastSuccessAt: args.success ? nowIso : prev.lastSuccessAt,
       lastTxCount: args.lastTxCount,
       backoffUntil: args.backoffUntil ? new Date(args.backoffUntil).toISOString() : null,
       consecutiveRateLimitHits: args.consecutiveRateLimitHits ?? 0,
       lastRateLimitAt,
-    }),
+      consecutiveFailures,
+      lastError: args.success ? prev.lastError : (args.error ?? prev.lastError) ?? null,
+    } satisfies BinancePollHealth),
   );
 }

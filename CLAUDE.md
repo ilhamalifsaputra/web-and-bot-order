@@ -21,7 +21,7 @@ schema at `prisma/schema.prisma` (datasource `DATABASE_URL_PRISMA`). See `DOCS.m
 - **UTC in DB, `TIMEZONE` on display** (web `localdt` filter; bot `localize`).
 - **Audit every state change** with the acting admin id (`logAdminAction`).
 - **Shared SQLite is single-writer** — keep each `$transaction` short; the trigger
-  to move to Postgres is ≥2 concurrent writers (RUN.md §9).
+  to move to Postgres is ≥2 concurrent writers.
 - **Schema change on deploy**: migrate the live DB (`pnpm prisma db push` or apply
   the migration) and restart order-bot **before** new code runs, or you get
   `P2022 column … does not exist`.

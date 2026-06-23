@@ -33,6 +33,7 @@ import {
 } from "@app/db";
 import { coreT } from "../util/i18n";
 import { notificationKb } from "../keyboards/customer";
+import { esc } from "../util/format";
 
 /**
  * Flip the anchored payment-instructions bubble (if any) to the auto-cancelled
@@ -152,26 +153,37 @@ export async function reconcileFinancesJob(api: Api): Promise<void> {
 
 // Watchdog: how long without a completed poll cycle counts as "stuck".
 const POLL_STALE_MINUTES = 5;
+// A poller that keeps cycling but fails every time (e.g. the destination is
+// network-blocked) refreshes `lastRun` forever and never trips the staleness
+// check above — this catches that case too.
+const FAILURE_STREAK_ALERT_THRESHOLD = 3;
 const POLL_ALERT_KEY = "binance_poll_alert_sent";
 
 /**
  * Pure decision for the poller watchdog (unit-tested without DB/env):
- *  - "none"    — healthy, intentionally backing off, or already alerted & still stale.
- *  - "alert"   — stale (no cycle in staleMs) and not yet alerted this episode.
+ *  - "none"    — healthy, intentionally backing off, or already alerted & still unhealthy.
+ *  - "alert"   — stale (no cycle in staleMs) OR failing every cycle
+ *                (consecutiveFailures ≥ failureThreshold), and not yet alerted this episode.
  *  - "recover" — back to healthy after having alerted (re-arm the alert).
+ *
+ * `consecutiveFailures` is optional so callers whose health type doesn't track
+ * it (e.g. Binance, currently) keep the original stale-only behavior unchanged.
  */
 export function pollWatchdogDecision(
-  health: { lastRun: string | null; backoffUntil: string | null },
+  health: { lastRun: string | null; backoffUntil: string | null; consecutiveFailures?: number | null },
   alreadyAlerted: boolean,
   now = Date.now(),
   staleMs = POLL_STALE_MINUTES * 60_000,
+  failureThreshold = FAILURE_STREAK_ALERT_THRESHOLD,
 ): "none" | "alert" | "recover" {
   const backoff = health.backoffUntil ? Date.parse(health.backoffUntil) : 0;
   if (backoff > now) return "none"; // rate-limited on purpose, not stuck
   const lastRun = health.lastRun ? Date.parse(health.lastRun) : 0;
   const stale = now - lastRun > staleMs;
-  if (stale && !alreadyAlerted) return "alert";
-  if (!stale && alreadyAlerted) return "recover";
+  const failing = (health.consecutiveFailures ?? 0) >= failureThreshold;
+  const unhealthy = stale || failing;
+  if (unhealthy && !alreadyAlerted) return "alert";
+  if (!unhealthy && alreadyAlerted) return "recover";
   return "none";
 }
 
@@ -224,17 +236,21 @@ export async function bybitPollWatchdog(api: Api): Promise<void> {
   if (decision === "alert") {
     const lastRun = health.lastRun ? Date.parse(health.lastRun) : 0;
     const mins = lastRun ? Math.round((Date.now() - lastRun) / 60_000) : "∞";
-    logger.error(`Bybit poller watchdog: no cycle in ${mins} min — alerting admins`);
+    const failing = (health.consecutiveFailures ?? 0) >= FAILURE_STREAK_ALERT_THRESHOLD;
+    const detail = failing
+      ? `${health.consecutiveFailures} consecutive cycle(s) failed (last error: ${health.lastError ?? "unknown"})`
+      : `no completed cycle in ${mins} min`;
+    logger.error(`Bybit poller watchdog: ${detail} — alerting admins`);
     for (const adminId of adminIds()) {
       try {
         await api.sendMessage(
           adminId,
-          `⚠️ <b>Bybit deposit poller looks STUCK</b>\nNo completed cycle in <b>${mins}</b> min. ` +
+          `⚠️ <b>Bybit deposit poller looks unhealthy</b>\n${esc(detail)}. ` +
             `Auto-confirm is paused — check the order-bot process.`,
           { parse_mode: "HTML" },
         );
       } catch (err) {
-        logger.error({ err }, `Failed to alert admin ${adminId} about stuck Bybit poller`);
+        logger.error({ err }, `Failed to alert admin ${adminId} about unhealthy Bybit poller`);
       }
     }
     await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "1");

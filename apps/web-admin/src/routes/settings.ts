@@ -13,6 +13,7 @@ import {
   deleteSetting,
   logAdminAction,
   refreshUsdIdrRate,
+  getBybitPollHealth,
 } from "@app/db";
 import {
   hashPassword,
@@ -185,6 +186,8 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       payMethodState[id] = paymentMethodState(m, currentValues);
     }
 
+    const bybitHealth = await getBybitPollHealth(prisma);
+
     const tg = req.admin!.telegramId;
     const twoFaEnabled = (await getSetting(prisma, twoFaSecretKey(tg))) !== null;
     const pendingSecret = await getSetting(prisma, twoFaPendingKey(tg));
@@ -206,6 +209,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       pay_bybit_fields: pick(PAY_BYBIT_KEYS),
       pay_binance_internal_fields: pick(PAY_BINANCE_INTERNAL_KEYS),
       pay_method_state: payMethodState,
+      bybit_health: bybitHealth,
       is_owner: req.admin!.role === "super",
       two_fa_enabled: twoFaEnabled,
       two_fa_pending: twoFaPending,

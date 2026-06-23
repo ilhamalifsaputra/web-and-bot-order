@@ -193,6 +193,19 @@
       </p>
     </div>
     {{ payment_toggle("bybit", "Bybit", pay_method_state.bybit) }}
+    {% if bybit_health.lastRun %}
+    <div class="text-xs rounded-lg bg-sand px-3 py-2 mb-3">
+      <span class="text-ink-soft">Poller last ran:</span>
+      <span class="font-medium" title="{{ tzname }}">{{ bybit_health.lastRun | localdt('yyyy-LL-dd HH:mm:ss') }}</span>
+      {% if bybit_health.lastTxCount is not none %}· {{ bybit_health.lastTxCount }} deposit(s) seen last check{% endif %}
+      {% if bybit_health.backoffUntil %}· <span class="text-amberx">rate-limited, paused until {{ bybit_health.backoffUntil | localdt('HH:mm:ss') }}</span>{% endif %}
+      {% if bybit_health.consecutiveFailures %}
+      <div class="text-rust mt-1">
+        ⚠️ {{ bybit_health.consecutiveFailures }} consecutive failure(s) fetching from Bybit{% if bybit_health.lastError %} — {{ bybit_health.lastError }}{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
     <div class="space-y-3">
       {% for fld in pay_bybit_fields %}{{ setting_form(fld) }}{% endfor %}
     </div>

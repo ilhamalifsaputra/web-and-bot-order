@@ -104,7 +104,11 @@ export const Env = z.object({
   // READ-ONLY API key/secret (Wallet read only — no Withdraw) to fetch deposits.
   BYBIT_API_KEY: z.string().optional(),
   BYBIT_API_SECRET: z.string().optional(),
-  BYBIT_API_BASE: z.string().default("https://api.bybit.com"),
+  // bytick.com is Bybit's own official mirror of api.bybit.com — defaulting to
+  // it dodges the Kominfo/Bappebti network-level block on api.bybit.com from
+  // Indonesian networks (confirmed: consistent ConnectTimeoutError to its CDN
+  // IPs from a production VPS; bytick.com, different IPs, unaffected).
+  BYBIT_API_BASE: z.string().default("https://api.bytick.com"),
   // Window for the auto-confirm path. Internal transfers are instant, but keep
   // a little headroom for poll latency + the buyer's transfer time.
   BYBIT_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(30),

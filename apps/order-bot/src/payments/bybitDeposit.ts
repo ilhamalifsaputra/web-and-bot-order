@@ -214,7 +214,8 @@ export async function pollOnce(api: Api): Promise<void> {
   try {
     deposits = await fetchRecentDeposits(cfg);
   } catch (err) {
-    if (err instanceof RateLimitedError) {
+    const rateLimited = err instanceof RateLimitedError;
+    if (rateLimited) {
       const { hitCount, delayMs } = backoff.recordRateLimit();
       logger.warn(`Bybit rate-limited (hit #${hitCount}) — backing off ${delayMs}ms`);
     } else {
@@ -224,7 +225,9 @@ export async function pollOnce(api: Api): Promise<void> {
       lastTxCount: 0,
       backoffUntil: backoff.backoffUntil || null,
       consecutiveRateLimitHits: backoff.hitCount,
-      rateLimited: err instanceof RateLimitedError,
+      rateLimited,
+      success: false,
+      error: String(err).slice(0, 300),
     }).catch(() => undefined);
     return;
   }
@@ -233,7 +236,7 @@ export async function pollOnce(api: Api): Promise<void> {
   const now = new Date();
   const orders = await listPendingBybitOrders(prisma, now);
   if (deposits.length) logger.info(`Bybit poll: ${deposits.length} deposit(s) fetched, ${orders.length} pending order(s)`);
-  await recordBybitPollHealth(prisma, { lastTxCount: deposits.length, backoffUntil: null }).catch(() => undefined);
+  await recordBybitPollHealth(prisma, { lastTxCount: deposits.length, backoffUntil: null, success: true }).catch(() => undefined);
 
   await processDeposits(api, deposits, orders);
 }

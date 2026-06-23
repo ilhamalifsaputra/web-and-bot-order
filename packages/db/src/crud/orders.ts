@@ -16,6 +16,7 @@ import { utcStamp, addMinutes } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { NotificationEvent } from "@app/core/enums";
+import { publicChannelId } from "@app/core/runtime";
 import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
 import { getBulkPricingForDenomination } from "./catalog";
@@ -790,31 +791,37 @@ export async function approveOrder(
     fxRate: order.fxRate,
   });
 
-  // Enqueue testimoni notification in the same transaction as the status flip.
-  // Web-only buyers (telegramId=null) get a "WEB-xx" masked id and the
-  // via_website flag so the admin channel post shows the origin.
-  const viaWebsite = order.user.telegramId == null;
-  const rawId = viaWebsite
-    ? `WEB-${(order.user.loginUsername ?? "user").slice(0, 2)}`
-    : String(order.user.telegramId);
-  const maskedBuyerId = rawId.slice(0, 4) + "X".repeat(Math.max(rawId.length - 4, 3));
-  const itemsSummary = order.items.map((item) => ({
-    name: item.product.name,
-    duration: item.product.durationLabel,
-    qty: item.quantity,
-  }));
-  await enqueueNotification(db, NotificationEvent.ORDER_DELIVERED, order.id, {
-    order_code: order.orderCode,
-    masked_buyer_id: maskedBuyerId,
-    items: itemsSummary,
-    total: String(order.totalAmount),
-    // The order's own transaction currency (IDR via TokoPay / USDT via
-    // Binance), not the legacy global CURRENCY env.
-    currency: order.currency,
-    delivered_at: utcStamp(now),
-    buyer_language: langCode(order.user.language),
-    via_website: viaWebsite,
-  });
+  // Enqueue testimoni notification in the same transaction as the status flip
+  // — but only when a testimonial channel is actually configured. Without
+  // PUBLIC_CHANNEL_ID the dispatcher just releases this row back to PENDING
+  // forever (see dispatcher.ts), so skip creating it rather than leaving a
+  // dead "Waiting" row behind for every delivered order.
+  if (publicChannelId() !== undefined) {
+    // Web-only buyers (telegramId=null) get a "WEB-xx" masked id and the
+    // via_website flag so the admin channel post shows the origin.
+    const viaWebsite = order.user.telegramId == null;
+    const rawId = viaWebsite
+      ? `WEB-${(order.user.loginUsername ?? "user").slice(0, 2)}`
+      : String(order.user.telegramId);
+    const maskedBuyerId = rawId.slice(0, 4) + "X".repeat(Math.max(rawId.length - 4, 3));
+    const itemsSummary = order.items.map((item) => ({
+      name: item.product.name,
+      duration: item.product.durationLabel,
+      qty: item.quantity,
+    }));
+    await enqueueNotification(db, NotificationEvent.ORDER_DELIVERED, order.id, {
+      order_code: order.orderCode,
+      masked_buyer_id: maskedBuyerId,
+      items: itemsSummary,
+      total: String(order.totalAmount),
+      // The order's own transaction currency (IDR via TokoPay / USDT via
+      // Binance), not the legacy global CURRENCY env.
+      currency: order.currency,
+      delivered_at: utcStamp(now),
+      buyer_language: langCode(order.user.language),
+      via_website: viaWebsite,
+    });
+  }
 
   logger.info(`Approved + delivered order ${order.orderCode} (admin=${args.adminId})`);
   const refreshed = await getOrder(db, order.id);

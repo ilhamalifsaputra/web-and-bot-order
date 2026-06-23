@@ -34,7 +34,7 @@
  * Setup (root .env):
  *   BYBIT_API_KEY=...
  *   BYBIT_API_SECRET=...
- *   BYBIT_API_BASE=https://api.bybit.com      # optional; testnet: https://api-testnet.bybit.com
+ *   BYBIT_API_BASE=https://api.bytick.com     # optional; testnet: https://api-testnet.bybit.com
  *
  * Run: pnpm exec tsx scripts/bybit-internal-probe.ts
  *
@@ -44,7 +44,7 @@
 import { createHmac } from "node:crypto";
 import "@app/core/config"; // side-effect: loads the monorepo-root .env into process.env
 
-const BASE = process.env.BYBIT_API_BASE || "https://api.bybit.com";
+const BASE = process.env.BYBIT_API_BASE || "https://api.bytick.com";
 const KEY = process.env.BYBIT_API_KEY || "";
 const SECRET = process.env.BYBIT_API_SECRET || "";
 const RECV = "5000";

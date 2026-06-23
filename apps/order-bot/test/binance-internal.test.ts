@@ -132,6 +132,38 @@ describe("pollWatchdogDecision (poller stuck/recover logic)", () => {
   it("never-run poller (no lastRun) is treated as stale", () => {
     expect(pollWatchdogDecision({ lastRun: null, backoffUntil: null }, false, now)).toBe("alert");
   });
+
+  // consecutiveFailures: catches a poller that keeps cycling on schedule
+  // (lastRun stays fresh) but fails every single cycle — e.g. the destination
+  // is network-blocked. Optional field, so callers without it (Binance, today)
+  // keep the original stale-only behavior from the cases above.
+  it("alerts on a fresh lastRun if consecutiveFailures has crossed the threshold", () => {
+    expect(
+      pollWatchdogDecision({ lastRun: ago(5_000), backoffUntil: null, consecutiveFailures: 3 }, false, now),
+    ).toBe("alert");
+  });
+
+  it("stays quiet below the failure threshold even with a fresh lastRun", () => {
+    expect(
+      pollWatchdogDecision({ lastRun: ago(5_000), backoffUntil: null, consecutiveFailures: 2 }, false, now),
+    ).toBe("none");
+  });
+
+  it("recovers once consecutiveFailures drops back below threshold", () => {
+    expect(
+      pollWatchdogDecision({ lastRun: ago(5_000), backoffUntil: null, consecutiveFailures: 0 }, true, now),
+    ).toBe("recover");
+  });
+
+  it("a backoff window still suppresses the alert even while failing", () => {
+    expect(
+      pollWatchdogDecision(
+        { lastRun: ago(5_000), backoffUntil: ago(-60_000), consecutiveFailures: 5 },
+        false,
+        now,
+      ),
+    ).toBe("none");
+  });
 });
 
 describe("matchByAmount (note-less fallback)", () => {

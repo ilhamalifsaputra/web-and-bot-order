@@ -34,14 +34,27 @@ const STATIC_DIR = process.env.STOREFRONT_STATIC_DIR ?? join(HERE, "..", "static
 const UPLOADS_DIR = process.env.UPLOADS_DIR ?? join(HERE, "..", "..", "..", "data", "uploads");
 
 export async function buildApp(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: false });
+  // trustProxy unset (default) → false: X-Forwarded-For is ignored entirely,
+  // req.ip is the real TCP peer. Only set TRUST_PROXY once an actual reverse
+  // proxy is in front (Storefront-4 fix, security audit 2026-06-23) — see
+  // packages/core/src/config.ts for the full rationale.
+  const trustProxy = config.TRUST_PROXY
+    ? config.TRUST_PROXY.split(",").map((s) => s.trim()).filter(Boolean)
+    : false;
+  const app = Fastify({ logger: false, trustProxy });
 
   // L-01: lightweight access log for 502/4xx/5xx diagnosis. Method + path +
   // status + duration only — never the query string (may carry tokens), body,
-  // or headers (never log secrets — CLAUDE.md).
+  // or headers (never log secrets — CLAUDE.md). The password-reset token
+  // rides in the PATH (`GET /reset/:token`), not the query string, so it's
+  // redacted explicitly here too (Storefront-1 fix, security audit
+  // 2026-06-23) — otherwise every reset-page hit would log the live,
+  // single-use token in full.
   app.addHook("onResponse", (req, reply, done) => {
+    const rawPath = req.url.split("?", 1)[0]!;
+    const path = rawPath.replace(/^\/reset\/[^/]+/, "/reset/[redacted]");
     logger.info(
-      { method: req.method, path: req.url.split("?", 1)[0], status: reply.statusCode, ms: Math.round(reply.elapsedTime) },
+      { method: req.method, path, status: reply.statusCode, ms: Math.round(reply.elapsedTime) },
       "access",
     );
     done();

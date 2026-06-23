@@ -125,4 +125,56 @@ describe("createOrderFromCart with voucher", () => {
       createOrderFromCart(prisma, { user, voucherCode: "NOPE" }),
     ).rejects.toMatchObject({ key: "error.voucher_not_found" });
   });
+
+  // Pricing-1 (security audit, 2026-06-23): a voucher must not be reusable by
+  // the same buyer across multiple orders, even while the GLOBAL usageLimit
+  // still has quota left.
+  it("records a VoucherRedemption row on first use", async () => {
+    const { user, product, voucher } = sample;
+    await addToCart(prisma, user.id, product.id, 2);
+    const order = await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
+
+    const redemption = await prisma.voucherRedemption.findUnique({
+      where: { voucherId_userId: { voucherId: voucher.id, userId: user.id } },
+    });
+    expect(redemption).not.toBeNull();
+    expect(redemption!.orderId).toBe(order!.id);
+  });
+
+  it("the SAME user reusing a voucher on a second order raises error.voucher_already_redeemed", async () => {
+    const { user, product } = sample;
+    await addToCart(prisma, user.id, product.id, 2);
+    await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" }); // 1st use — succeeds
+
+    await addToCart(prisma, user.id, product.id, 2);
+    await expect(
+      createOrderFromCart(prisma, { user, voucherCode: "SAVE10" }), // 2nd use — blocked
+    ).rejects.toMatchObject({ key: "error.voucher_already_redeemed" });
+  });
+
+  it("a DIFFERENT user can still redeem the same voucher (cap is per-user, not global)", async () => {
+    const { user, product, voucher } = sample;
+    await addToCart(prisma, user.id, product.id, 2);
+    await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
+
+    const otherUser = await prisma.user.create({ data: { telegramId: 9_988_776, referralCode: "OTHERUSR" } });
+    await addToCart(prisma, otherUser.id, product.id, 2);
+    const order2 = await createOrderFromCart(prisma, { user: { id: otherUser.id, role: "CUSTOMER", walletBalance: "0" }, voucherCode: "SAVE10" });
+
+    expect(order2!.voucherId).toBe(voucher.id);
+    const fresh = await prisma.voucher.findUnique({ where: { id: voucher.id } });
+    expect(fresh!.usedCount).toBe(2); // global counter still increments for both
+  });
+
+  it("a rejected reuse does NOT double-bump the global usedCount", async () => {
+    const { user, product, voucher } = sample;
+    await addToCart(prisma, user.id, product.id, 2);
+    await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
+
+    await addToCart(prisma, user.id, product.id, 2);
+    await expect(createOrderFromCart(prisma, { user, voucherCode: "SAVE10" })).rejects.toThrow();
+
+    const fresh = await prisma.voucher.findUnique({ where: { id: voucher.id } });
+    expect(fresh!.usedCount).toBe(1); // the blocked attempt never reached the increment
+  });
 });

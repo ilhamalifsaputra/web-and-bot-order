@@ -25,6 +25,11 @@ process.env.USE_UNIQUE_CENTS = "0";
 process.env.DEFAULT_LANGUAGE = "en";
 process.env.SMTP_HOST = "smtp.test.invalid";
 process.env.SMTP_FROM = "Shop <no-reply@test.invalid>";
+// app.inject()'s simulated connection comes from loopback — trust it as the
+// reverse-proxy hop so tests can keep simulating distinct client IPs via
+// X-Forwarded-For (Storefront-4 fix, security audit 2026-06-23; see
+// rateLimit.ts's clientIp for why TRUST_PROXY now gates X-Forwarded-For at all).
+process.env.TRUST_PROXY = "127.0.0.1,::1";
 // Shadow any real Bybit creds from the monorepo-root .env so payment-method
 // gating is driven purely by Settings in tests (dotenv never overrides these).
 process.env.BYBIT_DEPOSIT_ADDRESS = "";

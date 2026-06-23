@@ -59,8 +59,17 @@ const OPS_PREFIXES = ["/orders", "/support", "/outbox", "/payments", "/reviews"]
 const underAny = (path: string, prefixes: string[]) =>
   prefixes.some((p) => path === p || path.startsWith(p + "/"));
 
-/** Whether `role` may perform a mutating request to `path`. */
-export function canMutate(role: WebRole, path: string): boolean {
+/**
+ * Whether `role` may perform a mutating request to `rawPath`. `rawPath` may
+ * be a bare path or a full `req.url` (path + query string) — callers were
+ * inconsistent about stripping the query string themselves (some pre-trim,
+ * upload/branding/catalog routes pass `req.url` raw), which could silently
+ * break an exact-match path check like `/settings/password` if it were ever
+ * called with a query string. Normalizing once here removes that footgun for
+ * every caller (Admin-4 fix, security audit 2026-06-23).
+ */
+export function canMutate(role: WebRole, rawPath: string): boolean {
+  const path = (rawPath.split("?")[0] || rawPath) ?? "/";
   if (role === "super") return true;
   // Self-service for every authenticated admin: own password + own 2FA.
   if (path === "/settings/password" || path.startsWith("/settings/2fa/")) return true;

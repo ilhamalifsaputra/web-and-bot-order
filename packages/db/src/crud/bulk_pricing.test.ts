@@ -52,3 +52,31 @@ describe("activeBulkPricingByDenomination (storefront discount badge)", () => {
     expect(map[noRule.id]).toBeUndefined(); // products without a rule are absent
   });
 });
+
+// Pricing-4 (security audit, 2026-06-23): a misconfigured discountPercent is
+// the only thing standing between an admin typo and a free (Rp0) order.
+describe("upsertBulkPricing discountPercent bounds", () => {
+  it("rejects discountPercent > 100", async () => {
+    const p = await makeProduct("over-100");
+    await expect(
+      upsertBulkPricing(prisma, { denominationId: p.id, minQuantity: 2, discountPercent: 150 }),
+    ).rejects.toMatchObject({ key: "error.invalid_discount_percent" });
+    expect(await prisma.bulkPricing.findUnique({ where: { productId: p.id } })).toBeNull();
+  });
+
+  it("rejects discountPercent === 0 and negative", async () => {
+    const p = await makeProduct("zero-or-negative");
+    await expect(
+      upsertBulkPricing(prisma, { denominationId: p.id, minQuantity: 2, discountPercent: 0 }),
+    ).rejects.toMatchObject({ key: "error.invalid_discount_percent" });
+    await expect(
+      upsertBulkPricing(prisma, { denominationId: p.id, minQuantity: 2, discountPercent: -10 }),
+    ).rejects.toMatchObject({ key: "error.invalid_discount_percent" });
+  });
+
+  it("accepts exactly 100", async () => {
+    const p = await makeProduct("exactly-100");
+    const rule = await upsertBulkPricing(prisma, { denominationId: p.id, minQuantity: 2, discountPercent: 100 });
+    expect(Number(rule.discountPercent)).toBe(100);
+  });
+});

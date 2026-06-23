@@ -73,6 +73,44 @@ function requireUser(ctx: MyContext) {
   return u;
 }
 
+// Double-tap / grammY-retry window: a second tap on the same payment button
+// within this many ms must not create a second ghost order for the same
+// product+rail (Checkout-1 fix, security audit 2026-06-23).
+const DUPLICATE_CHECKOUT_WINDOW_MS = 30_000;
+
+/**
+ * Refuses to proceed if the user already has a PENDING_PAYMENT order for the
+ * same (productId, paymentMethod) created within the last
+ * DUPLICATE_CHECKOUT_WINDOW_MS — the common double-tap/network-retry case.
+ * Different rails for the same product are NOT blocked (the user may be
+ * deliberately switching gateways after a stuck attempt). Answers/edits the
+ * screen itself and returns true when a duplicate is found; the caller must
+ * stop. Returns false when it's safe to create a new order.
+ */
+async function refuseDuplicateCheckout(
+  ctx: MyContext,
+  userId: number,
+  productId: number,
+  paymentMethod: PaymentMethod,
+): Promise<boolean> {
+  const dupe = await prisma.order.findFirst({
+    where: {
+      userId,
+      paymentMethod,
+      status: OrderStatus.PENDING_PAYMENT,
+      items: { some: { productId } },
+      createdAt: { gt: new Date(Date.now() - DUPLICATE_CHECKOUT_WINDOW_MS) },
+    },
+  });
+  if (!dupe) return false;
+  if (ctx.callbackQuery) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "checkout.duplicate_pending"), show_alert: true });
+  } else {
+    await smartEdit(ctx, t(ctx, "checkout.duplicate_pending"), ckb.backToMain(ctx.session.lang));
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Order confirmation (summary before creating the order)
 // ---------------------------------------------------------------------------
@@ -293,7 +331,6 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     return;
   }
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
-  delete ctx.session.scratch.appliedVoucherCode;
 
   const user = await getUser(prisma, info.id);
   if (user === null) {
@@ -305,6 +342,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
     return;
   }
+  if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BINANCE_INTERNAL)) return;
 
   let order: Awaited<ReturnType<typeof createInternalOrder>>;
   try {
@@ -322,6 +360,10 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
+  // Consume the voucher only now that an order actually exists for it — a
+  // failed attempt above (out of stock, etc.) leaves it applied for a retry
+  // (Pricing-3 fix, security audit 2026-06-23).
+  delete ctx.session.scratch.appliedVoucherCode;
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -359,7 +401,6 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
     return;
   }
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
-  delete ctx.session.scratch.appliedVoucherCode;
 
   const user = await getUser(prisma, info.id);
   if (user === null) {
@@ -371,6 +412,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
     await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
     return;
   }
+  if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BYBIT)) return;
 
   let order: Awaited<ReturnType<typeof createBybitOrder>>;
   try {
@@ -388,6 +430,10 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
+  // Consume the voucher only now that an order actually exists for it — a
+  // failed attempt above (out of stock, etc.) leaves it applied for a retry
+  // (Pricing-3 fix, security audit 2026-06-23).
+  delete ctx.session.scratch.appliedVoucherCode;
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -434,7 +480,6 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     return;
   }
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
-  delete ctx.session.scratch.appliedVoucherCode;
 
   const user = await getUser(prisma, info.id);
   if (user === null) {
@@ -446,6 +491,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
     return;
   }
+  if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.NOWPAYMENTS)) return;
 
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
@@ -469,6 +515,10 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
+  // Consume the voucher only now that an order actually exists for it — a
+  // failed attempt above (out of stock, etc.) leaves it applied for a retry
+  // (Pricing-3 fix, security audit 2026-06-23).
+  delete ctx.session.scratch.appliedVoucherCode;
 
   // Create the hosted invoice + cache it. order.totalAmount is ALREADY in USDT
   // (finalizeOrderPayment's USDT branch) — pass it straight through as
@@ -488,6 +538,10 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify({ gateway: "nowpayments", ...gateway }) } });
   } catch (err) {
     logger.error({ err }, `NOWPayments create failed for ${order.orderCode}`);
+    // The order shell exists but has no payment instructions — cancel it
+    // rather than leaving an orphan PENDING_PAYMENT slot (Checkout-3 fix,
+    // security audit 2026-06-23).
+    await prisma.$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed")).catch(() => {});
     await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
     return;
   }
@@ -536,7 +590,6 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     return;
   }
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
-  delete ctx.session.scratch.appliedVoucherCode;
 
   const user = await getUser(prisma, info.id);
   if (user === null) {
@@ -547,6 +600,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
     return;
   }
+  if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.TOKOPAY)) return;
 
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
@@ -566,6 +620,10 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
+  // Consume the voucher only now that an order actually exists for it — a
+  // failed attempt above (out of stock, etc.) leaves it applied for a retry
+  // (Pricing-3 fix, security audit 2026-06-23).
+  delete ctx.session.scratch.appliedVoucherCode;
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   let gateway;
@@ -577,6 +635,10 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify({ gateway: "tokopay", ...gateway }) } });
   } catch (err) {
     logger.error({ err }, `TokoPay create failed for ${order.orderCode}`);
+    // The order shell exists but has no payment instructions — cancel it
+    // rather than leaving an orphan PENDING_PAYMENT slot (Checkout-3 fix,
+    // security audit 2026-06-23).
+    await prisma.$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed")).catch(() => {});
     await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
     return;
   }
@@ -643,7 +705,6 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
     return;
   }
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
-  delete ctx.session.scratch.appliedVoucherCode;
 
   const user = await getUser(prisma, info.id);
   if (user === null) {
@@ -654,6 +715,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
     await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
     return;
   }
+  if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.PAYDISINI)) return;
 
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
@@ -673,6 +735,10 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
+  // Consume the voucher only now that an order actually exists for it — a
+  // failed attempt above (out of stock, etc.) leaves it applied for a retry
+  // (Pricing-3 fix, security audit 2026-06-23).
+  delete ctx.session.scratch.appliedVoucherCode;
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   let gateway;
@@ -684,6 +750,10 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
     await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify({ gateway: "paydisini", ...gateway }) } });
   } catch (err) {
     logger.error({ err }, `PayDisini create failed for ${order.orderCode}`);
+    // The order shell exists but has no payment instructions — cancel it
+    // rather than leaving an orphan PENDING_PAYMENT slot (Checkout-3 fix,
+    // security audit 2026-06-23).
+    await prisma.$transaction((tx) => cancelOrder(tx, order!.id, "gateway_create_failed")).catch(() => {});
     await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
     return;
   }

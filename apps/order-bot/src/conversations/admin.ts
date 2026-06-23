@@ -145,20 +145,28 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
   await adminAnchor(ctx, t(ctx, "admin.processing"));
 
   const adminTg = ctx.from!.id;
-  const added = await prisma.$transaction(async (tx) => {
-    const n = await bulkAddStock(tx, productId, credentials);
+  const { added, dedupSkipped } = await prisma.$transaction(async (tx) => {
+    const { added: n, skipped } = await bulkAddStock(tx, productId, credentials);
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
       adminId: adminIdOf(admin),
       action: "stock_upload",
       targetType: "product",
       targetId: productId,
-      details: `added=${n} skipped=${skippedCount}`,
+      details: `added=${n} parse_skipped=${skippedCount} dedup_skipped=${skipped}`,
     });
-    return n;
+    return { added: n, dedupSkipped: skipped };
   });
 
-  await adminEdit(ctx, t(ctx, "admin.stock_added", { count: added, skipped: skippedCount }), akb.backToAdminKb(lang));
+  // Parse-time skips (malformed lines) and dedup skips (already-existing or
+  // repeated credentials — Stock-1 fix, security audit 2026-06-23) are both
+  // "this line didn't become new stock", so they're combined into one total
+  // for the admin-facing summary; the audit row above keeps them distinct.
+  await adminEdit(
+    ctx,
+    t(ctx, "admin.stock_added", { count: added, skipped: skippedCount + dedupSkipped }),
+    akb.backToAdminKb(lang),
+  );
   await notifyRestockSubscribers(ctx, productId);
 }
 
@@ -276,6 +284,37 @@ export async function voucherCreateConversation(conversation: MyConversation, ct
 // Broadcast
 // ===========================================================================
 
+// Crash-resume guard (Bot-6 fix, security audit 2026-06-23): the send loop
+// below is a single conversation.external() step with no per-recipient
+// "already sent" marker. If the bot process crashes mid-loop, grammY's
+// conversation replay re-runs this function from the top on the next update
+// for that admin — including re-executing the SAME external() step from
+// scratch, which would re-send to the WHOLE segment. A durable (outside
+// conversation/session state) lock recorded BEFORE the loop closes that gap:
+// on replay, the lock is already set from the interrupted attempt, so the
+// guard aborts instead of re-sending. Released on a clean finish; a stale
+// lock self-heals after BROADCAST_LOCK_STALE_MS so one crash can't lock out
+// broadcasting forever.
+const BROADCAST_LOCK_KEY = "broadcast_inflight_at";
+const BROADCAST_LOCK_STALE_MS = 30 * 60_000;
+
+/** True if the lock was free and is now held by this call. */
+async function acquireBroadcastLock(): Promise<boolean> {
+  const existing = await getSetting(prisma, BROADCAST_LOCK_KEY);
+  if (existing) {
+    const startedAt = Number(existing);
+    if (Number.isFinite(startedAt) && Date.now() - startedAt < BROADCAST_LOCK_STALE_MS) {
+      return false; // another (or this same, crash-replayed) send is still in flight
+    }
+  }
+  await setSetting(prisma, BROADCAST_LOCK_KEY, String(Date.now()));
+  return true;
+}
+
+async function releaseBroadcastLock(): Promise<void> {
+  await deleteSetting(prisma, BROADCAST_LOCK_KEY);
+}
+
 export async function broadcastConversation(conversation: MyConversation, ctx: MyContext): Promise<void> {
   if (!adminGate(ctx)) return denyAdmin(ctx);
   const lang = ctx.session.lang;
@@ -335,6 +374,12 @@ export async function broadcastConversation(conversation: MyConversation, ctx: M
 
   await adminEdit(ctx, t(ctx, "admin.processing"));
   const result = await conversation.external(async () => {
+    // Lock check is the FIRST thing this step does, so a crash-replay
+    // re-running this same external() call from scratch hits it before
+    // touching the send loop (Bot-6 fix, security audit 2026-06-23).
+    if (!(await acquireBroadcastLock())) {
+      return { aborted: true as const, sent: 0, failed: 0 };
+    }
     let sent = 0;
     let failed = 0;
     for (const r of recipients) {
@@ -355,9 +400,17 @@ export async function broadcastConversation(conversation: MyConversation, ctx: M
       const admin = await getUserByTelegramId(tx, adminTg);
       await logAdminAction(tx, { adminId: adminIdOf(admin), action: "broadcast", details: `sent=${sent} failed=${failed}` });
     });
-    return { sent, failed };
+    // Only released on a clean finish — if something throws between the
+    // lock and here, the lock stays held (fails safe: a stuck lock needing
+    // a retry after BROADCAST_LOCK_STALE_MS beats a silent mass re-send).
+    await releaseBroadcastLock();
+    return { aborted: false as const, sent, failed };
   });
 
+  if (result.aborted) {
+    await adminEdit(ctx, t(ctx, "admin.broadcast_already_in_progress"), akb.backToAdminKb(lang));
+    return;
+  }
   await adminEdit(ctx, t(ctx, "admin.broadcast_sent", { count: result.sent, failed: result.failed }), akb.backToAdminKb(lang));
 }
 

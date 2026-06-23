@@ -26,14 +26,20 @@ export function listOpenTickets(db: Db, limit = 50) {
   });
 }
 
-/** Close a ticket; return the ticket owner's telegram_id (to notify) or null. */
+/**
+ * Close a ticket; return the ticket owner's telegram_id (to notify) or null.
+ * Atomic conditional claim — `count===1` means THIS call is the one that
+ * actually flipped it, so a double-tap "Close" can never fire two DMs to the
+ * buyer (Bot-3 fix, security audit 2026-06-23).
+ */
 export async function closeTicket(db: Db, ticketId: number): Promise<bigint | null> {
-  const ticket = await db.supportTicket.findUnique({ where: { id: ticketId } });
-  if (!ticket) return null;
-  await db.supportTicket.update({
-    where: { id: ticketId },
+  const res = await db.supportTicket.updateMany({
+    where: { id: ticketId, status: { not: TicketStatus.CLOSED } },
     data: { status: TicketStatus.CLOSED },
   });
+  if (res.count === 0) return null;
+  const ticket = await db.supportTicket.findUnique({ where: { id: ticketId } });
+  if (!ticket) return null;
   const user = await db.user.findUnique({ where: { id: ticket.userId } });
   return user ? user.telegramId : null;
 }

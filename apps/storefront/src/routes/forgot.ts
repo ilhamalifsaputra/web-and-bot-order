@@ -12,7 +12,7 @@ import {
   setLoginCredentials,
 } from "@app/db";
 import { newJti, shopSessionJtiKey } from "../auth";
-import { clientIp, loginRateLimited } from "../rateLimit";
+import { clientIp, loginRateLimited, forgotEmailRateLimited } from "../rateLimit";
 import { shopContext } from "../shop";
 
 function publicBase(req: FastifyRequest): string {
@@ -30,7 +30,11 @@ const forgotRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Body: { email?: string } }>("/forgot", async (req, reply) => {
     const ctx = await shopContext(req, "/login");
     const ip = clientIp(req);
-    if (loginRateLimited(ip)) {
+    const email = (req.body.email ?? "").trim().toLowerCase();
+    // Per-IP throttle stops one source hammering ANY address; per-email
+    // throttle stops an attacker rotating IPs to email-bomb ONE victim with
+    // reset-token mail (Storefront-4 fix, security audit 2026-06-23).
+    if (loginRateLimited(ip) || forgotEmailRateLimited(email)) {
       return reply.code(429).view("forgot.njk", {
         ...ctx,
         sent: false,
@@ -41,7 +45,6 @@ const forgotRoutes: FastifyPluginAsync = async (app) => {
     if (!isSmtpEnabled()) {
       return reply.view("forgot.njk", { ...ctx, sent: false, unavailable: true });
     }
-    const email = (req.body.email ?? "").trim().toLowerCase();
     if (email) {
       const user = await prisma.user.findUnique({ where: { email } });
       if (user && !user.banned) {
@@ -67,6 +70,10 @@ const forgotRoutes: FastifyPluginAsync = async (app) => {
 
   app.get<{ Params: { token: string } }>("/reset/:token", async (req, reply) => {
     const ctx = await shopContext(req, "/login");
+    // The single-use reset token rides in this page's own URL — stop browsers
+    // from leaking it via the Referer header if the page ever links out
+    // (Storefront-1 fix, security audit 2026-06-23).
+    void reply.header("Referrer-Policy", "no-referrer");
     return reply.view("reset.njk", { ...ctx, token: req.params.token, error: null });
   });
 
@@ -74,6 +81,7 @@ const forgotRoutes: FastifyPluginAsync = async (app) => {
     "/reset/:token",
     async (req, reply) => {
       const ctx = await shopContext(req, "/login");
+      void reply.header("Referrer-Policy", "no-referrer"); // see GET /reset/:token above
       const password = req.body.password ?? "";
       const back = (error: string) =>
         reply.code(400).view("reset.njk", { ...ctx, token: req.params.token, error });

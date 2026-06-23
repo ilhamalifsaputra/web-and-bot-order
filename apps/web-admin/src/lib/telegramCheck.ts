@@ -6,17 +6,25 @@
  */
 export type TokenCheck = { ok: boolean; username?: string };
 
+// Bounds how long a hung api.telegram.org call can hold this single-process
+// app's request thread (Admin-3 fix, security audit 2026-06-23).
+const TELEGRAM_FETCH_TIMEOUT_MS = 5000;
+
 /**
  * Ask Telegram whether the token works. Plain fetch (no grammy dependency
  * here); the token never appears in logs or error messages.
  */
 export async function checkTokenWithTelegram(token: string): Promise<TokenCheck> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), TELEGRAM_FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`, { signal: ac.signal });
     const data = (await res.json()) as { ok?: boolean; result?: { username?: string } };
     return data.ok ? { ok: true, username: data.result?.username } : { ok: false };
   } catch {
     return { ok: false };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -52,9 +60,12 @@ export function normalizeChannelInput(input: string): string {
  */
 export async function checkChannelWithTelegram(botToken: string, input: string): Promise<ChannelCheck> {
   const chat = normalizeChannelInput(input);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), TELEGRAM_FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(
       `https://api.telegram.org/bot${botToken}/getChat?chat_id=${encodeURIComponent(chat)}`,
+      { signal: ac.signal },
     );
     const data = (await res.json()) as { ok?: boolean; result?: { id?: number; title?: string } };
     return data.ok && typeof data.result?.id === "number"
@@ -62,6 +73,8 @@ export async function checkChannelWithTelegram(botToken: string, input: string):
       : { ok: false };
   } catch {
     return { ok: false };
+  } finally {
+    clearTimeout(timer);
   }
 }
 

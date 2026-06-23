@@ -32,6 +32,9 @@
 
     <div class="card card-pad text-sm space-y-4">
       <h2 class="section-title">Manage</h2>
+      {% if user.role == "ADMIN" %}
+      <div class="text-xs text-ink-soft">Admin status is managed from the <a href="/admins" class="link">Admins page</a>, not here.</div>
+      {% else %}
       <form method="post" action="/users/{{ user.id }}/role" class="flex gap-2 items-end">
         {{ ui.csrf_field(admin) }}
         <div class="flex-1"><label class="field-label">Customer type</label>
@@ -40,6 +43,7 @@
           </select></div>
         <button class="btn btn-soft">Save</button>
       </form>
+      {% endif %}
 
       <form method="post" action="/users/{{ user.id }}/ban" class="space-y-2">
         {{ ui.csrf_field(admin) }}

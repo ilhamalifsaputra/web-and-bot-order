@@ -13,6 +13,7 @@ import {
   setOrderPaymentMessage,
 } from "@app/db";
 import type { Api } from "grammy";
+import { config } from "@app/core/config";
 import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import {
@@ -256,11 +257,27 @@ describe("processTransfers (poll-loop wiring)", () => {
     expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "T1" } }))!.outcome).toBe("matched");
   });
 
-  it("delivers on the amount fallback when the note is empty", async () => {
-    const order = (await makeInternalOrder())!;
+  it("delivers on the amount fallback when the note is empty AND USE_UNIQUE_CENTS is on", async () => {
+    // The amount fallback is gated on USE_UNIQUE_CENTS (Payment-2 fix) — without
+    // distinct totals it's a confused-deputy risk, so it's the one precondition
+    // this test must hold for real (toggled here, not just env-defaulted).
+    config.USE_UNIQUE_CENTS = true;
+    try {
+      const order = (await makeInternalOrder())!;
+      const { api } = fakeApi();
+      await processTransfers(api, [txFor({ txId: "T2", note: "", amount: Number(order.totalAmount) })], await pending());
+      expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
+    } finally {
+      config.USE_UNIQUE_CENTS = false;
+    }
+  });
+
+  it("never attempts the amount fallback when USE_UNIQUE_CENTS is off — unmatched, not delivered", async () => {
+    const order = (await makeInternalOrder())!; // unique-cents off in tests → no memo, no unique total
     const { api } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T2", note: "", amount: Number(order.totalAmount) })], await pending());
-    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
+    await processTransfers(api, [txFor({ txId: "T2B", note: "", amount: Number(order.totalAmount) })], await pending());
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "T2B" } }))!.outcome).toBe("unmatched");
   });
 
   it("refuses the amount fallback on a collision (two equal-total orders) → unmatched", async () => {

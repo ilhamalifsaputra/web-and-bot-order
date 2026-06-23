@@ -200,6 +200,29 @@ describe("POST /pay/paydisini/callback", () => {
     expect(updated!.status).toBe("PENDING_PAYMENT"); // untouched
   });
 
+  // Payment-4 (security audit, 2026-06-23): see tokopay-webhook.test.ts's
+  // matching test for the rationale.
+  it("records unmatched (not delivered) when the ref_id matches a PAYDISINI-method order whose currency is somehow not IDR", async () => {
+    const order = await prisma.order.create({
+      data: {
+        orderCode: "ORD-WRONGCURR",
+        userId,
+        subtotalAmount: "50000",
+        totalAmount: "50000",
+        status: "PENDING_PAYMENT",
+        currency: "USDT", // contrived: paymentMethod/currency decoupled
+        paymentMethod: "PAYDISINI",
+      },
+    });
+    const payload = signedPayload({ refId: order.orderCode, amount: "50000", trxId: "TRX-WRONGCURR-1" });
+    const res = await app.inject({ method: "POST", url: "/pay/paydisini/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "unmatched" });
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("PENDING_PAYMENT"); // untouched
+  });
+
   it("overpaid: delivers, ledger outcome is overpaid, and enqueues ADMIN_OVERPAID rows for each ADMIN_IDS entry", async () => {
     const order = await createPendingPaydisiniOrder("ORD-OVERPAY", "50000");
     const payload = signedPayload({ refId: order.orderCode, amount: "75000", trxId: "TRX-OVERPAY-1" }); // 25000 over

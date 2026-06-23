@@ -20,6 +20,7 @@ import {
   addAdminIdToDb,
   upsertUser,
   isSetupCompleted,
+  anyAdminPasswordSet,
   markSetupComplete,
   logAdminAction,
   resolveAdminIds,
@@ -33,23 +34,46 @@ export { setTokenValidator };
 const OWNER_TG_KEY = "setup_owner_tg"; // carries the owner id from step 2 → finish
 
 export default async function setupRoutes(app: FastifyInstance): Promise<void> {
-  /** Once setup is locked, the wizard is gone — send to the normal login. */
-  async function lockedRedirect(reply: FastifyReply): Promise<FastifyReply | null> {
+  /**
+   * Once setup is locked, the wizard is gone — send to the normal login.
+   * Mirrors setupNeeded()'s OR (isSetupCompleted || anyAdminPasswordSet), so a
+   * deploy that was bootstrapped via /bootstrap instead of the wizard (which
+   * never set setup_completed) doesn't leave these pre-auth, no-CSRF POSTs open
+   * forever. Self-heals setup_completed once an admin password is detected —
+   * EXCEPT mid-wizard between step 2 and step 3/finish, where OWNER_TG_KEY is
+   * set (step 2 already created the owner's password) but the wizard hasn't
+   * reached /setup/shop yet; bootstrap never sets OWNER_TG_KEY, so its presence
+   * reliably tells the two cases apart.
+   *
+   * Returns a plain boolean, NOT `reply` — Fastify's Reply implements `.then`,
+   * so a nested async helper that `return reply`s gets unwrapped by native
+   * Promise resolution (thenable-chaining) into `undefined` at the `await`
+   * call site, silently defeating `if (await lockedRedirect(reply)) return;`.
+   * That bug pre-dated this fix and meant the lock never actually blocked
+   * POST bodies from running (only the already-sent redirect masked it).
+   */
+  async function lockedRedirect(reply: FastifyReply): Promise<boolean> {
     if (await isSetupCompleted(prisma)) {
       reply.code(303).redirect("/login");
-      return reply;
+      return true;
     }
-    return null;
+    const midWizard = (await getSetting(prisma, OWNER_TG_KEY)) !== null;
+    if (!midWizard && (await anyAdminPasswordSet(prisma))) {
+      await markSetupComplete(prisma);
+      reply.code(303).redirect("/login");
+      return true;
+    }
+    return false;
   }
 
   // ---- Step 1: connect bot ----
   app.get("/setup", async (_req, reply) => {
-    if (await lockedRedirect(reply)) return reply;
+    if (await lockedRedirect(reply)) return;
     return reply.view("setup_bot.njk", { error: null });
   });
 
   app.post("/setup/bot", async (req, reply) => {
-    if (await lockedRedirect(reply)) return reply;
+    if (await lockedRedirect(reply)) return;
     const body = (req.body ?? {}) as Record<string, string>;
     if (body.skip) return reply.code(303).redirect("/setup/owner");
 
@@ -69,12 +93,12 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
 
   // ---- Step 2: create owner (admin) ----
   app.get("/setup/owner", async (_req, reply) => {
-    if (await lockedRedirect(reply)) return reply;
+    if (await lockedRedirect(reply)) return;
     return reply.view("setup_owner.njk", { error: null });
   });
 
   app.post("/setup/owner", async (req, reply) => {
-    if (await lockedRedirect(reply)) return reply;
+    if (await lockedRedirect(reply)) return;
     const body = (req.body ?? {}) as Record<string, string>;
     const telegramId = Number(body.telegram_id);
     const username = (body.username ?? "").trim() || null;
@@ -113,12 +137,12 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
 
   // ---- Step 3: shop basics (skippable) + finish ----
   app.get("/setup/shop", async (_req, reply) => {
-    if (await lockedRedirect(reply)) return reply;
+    if (await lockedRedirect(reply)) return;
     return reply.view("setup_shop.njk", { error: null });
   });
 
   app.post("/setup/shop", async (req, reply) => {
-    if (await lockedRedirect(reply)) return reply;
+    if (await lockedRedirect(reply)) return;
     const body = (req.body ?? {}) as Record<string, string>;
 
     // The owner must exist (step 2) before we can finish + auto-login.

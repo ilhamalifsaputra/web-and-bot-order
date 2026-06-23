@@ -155,7 +155,8 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
   }
   const method = choice.method ?? PaymentMethod.BINANCE_INTERNAL;
   const usdt = usdtFromIdr(baseIdr, rate);
-  const cents = config.USE_UNIQUE_CENTS ? computeUniqueCents(order.id) : new Decimal(0);
+  let cents = config.USE_UNIQUE_CENTS ? computeUniqueCents(order.id) : new Decimal(0);
+  let totalAmount = usdt.plus(cents);
 
   // Auto-confirm paths get a bounded payment window. Binance Internal also gets
   // a unique transfer note (paymentRef); Bybit BSC has no memo, so it relies on
@@ -172,6 +173,30 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
     expiresAt = addMinutes(new Date(), config.INTERNAL_PAYMENT_WINDOW_MINUTES);
   } else if (method === PaymentMethod.BYBIT) {
     expiresAt = addMinutes(new Date(), config.BYBIT_PAYMENT_WINDOW_MINUTES);
+    // Internal Transfer has no memo — amount is the ONLY disambiguator. The
+    // 49-bucket space in computeUniqueCents can still collide for two orders
+    // with the same base USDT amount whose ids land in the same bucket.
+    // Guarantee uniqueness among the SAME pool the matcher itself reads
+    // (listPendingBybitOrders: PENDING_PAYMENT, BYBIT, not-yet-expired)
+    // instead of just statistically reducing the odds (Checkout-4 fix,
+    // security audit 2026-06-23). Bumping the seed by +1 each retry cycles
+    // through all 49 buckets before repeating.
+    if (config.USE_UNIQUE_CENTS) {
+      for (let attempt = 1; attempt <= 49; attempt++) {
+        const clash = await db.order.findFirst({
+          where: {
+            id: { not: orderId },
+            paymentMethod: PaymentMethod.BYBIT,
+            status: OrderStatus.PENDING_PAYMENT,
+            expiresAt: { gt: new Date() },
+            totalAmount,
+          },
+        });
+        if (!clash) break;
+        cents = computeUniqueCents(order.id + attempt);
+        totalAmount = usdt.plus(cents);
+      }
+    }
   } else if (method === PaymentMethod.NOWPAYMENTS) {
     expiresAt = addMinutes(new Date(), config.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES);
     // tidak ada paymentRef di sini — NOWPayments invoice id dibuat & dicache di
@@ -186,7 +211,7 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
       fxRate: rate,
       paymentMethod: method,
       uniqueCents: cents,
-      totalAmount: usdt.plus(cents),
+      totalAmount,
       ...(paymentRef ? { paymentRef } : {}),
       ...(expiresAt ? { expiresAt } : {}),
     },

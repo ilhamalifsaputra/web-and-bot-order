@@ -6,7 +6,7 @@ import { prisma, createOrderDirect, finalizeOrderPayment, setOrderPaymentMessage
 import type { Api } from "grammy";
 import { OrderStatus, OrderCurrency } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { autoCancelExpiredOrders } from "../src/jobs";
+import { autoCancelExpiredOrders, scheduleJobs } from "../src/jobs";
 
 let sample: SampleData;
 
@@ -96,5 +96,27 @@ describe("autoCancelExpiredOrders", () => {
     await autoCancelExpiredOrders(api);
 
     expect(api.sendMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Bot-5 (security audit, 2026-06-23): a slow tick (or a restart racing the
+// next scheduled fire) must not overlap with itself and re-process the same
+// expired-orders/stale-tickets set, sending duplicate DMs.
+describe("scheduleJobs cron registration (Bot-5 fix)", () => {
+  it("registers autoCancelExpiredOrders and autoCloseStaleTickets with protect:true", () => {
+    // Indices match scheduleJobs' literal array order in src/jobs/index.ts:
+    // [autoCancelExpiredOrders, autoCloseStaleTickets, reconcileFinancesJob,
+    //  binancePollWatchdog, bybitPollWatchdog, drainBroadcasts].
+    const crons = scheduleJobs(fakeApi());
+    try {
+      expect(crons[0]!.getPattern()).toBe("*/1 * * * *"); // autoCancelExpiredOrders
+      expect(crons[0]!.options.protect).toBe(true);
+      expect(crons[1]!.getPattern()).toBe("0 * * * *"); // autoCloseStaleTickets
+      expect(crons[1]!.options.protect).toBe(true);
+      // drainBroadcasts (reference pattern) already had it — must stay on.
+      expect(crons[5]!.options.protect).toBe(true);
+    } finally {
+      for (const c of crons) c.stop();
+    }
   });
 });

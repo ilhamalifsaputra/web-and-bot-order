@@ -103,8 +103,13 @@ beforeAll(async () => {
     warrantyDays: 30,
   });
   productId = prod.id;
+  // Generous pool: checkout now reserves stock atomically at creation
+  // (Checkout-2/Stock-1 fix), so every test in this file that completes a
+  // real checkout against this shared product permanently consumes one row
+  // (no per-test reset). 5 was enough when checkout only counted stock
+  // without reserving it; it is not anymore.
   await prisma.stockItem.createMany({
-    data: Array.from({ length: 5 }, () => ({
+    data: Array.from({ length: 100 }, () => ({
       productId: prod.id,
       credentials: "user@mail.com:pass",
       status: "AVAILABLE",
@@ -810,7 +815,7 @@ describe("account settings", () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it("changes the password when the current password is right", async () => {
+  it("changes the password when the current password is right, and rotates the session (Storefront-2 fix)", async () => {
     const { verifyPassword } = await import("@app/core/password");
     const res = await app.inject({
       method: "POST",
@@ -827,6 +832,20 @@ describe("account settings", () => {
     expect(res.statusCode).toBe(303);
     const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
     expect(verifyPassword("second-pw-99", row.passwordHash!)).toBe(true);
+
+    // The OLD cookie's jti was just rotated server-side — it must no longer
+    // authenticate (any session active before this password change is dead).
+    const staleCheck = await app.inject({ method: "GET", url: "/account/settings", headers: { cookie } });
+    expect(staleCheck.statusCode).toBe(303);
+    expect(staleCheck.headers.location).toContain("/login");
+
+    // The response set a FRESH cookie for this same request/device, so the
+    // user who just changed their own password isn't logged out by it.
+    const setCookie = res.headers["set-cookie"];
+    cookie = Array.isArray(setCookie) ? setCookie.join("; ") : String(setCookie);
+    const freshPage = await app.inject({ method: "GET", url: "/account/settings", headers: { cookie } });
+    expect(freshPage.statusCode).toBe(200);
+    csrf = csrfFrom(freshPage.body);
   });
 
   it("refuses a password change with the wrong current password", async () => {
@@ -844,6 +863,44 @@ describe("account settings", () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.body).toContain("Current password is wrong");
+  });
+
+  // Storefront-3 (security audit, 2026-06-23): email/username are the
+  // account-recovery anchor — changing them must require re-auth too, not
+  // just password changes.
+  it("refuses an email change without the correct current_password", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/account/settings/credentials",
+      headers: { cookie },
+      payload: {
+        csrf_token: csrf,
+        username: "settingsuser",
+        email: "attacker-controlled@evil.test",
+        current_password: "WRONG",
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toContain("Current password is wrong");
+    const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
+    expect(row.email).not.toBe("attacker-controlled@evil.test");
+  });
+
+  it("allows an email change with the correct current_password", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/account/settings/credentials",
+      headers: { cookie },
+      payload: {
+        csrf_token: csrf,
+        username: "settingsuser",
+        email: "settings-new@u.test",
+        current_password: "second-pw-99",
+      },
+    });
+    expect(res.statusCode).toBe(303);
+    const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
+    expect(row.email).toBe("settings-new@u.test");
   });
 
   it("links a Telegram account via signed widget params", async () => {

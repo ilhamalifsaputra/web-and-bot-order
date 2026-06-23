@@ -89,6 +89,38 @@ export function shopHostFromConfig(): string | null {
 }
 
 /**
+ * Wire `unhandledRejection`/`uncaughtException` to a controlled shutdown
+ * (Infra-6 fix, security audit 2026-06-23). This single process serves
+ * web-admin + storefront + bot + every in-process worker — an unhandled
+ * rejection in ANY one of them (a poller, a job, a stray route handler)
+ * would otherwise either crash the whole process with no clean DB
+ * disconnect/webhook teardown, or (depending on Node flags) leave it in an
+ * undefined half-alive state. Logs with full context, then runs the SAME
+ * shutdown the signal handlers use, exiting non-zero so process supervisors
+ * (systemd/pm2/Docker) can tell a crash apart from a clean stop.
+ *
+ * Takes `proc` as a parameter (default the real `process`) so tests can pass
+ * a fake event-emitter instead of installing handlers on the actual global
+ * process, which would otherwise leak into the test runner's own process.
+ * Typed structurally (not `Pick<NodeJS.Process, "on">`) so a plain
+ * `EventEmitter` satisfies it — `NodeJS.Process["on"]` returns `this`, which
+ * would otherwise force every fake to impersonate the full Process shape.
+ */
+export function registerCrashHandlers(
+  shutdown: (sig: string, exitCode?: number) => Promise<void>,
+  proc: { on(event: string, listener: (...args: unknown[]) => void): unknown } = process,
+): void {
+  proc.on("unhandledRejection", (reason) => {
+    logger.error({ err: reason }, "Unhandled promise rejection — shutting down");
+    void shutdown("unhandledRejection", 1);
+  });
+  proc.on("uncaughtException", (err) => {
+    logger.error({ err }, "Uncaught exception — shutting down");
+    void shutdown("uncaughtException", 1);
+  });
+}
+
+/**
  * Build the Fastify apps (admin + storefront) + grammY bot and wire the health
  * and (in webhook mode) the webhook routes. No DB init, no network, no timers
  * — safe for tests.
@@ -299,7 +331,7 @@ export async function start(): Promise<void> {
 
   // Graceful shutdown: stop producers in dependency order, then the server/DB.
   let shuttingDown = false;
-  const shutdown = async (sig: string): Promise<void> => {
+  const shutdown = async (sig: string, exitCode = 0): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info(`Received ${sig}, shutting down…`);
@@ -327,11 +359,12 @@ export async function start(): Promise<void> {
     } catch (err) {
       logger.error({ err }, "Error during shutdown");
     } finally {
-      process.exit(0);
+      process.exit(exitCode);
     }
   };
   process.once("SIGINT", () => void shutdown("SIGINT"));
   process.once("SIGTERM", () => void shutdown("SIGTERM"));
+  registerCrashHandlers(shutdown);
 }
 
 // Boot only as the real entry point: directly via tsx/node, or as the bundled

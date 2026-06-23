@@ -158,6 +158,15 @@ export const Env = z.object({
   // 127.0.0.1; set true in production behind TLS so the cookie can't leak over
   // a plain-http hop.
   WEB_COOKIE_SECURE: looseBool.default(false),
+  // Comma-separated list of trusted reverse-proxy IPs/CIDRs (Fastify's
+  // `trustProxy` option) — e.g. "127.0.0.1,::1" for an nginx on the same
+  // host. Unset (default) means X-Forwarded-For is NOT trusted at all
+  // (req.ip falls back to the real TCP peer), which is the safe default:
+  // any directly-reachable app would otherwise let a client forge its own
+  // X-Forwarded-For and spoof per-IP rate limiting (Storefront-4 fix,
+  // security audit 2026-06-23). Set this ONLY to the actual reverse proxy's
+  // address(es) once one is in front of the app.
+  TRUST_PROXY: z.string().optional(),
 
   // ---- storefront (customer-facing shop) ----
   // Dev/standalone port for the shop app. In the combined server, when

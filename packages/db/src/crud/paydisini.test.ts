@@ -20,7 +20,7 @@ vi.mock("@app/core/config", async () => {
 
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderDirect, deliverPaidPaydisiniOrder, recordUnmatchedPaydisiniTx } from "@app/db";
+import { createOrderDirect, deliverPaidPaydisiniOrder, recordUnmatchedPaydisiniTx, addAdminIdToDb } from "@app/db";
 import { OrderStatus, PaymentMethod, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 
@@ -149,6 +149,31 @@ describe("deliverPaidPaydisiniOrder", () => {
       where: { orderId: order.id, event: NotificationEvent.ORDER_DELIVERED_DM },
     });
     expect(dmRow).not.toBeNull();
+  });
+
+  // Infra-4 (security audit, 2026-06-23): an admin added ONLY via the DB
+  // admin_ids Setting (no env ADMIN_IDS entry) must still get the
+  // overpayment alert — previously enqueueAdminOverpaid looped over
+  // config.ADMIN_IDS alone, so a shop managed entirely through the DB/setup
+  // wizard never reached DB-only admins.
+  it("overpaid alerts a DB-only admin too, not just env ADMIN_IDS", async () => {
+    await addAdminIdToDb(prisma, 333); // DB-only — not in the mocked ADMIN_IDS=[111,222]
+    const order = await makePendingPaydisiniOrder();
+    const expectedTotal = new Decimal(order.totalAmount);
+    const paid = expectedTotal.plus("1");
+
+    await deliverPaidPaydisiniOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-overpaid-dbadmin-1",
+      amount: paid,
+      shopUrl: "https://shop.example.com",
+    });
+
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    const chatIds = adminRows.map((r) => JSON.parse(r.payloadJson).chat_id).sort((a, b) => a - b);
+    expect(chatIds).toEqual([111, 222, 333]);
   });
 
   it("exact amount: outcome stays matched, no ADMIN_OVERPAID rows", async () => {

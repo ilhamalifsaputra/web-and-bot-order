@@ -44,7 +44,8 @@ import {
   recordUnmatchedNowpaymentsTx,
 } from "@app/db";
 import { currentCustomer, csrfProtect, type Customer } from "../plugins/auth";
-import { createTransaction, verifyCallback, type TokopayOrderInfo } from "@app/core/payments/tokopay";
+import { clientIp, webhookRateLimited } from "../rateLimit";
+import { createTransaction, verifyCallback, checkTransaction, type TokopayOrderInfo } from "@app/core/payments/tokopay";
 import {
   createTransaction as createPaydisiniTransaction,
   verifyCallback as verifyPaydisiniCallback,
@@ -540,7 +541,21 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
   );
 
   // ---- TokoPay webhook (public; signature is the auth — plan.md §15.5) ----
+  //
+  // The TokoPay signature is md5(merchantId:secret:refId) — it does NOT cover
+  // amount/status (see the ⚠ ASSUMPTION note in @app/core/payments/tokopay),
+  // so a body claiming any `nominal`/`status` would otherwise pass as long as
+  // the signature for that `refId` is valid. Defense-in-depth: re-confirm the
+  // payment live against TokoPay's API (`checkTransaction`, which requires the
+  // merchant secret to call) before trusting "paid" or using the amount for
+  // delivery — a forged callback body can't fake that server-to-server call.
   app.post("/pay/tokopay/callback", async (req, reply) => {
+    // Public + unauthenticated until the signature check below runs — a flood
+    // of forged bodies still costs a parse + signature compute (and, on a
+    // lucky refId guess, a DB query) before being rejected (Payment-3 fix,
+    // security audit 2026-06-23).
+    if (webhookRateLimited("tokopay", clientIp(req))) return reply.code(429).send({ status: "rate limited" });
+
     const creds = await getTokopayCreds(prisma);
     if (!creds) return reply.code(403).send({ status: "disabled" });
 
@@ -550,24 +565,42 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     if (!cb.paid) return reply.send({ status: "ignored" }); // pending/failed callbacks
 
     const order = await getOrderByCode(prisma, cb.refId);
-    if (!order || order.paymentMethod !== PaymentMethod.TOKOPAY) {
+    // paymentMethod implies currency (finalizeOrderPayment always stamps them
+    // together), but cross-check currency explicitly so a future bug that
+    // decouples them can never let a TokoPay (IDR) callback amount be
+    // compared against a USDT order's total (Payment-4 fix, security audit
+    // 2026-06-23).
+    if (!order || order.paymentMethod !== PaymentMethod.TOKOPAY || order.currency !== OrderCurrency.IDR) {
       await recordUnmatchedTokopayTx(prisma, { trxId: cb.trxId, amount: cb.amount });
       return reply.send({ status: "unmatched" });
     }
-    // Amount sanity: never deliver on a short payment.
-    if (cb.amount.lessThan(order.totalAmount)) {
+
+    let live;
+    try {
+      live = await checkTransaction(creds, { refId: cb.refId, amountIdr: order.totalAmount });
+    } catch (err) {
+      logger.error({ err }, `TokoPay live status check failed for ${order.orderCode}`);
+      return reply.send({ status: "status check failed" });
+    }
+    if (!live.paid) {
+      logger.warn(`TokoPay callback claimed paid but live status check disagrees for ${order.orderCode}`);
+      return reply.send({ status: "not confirmed live" });
+    }
+    // Amount sanity: never deliver on a short payment. Trust the LIVE amount
+    // from checkTransaction, not the unsigned callback body field.
+    if (live.amount.lessThan(order.totalAmount)) {
       logger.warn(
-        `TokoPay callback short-paid ${order.orderCode}: got ${cb.amount.toString()}, expected ${order.totalAmount.toString()}`,
+        `TokoPay callback short-paid ${order.orderCode}: got ${live.amount.toString()}, expected ${order.totalAmount.toString()}`,
       );
-      await recordUnmatchedTokopayTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+      await recordUnmatchedTokopayTx(prisma, { trxId: live.trxId ?? cb.trxId, amount: live.amount });
       return reply.send({ status: "amount mismatch" });
     }
 
     try {
       const r = await deliverPaidTokopayOrder(prisma, {
         orderId: order.id,
-        trxId: cb.trxId,
-        amount: cb.amount,
+        trxId: live.trxId ?? cb.trxId,
+        amount: live.amount,
         shopUrl: shopPublicUrl(),
       });
       return reply.send({ status: r.status });
@@ -585,6 +618,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
   // 403 disabled, 403 bad signature, 200 for every other outcome including
   // delivery-failed) ----
   app.post("/pay/paydisini/callback", async (req, reply) => {
+    // Payment-3 fix, security audit 2026-06-23 — see the TokoPay callback above.
+    if (webhookRateLimited("paydisini", clientIp(req))) return reply.code(429).send({ status: "rate limited" });
+
     const creds = await getPaydisiniCreds(prisma);
     if (!creds) return reply.code(403).send({ status: "disabled" });
 
@@ -594,7 +630,8 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     if (!cb.paid) return reply.send({ status: "ignored" }); // pending/failed callbacks
 
     const order = await getOrderByCode(prisma, cb.refId);
-    if (!order || order.paymentMethod !== PaymentMethod.PAYDISINI) {
+    // Payment-4 fix, security audit 2026-06-23 — see the TokoPay callback above.
+    if (!order || order.paymentMethod !== PaymentMethod.PAYDISINI || order.currency !== OrderCurrency.IDR) {
       await recordUnmatchedPaydisiniTx(prisma, { trxId: cb.trxId, amount: cb.amount });
       return reply.send({ status: "unmatched" });
     }
@@ -634,6 +671,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
   // (ignored/unmatched/amount mismatch/delivered/delivery-failed) so
   // NOWPayments stops retrying regardless of outcome. ----
   app.post("/pay/nowpayments/callback", async (req, reply) => {
+    // Payment-3 fix, security audit 2026-06-23 — see the TokoPay callback above.
+    if (webhookRateLimited("nowpayments", clientIp(req))) return reply.code(429).send({ status: "rate limited" });
+
     const creds = await getNowpaymentsCreds(prisma);
     if (!creds) return reply.code(403).send({ status: "disabled" });
 
@@ -647,7 +687,8 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     if (!cb.paid) return reply.send({ status: "ignored" });
 
     const order = await getOrderByCode(prisma, cb.orderId);
-    if (!order || order.paymentMethod !== PaymentMethod.NOWPAYMENTS) {
+    // Payment-4 fix, security audit 2026-06-23 — see the TokoPay callback above.
+    if (!order || order.paymentMethod !== PaymentMethod.NOWPAYMENTS || order.currency !== OrderCurrency.USDT) {
       await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
       return reply.send({ status: "unmatched" });
     }

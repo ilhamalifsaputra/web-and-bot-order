@@ -13,8 +13,8 @@ import {
   NotificationEvent,
   NotificationStatus,
 } from "@app/core/enums";
-import { config } from "@app/core/config";
 import type { Decimal } from "@app/core/money";
+import { resolveAdminIds } from "./admins";
 
 type Db = PrismaClient | Tx;
 
@@ -58,11 +58,16 @@ export async function enqueueAdminPasswordReset(
 }
 
 /**
- * Enqueue one admin DM per configured admin (config.ADMIN_IDS) alerting that a
- * payment-gateway webhook delivered an order whose paid amount exceeded the
- * total. orderId is set (unlike ADMIN_PW_RESET) so the rows are visible from
- * the order in the admin /outbox panel. No-op if ADMIN_IDS is empty. Numbers
- * are carried as Decimal `.toString()` — never `number` — per money rules.
+ * Enqueue one admin DM per resolved admin (env ADMIN_IDS ∪ the DB `admin_ids`
+ * Setting — same allow-list the bot/web panel resolve at runtime via
+ * `resolveAdminIds`/`adminIds()`) alerting that a payment-gateway webhook
+ * delivered an order whose paid amount exceeded the total. Previously looped
+ * over `config.ADMIN_IDS` alone, so a shop managed entirely through the
+ * DB/setup-wizard (no env ADMIN_IDS) never got these alerts (Infra-4 fix,
+ * security audit 2026-06-23). orderId is set (unlike ADMIN_PW_RESET) so the
+ * rows are visible from the order in the admin /outbox panel. No-op if no
+ * admin is resolved. Numbers are carried as Decimal `.toString()` — never
+ * `number` — per money rules.
  */
 export async function enqueueAdminOverpaid(
   db: Db,
@@ -75,7 +80,7 @@ export async function enqueueAdminOverpaid(
     currency: string;
   },
 ): Promise<void> {
-  for (const adminId of config.ADMIN_IDS) {
+  for (const adminId of await resolveAdminIds(db)) {
     await db.notificationOutbox.create({
       data: {
         event: NotificationEvent.ADMIN_OVERPAID,
@@ -93,12 +98,67 @@ export async function enqueueAdminOverpaid(
   }
 }
 
-/** Oldest pending rows first, capped at `limit`. */
-export function fetchPendingNotifications(db: Db, limit = 50) {
+/**
+ * A SENDING row whose claim is older than this is treated as abandoned (the
+ * dispatcher that claimed it died mid-send, before reaching
+ * markNotificationSent/Failed) and becomes claimable again. Infra-2 fix,
+ * security audit 2026-06-23.
+ */
+export const STALE_CLAIM_MS = 5 * 60_000;
+
+/**
+ * `nextRetryAt` IS NULL OR <= now — a row markNotificationFailed backed off
+ * isn't claimable again until its window passes (Infra-3 fix, security audit
+ * 2026-06-23). Shared by fetchPendingNotifications and claimNotification so
+ * a backed-off row can never sneak through one but not the other.
+ */
+function claimableWhere(staleCutoff: Date, now: Date) {
+  return {
+    OR: [
+      { status: NotificationStatus.PENDING },
+      { status: NotificationStatus.SENDING, claimedAt: { lt: staleCutoff } },
+    ],
+    AND: { OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }] },
+  };
+}
+
+/** Oldest claimable rows first (PENDING, or SENDING claimed past STALE_CLAIM_MS), capped at `limit`. */
+export function fetchPendingNotifications(db: Db, limit = 50, now: Date = new Date()) {
+  const staleCutoff = new Date(now.getTime() - STALE_CLAIM_MS);
   return db.notificationOutbox.findMany({
-    where: { status: NotificationStatus.PENDING },
+    where: claimableWhere(staleCutoff, now),
     orderBy: { createdAt: "asc" },
     take: limit,
+  });
+}
+
+/**
+ * Atomically claim a row (PENDING, or SENDING past STALE_CLAIM_MS) right
+ * before attempting to send it — closes the crash-window double-send gap
+ * where a row could be sent to Telegram but the SENT write never lands
+ * (Infra-2 fix). Returns false if another dispatcher already claimed it
+ * (multi-instance) or it's no longer claimable; the caller must skip the row.
+ */
+export async function claimNotification(db: Db, notifId: number, now: Date = new Date()): Promise<boolean> {
+  const staleCutoff = new Date(now.getTime() - STALE_CLAIM_MS);
+  const res = await db.notificationOutbox.updateMany({
+    where: { id: notifId, ...claimableWhere(staleCutoff, now) },
+    data: { status: NotificationStatus.SENDING, claimedAt: now },
+  });
+  return res.count === 1;
+}
+
+/**
+ * Release a claimed row back to PENDING without counting it as a failed
+ * attempt — used for transient conditions that aren't the row's fault (e.g.
+ * Telegram flood-control), so it's immediately retryable on the next tick
+ * instead of waiting out the full STALE_CLAIM_MS window. No-op if the row was
+ * already claimed by someone else or moved on (SENT/FAILED).
+ */
+export async function releaseNotificationClaim(db: Db, notifId: number): Promise<void> {
+  await db.notificationOutbox.updateMany({
+    where: { id: notifId, status: NotificationStatus.SENDING },
+    data: { status: NotificationStatus.PENDING, claimedAt: null },
   });
 }
 
@@ -109,32 +169,48 @@ export async function markNotificationSent(
 ): Promise<void> {
   await db.notificationOutbox.update({
     where: { id: notifId },
-    data: { status: NotificationStatus.SENT, sentAt: new Date() },
+    data: { status: NotificationStatus.SENT, sentAt: new Date(), claimedAt: null },
   });
+}
+
+// Exponential backoff for a row markNotificationFailed sends back to PENDING
+// (Infra-3 fix, security audit 2026-06-23) — base 30s, doubling per attempt,
+// capped at 10 minutes. At the default NOTIF_POLL_INTERVAL_SECONDS=10 this
+// frees up several tick's worth of "top N" batch slots for valid rows
+// instead of a permanently-failing row re-claiming one every single tick.
+export const NOTIF_RETRY_BASE_MS = 30_000;
+export const NOTIF_RETRY_MAX_MS = 10 * 60_000;
+
+/** Exponential backoff delay for the Nth attempt (1-indexed), capped. */
+export function notificationBackoffMs(attempts: number): number {
+  return Math.min(NOTIF_RETRY_BASE_MS * 2 ** (attempts - 1), NOTIF_RETRY_MAX_MS);
 }
 
 /**
  * Increment attempts and record the error (truncated to 500 chars). Flip to
- * FAILED only once attempts >= maxAttempts; otherwise it stays PENDING for a
- * later retry. No-op if the row is gone.
+ * FAILED only once attempts >= maxAttempts; otherwise back to PENDING with an
+ * exponential-backoff `nextRetryAt`, for a later retry. No-op if the row is
+ * gone.
  */
 export async function markNotificationFailed(
   db: Db,
   notifId: number,
   error: string,
   maxAttempts = 5,
+  now: Date = new Date(),
 ): Promise<void> {
   const row = await db.notificationOutbox.findUnique({ where: { id: notifId } });
   if (!row) return;
   const attempts = row.attempts + 1;
+  const failed = attempts >= maxAttempts;
   await db.notificationOutbox.update({
     where: { id: notifId },
     data: {
       attempts,
       lastError: error.slice(0, 500),
-      ...(attempts >= maxAttempts
-        ? { status: NotificationStatus.FAILED }
-        : {}),
+      claimedAt: null,
+      status: failed ? NotificationStatus.FAILED : NotificationStatus.PENDING,
+      nextRetryAt: failed ? null : new Date(now.getTime() + notificationBackoffMs(attempts)),
     },
   });
 }
@@ -170,14 +246,17 @@ export async function outboxStatusCounts(db: Db): Promise<Record<string, number>
 /**
  * Requeue a FAILED (or stuck) notification: back to PENDING, attempts reset to
  * 0, error/sent cleared, so the notifier drains it again on its next cycle.
- * Returns false if the row is gone. The web NEVER sends Telegram itself.
+ * `nextRetryAt` is cleared too (Infra-3 fix, security audit 2026-06-23) — an
+ * admin clicking "retry" means NOW, not "wait out whatever backoff window
+ * this row was already in." Returns false if the row is gone. The web NEVER
+ * sends Telegram itself.
  */
 export async function retryNotification(db: Db, notifId: number): Promise<boolean> {
   const row = await db.notificationOutbox.findUnique({ where: { id: notifId } });
   if (!row) return false;
   await db.notificationOutbox.update({
     where: { id: notifId },
-    data: { status: NotificationStatus.PENDING, attempts: 0, lastError: null, sentAt: null },
+    data: { status: NotificationStatus.PENDING, attempts: 0, lastError: null, sentAt: null, nextRetryAt: null },
   });
   return true;
 }

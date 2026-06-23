@@ -17,6 +17,7 @@ import { config } from "@app/core/config";
 import { OrderStatus, ProductType, StockStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
+import { ValidationError } from "@app/core/errors";
 import type { Category, Denomination, Product } from "@prisma/client";
 import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
@@ -442,6 +443,12 @@ export async function upsertBulkPricing(
 ) {
   const denominationId = args.denominationId ?? args.productId!;
   const discountPercent = quantizeMoney(args.discountPercent, 2);
+  // The only thing standing between a misconfigured rule and a free (Rp0)
+  // order — reject anything outside (0,100] (Pricing-4 fix, security audit
+  // 2026-06-23).
+  if (discountPercent.lte(0) || discountPercent.gt(100)) {
+    throw new ValidationError("error.invalid_discount_percent");
+  }
   const existing = await db.bulkPricing.findUnique({ where: { productId: denominationId } });
   if (existing) {
     return db.bulkPricing.update({

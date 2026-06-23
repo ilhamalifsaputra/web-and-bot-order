@@ -10,6 +10,8 @@ import {
   getOrder,
   approveOrder,
   getSetting,
+  setSetting,
+  deleteSetting,
 } from "@app/db";
 import { OrderStatus, SenderType, TicketStatus, UserRole } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
@@ -233,6 +235,64 @@ describe("admin conversations", () => {
     const targets = calls(sink, "sendMessage").map((c) => c.args[0]);
     expect(targets).toEqual(expect.arrayContaining([42, 999]));
     expect(await prisma.auditLog.count({ where: { action: "broadcast" } })).toBe(1);
+  });
+
+  // Bot-6 (security audit, 2026-06-23): the send loop is one
+  // conversation.external() step with no per-recipient marker — a
+  // crash-replay re-running it from scratch would re-send to everyone. A
+  // durable lock (outside conversation/session state) closes that gap.
+  it("broadcast: releases its lock on a clean finish, so a SECOND broadcast right after still sends", async () => {
+    const sink1: SentCall[] = [];
+    const entry1 = entryAdmin(sink1, "v1:adm:broadcast:start");
+    const conv1 = new FakeConversation([
+      msg(sink1, { text: "First blast" }),
+      msg(sink1, { callbackData: "v1:adm:broadcast:confirm" }),
+    ]);
+    await broadcastConversation(conv1.asMyConversation(), entry1);
+    expect(calls(sink1, "sendMessage").length).toBeGreaterThan(0);
+    expect(await getSetting(prisma, "broadcast_inflight_at")).toBeNull();
+
+    const sink2: SentCall[] = [];
+    const entry2 = entryAdmin(sink2, "v1:adm:broadcast:start");
+    const conv2 = new FakeConversation([
+      msg(sink2, { text: "Second blast" }),
+      msg(sink2, { callbackData: "v1:adm:broadcast:confirm" }),
+    ]);
+    await broadcastConversation(conv2.asMyConversation(), entry2);
+    expect(calls(sink2, "sendMessage").length).toBeGreaterThan(0);
+  });
+
+  it("broadcast: aborts without sending when a fresh lock is already held (simulates a crash-replay re-entry)", async () => {
+    await setSetting(prisma, "broadcast_inflight_at", String(Date.now()));
+    try {
+      const sink: SentCall[] = [];
+      const entry = entryAdmin(sink, "v1:adm:broadcast:start");
+      const conv = new FakeConversation([
+        msg(sink, { text: "Should not go out" }),
+        msg(sink, { callbackData: "v1:adm:broadcast:confirm" }),
+      ]);
+      await broadcastConversation(conv.asMyConversation(), entry);
+
+      expect(calls(sink, "sendMessage").length).toBe(0);
+      expect(await prisma.auditLog.count({ where: { action: "broadcast" } })).toBe(0);
+      expect(sentIncludes(sink, "already in progress")).toBe(true);
+    } finally {
+      await deleteSetting(prisma, "broadcast_inflight_at");
+    }
+  });
+
+  it("broadcast: a STALE lock (past BROADCAST_LOCK_STALE_MS) self-heals and the broadcast proceeds", async () => {
+    await setSetting(prisma, "broadcast_inflight_at", String(Date.now() - 31 * 60_000));
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, "v1:adm:broadcast:start");
+    const conv = new FakeConversation([
+      msg(sink, { text: "Recovered after stale lock" }),
+      msg(sink, { callbackData: "v1:adm:broadcast:confirm" }),
+    ]);
+    await broadcastConversation(conv.asMyConversation(), entry);
+
+    expect(calls(sink, "sendMessage").length).toBeGreaterThan(0);
+    expect(await getSetting(prisma, "broadcast_inflight_at")).toBeNull();
   });
 
   it("userSearch: a query renders matching users", async () => {

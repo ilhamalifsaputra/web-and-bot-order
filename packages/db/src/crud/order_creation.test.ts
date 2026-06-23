@@ -1,9 +1,10 @@
 /**
  * Port of tests/test_order_creation.py — order creation from cart.
- *   * Happy path: cart → order with correct subtotal, totals, unique cents.
+ *   * Happy path: cart → order with correct subtotal, totals, unique cents,
+ *     and stock reserved (Checkout-2/Stock-1 fix, security audit 2026-06-23).
  *   * Empty-cart guard.
- *   * Out-of-stock guard: requesting more than available throws and leaks no
- *     RESERVED stock (reservation only happens at admin approval now).
+ *   * Out-of-stock guard: requesting more than available throws before
+ *     reserving anything (pre-check ahead of the atomic per-unit allocation).
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
@@ -48,9 +49,12 @@ describe("create order from cart", () => {
       ),
     ).toBe(true);
 
-    // Two OrderItems, no stock linked yet (allocated at approval).
+    // Two OrderItems, each reserved against a stock row at creation time.
     expect(order.items.length).toBe(2);
-    for (const item of order.items) expect(item.stockItem).toBeNull();
+    for (const item of order.items) {
+      expect(item.stockItem).not.toBeNull();
+      expect(item.stockItem!.status).toBe("RESERVED");
+    }
 
     // Cart emptied.
     expect(await getCart(prisma, user.id)).toEqual([]);
@@ -84,7 +88,7 @@ describe("create order from cart", () => {
       key: "error.out_of_stock",
     });
 
-    // Nothing was reserved (reservation happens only at approval).
+    // The pre-check fails before any row is touched — nothing reserved.
     const reserved = await prisma.stockItem.count({ where: { status: "RESERVED" } });
     expect(reserved).toBe(0);
   });

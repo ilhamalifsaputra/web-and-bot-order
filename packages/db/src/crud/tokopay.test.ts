@@ -70,6 +70,23 @@ describe("deliverPaidTokopayOrder", () => {
     expect(ledgerRow?.orderId).toBe(order.id);
   });
 
+  // Checkout-6 (security audit, 2026-06-23): the auto-deliver path (no human
+  // admin involved) must still leave a forensic trail for paid->delivered.
+  it("auto-deliver writes an order.auto_deliver audit row with adminId=null", async () => {
+    const order = await makePendingTokopayOrder();
+    await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-audit-1",
+      amount: order.totalAmount,
+      shopUrl: "https://shop.example.com",
+    });
+
+    const rows = await prisma.auditLog.findMany({ where: { action: "order.auto_deliver", targetId: order.id } });
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.adminId).toBeNull();
+    expect(rows[0]!.details).toContain(order.orderCode);
+  });
+
   it("a repeated trx id is already_processed (no double-delivery)", async () => {
     const order = await makePendingTokopayOrder();
 

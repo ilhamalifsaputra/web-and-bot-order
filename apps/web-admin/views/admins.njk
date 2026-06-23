@@ -33,7 +33,6 @@
         <td>{% if a.passwordSet %}<span class="chip bg-grass-tint text-grass-dark">Set</span>{% else %}<span class="text-ink-faint text-xs">Not set</span>{% endif %}</td>
         <td>{% if a.twoFa %}<span class="chip bg-grass-tint text-grass-dark">On</span>{% else %}<span class="text-ink-faint text-xs">Off</span>{% endif %}</td>
         <td>
-          {% if a.from_env %}
           <form method="post" action="/admins/{{ a.telegramId }}/role" class="flex gap-2 items-center">
             {{ ui.csrf_field(admin) }}
             <select name="role" class="field w-auto py-1.5" {% if a.isSelf %}disabled title="Ask another owner to change your access"{% endif %}>
@@ -41,19 +40,14 @@
             </select>
             {% if not a.isSelf %}<button class="btn btn-soft btn-sm">Save</button>{% endif %}
           </form>
-          {% else %}
-          <span class="text-ink-faint text-xs">—</span>
-          {% endif %}
         </td>
         <td>
           {% if a.isSelf %}<span class="text-ink-faint text-xs">—</span>
-          {% elif a.from_env %}
+          {% else %}
           <form method="post" action="/admins/{{ a.telegramId }}/logout" data-confirm="Sign out {{ a.telegramId }} from all devices?">
             {{ ui.csrf_field(admin) }}
             <button class="btn btn-sm bg-amberx-tint text-amberx hover:bg-amberx/15">Sign out everywhere</button>
           </form>
-          {% else %}
-          <span class="text-ink-faint text-xs">—</span>
           {% endif %}
         </td>
         <td>

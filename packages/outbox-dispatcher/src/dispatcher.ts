@@ -22,6 +22,8 @@ import { Bot, GrammyError, InputFile } from "grammy";
 import {
   prisma,
   fetchPendingNotifications,
+  claimNotification,
+  releaseNotificationClaim,
   markNotificationSent,
   markNotificationFailed,
   getOrderByCodeFull,
@@ -68,13 +70,22 @@ export async function runDispatcher(bot: Bot, signal?: AbortSignal): Promise<voi
   }
 }
 
-async function drainBatch(bot: Bot): Promise<void> {
+/** Exported for tests — drains exactly one batch (no polling loop). */
+export async function drainBatch(bot: Bot): Promise<void> {
   const pending = await fetchPendingNotifications(prisma, 50);
   if (pending.length === 0) return;
 
   logger.debug(`Draining ${pending.length} pending notification(s)`);
 
   for (const row of pending) {
+    // Atomic claim right before processing — closes the crash-window
+    // double-send gap (Infra-2 fix): if this dispatcher dies between sending
+    // and recording SENT, the row stays SENDING (not PENDING) and only
+    // becomes claimable again once stale, instead of being re-sent on every
+    // tick in the meantime. Also guards against an accidental second
+    // dispatcher instance racing this one.
+    if (!(await claimNotification(prisma, row.id))) continue;
+
     let payload: Record<string, unknown>;
     try {
       payload = JSON.parse(row.payloadJson);
@@ -98,9 +109,13 @@ async function drainBatch(bot: Bot): Promise<void> {
     }
 
     const isDm = ADMIN_DM_EVENTS.has(row.event);
-    // Channel post with no channel configured → leave PENDING so it posts once a
-    // public channel is set, instead of failing the row permanently.
-    if (!isDm && publicChannelId() === undefined) continue;
+    // Channel post with no channel configured → release back to PENDING so it
+    // posts as soon as a public channel is set (not failed permanently, and
+    // not stuck claimed for the full stale-claim window).
+    if (!isDm && publicChannelId() === undefined) {
+      await releaseNotificationClaim(prisma, row.id);
+      continue;
+    }
     const chatId = isDm ? Number(payload.chat_id) : Number(publicChannelId());
     if (!Number.isFinite(chatId)) {
       await markNotificationFailed(prisma, row.id, isDm ? "missing chat_id" : "no PUBLIC_CHANNEL_ID", 1);
@@ -166,6 +181,10 @@ async function trySend(bot: Bot, row: PendingRow, send: () => Promise<unknown>):
     if (e instanceof GrammyError && e.parameters?.retry_after) {
       logger.warn(`Rate limited, sleeping ${e.parameters.retry_after}s`);
       await sleep((e.parameters.retry_after + 1) * 1000);
+      // Release the claim (not a failed attempt) so the row is immediately
+      // retryable next tick instead of waiting out the full stale-claim
+      // window — flood control is transient, not the row's fault.
+      await releaseNotificationClaim(prisma, row.id);
       return "ratelimited";
     }
     if (e instanceof GrammyError && e.error_code === 403) {

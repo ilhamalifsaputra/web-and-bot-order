@@ -303,8 +303,13 @@ export function scheduleJobs(api: Api): Cron[] {
   const wrap = (name: string, fn: (api: Api) => Promise<void>) => () =>
     fn(api).catch((err) => logger.error({ err }, `Job ${name} failed`));
   return [
-    new Cron("*/1 * * * *", wrap("autoCancelExpiredOrders", autoCancelExpiredOrders)),
-    new Cron("0 * * * *", wrap("autoCloseStaleTickets", autoCloseStaleTickets)),
+    // { protect: true } (Bot-5 fix, security audit 2026-06-23): without it, a
+    // slow tick (or a restart racing the next scheduled fire) can overlap
+    // with itself and process the same expired-orders/stale-tickets set
+    // twice, sending duplicate DMs — the exact gap drainBroadcasts below
+    // already guards against.
+    new Cron("*/1 * * * *", { protect: true }, wrap("autoCancelExpiredOrders", autoCancelExpiredOrders)),
+    new Cron("0 * * * *", { protect: true }, wrap("autoCloseStaleTickets", autoCloseStaleTickets)),
     new Cron("0 */6 * * *", wrap("reconcileFinancesJob", reconcileFinancesJob)),
     new Cron("*/2 * * * *", wrap("binancePollWatchdog", binancePollWatchdog)),
     new Cron("*/2 * * * *", wrap("bybitPollWatchdog", bybitPollWatchdog)),

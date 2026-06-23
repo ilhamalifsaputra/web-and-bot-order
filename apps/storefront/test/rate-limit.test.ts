@@ -20,6 +20,8 @@ import {
   accountLockedOut,
   recordAccountFailure,
   resetAccountFailures,
+  webhookRateLimited,
+  WEBHOOK_RATE_LIMIT_MAX,
 } from "../src/rateLimit";
 
 let app: FastifyInstance;
@@ -83,6 +85,18 @@ describe("rateLimit module (unit)", () => {
     expect(accountLockedOut(id)).toBe(true);
     resetAccountFailures(id);
     expect(accountLockedOut(id)).toBe(false);
+  });
+
+  // Payment-3 (security audit, 2026-06-23): the payment webhooks rely on this
+  // same module for per-IP throttling.
+  it("webhookRateLimited opens after WEBHOOK_RATE_LIMIT_MAX hits to one route from one IP, and routes have separate buckets", () => {
+    const ip = freshIp();
+    for (let i = 0; i < WEBHOOK_RATE_LIMIT_MAX; i++) {
+      expect(webhookRateLimited("tokopay", ip)).toBe(false);
+    }
+    expect(webhookRateLimited("tokopay", ip)).toBe(true);
+    // A different route from the SAME ip has its own, unexhausted bucket.
+    expect(webhookRateLimited("paydisini", ip)).toBe(false);
   });
 });
 
@@ -189,5 +203,126 @@ describe("POST /forgot rate limiting", () => {
     });
     expect(limited.statusCode).toBe(429);
     expect(limited.body).toContain("Too many requests");
+  });
+
+  // Storefront-4 (security audit, 2026-06-23): an attacker rotating IPs must
+  // not be able to email-bomb ONE victim address past the per-email cap, even
+  // though each individual IP is well under its own per-IP cap.
+  it("rate-limits repeated /forgot submissions to ONE email even when the attacker rotates IPs", async () => {
+    const victimEmail = "rotate-victim@buyer.test";
+    const max = config.WEB_LOGIN_RATE_LIMIT_MAX;
+    for (let i = 0; i < max; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/forgot",
+        headers: { "x-forwarded-for": freshIp() }, // new IP every time
+        payload: { email: victimEmail },
+      });
+      expect(res.statusCode).toBe(200);
+    }
+    const limited = await app.inject({
+      method: "POST",
+      url: "/forgot",
+      headers: { "x-forwarded-for": freshIp() },
+      payload: { email: victimEmail },
+    });
+    expect(limited.statusCode).toBe(429);
+  });
+
+  it("a DIFFERENT email from the same rotating-IP pattern is unaffected (throttle is per-email)", async () => {
+    const otherEmail = "unrelated-bystander@buyer.test";
+    const res = await app.inject({
+      method: "POST",
+      url: "/forgot",
+      headers: { "x-forwarded-for": freshIp() },
+      payload: { email: otherEmail },
+    });
+    expect(res.statusCode).toBe(200);
+  });
+});
+
+// Storefront-4 (security audit, 2026-06-23): clientIp() must only honor
+// X-Forwarded-For when the DIRECT connection comes from a trusted proxy
+// (TRUST_PROXY="127.0.0.1,::1" in apps/storefront/test/setup-env.ts) —
+// otherwise any directly-reachable caller could forge the header.
+describe("trustProxy gates X-Forwarded-For", () => {
+  it("an UNTRUSTED direct connection's forged X-Forwarded-For is ignored — real IP throttling still applies", async () => {
+    const realAttackerIp = "198.51.100.77"; // not in TRUST_PROXY's allowlist
+    const max = config.WEB_LOGIN_RATE_LIMIT_MAX;
+    let last;
+    for (let i = 0; i < max; i++) {
+      last = await app.inject({
+        method: "POST",
+        url: "/login",
+        remoteAddress: realAttackerIp,
+        // A forged, ever-changing XFF must NOT let the attacker dodge the
+        // per-IP cap, since the real connection isn't from a trusted proxy.
+        headers: { "x-forwarded-for": freshIp() },
+        payload: { identifier: "ghostuser", password: "nope" },
+      });
+      expect(last.statusCode).toBe(403);
+    }
+    const limited = await app.inject({
+      method: "POST",
+      url: "/login",
+      remoteAddress: realAttackerIp,
+      headers: { "x-forwarded-for": freshIp() },
+      payload: { identifier: "ghostuser", password: "nope" },
+    });
+    expect(limited.statusCode).toBe(429);
+  });
+});
+
+// Payment-3 (security audit, 2026-06-23): the public, unauthenticated payment
+// webhooks need their own per-IP cap — unlike /login they have no account to
+// lock out, so the IP throttle is the only defense against a flood of forged
+// callback bodies.
+describe("payment webhook rate limiting", () => {
+  it("returns 429 after WEBHOOK_RATE_LIMIT_MAX hits to one webhook route from one IP", async () => {
+    const ip = freshIp();
+    const badPayload = { ref_id: "ORD-NOPE", trx_id: "x", nominal: "1", status: "success", signature: "bad" };
+    for (let i = 0; i < WEBHOOK_RATE_LIMIT_MAX; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/pay/tokopay/callback",
+        headers: { "x-forwarded-for": ip },
+        payload: badPayload,
+      });
+      expect(res.statusCode).not.toBe(429); // still under the cap (gets 403 bad signature)
+    }
+    const limited = await app.inject({
+      method: "POST",
+      url: "/pay/tokopay/callback",
+      headers: { "x-forwarded-for": ip },
+      payload: badPayload,
+    });
+    expect(limited.statusCode).toBe(429);
+  });
+
+  it("each webhook route has its own bucket — exhausting tokopay's doesn't 429 paydisini from the same IP", async () => {
+    const ip = freshIp();
+    for (let i = 0; i < WEBHOOK_RATE_LIMIT_MAX; i++) {
+      await app.inject({
+        method: "POST",
+        url: "/pay/tokopay/callback",
+        headers: { "x-forwarded-for": ip },
+        payload: {},
+      });
+    }
+    const tokopayLimited = await app.inject({
+      method: "POST",
+      url: "/pay/tokopay/callback",
+      headers: { "x-forwarded-for": ip },
+      payload: {},
+    });
+    expect(tokopayLimited.statusCode).toBe(429);
+
+    const paydisiniStillOk = await app.inject({
+      method: "POST",
+      url: "/pay/paydisini/callback",
+      headers: { "x-forwarded-for": ip },
+      payload: {},
+    });
+    expect(paydisiniStillOk.statusCode).not.toBe(429);
   });
 });

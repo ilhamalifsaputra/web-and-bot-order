@@ -2,9 +2,10 @@ import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
 
 import { createServer, request as httpRequest, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { EventEmitter } from "node:events";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { prisma, setSetting } from "@app/db";
-import { buildServer, dispatchByHost } from "../src/index";
+import { buildServer, dispatchByHost, registerCrashHandlers } from "../src/index";
 
 /** Fastify instance type without a direct `fastify` dependency. */
 type App = Awaited<ReturnType<typeof buildServer>>["app"];
@@ -156,6 +157,34 @@ describe("combined server bootstrap", () => {
         await app.close();
         await shop.close();
       }
+    });
+  });
+
+  // Infra-6 fix (security audit, 2026-06-23): a fake event-emitter stands in
+  // for the real `process` so this test never installs a REAL
+  // unhandledRejection/uncaughtException handler on the test runner's own
+  // process (which would leak across unrelated test files and could call the
+  // real process.exit).
+  describe("registerCrashHandlers (Infra-6 fix)", () => {
+    it("runs the controlled shutdown with exit code 1 on an unhandled rejection", () => {
+      const fakeProc = new EventEmitter();
+      const shutdown = vi.fn().mockResolvedValue(undefined);
+      registerCrashHandlers(shutdown, fakeProc);
+
+      const reason = new Error("boom from a stray poller");
+      fakeProc.emit("unhandledRejection", reason);
+
+      expect(shutdown).toHaveBeenCalledWith("unhandledRejection", 1);
+    });
+
+    it("runs the controlled shutdown with exit code 1 on an uncaught exception", () => {
+      const fakeProc = new EventEmitter();
+      const shutdown = vi.fn().mockResolvedValue(undefined);
+      registerCrashHandlers(shutdown, fakeProc);
+
+      fakeProc.emit("uncaughtException", new Error("boom"));
+
+      expect(shutdown).toHaveBeenCalledWith("uncaughtException", 1);
     });
   });
 });

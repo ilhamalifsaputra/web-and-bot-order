@@ -15,6 +15,7 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
 }));
 
 import { prisma, createOrderDirect, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders } from "@app/db";
+import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, OrderCurrency, PaymentMethod, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
@@ -743,9 +744,97 @@ describe("checkout handlers", () => {
     expect(cached.trxId).toBe("TP-TEST");
   });
 
+  it("buyNowTokopay cancels the order shell when the gateway create call fails (Checkout-3 fix)", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    vi.mocked(mockedCreateTokopayTransaction).mockRejectedValueOnce(new Error("gateway down"));
+    const { ctx } = customerCtx();
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+
+    // No orphan PENDING_PAYMENT order left behind — it was cancelled, not
+    // left dangling to eat one of the 10 pending-order slots.
+    const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
+    expect(orders.length).toBe(1);
+    expect(orders[0]!.status).toBe("CANCELLED");
+  });
+
+  it("buyNowTokopay keeps the voucher applied in session when order creation fails, so a retry can reuse it (Pricing-3 fix)", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    // Drain stock to 0 so createOrderDirect throws error.out_of_stock.
+    await prisma.stockItem.updateMany({ where: { productId: sample.product.id }, data: { status: "DEAD" } });
+    const { ctx } = customerCtx({
+      session: { ...userSession(), scratch: { appliedVoucherCode: "SAVE10" } },
+    });
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(0);
+    // Voucher must still be in session — the failed attempt never used it.
+    expect(ctx.session.scratch.appliedVoucherCode).toBe("SAVE10");
+  });
+
+  it("buyNowTokopay clears the voucher from session once an order is actually created (Pricing-3 fix)", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const { ctx } = customerCtx({
+      session: { ...userSession(), scratch: { appliedVoucherCode: "SAVE10" } },
+    });
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+    expect(ctx.session.scratch.appliedVoucherCode).toBeUndefined();
+  });
+
+  it("buyNowTokopay refuses a double-tap for the same product within the duplicate window (Checkout-1 fix)", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const first = customerCtx({ callbackData: "v1:payq:1:1" });
+    await checkout.buyNowTokopay(first.ctx, sample.product.id, 1);
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1);
+
+    // Second tap — same user, same product, same rail, immediately after.
+    const second = customerCtx({ callbackData: "v1:payq:1:1" });
+    await checkout.buyNowTokopay(second.ctx, sample.product.id, 1);
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(1); // still just the one order
+    const alert = calls(second.sink, "answerCallbackQuery").find(
+      (c) => (c.args[0] as { show_alert?: boolean } | undefined)?.show_alert,
+    );
+    expect(alert).toBeTruthy();
+  });
+
+  it("buyNowTokopay allows a second order for a DIFFERENT product (duplicate guard is per-product)", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const other = await createDenomination(prisma, {
+      productId: sample.parentProduct.id,
+      name: "Other denom",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    await bulkAddStock(prisma, other.id, ["other1@x.com:pw"]);
+
+    const first = customerCtx({ callbackData: "v1:payq:1:1" });
+    await checkout.buyNowTokopay(first.ctx, sample.product.id, 1);
+    // The shared TokoPay mock always resolves the same trxId; give the 2nd
+    // order a distinct one so its paymentRef cache write doesn't collide with
+    // the 1st on the orders.payment_ref unique constraint.
+    vi.mocked(mockedCreateTokopayTransaction).mockResolvedValueOnce({
+      trxId: "TP-TEST-2", payUrl: null, qrLink: "https://x/qr2.png", qrString: "001", totalBayar: "100",
+    });
+    const second = customerCtx({ callbackData: "v1:payq:2:1" });
+    await checkout.buyNowTokopay(second.ctx, other.id, 1);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(2);
+  });
+
   it("buyNowTokopay refuses past the pending-order limit", async () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");
+    // Stock is now reserved per order (Checkout-2/Stock-1 fix) — top up well
+    // past the 10 pending orders this test creates, so it's the pending-limit
+    // guard under test that refuses the 11th, not stock exhaustion.
+    await bulkAddStock(prisma, sample.product.id, Array.from({ length: 10 }, (_, i) => `pending-limit-${i}@x.com:pw`));
     for (let i = 0; i < 10; i++) await makeOrder();
     const before = await prisma.order.count();
     const { ctx } = customerCtx({ callbackData: "v1:payq:1:1" });
@@ -1035,6 +1124,20 @@ describe("admin handlers", () => {
     expect(calls(sink, "answerCallbackQuery").length).toBe(1);
   });
 
+  it("non-admin is denied by /admin (no admin menu leaks)", async () => {
+    const { ctx, sink } = customerCtx();
+    await adminCommand(ctx);
+    expect(sentIncludes(sink, "Access restricted")).toBe(true);
+  });
+
+  it("non-admin cannot adjust wallets via /wallet", async () => {
+    const { ctx, sink } = customerCtx({ match: `${sample.user.id} 999999` });
+    const before = (await getUser(prisma, sample.user.id))!.walletBalance;
+    await adminWalletCommand(ctx);
+    expect(sentIncludes(sink, "Access restricted")).toBe(true);
+    expect((await getUser(prisma, sample.user.id))!.walletBalance.toString()).toBe(before.toString());
+  });
+
   it("adminWalletCommand offers a back action on bad args (never strands)", async () => {
     const { ctx, sink } = adminCtx({ match: "only-one-arg" });
     await adminWalletCommand(ctx);
@@ -1079,11 +1182,34 @@ describe("admin handlers", () => {
     expect(await prisma.auditLog.count({ where: { action: "product_toggle" } })).toBe(1);
   });
 
-  it("ticket close sets the ticket CLOSED", async () => {
+  it("ticket close sets the ticket CLOSED and writes an audit row (Bot-3 fix)", async () => {
     const ticket = await prisma.supportTicket.create({ data: { userId: sample.user.id, message: "help" } });
     const { ctx } = adminCtx({ callbackData: `v1:adm:ticket:close:${ticket.id}` });
     await handleAdminCallback(ctx, `v1:adm:ticket:close:${ticket.id}`.split(":"));
     expect((await prisma.supportTicket.findUnique({ where: { id: ticket.id } }))!.status).toBe(TicketStatus.CLOSED);
+    expect(await prisma.auditLog.count({ where: { action: "ticket_close", targetId: ticket.id } })).toBe(1);
+  });
+
+  it("a double-tap ticket close never sends a second buyer DM (Bot-3 fix)", async () => {
+    const ticket = await prisma.supportTicket.create({ data: { userId: sample.user.id, message: "help" } });
+    const { ctx: ctx1, sink: sink1 } = adminCtx({ callbackData: `v1:adm:ticket:close:${ticket.id}` });
+    await handleAdminCallback(ctx1, `v1:adm:ticket:close:${ticket.id}`.split(":"));
+    const { ctx: ctx2, sink: sink2 } = adminCtx({ callbackData: `v1:adm:ticket:close:${ticket.id}` });
+    await handleAdminCallback(ctx2, `v1:adm:ticket:close:${ticket.id}`.split(":"));
+
+    // sample.user has a telegramId, so the first close DMs them; the second
+    // (already-closed) close must NOT — closeTicket's atomic guard returns
+    // null, so handleAdminCallback's customerTgId check skips the DM.
+    expect(calls(sink1, "sendMessage").length).toBe(1);
+    expect(calls(sink2, "sendMessage").length).toBe(0);
+  });
+
+  it("mark stock dead flips the status and writes an audit row (Bot-4 fix)", async () => {
+    const item = await prisma.stockItem.findFirst({ where: { productId: sample.product.id, status: "AVAILABLE" } });
+    const { ctx } = adminCtx({ callbackData: `v1:adm:stockitem:dead:${item!.id}:${sample.product.id}` });
+    await handleAdminCallback(ctx, `v1:adm:stockitem:dead:${item!.id}:${sample.product.id}`.split(":"));
+    expect((await prisma.stockItem.findUnique({ where: { id: item!.id } }))!.status).toBe("DEAD");
+    expect(await prisma.auditLog.count({ where: { action: "stock_mark_dead", targetId: item!.id } })).toBe(1);
   });
 
   it("dashboard / product / settings menus render", async () => {

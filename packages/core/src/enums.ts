@@ -149,6 +149,9 @@ export const zNotificationEvent = z.nativeEnum(NotificationEvent);
 
 export const NotificationStatus = {
   PENDING: "PENDING",
+  // Atomically claimed by a dispatcher right before a send attempt — the
+  // crash-window double-send guard (Infra-2 fix). Reclaimable once stale.
+  SENDING: "SENDING",
   SENT: "SENT",
   FAILED: "FAILED",
 } as const;

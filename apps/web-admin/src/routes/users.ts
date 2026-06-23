@@ -24,7 +24,12 @@ import { currentAdmin, csrfProtect } from "../plugins/auth";
 import { redirectWithFlash, humanizeValidationError, renderError } from "../flash";
 
 const truthy = (v: string | undefined) => ["1", "true", "on", "yes"].includes((v ?? "").toLowerCase());
-const ROLES = Object.values(UserRole) as string[];
+// ADMIN is excluded — it's a derived field (auto-set when a Telegram id joins
+// admin_ids, see packages/db/src/crud/users.ts) and must stay in sync with
+// that allow-list. Letting this route set it manually creates two
+// independently-mutable sources of truth for "is this user an admin" (Admin-5
+// fix, security audit 2026-06-23); admin promotion goes through /admins only.
+const ROLES = [UserRole.CUSTOMER, UserRole.RESELLER] as string[];
 
 export default async function usersRoutes(app: FastifyInstance): Promise<void> {
   app.get("/users", { preHandler: currentAdmin }, async (req, reply) => {
@@ -72,6 +77,13 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
   app.post("/users/:userId/role", { preHandler: csrfProtect }, async (req, reply) => {
     const userId = Number((req.params as { userId: string }).userId);
     const roleUpper = ((req.body as Record<string, string>).role ?? "").toUpperCase();
+    // Whitelist-only (CUSTOMER/RESELLER); ADMIN is rejected explicitly even
+    // though it's also absent from ROLES, so a crafted request gets a clear
+    // message instead of the generic "Invalid role." (Admin-5 fix, security
+    // audit 2026-06-23).
+    if (roleUpper === UserRole.ADMIN) {
+      return redirectWithFlash(reply, `/users/${userId}`, "Admin status is managed from the Admins page, not here.", "error");
+    }
     if (!ROLES.includes(roleUpper)) {
       return redirectWithFlash(reply, `/users/${userId}`, "Invalid role.", "error");
     }

@@ -57,6 +57,12 @@ const adminId = (admin: { id: number } | null) => (admin ? admin.id : 0);
 // ===========================================================================
 
 export async function adminCommand(ctx: MyContext): Promise<void> {
+  if (!ctx.from || !isAdmin(ctx.from.id)) {
+    logger.warn(`Non-admin ${ctx.from?.id} tried /admin`);
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.admin_only"), show_alert: true });
+    else await ctx.reply(t(ctx, "error.admin_only"));
+    return;
+  }
   const lang = ctx.session.lang;
   if (ctx.message) ctx.session.adminMsgId = undefined; // drop the old anchor
   logger.info(`admin_command: user=${ctx.from?.id} via=${ctx.callbackQuery ? "cb" : "cmd"}`);
@@ -216,6 +222,12 @@ async function userWalletPrompt(ctx: MyContext, userId: number): Promise<void> {
 
 /** `/wallet <user_db_id> <amount>` — manual wallet adjustment by admin. */
 export async function adminWalletCommand(ctx: MyContext): Promise<void> {
+  if (!ctx.from || !isAdmin(ctx.from.id)) {
+    logger.warn(`Non-admin ${ctx.from?.id} tried /wallet`);
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.admin_only"), show_alert: true });
+    else await ctx.reply(t(ctx, "error.admin_only"));
+    return;
+  }
   ctx.session.adminMsgId = undefined;
   const lang = ctx.session.lang;
   const args = (typeof ctx.match === "string" ? ctx.match : "").trim().split(/\s+/).filter(Boolean);
@@ -418,7 +430,20 @@ async function viewStockItems(ctx: MyContext, productId: number): Promise<void> 
 }
 
 async function adminMarkStockDead(ctx: MyContext, stockId: number, productId: number): Promise<void> {
-  await markStockDead(prisma, stockId, "marked dead by admin");
+  const adminTg = ctx.from!.id;
+  // Bot-4 fix, security audit 2026-06-23: was a bare update with no
+  // $transaction and NO audit row at all — a stock-status change has no
+  // trail back to the admin who made it.
+  await prisma.$transaction(async (tx) => {
+    await markStockDead(tx, stockId, "marked dead by admin");
+    const admin = await getUserByTelegramId(tx, adminTg);
+    await logAdminAction(tx, {
+      adminId: adminId(admin),
+      action: "stock_mark_dead",
+      targetType: "stock_item",
+      targetId: stockId,
+    });
+  });
   await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.stock_marked_dead") });
   await viewStockItems(ctx, productId);
 }
@@ -488,7 +513,23 @@ async function showTicketsAdmin(ctx: MyContext): Promise<void> {
 
 async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void> {
   const lang = ctx.session.lang;
-  const customerTgId = await closeTicket(prisma, ticketId);
+  const adminTg = ctx.from!.id;
+  // closeTicket's atomic guard (count===1) means a double-tap "Close" never
+  // sends a second buyer DM; wrapping it with the audit write in one
+  // $transaction means a crash between them can never silently lose the
+  // audit row for a ticket that DID close (Bot-3 fix, security audit
+  // 2026-06-23).
+  const customerTgId = await prisma.$transaction(async (tx) => {
+    const tgId = await closeTicket(tx, ticketId);
+    const admin = await getUserByTelegramId(tx, adminTg);
+    await logAdminAction(tx, {
+      adminId: adminId(admin),
+      action: "ticket_close",
+      targetType: "support_ticket",
+      targetId: ticketId,
+    });
+    return tgId;
+  });
   await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.ticket_closed") });
 
   if (customerTgId) {

@@ -23,11 +23,17 @@
 import type { FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 
-/** Reads `x-forwarded-for` (first hop) and falls back to `req.ip`. Mirrors
- * apps/web-admin/src/routes/auth.ts's clientIp helper. */
+/**
+ * The request's real client IP. Delegates to Fastify's own `req.ip`, which is
+ * computed from `X-Forwarded-For` ONLY when `trustProxy` is configured
+ * (`TRUST_PROXY` env — see server.ts/config.ts) to the actual reverse proxy's
+ * address. Previously this read the raw `x-forwarded-for` header directly,
+ * always trusting its left-most (client-supplied, unverified) entry — any
+ * direct caller could forge that header and spoof a different IP for every
+ * request, defeating per-IP rate limiting entirely (Storefront-4 fix,
+ * security audit 2026-06-23).
+ */
 export function clientIp(req: FastifyRequest): string {
-  const fwd = req.headers["x-forwarded-for"];
-  if (typeof fwd === "string" && fwd) return fwd.split(",")[0]!.trim();
   return req.ip || "unknown";
 }
 
@@ -86,4 +92,58 @@ export function recordAccountFailure(identifier: string): void {
 /** Clear an identifier's failure count (call on a successful login). */
 export function resetAccountFailures(identifier: string): void {
   accountFailures.delete(identifier);
+}
+
+// ---------------------------------------------------------------------------
+// Payment webhook rate limit (per IP, in-process) — Payment-3 fix, security
+// audit 2026-06-23. The TokoPay/PayDisini/NOWPayments callbacks are public
+// and unauthenticated until the signature check inside the handler runs; a
+// flood of forged-signature bodies still costs a body parse + signature
+// compute (and, on a lucky refId guess, a DB query) before being rejected.
+// ---------------------------------------------------------------------------
+
+const webhookHits = new Map<string, number[]>();
+export const WEBHOOK_RATE_LIMIT_WINDOW_SECONDS = 60;
+export const WEBHOOK_RATE_LIMIT_MAX = 30;
+
+/** True if `${route}:${ip}` has exceeded the webhook rate limit this window. */
+export function webhookRateLimited(route: string, ip: string): boolean {
+  const key = `${route}:${ip}`;
+  const now = Date.now() / 1000;
+  const dq = webhookHits.get(key) ?? [];
+  while (dq.length && now - dq[0]! > WEBHOOK_RATE_LIMIT_WINDOW_SECONDS) dq.shift();
+  if (dq.length >= WEBHOOK_RATE_LIMIT_MAX) {
+    webhookHits.set(key, dq);
+    return true;
+  }
+  dq.push(now);
+  webhookHits.set(key, dq);
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Per-email forgot-password throttle — Storefront-4 fix, security audit
+// 2026-06-23. loginRateLimited(ip) alone doesn't stop an attacker rotating
+// IPs from email-bombing ONE victim with reset-token emails; this caps
+// attempts per (lowercased, trimmed) email address regardless of source IP.
+// Shares the same window/cap as the login throttles — no need for a separate
+// config knob for what's conceptually the same kind of abuse.
+// ---------------------------------------------------------------------------
+
+const forgotEmailHits = new Map<string, number[]>();
+
+export function forgotEmailRateLimited(email: string): boolean {
+  if (!email) return false;
+  const window = config.WEB_LOGIN_RATE_LIMIT_WINDOW_SECONDS;
+  const maxHits = config.WEB_LOGIN_RATE_LIMIT_MAX;
+  const now = Date.now() / 1000;
+  const dq = forgotEmailHits.get(email) ?? [];
+  while (dq.length && now - dq[0]! > window) dq.shift();
+  if (dq.length >= maxHits) {
+    forgotEmailHits.set(email, dq);
+    return true;
+  }
+  dq.push(now);
+  forgotEmailHits.set(email, dq);
+  return false;
 }

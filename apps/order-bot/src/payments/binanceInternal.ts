@@ -306,8 +306,14 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
     // the note is empty/garbled, match by a unique expected amount (see
     // matchByAmount). The amount path only ever yields an exact-within-tolerance
     // hit, so it's treated as a clean "match" (never auto-underpaid).
+    //
+    // The amount fallback is gated on USE_UNIQUE_CENTS: without it, distinct
+    // orders can share an identical total, turning a no-note transfer into a
+    // confused-deputy risk (paying a shared amount could match whichever
+    // single order happens to still be pending at that total, not the payer's
+    // own). Memo-based matching above is unaffected and always safe.
     const byNote = tx.note ? byRef.get(tx.note.trim().toLowerCase()) : undefined;
-    const order = byNote ?? matchByAmount(tx, orders);
+    const order = byNote ?? (config.USE_UNIQUE_CENTS ? matchByAmount(tx, orders) : undefined);
     if (!order) {
       if (await recordUnmatchedTx(prisma, { binanceTxId: tx.txId, amount: tx.amount })) {
         logger.info(`Unmatched transfer tx=${tx.txId} note=${tx.note} amount=${tx.amount}`);

@@ -54,8 +54,11 @@ export default async function adminsRoutes(app: FastifyInstance): Promise<void> 
     const tgId = Number((req.params as { tgId: string }).tgId);
     const role = ((req.body as Record<string, string>).role ?? "").toLowerCase();
 
-    if (!config.ADMIN_IDS.includes(tgId)) {
-      return redirectWithFlash(reply, "/admins", "That Telegram ID is not in ADMIN_IDS.", "error");
+    // adminIds() (env ∪ DB), not config.ADMIN_IDS alone — otherwise a
+    // DB-added admin (who defaults to "super" until a role is set explicitly)
+    // could never be assigned/demoted through this route.
+    if (!adminIds().includes(tgId)) {
+      return redirectWithFlash(reply, "/admins", "That Telegram ID is not a registered admin.", "error");
     }
     if (!isWebRole(role)) {
       return redirectWithFlash(reply, "/admins", "Invalid role.", "error");
@@ -83,6 +86,11 @@ export default async function adminsRoutes(app: FastifyInstance): Promise<void> 
     }
     await addAdminIdToDb(prisma, tgId);
     addAdminId(tgId); // live, no restart
+    // Persist an explicit least-privilege role immediately — an unset role
+    // resolves to DEFAULT_WEB_ROLE ("super", kept for legacy/bootstrap admins
+    // that pre-date RBAC), which would silently hand every newly added admin
+    // full access until someone remembers to demote them.
+    await setSetting(prisma, webRoleKey(tgId), "readonly");
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "web_admin_add",
@@ -117,8 +125,8 @@ export default async function adminsRoutes(app: FastifyInstance): Promise<void> 
   // cookie in the wild). Use your own Logout button for yourself.
   app.post("/admins/:tgId/logout", { preHandler: csrfProtect }, async (req, reply) => {
     const tgId = Number((req.params as { tgId: string }).tgId);
-    if (!config.ADMIN_IDS.includes(tgId)) {
-      return redirectWithFlash(reply, "/admins", "That Telegram ID is not in ADMIN_IDS.", "error");
+    if (!adminIds().includes(tgId)) {
+      return redirectWithFlash(reply, "/admins", "That Telegram ID is not a registered admin.", "error");
     }
     if (tgId === req.admin!.telegramId) {
       return redirectWithFlash(reply, "/admins", "Use the Logout button to end your own session.", "error");

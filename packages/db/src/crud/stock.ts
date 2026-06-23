@@ -5,20 +5,47 @@
 import { StockStatus } from "@app/core/enums";
 import type { Db } from "./_types";
 
+/**
+ * Bulk-insert AVAILABLE stock, deduping against the incoming batch itself
+ * (e.g. the same CSV pasted twice) AND against existing
+ * AVAILABLE/RESERVED/SOLD rows for this product — two identical credential
+ * strings stored as separate AVAILABLE rows could later be allocated to TWO
+ * different buyers, delivering the same digital account twice (Stock-1 fix,
+ * security audit 2026-06-23). `skipped` covers both kinds of duplicates so
+ * the caller can report one honest total to the admin.
+ */
 export async function bulkAddStock(
   db: Db,
   productId: number,
   credentials: string[],
-): Promise<number> {
-  if (credentials.length === 0) return 0;
+): Promise<{ added: number; skipped: number }> {
+  if (credentials.length === 0) return { added: 0, skipped: 0 };
+
+  const deduped = [...new Set(credentials)];
+  const existing = new Set(
+    (
+      await db.stockItem.findMany({
+        where: {
+          productId,
+          credentials: { in: deduped },
+          status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED, StockStatus.SOLD] },
+        },
+        select: { credentials: true },
+      })
+    ).map((r) => r.credentials),
+  );
+  const fresh = deduped.filter((c) => !existing.has(c));
+
+  if (fresh.length === 0) return { added: 0, skipped: credentials.length };
+
   const res = await db.stockItem.createMany({
-    data: credentials.map((c) => ({
+    data: fresh.map((c) => ({
       productId,
       credentials: c,
       status: StockStatus.AVAILABLE,
     })),
   });
-  return res.count;
+  return { added: res.count, skipped: credentials.length - res.count };
 }
 
 export async function markStockDead(db: Db, stockId: number, note: string) {

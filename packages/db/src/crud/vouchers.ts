@@ -20,7 +20,7 @@ export function listVouchers(db: Db) {
   return db.voucher.findMany({ orderBy: { createdAt: "desc" } });
 }
 
-export function createVoucher(
+export async function createVoucher(
   db: Db,
   args: {
     code: string;
@@ -31,6 +31,16 @@ export function createVoucher(
     expiresAt?: Date | null;
   },
 ) {
+  // The only thing standing between a misconfigured PERCENT voucher and a
+  // free (Rp0) order — reject anything outside (0,100] (Pricing-4 fix,
+  // security audit 2026-06-23). FIXED vouchers are already capped at the
+  // subtotal in applyVoucherToSubtotal, so only the percentage needs bounding.
+  if (args.type === VoucherType.PERCENT) {
+    const value = new Decimal(args.value);
+    if (value.lte(0) || value.gt(100)) {
+      throw new ValidationError("error.invalid_discount_percent");
+    }
+  }
   return db.voucher.create({
     data: {
       code: args.code.toUpperCase(),
@@ -99,4 +109,18 @@ export function applyVoucherToSubtotal(
 
   if (discount.greaterThan(sub)) discount = sub; // cap at subtotal
   return quantizeMoney(discount, 4);
+}
+
+/**
+ * Throws if `userId` has already redeemed `voucherId` (1x/voucher/user cap —
+ * security audit Pricing-1, 2026-06-23: without this, a customer could reuse
+ * the same discount voucher across unlimited orders). Call before computing
+ * the discount; the `(voucherId, userId)` unique index on VoucherRedemption
+ * is the atomic race-safety net for two concurrent checkouts.
+ */
+export async function assertVoucherNotRedeemedByUser(db: Db, voucherId: number, userId: number): Promise<void> {
+  const existing = await db.voucherRedemption.findUnique({
+    where: { voucherId_userId: { voucherId, userId } },
+  });
+  if (existing) throw new ValidationError("error.voucher_already_redeemed");
 }

@@ -83,7 +83,7 @@ export const adminOnly: MiddlewareFn<MyContext> = async (ctx, next) => {
   if (!ctx.from || !isAdmin(ctx.from.id)) {
     logger.warn(`Non-admin ${ctx.from?.id} tried an admin action`);
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.admin_only"), show_alert: true });
-    else if (ctx.message) await ctx.reply(t(ctx, "error.admin_only"));
+    else await ctx.reply(t(ctx, "error.admin_only"));
     return;
   }
   return next();

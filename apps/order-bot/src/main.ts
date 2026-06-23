@@ -25,7 +25,7 @@ import { initDb, prisma, resolveBotCredentials, resolveAdminIds } from "@app/db"
 import { logger } from "@app/core/logger";
 import type { MyContext } from "./context";
 import { initialSession } from "./context";
-import { bindUpdateId, registeredUser, rateLimit } from "./middleware";
+import { bindUpdateId, registeredUser, rateLimit, adminOnly } from "./middleware";
 import { CONVERSATIONS } from "./conversations";
 import { coreT } from "./util/i18n";
 import { newErrorRef } from "./util/errors";
@@ -95,8 +95,8 @@ export function buildBot(token?: string): Bot<MyContext> {
   bot.command("faq", staticPages.faqCommand);
   bot.command("terms", staticPages.termsCommand);
   bot.command("howtopay", staticPages.howtopayCommand);
-  bot.command("admin", admin.adminCommand);
-  bot.command("wallet", admin.adminWalletCommand);
+  bot.command("admin", adminOnly, admin.adminCommand);
+  bot.command("wallet", adminOnly, admin.adminWalletCommand);
 
   // --- Callback router + persistent-keyboard number input (PTB group 2) ----
   bot.callbackQuery(/^v1:/, routeCallback);

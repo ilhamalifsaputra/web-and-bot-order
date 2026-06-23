@@ -88,16 +88,17 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return redirectWithFlash(reply, "/stock", "Product not found.", "error");
 
-    const added = await bulkAddStock(prisma, productId, creds);
+    const { added, skipped } = await bulkAddStock(prisma, productId, creds);
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "stock_upload",
       targetType: "product",
       targetId: productId,
-      details: `added=${added}`, // never log the credentials themselves
+      details: `added=${added} skipped=${skipped}`, // never log the credentials themselves
     });
-    logger.info(`Bulk-added ${added} stock rows to product ${productId}`);
-    return redirectWithFlash(reply, back, `Added ${added} stock item(s).`, "success");
+    logger.info(`Bulk-added ${added} stock rows to product ${productId} (${skipped} duplicate skipped)`);
+    const msg = skipped > 0 ? `Added ${added} stock item(s). Skipped ${skipped} duplicate(s).` : `Added ${added} stock item(s).`;
+    return redirectWithFlash(reply, back, msg, "success");
   });
 
   // Bulk mark selected stock items dead (one writer, audited once). Never logs

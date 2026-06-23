@@ -10,16 +10,20 @@ import {
   listPendingBybitOrders,
   resolveBybitConfig,
   setSetting,
+  getSetting,
   deleteSetting,
   setOrderPaymentMessage,
   BYBIT_UID_KEY,
   BYBIT_API_KEY_KEY,
   BYBIT_API_SECRET_KEY,
+  BYBIT_POLL_HEALTH_KEY,
 } from "@app/db";
 import type { Api } from "grammy";
+import { config } from "@app/core/config";
+import { Decimal } from "@app/core/money";
 import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { normalizeInternalDeposit, processDeposits, type BybitDeposit } from "../src/payments/bybitDeposit";
+import { normalizeInternalDeposit, processDeposits, pollOnce, type BybitDeposit } from "../src/payments/bybitDeposit";
 
 let sample: SampleData;
 
@@ -100,6 +104,34 @@ describe("createBybitOrder", () => {
     expect(order!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect(order!.expiresAt).not.toBeNull();
     expect(order!.expiresAt!.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  // Checkout-4 (security audit, 2026-06-23): computeUniqueCents only has 49
+  // buckets — two orders for the SAME base amount whose ids happen to land in
+  // the same bucket used to get an IDENTICAL totalAmount, and Bybit has no
+  // memo to disambiguate beyond the amount. finalizeOrderPayment now retries
+  // within the bucket space against the SAME pool the matcher reads
+  // (PENDING_PAYMENT, BYBIT, not-yet-expired), so amounts must stay distinct
+  // well past the point where raw `id % 49` would have collided.
+  it("totalAmount stays unique across many simultaneous orders for the same product (no two share a bucket)", async () => {
+    const original = config.USE_UNIQUE_CENTS;
+    config.USE_UNIQUE_CENTS = true;
+    try {
+      // Stock up enough credentials for 20 single-unit orders.
+      await prisma.stockItem.createMany({
+        data: Array.from({ length: 20 }, (_, i) => ({
+          productId: sample.product.id,
+          credentials: `bybit-uniq-${i}@x.com:pw`,
+          status: StockStatus.AVAILABLE,
+        })),
+      });
+      const orders = [];
+      for (let i = 0; i < 20; i++) orders.push(await makeBybitOrder());
+      const totals = orders.map((o) => new Decimal(o!.totalAmount).toString());
+      expect(new Set(totals).size).toBe(totals.length); // all 20 distinct
+    } finally {
+      config.USE_UNIQUE_CENTS = original;
+    }
   });
 });
 
@@ -243,6 +275,35 @@ describe("resolveBybitConfig (Settings-backed config)", () => {
     await setSetting(prisma, BYBIT_API_SECRET_KEY, "s");
     expect((await resolveBybitConfig(prisma)).enabled).toBe(false);
     await clear();
+  });
+});
+
+// ===========================================================================
+// pollOnce — refuses to run at all when enabled but USE_UNIQUE_CENTS is off
+// (Payment-2 fix). Internal Transfer has no memo, so without unique cents two
+// orders can share a total — a confused-deputy risk, not just an availability
+// one. Asserting the tick returns immediately (no poll-health row written)
+// proves it never reached the network call.
+// ===========================================================================
+
+describe("pollOnce — USE_UNIQUE_CENTS hard gate", () => {
+  beforeEach(async () => {
+    await setSetting(prisma, BYBIT_UID_KEY, "123456");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "k");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "s");
+  });
+  afterAll(async () => {
+    await deleteSetting(prisma, BYBIT_UID_KEY);
+    await deleteSetting(prisma, BYBIT_API_KEY_KEY);
+    await deleteSetting(prisma, BYBIT_API_SECRET_KEY);
+  });
+
+  it("refuses to poll (no network call, no health setting written) when USE_UNIQUE_CENTS is off", async () => {
+    expect(config.USE_UNIQUE_CENTS).toBe(false); // test-env default (setup-db.ts)
+    await deleteSetting(prisma, BYBIT_POLL_HEALTH_KEY);
+    const fakeApi = {} as Api; // never called — pollOnce must return before touching it
+    await pollOnce(fakeApi);
+    expect(await getSetting(prisma, BYBIT_POLL_HEALTH_KEY)).toBeNull(); // never reached fetchRecentDeposits
   });
 });
 

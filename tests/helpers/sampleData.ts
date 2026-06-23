@@ -79,5 +79,10 @@ export async function resetDb(prisma: PrismaClient) {
   await prisma.auditLog.deleteMany();
   await prisma.broadcast.deleteMany();
   await prisma.setting.deleteMany();
+  // WalletTransaction.user is onDelete:Restrict (Infra-5 fix, security audit
+  // 2026-06-23 — it's an append-only ledger, never auto-erased alongside its
+  // user) — must be cleared explicitly before deleting users, since there's
+  // no cascade to do it implicitly anymore.
+  await prisma.walletTransaction.deleteMany();
   await prisma.user.deleteMany();
 }

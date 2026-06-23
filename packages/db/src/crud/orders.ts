@@ -19,15 +19,46 @@ import { NotificationEvent } from "@app/core/enums";
 import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
 import { getBulkPricingForDenomination } from "./catalog";
-import { getVoucherByCode, applyVoucherToSubtotal } from "./vouchers";
+import { getVoucherByCode, applyVoucherToSubtotal, assertVoucherNotRedeemedByUser } from "./vouchers";
 import { countAvailableStock, allocateOneAvailableStock } from "./stock";
 import { adjustWallet, getUser } from "./users";
 import { clearCart, getCart } from "./cart";
 import { maybePayReferralCommission } from "./referrals";
 import { enqueueNotification } from "./notifications";
+import { logAdminAction } from "./audit";
 
 const ZERO = new Decimal(0);
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
+// Matches the cart's own cap (packages/db/src/crud/cart.ts) — the final
+// server-side boundary regardless of how quantity reached this function
+// (typed input, a crafted callback, or a cart row). Checkout-5 fix, security
+// audit 2026-06-23.
+const MAX_QTY_PER_ORDER = 99;
+
+function assertValidQuantity(quantity: number, productName: string): void {
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QTY_PER_ORDER) {
+    throw new ValidationError("error.invalid_quantity", { product: productName });
+  }
+}
+
+/**
+ * Atomically bump a voucher's global usedCount, conditional on it not having
+ * already hit usageLimit — a single updateMany's row-level atomicity makes
+ * this safe under any DB isolation level, unlike a separate read-check then
+ * increment (which only stayed safe so far because SQLite's BEGIN IMMEDIATE
+ * serializes concurrent transactions). Pricing-2 fix, security audit
+ * 2026-06-23. Throws error.voucher_used_up if the limit was already hit.
+ */
+async function bumpVoucherUsage(db: Db, voucher: { id: number; usageLimit: number | null }): Promise<void> {
+  const bumped = await db.voucher.updateMany({
+    where: {
+      id: voucher.id,
+      OR: [{ usageLimit: null }, { usedCount: { lt: voucher.usageLimit ?? undefined } }],
+    },
+    data: { usedCount: { increment: 1 } },
+  });
+  if (bumped.count === 0) throw new ValidationError("error.voucher_used_up");
+}
 
 /** Eager-load shape matching the Python get_order selectinload set. */
 const fullInclude = {
@@ -104,6 +135,11 @@ export async function createOrderFromCart(
 ) {
   const cart = (await getCart(db, args.user.id)) as unknown as CartLine[];
   if (cart.length === 0) throw new ValidationError("error.cart_empty");
+  // Cart rows are normally clamped to 1-99 by cart.ts, but the very first
+  // insert path (addToCart's create branch) doesn't clamp — re-validate here
+  // as the final server-side boundary (Checkout-5 fix, security audit
+  // 2026-06-23).
+  for (const ci of cart) assertValidQuantity(ci.quantity, ci.product.name);
 
   const isReseller = args.user.role === UserRole.RESELLER;
 
@@ -127,6 +163,7 @@ export async function createOrderFromCart(
   if (args.voucherCode) {
     voucher = await getVoucherByCode(db, args.voucherCode);
     if (!voucher) throw new ValidationError("error.voucher_not_found");
+    await assertVoucherNotRedeemedByUser(db, voucher.id, args.user.id);
     discount = applyVoucherToSubtotal(voucher, subtotal);
   }
 
@@ -159,19 +196,35 @@ export async function createOrderFromCart(
     },
   });
 
-  // 7. Validate stock & create one OrderItem per unit (no reservation yet)
+  // 7. Pre-check every line's availability before reserving anything, so the
+  // common "you asked for more than we have" case fails before any row is
+  // touched (rather than leaving earlier lines reserved). Then reserve stock
+  // atomically (one row per unit, AVAILABLE -> RESERVED) and create one
+  // OrderItem per unit. allocateOneAvailableStock is itself optimistic-locked,
+  // so concurrent checkouts for the same product can never both reserve the
+  // same row — that's the real race guard; the pre-check is just a fast-fail.
+  // Out-of-stock is now caught HERE instead of first becoming visible at admin
+  // approval (Checkout-2/Stock-1 fix, security audit 2026-06-23).
+  // releaseOrderHolds (cancel/reject/expire) already returns RESERVED rows to
+  // AVAILABLE.
   for (const ci of cart) {
     const available = await countAvailableStock(db, ci.productId);
     if (available < ci.quantity) {
       throw new ValidationError("error.out_of_stock", { product: ci.product.name });
     }
+  }
+  for (const ci of cart) {
     const unit = q4(unitPrice(ci.product, isReseller));
     for (let k = 0; k < ci.quantity; k++) {
+      const reserved = await allocateOneAvailableStock(db, ci.productId, order.id);
+      if (!reserved) {
+        throw new ValidationError("error.out_of_stock", { product: ci.product.name });
+      }
       await db.orderItem.create({
         data: {
           orderId: order.id,
           productId: ci.productId,
-          stockItemId: null,
+          stockItemId: reserved.id,
           quantity: 1,
           unitPrice: unit,
           warrantyDaysSnapshot: (ci.product as unknown as { warrantyDays: number }).warrantyDays,
@@ -195,11 +248,14 @@ export async function createOrderFromCart(
     await adjustWallet(db, args.user.id, walletUsed.negated(), { currency: "IDR", reason: "order_payment", orderId: order.id });
   }
 
-  // 10. Bump voucher usage
+  // 10. Bump voucher usage (atomic conditional — Pricing-2 fix) + record this
+  // user's redemption (1x/user; the unique index on (voucherId, userId) is
+  // the race-safety net for two concurrent checkouts that both passed the
+  // check in step 3).
   if (voucher) {
-    await db.voucher.update({
-      where: { id: voucher.id },
-      data: { usedCount: { increment: 1 } },
+    await bumpVoucherUsage(db, voucher);
+    await db.voucherRedemption.create({
+      data: { voucherId: voucher.id, userId: args.user.id, orderId: order.id },
     });
   }
 
@@ -222,6 +278,10 @@ export async function createOrderDirect(
   // args.productId is a denomination id (the sellable SKU).
   const product = await db.denomination.findUnique({ where: { id: args.productId } });
   if (!product) throw new ValidationError("error.out_of_stock", { product: "(unknown)" });
+  // Quantity can arrive from a crafted callback (v1:payq:<pid>:<qty>), not
+  // just the UI's clamped stepper — validate it server-side (Checkout-5 fix,
+  // security audit 2026-06-23).
+  assertValidQuantity(args.quantity, product.name);
 
   const isReseller = args.user.role === UserRole.RESELLER;
   const unit = unitPrice(product, isReseller);
@@ -240,12 +300,14 @@ export async function createOrderDirect(
   if (args.voucherCode) {
     voucher = await getVoucherByCode(db, args.voucherCode);
     if (!voucher) throw new ValidationError("error.voucher_not_found");
+    await assertVoucherNotRedeemedByUser(db, voucher.id, args.user.id);
     voucherDiscount = applyVoucherToSubtotal(voucher, subtotal.minus(bulkDiscount));
   }
 
   const orderCode = await uniqueOrderCode(db);
 
-  // Validate stock before committing
+  // Pre-check before reserving anything (fast-fail on the common "ordered too
+  // much" case) — see createOrderFromCart's matching guard for the rationale.
   const available = await countAvailableStock(db, args.productId);
   if (available < args.quantity) {
     throw new ValidationError("error.out_of_stock", { product: product.name });
@@ -267,12 +329,18 @@ export async function createOrderDirect(
     },
   });
 
+  // Reserve stock atomically per unit (Checkout-2/Stock-1 fix — see
+  // createOrderFromCart's matching loop for the full rationale).
   for (let k = 0; k < args.quantity; k++) {
+    const reserved = await allocateOneAvailableStock(db, args.productId, order.id);
+    if (!reserved) {
+      throw new ValidationError("error.out_of_stock", { product: product.name });
+    }
     await db.orderItem.create({
       data: {
         orderId: order.id,
         productId: args.productId,
-        stockItemId: null,
+        stockItemId: reserved.id,
         quantity: 1,
         unitPrice: q4(unit),
         warrantyDaysSnapshot: product.warrantyDays,
@@ -281,9 +349,10 @@ export async function createOrderDirect(
   }
 
   if (voucher) {
-    await db.voucher.update({
-      where: { id: voucher.id },
-      data: { usedCount: { increment: 1 } },
+    // Atomic conditional bump — Pricing-2 fix, security audit 2026-06-23.
+    await bumpVoucherUsage(db, voucher);
+    await db.voucherRedemption.create({
+      data: { voucherId: voucher.id, userId: args.user.id, orderId: order.id },
     });
   }
 
@@ -642,11 +711,26 @@ export async function approveOrder(
 ): Promise<{ order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }> {
   const order = await getOrder(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
-  if (order.status !== OrderStatus.PENDING_VERIFICATION) {
+
+  // Atomic conditional claim: only ONE caller can flip PENDING_VERIFICATION ->
+  // DELIVERED for this order, regardless of DB isolation level — a single
+  // UPDATE's row-level atomicity holds even under Read Committed, unlike the
+  // read-then-throw check this replaces (which only stayed safe so far
+  // because SQLite's BEGIN IMMEDIATE happens to serialize concurrent
+  // transactions). Making the guard explicit removes that implicit
+  // dependency ahead of a possible Postgres migration (Bot-2 fix, security
+  // audit 2026-06-23). If the rest of this function throws (e.g. out of
+  // stock below), the whole $transaction the caller wraps this in rolls back
+  // — including this claim — so behavior on failure is unchanged.
+  const now = new Date();
+  const claim = await db.order.updateMany({
+    where: { id: orderId, status: OrderStatus.PENDING_VERIFICATION },
+    data: { status: OrderStatus.DELIVERED, paidAt: now, deliveredAt: now },
+  });
+  if (claim.count !== 1) {
     throw new ValidationError("error.order_not_pending_verification");
   }
 
-  const now = new Date();
   const credentials: string[] = [];
 
   for (const item of order.items) {
@@ -674,12 +758,26 @@ export async function approveOrder(
   await db.order.update({
     where: { id: order.id },
     data: {
-      status: OrderStatus.DELIVERED,
-      paidAt: now,
-      deliveredAt: now,
       adminNote: `${order.adminNote ?? ""}\n[approve] by admin_id=${args.adminId}`,
     },
   });
+
+  // adminId=0 means this approval came from an auto-confirm poller, not a
+  // human admin tapping Approve — those callers (verification.ts, web-admin's
+  // /orders/:id/approve) already write their own logAdminAction row with the
+  // real admin id, so logging here too would duplicate it. The auto-deliver
+  // path had NO audit trail at all before this (Checkout-6 fix, security
+  // audit 2026-06-23) — the paid->delivered, stock->SOLD transition is exactly
+  // where a "paid but never got my item" dispute needs forensic evidence.
+  if (args.adminId === 0) {
+    await logAdminAction(db, {
+      adminId: null,
+      action: "order.auto_deliver",
+      targetType: "order",
+      targetId: order.id,
+      details: `code=${order.orderCode}`,
+    });
+  }
 
   // Referral commission (referee's first delivered order only). Currency +
   // fxRate ride along so IDR orders convert to the USDT wallet basis.

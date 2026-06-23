@@ -245,6 +245,34 @@ describe("POST /pay/nowpayments/callback", () => {
     expect(updated!.status).toBe("PENDING_PAYMENT"); // untouched
   });
 
+  // Payment-4 (security audit, 2026-06-23): see tokopay-webhook.test.ts's
+  // matching test for the rationale.
+  it("records unmatched (not delivered) when the order_id matches a NOWPAYMENTS-method order whose currency is somehow not USDT", async () => {
+    const order = await prisma.order.create({
+      data: {
+        orderCode: "ORD-WRONGCURR-NP",
+        userId,
+        subtotalAmount: "50000",
+        totalAmount: "50000",
+        status: "PENDING_PAYMENT",
+        currency: "IDR", // contrived: paymentMethod/currency decoupled
+        paymentMethod: "NOWPAYMENTS",
+      },
+    });
+    const { body, signature } = signedIpn({ orderId: order.orderCode, amount: "50000", trxId: "PID-WRONGCURR-1" });
+    const res = await app.inject({
+      method: "POST",
+      url: "/pay/nowpayments/callback",
+      headers: { "x-nowpayments-sig": signature },
+      payload: body,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "unmatched" });
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("PENDING_PAYMENT"); // untouched
+  });
+
   it("never delivers a short/underpaid amount — records unmatched instead", async () => {
     const order = await createPendingNowpaymentsOrder("ORD-SHORTPAY-NP", "50");
     const { body, signature } = signedIpn({ orderId: order.orderCode, amount: "40", trxId: "PID-SHORT-1" }); // less than totalAmount

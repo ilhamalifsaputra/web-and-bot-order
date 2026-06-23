@@ -321,28 +321,34 @@ describe("orders", () => {
   });
 
   it("approve is atomic: mid-loop out-of-stock failure rolls back the FIRST item's allocation too", async () => {
-    // Quantity 2, but only 1 AVAILABLE stock item left: approveOrder's per-item
-    // loop allocates+SOLDs item #1, then throws on item #2
-    // (error.cannot_deliver_out_of_stock). Without a shared transaction, item
-    // #1's stock flip and the order/audit writes are separate statements on
-    // the raw client, so a non-atomic route would leave a SOLD stock row and
-    // an untouched PENDING_VERIFICATION order behind — an inconsistent state.
+    // Stock is now reserved at order CREATION (Checkout-2/Stock-1 fix), so
+    // approveOrder's per-item loop normally just flips already-RESERVED rows
+    // to SOLD — the old "stock ran out between creation and approval" race
+    // this test used to simulate can no longer happen for orders created
+    // through the app's own mutators. The one residual case approveOrder
+    // still defends is a reserved stock row vanishing by some OTHER means
+    // (e.g. direct DB intervention, never through the app's guarded helpers)
+    // between creation and approval — simulated here by deleting item #2's
+    // reserved stock row directly and draining the remaining AVAILABLE pool,
+    // so approveOrder's replacement-allocation attempt for item #2 fails
+    // after item #1 (still healthy/RESERVED) has already been flipped to SOLD.
     const user = (await getUser(prisma, seed.customerId))!;
-    // Seed has 4 AVAILABLE stock items already; create a qty=2 order against
-    // that healthy stock, then drain stock down to 1 item to simulate another
-    // sale consuming it between order creation and admin approval.
+    // Seed has 4 AVAILABLE stock items; a qty=2 order reserves 2 of them,
+    // leaving 2 AVAILABLE.
     const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 2 }))!;
     await attachPaymentProof(prisma, order.id, { fileId: "proof123", txid: "TX1234567890" });
     const orderId = order.id;
 
-    const remaining = await prisma.stockItem.findMany({
-      where: { productId: seed.productId, status: "AVAILABLE" },
-      orderBy: { id: "asc" },
-    });
-    // Keep exactly 1 AVAILABLE row so item #1 of the loop allocates fine and
-    // item #2 hits the out-of-stock branch.
+    const items = await prisma.orderItem.findMany({ where: { orderId }, orderBy: { id: "asc" } });
+    expect(items.length).toBe(2);
+    const [item1, item2] = items;
+
+    // Item #2's reserved row vanishes (onDelete: SetNull clears stockItemId).
+    await prisma.stockItem.delete({ where: { id: item2!.stockItemId! } });
+    // Drain the rest of the AVAILABLE pool so item #2's replacement allocation
+    // attempt has nothing to grab.
     await prisma.stockItem.deleteMany({
-      where: { id: { in: remaining.slice(1).map((s) => s.id) } },
+      where: { productId: seed.productId, status: "AVAILABLE" },
     });
 
     const res = await post(`/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
@@ -355,14 +361,14 @@ describe("orders", () => {
     const reloaded = (await getOrder(prisma, orderId))!;
     expect(reloaded.status).toBe("PENDING_VERIFICATION");
 
-    // The one stock item that DID get allocated+SOLD for item #1 must have
-    // been rolled back to AVAILABLE, not left dangling as SOLD/RESERVED.
-    const leftoverStock = await prisma.stockItem.count({
-      where: { productId: seed.productId, status: { in: ["RESERVED", "SOLD"] } },
+    // Item #1's stock DID get flipped to SOLD inside the loop before item #2
+    // failed — it must roll back to RESERVED, not stay SOLD.
+    const stock1 = await prisma.stockItem.findUnique({ where: { id: item1!.stockItemId! } });
+    expect(stock1!.status).toBe("RESERVED");
+    const leftoverSold = await prisma.stockItem.count({
+      where: { productId: seed.productId, status: "SOLD" },
     });
-    expect(leftoverStock).toBe(0);
-    const stillAvailable = await countAvailableStock(prisma, seed.productId);
-    expect(stillAvailable).toBe(1);
+    expect(leftoverSold).toBe(0);
 
     // The audit write must have rolled back with the failed state change —
     // proving approveOrder + logAdminAction share one transaction.
@@ -1054,6 +1060,16 @@ describe("users", () => {
     const res = await post(`/users/${seed.customerId}/role`, seed.cookie, { csrf_token: seed.csrf, role: "reseller" });
     expect(res.statusCode).toBe(303);
     expect((await getUser(prisma, seed.customerId))!.role).toBe("RESELLER");
+  });
+
+  // Admin-5 (security audit, 2026-06-23): /users/:id/role must not be a back
+  // door to ADMIN — that's a derived field synced from admin_ids, and
+  // promotion goes through /admins only.
+  it("set role refuses ADMIN — that's managed via /admins, not here", async () => {
+    const res = await post(`/users/${seed.customerId}/role`, seed.cookie, { csrf_token: seed.csrf, role: "admin" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect((await getUser(prisma, seed.customerId))!.role).not.toBe("ADMIN");
   });
 
   it("ban happy", async () => {
@@ -1986,6 +2002,16 @@ describe("rbac", () => {
     expect(canMutate("support", "/settings/edit")).toBe(false);
   });
 
+  // Admin-4 (security audit, 2026-06-23): canMutate now strips the query
+  // string itself, so callers that pass raw `req.url` (upload.ts, branding.ts,
+  // catalog.ts) can't get an exact-match path check wrong.
+  it("canMutate strips a query string itself, matching exact-path checks correctly", () => {
+    expect(canMutate("readonly", "/settings/password?foo=bar")).toBe(true); // self-service, still matches
+    expect(canMutate("support", "/orders/1/approve?ref=abc")).toBe(true);
+    expect(canMutate("support", "/catalog/category?x=1")).toBe(false);
+    expect(canMutate("readonly", "/orders/1/approve?x=1")).toBe(false);
+  });
+
   it("readonly is blocked from mutations (403) but can still view", async () => {
     await setRole(ADMIN_TG, "readonly");
     const cat = await post("/catalog/category", seed.cookie, { csrf_token: seed.csrf, name: "Nope" });
@@ -2167,6 +2193,28 @@ describe("manage DB admins", () => {
     const res = await post("/admins/remove", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(ADMIN_TG) });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toContain("kind=error");
+  });
+
+  it("add: defaults a new DB admin to readonly, NOT super (no privilege escalation by default)", async () => {
+    await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+    expect(await getSetting(prisma, webRoleKey(NEW_ADMIN_TG))).toBe("readonly");
+  });
+
+  it("a DB-added admin's role CAN be set/demoted/promoted via /admins/:tgId/role", async () => {
+    await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+    const res = await post(`/admins/${NEW_ADMIN_TG}/role`, seed.cookie, { csrf_token: seed.csrf, role: "support" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, webRoleKey(NEW_ADMIN_TG))).toBe("support");
+  });
+
+  it("a DB-added admin CAN be force-logged-out via /admins/:tgId/logout", async () => {
+    await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+    await setSetting(prisma, sessionJtiKey(NEW_ADMIN_TG), "jti-db-admin");
+    const res = await post(`/admins/${NEW_ADMIN_TG}/logout`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, sessionJtiKey(NEW_ADMIN_TG))).not.toBe("jti-db-admin");
   });
 });
 
@@ -2420,5 +2468,31 @@ describe("setup wizard — step 2/3/finish", () => {
     const locked = await app.inject({ method: "GET", url: "/setup" });
     expect(locked.statusCode).toBe(303);
     expect(locked.headers.location).toBe("/login");
+  });
+
+  it("does NOT lock between step 2 and step 3 (mid-wizard owner password already set)", async () => {
+    await createOwner();
+    // setup_completed is still unset and an admin password now exists, but the
+    // wizard is mid-flight (setup_owner_tg set in step 2) — /setup/shop must
+    // stay reachable, not get self-healed into a premature lock.
+    const shopPage = await app.inject({ method: "GET", url: "/setup/shop" });
+    expect(shopPage.statusCode).toBe(200);
+  });
+
+  it("locks /setup/owner once an admin password exists outside the wizard (bootstrap takeover)", async () => {
+    // Simulates a deploy bootstrapped via /bootstrap (sets a password hash
+    // directly, never touches setup_owner_tg) instead of the wizard.
+    await deleteSetting(prisma, "setup_owner_tg");
+    await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("password123"));
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: "1234567", username: "attacker", password: "attackerpw", password_confirm: "attackerpw" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect(isAdmin(1234567)).toBe(false); // attacker was NOT promoted
+    expect(await getSetting(prisma, "setup_completed")).toBe("true"); // self-healed
   });
 });

@@ -196,6 +196,18 @@ const backoff = createBackoffGate();
 export async function pollOnce(api: Api): Promise<void> {
   const cfg = await resolveBybitConfig(prisma);
   if (!cfg.enabled) return;
+  // Internal Transfer carries no memo — amount is the ONLY disambiguator.
+  // Without USE_UNIQUE_CENTS, distinct orders can land on identical totals,
+  // and a deposit paying that shared amount becomes a confused-deputy risk
+  // (it could be misattributed to whichever single order still happens to be
+  // the only pending one at that total). Refuse to match by amount at all
+  // rather than degrade — deposits fall through to "unmatched" for manual
+  // review, which is always safe, instead of a live (re-checked every poll
+  // tick, no restart needed) hard gate.
+  if (!config.USE_UNIQUE_CENTS) {
+    logger.error("Bybit deposit auto-confirm is enabled but USE_UNIQUE_CENTS is OFF — refusing to match deposits by amount this cycle. Set USE_UNIQUE_CENTS=1.");
+    return;
+  }
   if (backoff.shouldSkip()) return;
 
   let deposits: BybitDeposit[];

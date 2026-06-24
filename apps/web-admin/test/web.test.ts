@@ -23,6 +23,7 @@ import {
   getUserByTelegramId,
   getOrder,
   createOrderDirect,
+  finalizeOrderPayment,
   createWebUser,
   attachPaymentProof,
   createTicket,
@@ -2398,6 +2399,24 @@ describe("page smoke tests", () => {
     expect((await get(`/orders/${orderId}`, seed.cookie)).statusCode).toBe(200);
     expect((await get(`/stock/${seed.productId}`, seed.cookie)).statusCode).toBe(200);
     expect((await get(`/users/${seed.customerId}`, seed.cookie)).statusCode).toBe(200);
+  });
+
+  it("renders a USDT order's Money card in USDT, never collapsing the total into a misleading Rupiah figure", async () => {
+    // Regression: the Money card used to format every field with the `idr`
+    // filter regardless of `order.currency`. A USDT order's small decimal
+    // total (e.g. 3.43) then rendered as "Rp3" — see the bug report screenshot.
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    // rate "1" keeps the USDT total numerically equal to the central price,
+    // so the rendered total is a deterministic, non-trivial USDT amount.
+    await finalizeOrderPayment(prisma, order.id, { currency: "USDT", rate: "1" });
+
+    const res = await get(`/orders/${order.id}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("USDT");
+    // The exact old buggy markup: the "Total to pay" row formatted with the
+    // IDR filter regardless of the order's actual settlement currency.
+    expect(res.body).not.toContain("<dt>Total to pay</dt><dd>Rp");
   });
 });
 

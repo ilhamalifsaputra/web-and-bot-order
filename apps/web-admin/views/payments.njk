@@ -61,7 +61,7 @@
         <tr class="align-top">
           <td><a class="link font-mono text-xs" href="/orders/{{ o.id }}">{{ o.orderCode }}</a></td>
           <td class="text-ink-soft">{{ o.user.username or o.user.fullName or o.user.id }}</td>
-          <td class="tabular">{{ o.totalAmount | idr }}</td>
+          <td class="tabular">{{ o.totalAmount | money_in(o.currency) }}</td>
           <td class="text-ink-soft break-all max-w-xs">{{ o.adminNote or '—' }}</td>
           <td>
             <div class="flex gap-2 justify-end">
@@ -104,7 +104,7 @@
       <label class="field-label">Order code</label>
       <input name="order_code" required list="pending-internal" class="field font-mono w-40" placeholder="ABC123">
       <datalist id="pending-internal">
-        {% for o in pending_internal %}<option value="{{ o.orderCode }}">{{ o.totalAmount | idr }}</option>{% endfor %}
+        {% for o in pending_internal %}<option value="{{ o.orderCode }}">{{ o.totalAmount | money_in(o.currency) }}</option>{% endfor %}
       </datalist>
     </div>
     <button class="btn btn-primary">Match &amp; deliver</button>

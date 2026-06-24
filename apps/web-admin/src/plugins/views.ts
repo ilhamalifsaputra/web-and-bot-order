@@ -11,7 +11,7 @@ import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import nunjucks from "nunjucks";
 import { config } from "@app/core/config";
 import { localize } from "@app/core/datetime";
-import { formatIdr, usdtFromIdr } from "@app/core/formatters";
+import { formatIdr, formatMoney, usdtFromIdr } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { sharedViewsDir } from "@app/web-ui";
 
@@ -51,6 +51,21 @@ function usdtFilter(value: unknown, rate: unknown): string {
   }
 }
 
+/**
+ * Money in an order's OWN currency — "Rp54.000" for an IDR order, "3.43 USDT"
+ * for a USDT order. Use this (not `idr`) for any amount whose currency varies
+ * per-order (totalAmount, and anything derived from it); `idr` stays correct
+ * for fields that are always genuinely IDR (catalog prices, OrderItem rows).
+ */
+function moneyInFilter(value: unknown, currency: unknown): string {
+  if (value === null || value === undefined || value === "") return "—";
+  try {
+    return formatMoney(value as Decimal.Value, String(currency ?? "IDR"));
+  } catch {
+    return String(value);
+  }
+}
+
 /** Localize a stored UTC datetime to config.TIMEZONE. Mirrors deps._localdt_filter. */
 function localdtFilter(value: unknown, fmt = "yyyy-LL-dd HH:mm"): string {
   if (value === null || value === undefined) return "—";
@@ -72,6 +87,7 @@ const viewsPlugin: FastifyPluginAsync = async (app) => {
   env.addFilter("money", moneyFilter);
   env.addFilter("idr", idrFilter);
   env.addFilter("usdt", usdtFilter);
+  env.addFilter("money_in", moneyInFilter);
   env.addFilter("localdt", localdtFilter);
   env.addGlobal("currency", config.CURRENCY);
   env.addGlobal("tzname", config.TIMEZONE);

@@ -46,9 +46,6 @@ const CATEGORY_IMAGES: Array<[needle: string, url: string]> = [
   ["produktivitas", u("photo-1497032628192-86f99bcd76bc")],
 ];
 
-/** Hero banner for the home page (overridable later via banner settings). */
-export const HERO_IMAGE = `https://images.unsplash.com/photo-1607082348824-0a96f2a4b9da?w=1600&q=80&auto=format&fit=crop`;
-
 /** Best Unsplash image for a category name; placeholder when nothing matches. */
 export function categoryImage(name: string | null | undefined): string {
   const n = (name ?? "").toLowerCase();

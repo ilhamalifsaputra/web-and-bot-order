@@ -16,7 +16,7 @@ import {
   overallRating,
   shopFulfilmentStats,
 } from "@app/db";
-import { categoryImage, HERO_IMAGE } from "../images";
+import { categoryImage } from "../images";
 import { shopContext, LANG_COOKIE, resolveBotUsername } from "../shop";
 import { shapeProducts } from "../cards";
 
@@ -51,7 +51,7 @@ const homeRoutes: FastifyPluginAsync = async (app) => {
         // WhatsApp button on the contact section — set in web-admin Settings ›
         // Website; empty/unset hides the button.
         getSetting(prisma, "support_whatsapp"),
-        // Hero banner — admin-uploaded image overrides the Unsplash default.
+        // Hero banner — admin-uploaded image overrides the gradient default.
         getSetting(prisma, "web_hero_url"),
       ]);
     const ratingByDenom = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
@@ -83,7 +83,7 @@ const homeRoutes: FastifyPluginAsync = async (app) => {
 
     return reply.view("home.njk", {
       ...ctx,
-      hero_image: heroUrl || HERO_IMAGE,
+      hero_image: heroUrl || null,
       categories: categories.map((c) => ({ ...c, image: categoryImage(c.name) })),
       products: cards,
       stats,

@@ -1296,9 +1296,13 @@ describe("hero image", () => {
     await deleteSetting(prisma, "web_hero_url");
   });
 
-  it("falls back to the default hero when unset", async () => {
+  it("falls back to a brand gradient (no photo) when unset", async () => {
     const res = await app.inject({ method: "GET", url: "/" });
-    expect(res.body).toContain("images.unsplash.com");
+    // photo-1607082348824-... was the removed HERO_IMAGE hotlink id; other
+    // Unsplash images legitimately appear elsewhere on the page (categories,
+    // products), so assert against the specific id, not the whole domain.
+    expect(res.body).not.toContain("photo-1607082348824");
+    expect(res.body).toContain("from-ink via-pine-dark to-pine");
   });
 });
 

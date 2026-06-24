@@ -90,7 +90,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
     }
 
     await setSetting(prisma, passwordHashKey(telegramId), hashPassword(password));
-    logger.info(`Bootstrap: web admin password set for telegram_id=${telegramId}`);
+    logger.info(`Bootstrap: set initial web admin password for Telegram id ${telegramId}`);
     return reply.code(303).redirect("/login");
   });
 
@@ -127,7 +127,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
           action: "web_login_failed",
           targetType: "web_admin",
           targetId: null,
-          details: `telegram_id=${telegramId} ip=${ip} reason=${reason}`,
+          details: `Failed login attempt for Telegram ID ${telegramId} from IP ${ip} (${reason}).`,
         });
       }
       return reply.code(401).view("login.njk", { error: genericError, ...extra });
@@ -168,7 +168,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       sameSite: "lax",
       secure: config.WEB_COOKIE_SECURE, // true in production behind TLS
     });
-    logger.info(`Login OK telegram_id=${telegramId} ip=${ip}`);
+    logger.info(`Admin with Telegram id ${telegramId} logged in from IP ${ip}`);
     return reply.code(303).redirect("/");
   });
 
@@ -195,7 +195,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       const { code, store } = newResetCode();
       await setSetting(prisma, pwResetKey(telegramId), store);
       await enqueueAdminPasswordReset(prisma, { telegramId, code, ttlMinutes: RESET_TTL_MINUTES });
-      logger.info(`Password reset code enqueued telegram_id=${telegramId} ip=${ip}`); // never log the code
+      logger.info(`Enqueued a password reset code for Telegram id ${telegramId}, requested from IP ${ip}`); // never log the code
     }
     return reply.view("forgot.njk", {
       error: null,
@@ -249,9 +249,9 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       action: "web_password_reset",
       targetType: "web_admin",
       targetId: null,
-      details: `telegram_id=${telegramId}`,
+      details: `Password reset completed for Telegram ID ${telegramId}.`,
     });
-    logger.info(`Password reset completed telegram_id=${telegramId} ip=${ip}`);
+    logger.info(`Password reset completed for Telegram id ${telegramId} from IP ${ip}`);
     return reply.code(303).redirect("/login");
   });
 
@@ -259,7 +259,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
     const admin = await optionalAdmin(req);
     if (admin) {
       await setSetting(prisma, sessionJtiKey(admin.telegramId), newJti());
-      logger.info(`Logout telegram_id=${admin.telegramId}`);
+      logger.info(`Admin with Telegram id ${admin.telegramId} logged out`);
     }
     reply.clearCookie(config.WEB_COOKIE_NAME, { path: "/" });
     return reply.code(303).redirect("/login");

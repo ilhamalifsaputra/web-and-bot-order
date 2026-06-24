@@ -195,7 +195,7 @@ export async function deliverPaidInternalOrder(
         data: { status: OrderStatus.PENDING_VERIFICATION, binanceTxid: args.binanceTxId, paidAt: new Date() },
       });
       const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: 0 });
-      logger.info(`Auto-delivered internal-transfer order ${delivered.orderCode} (tx ${args.binanceTxId})`);
+      logger.info(`Auto-delivered internal-transfer order ${delivered.orderCode} for Binance transaction ${args.binanceTxId}`);
       return { status: "delivered" as const, order: delivered, credentials };
     });
   } catch (e) {
@@ -327,7 +327,7 @@ export async function deliverUnderpaidOrder(
       data: { status: OrderStatus.PENDING_VERIFICATION, paidAt: new Date() },
     });
     const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: args.adminId });
-    logger.info(`Underpaid order ${delivered.orderCode} delivered anyway by admin=${args.adminId}`);
+    logger.info(`Underpaid order ${delivered.orderCode} delivered anyway by admin ${args.adminId} — operator absorbed the shortfall`);
     return { order: delivered, credentials };
   });
 }
@@ -364,7 +364,7 @@ export async function refundUnderpaidOrder(
         adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} to wallet by admin_id=${args.adminId}`,
       },
     });
-    logger.info(`Refunded underpaid order ${order.orderCode} (${received.toString()}) by admin=${args.adminId}`);
+    logger.info(`Refunded underpaid order ${order.orderCode} (${received.toString()}) to wallet by admin ${args.adminId}`);
     return { refunded: received };
   });
 }
@@ -403,7 +403,7 @@ export async function manualMatchTx(
       },
     });
     const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: args.adminId });
-    logger.info(`Manual-matched tx ${args.binanceTxId} → order ${delivered.orderCode} by admin=${args.adminId}`);
+    logger.info(`Manually matched Binance transaction ${args.binanceTxId} to order ${delivered.orderCode} by admin ${args.adminId}`);
     return { order: delivered, credentials };
   });
 }

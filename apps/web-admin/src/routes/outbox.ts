@@ -62,7 +62,7 @@ export default async function outboxRoutes(app: FastifyInstance): Promise<void> 
       targetType: "notification",
       targetId: id,
     });
-    logger.info(`Outbox notification ${id} requeued via web by admin_id=${req.admin!.userId}`);
+    logger.info(`Admin ${req.admin!.userId} requeued outbox notification ${id} for delivery via the web panel`);
     return redirectWithFlash(reply, "/outbox", "Notification requeued for delivery.", "success");
   });
 }

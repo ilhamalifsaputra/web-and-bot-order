@@ -167,9 +167,9 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     const result = verifyTelegramLoginResult(tgParams, await resolveBotToken());
     if (!result.ok) {
       logger.warn(
-        `Storefront: rejected Telegram login (${result.reason}). ` +
-          `bad_hash = the bot_token doesn't match the bot_username the widget uses; ` +
-          `stale = server clock skew or replay.`,
+        `Rejected a Telegram login widget callback — reason: ${result.reason} ` +
+          `("bad_hash" means the configured bot token doesn't match the bot username the widget signed with; ` +
+          `"stale" means server clock skew or a replayed login link).`,
       );
       return renderLogin(req, reply, { next, ref, error: t("web.error_message", ctx.lang), code: 403 });
     }

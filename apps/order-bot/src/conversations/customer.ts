@@ -89,7 +89,7 @@ export async function ticketUserReplyConversation(conversation: MyConversation, 
           { parse_mode: "HTML", reply_markup: akb.ticketReplyKb(ticketId, "en") },
         );
       } catch (err) {
-        logger.error({ err }, `Failed to notify admin about ticket #${ticketId} user reply`);
+        logger.error({ err }, `Failed to notify admin chat ${chatId} about the customer's reply on ticket #${ticketId} — that chat won't see the reply unless another admin chat in the list got it`);
       }
     }
   });

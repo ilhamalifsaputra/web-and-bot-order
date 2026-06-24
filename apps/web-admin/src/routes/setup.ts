@@ -87,7 +87,7 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
     }
     await setSetting(prisma, "bot_token", token);
     if (check.username) await setSetting(prisma, "bot_username", check.username);
-    logger.info("Setup: bot token saved"); // never log the token
+    logger.info("Setup wizard: bot token verified and saved"); // never log the token
     return reply.code(303).redirect("/setup/owner");
   });
 
@@ -131,7 +131,7 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
       throw err;
     }
     await setSetting(prisma, OWNER_TG_KEY, String(telegramId));
-    logger.info(`Setup: owner admin created telegram_id=${telegramId}`); // never log the password
+    logger.info(`Setup wizard: created owner admin with Telegram id ${telegramId}`); // never log the password
     return reply.code(303).redirect("/setup/shop");
   });
 
@@ -177,13 +177,13 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
         action: "web_setup_completed",
         targetType: "web_admin",
         targetId: null,
-        details: `owner_telegram_id=${ownerTg}`,
+        details: `Completed setup wizard for owner (Telegram id ${ownerTg}).`,
       });
     } else {
-      logger.error(`Setup finish: owner user row missing for telegram_id=${ownerTg}; auto-login skipped`);
+      logger.error(`Setup wizard finish: no user row found for owner Telegram id ${ownerTg} — skipping auto-login, owner will need to log in manually`);
     }
     await deleteSetting(prisma, OWNER_TG_KEY);
-    logger.info(`Setup completed; owner auto-logged-in telegram_id=${ownerTg}`);
+    logger.info(`Setup wizard completed — owner with Telegram id ${ownerTg} auto-logged-in`);
     return reply.code(303).redirect("/setup/done");
   });
 
@@ -201,10 +201,10 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
     try {
       mkdirSync(dirname(target), { recursive: true });
       writeFileSync(target, new Date().toISOString());
-      logger.info("Setup: wrote Passenger restart trigger");
+      logger.info("Setup wizard: wrote Passenger restart trigger file to reboot the app");
     } catch (err) {
       ok = false;
-      logger.warn({ err }, "Setup: failed to write restart trigger");
+      logger.warn({ err }, "Setup wizard: failed to write Passenger restart trigger file — app needs a manual restart from the hosting panel");
     }
     const botConfigured = (await getSetting(prisma, "bot_token")) !== null;
     return reply.view("setup_done.njk", {

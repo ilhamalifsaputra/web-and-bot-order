@@ -387,7 +387,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
                 data: { paymentRef: JSON.stringify({ gateway: "tokopay", ...gateway }) },
               });
             } catch (err) {
-              logger.error({ err }, `TokoPay create failed for ${order.orderCode}`);
+              logger.error({ err }, `Failed to create a TokoPay transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
               gatewayError = true;
             }
           } else {
@@ -417,7 +417,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
                 data: { paymentRef: JSON.stringify({ gateway: "paydisini", ...paydisiniGateway }) },
               });
             } catch (err) {
-              logger.error({ err }, `PayDisini create failed for ${order.orderCode}`);
+              logger.error({ err }, `Failed to create a PayDisini transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
               paydisiniGatewayError = true;
             }
           } else {
@@ -454,14 +454,14 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
                 data: { paymentRef: JSON.stringify({ gateway: "nowpayments", ...nowpaymentsGateway }) },
               });
             } catch (err) {
-              logger.error({ err }, `NOWPayments create failed for ${order.orderCode}`);
+              logger.error({ err }, `Failed to create a NOWPayments invoice for order ${order.orderCode} — showing the contact fallback instead of a payment link`);
               nowpaymentsGatewayError = true;
             }
           } else {
             logger.warn(
-              `NOWPayments unavailable for ${order.orderCode}: ${
-                !creds ? "no creds configured" : "no public URL configured (SHOP_PUBLIC_URL/PUBLIC_URL)"
-              }`,
+              `Cannot create a NOWPayments invoice for order ${order.orderCode} — ${
+                !creds ? "no NOWPayments credentials configured" : "no public URL configured (SHOP_PUBLIC_URL/PUBLIC_URL)"
+              }, showing the contact fallback instead`,
             );
             nowpaymentsGatewayError = true;
           }
@@ -579,7 +579,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     try {
       live = await checkTransaction(creds, { refId: cb.refId, amountIdr: order.totalAmount });
     } catch (err) {
-      logger.error({ err }, `TokoPay live status check failed for ${order.orderCode}`);
+      logger.error({ err }, `Failed to check TokoPay's live transaction status for order ${order.orderCode} — the callback will be ignored until a retry confirms payment`);
       return reply.send({ status: "status check failed" });
     }
     if (!live.paid) {
@@ -590,7 +590,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     // from checkTransaction, not the unsigned callback body field.
     if (live.amount.lessThan(order.totalAmount)) {
       logger.warn(
-        `TokoPay callback short-paid ${order.orderCode}: got ${live.amount.toString()}, expected ${order.totalAmount.toString()}`,
+        `TokoPay callback for order ${order.orderCode} is short-paid — got ${live.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
       );
       await recordUnmatchedTokopayTx(prisma, { trxId: live.trxId ?? cb.trxId, amount: live.amount });
       return reply.send({ status: "amount mismatch" });
@@ -605,7 +605,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       });
       return reply.send({ status: r.status });
     } catch (err) {
-      logger.error({ err }, `TokoPay delivery failed for ${order.orderCode}`);
+      logger.error({ err }, `Failed to deliver paid TokoPay order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);
       // 200 so TokoPay stops retrying — the ledger row is flagged delivery_failed
       // and an admin resolves it from the orders panel.
       return reply.send({ status: "delivery failed" });
@@ -638,7 +638,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     // Amount sanity: never deliver on a short payment.
     if (cb.amount.lessThan(order.totalAmount)) {
       logger.warn(
-        `PayDisini callback short-paid ${order.orderCode}: got ${cb.amount.toString()}, expected ${order.totalAmount.toString()}`,
+        `PayDisini callback for order ${order.orderCode} is short-paid — got ${cb.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
       );
       await recordUnmatchedPaydisiniTx(prisma, { trxId: cb.trxId, amount: cb.amount });
       return reply.send({ status: "amount mismatch" });
@@ -653,7 +653,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       });
       return reply.send({ status: r.status });
     } catch (err) {
-      logger.error({ err }, `PayDisini delivery failed for ${order.orderCode}`);
+      logger.error({ err }, `Failed to deliver paid PayDisini order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);
       // 200 so PayDisini stops retrying — the ledger row is flagged delivery_failed
       // and an admin resolves it from the orders panel.
       return reply.send({ status: "delivery failed" });
@@ -695,7 +695,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     // Amount sanity: never deliver on a short/partial payment.
     if (cb.amount.lessThan(order.totalAmount)) {
       logger.warn(
-        `NOWPayments callback short-paid ${order.orderCode}: got ${cb.amount.toString()}, expected ${order.totalAmount.toString()}`,
+        `NOWPayments callback for order ${order.orderCode} is short-paid — got ${cb.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
       );
       await recordUnmatchedNowpaymentsTx(prisma, { trxId: cb.trxId, amount: cb.amount });
       return reply.send({ status: "amount mismatch" });
@@ -710,7 +710,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       });
       return reply.send({ status: r.status });
     } catch (err) {
-      logger.error({ err }, `NOWPayments delivery failed for ${order.orderCode}`);
+      logger.error({ err }, `Failed to deliver paid NOWPayments order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);
       // 200 so NOWPayments stops retrying — the ledger row is flagged delivery_failed
       // and an admin resolves it from the orders panel.
       return reply.send({ status: "delivery failed" });

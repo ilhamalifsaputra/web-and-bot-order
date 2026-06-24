@@ -148,7 +148,7 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
       adminId: req.admin!.userId,
       action: "setting_set",
       targetType: "setting",
-      details: `${key}=${value.slice(0, 80)}${value.length > 80 ? "…" : ""}`,
+      details: `Changed setting "${key}" to "${value.slice(0, 80)}${value.length > 80 ? "…" : ""}".`,
     });
     return redirectWithFlash(reply, "/branding", `Setting '${key}' updated.`, "success");
   });

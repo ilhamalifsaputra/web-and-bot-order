@@ -162,7 +162,7 @@ export function verifyCallback(
     .update(`${creds.apiKey}:${creds.userKey}:${refId}:${amountRaw}`)
     .digest("hex");
   if (!constantTimeEqual(expected, signature.toLowerCase())) {
-    logger.warn(`PayDisini callback signature mismatch for ref ${refId}`);
+    logger.warn(`PayDisini callback signature mismatch for reference ${refId} — rejecting the callback as unverified`);
     return null;
   }
 

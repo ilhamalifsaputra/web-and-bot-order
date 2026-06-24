@@ -24,5 +24,5 @@ export async function sendMail(args: { to: string; subject: string; text: string
     subject: args.subject,
     text: args.text,
   });
-  logger.info(`Sent mail to=${args.to} subject="${args.subject}"`);
+  logger.info(`Sent email to ${args.to} with subject "${args.subject}"`);
 }

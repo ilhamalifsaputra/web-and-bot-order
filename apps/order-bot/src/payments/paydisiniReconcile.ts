@@ -85,7 +85,7 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
     try {
       await api.sendMessage(adminId, text, { parse_mode: "HTML" });
     } catch (err) {
-      logger.error({ err }, `admin alert to ${adminId} failed`);
+      logger.error({ err }, `Failed to send admin alert to admin ${adminId} — they will not see this notification in Telegram`);
     }
   }
 }
@@ -101,14 +101,14 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   try {
     status = await checkTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
   } catch (err) {
-    logger.warn({ err }, `PayDisini status check failed for ${order.orderCode}`);
+    logger.warn({ err }, `Failed to check PayDisini status for order ${order.orderCode} — will retry on the next reconcile cycle`);
     return;
   }
   if (!status.paid) return;
 
   // Paid but short — never deliver on an underpayment; leave for manual review.
   if (status.amount.lessThan(new Decimal(order.totalAmount))) {
-    logger.warn(`PayDisini reconcile: ${order.orderCode} paid ${status.amount} < total ${order.totalAmount} — skipping`);
+    logger.warn(`Order ${order.orderCode} underpaid — PayDisini reports ${status.amount}, expected ${order.totalAmount}, left PENDING for manual review`);
     return;
   }
 
@@ -120,15 +120,15 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
       shopUrl: null,
     });
     if (r.status === "delivered") {
-      logger.info(`PayDisini reconcile → delivered ${order.orderCode} (notifier will DM the account file)`);
+      logger.info(`PayDisini reconcile delivered order ${order.orderCode} — notifier will DM the account file`);
       await editBubbleToSuccess(api, r.order);
       await clearOrderPaymentMessage(prisma, r.order.id);
     } else if (r.status === "stale") {
-      logger.warn(`PayDisini reconcile: ${order.orderCode} no longer pending (already handled?)`);
+      logger.warn(`Order ${order.orderCode} was paid but is no longer PENDING — likely already delivered by the webhook, no action needed`);
     }
     // "already_processed" → another cycle/webhook handled it; nothing to do.
   } catch (err) {
-    logger.error({ err }, `PayDisini reconcile delivery FAILED for ${order.orderCode}`);
+    logger.error({ err }, `Order ${order.orderCode} was paid (PayDisini) but delivery threw — admin alerted for manual action`);
     await alertAdmins(api, `⚠️ PayDisini paid but delivery FAILED for <code>${esc(order.orderCode)}</code> — ${esc(String(err).slice(0, 200))}. Manual action needed.`);
   }
 }
@@ -139,7 +139,7 @@ export async function pollOnce(api: Api): Promise<void> {
 
   const orders = await listPendingPaydisiniOrders(prisma, new Date());
   if (!orders.length) return;
-  logger.info(`PayDisini reconcile: checking ${orders.length} pending order(s)`);
+  logger.info(`PayDisini reconcile checking ${orders.length} pending order(s) against the gateway`);
 
   for (const order of orders) {
     await reconcileOrder(api, creds, order);
@@ -170,7 +170,7 @@ export function startPolling(api: Api): void {
       try {
         await pollOnce(api);
       } catch (err) {
-        logger.error({ err }, "PayDisini reconcile cycle error");
+        logger.error({ err }, "PayDisini reconcile cycle threw an unhandled error — the cycle was aborted, polling resumes on the next tick");
       } finally {
         isRunning = false;
       }

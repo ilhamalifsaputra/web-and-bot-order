@@ -122,7 +122,7 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
         await ctx.api.sendMediaGroup(chatId, photos.map((fid) => InputMediaBuilder.photo(fid)));
       }
     } catch (err) {
-      logger.error({ err }, `Failed to forward ticket ${ticket.id} to ${chatId}`);
+      logger.error({ err }, `Failed to forward ticket ${ticket.id} to admin chat ${chatId} — that chat won't see the new ticket unless another admin chat in the list got it`);
     }
   }
 }

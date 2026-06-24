@@ -128,10 +128,10 @@ export async function deliverPaidTokopayOrder(
           currency: order.currency,
         });
         logger.warn(
-          `TokoPay order ${delivered.orderCode} overpaid: got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency})`,
+          `TokoPay order ${delivered.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
         );
       }
-      logger.info(`Auto-delivered TokoPay order ${delivered.orderCode} (trx ${args.trxId})`);
+      logger.info(`Auto-delivered TokoPay order ${delivered.orderCode} for transaction ${args.trxId}`);
       return { status: "delivered" as const, order: delivered, credentials };
     });
   } catch (e) {

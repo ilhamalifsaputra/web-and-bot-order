@@ -32,6 +32,23 @@ schema at `prisma/schema.prisma` (datasource `DATABASE_URL_PRISMA`). See `DOCS.m
 - **Never log secrets** — credentials, payment-proof `file_id`, password hashes,
   full DB URLs. The bulk/CSV paths are the next risk surface.
 
+## Logging
+- **Audit log (`logAdminAction`) is read by shop admins, not developers** —
+  write `details` as a short natural-language sentence (e.g. `"Added 150
+  items; skipped 2 invalid lines and 1 duplicate."`), never `key=value`
+  shorthand. Full convention + examples: `docs/LOGGING.md`.
+- **Pino logs (`packages/core/src/logger.ts`) are for developers/ops** —
+  keep them in English, but write full sentences: state what happened, give
+  enough context to understand significance without reading the
+  surrounding code, and for warn/error explain why it matters or what's
+  next. Spell out internal abbreviations (no bare `cb`/`cmd`/`idx`/`tx`).
+- Never interpolate a truncated/sliced id or name list into a log
+  string — summarize by count instead (e.g. `"12 products"`, not a clipped
+  id dump).
+- Structured metadata (the object arg to `logger.info({ err, id }, "msg")`)
+  is untouched by this convention — only the leading message string
+  follows it.
+
 ## Bot UX (grammY)
 - **Edit the bubble, don't just toast.** Every terminal button tap ends on
   `smartEdit` (customer) / `adminEdit` (admin) + a navigation keyboard, turning

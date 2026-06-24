@@ -81,14 +81,14 @@ export async function autoCancelExpiredOrders(api: Api): Promise<void> {
   for (const o of orderData) {
     try {
       await prisma.$transaction((tx) => cancelOrder(tx, o.id, "expired"));
-      logger.info(`Auto-cancelled expired order ${o.code}`);
+      logger.info(`Order ${o.code} auto-cancelled after its payment window expired`);
       try {
         await notifyAutoCancelled(api, o);
       } catch (err) {
-        logger.error({ err }, `Failed to notify user about expired order ${o.id}`);
+        logger.error({ err }, `Failed to notify the customer that order ${o.id} was auto-cancelled — order is cancelled, but they won't see it until they reopen the bot`);
       }
     } catch (err) {
-      logger.error({ err }, `Failed to cancel expired order ${o.id}`);
+      logger.error({ err }, `Failed to auto-cancel expired order ${o.id} — order is still pending and will be retried next tick`);
     }
   }
 }
@@ -100,7 +100,7 @@ export async function autoCloseStaleTickets(api: Api): Promise<void> {
     const user = await prisma.user.findUnique({ where: { id: ticket.userId } });
     if (user === null) continue;
     await closeTicket(prisma, ticket.id);
-    logger.info(`Auto-closed stale ticket #${ticket.id} (user_id=${ticket.userId})`);
+    logger.info(`Support ticket #${ticket.id} (user ${ticket.userId}) auto-closed after 48h with no customer reply`);
     try {
       await api.sendMessage(
         Number(user.telegramId),
@@ -108,7 +108,7 @@ export async function autoCloseStaleTickets(api: Api): Promise<void> {
         { parse_mode: "HTML" },
       );
     } catch (err) {
-      logger.error({ err }, `Failed to notify user about auto-closed ticket #${ticket.id}`);
+      logger.error({ err }, `Failed to notify the customer that ticket #${ticket.id} was auto-closed — ticket is closed, but they won't see it until they reopen the bot`);
     }
   }
 }
@@ -118,13 +118,14 @@ export async function reconcileFinancesJob(api: Api): Promise<void> {
   const total =
     findings.order_drift.length + findings.voucher_drift.length + findings.negative_wallets.length;
   if (total === 0) {
-    logger.info("Reconciliation: clean (no drift)");
+    logger.info("Payment reconciliation finished — all checked orders matched, no drift found");
     return;
   }
 
   logger.warn(
-    `Reconciliation FOUND DRIFT: orders=${findings.order_drift.length} ` +
-      `vouchers=${findings.voucher_drift.length} negative_wallets=${findings.negative_wallets.length}`,
+    `Payment reconciliation found drift — ${findings.order_drift.length} order(s), ` +
+      `${findings.voucher_drift.length} voucher(s), and ${findings.negative_wallets.length} negative wallet(s) ` +
+      `need manual review (see audit log for details)`,
   );
 
   await logAdminAction(prisma, {
@@ -132,7 +133,7 @@ export async function reconcileFinancesJob(api: Api): Promise<void> {
     action: "reconcile_finances.drift",
     targetType: "system",
     targetId: null,
-    details: JSON.stringify(findings).slice(0, 4000),
+    details: `Reconciliation found drift: ${findings.order_drift.length} orders, ${findings.voucher_drift.length} vouchers, and ${findings.negative_wallets.length} negative wallets.`,
   });
 
   if (adminIds().length) {
@@ -146,7 +147,7 @@ export async function reconcileFinancesJob(api: Api): Promise<void> {
           "See audit log for full details.",
       );
     } catch (err) {
-      logger.error({ err }, "Failed to alert admin about reconciliation drift");
+      logger.error({ err }, "Failed to DM the admin about reconciliation drift — drift is still recorded in the audit log, but no one was paged");
     }
   }
 }
@@ -207,7 +208,7 @@ export async function binancePollWatchdog(api: Api): Promise<void> {
     const detail = failing
       ? `${health.consecutiveFailures} consecutive cycle(s) failed (last error: ${health.lastError ?? "unknown"})`
       : `no completed cycle in ${mins} min`;
-    logger.error(`Binance poller watchdog: ${detail} — alerting admins`);
+    logger.error(`Binance poller looks unhealthy (${detail}) — alerting admins and pausing auto-confirm`);
     for (const adminId of adminIds()) {
       try {
         await api.sendMessage(
@@ -217,13 +218,13 @@ export async function binancePollWatchdog(api: Api): Promise<void> {
           { parse_mode: "HTML" },
         );
       } catch (err) {
-        logger.error({ err }, `Failed to alert admin ${adminId} about unhealthy Binance poller`);
+        logger.error({ err }, `Failed to DM admin ${adminId} about the unhealthy Binance poller`);
       }
     }
     await setSetting(prisma, POLL_ALERT_KEY, "1");
   } else if (decision === "recover") {
     await setSetting(prisma, POLL_ALERT_KEY, "0");
-    logger.info("Binance poller watchdog: poller recovered");
+    logger.info("Binance poller recovered — back to completing cycles normally, alert state cleared");
   }
 }
 
@@ -245,7 +246,7 @@ export async function bybitPollWatchdog(api: Api): Promise<void> {
     const detail = failing
       ? `${health.consecutiveFailures} consecutive cycle(s) failed (last error: ${health.lastError ?? "unknown"})`
       : `no completed cycle in ${mins} min`;
-    logger.error(`Bybit poller watchdog: ${detail} — alerting admins`);
+    logger.error(`Bybit deposit poller looks unhealthy (${detail}) — alerting admins and pausing auto-confirm`);
     for (const adminId of adminIds()) {
       try {
         await api.sendMessage(
@@ -255,13 +256,13 @@ export async function bybitPollWatchdog(api: Api): Promise<void> {
           { parse_mode: "HTML" },
         );
       } catch (err) {
-        logger.error({ err }, `Failed to alert admin ${adminId} about unhealthy Bybit poller`);
+        logger.error({ err }, `Failed to DM admin ${adminId} about the unhealthy Bybit deposit poller`);
       }
     }
     await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "1");
   } else if (decision === "recover") {
     await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "0");
-    logger.info("Bybit poller watchdog: poller recovered");
+    logger.info("Bybit deposit poller recovered — back to completing cycles normally, alert state cleared");
   }
 }
 
@@ -278,13 +279,13 @@ export async function drainBroadcasts(api: Api): Promise<void> {
   const bc = await claimNextDueBroadcast(prisma, new Date());
   if (!bc) return;
   if (!isBroadcastSegment(bc.segment)) {
-    logger.error(`Broadcast #${bc.id} has an unknown segment "${bc.segment}" — marking sent with 0`);
+    logger.error(`Broadcast #${bc.id} has an unknown recipient segment "${bc.segment}" — skipping it and recording 0 sent/0 failed`);
     await finishBroadcast(prisma, bc.id, { sent: 0, failed: 0, total: 0 });
     return;
   }
 
   const recipients = await resolveSegmentRecipients(prisma, bc.segment);
-  logger.info(`Broadcast #${bc.id}: sending to ${recipients.length} (${bc.segment})`);
+  logger.info(`Broadcast #${bc.id} starting — sending to ${recipients.length} recipient(s) in segment "${bc.segment}"`);
   let sent = 0;
   let failed = 0;
   for (const r of recipients) {
@@ -299,7 +300,7 @@ export async function drainBroadcasts(api: Api): Promise<void> {
     await sleep(BROADCAST_THROTTLE_MS);
   }
   await finishBroadcast(prisma, bc.id, { sent, failed, total: recipients.length });
-  logger.info(`Broadcast #${bc.id} done: sent=${sent} failed=${failed}`);
+  logger.info(`Broadcast #${bc.id} finished — sent to ${sent} recipient(s), ${failed} failed (blocked the bot or deactivated)`);
 }
 
 /** Register all scheduled jobs against croner. Returns the Cron handles. */
@@ -315,14 +316,14 @@ export function scheduleFxRefresh(): Cron {
       .then((r) => {
         if (r.status === "disabled") logger.debug("FX auto-update is off (usd_idr_rate_auto=false)");
       })
-      .catch((err) => logger.error({ err }, "Job refreshUsdIdrRate failed (previous rate stays)"));
+      .catch((err) => logger.error({ err }, "Failed to refresh the USD/IDR exchange rate from the market — keeping the previous rate"));
   void run();
   return new Cron("5 * * * *", { protect: true }, run);
 }
 
 export function scheduleJobs(api: Api): Cron[] {
   const wrap = (name: string, fn: (api: Api) => Promise<void>) => () =>
-    fn(api).catch((err) => logger.error({ err }, `Job ${name} failed`));
+    fn(api).catch((err) => logger.error({ err }, `Scheduled job "${name}" threw an uncaught error — this run was skipped, will retry on its next tick`));
   return [
     // { protect: true } (Bot-5 fix, security audit 2026-06-23): without it, a
     // slow tick (or a restart racing the next scheduled fire) can overlap

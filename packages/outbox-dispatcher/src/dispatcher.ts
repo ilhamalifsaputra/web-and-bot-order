@@ -63,7 +63,7 @@ export async function runDispatcher(bot: Bot, signal?: AbortSignal): Promise<voi
     try {
       await drainBatch(bot);
     } catch (e) {
-      logger.error({ err: e }, "Dispatcher tick error, continuing...");
+      logger.error({ err: e }, "Outbox dispatcher tick failed — will retry on the next poll interval");
     }
     if (signal?.aborted) break;
     await sleep(config.NOTIF_POLL_INTERVAL_SECONDS * 1000);
@@ -175,11 +175,11 @@ async function trySend(bot: Bot, row: PendingRow, send: () => Promise<unknown>):
   try {
     await send();
     await markNotificationSent(prisma, row.id);
-    logger.info(`Sent notif id=${row.id} event=${row.event}`);
+    logger.info(`Sent notification ${row.id} (${row.event}) to Telegram`);
     return "ok";
   } catch (e) {
     if (e instanceof GrammyError && e.parameters?.retry_after) {
-      logger.warn(`Rate limited, sleeping ${e.parameters.retry_after}s`);
+      logger.warn(`Telegram rate-limited the dispatcher — sleeping ${e.parameters.retry_after}s before retrying`);
       await sleep((e.parameters.retry_after + 1) * 1000);
       // Release the claim (not a failed attempt) so the row is immediately
       // retryable next tick instead of waiting out the full stale-claim
@@ -188,11 +188,11 @@ async function trySend(bot: Bot, row: PendingRow, send: () => Promise<unknown>):
       return "ratelimited";
     }
     if (e instanceof GrammyError && e.error_code === 403) {
-      logger.error(`Forbidden sending notif id=${row.id} (bot blocked or not in channel) — marking failed`);
+      logger.error(`Telegram forbade sending notification ${row.id} — the bot is blocked or not in the target channel, marking it failed`);
       await markNotificationFailed(prisma, row.id, "Forbidden: bot blocked, or not in channel / lacks post permission", 1);
       return "ok";
     }
-    logger.error({ err: e }, `Failed to send notif id=${row.id}`);
+    logger.error({ err: e }, `Failed to send notification ${row.id} — recording the attempt, it will retry until it hits the max attempt limit`);
     await markNotificationFailed(prisma, row.id, String(e), config.NOTIF_MAX_ATTEMPTS);
     return "ok";
   }

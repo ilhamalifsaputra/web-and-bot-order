@@ -1,10 +1,11 @@
 name: CI
 
 # Gate regresi: typecheck + test pada setiap PR dan push ke master.
+# Dinonaktifkan sementara — akun GitHub Actions terkunci karena masalah billing
+# (semua run gagal instan dengan "account is locked due to a billing issue").
+# Pulihkan trigger pull_request/push di bawah setelah billing diselesaikan.
 on:
-  pull_request:
-  push:
-    branches: [master]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}

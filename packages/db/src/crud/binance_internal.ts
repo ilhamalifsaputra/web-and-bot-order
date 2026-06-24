@@ -19,6 +19,7 @@ import { getOrder, createOrderDirect, approveOrder, applyUsdtWalletToOrder } fro
 import { adjustWallet } from "./users";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
+import { parseMinAmount } from "./_minAmount";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -31,6 +32,8 @@ export const BINANCE_API_KEY_KEY = "binance_api_key";
 export const BINANCE_API_SECRET_KEY = "binance_api_secret";
 // On/off toggle (web admin). Default ON: only the literal "false" disables.
 export const BINANCE_INTERNAL_ENABLED_KEY = "binance_internal_enabled";
+// Minimum-payment-amount note shown at checkout (USDT) — blank = no note.
+export const BINANCE_INTERNAL_MIN_AMOUNT_KEY = "binance_internal_min_amount";
 
 export interface BinanceInternalConfig {
   /** True only when receiveUid + apiKey + apiSecret are all present. */
@@ -46,6 +49,7 @@ export interface BinanceInternalConfig {
   currency: string;
   pollIntervalSeconds: number;
   windowMinutes: number;
+  minAmount: Decimal | null;
 }
 
 /** First non-empty (trimmed) value, else "". DB value wins over the env fallback. */
@@ -63,11 +67,12 @@ function pick(dbVal: string | null, envVal?: string): string {
  * the API key/secret are web-editable.
  */
 export async function resolveBinanceInternalConfig(db: Db): Promise<BinanceInternalConfig> {
-  const [uid, key, secret, flag] = await Promise.all([
+  const [uid, key, secret, flag, minAmountSetting] = await Promise.all([
     getSetting(db, BINANCE_UID_KEY),
     getSetting(db, BINANCE_API_KEY_KEY),
     getSetting(db, BINANCE_API_SECRET_KEY),
     getSetting(db, BINANCE_INTERNAL_ENABLED_KEY),
+    getSetting(db, BINANCE_INTERNAL_MIN_AMOUNT_KEY),
   ]);
   const receiveUid = pick(uid, config.BINANCE_RECEIVE_UID);
   const apiKey = pick(key, config.BINANCE_API_KEY);
@@ -84,6 +89,7 @@ export async function resolveBinanceInternalConfig(db: Db): Promise<BinanceInter
     currency: config.CURRENCY,
     pollIntervalSeconds: config.POLL_INTERVAL_SECONDS,
     windowMinutes: config.INTERNAL_PAYMENT_WINDOW_MINUTES,
+    minAmount: parseMinAmount(minAmountSetting),
   };
 }
 

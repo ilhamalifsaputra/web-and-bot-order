@@ -459,3 +459,22 @@ export function stopPolling(): void {
   if (timer) clearTimeout(timer);
   timer = undefined;
 }
+
+/**
+ * Fire an extra poll cycle right now, on top of the normal timer — called
+ * right after a fresh order is anchored so its very first check doesn't wait
+ * up to POLL_INTERVAL_SECONDS for the next scheduled tick. Pure latency
+ * optimization: never lowers the confirmation bar, just shrinks the window
+ * before the first check happens. Fire-and-forget by design (never awaited,
+ * never throws) and shares the timer loop's `isRunning` guard so it can't
+ * race a tick already in flight.
+ */
+export function triggerImmediatePoll(api: Api): void {
+  if (isRunning || stopped) return;
+  isRunning = true;
+  void pollOnce(api)
+    .catch((err) => logger.error({ err }, "Binance immediate poll (triggered right after order creation) threw an unhandled error — the regular timer will retry on its next tick"))
+    .finally(() => {
+      isRunning = false;
+    });
+}

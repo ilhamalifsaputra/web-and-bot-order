@@ -1,6 +1,6 @@
 # Payment Gateway
 
-5 metode bayar, semua auto-confirm (tidak ada approval manual admin kecuali
+6 metode bayar, semua auto-confirm (tidak ada approval manual admin kecuali
 fallback Binance Pay lama). Ringkasan tabel ada di
 [`../DOCS.md` §5](../DOCS.md#5-pembayaran); dokumen ini adalah detail
 level-kode: endpoint, signature, idempotency, dan jalur kegagalan.
@@ -21,8 +21,12 @@ level-kode: endpoint, signature, idempotency, dan jalur kegagalan.
 | NOWPayments | USDT | IPN webhook + reconcile poller | `ProcessedNowpaymentsTx` (UNIQUE `trxId`) | `.../nowpayments.ts` |
 | Binance Internal Transfer | USDT | Poller (by-note, fallback by-amount) | `ProcessedBinanceTx` (UNIQUE `binanceTxId`) | `apps/order-bot/src/payments/binanceInternal.ts` |
 | Bybit Internal Transfer | USDT | Poller (by unique-amount) | `ProcessedBybitTx` (UNIQUE `bybitTxId`) | `.../bybitDeposit.ts` |
+| Bybit BSC (on-chain) | USDT | Poller (by unique-amount + chain/address filter) | `ProcessedBybitTx` (UNIQUE `bybitTxId`, SHARED dengan Internal Transfer) | `.../bybitBscDeposit.ts` |
 
-Semua 5 idempotency ledger memakai pola yang sama: **insert-first-on-unique**
+Bybit BSC berbagi ledger `ProcessedBybitTx` yang sama dengan Bybit Internal
+Transfer (lihat §Bybit BSC di bawah untuk alasan mengapa ini aman) — jadi 6
+metode di atas tetap hanya memakai 5 tabel ledger. Semua 5 idempotency ledger
+memakai pola yang sama: **insert-first-on-unique**
 — SQLite tidak punya row lock, jadi klaim ID transaksi gateway via
 `create()` yang gagal pada UNIQUE constraint berarti "sudah pernah
 diproses" (`isUniqueViolation`).
@@ -110,6 +114,49 @@ diproses" (`isUniqueViolation`).
   `computeUniqueCents(orderId + attempt)` sampai unik (Checkout-4 fix).
 - **Interval poll independen** (`BYBIT_POLL_INTERVAL_SECONDS`, default 5s) —
   tidak terpengaruh `POLL_INTERVAL_SECONDS` (Binance).
+
+## Bybit BSC On-chain (BEP20, USDT)
+
+Metode Bybit KEDUA, terpisah dari Internal Transfer di atas — keduanya bisa
+diaktifkan bersamaan dan pembeli memilih salah satu saat checkout.
+
+- **Mekanisme:** Pembeli transfer USDT **on-chain** (jaringan BEP20/BSC) ke
+  alamat deposit milik merchant di Bybit. Berbeda dari Internal Transfer,
+  ini adalah transfer blockchain biasa — **bisa diterima dari exchange/
+  wallet apa pun** yang mendukung penarikan BEP20 (termasuk withdrawal dari
+  Binance), bukan hanya sesama akun Bybit. Konsekuensinya: butuh menunggu
+  konfirmasi blockchain (~1-2 menit) sebelum Bybit menandainya credited —
+  lebih lambat dari Internal Transfer yang instan.
+- **Endpoint:** `GET /v5/asset/deposit/query-record` (BUKAN
+  `query-internal-record` yang dipakai Internal Transfer) — endpoint khusus
+  deposit on-chain. Kredensial API key/secret **dibagi** dengan Internal
+  Transfer (akun exchange yang sama); hanya alamat deposit yang berbeda.
+- **Status sukses:** `status === 3` (on-chain) — **BERBEDA** dari Internal
+  Transfer yang sukses di `status === 2`. Jangan disamakan.
+- **Filter tambahan:** selain matching by-amount, baris deposit juga
+  difilter `chain === "BSC"` (deposit di jaringan lain untuk coin yang sama
+  tidak pernah dicocokkan) dan, bila tersedia, `address` dicocokkan ke
+  alamat deposit yang dikonfigurasi (belt-and-suspenders, bukan
+  disambiguator utama).
+- **Matching:** sama seperti Internal Transfer — **hanya by unique-amount**
+  (BEP20 juga tidak punya memo/note), wajib `USE_UNIQUE_CENTS=1`.
+- **Ledger dibagi:** memakai tabel `ProcessedBybitTx` yang SAMA dengan
+  Internal Transfer (tidak ada migrasi/kolom baru) — aman karena format
+  `bybitTxId` kedua metode tidak pernah bertabrakan: id Internal Transfer
+  berupa angka pendek dari ledger internal Bybit, id on-chain BEP20 berupa
+  hash transaksi `0x…` 64-hex-char.
+- **Anti-kolisi amount:** sama seperti Internal Transfer, tapi pool
+  `PENDING_PAYMENT` yang dicek di-scope ke `paymentMethod: BYBIT_BSC` —
+  order BYBIT dan BYBIT_BSC dengan total yang sama tidak saling bentrok,
+  karena masing-masing dicocokkan oleh poller-nya sendiri.
+- **Interval poll independen** (`BYBIT_BSC_POLL_INTERVAL_SECONDS`, default
+  5s) — terpisah dari interval Internal Transfer maupun Binance.
+- **Optimasi latensi:** selain timer reguler, sebuah poll tambahan
+  (`triggerImmediatePoll`) langsung dipicu begitu order dibuat, supaya
+  pengecekan pertama tidak menunggu tick berikutnya. Ini TIDAK mengurangi
+  ambang konfirmasi yang disyaratkan Bybit (status 3 tetap wajib) — hanya
+  menghilangkan delay interval-poll yang menumpuk di atas lantai konfirmasi
+  blockchain itu sendiri.
 
 ## Kontrak respons webhook (TokoPay/PayDisini/NOWPayments)
 

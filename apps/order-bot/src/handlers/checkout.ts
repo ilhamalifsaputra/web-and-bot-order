@@ -28,7 +28,9 @@ import {
   createOrderDirect,
   createInternalOrder,
   createBybitOrder,
+  createBybitBscOrder,
   resolveBybitConfig,
+  resolveBybitBscConfig,
   resolveBinanceInternalConfig,
   setOrderPaymentMessage,
   cancelOrder,
@@ -42,8 +44,9 @@ import { createTransaction as createPaydisiniTransaction } from "@app/core/payme
 import { createInvoice as createNowpaymentsInvoice } from "@app/core/payments/nowpayments";
 import { pollOnce as tokopayPoll } from "../payments/tokopayReconcile";
 import { pollOnce as paydisiniPoll } from "../payments/paydisiniReconcile";
-import { pollOnce as internalPoll } from "../payments/binanceInternal";
-import { pollOnce as bybitPoll } from "../payments/bybitDeposit";
+import { pollOnce as internalPoll, triggerImmediatePoll as internalImmediatePoll } from "../payments/binanceInternal";
+import { pollOnce as bybitPoll, triggerImmediatePoll as bybitImmediatePoll } from "../payments/bybitDeposit";
+import { pollOnce as bybitBscPoll, triggerImmediatePoll as bybitBscImmediatePoll } from "../payments/bybitBscDeposit";
 import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
@@ -66,6 +69,17 @@ const MAX_PENDING_ORDERS = 10;
 // USDT figures only (the charged total of Binance orders). Catalog/confirmation
 // amounts are central Rupiah — use priceIdr(v, rate).
 const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimals);
+
+/**
+ * Per-method minimum-payment note, appended to a rail's instructions when an
+ * admin has configured one in web-admin Settings (blank = no note). Returns
+ * "" when unset, so callers can always do `text + minAmountNote(...)`.
+ */
+function minAmountNote(ctx: MyContext, minAmount: Decimal.Value | null, currency: "USDT" | "IDR"): string {
+  if (!minAmount) return "";
+  const formatted = currency === "USDT" ? price(minAmount, 4) : formatIdr(minAmount);
+  return "\n\n" + t(ctx, "checkout.min_amount_note", { min: formatted });
+}
 
 function requireUser(ctx: MyContext) {
   const u = ctx.session.dbUser;
@@ -207,6 +221,7 @@ export async function showOrderConfirmation(
   const rate = await currentUsdtRate();
   const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
+  const bybitBscEnabled = (await resolveBybitBscConfig(prisma)).enabled;
   const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
   const paydisiniEnabled = (await getPaydisiniCreds(prisma)) != null;
   const nowpaymentsEnabled = (await getNowpaymentsCreds(prisma)) != null;
@@ -229,6 +244,7 @@ export async function showOrderConfirmation(
       tokopayEnabled,
       paydisiniEnabled,
       nowpaymentsEnabled && rate !== null,
+      bybitBscEnabled && rate !== null,
     ),
   );
 }
@@ -245,6 +261,7 @@ export async function renderOrderConfirmation(
   const rate = await currentUsdtRate();
   const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
+  const bybitBscEnabled = (await resolveBybitBscConfig(prisma)).enabled;
   const tokopayEnabled = (await getTokopayCreds(prisma)) != null;
   const paydisiniEnabled = (await getPaydisiniCreds(prisma)) != null;
   const nowpaymentsEnabled = (await getNowpaymentsCreds(prisma)) != null;
@@ -269,6 +286,7 @@ export async function renderOrderConfirmation(
         tokopayEnabled,
         paydisiniEnabled,
         nowpaymentsEnabled && rate !== null,
+        bybitBscEnabled && rate !== null,
       ),
     },
   );
@@ -277,8 +295,9 @@ export async function renderOrderConfirmation(
 
 /**
  * USDT payment submenu — keeps the order-summary bubble but swaps the keyboard
- * for the USDT rails (Binance Transfer / Bybit). Reached from the "USDT" entry
- * on the confirmation screen; Back returns to {@link showOrderConfirmation}.
+ * for the USDT rails (Binance Transfer / Bybit Internal Transfer / Bybit BSC
+ * on-chain / NOWPayments). Reached from the "USDT" entry on the confirmation
+ * screen; Back returns to {@link showOrderConfirmation}.
  */
 export async function showUsdtMethods(ctx: MyContext, productId: number, quantity: number): Promise<void> {
   const lang = ctx.session.lang;
@@ -295,6 +314,7 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
   const rate = await currentUsdtRate();
   const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
+  const bybitBscEnabled = (await resolveBybitBscConfig(prisma)).enabled;
   const nowpaymentsEnabled = (await getNowpaymentsCreds(prisma)) != null;
   await smartEdit(
     ctx,
@@ -312,6 +332,7 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
       binanceEnabled && rate !== null,
       bybitEnabled && rate !== null,
       nowpaymentsEnabled && rate !== null,
+      bybitBscEnabled && rate !== null,
     ),
   );
 }
@@ -380,16 +401,20 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     amount: price(order.totalAmount, 4),
     idr_line: idrLine,
     expiry,
-  });
+  }) + minAmountNote(ctx, cfg.minAmount, "USDT");
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
   // Anchor the instructions message so the poller can flip it to success.
   if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+  // Latency optimization: an extra poll right now, on top of the regular
+  // timer, so this fresh order's first check doesn't wait for the next tick.
+  internalImmediatePoll(ctx.api);
 }
 
 /**
- * Bybit USDT-BSC deposit: create the order, show the BEP20 deposit address +
- * the exact amount to send (no memo on BSC — matching is by amount), and anchor
- * the message so the deposit poller can flip it to success on auto-confirm.
+ * Bybit Internal Transfer (UID→UID, off-chain, instant): create the order,
+ * show the UID + the exact amount to send (no memo — matching is by amount),
+ * and anchor the message so the deposit poller can flip it to success on
+ * auto-confirm. See {@link buyNowBybitBsc} for the on-chain BSC alternative.
  */
 export async function buyNowBybit(ctx: MyContext, productId: number, quantity: number): Promise<void> {
   const info = requireUser(ctx);
@@ -449,10 +474,91 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
     amount: price(order.totalAmount, 4),
     idr_line: idrLine,
     expiry,
-  });
+  }) + minAmountNote(ctx, bybit.minAmount, "USDT");
   await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
   // Anchor the instructions message so the poller can flip it to success.
   if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+  // Latency optimization: an extra poll right now, on top of the regular
+  // timer, so this fresh order's first check doesn't wait for the next tick.
+  bybitImmediatePoll(ctx.api);
+}
+
+/**
+ * Bybit BSC on-chain (BEP20) deposit: create the order, show the deposit
+ * address + chain + the exact amount to send (no memo on BEP20 — matching is
+ * by amount), and anchor the message so the deposit poller can flip it to
+ * success on auto-confirm. Slower than {@link buyNowBybit} (needs on-chain
+ * confirmation, ~1-2 min) but accepts a deposit from any BEP20 wallet/
+ * exchange, including a Binance withdrawal.
+ */
+export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+  const info = requireUser(ctx);
+  const lang = ctx.session.lang;
+  const rate = await currentUsdtRate();
+  const bybitBsc = await resolveBybitBscConfig(prisma);
+  if (!bybitBsc.enabled || !rate) {
+    await smartEdit(ctx, t(ctx, "checkout.payment_unavailable"), ckb.backToMain(lang));
+    return;
+  }
+  const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+
+  const user = await getUser(prisma, info.id);
+  if (user === null) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+  const pendingCount = await countUserPendingOrders(prisma, info.id);
+  if (pendingCount >= MAX_PENDING_ORDERS) {
+    await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
+    return;
+  }
+  if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BYBIT_BSC)) return;
+
+  let order: Awaited<ReturnType<typeof createBybitBscOrder>>;
+  try {
+    order = await prisma.$transaction((tx) =>
+      createBybitBscOrder(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode, rate }),
+    );
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      return;
+    }
+    throw e;
+  }
+  if (!order) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+  // Consume the voucher only now that an order actually exists for it — a
+  // failed attempt above (out of stock, etc.) leaves it applied for a retry
+  // (Pricing-3 fix, security audit 2026-06-23).
+  delete ctx.session.scratch.appliedVoucherCode;
+
+  // The charged amount is USDT; show the central-IDR equivalent beside it
+  // (totalAmount × the fxRate snapshot, which includes the unique cents).
+  const fxRate = order.fxRate != null ? new Decimal(order.fxRate) : rate;
+  const idrLine = ` (≈ ${formatIdr(new Decimal(order.totalAmount).times(fxRate))})`;
+  const expiry = order.expiresAt
+    ? `${localize(order.expiresAt, "yyyy-LL-dd HH:mm")} WIB`
+    : `${config.BYBIT_BSC_PAYMENT_WINDOW_MINUTES}m`;
+
+  const text = t(ctx, "checkout.bybit_bsc_instructions", {
+    code: order.orderCode,
+    address: esc(bybitBsc.depositAddress),
+    chain: esc(bybitBsc.chain),
+    amount: price(order.totalAmount, 4),
+    idr_line: idrLine,
+    expiry,
+  }) + minAmountNote(ctx, bybitBsc.minAmount, "USDT");
+  await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
+  // Anchor the instructions message so the poller can flip it to success.
+  if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
+  // Latency optimization: an extra poll right now, on top of the regular
+  // timer, so this fresh order's first check doesn't wait for the next tick.
+  // The real floor here is the on-chain confirmation Bybit itself requires —
+  // this only removes the poll-interval delay layered on top of that floor.
+  bybitBscImmediatePoll(ctx.api);
 }
 
 /** Public origin used for the NOWPayments IPN callback URL (storefront route). */
@@ -553,7 +659,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     code: order.orderCode,
     amount: price(order.totalAmount, 4),
     expiry,
-  });
+  }) + minAmountNote(ctx, creds.minAmount, "USDT");
 
   // No QR/address to render — a hosted invoice is a redirect-UX page, so the
   // payment action is a URL button rather than sendPhoto (the QR/TokoPay/
@@ -650,7 +756,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     code: order.orderCode,
     amount: formatIdr(order.totalAmount),
     expiry,
-  });
+  }) + minAmountNote(ctx, creds.minAmount, "IDR");
 
   // Unify the QR image and the payment instructions into ONE photo+caption
   // bubble (image + caption + waiting keyboard), so the QR reads as part of the
@@ -765,7 +871,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
     code: order.orderCode,
     amount: formatIdr(order.totalAmount),
     expiry,
-  });
+  }) + minAmountNote(ctx, creds.minAmount, "IDR");
 
   // Unify the QR image and the payment instructions into ONE photo+caption
   // bubble (image + caption + waiting keyboard), so the QR reads as part of the
@@ -903,6 +1009,9 @@ export async function refreshPaymentStatus(ctx: MyContext, orderId: number): Pro
       break;
     case PaymentMethod.BYBIT:
       await bybitPoll(ctx.api);
+      break;
+    case PaymentMethod.BYBIT_BSC:
+      await bybitBscPoll(ctx.api);
       break;
     case PaymentMethod.NOWPAYMENTS:
       await nowpaymentsPoll(ctx.api);

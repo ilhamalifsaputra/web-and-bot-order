@@ -1395,6 +1395,55 @@ describe("settings", () => {
     expect(entry).toBeTruthy();
     expect(entry!.details).not.toContain("NOWIPNSECRETVALUE");
   });
+
+  it("accepts bybit_bsc_deposit_address (not a secret — shown back on the page)", async () => {
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "bybit_bsc_deposit_address", value: "0xMERCHANTADDR",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "bybit_bsc_deposit_address")).toBe("0xMERCHANTADDR");
+    const page = await get("/settings", seed.cookie);
+    expect(page.body).toContain("0xMERCHANTADDR");
+  });
+
+  it("a positive number is accepted for any *_min_amount key", async () => {
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "bybit_bsc_min_amount", value: "10",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "bybit_bsc_min_amount")).toBe("10");
+  });
+
+  it("a blank *_min_amount value is accepted (hides the note)", async () => {
+    await setSetting(prisma, "tokopay_min_amount", "5000");
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "tokopay_min_amount", value: "",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "tokopay_min_amount")).toBe("");
+  });
+
+  it("rejects a non-numeric *_min_amount value, leaving the prior value untouched", async () => {
+    await setSetting(prisma, "nowpayments_min_amount", "3.5");
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "nowpayments_min_amount", value: "not-a-number",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect(await getSetting(prisma, "nowpayments_min_amount")).toBe("3.5");
+  });
+
+  it("rejects a non-positive *_min_amount value (zero/negative)", async () => {
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "bybit_min_amount", value: "0",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect(await getSetting(prisma, "bybit_min_amount")).toBeNull();
+  });
 });
 
 // ---- market USDT rate refresh (plan.md §15.8 resolved) ----------------------

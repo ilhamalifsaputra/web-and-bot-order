@@ -78,9 +78,17 @@ export const PaymentMethod = {
   BINANCE_PAY: "BINANCE_PAY",
   /** New flow: USDT to a Binance UID with the order ref as the note; auto-confirmed. */
   BINANCE_INTERNAL: "BINANCE_INTERNAL",
-  /** USDT on-chain deposit to a Bybit BSC (BEP20) address; auto-confirmed by
-   *  matching the unique deposit amount (BEP20 carries no memo). */
+  /** USDT via Bybit's "Internal Transfer" (UID→UID, off-chain, instant);
+   *  auto-confirmed by matching the unique deposit amount (internal transfers
+   *  carry no memo). Bybit-account-to-Bybit-account only — a deposit cannot
+   *  arrive here from another exchange. See BYBIT_BSC for the on-chain rail. */
   BYBIT: "BYBIT",
+  /** USDT on-chain deposit to a Bybit-custodied BSC (BEP20) address;
+   *  auto-confirmed by matching the unique deposit amount (BEP20 carries no
+   *  memo). Slower than BYBIT (needs on-chain confirmation, ~1-2 min) but
+   *  accepts a deposit from any BEP20 wallet/exchange, including a Binance
+   *  withdrawal — unlike BYBIT's Internal Transfer. */
+  BYBIT_BSC: "BYBIT_BSC",
   /** Rupiah gateway (QRIS/VA/e-wallet) — confirmed by webhook callback (plan.md §15.5). */
   TOKOPAY: "TOKOPAY",
   /** Indonesian QRIS/e-wallet aggregator (one admin-configured default channel,

@@ -49,6 +49,17 @@
     <div class="codeish !text-base mt-1 select-all break-all">{{ bybit_uid }}</div>
     {% endif %}
     <p class="text-xs text-ink-faint mt-4">{{ t('web.pay_bybit_note', lang) }}</p>
+    {% elif is_bybit_bsc %}
+    {# ---- Bybit BSC on-chain (BEP20) — auto-confirm (amount match, slower: needs block confirmation) ---- #}
+    <h2 class="section-title mb-3">{{ t('web.pay_bybit_bsc_title', lang) }}</h2>
+    <p class="text-sm text-ink-soft mt-2">{{ t('web.pay_bybit_bsc_amount', lang) }}</p>
+    <div class="font-display font-semibold text-pine text-2xl mt-1">${{ order.total }}</div>
+    {% if bybit_bsc_address %}
+    <p class="text-sm text-ink-soft mt-3">{{ t('web.pay_bybit_bsc_address', lang) }}</p>
+    <div class="codeish !text-base mt-1 select-all break-all">{{ bybit_bsc_address }}</div>
+    <p class="text-xs text-amberx mt-2">{{ t('web.pay_bybit_bsc_chain_warning', lang) }}</p>
+    {% endif %}
+    <p class="text-xs text-ink-faint mt-4">{{ t('web.pay_bybit_bsc_note', lang) }}</p>
     {% elif is_qris %}
     {# ---- TokoPay (QRIS) ---- #}
     <h2 class="section-title mb-3">{{ t('web.pay_idr_title', lang) }}</h2>
@@ -184,6 +195,13 @@
       <i data-lucide="send" class="w-3.5 h-3.5"></i> Telegram
     </a>
     {% endif %}
+    {% endif %}
+
+    {% if min_amount %}
+    <p class="text-xs text-amberx mt-3 flex items-start gap-1.5">
+      <i data-lucide="alert-triangle" class="w-3.5 h-3.5 mt-0.5 shrink-0"></i>
+      {{ t('web.pay_min_amount_note', lang, {min: min_amount}) }}
+    </p>
     {% endif %}
 
     {# Trust line: reassure exactly where buyers hesitate (design.md §4.6).

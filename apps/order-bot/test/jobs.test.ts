@@ -106,7 +106,7 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
   it("registers autoCancelExpiredOrders and autoCloseStaleTickets with protect:true", () => {
     // Indices match scheduleJobs' literal array order in src/jobs/index.ts:
     // [autoCancelExpiredOrders, autoCloseStaleTickets, reconcileFinancesJob,
-    //  binancePollWatchdog, bybitPollWatchdog, drainBroadcasts].
+    //  binancePollWatchdog, bybitPollWatchdog, bybitBscPollWatchdog, drainBroadcasts].
     const crons = scheduleJobs(fakeApi());
     try {
       expect(crons[0]!.getPattern()).toBe("*/1 * * * *"); // autoCancelExpiredOrders
@@ -114,7 +114,7 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       expect(crons[1]!.getPattern()).toBe("0 * * * *"); // autoCloseStaleTickets
       expect(crons[1]!.options.protect).toBe(true);
       // drainBroadcasts (reference pattern) already had it — must stay on.
-      expect(crons[5]!.options.protect).toBe(true);
+      expect(crons[6]!.options.protect).toBe(true);
     } finally {
       for (const c of crons) c.stop();
     }

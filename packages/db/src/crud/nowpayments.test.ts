@@ -19,7 +19,7 @@ vi.mock("@app/core/config", async () => {
 
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderDirect, deliverPaidNowpaymentsOrder, recordUnmatchedNowpaymentsTx } from "@app/db";
+import { createOrderDirect, deliverPaidNowpaymentsOrder, recordUnmatchedNowpaymentsTx, getNowpaymentsCreds, setSetting, deleteSetting } from "@app/db";
 import { OrderStatus, PaymentMethod, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 
@@ -169,5 +169,29 @@ describe("recordUnmatchedNowpaymentsTx", () => {
     expect(ok).toBe(false);
     const rows = await prisma.processedNowpaymentsTx.findMany({ where: { trxId: "trx-unmatched-2" } });
     expect(rows.length).toBe(1);
+  });
+});
+
+describe("getNowpaymentsCreds — minAmount", () => {
+  beforeEach(async () => {
+    await setSetting(prisma, "nowpayments_api_key", "ak");
+    await setSetting(prisma, "nowpayments_ipn_secret", "secret");
+  });
+
+  it("defaults to null when unset", async () => {
+    await deleteSetting(prisma, "nowpayments_min_amount");
+    expect((await getNowpaymentsCreds(prisma))!.minAmount).toBeNull();
+  });
+
+  it("parses a configured positive value", async () => {
+    await setSetting(prisma, "nowpayments_min_amount", "3.5");
+    expect((await getNowpaymentsCreds(prisma))!.minAmount).toEqual(new Decimal("3.5"));
+  });
+
+  it("treats a non-numeric or non-positive value as null (never throws)", async () => {
+    await setSetting(prisma, "nowpayments_min_amount", "garbage");
+    expect((await getNowpaymentsCreds(prisma))!.minAmount).toBeNull();
+    await setSetting(prisma, "nowpayments_min_amount", "-3");
+    expect((await getNowpaymentsCreds(prisma))!.minAmount).toBeNull();
   });
 });

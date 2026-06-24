@@ -17,6 +17,7 @@ import { t } from "@app/core/i18n";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
+import { formatIdr, formatPrice } from "@app/core/formatters";
 import {
   prisma,
   getCart,
@@ -35,6 +36,7 @@ import {
   getSetting,
   getTokopayCreds,
   resolveBybitConfig,
+  resolveBybitBscConfig,
   resolveBinanceInternalConfig,
   getPaydisiniCreds,
   deliverPaidPaydisiniOrder,
@@ -116,11 +118,12 @@ async function checkoutView(
   voucherCode: string | null,
   errorKey: string | null,
 ) {
-  const [totals, fxRate, tokopay, bybit, binance, paydisini, nowpayments] = await Promise.all([
+  const [totals, fxRate, tokopay, bybit, bybitBsc, binance, paydisini, nowpayments] = await Promise.all([
     computeTotals(customer, voucherCode),
     getUsdIdrRate(prisma),
     getTokopayCreds(prisma),
     resolveBybitConfig(prisma),
+    resolveBybitBscConfig(prisma),
     resolveBinanceInternalConfig(prisma),
     getPaydisiniCreds(prisma),
     getNowpaymentsCreds(prisma),
@@ -137,6 +140,7 @@ async function checkoutView(
     error_key: errorKey ?? totals.voucherError,
     binance_enabled: haveRate && binance.enabled,
     bybit_enabled: haveRate && bybit.enabled,
+    bybit_bsc_enabled: haveRate && bybitBsc.enabled,
     idr_enabled: Boolean(tokopay),
     paydisini_enabled: Boolean(paydisini),
     nowpayments_enabled: haveRate && Boolean(nowpayments),
@@ -247,10 +251,11 @@ export async function performCheckout(
   method: string,
   voucherCode: string | null,
 ): Promise<{ orderCode: string }> {
-  const [fxRate, tokopay, bybit, binance, paydisini, nowpayments] = await Promise.all([
+  const [fxRate, tokopay, bybit, bybitBsc, binance, paydisini, nowpayments] = await Promise.all([
     getUsdIdrRate(prisma),
     getTokopayCreds(prisma),
     resolveBybitConfig(prisma),
+    resolveBybitBscConfig(prisma),
     resolveBinanceInternalConfig(prisma),
     getPaydisiniCreds(prisma),
     getNowpaymentsCreds(prisma),
@@ -262,7 +267,11 @@ export async function performCheckout(
     | {
         currency: typeof OrderCurrency.USDT;
         rate: NonNullable<typeof fxRate>;
-        method: typeof PaymentMethod.BINANCE_INTERNAL | typeof PaymentMethod.BYBIT | typeof PaymentMethod.NOWPAYMENTS;
+        method:
+          | typeof PaymentMethod.BINANCE_INTERNAL
+          | typeof PaymentMethod.BYBIT
+          | typeof PaymentMethod.BYBIT_BSC
+          | typeof PaymentMethod.NOWPAYMENTS;
       }
     | { currency: typeof OrderCurrency.IDR; method?: typeof PaymentMethod.PAYDISINI };
   let choice: Choice;
@@ -272,6 +281,9 @@ export async function performCheckout(
   } else if (method === "bybit") {
     if (!fxRate || !bybit.enabled) throw new ValidationError("web.pay_method_unavailable");
     choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BYBIT };
+  } else if (method === "bybit_bsc") {
+    if (!fxRate || !bybitBsc.enabled) throw new ValidationError("web.pay_method_unavailable");
+    choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.BYBIT_BSC };
   } else if (method === "nowpayments") {
     if (!fxRate || !nowpayments) throw new ValidationError("web.pay_method_unavailable");
     choice = { currency: OrderCurrency.USDT, rate: fxRate, method: PaymentMethod.NOWPAYMENTS };
@@ -354,16 +366,28 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const state = payState(order);
-      const method = order.paymentMethod; // "BINANCE_INTERNAL" | "BYBIT" | "TOKOPAY" | "PAYDISINI" | "NOWPAYMENTS" | ...
+      const method = order.paymentMethod; // "BINANCE_INTERNAL" | "BYBIT" | "BYBIT_BSC" | "TOKOPAY" | "PAYDISINI" | "NOWPAYMENTS" | ...
       const isBinance = method === PaymentMethod.BINANCE_INTERNAL;
       const isBybit = method === PaymentMethod.BYBIT;
+      const isBybitBsc = method === PaymentMethod.BYBIT_BSC;
       const isQris = method === PaymentMethod.TOKOPAY;
       const isPaydisini = method === PaymentMethod.PAYDISINI;
       const isNowpayments = method === PaymentMethod.NOWPAYMENTS;
 
-      // Bybit UID (no API call — just the configured UID).
-      const bybitUid = isBybit ? (await resolveBybitConfig(prisma)).uid : "";
-      const binanceUid = isBinance ? (await resolveBinanceInternalConfig(prisma)).receiveUid : "";
+      // Bybit UID / BSC deposit address (no API call — just the configured values).
+      const bybitCfg = isBybit ? await resolveBybitConfig(prisma) : null;
+      const bybitBscCfg = isBybitBsc ? await resolveBybitBscConfig(prisma) : null;
+      const binanceCfg = isBinance ? await resolveBinanceInternalConfig(prisma) : null;
+      const bybitUid = bybitCfg?.uid ?? "";
+      const bybitBscAddress = bybitBscCfg?.depositAddress ?? "";
+      const binanceUid = binanceCfg?.receiveUid ?? "";
+
+      // Per-method minimum-payment note (web-admin Settings, blank = none) —
+      // pre-formatted here (currency differs by method) rather than pushed
+      // into the template. Only resolved while the payment card is actually
+      // shown ("waiting"); IDR methods' creds are fetched below alongside
+      // their gateway transaction, reused here instead of a second lookup.
+      let minAmount: Decimal | null = bybitCfg?.minAmount ?? bybitBscCfg?.minAmount ?? binanceCfg?.minAmount ?? null;
 
       // TokoPay transaction (QR / pay link) only while actually payable.
       // The result is cached in order.paymentRef (JSON) after the first fetch so
@@ -374,8 +398,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       let gatewayError = false;
       if (isQris && state === "waiting") {
         gateway = parseCachedGateway(order.paymentRef);
+        const creds = await getTokopayCreds(prisma);
+        minAmount = creds?.minAmount ?? null;
         if (!gateway) {
-          const creds = await getTokopayCreds(prisma);
           if (creds) {
             try {
               gateway = await createTransaction(creds, {
@@ -404,8 +429,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       let paydisiniGatewayError = false;
       if (isPaydisini && state === "waiting") {
         paydisiniGateway = parseCachedPaydisiniGateway(order.paymentRef);
+        const creds = await getPaydisiniCreds(prisma);
+        minAmount = creds?.minAmount ?? null;
         if (!paydisiniGateway) {
-          const creds = await getPaydisiniCreds(prisma);
           if (creds) {
             try {
               paydisiniGateway = await createPaydisiniTransaction(creds, {
@@ -439,8 +465,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       let nowpaymentsGatewayError = false;
       if (isNowpayments && state === "waiting") {
         nowpaymentsGateway = parseCachedNowpaymentsGateway(order.paymentRef);
+        const creds = await getNowpaymentsCreds(prisma);
+        minAmount = creds?.minAmount ?? null;
         if (!nowpaymentsGateway) {
-          const creds = await getNowpaymentsCreds(prisma);
           const publicUrl = shopPublicUrl();
           if (creds && publicUrl) {
             try {
@@ -474,6 +501,15 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         ? ((await getSetting(prisma, "support_whatsapp")) ?? "").replace(/[^0-9]/g, "")
         : "";
 
+      // Pre-formatted here (not in the template) since IDR vs USDT formatting
+      // differs per method — null when unset, so pay.njk just renders the
+      // note iff this is non-empty.
+      const minAmountDisplay = minAmount
+        ? isQris || isPaydisini
+          ? formatIdr(minAmount)
+          : formatPrice(minAmount, "USDT", 4)
+        : null;
+
       return reply.view("pay.njk", {
         ...ctx,
         order: {
@@ -487,10 +523,12 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         state,
         is_binance: isBinance,
         is_bybit: isBybit,
+        is_bybit_bsc: isBybitBsc,
         is_qris: isQris,
         is_paydisini: isPaydisini,
         is_nowpayments: isNowpayments,
         bybit_uid: bybitUid,
+        bybit_bsc_address: bybitBscAddress,
         binance_uid: binanceUid,
         gateway,
         gateway_error: gatewayError,
@@ -498,6 +536,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         paydisini_gateway_error: paydisiniGatewayError,
         nowpayments_gateway: nowpaymentsGateway,
         nowpayments_gateway_error: nowpaymentsGatewayError,
+        min_amount: minAmountDisplay,
         wa_number: waNumber,
         bot_username: await resolveBotUsername(),
       });

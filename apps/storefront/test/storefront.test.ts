@@ -1032,6 +1032,111 @@ describe("checkout — Bybit option", () => {
   });
 });
 
+describe("checkout — Bybit BSC on-chain option (2nd Bybit method, alongside Internal Transfer)", () => {
+  let buyerId: number;
+  beforeAll(async () => {
+    const { hashPassword } = await import("@app/core/password");
+    const u = await prisma.user.create({
+      data: {
+        loginUsername: "bybitbscbuyer",
+        email: "bybitbsc@buyer.test",
+        passwordHash: hashPassword("bybitbsc-pass-99"),
+        referralCode: "BYBC01",
+      },
+    });
+    buyerId = u.id;
+  });
+
+  async function enableBybitBsc() {
+    await setSetting(prisma, "bybit_bsc_deposit_address", "0xMERCHANTADDR");
+    await setSetting(prisma, "bybit_api_key", "k");
+    await setSetting(prisma, "bybit_api_secret", "s");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+  }
+  async function disableBybitBsc() {
+    await deleteSetting(prisma, "bybit_bsc_deposit_address");
+    await deleteSetting(prisma, "bybit_api_key");
+    await deleteSetting(prisma, "bybit_api_secret");
+    await deleteSetting(prisma, "usd_idr_rate");
+    await deleteSetting(prisma, "bybit_bsc_min_amount");
+  }
+
+  async function checkoutSession() {
+    const cookie = await loginAs("bybitbscbuyer", "bybitbsc-pass-99");
+    await addToCart(prisma, buyerId, productId, 1);
+    const page = await app.inject({ method: "GET", url: "/checkout", headers: { cookie } });
+    return { cookie, csrf: csrfFrom(page.body) };
+  }
+
+  it("creates a BYBIT_BSC/USDT order when method=bybit_bsc and Bybit BSC is enabled", async () => {
+    await enableBybitBsc();
+    const { cookie, csrf } = await checkoutSession();
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ method: "bybit_bsc", csrf_token: csrf }).toString(),
+    });
+    expect([302, 303]).toContain(res.statusCode);
+    const code = res.headers.location!.split("/")[2]!; // /checkout/<code>/pay
+    const order = await getOrderByCode(prisma, code);
+    expect(order!.paymentMethod).toBe("BYBIT_BSC");
+    expect(order!.currency).toBe("USDT");
+  });
+
+  it("pay page for a BYBIT_BSC order shows the deposit address + USDT amount + chain warning", async () => {
+    await enableBybitBsc();
+    const { cookie, csrf } = await checkoutSession();
+    const created = await app.inject({
+      method: "POST",
+      url: "/checkout",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ method: "bybit_bsc", csrf_token: csrf }).toString(),
+    });
+    const code = created.headers.location!.split("/")[2]!; // /checkout/<code>/pay
+    const res = await app.inject({ method: "GET", url: `/checkout/${code}/pay`, headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("0xMERCHANTADDR");
+    expect(res.body).toContain("$"); // USDT amount shown on the Bybit BSC card
+  });
+
+  it("rejects method=bybit_bsc when Bybit BSC is disabled", async () => {
+    await disableBybitBsc();
+    const { cookie, csrf } = await checkoutSession(); // Bybit BSC NOT enabled here
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ method: "bybit_bsc", csrf_token: csrf }).toString(),
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("shows the minimum-amount note on the pay page once configured, hides it when blank", async () => {
+    await enableBybitBsc();
+    await setSetting(prisma, "bybit_bsc_min_amount", "5");
+    const { cookie, csrf } = await checkoutSession();
+    const created = await app.inject({
+      method: "POST",
+      url: "/checkout",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ method: "bybit_bsc", csrf_token: csrf }).toString(),
+    });
+    const code = created.headers.location!.split("/")[2]!;
+    const withNote = await app.inject({ method: "GET", url: `/checkout/${code}/pay`, headers: { cookie } });
+    expect(withNote.body).toContain("Minimum payment");
+
+    await deleteSetting(prisma, "bybit_bsc_min_amount");
+    const withoutNote = await app.inject({ method: "GET", url: `/checkout/${code}/pay`, headers: { cookie } });
+    expect(withoutNote.body).not.toContain("Minimum payment");
+
+    // Leave Bybit BSC disabled afterward — later describe blocks in this file
+    // (e.g. "hides a disabled payment method") assume every USDT rail is off
+    // by default, the same convention the "Bybit option" block above follows.
+    await disableBybitBsc();
+  });
+});
+
 describe("checkout — PayDisini option (2nd IDR method, alongside TokoPay)", () => {
   let buyerId: number;
   beforeAll(async () => {

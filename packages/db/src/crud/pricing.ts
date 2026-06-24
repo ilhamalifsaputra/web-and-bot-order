@@ -102,13 +102,15 @@ export type PaymentChoice =
       rate: Decimal.Value;
       /**
        * BINANCE_INTERNAL (auto-confirm via note, default), BYBIT (auto-confirm
-       * via on-chain BSC deposit, matched by unique amount), BINANCE_PAY
-       * (manual proof, bot only), or NOWPAYMENTS (auto-confirm via hosted
-       * invoice IPN webhook).
+       * via Bybit Internal Transfer UID, matched by unique amount), BYBIT_BSC
+       * (auto-confirm via on-chain BSC deposit, also matched by unique
+       * amount), BINANCE_PAY (manual proof, bot only), or NOWPAYMENTS
+       * (auto-confirm via hosted invoice IPN webhook).
        */
       method?:
         | typeof PaymentMethod.BINANCE_INTERNAL
         | typeof PaymentMethod.BYBIT
+        | typeof PaymentMethod.BYBIT_BSC
         | typeof PaymentMethod.BINANCE_PAY
         | typeof PaymentMethod.NOWPAYMENTS;
     };
@@ -159,8 +161,9 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
   let totalAmount = usdt.plus(cents);
 
   // Auto-confirm paths get a bounded payment window. Binance Internal also gets
-  // a unique transfer note (paymentRef); Bybit BSC has no memo, so it relies on
-  // the unique-cents amount alone for matching — no paymentRef.
+  // a unique transfer note (paymentRef); neither Bybit rail (Internal
+  // Transfer or on-chain BSC) has a memo, so both rely on the unique-cents
+  // amount alone for matching — no paymentRef.
   let paymentRef: string | null = null;
   let expiresAt: Date | null = null;
   if (method === PaymentMethod.BINANCE_INTERNAL) {
@@ -171,22 +174,29 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
       paymentRef = generatePaymentRef();
     }
     expiresAt = addMinutes(new Date(), config.INTERNAL_PAYMENT_WINDOW_MINUTES);
-  } else if (method === PaymentMethod.BYBIT) {
-    expiresAt = addMinutes(new Date(), config.BYBIT_PAYMENT_WINDOW_MINUTES);
-    // Internal Transfer has no memo — amount is the ONLY disambiguator. The
-    // 49-bucket space in computeUniqueCents can still collide for two orders
-    // with the same base USDT amount whose ids land in the same bucket.
-    // Guarantee uniqueness among the SAME pool the matcher itself reads
-    // (listPendingBybitOrders: PENDING_PAYMENT, BYBIT, not-yet-expired)
-    // instead of just statistically reducing the odds (Checkout-4 fix,
-    // security audit 2026-06-23). Bumping the seed by +1 each retry cycles
-    // through all 49 buckets before repeating.
+  } else if (method === PaymentMethod.BYBIT || method === PaymentMethod.BYBIT_BSC) {
+    expiresAt = addMinutes(
+      new Date(),
+      method === PaymentMethod.BYBIT ? config.BYBIT_PAYMENT_WINDOW_MINUTES : config.BYBIT_BSC_PAYMENT_WINDOW_MINUTES,
+    );
+    // Neither Bybit rail has a memo (Internal Transfer or on-chain BEP20) —
+    // amount is the ONLY disambiguator. The 49-bucket space in
+    // computeUniqueCents can still collide for two orders with the same base
+    // USDT amount whose ids land in the same bucket. Guarantee uniqueness
+    // among the SAME pool the matcher itself reads (listPendingBybitOrders /
+    // listPendingBybitBscOrders: PENDING_PAYMENT, this method, not-yet-
+    // expired) instead of just statistically reducing the odds (Checkout-4
+    // fix, security audit 2026-06-23). `paymentMethod: method` scopes this to
+    // the order's own method, so BYBIT and BYBIT_BSC orders never collide
+    // with each other's pool — each is matched against its own independent
+    // poller. Bumping the seed by +1 each retry cycles through all 49 buckets
+    // before repeating.
     if (config.USE_UNIQUE_CENTS) {
       for (let attempt = 1; attempt <= 49; attempt++) {
         const clash = await db.order.findFirst({
           where: {
             id: { not: orderId },
-            paymentMethod: PaymentMethod.BYBIT,
+            paymentMethod: method,
             status: OrderStatus.PENDING_PAYMENT,
             expiresAt: { gt: new Date() },
             totalAmount,

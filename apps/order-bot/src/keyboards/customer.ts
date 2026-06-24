@@ -398,6 +398,7 @@ export function orderConfirmKb(
   tokopayEnabled = false,
   paydisiniEnabled = false,
   nowpaymentsEnabled = false,
+  bybitBscEnabled = false,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   if (voucherCode) {
@@ -409,7 +410,7 @@ export function orderConfirmKb(
       { text: coreT("checkout.use_voucher", lang), data: cb("voucher", "start", productId, qty) },
     ]);
   }
-  const hasUsdt = internalEnabled || bybitEnabled || nowpaymentsEnabled;
+  const hasUsdt = internalEnabled || bybitEnabled || bybitBscEnabled || nowpaymentsEnabled;
   // Top-level methods: QRIS first, then PayDisini (second IDR rail), then a
   // single USDT entry that opens a submenu (Binance / Bybit / NOWPayments). The
   // legacy manual Binance Pay method is retired, so an unconfigured shop offers
@@ -437,10 +438,12 @@ export function usdtMethodsKb(
   internalEnabled = false,
   bybitEnabled = false,
   nowpaymentsEnabled = false,
+  bybitBscEnabled = false,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   if (internalEnabled) rows.push([{ text: coreT("checkout.pay_internal_btn", lang), data: cb("payx", productId, qty) }]);
   if (bybitEnabled) rows.push([{ text: coreT("checkout.pay_bybit_btn", lang), data: cb("payb", productId, qty) }]);
+  if (bybitBscEnabled) rows.push([{ text: coreT("checkout.pay_bybit_bsc_btn", lang), data: cb("paybc", productId, qty) }]);
   if (nowpaymentsEnabled) rows.push([{ text: coreT("checkout.pay_nowpayments_btn", lang), data: cb("payn", productId, qty) }]);
   rows.push([{ text: coreT("menu.back", lang), data: cb("buy", productId, qty) }]);
   return ik(rows);

@@ -1,17 +1,22 @@
 /**
- * CRUD for the Bybit Internal Transfer (UID→UID, off-chain, instant) payment
- * method.
+ * CRUD for the Bybit BSC on-chain (BEP20) deposit payment method — a second,
+ * separate Bybit rail alongside bybit_deposit.ts's Internal Transfer.
  *
- * Mirrors binance_internal.ts but simpler: internal transfers carry NO memo, so
- * an incoming deposit is matched to a PENDING order purely by its unique total
- * amount (USE_UNIQUE_CENTS keeps every order distinct). There is therefore no
- * underpaid auto-path — a deposit whose amount matches no order is "unmatched"
- * and left for manual review.
+ * Unlike Internal Transfer (Bybit account → Bybit account only), this is a
+ * normal blockchain transfer to a Bybit-custodied BSC address, so it accepts
+ * a deposit from any BEP20 wallet/exchange (including a Binance withdrawal).
+ * It needs on-chain confirmation (~1-2 min), so it's slower than Internal
+ * Transfer, but reaches buyers Internal Transfer can't.
  *
- * Idempotency on SQLite: the `processed_bybit_tx.bybit_tx_id` UNIQUE constraint
- * is the concurrency gate — claiming the internal-deposit txID is an atomic
- * insert; a duplicate insert throws and is treated as "already processed", so
- * repeated poll cycles never double-deliver.
+ * BEP20 carries NO memo either, so matching is by unique total amount only
+ * (same as Internal Transfer) — USE_UNIQUE_CENTS keeps every order distinct.
+ * There is therefore no underpaid auto-path — an amount that matches no
+ * order is "unmatched" and left for manual review.
+ *
+ * Idempotency: shares the SAME `processed_bybit_tx` ledger as Internal
+ * Transfer. This is safe because the two methods' txId formats never
+ * collide — Internal Transfer ids are short numeric ledger ids, on-chain
+ * BEP20 ids are 0x-prefixed 64-hex-char transaction hashes.
  */
 import { config } from "@app/core/config";
 import { OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
@@ -23,6 +28,7 @@ import { isUniqueViolation } from "./_types";
 import { getOrder, createOrderDirect, approveOrder, applyUsdtWalletToOrder } from "./orders";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
+import { BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY } from "./bybit_deposit";
 import { parseMinAmount } from "./_minAmount";
 
 // ---------------------------------------------------------------------------
@@ -31,18 +37,20 @@ import { parseMinAmount } from "./_minAmount";
 // takes effect on the next cycle without a restart (like TokoPay).
 // ---------------------------------------------------------------------------
 
-export const BYBIT_UID_KEY = "bybit_uid";
-export const BYBIT_API_KEY_KEY = "bybit_api_key";
-export const BYBIT_API_SECRET_KEY = "bybit_api_secret";
-// On/off toggle (web admin). Default ON: only the literal "false" disables.
-export const BYBIT_ENABLED_KEY = "bybit_enabled";
+export const BYBIT_BSC_DEPOSIT_ADDRESS_KEY = "bybit_bsc_deposit_address";
+// On/off toggle (web admin), independent of Internal Transfer's. Default ON:
+// only the literal "false" disables.
+export const BYBIT_BSC_ENABLED_KEY = "bybit_bsc_enabled";
 // Minimum-payment-amount note shown at checkout (USDT) — blank = no note.
-export const BYBIT_MIN_AMOUNT_KEY = "bybit_min_amount";
+export const BYBIT_BSC_MIN_AMOUNT_KEY = "bybit_bsc_min_amount";
 
-export interface BybitConfig {
-  /** True only when uid + apiKey + apiSecret are all present. */
+export interface BybitBscConfig {
+  /** True only when depositAddress + apiKey + apiSecret are all present. */
   enabled: boolean;
-  uid: string;
+  depositAddress: string;
+  /** On-chain network filter for incoming deposits (e.g. "BSC"). */
+  chain: string;
+  /** Shared with Internal Transfer — same exchange account, same credentials. */
   apiKey: string;
   apiSecret: string;
   apiBase: string;
@@ -58,42 +66,43 @@ function pick(dbVal: string | null, envVal?: string): string {
 }
 
 /**
- * Resolve the Bybit Internal Transfer config from Settings (with .env
- * fallback). `enabled` gates the poller, the watchdog, and the checkout
- * option. The API base and payment window stay env-only (rarely change);
- * only the UID and the API key/secret are web-editable.
+ * Resolve the Bybit BSC on-chain config from Settings (with .env fallback).
+ * `enabled` gates the poller, the watchdog, and the checkout option. The API
+ * key/secret are shared with Internal Transfer (same exchange account); only
+ * the deposit address is specific to this method.
  */
-export async function resolveBybitConfig(db: Db): Promise<BybitConfig> {
-  const [uidSetting, key, secret, flag, minAmountSetting] = await Promise.all([
-    getSetting(db, BYBIT_UID_KEY),
+export async function resolveBybitBscConfig(db: Db): Promise<BybitBscConfig> {
+  const [addressSetting, key, secret, flag, minAmountSetting] = await Promise.all([
+    getSetting(db, BYBIT_BSC_DEPOSIT_ADDRESS_KEY),
     getSetting(db, BYBIT_API_KEY_KEY),
     getSetting(db, BYBIT_API_SECRET_KEY),
-    getSetting(db, BYBIT_ENABLED_KEY),
-    getSetting(db, BYBIT_MIN_AMOUNT_KEY),
+    getSetting(db, BYBIT_BSC_ENABLED_KEY),
+    getSetting(db, BYBIT_BSC_MIN_AMOUNT_KEY),
   ]);
-  const uid = pick(uidSetting, config.BYBIT_UID);
+  const depositAddress = pick(addressSetting, config.BYBIT_DEPOSIT_ADDRESS);
   const apiKey = pick(key, config.BYBIT_API_KEY);
   const apiSecret = pick(secret, config.BYBIT_API_SECRET);
   return {
     // Default ON: an unset/empty flag means enabled; only the literal "false"
     // (trimmed, case-insensitive) disables the method without touching creds.
-    enabled: Boolean(uid && apiKey && apiSecret) && (flag ?? "").trim().toLowerCase() !== "false",
-    uid,
+    enabled: Boolean(depositAddress && apiKey && apiSecret) && (flag ?? "").trim().toLowerCase() !== "false",
+    depositAddress,
+    chain: config.BYBIT_DEPOSIT_CHAIN,
     apiKey,
     apiSecret,
     apiBase: config.BYBIT_API_BASE,
-    windowMinutes: config.BYBIT_PAYMENT_WINDOW_MINUTES,
+    windowMinutes: config.BYBIT_BSC_PAYMENT_WINDOW_MINUTES,
     minAmount: parseMinAmount(minAmountSetting),
   };
 }
 
 /**
- * Create a direct order, then stamp it as a USDT/Bybit deposit payment: the
- * central-IDR total converts once at `rate` (rounded 0.1) + unique cents, with
- * the Bybit auto-confirm payment window. No transfer note (internal transfers
- * carry none).
+ * Create a direct order, then stamp it as a USDT/Bybit BSC deposit payment:
+ * the central-IDR total converts once at `rate` (rounded 0.1) + unique
+ * cents, with the BSC auto-confirm payment window. No transfer note (BEP20
+ * carries none).
  */
-export async function createBybitOrder(
+export async function createBybitBscOrder(
   db: Db,
   args: {
     user: { id: number; role: string };
@@ -111,7 +120,7 @@ export async function createBybitOrder(
   const finalized = await finalizeOrderPayment(db, created.id, {
     currency: OrderCurrency.USDT,
     rate: args.rate,
-    method: PaymentMethod.BYBIT,
+    method: PaymentMethod.BYBIT_BSC,
   });
   // Spend the USDT credit balance against the finalized USDT total (no-op when
   // walletAmount is unset). Re-read so callers see the updated walletUsed/total.
@@ -119,33 +128,35 @@ export async function createBybitOrder(
   return args.walletAmount != null ? getOrder(db, created.id) : finalized;
 }
 
-/** PENDING, not-yet-expired Bybit orders the deposit poller should match against. */
-export function listPendingBybitOrders(db: Db, now: Date) {
+/** PENDING, not-yet-expired Bybit BSC orders the deposit poller should match against. */
+export function listPendingBybitBscOrders(db: Db, now: Date) {
   return db.order.findMany({
     where: {
       status: OrderStatus.PENDING_PAYMENT,
-      paymentMethod: PaymentMethod.BYBIT,
+      paymentMethod: PaymentMethod.BYBIT_BSC,
       expiresAt: { gt: now },
     },
     include: { user: true },
   });
 }
 
-export type BybitDeliverResult =
+export type BybitBscDeliverResult =
   | { status: "delivered"; order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }
   | { status: "already_processed" }
   | { status: "stale" };
 
 /**
- * Idempotently confirm + deliver a matched Bybit deposit.
- * Claims the on-chain txID (UNIQUE gate) then runs the normal approve/deliver
- * path. Returns "already_processed" if the tx was seen before, "stale" if the
- * order is no longer awaiting payment (delivered/expired elsewhere).
+ * Idempotently confirm + deliver a matched Bybit BSC deposit. Shares the
+ * SAME `processed_bybit_tx` ledger as Internal Transfer (see module
+ * doc-comment for the non-collision reasoning) — claims the on-chain txID
+ * (UNIQUE gate) then runs the normal approve/deliver path. Returns
+ * "already_processed" if the tx was seen before, "stale" if the order is no
+ * longer awaiting payment (delivered/expired elsewhere).
  */
-export async function deliverPaidBybitOrder(
+export async function deliverPaidBybitBscOrder(
   db: PrismaClient,
   args: { orderId: number; bybitTxId: string; amount: Decimal.Value },
-): Promise<BybitDeliverResult> {
+): Promise<BybitBscDeliverResult> {
   // 1. Claim the tx id. A duplicate means another cycle already handled it.
   try {
     await db.processedBybitTx.create({
@@ -169,7 +180,7 @@ export async function deliverPaidBybitOrder(
         data: { status: OrderStatus.PENDING_VERIFICATION, bybitTxid: args.bybitTxId, paidAt: new Date() },
       });
       const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: 0 });
-      logger.info(`Auto-delivered Bybit order ${delivered.orderCode} for transaction ${args.bybitTxId}`);
+      logger.info(`Auto-delivered Bybit BSC order ${delivered.orderCode} for transaction ${args.bybitTxId}`);
       return { status: "delivered" as const, order: delivered, credentials };
     });
   } catch (e) {
@@ -181,7 +192,7 @@ export async function deliverPaidBybitOrder(
 }
 
 /** A deposit that matched no PENDING order — record once for manual review. */
-export async function recordUnmatchedBybitTx(db: Db, args: { bybitTxId: string; amount: Decimal.Value }): Promise<boolean> {
+export async function recordUnmatchedBybitBscTx(db: Db, args: { bybitTxId: string; amount: Decimal.Value }): Promise<boolean> {
   try {
     await db.processedBybitTx.create({
       data: { bybitTxId: args.bybitTxId, amount: new Decimal(args.amount), outcome: "unmatched" },
@@ -194,11 +205,14 @@ export async function recordUnmatchedBybitTx(db: Db, args: { bybitTxId: string; 
 }
 
 // ---- Poller heartbeat (written by the order-bot poller, read by the web) ----
+// Independent from Internal Transfer's heartbeat so the two pollers' health
+// is diagnosable separately — they can fail for unrelated reasons (on-chain
+// network congestion vs. an API outage).
 
-/** Single settings key holding the Bybit poller's last-cycle heartbeat as JSON. */
-export const BYBIT_POLL_HEALTH_KEY = "bybit_poll_health";
+/** Single settings key holding the Bybit BSC poller's last-cycle heartbeat as JSON. */
+export const BYBIT_BSC_POLL_HEALTH_KEY = "bybit_bsc_poll_health";
 
-export interface BybitPollHealth {
+export interface BybitBscPollHealth {
   lastRun: string | null;
   /** Last cycle that completed WITHOUT error (0 new deposits still counts). */
   lastSuccessAt: string | null;
@@ -217,7 +231,7 @@ export interface BybitPollHealth {
   lastError: string | null;
 }
 
-const EMPTY_BYBIT_HEALTH: BybitPollHealth = {
+const EMPTY_BYBIT_BSC_HEALTH: BybitBscPollHealth = {
   lastRun: null,
   lastSuccessAt: null,
   lastTxCount: null,
@@ -228,12 +242,12 @@ const EMPTY_BYBIT_HEALTH: BybitPollHealth = {
   lastError: null,
 };
 
-/** Read the Bybit poller heartbeat; all-null when it has never run. */
-export async function getBybitPollHealth(db: Db): Promise<BybitPollHealth> {
-  const raw = await getSetting(db, BYBIT_POLL_HEALTH_KEY);
-  if (!raw) return EMPTY_BYBIT_HEALTH;
+/** Read the Bybit BSC poller heartbeat; all-null when it has never run. */
+export async function getBybitBscPollHealth(db: Db): Promise<BybitBscPollHealth> {
+  const raw = await getSetting(db, BYBIT_BSC_POLL_HEALTH_KEY);
+  if (!raw) return EMPTY_BYBIT_BSC_HEALTH;
   try {
-    const p = JSON.parse(raw) as Partial<BybitPollHealth>;
+    const p = JSON.parse(raw) as Partial<BybitBscPollHealth>;
     return {
       lastRun: p.lastRun ?? null,
       lastSuccessAt: p.lastSuccessAt ?? null,
@@ -245,17 +259,17 @@ export async function getBybitPollHealth(db: Db): Promise<BybitPollHealth> {
       lastError: p.lastError ?? null,
     };
   } catch {
-    return EMPTY_BYBIT_HEALTH;
+    return EMPTY_BYBIT_BSC_HEALTH;
   }
 }
 
-/** Record one Bybit poll cycle's heartbeat. Called by the poller each tick.
+/** Record one Bybit BSC poll cycle's heartbeat. Called by the poller each tick.
  * `lastRateLimitAt`/`lastError` are sticky (carried forward from the prior
  * heartbeat) so a rare hit stays visible after the poller recovers.
  * `consecutiveFailures` counts non-rate-limit failures only — a rate-limit
  * hit neither increments nor resets it, since that streak already has its own
  * dedicated counter/backoff above. */
-export async function recordBybitPollHealth(
+export async function recordBybitBscPollHealth(
   db: Db,
   args: {
     lastTxCount: number;
@@ -266,7 +280,7 @@ export async function recordBybitPollHealth(
     error?: string | null;
   },
 ): Promise<void> {
-  const prev = await getBybitPollHealth(db);
+  const prev = await getBybitBscPollHealth(db);
   const lastRateLimitAt = args.rateLimited ? new Date().toISOString() : prev.lastRateLimitAt;
   const consecutiveFailures = args.success
     ? 0
@@ -276,7 +290,7 @@ export async function recordBybitPollHealth(
   const nowIso = new Date().toISOString();
   await setSetting(
     db,
-    BYBIT_POLL_HEALTH_KEY,
+    BYBIT_BSC_POLL_HEALTH_KEY,
     JSON.stringify({
       lastRun: nowIso,
       lastSuccessAt: args.success ? nowIso : prev.lastSuccessAt,
@@ -286,6 +300,6 @@ export async function recordBybitPollHealth(
       lastRateLimitAt,
       consecutiveFailures,
       lastError: args.success ? prev.lastError : (args.error ?? prev.lastError) ?? null,
-    } satisfies BybitPollHealth),
+    } satisfies BybitBscPollHealth),
   );
 }

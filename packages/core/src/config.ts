@@ -110,12 +110,17 @@ export const Env = z.object({
   // carry no memo, so matching is by the order's unique total amount
   // (USE_UNIQUE_CENTS must stay on). All buyers share this one UID.
   BYBIT_UID: z.string().optional(),
-  // Deprecated on-chain BEP20 fields (BYBIT_DEPOSIT_ADDRESS, BYBIT_DEPOSIT_CHAIN)
-  // — kept so old .env files don't error on load; neither is read anywhere
-  // anymore (superseded by BYBIT_UID above).
+  // ---- Bybit BSC on-chain (BEP20) — a SEPARATE, second Bybit method ----
+  // Our Bybit-custodied BSC deposit address buyers send USDT to on-chain.
+  // Unlike BYBIT_UID's Internal Transfer, this is a normal blockchain
+  // transfer, so it accepts a deposit from any BEP20 wallet/exchange
+  // (including a Binance withdrawal). Env-fallback only — web-admin Settings
+  // (bybit_bsc_deposit_address) wins when set, same pattern as BYBIT_UID.
   BYBIT_DEPOSIT_ADDRESS: z.string().optional(),
   BYBIT_DEPOSIT_CHAIN: z.string().default("BSC"),
   // READ-ONLY API key/secret (Wallet read only — no Withdraw) to fetch deposits.
+  // Shared by BOTH Bybit methods (Internal Transfer + BSC on-chain) — same
+  // exchange account, same credentials, just a different deposit rail.
   BYBIT_API_KEY: z.string().optional(),
   BYBIT_API_SECRET: z.string().optional(),
   // bytick.com is Bybit's own official mirror of api.bybit.com — defaulting to
@@ -131,6 +136,14 @@ export const Env = z.object({
   // conservative starting point pending real rate-limit headroom data (see
   // the X-Bapi-Limit-* debug logs in bybitDeposit.ts's bybitGet()).
   BYBIT_POLL_INTERVAL_SECONDS: z.coerce.number().default(5),
+  // Window for the BSC on-chain auto-confirm path. Shorter than Internal
+  // Transfer's 30 min default — on-chain only needs headroom for the ~1-2 min
+  // block-confirmation floor plus a few poll cycles, not a full instant-rail
+  // window.
+  BYBIT_BSC_PAYMENT_WINDOW_MINUTES: z.coerce.number().default(15),
+  // Independent poll cadence for the BSC on-chain poller — tunable separately
+  // from both Binance's and Bybit Internal Transfer's intervals.
+  BYBIT_BSC_POLL_INTERVAL_SECONDS: z.coerce.number().default(5),
   // Optional USDT→IDR rate; if set, instructions show an IDR equivalent.
   USDT_IDR_RATE: z.coerce.number().optional(),
 

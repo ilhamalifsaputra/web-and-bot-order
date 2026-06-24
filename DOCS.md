@@ -115,7 +115,7 @@ sebagai statis `GET /uploads/*` (env `UPLOADS_DIR`, default `data/uploads`).
 |---|---|---|
 | Favicon (PNG/ICO/SVG) | `web_favicon_url` | tiap halaman storefront (fallback `/static/favicon.svg`) |
 | Logo header (PNG/SVG/WebP) | `web_logo_url` | header toko (kosong → ikon `store`) |
-| Hero (JPG/PNG/WebP) | `web_hero_url` | beranda toko (fallback `HERO_IMAGE`) |
+| Hero (JPG/PNG/WebP) | `web_hero_url` | beranda toko (fallback: gradient warna brand, tanpa foto) |
 | Banner bot | `banner_image` | atas menu utama & daftar produk di bot |
 
 Identitas toko `shop_name`, `shop_tagline`, `welcome` juga diedit di sini. Semua

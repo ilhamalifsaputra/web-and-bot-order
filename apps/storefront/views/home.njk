@@ -34,11 +34,17 @@
 
 {# ── 1. Hero (design.md §4.8, mockup perbaikan) ── #}
 <section class="relative overflow-hidden rounded-3xl bg-ink px-6 py-12 sm:px-10 sm:py-16 mb-12">
-  {# Admin-configurable hero image (web_hero_url) with unsplash fallback; the
-     gradient below is a semi-transparent tint so text stays readable. #}
+  {# Admin-configurable hero image (web_hero_url); when set, the gradient below
+     is a semi-transparent tint over the photo so text stays readable. With no
+     custom hero uploaded, the section falls back to a plain brand gradient
+     instead of a stock photo. #}
+  {% if hero_image %}
   <img src="{{ hero_image }}" alt="" aria-hidden="true" loading="eager" decoding="async"
        class="absolute inset-0 h-full w-full object-cover">
   <div class="absolute inset-0 bg-gradient-to-br from-ink/95 via-ink/85 to-pine-dark/80"></div>
+  {% else %}
+  <div class="absolute inset-0 bg-gradient-to-br from-ink via-pine-dark to-pine"></div>
+  {% endif %}
   <div class="absolute -right-16 -top-16 h-64 w-64 rounded-full bg-pine/20 blur-3xl"></div>
   <div class="relative max-w-2xl">
     <span class="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-medium uppercase tracking-wide text-grass">

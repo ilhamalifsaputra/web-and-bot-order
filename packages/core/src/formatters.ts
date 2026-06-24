@@ -36,6 +36,18 @@ export function formatIdr(amount: Decimal.Value): string {
 }
 
 /**
+ * Currency-aware money display for any `Order.currency` value: "IDR" routes
+ * through {@link formatIdr} (Rp prefix, dotted thousands); anything else
+ * (USDT today, any future non-ISO code) is a 2dp amount + code suffix via
+ * {@link formatPrice}. Deliberately NOT `Intl.NumberFormat(..., {style:
+ * "currency"})` — that throws on a non-ISO-4217 code like "USDT", which is
+ * most of what this system actually stores.
+ */
+export function formatMoney(amount: Decimal.Value, currency: string): string {
+  return currency === "IDR" ? formatIdr(amount) : formatPrice(amount, currency, 2);
+}
+
+/**
  * Derived USDT for a central-IDR amount (plan.md §15.1): idr / rate, rounded
  * to the NEAREST 0.1 (16,000/USDT → Rp40.000 = $2.5; $2.453 → $2.5). The
  * rounded value is both what's displayed beside the IDR price and what Binance

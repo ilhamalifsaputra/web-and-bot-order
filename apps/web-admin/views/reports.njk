@@ -8,7 +8,7 @@
 <section class="card card-pad mb-6">
   <div class="flex items-baseline justify-between mb-3">
     <h2 class="section-title">Sales — last 30 days</h2>
-    <span class="text-sm text-ink-soft tabular">{{ total_30d | idr }} total</span>
+    <span class="text-sm text-ink-soft tabular">{{ total_30d_idr | idr }}{% if total_30d_usdt %} + {{ total_30d_usdt | money_in('USDT') }}{% endif %} total</span>
   </div>
   <svg viewBox="0 0 {{ spark.width }} {{ spark.height }}" class="w-full h-32" preserveAspectRatio="none" role="img" aria-label="Daily sales trend">
     {% if spark.area %}<polygon points="{{ spark.area }}" fill="#2563eb" fill-opacity="0.10" />{% endif %}

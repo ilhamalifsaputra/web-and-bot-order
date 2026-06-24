@@ -77,6 +77,15 @@
 </span>
 {%- endmacro %}
 
+{# An order's settlement currency, next to its status badge — IDR is the
+   neutral default tone, anything else (USDT today, future codes) gets the
+   pine accent so a non-IDR order is visually distinct at a glance. #}
+{% macro currency_badge(currency) -%}
+<span class="chip {% if (currency | string | upper) == 'IDR' %}bg-sand text-ink-soft{% else %}bg-pine-tint text-pine-dark{% endif %}">
+  {{ currency | string | upper }}
+</span>
+{%- endmacro %}
+
 {# Empty-state row for tables: a quiet, friendly "nothing here yet" line. #}
 {% macro empty_row(cols, message) -%}
 <tr><td colspan="{{ cols }}" class="px-4 py-10 text-center text-ink-faint">{{ message }}</td></tr>

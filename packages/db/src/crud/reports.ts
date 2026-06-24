@@ -141,7 +141,8 @@ export async function revenueSummary(
 
 export interface DayRevenue {
   day: string; // YYYY-MM-DD (UTC)
-  revenue: string;
+  revenue_idr: string;
+  revenue_usdt: string;
   orders: number;
 }
 
@@ -149,6 +150,11 @@ export interface DayRevenue {
  * Daily delivered revenue for the last `days` days, oldest→newest, with empty
  * days filled with zero so the sparkline has no gaps. Buckets by UTC date; the
  * dashboard is single-operator so a TZ-exact daily cut isn't worth a raw query.
+ *
+ * Split by `currency` (mirrors `deliveredRevenueByCurrency` above) — summing
+ * `totalAmount` across orders regardless of currency would add a USDT order's
+ * small decimal total straight into the Rupiah figure, the reports-page
+ * equivalent of the "Rp3" display bug.
  */
 export async function revenueByDay(db: Db, days = 30): Promise<DayRevenue[]> {
   const now = new Date();
@@ -157,25 +163,27 @@ export async function revenueByDay(db: Db, days = 30): Promise<DayRevenue[]> {
 
   const orders = await db.order.findMany({
     where: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } },
-    select: { deliveredAt: true, totalAmount: true },
+    select: { deliveredAt: true, totalAmount: true, currency: true },
   });
 
-  const buckets = new Map<string, { revenue: Decimal; orders: number }>();
+  const buckets = new Map<string, { idr: Decimal; usdt: Decimal; orders: number }>();
   for (let i = 0; i < days; i++) {
     const d = addDays(since, i);
-    buckets.set(d.toISOString().slice(0, 10), { revenue: new Decimal(0), orders: 0 });
+    buckets.set(d.toISOString().slice(0, 10), { idr: new Decimal(0), usdt: new Decimal(0), orders: 0 });
   }
   for (const o of orders) {
     if (!o.deliveredAt) continue;
     const key = o.deliveredAt.toISOString().slice(0, 10);
     const b = buckets.get(key);
     if (!b) continue; // outside the window (shouldn't happen)
-    b.revenue = b.revenue.plus(o.totalAmount);
+    if (o.currency === "IDR") b.idr = b.idr.plus(o.totalAmount);
+    else b.usdt = b.usdt.plus(o.totalAmount);
     b.orders += 1;
   }
   return [...buckets.entries()].map(([day, b]) => ({
     day,
-    revenue: q4(b.revenue).toString(),
+    revenue_idr: q4(b.idr).toString(),
+    revenue_usdt: q4(b.usdt).toString(),
     orders: b.orders,
   }));
 }

@@ -17,9 +17,12 @@ import {
 import { currentAdmin } from "../plugins/auth";
 
 /** Build an SVG polyline path for the daily-revenue series in a viewBox of
- * WxH. Returns the points string plus the area path for a subtle fill. */
+ * WxH. Returns the points string plus the area path for a subtle fill.
+ * Charts `revenue_idr` as the headline series (same convention as the
+ * dashboard's IDR-first cards) — USDT is surfaced separately, never mixed
+ * into the same number. */
 function sparkline(series: DayRevenue[], width = 600, height = 120) {
-  const vals = series.map((d) => new Decimal(d.revenue).toNumber());
+  const vals = series.map((d) => new Decimal(d.revenue_idr).toNumber());
   const max = Math.max(1, ...vals);
   const n = vals.length;
   const dx = n > 1 ? width / (n - 1) : 0;
@@ -39,7 +42,8 @@ export default async function reportsRoutes(app: FastifyInstance): Promise<void>
   app.get("/reports", { preHandler: currentAdmin }, async (req, reply) => {
     const daily = await revenueByDay(prisma, 30);
     const spark = sparkline(daily);
-    const total30d = daily.reduce((acc, d) => acc.plus(d.revenue), new Decimal(0));
+    const total30dIdr = daily.reduce((acc, d) => acc.plus(d.revenue_idr), new Decimal(0));
+    const total30dUsdt = daily.reduce((acc, d) => acc.plus(d.revenue_usdt), new Decimal(0));
     const products = await topProducts(prisma, 10);
     const funnel = await ordersByStatus(prisma);
     const vouchers = await voucherUsage(prisma, 20);
@@ -49,7 +53,8 @@ export default async function reportsRoutes(app: FastifyInstance): Promise<void>
       active_nav: "/reports",
       daily,
       spark,
-      total_30d: total30d.toString(),
+      total_30d_idr: total30dIdr.toString(),
+      total_30d_usdt: total30dUsdt.isZero() ? null : total30dUsdt.toString(),
       products,
       funnel,
       vouchers,

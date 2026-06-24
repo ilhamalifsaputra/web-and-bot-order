@@ -198,6 +198,19 @@ export async function setupCommandMenu(bot: Bot<MyContext>): Promise<void> {
 }
 
 // --- Startup ---------------------------------------------------------------
+
+/**
+ * `run(bot, ...)` (@grammyjs/runner) starts its fetch loop in a detached task
+ * that nothing awaits — if `bot.init()`/`getUpdates()` rejects (e.g. an
+ * invalid bot_token, the .env recovery-fallback path bypasses the Settings
+ * `getMe` pre-check), that rejection is otherwise unhandled and crashes the
+ * whole process. Attach a catch so a bad token degrades to "bot stopped"
+ * instead of an unhandledRejection-triggered exit.
+ */
+export function guardRunnerTask(task: Promise<unknown> | undefined, onError: (err: unknown) => void): void {
+  task?.catch(onError);
+}
+
 export async function start(): Promise<void> {
   await initDb();
   setAdminIds(await resolveAdminIds(prisma));
@@ -249,6 +262,12 @@ export async function start(): Promise<void> {
         allowed_updates: ["message", "edited_message", "callback_query", "my_chat_member"],
       },
     },
+  });
+  guardRunnerTask(runner.task(), (err) => {
+    logger.error(
+      { err },
+      "Bot polling stopped (invalid bot_token?) — fix it in web-admin Settings, then restart.",
+    );
   });
 
   // Crypto auto-confirmation pollers (each a no-op unless its creds are set).

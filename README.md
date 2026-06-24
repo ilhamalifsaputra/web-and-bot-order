@@ -62,16 +62,17 @@ cp .env.example .env
 
 ```ini
 DATABASE_URL_PRISMA=file:./data/bot.db        # biarkan default kalau pakai Docker
-BOT_TOKEN=123456789:AAE...                    # dari @BotFather (bisa diisi nanti)
 ADMIN_IDS=12345678                            # ID Telegram-mu; pisah koma kalau >1
 WEB_COOKIE_SECRET=hasil_openssl_rand_hex_32   # kunci login panel admin
 TIMEZONE=Asia/Jakarta
 DEFAULT_LANGUAGE=id
 ```
 
-> 💡 **Token bot bisa diisi nanti** lewat wizard panel admin (DB menang atas
-> `.env`). Jika diatur lewat panel, **hapus/comment** baris `BOT_TOKEN` —
-> **jangan** dikosongkan jadi `BOT_TOKEN=` (gagal validasi).
+> 💡 **Token bot, UID & API key Binance/Bybit TIDAK diisi di `.env`** — semua
+> diisi lewat Setup Wizard (saat pertama buka panel admin) atau panel admin →
+> Settings, yang selalu menang atas `.env`. Tidak perlu menyentuh `.env` untuk
+> ini sama sekali; baris env yang sepadan (`BOT_TOKEN`, `BINANCE_RECEIVE_UID`,
+> `BYBIT_UID`, dst.) hanya jalur recovery darurat kalau terkunci dari panel.
 
 Pengaturan pembayaran **tidak wajib** sekarang — bisa diisi belakangan dari panel
 admin ([bagian 6](#6-pembayaran--branding)). Daftar lengkap variabel ada di
@@ -297,8 +298,7 @@ VPS"**.
 |---|---|
 | `P2022: column does not exist` | `prisma db push` lalu restart |
 | HTTP 500 / `readonly database` | `sudo chown -R 999:999 data` lalu `docker compose restart server` |
-| Bot crash: `String must contain at least 20 character(s)` | Hapus/comment baris `BOT_TOKEN=` di `.env` (jangan dikosongkan) |
-| Bot tak membalas `/start` | Cek `BOT_TOKEN`; cek `docker compose logs server` / `pm2 logs` |
+| Bot tak membalas `/start` | Cek panel admin → Settings → bot token (atau jalankan Setup Wizard kalau belum); cek `docker compose logs server` / `pm2 logs` |
 | Tak bisa login / loop login | HTTP lokal: `WEB_COOKIE_SECURE=false`; produksi: HTTPS + `WEB_COOKIE_SECURE=true` |
 | Pembayaran Bybit tak otomatis | Kirim **jumlah persis** via Bybit Internal Transfer; pastikan `USE_UNIQUE_CENTS=1` |
 | Panel tak bisa diakses dari luar | Non-Docker set `WEB_HOST=0.0.0.0` (di balik HTTPS); Docker sudah `0.0.0.0` |

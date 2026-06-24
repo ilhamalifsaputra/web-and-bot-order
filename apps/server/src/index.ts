@@ -23,7 +23,7 @@ import { config } from "@app/core/config";
 import { botToken as runtimeBotToken, notifBotToken, publicChannelId, setBotIdentity, setAdminIds, setWebSecret } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { initDb, prisma, resolveBotCredentials, resolveAdminIds, resolveWebCookieSecret, missingTables, PAYMENT_LEDGER_TABLES } from "@app/db";
-import { buildBot, setupCommandMenu } from "@app/order-bot/main";
+import { buildBot, setupCommandMenu, guardRunnerTask } from "@app/order-bot/main";
 import { scheduleJobs, scheduleFxRefresh } from "@app/order-bot/jobs";
 import { startPolling, stopPolling } from "@app/order-bot/payments/binanceInternal";
 import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "@app/order-bot/payments/bybitDeposit";
@@ -310,14 +310,24 @@ export async function start(): Promise<void> {
     if (!config.PUBLIC_URL || !config.WEBHOOK_SECRET) {
       throw new Error("PUBLIC_URL and WEBHOOK_SECRET are required when BOT_MODE=webhook");
     }
-    await bot.init(); // webhook handler needs botInfo before handling updates
-    const url = `${config.PUBLIC_URL.replace(/\/+$/, "")}/tg/${config.WEBHOOK_SECRET}`;
-    await bot.api.setWebhook(url, {
-      secret_token: config.WEBHOOK_SECRET,
-      drop_pending_updates: true,
-      allowed_updates: [...ALLOWED_UPDATES],
-    });
-    logger.info("Webhook registered"); // never log the URL — it carries the secret
+    // Best-effort: an invalid bot_token (the .env recovery-fallback path
+    // bypasses the Settings `getMe` pre-check) must not crash the whole
+    // process — degrade to "web serves, bot off" like the no-token case.
+    try {
+      await bot.init(); // webhook handler needs botInfo before handling updates
+      const url = `${config.PUBLIC_URL.replace(/\/+$/, "")}/tg/${config.WEBHOOK_SECRET}`;
+      await bot.api.setWebhook(url, {
+        secret_token: config.WEBHOOK_SECRET,
+        drop_pending_updates: true,
+        allowed_updates: [...ALLOWED_UPDATES],
+      });
+      logger.info("Webhook registered"); // never log the URL — it carries the secret
+    } catch (err) {
+      logger.error(
+        { err },
+        "Webhook setup failed (invalid bot_token?) — bot is OFF. Fix Settings → bot token, then restart.",
+      );
+    }
   } else {
     // Clear any webhook left over from a previous webhook deploy, then poll.
     try {
@@ -326,6 +336,12 @@ export async function start(): Promise<void> {
       logger.warn({ err }, "deleteWebhook failed (continuing; pending updates not dropped)");
     }
     runner = run(bot, { runner: { fetch: { allowed_updates: [...ALLOWED_UPDATES] } } });
+    guardRunnerTask(runner.task(), (err) => {
+      logger.error(
+        { err },
+        "Bot polling stopped (invalid bot_token?) — fix it in web-admin Settings, then restart.",
+      );
+    });
     logger.info("Order bot started (long polling)");
   }
 

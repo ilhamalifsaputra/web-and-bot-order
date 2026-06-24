@@ -17,10 +17,14 @@ describe("config schema", () => {
     expect(Env.parse({ BOT_TOKEN: "   " }).BOT_TOKEN).toBeUndefined();
   });
 
-  it("keeps a valid BOT_TOKEN and still rejects a too-short non-empty one", () => {
+  it("keeps a valid BOT_TOKEN and also passes through a malformed non-empty one", () => {
+    // BOT_TOKEN is a recovery-only fallback (Settings wins) — a typo'd or
+    // truncated value here must not crash the whole process at parse time.
+    // Real format validation happens once, at the buildBot() call site.
     const token = "123456789:AAE-some-long-enough-token";
     expect(Env.parse({ BOT_TOKEN: token }).BOT_TOKEN).toBe(token);
-    expect(() => Env.parse({ BOT_TOKEN: "short" })).toThrow();
+    expect(() => Env.parse({ BOT_TOKEN: "short" })).not.toThrow();
+    expect(Env.parse({ BOT_TOKEN: "short" }).BOT_TOKEN).toBe("short");
   });
 
   it("treats empty/whitespace BOT_USERNAME as undefined", () => {

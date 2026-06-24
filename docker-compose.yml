@@ -32,8 +32,12 @@ services:
     image: bot-order-node:latest
     restart: unless-stopped
     command: ["pnpm", "start"]
+    # required: false — credentials (bot token, Binance/Bybit UID+keys) live in
+    # web-admin Settings now, not `.env`, so a missing `.env` file must not
+    # block `docker compose up`. Needs Docker Compose v2.24+ (Jan 2024).
     env_file:
-      - .env
+      - path: .env
+        required: false
     # Bind 0.0.0.0 inside the container (config default is 127.0.0.1) so the
     # published ports reach the app.
     environment:

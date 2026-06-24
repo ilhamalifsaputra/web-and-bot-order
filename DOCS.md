@@ -202,7 +202,12 @@ Kredensial & setelan terpusat di **web-admin → Settings**
 - **Branding:** identitas toko + upload aset (halaman `/branding` terpisah).
 
 **Aturan umum: DB (Setting) menang, `.env` = bootstrap/pemulihan** — tapi ada
-tiga pola resolver yang sengaja berbeda. Tabel sumber-kebenaran per setting
+tiga pola resolver yang sengaja berbeda. `.env.example` sengaja TIDAK lagi
+mencantumkan baris isi untuk `bot_token`/Binance UID+key/Bybit UID+key, dkk. —
+field-field itu hanya diisi lewat Setup Wizard/Settings; env tetap didukung di
+kode sebagai jalur recovery darurat (tidak divalidasi format, tak pernah
+crash boot), tapi sengaja tak ditampilkan supaya tidak ada yang isi di situ
+secara normal. Tabel sumber-kebenaran per setting
 (resolver di `packages/db/src/crud/`, dipanggil sekali per proses saat boot lalu
 di-stamp ke `@app/core/runtime`):
 

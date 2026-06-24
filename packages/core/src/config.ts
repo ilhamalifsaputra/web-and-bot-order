@@ -67,8 +67,12 @@ export const Env = z.object({
   // Optional since plan.md §16: the primary source is the `bot_token` /
   // `bot_username` Settings rows (web-admin editable, DB wins when filled);
   // env is the bootstrap / recovery fallback. See @app/core/runtime.
-  BOT_TOKEN: blankableOptional(z.string().min(20)),
-  BOT_USERNAME: blankableOptional(z.string().min(3)),
+  // No format check here: this is a recovery-only fallback (Settings wins —
+  // see @app/core/runtime), and a typo'd/truncated value must not crash the
+  // whole process at parse time. Real format validation happens once, at the
+  // buildBot() call site (apps/server/src/index.ts, apps/order-bot/src/main.ts).
+  BOT_TOKEN: blankableOptional(z.string()),
+  BOT_USERNAME: blankableOptional(z.string()),
   ADMIN_IDS: csvNumbers,
   SUPPORT_GROUP_ID: z.coerce.number().optional(),
 

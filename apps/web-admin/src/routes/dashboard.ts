@@ -33,15 +33,18 @@ const WARRANTY_HORIZON_DAYS = 3;
 
 /**
  * Flatten a {revenue_idr, revenue_usdt, orders} summary into template-friendly
- * primitives. Revenue is split per currency in the DB layer (reports.ts), so the
- * cards show IDR as the headline and surface USDT only when there actually is
- * USDT revenue — a Decimal is always truthy in Nunjucks, so the zero check must
- * happen here, not in the template.
+ * primitives. Both currencies are null when zero (not just USDT) — a Decimal
+ * is always truthy in Nunjucks, so the zero check must happen here, not in
+ * the template. This lets `ui.dual_currency_value` lead with whichever
+ * currency actually had revenue instead of always defaulting to a "Rp0"
+ * headline for a period whose only sale was USDT.
  */
 function shapeRevenue(r: { revenue_idr: Decimal; revenue_usdt: Decimal; orders: number }) {
+  const idr = new Decimal(r.revenue_idr);
+  const usdt = new Decimal(r.revenue_usdt);
   return {
-    idr: r.revenue_idr.toString(),
-    usdt: new Decimal(r.revenue_usdt).isZero() ? null : r.revenue_usdt.toString(),
+    idr: idr.isZero() ? null : idr.toString(),
+    usdt: usdt.isZero() ? null : usdt.toString(),
     orders: r.orders,
   };
 }

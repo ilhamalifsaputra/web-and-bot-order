@@ -50,8 +50,8 @@
       <div class="stat-label">{{ c.label }}</div>
       <span class="grid place-items-center w-9 h-9 rounded-lg {{ c.tint }}"><i data-lucide="{{ c.icon }}" class="w-5 h-5"></i></span>
     </div>
-    <div class="stat-value tabular">{{ c.rev.idr | idr }}</div>
-    <div class="stat-sub">{{ c.rev.orders }} orders{% if c.rev.usdt %} · {{ c.rev.usdt }} USDT{% endif %}</div>
+    <div class="stat-value tabular">{{ ui.dual_currency_value(c.rev.idr, c.rev.usdt) }}</div>
+    <div class="stat-sub">{{ c.rev.orders }} orders</div>
   </div>
   {% endfor %}
   <div class="card card-pad">
@@ -59,8 +59,8 @@
       <div class="stat-label">All-time sales</div>
       <span class="grid place-items-center w-9 h-9 rounded-lg bg-grass-tint text-grass-dark"><i data-lucide="wallet" class="w-5 h-5"></i></span>
     </div>
-    <div class="stat-value tabular">{{ all_time.idr | idr }}</div>
-    <div class="stat-sub">{{ overall.items_sold }} items sold{% if all_time.usdt %} · {{ all_time.usdt }} USDT{% endif %}</div>
+    <div class="stat-value tabular">{{ ui.dual_currency_value(all_time.idr, all_time.usdt) }}</div>
+    <div class="stat-sub">{{ overall.items_sold }} items sold</div>
   </div>
 </section>
 

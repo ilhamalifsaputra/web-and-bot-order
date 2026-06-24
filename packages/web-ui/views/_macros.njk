@@ -86,6 +86,15 @@
 </span>
 {%- endmacro %}
 
+{# A headline revenue figure that never hides which currency the money
+   actually is. `idr`/`usdt` are pre-shaped as null-when-zero strings (see
+   shapeRevenue in routes/dashboard.ts) so this never shows a misleading
+   "Rp0" headline for a period whose only sale was USDT — it shows whichever
+   currency actually has revenue, or both if both do. #}
+{% macro dual_currency_value(idr, usdt) -%}
+{% if idr %}{{ idr | idr }}{% endif %}{% if idr and usdt %} + {% endif %}{% if usdt %}{{ usdt | money_in('USDT') }}{% endif %}{% if not idr and not usdt %}{{ 0 | idr }}{% endif %}
+{%- endmacro %}
+
 {# Empty-state row for tables: a quiet, friendly "nothing here yet" line. #}
 {% macro empty_row(cols, message) -%}
 <tr><td colspan="{{ cols }}" class="px-4 py-10 text-center text-ink-faint">{{ message }}</td></tr>

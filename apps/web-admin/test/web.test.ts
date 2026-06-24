@@ -2384,6 +2384,40 @@ describe("dashboard", () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("Rp5");
   });
+
+  it("leads with the USDT amount when a period's only delivered order was USDT, instead of a misleading Rp0 headline", async () => {
+    // Bug: the card always showed `c.rev.idr` as the big bold headline number
+    // and squeezed USDT into a tiny subtitle. A period with one real USDT
+    // sale and zero IDR sales rendered a giant "Rp0" — reading as "no sales
+    // happened" when a sale for real money actually did.
+    const user = (await getUser(prisma, seed.customerId))!;
+    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
+    await finalizeOrderPayment(prisma, order.id, { currency: "USDT", rate: "1" });
+    await attachPaymentProof(prisma, order.id, { fileId: "proof123", txid: "TX1234567890" });
+    const approveRes = await post(`/orders/${order.id}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(approveRes.statusCode).toBe(303);
+    expect(approveRes.headers.location).toContain("kind=success");
+
+    const res = await get("/", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain('<div class="stat-value tabular">Rp0</div>');
+    expect(res.body).toContain("USDT");
+  });
+
+  it("shows both currencies on one headline when a period has both an IDR and a USDT sale", async () => {
+    const orderId = await makePendingOrder(); // IDR, product price 5.00
+    await post(`/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+
+    const user2 = (await getUser(prisma, seed.customerId))!;
+    const usdtOrder = (await createOrderDirect(prisma, { user: user2, productId: seed.productId, quantity: 1 }))!;
+    await finalizeOrderPayment(prisma, usdtOrder.id, { currency: "USDT", rate: "1" });
+    await attachPaymentProof(prisma, usdtOrder.id, { fileId: "proof123", txid: "TX1234567890" });
+    await post(`/orders/${usdtOrder.id}/approve`, seed.cookie, { csrf_token: seed.csrf });
+
+    const res = await get("/", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('<div class="stat-value tabular">Rp5 + 5.00 USDT</div>');
+  });
 });
 
 describe("page smoke tests", () => {

@@ -9,6 +9,7 @@ import { InlineKeyboard } from "grammy";
 import { makeCtx, calls } from "./helpers/ctx";
 import {
   smartEdit,
+  renderMenu,
   adminEdit,
   adminAnchor,
   menuAnchor,
@@ -53,6 +54,28 @@ describe("single-active-keyboard invariant", () => {
     });
     await smartEdit(ctx, "screen", kb());
     expect(calls(sink, "editMessageReplyMarkup").length).toBe(0);
+  });
+
+  it("smartEdit on a no-op edit (\"message is not modified\") still anchors the tapped bubble as the active menu", async () => {
+    // Telegram throws this when the rendered text+markup are byte-identical
+    // to what the bubble already shows — a successful render outcome, not a
+    // failure. Regression test: this used to leave ctx.session.menuMsgId
+    // stale/unset, which permanently broke any later poller's "edit this
+    // order's anchored bubble" lookup for that chat (e.g. Bybit BSC delivery
+    // never flipping the payment-instructions bubble to a success state).
+    const { ctx, sink } = makeCtx({
+      callbackData: "v1:menu:main",
+      cbMessage: { message_id: 10, chat: { id: 42, type: "private" }, date: 0 },
+      session: { menuMsgId: 5 },
+      editThrowsNotModified: true,
+    });
+    await smartEdit(ctx, "screen", kb());
+
+    expect(calls(sink, "reply").length).toBe(0); // no fallback fresh send needed
+    expect(ctx.session.menuMsgId).toBe(10);
+    const retire = calls(sink, "editMessageReplyMarkup");
+    expect(retire.length).toBe(1);
+    expect(retire[0]!.args[1]).toBe(5); // the stale previous menu still gets retired
   });
 
   it("adminEdit on typed input retires the previous admin screen", async () => {
@@ -104,6 +127,26 @@ describe("wizard anchors", () => {
     await menuAnchor(ctx, "screen", kb());
     expect(calls(sink, "editMessageText").length).toBe(1);
     expect(ctx.session.menuMsgId).toBe(12);
+  });
+});
+
+describe("renderMenu (photo+caption bubble)", () => {
+  it("on a no-op caption edit (\"message is not modified\") still anchors the tapped photo bubble as the active menu", async () => {
+    // Same regression as smartEdit's analogous test above, for the
+    // photo+caption edit path (e.g. a banner menu screen).
+    const { ctx, sink } = makeCtx({
+      callbackData: "v1:menu:main",
+      cbMessage: { message_id: 10, chat: { id: 42, type: "private" }, date: 0, photo: [{ file_id: "f1" }] },
+      session: { menuMsgId: 5 },
+      editThrowsNotModified: true,
+    });
+    await renderMenu(ctx, "screen", kb(), "banner.jpg");
+
+    expect(calls(sink, "replyWithPhoto").length).toBe(0); // no fallback fresh send needed
+    expect(ctx.session.menuMsgId).toBe(10);
+    const retire = calls(sink, "editMessageReplyMarkup");
+    expect(retire.length).toBe(1);
+    expect(retire[0]!.args[1]).toBe(5);
   });
 });
 

@@ -81,7 +81,7 @@ export async function upsertUser(
           lastSeenAt: now,
         },
       });
-      logger.info(`Registered new user telegram_id=${telegramId}`);
+      logger.info(`Registered new user with Telegram id ${telegramId}`);
       return user;
     } catch (e) {
       if (isUniqueViolation(e)) continue;

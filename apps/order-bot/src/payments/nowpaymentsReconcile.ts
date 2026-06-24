@@ -56,7 +56,7 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
     try {
       await api.sendMessage(adminId, text, { parse_mode: "HTML" });
     } catch (err) {
-      logger.error({ err }, `admin alert to ${adminId} failed`);
+      logger.error({ err }, `Failed to send admin alert to admin ${adminId} — they will not see this notification in Telegram`);
     }
   }
 }
@@ -96,7 +96,7 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   try {
     status = await getPaymentStatus(creds, { invoiceId });
   } catch (err) {
-    logger.warn({ err }, `NOWPayments status check failed for ${order.orderCode}`);
+    logger.warn({ err }, `Failed to check NOWPayments status for order ${order.orderCode} — will retry on the next reconcile cycle`);
     return;
   }
 
@@ -107,7 +107,7 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
 
   // Paid but short — never deliver on an underpayment; leave for manual review.
   if (status.amount.lessThan(new Decimal(order.totalAmount))) {
-    logger.warn(`NOWPayments reconcile: ${order.orderCode} paid ${status.amount} < total ${order.totalAmount} — skipping`);
+    logger.warn(`Order ${order.orderCode} underpaid — NOWPayments reports ${status.amount}, expected ${order.totalAmount}, left PENDING for manual review`);
     return;
   }
 
@@ -119,13 +119,13 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
       shopUrl: null,
     });
     if (r.status === "delivered") {
-      logger.info(`NOWPayments reconcile → delivered ${order.orderCode} (notifier will DM the account file)`);
+      logger.info(`NOWPayments reconcile delivered order ${order.orderCode} — notifier will DM the account file`);
     } else if (r.status === "stale") {
-      logger.warn(`NOWPayments reconcile: ${order.orderCode} no longer pending (already handled?)`);
+      logger.warn(`Order ${order.orderCode} was paid but is no longer PENDING — likely already delivered by the webhook, no action needed`);
     }
     // "already_processed" → another cycle/webhook handled it; nothing to do.
   } catch (err) {
-    logger.error({ err }, `NOWPayments reconcile delivery FAILED for ${order.orderCode}`);
+    logger.error({ err }, `Order ${order.orderCode} was paid (NOWPayments) but delivery threw — admin alerted for manual action`);
     await alertAdmins(api, `⚠️ NOWPayments paid but delivery FAILED for <code>${esc(order.orderCode)}</code> — ${esc(String(err).slice(0, 200))}. Manual action needed.`);
   }
 }
@@ -136,7 +136,7 @@ export async function pollOnce(api: Api): Promise<void> {
 
   const orders = await listPendingNowpaymentsOrders(prisma, new Date());
   if (!orders.length) return;
-  logger.info(`NOWPayments reconcile: checking ${orders.length} pending order(s)`);
+  logger.info(`NOWPayments reconcile checking ${orders.length} pending order(s) against the gateway`);
 
   for (const order of orders) {
     await reconcileOrder(api, creds, order);
@@ -163,7 +163,7 @@ export function startPolling(api: Api): void {
       try {
         await pollOnce(api);
       } catch (err) {
-        logger.error({ err }, "NOWPayments reconcile cycle error");
+        logger.error({ err }, "NOWPayments reconcile cycle threw an unhandled error — the cycle was aborted, polling resumes on the next tick");
       } finally {
         isRunning = false;
       }

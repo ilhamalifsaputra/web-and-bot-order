@@ -537,7 +537,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     // discriminator before trusting the cache.
     await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify({ gateway: "nowpayments", ...gateway }) } });
   } catch (err) {
-    logger.error({ err }, `NOWPayments create failed for ${order.orderCode}`);
+    logger.error({ err }, `Failed to create a NOWPayments invoice for order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
     // The order shell exists but has no payment instructions — cancel it
     // rather than leaving an orphan PENDING_PAYMENT slot (Checkout-3 fix,
     // security audit 2026-06-23).
@@ -634,7 +634,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     // parseCachedGateway() requires this discriminator before trusting the cache.
     await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify({ gateway: "tokopay", ...gateway }) } });
   } catch (err) {
-    logger.error({ err }, `TokoPay create failed for ${order.orderCode}`);
+    logger.error({ err }, `Failed to create a TokoPay transaction for order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
     // The order shell exists but has no payment instructions — cancel it
     // rather than leaving an orphan PENDING_PAYMENT slot (Checkout-3 fix,
     // security audit 2026-06-23).
@@ -673,7 +673,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
         try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
       }
     } catch (err) {
-      logger.error({ err }, "Failed to send QRIS photo");
+      logger.error({ err }, `Failed to send the QRIS QR code photo for order ${order.orderCode} — falling back to a text-only instructions bubble`);
       // QR image failed — fall back to a text-only instructions bubble.
       await smartEdit(ctx, caption, waitingKb);
     }
@@ -749,7 +749,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
     // parseCachedPaydisiniGateway() requires this discriminator before trusting the cache.
     await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify({ gateway: "paydisini", ...gateway }) } });
   } catch (err) {
-    logger.error({ err }, `PayDisini create failed for ${order.orderCode}`);
+    logger.error({ err }, `Failed to create a PayDisini transaction for order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
     // The order shell exists but has no payment instructions — cancel it
     // rather than leaving an orphan PENDING_PAYMENT slot (Checkout-3 fix,
     // security audit 2026-06-23).
@@ -788,7 +788,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
         try { await ctx.api.deleteMessage(chatId, confirmMsgId); } catch { /* already gone or too old */ }
       }
     } catch (err) {
-      logger.error({ err }, "Failed to send PayDisini QR photo");
+      logger.error({ err }, `Failed to send the PayDisini QR code photo for order ${order.orderCode} — falling back to a text-only instructions bubble`);
       // QR image failed — fall back to a text-only instructions bubble.
       await smartEdit(ctx, caption, waitingKb);
     }

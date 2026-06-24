@@ -128,7 +128,7 @@ export async function approve(ctx: MyContext, orderId: number): Promise<void> {
         action: "approve_order",
         targetType: "order",
         targetId: orderId,
-        details: `order_code=${order.orderCode}`,
+        details: `Approved order ${order.orderCode}.`,
       });
       return order;
     });
@@ -216,7 +216,7 @@ export async function resendCredentials(ctx: MyContext, orderId: number): Promis
     // website. (The resend button isn't offered for these orders, but guard
     // anyway so Number(null) can never become a sendDocument target.)
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.resend_fail"), show_alert: true });
-    logger.info(`Resend skipped for order ${orderCode}: buyer is web-only (no Telegram id)`);
+    logger.info(`Resend skipped for order ${orderCode} — buyer is web-only (no Telegram id)`);
     return;
   }
 
@@ -226,7 +226,10 @@ export async function resendCredentials(ctx: MyContext, orderId: number): Promis
     logger.info(`Resent credentials for order ${orderCode} to user ${buyerTgId}`);
   } catch (err) {
     await ctx.answerCallbackQuery({ text: t(ctx, "admin.resend_fail"), show_alert: true });
-    logger.error({ err }, `Resend of credentials for order ${orderCode} to ${buyerTgId} still failed`);
+    logger.error(
+      { err },
+      `Resend of credentials for order ${orderCode} to buyer ${buyerTgId} failed again — admin notified, manual delivery may be needed`,
+    );
   }
 }
 
@@ -247,7 +250,7 @@ async function maybeAlertLowStock(ctx: MyContext, _userId: number): Promise<void
           { parse_mode: "HTML" },
         );
       } catch (err) {
-        logger.error({ err }, `Failed to send low-stock alert to admin ${adminId}`);
+        logger.error({ err }, `Failed to send low-stock alert to admin ${adminId} — they won't be notified this stock is running low`);
       }
     }
   }

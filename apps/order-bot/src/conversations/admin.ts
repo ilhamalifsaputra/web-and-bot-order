@@ -153,7 +153,7 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
       action: "stock_upload",
       targetType: "product",
       targetId: productId,
-      details: `added=${n} parse_skipped=${skippedCount} dedup_skipped=${skipped}`,
+      details: `Added ${n} items; skipped ${skippedCount} invalid lines and ${skipped} duplicates.`,
     });
     return { added: n, dedupSkipped: skipped };
   });
@@ -264,7 +264,7 @@ export async function voucherCreateConversation(conversation: MyConversation, ct
       action: "voucher_create",
       targetType: "voucher",
       targetId: v.id,
-      details: `code=${code} type=${vtype} value=${value} limit=${limit}`,
+      details: `Created voucher "${code}" (${vtype}, value ${value}, limit ${limit}).`,
     });
   });
 
@@ -398,7 +398,7 @@ export async function broadcastConversation(conversation: MyConversation, ctx: M
     const adminTg = ctx.from!.id;
     await prisma.$transaction(async (tx) => {
       const admin = await getUserByTelegramId(tx, adminTg);
-      await logAdminAction(tx, { adminId: adminIdOf(admin), action: "broadcast", details: `sent=${sent} failed=${failed}` });
+      await logAdminAction(tx, { adminId: adminIdOf(admin), action: "broadcast", details: `Broadcast sent to ${sent} users${failed ? ` (${failed} failed to deliver)` : ""}.` });
     });
     // Only released on a clean finish — if something throws between the
     // lock and here, the lock stays held (fails safe: a stuck lock needing
@@ -541,7 +541,7 @@ export async function settingConversation(conversation: MyConversation, ctx: MyC
       adminId: adminIdOf(admin),
       action: "setting_set",
       targetType: "setting",
-      details: `${key}=${displayValue}`,
+      details: `Changed setting "${key}" to "${displayValue}".`,
     });
   });
   await adminEdit(ctx, t(ctx, "admin.setting_updated", { key: esc(key) }), akb.backToAdminKb(lang));
@@ -772,7 +772,7 @@ export async function productCreateConversation(conversation: MyConversation, ct
       action: "product_create",
       targetType: "product",
       targetId: denom.id,
-      details: `name=${denom.name}`,
+      details: `Created product "${denom.name}".`,
     });
     return denom.name;
   });
@@ -820,7 +820,7 @@ export async function productEditConversation(conversation: MyConversation, ctx:
           action: "product_rename",
           targetType: "product",
           targetId: denominationId,
-          details: `name=${raw}`,
+          details: `Renamed product to "${raw}".`,
         });
       });
       await adminEdit(ctx, t(ctx, "admin.prod_renamed", { name: esc(raw) }), akb.backToAdminKb(lang));
@@ -844,7 +844,7 @@ export async function productEditConversation(conversation: MyConversation, ctx:
           action: "product_price",
           targetType: "product",
           targetId: denominationId,
-          details: `price=${p}`,
+          details: `Changed product price to ${p}.`,
         });
       });
       await adminEdit(ctx, t(ctx, "admin.prod_price_updated", { price: price(p) }), akb.backToAdminKb(lang));
@@ -911,7 +911,7 @@ export async function bulkPricingConversation(conversation: MyConversation, ctx:
       action: "bulk_pricing_set",
       targetType: "product",
       targetId: productId,
-      details: `min_qty=${minQty} discount_pct=${pct}`,
+      details: `Set bulk pricing: minimum quantity ${minQty}, discount ${pct}%.`,
     });
   });
 
@@ -945,7 +945,7 @@ export async function ticketReplyConversation(conversation: MyConversation, ctx:
       const media = ticket.photoFileIds.split(",").map((fid) => InputMediaBuilder.photo(fid));
       await ctx.api.sendMediaGroup(ctx.chat!.id, media);
     } catch (err) {
-      logger.error({ err }, "Failed to send ticket photos to admin");
+      logger.error({ err }, `Failed to send ticket ${ticketId}'s attached photos to the admin — reply prompt still shown, admin can ask the customer to resend them`);
     }
   }
 
@@ -992,7 +992,7 @@ export async function ticketReplyConversation(conversation: MyConversation, ctx:
         reply_markup: ticketResolvedKb(ticketId),
       });
     } catch (err) {
-      logger.error({ err }, `Failed to DM customer ${customerTgId} about ticket reply`);
+      logger.error({ err }, `Failed to DM customer ${customerTgId} with the admin's reply to ticket ${ticketId} — reply is saved in the DB, but the customer won't be notified`);
     }
   }
 }

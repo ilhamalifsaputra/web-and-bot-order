@@ -163,7 +163,7 @@ export async function deliverPaidBybitOrder(
         data: { status: OrderStatus.PENDING_VERIFICATION, bybitTxid: args.bybitTxId, paidAt: new Date() },
       });
       const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: 0 });
-      logger.info(`Auto-delivered Bybit order ${delivered.orderCode} (tx ${args.bybitTxId})`);
+      logger.info(`Auto-delivered Bybit order ${delivered.orderCode} for transaction ${args.bybitTxId}`);
       return { status: "delivered" as const, order: delivered, credentials };
     });
   } catch (e) {

@@ -95,8 +95,8 @@ async function bybitGet(path: string, params: Record<string, string>, cfg: Bybit
   const limitStatus = res.headers.get("X-Bapi-Limit-Status");
   if (limit != null || limitStatus != null) {
     logger.debug(
-      `Bybit ${path} rate-limit budget: limit=${limit} remaining=${limitStatus} ` +
-        `resetAt=${res.headers.get("X-Bapi-Limit-Reset-Timestamp")}`,
+      `Bybit ${path} reported its rate-limit budget — limit ${limit}, ${limitStatus} remaining, ` +
+        `resets at ${res.headers.get("X-Bapi-Limit-Reset-Timestamp")}`,
     );
   }
   if (res.status === 429 || res.status === 403) {
@@ -159,7 +159,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   try {
     await sendAccountFile(api, tgId, order, lang);
   } catch (err) {
-    logger.error({ err }, `account file DM failed for order ${order.orderCode}`);
+    logger.error({ err }, `Failed to DM the account file for order ${order.orderCode} — buyer paid but has not received their credentials yet`);
   }
 
   // Turn the payment-instructions bubble into a success message in place.
@@ -182,7 +182,7 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
     try {
       await api.sendMessage(adminId, text, { parse_mode: "HTML" });
     } catch (err) {
-      logger.error({ err }, `admin alert to ${adminId} failed`);
+      logger.error({ err }, `Failed to send admin alert to admin ${adminId} — they will not see this notification in Telegram`);
     }
   }
 }
@@ -219,7 +219,7 @@ export async function pollOnce(api: Api): Promise<void> {
       const { hitCount, delayMs } = backoff.recordRateLimit();
       logger.warn(`Bybit rate-limited (hit #${hitCount}) — backing off ${delayMs}ms`);
     } else {
-      logger.error({ err }, "Bybit deposit fetch failed");
+      logger.error({ err }, "Failed to fetch recent Bybit deposits — this poll cycle is skipped, pending orders stay unmatched until the next cycle");
     }
     await recordBybitPollHealth(prisma, {
       lastTxCount: 0,
@@ -235,7 +235,7 @@ export async function pollOnce(api: Api): Promise<void> {
   backoff.recordSuccess();
   const now = new Date();
   const orders = await listPendingBybitOrders(prisma, now);
-  if (deposits.length) logger.info(`Bybit poll: ${deposits.length} deposit(s) fetched, ${orders.length} pending order(s)`);
+  if (deposits.length) logger.info(`Bybit poll fetched ${deposits.length} deposit(s) against ${orders.length} pending order(s)`);
   await recordBybitPollHealth(prisma, { lastTxCount: deposits.length, backoffUntil: null, success: true }).catch(() => undefined);
 
   await processDeposits(api, deposits, orders);
@@ -255,7 +255,7 @@ export async function processDeposits(api: Api, deposits: BybitDeposit[], orders
     const order = matchByAmount({ amount: dep.amount }, orders, AMOUNT_TOLERANCE);
     if (!order) {
       if (await recordUnmatchedBybitTx(prisma, { bybitTxId: dep.txId, amount: dep.amount })) {
-        logger.info(`Unmatched Bybit deposit tx=${dep.txId} amount=${dep.amount}`);
+        logger.info(`No pending order matched Bybit deposit ${dep.txId} (amount: ${dep.amount}) — left for manual review`);
       }
       continue;
     }
@@ -263,14 +263,14 @@ export async function processDeposits(api: Api, deposits: BybitDeposit[], orders
     try {
       const r = await deliverPaidBybitOrder(prisma, { orderId: order.id, bybitTxId: dep.txId, amount: dep.amount });
       if (r.status === "delivered") {
-        logger.info(`Match(amount) → delivered Bybit order ${order.orderCode} (tx ${dep.txId})`);
+        logger.info(`Matched by amount — delivered Bybit order ${order.orderCode} (deposit ${dep.txId})`);
         await onDelivered(api, r.order);
       } else if (r.status === "stale") {
-        logger.warn(`Matched Bybit deposit ${dep.txId} but order ${order.orderCode} no longer PENDING`);
+        logger.warn(`Bybit deposit ${dep.txId} matched order ${order.orderCode} but it was no longer PENDING — skipped to avoid double delivery, admin alerted`);
         await alertAdmins(api, `⚠️ Bybit deposit matched <code>${order.orderCode}</code> but it was no longer pending (tx ${esc(dep.txId)}).`);
       }
     } catch (err) {
-      logger.error({ err }, `Delivery failed for Bybit order ${order.orderCode} tx ${dep.txId}`);
+      logger.error({ err }, `Bybit order ${order.orderCode} was paid (deposit ${dep.txId}) but delivery threw — admin alerted for manual action`);
       await alertAdmins(api, `⚠️ Paid but delivery FAILED for <code>${order.orderCode}</code> tx ${esc(dep.txId)} — ${esc(String(err).slice(0, 200))}. Manual action needed.`);
     }
   }
@@ -294,7 +294,7 @@ export function startPolling(api: Api): void {
       try {
         await pollOnce(api);
       } catch (err) {
-        logger.error({ err }, "Bybit poll cycle error");
+        logger.error({ err }, "Bybit poll cycle threw an unhandled error — the cycle was aborted, polling resumes on the next tick");
       } finally {
         isRunning = false;
       }

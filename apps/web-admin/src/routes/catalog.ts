@@ -239,7 +239,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       action: "category_create",
       targetType: "category",
       targetId: cat.id,
-      details: `name=${name}`,
+      details: `Created category "${name}".`,
     });
     return redirectWithFlash(reply, "/catalog", `Category '${name}' created.`, "success");
   });
@@ -262,7 +262,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       action: "category_update",
       targetType: "category",
       targetId: categoryId,
-      details: `name=${name}`,
+      details: `Updated category "${name}".`,
     });
     return redirectWithFlash(reply, "/catalog", "Category updated.", "success");
   });
@@ -276,7 +276,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       action: "category_toggle",
       targetType: "category",
       targetId: categoryId,
-      details: `is_active=${active}`,
+      details: `${active ? "Activated" : "Deactivated"} category ${categoryId}.`,
     });
     return redirectWithFlash(reply, "/catalog", "Category updated.", "success");
   });
@@ -297,7 +297,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       action: "product_bulk_active",
       targetType: "product",
       targetId: null,
-      details: `is_active=${isActive} count=${count} ids=${ids.join("|").slice(0, 180)}`,
+      details: `${isActive ? "Activated" : "Deactivated"} ${count} products.`,
     });
     return redirectWithFlash(reply, "/catalog", `${count} product(s) ${isActive ? "activated" : "deactivated"}.`, "success");
   });
@@ -351,7 +351,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       action: "product_csv_import",
       targetType: "product",
       targetId: null,
-      details: `count=${valid.length} names=${valid.map((r) => r.data!.denominationName).join(",").slice(0, 200)}`,
+      details: `Imported ${valid.length} products from CSV.`,
     });
     return redirectWithFlash(reply, "/catalog", `Imported ${valid.length} row(s).`, "success");
   });
@@ -377,7 +377,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       action: "product_create",
       targetType: "product",
       targetId: product.id,
-      details: `name=${name}`,
+      details: `Created product "${name}".`,
     });
     return redirectWithFlash(reply, "/catalog", `Product '${name}' created.`, "success");
   });
@@ -407,7 +407,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       action: "product_update",
       targetType: "product",
       targetId: productId,
-      details: `name=${name}`,
+      details: `Updated product "${name}".`,
     });
     return redirectWithFlash(reply, back, "Product updated.", "success");
   });
@@ -516,7 +516,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
         action: "product_photo_upload",
         targetType: "product",
         targetId: productId,
-        details: `filename=${filename}`,
+        details: `Uploaded a new photo (${filename}) for product ${productId}.`,
       });
       return redirectWithFlash(reply, back, "Photo uploaded.", "success");
     },
@@ -569,7 +569,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       action: "denomination_create",
       targetType: "denomination",
       targetId: denom.id,
-      details: `name=${name} productId=${productId}`,
+      details: `Created denomination "${name}" for product ${productId}.`,
     });
     return redirectWithFlash(reply, back, `Denomination '${name}' created.`, "success");
   });
@@ -650,7 +650,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       action: "denomination_update",
       targetType: "denomination",
       targetId: denominationId,
-      details: `name=${name}`,
+      details: `Updated denomination "${name}".`,
     });
     return redirectWithFlash(reply, back, "Denomination updated.", "success");
   });
@@ -722,7 +722,7 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
       action: "bulk_pricing_set",
       targetType: "denomination",
       targetId: denominationId,
-      details: `min_qty=${minq} pct=${pct.toString()}`,
+      details: `Set bulk pricing for denomination ${denominationId}: ${pct.toString()}% off at ${minq}+ quantity.`,
     });
     return redirectWithFlash(reply, back, "Bulk pricing saved.", "success");
   });

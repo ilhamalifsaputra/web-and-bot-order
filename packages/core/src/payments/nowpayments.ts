@@ -147,7 +147,7 @@ export function verifyIpn(
   const sorted = JSON.stringify(sortKeysDeep(body));
   const expected = createHmac("sha512", creds.ipnSecret).update(sorted).digest("hex");
   if (!constantTimeEqual(expected, signatureHeader.toLowerCase())) {
-    logger.warn("NOWPayments IPN signature mismatch");
+    logger.warn("NOWPayments IPN (Instant Payment Notification) webhook signature mismatch — rejecting the callback as unverified");
     return null;
   }
 

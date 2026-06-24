@@ -75,7 +75,7 @@ export default async function broadcastRoutes(app: FastifyInstance): Promise<voi
       action: "broadcast_enqueue",
       targetType: "broadcast",
       targetId: bc.id,
-      details: `segment=${segment} recipients=${total}${scheduledAt ? ` at=${scheduledAt.toISOString()}` : ""}`,
+      details: `${scheduledAt ? "Scheduled" : "Queued"} a broadcast to ${total} recipient(s) in segment "${segment}"${scheduledAt ? ` for ${scheduledAt.toISOString()}` : ""}.`,
     });
     const when = scheduledAt ? "scheduled" : "queued";
     return redirectWithFlash(reply, "/broadcast", `Broadcast ${when} for ${total} recipient(s). The bot will deliver it.`, "success");

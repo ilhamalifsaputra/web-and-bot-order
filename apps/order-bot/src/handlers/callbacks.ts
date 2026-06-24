@@ -60,7 +60,7 @@ const dispatchBrowse: DomainDispatcher = async (ctx, parts) => {
     await customer.browseDenomination(ctx, parseInt(parts[3]!, 10), parts[4] ? parseInt(parts[4]!, 10) : 1);
   else if (action === "popular") await customer.browsePopular(ctx);
   else {
-    logger.warn({ event: "dead_tap", action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, "stale browse callback");
+    logger.warn({ event: "dead_tap", action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Browse callback used an unrecognized action "${action}" — likely a button from a stale/pre-rename bubble, showing the stale-screen toast instead`);
     await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
   }
 };
@@ -202,7 +202,7 @@ export async function routeCallback(ctx: MyContext): Promise<void> {
   if (parts.length < 2 || parts[0] !== "v1") {
     // A button from an old bubble whose format we no longer speak — tell the
     // user the screen expired instead of silently swallowing the tap.
-    logger.warn({ event: "dead_tap", callbackData: cq.data, userId: ctx.from?.id }, "stale callback (non-v1 format)");
+    logger.warn({ event: "dead_tap", callbackData: cq.data, userId: ctx.from?.id }, "Callback tap used a pre-v1 data format the bot no longer speaks — showing the stale-screen toast instead of routing it");
     await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
     return;
   }
@@ -232,7 +232,7 @@ export async function routeCallback(ctx: MyContext): Promise<void> {
 
   const dispatcher = DOMAIN_ROUTES[domain!];
   if (dispatcher === undefined) {
-    logger.warn({ event: "dead_tap", domain, callbackData: cq.data, userId: ctx.from?.id }, "stale callback (unknown domain)");
+    logger.warn({ event: "dead_tap", domain, callbackData: cq.data, userId: ctx.from?.id }, `Callback tap used domain "${domain}", which has no registered dispatcher — showing the stale-screen toast instead of routing it`);
     try {
       await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
     } catch {
@@ -255,7 +255,7 @@ export async function routeCallback(ctx: MyContext): Promise<void> {
     try {
       await ctx.answerCallbackQuery({ text: t(ctx, "error.generic_ref", { ref }), show_alert: true });
     } catch {
-      logger.error(`Failed to deliver error popup for callback_data=${cq.data} ref=${ref}`);
+      logger.error(`Failed to show the error popup (ref ${ref}) for callback data "${cq.data}" — user got no feedback that their tap failed`);
     }
   }
 }
@@ -292,7 +292,7 @@ async function closeTicketUser(ctx: MyContext, ticketId: number): Promise<void> 
         { parse_mode: "HTML" },
       );
     } catch (err) {
-      logger.error({ err }, "Failed to notify admin about ticket close");
+      logger.error({ err }, `Failed to notify admin chat ${chatId} that user ${ctx.from!.id} closed support ticket #${ticketId} — admins relying on that chat won't see the resolution`);
     }
   }
 }

@@ -57,7 +57,7 @@ export async function createWebUser(
           lastSeenAt: now,
         },
       });
-      logger.info(`Registered new web user id=${user.id}`);
+      logger.info(`Registered new web user ${user.id}`);
       return user;
     } catch (e) {
       if (isUniqueViolation(e) && mapUniqueViolation(e) === "retry") continue;

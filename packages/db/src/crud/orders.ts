@@ -263,7 +263,7 @@ export async function createOrderFromCart(
   // 11. Clear cart
   await clearCart(db, args.user.id);
 
-  logger.info(`Created order ${orderCode} for user ${args.user.id} total computed`);
+  logger.info(`Created order ${orderCode} for user ${args.user.id} with totals computed`);
   return getOrder(db, order.id);
 }
 
@@ -365,7 +365,7 @@ export async function createOrderDirect(
   });
 
   logger.info(
-    `Created direct order ${orderCode} user=${args.user.id} product=${args.productId} qty=${args.quantity}`,
+    `Created direct order ${orderCode} for user ${args.user.id}, product ${args.productId}, quantity ${args.quantity}`,
   );
   return getOrder(db, order.id);
 }
@@ -591,7 +591,7 @@ export async function cancelOrder(db: Db, orderId: number, reason: string) {
       adminNote: `${order.adminNote ?? ""}\n[cancel] ${reason}`,
     },
   });
-  logger.info(`Cancelled order ${order.orderCode} reason=${reason}`);
+  logger.info(`Cancelled order ${order.orderCode} — reason: ${reason}`);
   return getOrder(db, orderId);
 }
 
@@ -671,7 +671,7 @@ export async function creditOrderToBalance(
   }
 
   logger.info(
-    `Credited order ${order.orderCode} (${amount.toString()} ${currency}) to buyer's credit balance by admin=${args.adminId}`,
+    `Credited order ${order.orderCode} (${amount.toString()} ${currency}) to buyer's credit balance — approved by admin ${args.adminId}`,
   );
   return { credited: amount, currency };
 }
@@ -696,7 +696,7 @@ export async function rejectOrder(
       adminNote: `${order.adminNote ?? ""}\n[reject] by admin_id=${args.adminId}: ${args.reason}`,
     },
   });
-  logger.info(`Rejected order ${order.orderCode} by admin ${args.adminId}: ${args.reason}`);
+  logger.info(`Rejected order ${order.orderCode} by admin ${args.adminId} — reason: ${args.reason}`);
   return getOrder(db, orderId);
 }
 
@@ -776,7 +776,7 @@ export async function approveOrder(
       action: "order.auto_deliver",
       targetType: "order",
       targetId: order.id,
-      details: `code=${order.orderCode}`,
+      details: `Auto-delivered order ${order.orderCode}.`,
     });
   }
 
@@ -823,7 +823,7 @@ export async function approveOrder(
     });
   }
 
-  logger.info(`Approved + delivered order ${order.orderCode} (admin=${args.adminId})`);
+  logger.info(`Approved and delivered order ${order.orderCode} by admin ${args.adminId}`);
   const refreshed = await getOrder(db, order.id);
   return { order: refreshed!, credentials };
 }

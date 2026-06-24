@@ -135,9 +135,7 @@ async function main(): Promise<void> {
     action: "web_admin_password_reset_cli",
     targetType: "web_admin",
     targetId: null,
-    details:
-      `telegram_id=${telegramId} mode=${newPassword !== null ? "set" : "clear"} ` +
-      `2fa=${keep2fa ? "kept" : "cleared"}`,
+    details: `Reset web-admin login for Telegram ID ${telegramId} via CLI: password ${newPassword !== null ? "set to a new value" : "cleared"}, 2FA ${keep2fa ? "kept" : "cleared"}.`,
   });
 
   console.log(`\n✓ Reset done for ${telegramId} (${label}).`);

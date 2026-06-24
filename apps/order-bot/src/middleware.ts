@@ -37,7 +37,7 @@ export const registeredUser: MiddlewareFn<MyContext> = async (ctx, next) => {
   ctx.session.lang = langCode(user.language);
 
   if (user.banned) {
-    logger.info(`Banned user ${from.id} blocked`);
+    logger.info(`Banned user ${from.id} tried to use the bot — blocked and shown the ban-reason message`);
     const msg = t(ctx, "error.banned", { reason: user.bannedReason ?? "-" });
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: msg, show_alert: true });
     else await ctx.reply(msg);
@@ -68,7 +68,7 @@ export const rateLimit: MiddlewareFn<MyContext> = async (ctx, next) => {
   const dq = buckets.get(from.id) ?? [];
   while (dq.length && dq[0]! <= now - window) dq.shift();
   if (dq.length >= max) {
-    logger.warn(`Rate limit hit for user ${from.id}`);
+    logger.warn(`User ${from.id} exceeded the rate limit (${max} actions per ${window}s) — this update is dropped silently`);
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.rate_limited") });
     buckets.set(from.id, dq);
     return; // drop silently
@@ -81,7 +81,7 @@ export const rateLimit: MiddlewareFn<MyContext> = async (ctx, next) => {
 /** Guard: only ADMIN_IDS proceed; others get a polite refusal. */
 export const adminOnly: MiddlewareFn<MyContext> = async (ctx, next) => {
   if (!ctx.from || !isAdmin(ctx.from.id)) {
-    logger.warn(`Non-admin ${ctx.from?.id} tried an admin action`);
+    logger.warn(`User ${ctx.from?.id} tried an admin-only action without admin rights — refused`);
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.admin_only"), show_alert: true });
     else await ctx.reply(t(ctx, "error.admin_only"));
     return;

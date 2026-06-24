@@ -62,7 +62,7 @@ describe("POST /settings/payments/toggle", () => {
     const row = await prisma.auditLog.findFirst({ where: { action: "payment_method_toggle" } });
     expect(row).toBeTruthy();
     expect(row?.targetType).toBe("setting");
-    expect(row?.details).toBe("bybit_enabled=false");
+    expect(row?.details).toBe("Turned Bybit off.");
     expect(row?.adminId).toBe(adminId);
   });
 
@@ -91,7 +91,7 @@ describe("POST /settings/payments/toggle", () => {
     // The save still happens and is audited, same as the redirect path.
     expect(await getSetting(prisma, "bybit_enabled")).toBe("false");
     const row = await prisma.auditLog.findFirst({ where: { action: "payment_method_toggle" } });
-    expect(row?.details).toBe("bybit_enabled=false");
+    expect(row?.details).toBe("Turned Bybit off.");
   });
 
   it("rejects an unknown method (whitelist guardrail) without writing anything", async () => {

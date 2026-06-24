@@ -66,8 +66,8 @@ export async function refreshUsdIdrRate(db: Db, opts: { force?: boolean } = {}):
   if (previous && rate.equals(previous)) return { status: "unchanged", rate, market };
   await setSetting(db, USD_IDR_RATE_KEY, rate.toString());
   logger.info(
-    `usd_idr_rate ${previous ? `updated ${previous.toString()} ->` : "set to"} ${rate.toString()} ` +
-      `(market ${market.toString()}, step ${step})`,
+    `USD/IDR rate ${previous ? `updated from ${previous.toString()} to` : "set to"} ${rate.toString()} ` +
+      `(market rate ${market.toString()}, rounded to the nearest ${step})`,
   );
   return { status: "updated", rate, market, previous };
 }
@@ -217,7 +217,7 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
     },
   });
   logger.info(
-    `Order ${order.orderCode} finalized as USDT (${usdt.toString()} @ ${rate.toString()}, method=${method})`,
+    `Order ${order.orderCode} finalized as USDT (${usdt.toString()} @ ${rate.toString()}, via ${method})`,
   );
   return getOrder(db, orderId);
 }

@@ -101,7 +101,7 @@ export async function handleUpload(
     adminId: req.admin!.userId,
     action: opts.auditAction,
     targetType: "setting",
-    details: `filename=${filename}`,
+    details: `Uploaded a new ${opts.kind} image (${filename}).`,
   });
   return redirectWithFlash(reply, opts.redirectPath, "Saved.", "success");
 }

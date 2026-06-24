@@ -99,7 +99,7 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
         action: "underpaid_deliver",
         targetType: "order",
         targetId: orderId,
-        details: `order_code=${order.orderCode}`,
+        details: `Delivered underpaid order ${order.orderCode} anyway.`,
       });
     } catch (e) {
       if (e instanceof ValidationError) {
@@ -107,7 +107,7 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
       }
       throw e;
     }
-    logger.info(`Underpaid order ${orderId} delivered via web by admin_id=${req.admin!.userId}`);
+    logger.info(`Admin ${req.admin!.userId} delivered underpaid order ${orderId} anyway via the web panel`);
     return redirectWithFlash(reply, "/payments", "Underpaid order delivered.", "success");
   });
 
@@ -120,7 +120,7 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
         action: "underpaid_refund",
         targetType: "order",
         targetId: orderId,
-        details: `refunded=${refunded.toString()}`,
+        details: `Refunded ${refunded.toString()} to the buyer's wallet for an underpaid order.`,
       });
     } catch (e) {
       if (e instanceof ValidationError) {
@@ -176,7 +176,7 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
         action: "tx_manual_match",
         targetType: "order",
         targetId: order.id,
-        details: `tx=${binanceTxId} order_code=${order.orderCode}`,
+        details: `Matched transfer ${binanceTxId} to order ${order.orderCode}.`,
       });
     } catch (e) {
       if (e instanceof ValidationError) {
@@ -184,7 +184,7 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
       }
       throw e;
     }
-    logger.info(`Tx ${binanceTxId} manually matched to ${orderCode} via web by admin_id=${req.admin!.userId}`);
+    logger.info(`Admin ${req.admin!.userId} manually matched Binance transfer ${binanceTxId} to order ${orderCode} via the web panel`);
     return redirectWithFlash(reply, "/payments", "Transfer matched and order delivered.", "success");
   });
 
@@ -222,7 +222,7 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
           action: "tx_credit_balance",
           targetType: "order",
           targetId: target.id,
-          details: `tx=${binanceTxId} order_code=${target.orderCode} credited=${credited.toString()} ${currency}`,
+          details: `Credited transfer ${binanceTxId} (${credited.toString()} ${currency}) to order ${target.orderCode}'s buyer balance.`,
         });
       });
     } catch (e) {
@@ -234,7 +234,7 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
       }
       throw e;
     }
-    logger.info(`Tx ${binanceTxId} credited to ${orderCode}'s buyer balance via web by admin_id=${req.admin!.userId}`);
+    logger.info(`Admin ${req.admin!.userId} credited Binance transfer ${binanceTxId} to order ${orderCode}'s buyer balance via the web panel`);
     return redirectWithFlash(reply, "/payments", "Payment added to the buyer's credit balance.", "success");
   });
 
@@ -252,7 +252,7 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
           adminId: req.admin!.userId,
           action: "tx_dismiss",
           targetType: "payment",
-          details: `tx=${binanceTxId}`,
+          details: `Dismissed unmatched transfer ${binanceTxId}.`,
         });
       });
     } catch (e) {
@@ -261,7 +261,7 @@ export default async function paymentsRoutes(app: FastifyInstance): Promise<void
       }
       throw e;
     }
-    logger.info(`Unmatched tx ${binanceTxId} dismissed via web by admin_id=${req.admin!.userId}`);
+    logger.info(`Admin ${req.admin!.userId} dismissed unmatched Binance transfer ${binanceTxId} via the web panel`);
     return redirectWithFlash(reply, "/payments", "Payment dismissed.", "success");
   });
 }

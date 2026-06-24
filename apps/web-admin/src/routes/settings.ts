@@ -295,7 +295,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
           adminId: req.admin!.userId,
           action: "setting_set",
           targetType: "setting",
-          details: `usd_idr_rate=${r.rate.toString()} (market refresh)`,
+          details: `Refreshed the USDT rate from the market to Rp${r.rate.toString()}.`,
         });
         return flashOrRedirect(
           req,
@@ -306,7 +306,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
         );
       }
     } catch (err) {
-      logger.warn({ err }, "Manual FX refresh failed");
+      logger.warn({ err }, "Manual USDT exchange-rate refresh failed — keeping the previously saved rate");
     }
     return flashOrRedirect(
       req,
@@ -335,7 +335,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       adminId: req.admin!.userId,
       action: "payment_method_toggle",
       targetType: "setting",
-      details: `${method.enabledKey}=${value}`,
+      details: `Turned ${method.label} ${value === "true" ? "on" : "off"}.`,
     });
     const verb = value === "true" ? "on" : "off";
     return flashOrRedirect(req, reply, "/settings", `${method.label} turned ${verb}.`, "success");
@@ -368,7 +368,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
           adminId: req.admin!.userId,
           action: "setting_clear",
           targetType: "setting",
-          details: key,
+          details: `Cleared setting "${key}".`,
         });
         return flashOrRedirect(
           req,
@@ -398,7 +398,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
         adminId: req.admin!.userId,
         action: "setting_set",
         targetType: "setting",
-        details: `${key}=(updated)`, // never the value
+        details: `Changed setting "${key}" (updated).`, // never the value
       });
       return flashOrRedirect(
         req,
@@ -419,7 +419,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       if (value === "-") {
         await deleteSetting(prisma, key);
         await logAdminAction(prisma, {
-          adminId: req.admin!.userId, action: "setting_clear", targetType: "setting", details: key,
+          adminId: req.admin!.userId, action: "setting_clear", targetType: "setting", details: `Cleared setting "${key}".`,
         });
         return flashOrRedirect(req, reply, "/settings", "Channel cleared. After a restart the server's own configuration is used again.", "success");
       }
@@ -438,7 +438,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       await setSetting(prisma, key, String(check.id));
       await logAdminAction(prisma, {
         adminId: req.admin!.userId, action: "setting_set", targetType: "setting",
-        details: `${key}=${check.id}`, // channel id is public, fine to log
+        details: `Changed setting "${key}" to ${check.id}.`, // channel id is public, fine to log
       });
       return flashOrRedirect(req, reply, "/settings", `Channel saved (resolved to ${check.id}). Restart the app to apply.`, "success");
     }
@@ -451,7 +451,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       adminId: req.admin!.userId,
       action: "setting_set",
       targetType: "setting",
-      details: `${key}=${displayValue}`,
+      details: `Changed setting "${key}" to "${displayValue}".`,
     });
     return flashOrRedirect(req, reply, "/settings", `Setting '${key}' updated.`, "success");
   });
@@ -480,7 +480,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       action: "web_password_change",
       targetType: "setting", // never log the password itself
     });
-    logger.info(`Web admin password changed for telegram_id=${req.admin!.telegramId}`);
+    logger.info(`Web admin with Telegram id ${req.admin!.telegramId} changed their own password`);
     return flashOrRedirect(req, reply, "/settings", "Password changed.", "success");
   });
 }

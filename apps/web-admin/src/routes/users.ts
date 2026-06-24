@@ -96,7 +96,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       action: "user_set_role",
       targetType: "user",
       targetId: userId,
-      details: `role=${roleUpper}`,
+      details: `Changed role to "${roleUpper}".`,
     });
     return redirectWithFlash(reply, `/users/${userId}`, `Role set to ${roleUpper}.`, "success");
   });
@@ -114,7 +114,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       action: doBan ? "user_ban" : "user_unban",
       targetType: "user",
       targetId: userId,
-      details: `reason=${(body.reason ?? "").trim().slice(0, 200)}`,
+      details: `${doBan ? "Banned" : "Unbanned"} the user. Reason: "${(body.reason ?? "").trim().slice(0, 200)}".`,
     });
     return redirectWithFlash(reply, `/users/${userId}`, doBan ? "User banned." : "User unbanned.", "success");
   });
@@ -156,7 +156,7 @@ export default async function usersRoutes(app: FastifyInstance): Promise<void> {
       action: "wallet_adjust",
       targetType: "user",
       targetId: userId,
-      details: `delta=${deltaDec.toString()} note=${note.slice(0, 160)}`,
+      details: `Adjusted wallet by ${deltaDec.toString()}. Note: "${note.slice(0, 160)}".`,
     });
     return redirectWithFlash(reply, `/users/${userId}`, `Wallet adjusted. New balance: ${newBalance.toString()}.`, "success");
   });

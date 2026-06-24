@@ -58,14 +58,14 @@ const adminId = (admin: { id: number } | null) => (admin ? admin.id : 0);
 
 export async function adminCommand(ctx: MyContext): Promise<void> {
   if (!ctx.from || !isAdmin(ctx.from.id)) {
-    logger.warn(`Non-admin ${ctx.from?.id} tried /admin`);
+    logger.warn(`Non-admin user ${ctx.from?.id} tried to open /admin — request blocked, user is not in the admin id list`);
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.admin_only"), show_alert: true });
     else await ctx.reply(t(ctx, "error.admin_only"));
     return;
   }
   const lang = ctx.session.lang;
   if (ctx.message) ctx.session.adminMsgId = undefined; // drop the old anchor
-  logger.info(`admin_command: user=${ctx.from?.id} via=${ctx.callbackQuery ? "cb" : "cmd"}`);
+  logger.info(`Admin command from user ${ctx.from?.id} via ${ctx.callbackQuery ? "a callback button" : "a typed command"}`);
 
   const pending = await listPendingVerifications(prisma, 200);
   await adminEdit(ctx, t(ctx, "admin.menu"), akb.adminMenu(lang, pending.length));
@@ -206,7 +206,7 @@ async function userSetReseller(ctx: MyContext, userId: number, on: boolean): Pro
       action: "user_set_reseller",
       targetType: "user",
       targetId: userId,
-      details: `role=${newRole}`,
+      details: `Set user's role to ${newRole}.`,
     });
   });
   await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.role_set", { role: newRole }), show_alert: true });
@@ -223,7 +223,7 @@ async function userWalletPrompt(ctx: MyContext, userId: number): Promise<void> {
 /** `/wallet <user_db_id> <amount>` — manual wallet adjustment by admin. */
 export async function adminWalletCommand(ctx: MyContext): Promise<void> {
   if (!ctx.from || !isAdmin(ctx.from.id)) {
-    logger.warn(`Non-admin ${ctx.from?.id} tried /wallet`);
+    logger.warn(`Non-admin user ${ctx.from?.id} tried to use /wallet — request blocked, user is not in the admin id list`);
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.admin_only"), show_alert: true });
     else await ctx.reply(t(ctx, "error.admin_only"));
     return;
@@ -231,7 +231,7 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
   ctx.session.adminMsgId = undefined;
   const lang = ctx.session.lang;
   const args = (typeof ctx.match === "string" ? ctx.match : "").trim().split(/\s+/).filter(Boolean);
-  logger.info(`admin_wallet_command: user=${ctx.from?.id} args=${args.join(" ")}`);
+  logger.info(`Admin wallet command from user ${ctx.from?.id} with args "${args.join(" ")}"`);
   if (args.length !== 2) {
     await adminEdit(ctx, t(ctx, "admin.wallet_usage"), akb.backToAdminKb(lang));
     return;
@@ -259,12 +259,12 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
         action: "wallet_adjust",
         targetType: "user",
         targetId: uid,
-        details: `delta=${amt} new_balance=${bal}`,
+        details: `Adjusted wallet by ${amt}; new balance is ${bal}.`,
       });
       return bal;
     });
   } catch (err) {
-    logger.error({ err }, "wallet adjust failed");
+    logger.error({ err }, `Wallet adjustment for user ${uid} failed — balance was not changed, admin shown a failure message`);
     await adminEdit(ctx, t(ctx, "admin.wallet_failed"), akb.backToAdminKb(lang));
     return;
   }
@@ -391,7 +391,7 @@ async function toggleProduct(ctx: MyContext, denominationId: number): Promise<vo
       action: "product_toggle",
       targetType: "product",
       targetId: denominationId,
-      details: `is_active=${newState}`,
+      details: `${newState ? "Activated" : "Deactivated"} this product.`,
     });
   });
   await ctx.answerCallbackQuery({ text: t(ctx, newState ? "admin.toast.product_activated" : "admin.toast.product_deactivated") });
@@ -539,7 +539,7 @@ async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void>
       const buyerLang = buyer ? langCode(buyer.language) : "en";
       await ctx.api.sendMessage(Number(customerTgId), coreT("support.ticket_closed", buyerLang), { parse_mode: "HTML" });
     } catch (err) {
-      logger.error({ err }, "Failed to notify user about ticket close");
+      logger.error({ err }, `Failed to notify customer ${customerTgId} that their support ticket ${ticketId} was closed — ticket is closed in the DB, but they won't see a DM about it`);
     }
   }
   await adminEdit(ctx, t(ctx, "admin.ticket_closed_body", { id: ticketId }), akb.backToAdminKb(lang));
@@ -568,7 +568,7 @@ export async function notifyRestockSubscribers(ctx: MyContext, productId: number
         { parse_mode: "HTML" },
       );
     } catch (err) {
-      logger.error({ err }, `Failed to notify restock subscriber ${tgId}`);
+      logger.error({ err }, `Failed to notify restock subscriber ${tgId} about "${productName}" being back in stock — their subscription was already consumed, they won't be retried`);
     }
   }
 }
@@ -599,7 +599,7 @@ async function undoBannerRemoval(ctx: MyContext): Promise<void> {
       adminId: adminId(admin),
       action: "setting_set",
       targetType: "setting",
-      details: "banner_image=restored_via_undo",
+      details: `Restored the banner image via undo.`,
     });
   });
   await ctx.answerCallbackQuery({ text: t(ctx, "admin.banner_restored") });

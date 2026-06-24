@@ -74,7 +74,7 @@ export default async function adminsRoutes(app: FastifyInstance): Promise<void> 
       action: "web_admin_set_role",
       targetType: "web_admin",
       targetId: null,
-      details: `telegram_id=${tgId} role=${role}`,
+      details: `Set admin (Telegram ID ${tgId}) role to "${role}".`,
     });
     return redirectWithFlash(reply, "/admins", `Role for ${tgId} set to ${role}.`, "success");
   });
@@ -96,7 +96,7 @@ export default async function adminsRoutes(app: FastifyInstance): Promise<void> 
       action: "web_admin_add",
       targetType: "web_admin",
       targetId: null,
-      details: `telegram_id=${tgId}`,
+      details: `Added admin (Telegram ID ${tgId}).`,
     });
     return redirectWithFlash(reply, "/admins", `Admin ${tgId} added.`, "success");
   });
@@ -116,7 +116,7 @@ export default async function adminsRoutes(app: FastifyInstance): Promise<void> 
       action: "web_admin_remove",
       targetType: "web_admin",
       targetId: null,
-      details: `telegram_id=${tgId}`,
+      details: `Removed admin (Telegram ID ${tgId}).`,
     });
     return redirectWithFlash(reply, "/admins", `Admin ${tgId} removed.`, "success");
   });
@@ -137,7 +137,7 @@ export default async function adminsRoutes(app: FastifyInstance): Promise<void> 
       action: "web_admin_force_logout",
       targetType: "web_admin",
       targetId: null,
-      details: `telegram_id=${tgId}`,
+      details: `Forced logout of admin (Telegram ID ${tgId}).`,
     });
     return redirectWithFlash(reply, "/admins", `Forced logout of ${tgId}.`, "success");
   });

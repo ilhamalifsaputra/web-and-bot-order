@@ -273,7 +273,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   try {
     await sendAccountFile(api, tgId, order, lang);
   } catch (err) {
-    logger.error({ err }, `account file DM failed for order ${order.orderCode}`);
+    logger.error({ err }, `Failed to DM the account file for order ${order.orderCode} — buyer paid but has not received their credentials yet`);
   }
 
   // Turn the payment-instructions bubble into a success message in place.
@@ -296,7 +296,7 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
     try {
       await api.sendMessage(adminId, text, { parse_mode: "HTML" });
     } catch (err) {
-      logger.error({ err }, `admin alert to ${adminId} failed`);
+      logger.error({ err }, `Failed to send admin alert to admin ${adminId} — they will not see this notification in Telegram`);
     }
   }
 }
@@ -321,7 +321,7 @@ export async function pollOnce(api: Api): Promise<void> {
       const { hitCount, delayMs } = backoff.recordRateLimit();
       logger.warn(`Binance rate-limited (hit #${hitCount}) — backing off ${delayMs}ms`);
     } else {
-      logger.error({ err }, "Binance transfer fetch failed");
+      logger.error({ err }, "Failed to fetch incoming Binance transfers — this poll cycle is skipped, pending orders stay unmatched until the next cycle");
     }
     // Heartbeat so the web ops panel shows the poller is alive (and backing off).
     await recordBinancePollHealth(prisma, {
@@ -338,7 +338,7 @@ export async function pollOnce(api: Api): Promise<void> {
   backoff.recordSuccess();
   const now = new Date();
   const orders = await listPendingInternalOrders(prisma, now);
-  if (txs.length) logger.info(`Binance poll: ${txs.length} tx fetched, ${orders.length} pending order(s)`);
+  if (txs.length) logger.info(`Binance poll fetched ${txs.length} transfer(s) against ${orders.length} pending order(s)`);
   await recordBinancePollHealth(prisma, { lastTxCount: txs.length, backoffUntil: null, success: true }).catch(() => undefined);
 
   await processTransfers(api, txs, orders);
@@ -368,7 +368,7 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
     const order = byNote ?? (config.USE_UNIQUE_CENTS ? matchByAmount(tx, orders) : undefined);
     if (!order) {
       if (await recordUnmatchedTx(prisma, { binanceTxId: tx.txId, amount: tx.amount })) {
-        logger.info(`Unmatched transfer tx=${tx.txId} note=${tx.note} amount=${tx.amount}`);
+        logger.info(`No pending order matched Binance transfer ${tx.txId} (note: "${tx.note}", amount: ${tx.amount}) — left for manual review`);
       }
       continue;
     }
@@ -377,7 +377,7 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
     const cls = byNote ? classifyTx(tx, order) : "match";
     if (cls === "underpaid") {
       if (await markUnderpaid(prisma, { orderId: order.id, binanceTxId: tx.txId, amount: tx.amount })) {
-        logger.warn(`Underpaid order ${order.orderCode}: got ${tx.amount}, expected ${order.totalAmount}`);
+        logger.warn(`Order ${order.orderCode} underpaid — received ${tx.amount}, expected ${order.totalAmount}, left PENDING for manual review`);
         await alertAdmins(
           api,
           `⚠️ Underpaid order <code>${order.orderCode}</code>\nReceived <b>${tx.amount}</b>, expected <b>${order.totalAmount}</b> (tx ${esc(tx.txId)}).`,
@@ -390,14 +390,14 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
       try {
         const r = await deliverPaidInternalOrder(prisma, { orderId: order.id, binanceTxId: tx.txId, amount: tx.amount });
         if (r.status === "delivered") {
-          logger.info(`Match(${matchedBy}) → delivered order ${order.orderCode} (tx ${tx.txId})`);
+          logger.info(`Matched by ${matchedBy} — delivered order ${order.orderCode} (transfer ${tx.txId})`);
           await onDelivered(api, r.order);
         } else if (r.status === "stale") {
-          logger.warn(`Matched tx ${tx.txId} but order ${order.orderCode} no longer PENDING`);
+          logger.warn(`Transfer ${tx.txId} matched order ${order.orderCode} but it was no longer PENDING — skipped to avoid double delivery, admin alerted`);
           await alertAdmins(api, `⚠️ Transfer matched <code>${order.orderCode}</code> but it was no longer pending (tx ${esc(tx.txId)}).`);
         }
       } catch (err) {
-        logger.error({ err }, `Delivery failed for order ${order.orderCode} tx ${tx.txId}`);
+        logger.error({ err }, `Order ${order.orderCode} was paid (transfer ${tx.txId}) but delivery threw — admin alerted for manual action`);
         await alertAdmins(api, `⚠️ Paid but delivery FAILED for <code>${order.orderCode}</code> tx ${esc(tx.txId)} — ${esc(String(err).slice(0, 200))}. Manual action needed.`);
       }
     }
@@ -422,7 +422,7 @@ export function startPolling(api: Api): void {
       try {
         await pollOnce(api);
       } catch (err) {
-        logger.error({ err }, "Binance poll cycle error");
+        logger.error({ err }, "Binance poll cycle threw an unhandled error — the cycle was aborted, polling resumes on the next tick");
       } finally {
         isRunning = false;
       }

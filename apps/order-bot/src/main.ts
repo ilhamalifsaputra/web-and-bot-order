@@ -103,7 +103,7 @@ export function buildBot(token?: string): Bot<MyContext> {
   // Buttons from pre-migration bubbles (non-v1 data) would otherwise hang the
   // tap spinner forever — answer them with a "screen expired" toast.
   bot.on("callback_query", async (ctx) => {
-    logger.warn({ event: "dead_tap", callbackData: ctx.callbackQuery.data, userId: ctx.from?.id }, "stale callback (pre-migration)");
+    logger.warn({ event: "dead_tap", callbackData: ctx.callbackQuery.data, userId: ctx.from?.id }, "User tapped a button from a bubble rendered before the callback-data format migration — answering with a stale-screen toast instead of routing it");
     try {
       await ctx.answerCallbackQuery({ text: coreT("error.stale_screen", ctx.session.lang) });
     } catch {
@@ -123,12 +123,12 @@ export function buildBot(token?: string): Bot<MyContext> {
     const ref = newErrorRef();
     const bits: string[] = [`ref=${ref}`];
     if (ctx.from) bits.push(`user=${ctx.from.id}`);
-    if (ctx.callbackQuery?.data) bits.push(`cb=${ctx.callbackQuery.data}`);
+    if (ctx.callbackQuery?.data) bits.push(`callback_button=${ctx.callbackQuery.data}`);
     // L-8: never log the raw user text — it can carry TxIDs, support messages, or
     // other sensitive input. Record only that a text update was in flight + its
     // length, which is enough to correlate via `ref` without leaking content.
-    else if (ctx.message?.text) bits.push(`msglen=${ctx.message.text.length}`);
-    logger.error({ err: err.error, ref }, `Unhandled error in grammY [${bits.join(" ")}]`);
+    else if (ctx.message?.text) bits.push(`text_length=${ctx.message.text.length}`);
+    logger.error({ err: err.error, ref }, `Unhandled error while processing a Telegram update [${bits.join(" ")}] — user saw a generic error with this ref, check the stack trace below`);
 
     // Best-effort: tell the user something broke (with the ref), so an uncaught
     // exception doesn't leave them staring at a dead screen. Never rethrow here.
@@ -188,12 +188,12 @@ export async function setupCommandMenu(bot: Bot<MyContext>): Promise<void> {
       try {
         await bot.api.setMyCommands(adminCommands, { scope: { type: "chat", chat_id: adminId } });
       } catch {
-        logger.warn(`Could not set admin commands for ${adminId}`);
+        logger.warn(`Could not register the admin command menu for admin ${adminId} — they'll still see the general command list`);
       }
     }
-    logger.info("Bot command menu configured");
+    logger.info("Telegram command menu configured (general + per-admin command lists)");
   } catch (err) {
-    logger.error({ err }, "Failed to configure bot command menu");
+    logger.error({ err }, "Failed to configure the Telegram command menu — users may see a stale or empty command list until this is retried");
   }
 }
 
@@ -225,7 +225,7 @@ export async function start(): Promise<void> {
   if (!creds.botToken) {
     logger.error(
       "Bot token is not configured — set it in web-admin Settings or BOT_TOKEN env. " +
-        "Bot stays off; FX auto-update keeps running.",
+        "Bot stays off; the USD/IDR exchange-rate auto-update keeps running.",
     );
     return;
   }
@@ -240,7 +240,7 @@ export async function start(): Promise<void> {
   try {
     setBotIdentity({ botUsername: (await bot.api.getMe()).username });
   } catch (err) {
-    logger.warn({ err }, "getMe failed; using configured bot_username if any");
+    logger.warn({ err }, "Failed to fetch the bot's username from Telegram (getMe) — falling back to the bot_username configured in Settings, if any; referral links may be wrong until this resolves");
   }
   await setupCommandMenu(bot);
   scheduleJobs(bot.api);
@@ -252,9 +252,9 @@ export async function start(): Promise<void> {
   try {
     await bot.api.deleteWebhook({ drop_pending_updates: true });
   } catch (err) {
-    logger.warn({ err }, "deleteWebhook failed (continuing; pending updates not dropped)");
+    logger.warn({ err }, "Failed to drop pending Telegram updates queued during downtime — continuing startup, but stale button taps from before the restart may get reprocessed");
   }
-  logger.info("Bot is starting up");
+  logger.info("Bot is starting up — wiring middleware, launching the polling runner and payment pollers");
 
   const runner = run(bot, {
     runner: {
@@ -266,7 +266,7 @@ export async function start(): Promise<void> {
   guardRunnerTask(runner.task(), (err) => {
     logger.error(
       { err },
-      "Bot polling stopped (invalid bot_token?) — fix it in web-admin Settings, then restart.",
+      "Bot polling stopped unexpectedly, most likely because the bot token is invalid — FX auto-update and payment reconciliation keep running; fix the token in web-admin Settings, then restart to retry.",
     );
   });
 
@@ -278,7 +278,7 @@ export async function start(): Promise<void> {
   startNowpaymentsPolling(bot.api); // NOWPayments / USDT invoice reconcile (webhook safety net)
 
   const stop = async () => {
-    logger.info("Shutting down…");
+    logger.info("Received shutdown signal — stopping payment pollers and the Telegram polling runner");
     stopPolling();
     stopBybitPolling();
     stopTokopayPolling();
@@ -299,7 +299,7 @@ const isEntry =
   import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isEntry) {
   start().catch((err) => {
-    logger.error({ err }, "Fatal error during startup");
+    logger.error({ err }, "Bot startup failed — exiting the process so the supervisor (e.g. Docker restart policy) can retry");
     process.exit(1);
   });
 }

@@ -89,7 +89,7 @@ export default async function vouchersRoutes(app: FastifyInstance): Promise<void
       action: "voucher_create",
       targetType: "voucher",
       targetId: v.id,
-      details: `code=${code} type=${typeUpper} value=${valueDec.toString()} limit=${limit}`,
+      details: `Created voucher "${code}" (${typeUpper}, value ${valueDec.toString()}, limit ${limit}).`,
     });
     return redirectWithFlash(reply, "/vouchers", `Voucher '${code}' created.`, "success");
   });
@@ -106,7 +106,7 @@ export default async function vouchersRoutes(app: FastifyInstance): Promise<void
       action: "voucher_toggle",
       targetType: "voucher",
       targetId: voucherId,
-      details: `is_active=${active}`,
+      details: `${active ? "Activated" : "Deactivated"} the voucher.`,
     });
     return redirectWithFlash(reply, "/vouchers", "Voucher updated.", "success");
   });

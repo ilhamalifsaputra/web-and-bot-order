@@ -127,10 +127,10 @@ export async function deliverPaidPaydisiniOrder(
           currency: order.currency,
         });
         logger.warn(
-          `PayDisini order ${delivered.orderCode} overpaid: got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency})`,
+          `PayDisini order ${delivered.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
         );
       }
-      logger.info(`Auto-delivered PayDisini order ${delivered.orderCode} (trx ${args.trxId})`);
+      logger.info(`Auto-delivered PayDisini order ${delivered.orderCode} for transaction ${args.trxId}`);
       return { status: "delivered" as const, order: delivered, credentials };
     });
   } catch (e) {

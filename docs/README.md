@@ -28,6 +28,7 @@ mengganti, ketiga file itu — hindari duplikasi, ikuti link saat tumpang tindih
 | [INVENTORY_SYSTEM.md](INVENTORY_SYSTEM.md) | Stok, reservasi, dedup, restock subscription |
 | [PAYMENT_GATEWAY.md](PAYMENT_GATEWAY.md) | 5 metode bayar — webhook, signature, reconcile poller |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Gejala umum → diagnosis → fix |
+| [LOGGING.md](LOGGING.md) | Konvensi penulisan log: audit log (kalimat untuk admin toko) vs Pino (pesan untuk developer/ops) |
 | [SECURITY.md](SECURITY.md) | Model otorisasi, RBAC, CSRF, ringkasan audit keamanan |
 | [ROLLBACK.md](ROLLBACK.md) | Rollback kode, DB, migrasi, deploy gagal |
 | [VERSIONING.md](VERSIONING.md) | Skema semantic versioning untuk repo ini |

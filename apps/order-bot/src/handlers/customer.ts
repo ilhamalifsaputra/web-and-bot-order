@@ -379,7 +379,7 @@ export async function handleProductNumber(ctx: MyContext): Promise<void> {
   }
 
   const productId = entries[idx - 1]!;
-  logger.debug(`handle_product_number: user selected idx=${idx} product=${productId}`);
+  logger.debug(`Customer selected product #${idx} (product ${productId}) by typing its list number`);
   await browseProduct(ctx, productId);
 }
 
@@ -465,7 +465,7 @@ export async function browseDenomination(
   try {
     d = await getDenominationWithProduct(prisma, denominationId);
     if (d === null) {
-      logger.warn(`browse_denomination: denomination_id=${denominationId} not found`);
+      logger.warn(`Denomination ${denominationId} not found — likely deleted/deactivated between render and tap, showing a try-again screen instead of a crash`);
       // Expected-but-rare (denomination deleted/deactivated between render and
       // tap) — transient copy, no ref. Forward action so it isn't a dead end.
       if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.try_again"), show_alert: true });

@@ -56,7 +56,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   app.addHook("onResponse", (req, reply, done) => {
     logger.info(
       { method: req.method, path: req.url.split("?", 1)[0], status: reply.statusCode, ms: Math.round(reply.elapsedTime) },
-      "access",
+      "Handled web admin request",
     );
     done();
   });
@@ -81,7 +81,7 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // Friendly error page; never log the request body (it may carry secrets).
   app.setErrorHandler((err, req, reply) => {
-    logger.error({ err, method: req.method, path: req.url }, "Unhandled web error");
+    logger.error({ err, method: req.method, path: req.url }, "Unhandled error in a web admin request — serving the generic error page instead of crashing");
     if (!reply.sent) {
       void reply.code(500).view("error.njk", {
         admin: null,

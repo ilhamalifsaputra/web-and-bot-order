@@ -145,7 +145,7 @@ export function verifyCallback(
     .update(`${creds.merchantId}:${creds.secret}:${refId}`)
     .digest("hex");
   if (!constantTimeEqual(expected, signature.toLowerCase())) {
-    logger.warn(`TokoPay callback signature mismatch for ref ${refId}`);
+    logger.warn(`TokoPay callback signature mismatch for reference ${refId} — rejecting the callback as unverified`);
     return null;
   }
 

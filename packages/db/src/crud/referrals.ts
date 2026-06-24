@@ -45,7 +45,7 @@ export async function maybePayReferralCommission(
       order.fxRate != null ? new Decimal(order.fxRate) : await getUsdIdrRate(db);
     if (!rate || rate.lessThanOrEqualTo(0)) {
       logger.warn(
-        `Skipping referral commission for ${order.orderCode}: IDR order but no usd_idr_rate to convert`,
+        `Skipping referral commission for order ${order.orderCode} — it's an IDR order but no USD/IDR exchange rate is available to convert it to the USDT wallet`,
       );
       return;
     }
@@ -69,6 +69,6 @@ export async function maybePayReferralCommission(
   });
   await adjustWallet(db, user.referredById, commission, { reason: "referral", orderId: order.id });
   logger.info(
-    `Paid referral commission ${commission} to user_id=${user.referredById} for order=${order.orderCode}`,
+    `Paid referral commission ${commission} to user ${user.referredById} for order ${order.orderCode}`,
   );
 }

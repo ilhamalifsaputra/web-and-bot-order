@@ -72,7 +72,7 @@ export async function rejectConversation(conversation: MyConversation, ctx: MyCo
         action: "reject_order",
         targetType: "order",
         targetId: orderId,
-        details: `reason=${reason}`,
+        details: `Rejected order: ${reason}`,
       });
       return o!;
     });
@@ -99,7 +99,7 @@ export async function rejectConversation(conversation: MyConversation, ctx: MyCo
         { parse_mode: "HTML", reply_markup: notificationKb(buyerLang) },
       );
     } catch (err) {
-      logger.error({ err }, "Failed to notify buyer of rejection");
+      logger.error({ err }, `Failed to notify buyer ${buyerTgId} that order ${orderCode} was rejected — order is rejected in the DB, but they won't see a DM about it`);
     }
   }
 

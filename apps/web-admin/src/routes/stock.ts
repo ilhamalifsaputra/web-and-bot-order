@@ -94,9 +94,9 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
       action: "stock_upload",
       targetType: "product",
       targetId: productId,
-      details: `added=${added} skipped=${skipped}`, // never log the credentials themselves
+      details: `Added ${added} stock items; skipped ${skipped} duplicates.`, // never log the credentials themselves
     });
-    logger.info(`Bulk-added ${added} stock rows to product ${productId} (${skipped} duplicate skipped)`);
+    logger.info(`Bulk-added ${added} stock items to product ${productId} (skipped ${skipped} duplicate lines)`);
     const msg = skipped > 0 ? `Added ${added} stock item(s). Skipped ${skipped} duplicate(s).` : `Added ${added} stock item(s).`;
     return redirectWithFlash(reply, back, msg, "success");
   });
@@ -121,9 +121,9 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
       action: "stock_bulk_dead",
       targetType: "product",
       targetId: productId,
-      details: `count=${count} note=${note.slice(0, 160)}`, // never the credentials
+      details: `Marked ${count} stock items dead. Note: "${note.slice(0, 160)}".`, // never the credentials
     });
-    logger.info(`Bulk-marked ${count} stock rows dead on product ${productId}`);
+    logger.info(`Bulk-marked ${count} stock items dead on product ${productId}`);
     return redirectWithFlash(reply, back, `${count} stock item(s) marked dead.`, "success");
   });
 
@@ -147,9 +147,9 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
       action: "stock_bulk_delete",
       targetType: "product",
       targetId: productId,
-      details: `requested=${ids.length} deleted=${count}`, // never the credentials
+      details: `Deleted ${count} of ${ids.length} requested stock items.`, // never the credentials
     });
-    logger.info(`Bulk-deleted ${count} stock rows on product ${productId}`);
+    logger.info(`Bulk-deleted ${count} stock items on product ${productId}`);
     const skipped = ids.length - count;
     const tail = skipped > 0 ? ` (${skipped} skipped — sold or in an order)` : "";
     return redirectWithFlash(reply, back, `${count} stock item(s) deleted${tail}.`, "success");
@@ -171,7 +171,7 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
       action: "stock_download",
       targetType: "product",
       targetId: productId,
-      details: `count=${creds.length}`, // never the credentials
+      details: `Downloaded ${creds.length} available credentials.`, // never the credentials
     });
     const slug = product.name.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "stock";
     const body = creds.length ? creds.join("\n") + "\n" : "";
@@ -196,7 +196,7 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
       action: "stock_mark_dead",
       targetType: "stock_item",
       targetId: stockId,
-      details: `note=${note.slice(0, 200)}`,
+      details: `Marked stock item dead. Note: "${note.slice(0, 200)}".`,
     });
     return redirectWithFlash(reply, back, `Stock item #${stockId} marked dead.`, "success");
   });
@@ -215,7 +215,7 @@ export default async function stockRoutes(app: FastifyInstance): Promise<void> {
       action: "stock_edit_note",
       targetType: "stock_item",
       targetId: stockId,
-      details: `note=${note.slice(0, 200)}`,
+      details: `Updated stock item note to: "${note.slice(0, 200)}".`,
     });
     return redirectWithFlash(reply, back, `Note updated on item #${stockId}.`, "success");
   });

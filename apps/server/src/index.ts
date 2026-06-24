@@ -177,19 +177,19 @@ async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal
   // the dispatcher only touches `bot.api`, which is invariant in C.
   const dedicated = notifBotToken();
   if (!dedicated && !mainBot) {
-    logger.warn("Notifier disabled (no notifier token and the main bot is off)");
+    logger.warn("Notifier disabled — no notifier token is configured and the main bot is off, so outbox notifications cannot be delivered");
     return;
   }
   const notifBot: Bot = dedicated ? new Bot(dedicated) : (mainBot as unknown as Bot);
   try {
     if (dedicated) await notifBot.init();
     logger.info(
-      `Notifier started -> channel ${publicChannelId() ?? "(none — DMs only)"} ` +
-        `(token=${dedicated ? "dedicated" : "main-bot"})`,
+      `Notifier started, publishing to channel ${publicChannelId() ?? "(none configured — DMs only)"} ` +
+        `using the ${dedicated ? "dedicated notifier" : "main"} bot token`,
     );
     await runDispatcher(notifBot, signal);
   } catch (err) {
-    logger.error({ err }, "Notifier dispatcher exited unexpectedly");
+    logger.error({ err }, "Notifier dispatcher exited unexpectedly — outbox notifications will stop being delivered until the process restarts");
   }
 }
 
@@ -205,9 +205,9 @@ export async function start(): Promise<void> {
   const missingLedgers = await missingTables(prisma, [...PAYMENT_LEDGER_TABLES]);
   if (missingLedgers.length) {
     logger.error(
-      `DB SCHEMA DRIFT: missing table(s) ${missingLedgers.join(", ")}. ` +
-        "Payment delivery WILL FAIL for the affected gateway(s). " +
-        "Run `pnpm prisma db push` against the live DB, then restart.",
+      `Database schema drift detected — missing payment-ledger table(s): ${missingLedgers.join(", ")} ` +
+        "— payment delivery will fail for the affected gateway(s). " +
+        "Run `pnpm prisma db push` against the live database, then restart.",
     );
   }
 
@@ -235,7 +235,7 @@ export async function start(): Promise<void> {
     try {
       setBotIdentity({ botUsername: (await bot.api.getMe()).username });
     } catch (err) {
-      logger.warn({ err }, "getMe failed; using configured bot_username if any");
+      logger.warn({ err }, "Failed to fetch the bot's own username from Telegram (getMe call) — falling back to the bot_username configured in Settings, if any");
     }
     // Best-effort command menu (logs internally, never throws).
     await setupCommandMenu(bot);
@@ -251,7 +251,7 @@ export async function start(): Promise<void> {
         try {
           await bot.api.sendMessage(id, driftMsg, { parse_mode: "HTML" });
         } catch (err) {
-          logger.error({ err }, `startup drift alert to ${id} failed`);
+          logger.error({ err }, `Failed to DM the startup schema-drift alert to admin ${id} — the schema drift log entry above is the only remaining warning they'll get`);
         }
       }
     }
@@ -321,11 +321,11 @@ export async function start(): Promise<void> {
         drop_pending_updates: true,
         allowed_updates: [...ALLOWED_UPDATES],
       });
-      logger.info("Webhook registered"); // never log the URL — it carries the secret
+      logger.info("Telegram webhook registered — the bot will now receive updates via HTTP POST instead of long polling"); // never log the URL — it carries the secret
     } catch (err) {
       logger.error(
         { err },
-        "Webhook setup failed (invalid bot_token?) — bot is OFF. Fix Settings → bot token, then restart.",
+        "Webhook setup failed, most likely because the bot token is invalid — the bot stays off while the web keeps serving; fix the token in Settings, then restart to retry.",
       );
     }
   } else {
@@ -333,13 +333,13 @@ export async function start(): Promise<void> {
     try {
       await bot.api.deleteWebhook({ drop_pending_updates: true });
     } catch (err) {
-      logger.warn({ err }, "deleteWebhook failed (continuing; pending updates not dropped)");
+      logger.warn({ err }, "Failed to clear a leftover Telegram webhook before starting long polling — continuing anyway, but any updates queued for the old webhook were not dropped");
     }
     runner = run(bot, { runner: { fetch: { allowed_updates: [...ALLOWED_UPDATES] } } });
     guardRunnerTask(runner.task(), (err) => {
       logger.error(
         { err },
-        "Bot polling stopped (invalid bot_token?) — fix it in web-admin Settings, then restart.",
+        "Bot polling stopped unexpectedly, most likely because the bot token is invalid — the web keeps serving; fix the token in web-admin Settings, then restart to retry.",
       );
     });
     logger.info("Order bot started (long polling)");
@@ -350,7 +350,7 @@ export async function start(): Promise<void> {
   const shutdown = async (sig: string, exitCode = 0): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
-    logger.info(`Received ${sig}, shutting down…`);
+    logger.info(`Received ${sig} signal — starting graceful shutdown`);
     try {
       for (const job of jobs) job.stop();
       stopPolling();
@@ -373,7 +373,7 @@ export async function start(): Promise<void> {
       await shop.close();
       await prisma.$disconnect();
     } catch (err) {
-      logger.error({ err }, "Error during shutdown");
+      logger.error({ err }, "Graceful shutdown hit an error partway through — exiting anyway, some cleanup steps (server close, bot/DB disconnect) may have been skipped");
     } finally {
       process.exit(exitCode);
     }
@@ -390,7 +390,7 @@ const isEntry =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isEntry) {
   start().catch((err) => {
-    logger.error({ err }, "Fatal error during startup");
+    logger.error({ err }, "Fatal error during startup — the process never finished booting and is exiting now");
     process.exit(1);
   });
 }

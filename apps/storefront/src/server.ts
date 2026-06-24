@@ -55,7 +55,7 @@ export async function buildApp(): Promise<FastifyInstance> {
     const path = rawPath.replace(/^\/reset\/[^/]+/, "/reset/[redacted]");
     logger.info(
       { method: req.method, path, status: reply.statusCode, ms: Math.round(reply.elapsedTime) },
-      "access",
+      "Handled a storefront HTTP request",
     );
     done();
   });
@@ -79,7 +79,7 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // Friendly error + 404 pages; never log the request body (may carry secrets).
   app.setErrorHandler((err, req, reply) => {
-    logger.error({ err, method: req.method, path: req.url }, "Unhandled storefront error");
+    logger.error({ err, method: req.method, path: req.url }, "Unhandled error in a storefront request — serving the generic error page to the visitor");
     if (!reply.sent) {
       const lang = requestLang(req);
       void reply.code(500).view("error.njk", {

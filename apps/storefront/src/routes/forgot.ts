@@ -61,7 +61,7 @@ const forgotRoutes: FastifyPluginAsync = async (app) => {
               `Abaikan email ini jika kamu tidak memintanya — kata sandimu tidak berubah.`,
           });
         } catch (e) {
-          logger.error({ err: e }, "Failed to send password reset mail");
+          logger.error({ err: e }, "Failed to send the password reset email — the user still sees the generic check-your-inbox confirmation, so they have no signal to retry");
         }
       }
     }

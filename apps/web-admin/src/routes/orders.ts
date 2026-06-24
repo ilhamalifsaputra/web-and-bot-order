@@ -95,7 +95,7 @@ export default async function ordersRoutes(app: FastifyInstance): Promise<void> 
           action: "approve_order",
           targetType: "order",
           targetId: orderId,
-          details: `order_code=${order.orderCode}`,
+          details: `Approved order ${order.orderCode}.`,
         });
       });
     } catch (e) {
@@ -105,7 +105,7 @@ export default async function ordersRoutes(app: FastifyInstance): Promise<void> 
       throw e;
     }
     // NB: never put credentials in the redirect URL — they'd leak into logs.
-    logger.info(`Order ${orderId} approved via web by admin_id=${req.admin!.userId}`);
+    logger.info(`Admin ${req.admin!.userId} approved and delivered order ${orderId} via the web panel`);
     return redirectWithFlash(
       reply,
       `/orders/${orderId}`,
@@ -127,7 +127,7 @@ export default async function ordersRoutes(app: FastifyInstance): Promise<void> 
           action: "order_credit_balance",
           targetType: "order",
           targetId: orderId,
-          details: `credited=${credited.toString()} ${currency}`,
+          details: `Credited order ${orderId}'s paid amount (${credited.toString()} ${currency}) to the buyer's balance.`,
         });
       });
     } catch (e) {
@@ -136,7 +136,7 @@ export default async function ordersRoutes(app: FastifyInstance): Promise<void> 
       }
       throw e;
     }
-    logger.info(`Order ${orderId} paid amount credited to buyer balance via web by admin_id=${req.admin!.userId}`);
+    logger.info(`Admin ${req.admin!.userId} credited order ${orderId}'s paid amount to the buyer's balance via the web panel`);
     return redirectWithFlash(
       reply,
       `/orders/${orderId}`,
@@ -159,7 +159,7 @@ export default async function ordersRoutes(app: FastifyInstance): Promise<void> 
           action: "reject_order",
           targetType: "order",
           targetId: orderId,
-          details: `reason=${reason.slice(0, 200)}`,
+          details: `Rejected order ${orderId}: ${reason.slice(0, 200)}`,
         });
       });
     } catch (e) {
@@ -168,7 +168,7 @@ export default async function ordersRoutes(app: FastifyInstance): Promise<void> 
       }
       throw e;
     }
-    logger.info(`Order ${orderId} rejected via web by admin_id=${req.admin!.userId}`);
+    logger.info(`Admin ${req.admin!.userId} rejected order ${orderId} via the web panel`);
     return redirectWithFlash(reply, `/orders/${orderId}`, "Order rejected.", "success");
   });
 }

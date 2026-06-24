@@ -3,6 +3,7 @@ import type { PrismaClient } from "@prisma/client";
 import { Decimal } from "@app/core/money";
 import { config } from "@app/core/config";
 import { PaymentMethod } from "@app/core/enums";
+import { usdtFromIdr, computeUniqueCents } from "@app/core/formatters";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { addToCart, createOrderFromCart } from "@app/db";
@@ -110,5 +111,76 @@ describe("finalizeOrderPayment — PaymentChoice widening (PAYDISINI/NOWPAYMENTS
     const actualMs = order!.expiresAt!.getTime();
     // Allow a small skew for test execution time between `before` and the call.
     expect(Math.abs(actualMs - expectedMs)).toBeLessThan(5_000);
+  });
+});
+
+// Checkout-4's collision-avoidance generalized from a BYBIT-only literal to
+// `paymentMethod: method` so it covers BYBIT_BSC too. These prove the pool
+// scoping is genuinely per-method: a same-amount pending order under the
+// OTHER Bybit rail must never be treated as a collision, while one under the
+// SAME rail still is.
+describe("finalizeOrderPayment — BYBIT vs BYBIT_BSC collision-avoidance is scoped per method", () => {
+  let sample: SampleData;
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  async function makeOrder() {
+    await addToCart(prisma, sample.user.id, sample.product.id, 1);
+    return (await createOrderFromCart(prisma, { user: sample.user }))!;
+  }
+
+  /** What finalizeOrderPayment computes on its FIRST attempt, before any
+   * collision-avoidance retry — matches its own baseIdr/usdt/cents math. */
+  function firstAttemptTotal(order: { totalAmount: Decimal.Value; uniqueCents: Decimal.Value; id: number }, rate: Decimal.Value) {
+    const baseIdr = new Decimal(order.totalAmount).minus(order.uniqueCents);
+    return usdtFromIdr(baseIdr, rate).plus(computeUniqueCents(order.id));
+  }
+
+  it("a same-amount pending order under the OTHER Bybit method never triggers a bump", async () => {
+    const original = config.USE_UNIQUE_CENTS;
+    config.USE_UNIQUE_CENTS = true;
+    try {
+      const target = await makeOrder();
+      const rate = new Decimal("16000");
+      const expectedTotal = firstAttemptTotal(target, rate);
+
+      // Seed a PENDING, not-expired BYBIT order with the EXACT amount
+      // BYBIT_BSC's first attempt will compute — without per-method scoping
+      // this would force target's totalAmount to bump away from it.
+      const decoy = await makeOrder();
+      await prisma.order.update({
+        where: { id: decoy.id },
+        data: { paymentMethod: PaymentMethod.BYBIT, currency: "USDT", totalAmount: expectedTotal, expiresAt: new Date(Date.now() + 60_000) },
+      });
+
+      const finalized = await finalizeOrderPayment(prisma, target.id, { currency: "USDT", rate, method: PaymentMethod.BYBIT_BSC });
+      expect(new Decimal(finalized!.totalAmount).equals(expectedTotal)).toBe(true);
+    } finally {
+      config.USE_UNIQUE_CENTS = original;
+    }
+  });
+
+  it("control: a same-amount pending order under the SAME method does trigger a bump", async () => {
+    const original = config.USE_UNIQUE_CENTS;
+    config.USE_UNIQUE_CENTS = true;
+    try {
+      const target = await makeOrder();
+      const rate = new Decimal("16000");
+      const expectedTotal = firstAttemptTotal(target, rate);
+
+      const decoy = await makeOrder();
+      await prisma.order.update({
+        where: { id: decoy.id },
+        data: { paymentMethod: PaymentMethod.BYBIT_BSC, currency: "USDT", totalAmount: expectedTotal, expiresAt: new Date(Date.now() + 60_000) },
+      });
+
+      const finalized = await finalizeOrderPayment(prisma, target.id, { currency: "USDT", rate, method: PaymentMethod.BYBIT_BSC });
+      expect(new Decimal(finalized!.totalAmount).equals(expectedTotal)).toBe(false);
+    } finally {
+      config.USE_UNIQUE_CENTS = original;
+    }
   });
 });

@@ -24,18 +24,28 @@ import { isUniqueViolation } from "./_types";
 import { getOrder, approveOrder } from "./orders";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting } from "./settings";
+import { parseMinAmount } from "./_minAmount";
+
+/** Minimum-payment-amount note shown at checkout (IDR) — blank = no note. */
+export const PAYDISINI_MIN_AMOUNT_KEY = "paydisini_min_amount";
 
 /** Read PayDisini gateway credentials from Settings; null = the QRIS/e-wallet path is off. */
-export async function getPaydisiniCreds(db: Db): Promise<PaydisiniCreds | null> {
-  const [userKey, apiKey, enabled, channel] = await Promise.all([
+export async function getPaydisiniCreds(db: Db): Promise<(PaydisiniCreds & { minAmount: Decimal | null }) | null> {
+  const [userKey, apiKey, enabled, channel, minAmountSetting] = await Promise.all([
     getSetting(db, PAYDISINI_USERKEY_KEY),
     getSetting(db, PAYDISINI_APIKEY_KEY),
     getSetting(db, PAYDISINI_ENABLED_KEY),
     getSetting(db, PAYDISINI_CHANNEL_KEY),
+    getSetting(db, PAYDISINI_MIN_AMOUNT_KEY),
   ]);
   if (!userKey || !apiKey) return null;
   if ((enabled ?? "").trim().toLowerCase() === "false") return null;
-  return { userKey, apiKey, channel: (channel ?? "QRIS").trim() || "QRIS" };
+  return {
+    userKey,
+    apiKey,
+    channel: (channel ?? "QRIS").trim() || "QRIS",
+    minAmount: parseMinAmount(minAmountSetting),
+  };
 }
 
 /** PENDING, not-yet-expired PayDisini orders the reconcile poller should check. */

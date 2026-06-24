@@ -36,6 +36,7 @@ import { routeCallback } from "./handlers/callbacks";
 import { scheduleJobs, scheduleFxRefresh } from "./jobs";
 import { startPolling, stopPolling } from "./payments/binanceInternal";
 import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "./payments/bybitDeposit";
+import { startPolling as startBybitBscPolling, stopPolling as stopBybitBscPolling } from "./payments/bybitBscDeposit";
 import { startPolling as startTokopayPolling, stopPolling as stopTokopayPolling } from "./payments/tokopayReconcile";
 import { startPolling as startPaydisiniPolling, stopPolling as stopPaydisiniPolling } from "./payments/paydisiniReconcile";
 import { startPolling as startNowpaymentsPolling, stopPolling as stopNowpaymentsPolling } from "./payments/nowpaymentsReconcile";
@@ -272,7 +273,8 @@ export async function start(): Promise<void> {
 
   // Crypto auto-confirmation pollers (each a no-op unless its creds are set).
   startPolling(bot.api); // Binance Internal Transfer
-  startBybitPolling(bot.api); // Bybit USDT-BSC deposits
+  startBybitPolling(bot.api); // Bybit Internal Transfer deposits
+  startBybitBscPolling(bot.api); // Bybit BSC on-chain (BEP20) deposits
   startTokopayPolling(bot.api); // TokoPay / QRIS reconcile (webhook safety net)
   startPaydisiniPolling(bot.api); // PayDisini / QRIS reconcile (webhook safety net)
   startNowpaymentsPolling(bot.api); // NOWPayments / USDT invoice reconcile (webhook safety net)
@@ -281,6 +283,7 @@ export async function start(): Promise<void> {
     logger.info("Received shutdown signal — stopping payment pollers and the Telegram polling runner");
     stopPolling();
     stopBybitPolling();
+    stopBybitBscPolling();
     stopTokopayPolling();
     stopPaydisiniPolling();
     stopNowpaymentsPolling();

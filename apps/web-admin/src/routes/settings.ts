@@ -5,6 +5,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { logger } from "@app/core/logger";
+import { Decimal } from "@app/core/money";
 import {
   prisma,
   listAllSettings,
@@ -14,6 +15,7 @@ import {
   logAdminAction,
   refreshUsdIdrRate,
   getBybitPollHealth,
+  getBybitBscPollHealth,
 } from "@app/db";
 import {
   hashPassword,
@@ -52,24 +54,36 @@ const EDITABLE: Record<string, string> = {
   tokopay_merchant_id: "TokoPay merchant ID",
   tokopay_secret: "TokoPay secret key",
   tokopay_enabled: "Rupiah payments on the website — true / false",
+  tokopay_min_amount: "Minimum payment shown to buyers for TokoPay (IDR) — leave blank to hide the note",
   paydisini_userkey: "PayDisini user key",
   paydisini_apikey: "PayDisini API key",
   paydisini_enabled: "Rupiah payments via PayDisini on the website — true / false",
   paydisini_default_channel: "PayDisini channel/service code — default QRIS",
+  paydisini_min_amount: "Minimum payment shown to buyers for PayDisini (IDR) — leave blank to hide the note",
   nowpayments_api_key: "NOWPayments API key",
   nowpayments_ipn_secret: "NOWPayments IPN secret (verifies payment callbacks)",
   nowpayments_enabled: "USDT payments via NOWPayments on the website — true / false",
   nowpayments_pay_currency: "Underlying crypto network for NOWPayments — e.g. usdttrc20 (USDT on TRON), usdtbsc, usdterc20",
+  nowpayments_min_amount: "Minimum payment shown to buyers for NOWPayments (USDT) — leave blank to hide the note",
   // ---- Bybit Internal Transfer (UID-based auto-confirm; leave blank to disable) ----
   bybit_uid: "Bybit UID for Internal Transfer shown to buyers",
-  bybit_api_key: "Bybit API key — Wallet READ-ONLY (no Withdraw)",
-  bybit_api_secret: "Bybit API secret",
-  bybit_enabled: "Bybit USDT deposits on the website — true / false",
+  bybit_api_key: "Bybit API key — Wallet READ-ONLY (no Withdraw); shared with Bybit BSC below",
+  bybit_api_secret: "Bybit API secret — shared with Bybit BSC below",
+  bybit_enabled: "Bybit Internal Transfer USDT deposits on the website — true / false",
+  bybit_min_amount: "Minimum payment shown to buyers for Bybit Internal Transfer (USDT) — leave blank to hide the note",
+  // ---- Bybit BSC on-chain (BEP20 auto-confirm; leave blank to disable) — a
+  // second, separate Bybit method alongside Internal Transfer above. Shares
+  // the same API key/secret (same exchange account), only the deposit
+  // address is specific to this method. ----
+  bybit_bsc_deposit_address: "Bybit BSC (BEP20) deposit address shown to buyers",
+  bybit_bsc_enabled: "Bybit BSC on-chain USDT deposits on the website — true / false",
+  bybit_bsc_min_amount: "Minimum payment shown to buyers for Bybit BSC (USDT) — leave blank to hide the note",
   // ---- Binance Internal Transfer (UID-based auto-confirm; leave blank to disable) ----
   binance_receive_uid: "Binance UID buyers transfer to (Internal Transfer)",
   binance_api_key: "Binance API key — READ-ONLY (no trading/withdraw)",
   binance_api_secret: "Binance API secret",
   binance_internal_enabled: "Binance Internal Transfer on the website — true / false",
+  binance_internal_min_amount: "Minimum payment shown to buyers for Binance Internal Transfer (USDT) — leave blank to hide the note",
   // ---- Bot & notifications (plan.md §16.1) ----
   bot_token: "Order Bot token — the main @YourBot that receives customer orders (get from BotFather → /mybots → API Token); restart the app after saving",
   bot_username: "Bot username without the @ — filled in automatically when you save the Order Bot token above",
@@ -89,11 +103,12 @@ const BOT_MESSAGE_KEYS = new Set(["support_contact"]);
 const BRANDING_KEYS = new Set(["shop_name", "shop_tagline", "welcome", "banner_image"]);
 const BOT_TOKEN_FIELD_KEYS = new Set(["bot_token", "bot_username", "notif_bot_token", "public_channel_id"]);
 const PAY_RATE_KEYS = new Set(["usd_idr_rate", "usd_idr_rate_auto", "usd_idr_rate_rounding"]);
-const PAY_QRIS_KEYS = new Set(["tokopay_merchant_id", "tokopay_secret", "tokopay_enabled"]);
-const PAY_PAYDISINI_KEYS = new Set(["paydisini_userkey", "paydisini_apikey", "paydisini_enabled", "paydisini_default_channel"]);
-const PAY_NOWPAYMENTS_KEYS = new Set(["nowpayments_api_key", "nowpayments_ipn_secret", "nowpayments_enabled", "nowpayments_pay_currency"]);
-const PAY_BYBIT_KEYS = new Set(["bybit_uid", "bybit_api_key", "bybit_api_secret", "bybit_enabled"]);
-const PAY_BINANCE_INTERNAL_KEYS = new Set(["binance_receive_uid", "binance_api_key", "binance_api_secret", "binance_internal_enabled"]);
+const PAY_QRIS_KEYS = new Set(["tokopay_merchant_id", "tokopay_secret", "tokopay_enabled", "tokopay_min_amount"]);
+const PAY_PAYDISINI_KEYS = new Set(["paydisini_userkey", "paydisini_apikey", "paydisini_enabled", "paydisini_default_channel", "paydisini_min_amount"]);
+const PAY_NOWPAYMENTS_KEYS = new Set(["nowpayments_api_key", "nowpayments_ipn_secret", "nowpayments_enabled", "nowpayments_pay_currency", "nowpayments_min_amount"]);
+const PAY_BYBIT_KEYS = new Set(["bybit_uid", "bybit_api_key", "bybit_api_secret", "bybit_enabled", "bybit_min_amount"]);
+const PAY_BYBIT_BSC_KEYS = new Set(["bybit_bsc_deposit_address", "bybit_bsc_enabled", "bybit_bsc_min_amount"]);
+const PAY_BINANCE_INTERNAL_KEYS = new Set(["binance_receive_uid", "binance_api_key", "binance_api_secret", "binance_internal_enabled", "binance_internal_min_amount"]);
 
 // Per-method on/off toggle — the whitelist guardrail for POST /settings/payments/toggle.
 // `enabledKey` is the *_enabled settings key; `credKeys` are the credential keys whose
@@ -106,6 +121,7 @@ const PAYMENT_METHODS: Record<string, { enabledKey: string; credKeys: string[]; 
   paydisini: { enabledKey: "paydisini_enabled", credKeys: ["paydisini_userkey", "paydisini_apikey"], label: "PayDisini" },
   nowpayments: { enabledKey: "nowpayments_enabled", credKeys: ["nowpayments_api_key", "nowpayments_ipn_secret"], label: "NOWPayments" },
   bybit: { enabledKey: "bybit_enabled", credKeys: ["bybit_uid", "bybit_api_key", "bybit_api_secret"], label: "Bybit" },
+  bybit_bsc: { enabledKey: "bybit_bsc_enabled", credKeys: ["bybit_bsc_deposit_address", "bybit_api_key", "bybit_api_secret"], label: "Bybit BSC (on-chain)" },
   binance_internal: { enabledKey: "binance_internal_enabled", credKeys: ["binance_receive_uid", "binance_api_key", "binance_api_secret"], label: "Binance Internal Transfer" },
 };
 
@@ -171,7 +187,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     const grouped = new Set([
       ...WEBSITE_KEYS, ...BOT_MESSAGE_KEYS, ...BOT_TOKEN_FIELD_KEYS,
       ...PAY_RATE_KEYS, ...PAY_QRIS_KEYS, ...PAY_PAYDISINI_KEYS, ...PAY_NOWPAYMENTS_KEYS, ...PAY_BYBIT_KEYS,
-      ...PAY_BINANCE_INTERNAL_KEYS, ...BRANDING_KEYS,
+      ...PAY_BYBIT_BSC_KEYS, ...PAY_BINANCE_INTERNAL_KEYS, ...BRANDING_KEYS,
     ]);
     // Leftover guard: an EDITABLE key missing from every group still shows up.
     const websiteFields = [
@@ -187,6 +203,7 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
     }
 
     const bybitHealth = await getBybitPollHealth(prisma);
+    const bybitBscHealth = await getBybitBscPollHealth(prisma);
 
     const tg = req.admin!.telegramId;
     const twoFaEnabled = (await getSetting(prisma, twoFaSecretKey(tg))) !== null;
@@ -207,9 +224,11 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       pay_paydisini_fields: pick(PAY_PAYDISINI_KEYS),
       pay_nowpayments_fields: pick(PAY_NOWPAYMENTS_KEYS),
       pay_bybit_fields: pick(PAY_BYBIT_KEYS),
+      pay_bybit_bsc_fields: pick(PAY_BYBIT_BSC_KEYS),
       pay_binance_internal_fields: pick(PAY_BINANCE_INTERNAL_KEYS),
       pay_method_state: payMethodState,
       bybit_health: bybitHealth,
+      bybit_bsc_health: bybitBscHealth,
       is_owner: req.admin!.role === "super",
       two_fa_enabled: twoFaEnabled,
       two_fa_pending: twoFaPending,
@@ -441,6 +460,22 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
         details: `Changed setting "${key}" to ${check.id}.`, // channel id is public, fine to log
       });
       return flashOrRedirect(req, reply, "/settings", `Channel saved (resolved to ${check.id}). Restart the app to apply.`, "success");
+    }
+
+    // Minimum-payment-amount note: a plain positive decimal, or blank to hide
+    // the note. Reject anything else outright rather than silently storing a
+    // value the checkout note's Decimal parse would later treat as "no note".
+    if (key.endsWith("_min_amount") && value !== "") {
+      let valid = false;
+      try {
+        const d = new Decimal(value);
+        valid = d.isFinite() && d.greaterThan(0);
+      } catch {
+        valid = false;
+      }
+      if (!valid) {
+        return flashOrRedirect(req, reply, "/settings", "Minimum amount must be a positive number, or blank to disable the note.", "error");
+      }
     }
 
     const displayValue = SECRET_KEYS.has(key)

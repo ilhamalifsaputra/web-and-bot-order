@@ -125,4 +125,42 @@ describe("POST /settings/payments/toggle", () => {
     expect(res.statusCode).toBe(403);
     expect(await getSetting(prisma, "bybit_enabled")).toBeNull();
   });
+
+  // Bybit BSC is a second, independent method alongside Bybit (Internal
+  // Transfer) — same trio coverage, its own enabled key.
+  it("happy path: turns Bybit BSC off — writes the flag, redirects, audits", async () => {
+    const res = await postForm("/settings/payments/toggle", cookie, {
+      csrf_token: csrf,
+      method: "bybit_bsc",
+      enabled: "false",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toMatch(/^\/settings/);
+    expect(await getSetting(prisma, "bybit_bsc_enabled")).toBe("false");
+
+    const row = await prisma.auditLog.findFirst({ where: { action: "payment_method_toggle", details: "Turned Bybit BSC (on-chain) off." } });
+    expect(row).toBeTruthy();
+    expect(row?.adminId).toBe(adminId);
+  });
+
+  it("auth-fail (Bybit BSC): no admin session is redirected to /login and writes nothing", async () => {
+    const res = await postForm("/settings/payments/toggle", null, {
+      csrf_token: csrf,
+      method: "bybit_bsc",
+      enabled: "false",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect(await getSetting(prisma, "bybit_bsc_enabled")).toBeNull();
+  });
+
+  it("bad-csrf (Bybit BSC): an invalid token is rejected with 403 and writes nothing", async () => {
+    const res = await postForm("/settings/payments/toggle", cookie, {
+      csrf_token: "bad",
+      method: "bybit_bsc",
+      enabled: "false",
+    });
+    expect(res.statusCode).toBe(403);
+    expect(await getSetting(prisma, "bybit_bsc_enabled")).toBeNull();
+  });
 });

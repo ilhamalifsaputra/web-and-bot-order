@@ -78,7 +78,7 @@ const dispatchBuy: DomainDispatcher = async (ctx, parts) => {
 };
 
 const dispatchUsdt: DomainDispatcher = async (ctx, parts) => {
-  // v1:usdt:<pid>:<qty> → USDT payment submenu (Binance Transfer / Bybit)
+  // v1:usdt:<pid>:<qty> → USDT payment submenu (Binance Transfer / Bybit Internal Transfer / Bybit BSC)
   await checkout.showUsdtMethods(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
 };
 
@@ -88,8 +88,13 @@ const dispatchPayInternal: DomainDispatcher = async (ctx, parts) => {
 };
 
 const dispatchPayBybit: DomainDispatcher = async (ctx, parts) => {
-  // v1:payb:<pid>:<qty> → Bybit USDT-BSC deposit (auto-confirmed)
+  // v1:payb:<pid>:<qty> → Bybit Internal Transfer deposit (auto-confirmed)
   await checkout.buyNowBybit(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
+};
+
+const dispatchPayBybitBsc: DomainDispatcher = async (ctx, parts) => {
+  // v1:paybc:<pid>:<qty> → Bybit BSC on-chain deposit (auto-confirmed)
+  await checkout.buyNowBybitBsc(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
 };
 
 const dispatchPayTokopay: DomainDispatcher = async (ctx, parts) => {
@@ -179,6 +184,7 @@ const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
   usdt: dispatchUsdt,
   payx: dispatchPayInternal,
   payb: dispatchPayBybit,
+  paybc: dispatchPayBybitBsc,
   payq: dispatchPayTokopay,
   payd: dispatchPayPaydisini,
   payn: dispatchPayNowpayments,

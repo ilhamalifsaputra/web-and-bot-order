@@ -21,7 +21,7 @@
        are turned ON (admin toggle) AND fully configured render — a disabled
        method is hidden entirely, not greyed out. The first one shown is the
        default selection (cascade in file/priority order). #}
-    {% set any_method = idr_enabled or paydisini_enabled or binance_enabled or bybit_enabled or nowpayments_enabled %}
+    {% set any_method = idr_enabled or paydisini_enabled or binance_enabled or bybit_enabled or bybit_bsc_enabled or nowpayments_enabled %}
     <div class="card card-pad">
       <h2 class="section-title mb-3">{{ t('web.pay_method', lang) }}</h2>
       <div class="space-y-3">
@@ -65,9 +65,19 @@
           </span>
         </label>
         {% endif %}
+        {% if bybit_bsc_enabled %}
+        <label class="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
+          <input type="radio" name="method" value="bybit_bsc" class="mt-1" {% if not idr_enabled and not paydisini_enabled and not binance_enabled and not bybit_enabled %}checked{% endif %}>
+          <img src="/static/pay/bybit.png" alt="Bybit" class="h-7 w-7 rounded object-contain shrink-0 mt-0.5">
+          <span>
+            <span class="font-semibold text-sm block">{{ t('web.pay_bybit_bsc_title', lang) }}</span>
+            <span class="text-xs text-ink-soft block mt-0.5">{{ t('web.pay_bybit_bsc_sub', lang) }}</span>
+          </span>
+        </label>
+        {% endif %}
         {% if nowpayments_enabled %}
         <label class="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
-          <input type="radio" name="method" value="nowpayments" class="mt-1" {% if not idr_enabled and not paydisini_enabled and not binance_enabled and not bybit_enabled %}checked{% endif %}>
+          <input type="radio" name="method" value="nowpayments" class="mt-1" {% if not idr_enabled and not paydisini_enabled and not binance_enabled and not bybit_enabled and not bybit_bsc_enabled %}checked{% endif %}>
           <img src="/static/pay/nowpayments.png" alt="NOWPayments" class="h-7 w-7 rounded object-contain shrink-0 mt-0.5">
           <span>
             <span class="font-semibold text-sm block">{{ t('web.pay_nowpayments_title', lang) }}</span>

@@ -25,18 +25,28 @@ import { isUniqueViolation } from "./_types";
 import { getOrder, approveOrder } from "./orders";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting } from "./settings";
+import { parseMinAmount } from "./_minAmount";
+
+/** Minimum-payment-amount note shown at checkout (IDR) — blank = no note. */
+export const TOKOPAY_MIN_AMOUNT_KEY = "tokopay_min_amount";
 
 /** Read TokoPay gateway credentials from Settings; null = the IDR/QRIS path is off. */
-export async function getTokopayCreds(db: Db): Promise<TokopayCreds | null> {
-  const [merchantId, secret, enabled, channel] = await Promise.all([
+export async function getTokopayCreds(db: Db): Promise<(TokopayCreds & { minAmount: Decimal | null }) | null> {
+  const [merchantId, secret, enabled, channel, minAmountSetting] = await Promise.all([
     getSetting(db, TOKOPAY_MERCHANT_KEY),
     getSetting(db, TOKOPAY_SECRET_KEY),
     getSetting(db, TOKOPAY_ENABLED_KEY),
     getSetting(db, TOKOPAY_CHANNEL_KEY),
+    getSetting(db, TOKOPAY_MIN_AMOUNT_KEY),
   ]);
   if (!merchantId || !secret) return null;
   if ((enabled ?? "").trim().toLowerCase() === "false") return null;
-  return { merchantId, secret, channel: (channel ?? "QRIS").trim() || "QRIS" };
+  return {
+    merchantId,
+    secret,
+    channel: (channel ?? "QRIS").trim() || "QRIS",
+    minAmount: parseMinAmount(minAmountSetting),
+  };
 }
 
 /** PENDING, not-yet-expired TokoPay orders the reconcile poller should check. */

@@ -101,6 +101,23 @@ describe("resolveBybitConfig — enabled flag matrix", () => {
   });
 });
 
+describe("resolveBybitConfig — minAmount", () => {
+  it("defaults to null when unset", async () => {
+    const cfg = await resolveBybitConfig(stubDb({ ...CREDS }));
+    expect(cfg.minAmount).toBeNull();
+  });
+
+  it("parses a configured positive value", async () => {
+    const cfg = await resolveBybitConfig(stubDb({ ...CREDS, bybit_min_amount: "8" }));
+    expect(cfg.minAmount?.toString()).toBe("8");
+  });
+
+  it("treats a non-numeric or non-positive value as null (never throws)", async () => {
+    expect((await resolveBybitConfig(stubDb({ ...CREDS, bybit_min_amount: "not-a-number" }))).minAmount).toBeNull();
+    expect((await resolveBybitConfig(stubDb({ ...CREDS, bybit_min_amount: "0" }))).minAmount).toBeNull();
+  });
+});
+
 describe("Bybit poll health — rate-limit tracking fields", () => {
   it("getBybitPollHealth on a never-run poller is all-null", async () => {
     const health = await getBybitPollHealth(mutableStubDb());

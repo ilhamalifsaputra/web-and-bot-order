@@ -29,7 +29,7 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-const CREDS = { apiKey: "ak", ipnSecret: "secret", payCurrency: "usdttrc20" };
+const CREDS = { apiKey: "ak", ipnSecret: "secret", payCurrency: "usdttrc20", minAmount: null };
 const fakeApi = () => ({ sendMessage: vi.fn().mockResolvedValue(undefined) }) as unknown as Api;
 
 /** Stub the gateway's GET /v1/invoice/{id} status call. */

@@ -21,8 +21,10 @@ import {
   logAdminAction,
   getBinancePollHealth,
   getBybitPollHealth,
+  getBybitBscPollHealth,
   resolveBinanceInternalConfig,
   resolveBybitConfig,
+  resolveBybitBscConfig,
   getSetting,
   setSetting,
   claimNextDueBroadcast,
@@ -266,6 +268,45 @@ export async function bybitPollWatchdog(api: Api): Promise<void> {
   }
 }
 
+const BYBIT_BSC_POLL_ALERT_KEY = "bybit_bsc_poll_alert_sent";
+
+/** Bybit-BSC twin of bybitPollWatchdog — same stale/recover logic on the
+ * Bybit BSC on-chain poller's own heartbeat, with its own alert-state key so
+ * the two Bybit pollers' alerts never clobber each other (they can fail for
+ * unrelated reasons — on-chain network congestion vs. an API outage). */
+export async function bybitBscPollWatchdog(api: Api): Promise<void> {
+  if (!(await resolveBybitBscConfig(prisma)).enabled) return;
+  const health = await getBybitBscPollHealth(prisma);
+  const alerted = (await getSetting(prisma, BYBIT_BSC_POLL_ALERT_KEY)) === "1";
+  const decision = pollWatchdogDecision(health, alerted);
+
+  if (decision === "alert") {
+    const lastRun = health.lastRun ? Date.parse(health.lastRun) : 0;
+    const mins = lastRun ? Math.round((Date.now() - lastRun) / 60_000) : "∞";
+    const failing = (health.consecutiveFailures ?? 0) >= FAILURE_STREAK_ALERT_THRESHOLD;
+    const detail = failing
+      ? `${health.consecutiveFailures} consecutive cycle(s) failed (last error: ${health.lastError ?? "unknown"})`
+      : `no completed cycle in ${mins} min`;
+    logger.error(`Bybit BSC deposit poller looks unhealthy (${detail}) — alerting admins and pausing auto-confirm`);
+    for (const adminId of adminIds()) {
+      try {
+        await api.sendMessage(
+          adminId,
+          `⚠️ <b>Bybit BSC deposit poller looks unhealthy</b>\n${esc(detail)}. ` +
+            `Auto-confirm is paused — check the order-bot process.`,
+          { parse_mode: "HTML" },
+        );
+      } catch (err) {
+        logger.error({ err }, `Failed to DM admin ${adminId} about the unhealthy Bybit BSC deposit poller`);
+      }
+    }
+    await setSetting(prisma, BYBIT_BSC_POLL_ALERT_KEY, "1");
+  } else if (decision === "recover") {
+    await setSetting(prisma, BYBIT_BSC_POLL_ALERT_KEY, "0");
+    logger.info("Bybit BSC deposit poller recovered — back to completing cycles normally, alert state cleared");
+  }
+}
+
 // Throttle between broadcast DMs — stays under Telegram's ~30 msg/s bulk limit.
 const BROADCAST_THROTTLE_MS = 40;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -335,6 +376,7 @@ export function scheduleJobs(api: Api): Cron[] {
     new Cron("0 */6 * * *", wrap("reconcileFinancesJob", reconcileFinancesJob)),
     new Cron("*/2 * * * *", wrap("binancePollWatchdog", binancePollWatchdog)),
     new Cron("*/2 * * * *", wrap("bybitPollWatchdog", bybitPollWatchdog)),
+    new Cron("*/2 * * * *", wrap("bybitBscPollWatchdog", bybitBscPollWatchdog)),
     new Cron("*/1 * * * *", { protect: true }, wrap("drainBroadcasts", drainBroadcasts)),
   ];
 }

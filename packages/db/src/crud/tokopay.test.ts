@@ -18,7 +18,7 @@ vi.mock("@app/core/config", async () => {
 
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderDirect, deliverPaidTokopayOrder, recordUnmatchedTokopayTx } from "@app/db";
+import { createOrderDirect, deliverPaidTokopayOrder, recordUnmatchedTokopayTx, getTokopayCreds, setSetting, deleteSetting } from "@app/db";
 import { OrderStatus, PaymentMethod, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 
@@ -171,5 +171,29 @@ describe("recordUnmatchedTokopayTx", () => {
     expect(ok).toBe(false);
     const rows = await prisma.processedTokopayTx.findMany({ where: { trxId: "trx-unmatched-2" } });
     expect(rows.length).toBe(1);
+  });
+});
+
+describe("getTokopayCreds — minAmount", () => {
+  beforeEach(async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M");
+    await setSetting(prisma, "tokopay_secret", "s");
+  });
+
+  it("defaults to null when unset", async () => {
+    await deleteSetting(prisma, "tokopay_min_amount");
+    expect((await getTokopayCreds(prisma))!.minAmount).toBeNull();
+  });
+
+  it("parses a configured positive value", async () => {
+    await setSetting(prisma, "tokopay_min_amount", "50000");
+    expect((await getTokopayCreds(prisma))!.minAmount).toEqual(new Decimal("50000"));
+  });
+
+  it("treats a non-numeric or non-positive value as null (never throws)", async () => {
+    await setSetting(prisma, "tokopay_min_amount", "garbage");
+    expect((await getTokopayCreds(prisma))!.minAmount).toBeNull();
+    await setSetting(prisma, "tokopay_min_amount", "-1");
+    expect((await getTokopayCreds(prisma))!.minAmount).toBeNull();
   });
 });

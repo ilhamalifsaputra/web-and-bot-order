@@ -31,7 +31,7 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-const CREDS = { merchantId: "M", secret: "s", channel: "QRIS" };
+const CREDS = { merchantId: "M", secret: "s", channel: "QRIS", minAmount: null };
 const fakeApi = () =>
   ({
     sendMessage: vi.fn().mockResolvedValue(undefined),

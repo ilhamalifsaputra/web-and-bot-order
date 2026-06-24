@@ -215,6 +215,39 @@
 
   <div class="card card-pad">
     <h2 class="section-title mb-1 flex items-center gap-2">
+      <i data-lucide="link-2" class="w-5 h-5 text-sky-500"></i> Bybit BSC (on-chain)
+    </h2>
+    <div class="text-xs text-ink-soft mb-4 space-y-1.5">
+      <p>
+        A second, independent Bybit option: buyers send USDT on the
+        <strong class="text-ink">BEP20 (BSC) network</strong> to a deposit address —
+        slower than Internal Transfer above (needs on-chain confirmation, ~1-2
+        minutes) but accepts a deposit from any wallet/exchange, including a
+        Binance withdrawal. Uses the SAME Bybit API key/secret as Internal
+        Transfer above — only the deposit address is separate.
+      </p>
+    </div>
+    {{ payment_toggle("bybit_bsc", "Bybit BSC", pay_method_state.bybit_bsc) }}
+    {% if bybit_bsc_health.lastRun %}
+    <div class="text-xs rounded-lg bg-sand px-3 py-2 mb-3">
+      <span class="text-ink-soft">Poller last ran:</span>
+      <span class="font-medium" title="{{ tzname }}">{{ bybit_bsc_health.lastRun | localdt('yyyy-LL-dd HH:mm:ss') }}</span>
+      {% if bybit_bsc_health.lastTxCount is not none %}· {{ bybit_bsc_health.lastTxCount }} deposit(s) seen last check{% endif %}
+      {% if bybit_bsc_health.backoffUntil %}· <span class="text-amberx">rate-limited, paused until {{ bybit_bsc_health.backoffUntil | localdt('HH:mm:ss') }}</span>{% endif %}
+      {% if bybit_bsc_health.consecutiveFailures %}
+      <div class="text-rust mt-1">
+        ⚠️ {{ bybit_bsc_health.consecutiveFailures }} consecutive failure(s) fetching from Bybit{% if bybit_bsc_health.lastError %} — {{ bybit_bsc_health.lastError }}{% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+    <div class="space-y-3">
+      {% for fld in pay_bybit_bsc_fields %}{{ setting_form(fld) }}{% endfor %}
+    </div>
+  </div>
+
+  <div class="card card-pad">
+    <h2 class="section-title mb-1 flex items-center gap-2">
       <i data-lucide="arrow-left-right" class="w-5 h-5 text-sky-500"></i> Binance
     </h2>
     <div class="text-xs text-ink-soft mb-4 space-y-1.5">

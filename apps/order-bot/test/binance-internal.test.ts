@@ -11,10 +11,17 @@ import {
   dismissUnmatchedTx,
   listPendingInternalOrders,
   setOrderPaymentMessage,
+  resolveBinanceInternalConfig,
+  setSetting,
+  deleteSetting,
+  BINANCE_UID_KEY,
+  BINANCE_API_KEY_KEY,
+  BINANCE_API_SECRET_KEY,
   type BinanceInternalConfig,
 } from "@app/db";
 import type { Api } from "grammy";
 import { config } from "@app/core/config";
+import { Decimal } from "@app/core/money";
 import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import {
@@ -384,6 +391,7 @@ describe("fetchIncomingTransfers (connect-fallback escalation)", () => {
     currency: "USDT",
     pollIntervalSeconds: 10,
     windowMinutes: 15,
+    minAmount: null,
   };
   const okResponse = (data: unknown[] = []) => ({ ok: true, status: 200, json: async () => ({ data }) }) as Response;
 
@@ -435,4 +443,34 @@ describe("fetchIncomingTransfers (connect-fallback escalation)", () => {
     await expect(fetchIncomingTransfers({ ...baseCfg, apiBaseFallbacks: [] })).rejects.toThrow("connect refused");
     expect(fetchMock).toHaveBeenCalledTimes(3); // primary's retry budget only
   }, 15_000);
+});
+
+describe("resolveBinanceInternalConfig — minAmount", () => {
+  const clear = () => Promise.all([
+    deleteSetting(prisma, BINANCE_UID_KEY),
+    deleteSetting(prisma, BINANCE_API_KEY_KEY),
+    deleteSetting(prisma, BINANCE_API_SECRET_KEY),
+    deleteSetting(prisma, "binance_internal_min_amount"),
+  ]);
+
+  it("defaults to null when unset", async () => {
+    await clear();
+    expect((await resolveBinanceInternalConfig(prisma)).minAmount).toBeNull();
+  });
+
+  it("parses a configured positive value", async () => {
+    await clear();
+    await setSetting(prisma, "binance_internal_min_amount", "7.5");
+    expect((await resolveBinanceInternalConfig(prisma)).minAmount).toEqual(new Decimal("7.5"));
+    await clear();
+  });
+
+  it("treats a non-numeric or non-positive value as null (never throws)", async () => {
+    await clear();
+    await setSetting(prisma, "binance_internal_min_amount", "garbage");
+    expect((await resolveBinanceInternalConfig(prisma)).minAmount).toBeNull();
+    await setSetting(prisma, "binance_internal_min_amount", "-1");
+    expect((await resolveBinanceInternalConfig(prisma)).minAmount).toBeNull();
+    await clear();
+  });
 });

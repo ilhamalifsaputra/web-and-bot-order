@@ -1445,6 +1445,52 @@ describe("settings", () => {
     expect(res.headers.location).toContain("kind=error");
     expect(await getSetting(prisma, "bybit_min_amount")).toBeNull();
   });
+
+  it("accepts a positive whole number for bybit_bsc_required_confirmations", async () => {
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "bybit_bsc_required_confirmations", value: "20",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "bybit_bsc_required_confirmations")).toBe("20");
+  });
+
+  it("rejects a non-whole-number bybit_bsc_required_confirmations value, leaving the prior value untouched", async () => {
+    await setSetting(prisma, "bybit_bsc_required_confirmations", "15");
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "bybit_bsc_required_confirmations", value: "12.5",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+    expect(await getSetting(prisma, "bybit_bsc_required_confirmations")).toBe("15");
+  });
+
+  it("a blank bybit_bsc_required_confirmations value is accepted (falls back to the default)", async () => {
+    await setSetting(prisma, "bybit_bsc_required_confirmations", "20");
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "bybit_bsc_required_confirmations", value: "",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "bybit_bsc_required_confirmations")).toBe("");
+  });
+
+  it("bscscan_api_key is treated as a write-only secret (never echoed back, audited without the value)", async () => {
+    const res = await post("/settings/edit", seed.cookie, {
+      csrf_token: seed.csrf, key: "bscscan_api_key", value: "SUPERSECRETBSCSCANKEY",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=success");
+    expect(await getSetting(prisma, "bscscan_api_key")).toBe("SUPERSECRETBSCSCANKEY");
+
+    const page = await get("/settings", seed.cookie);
+    expect(page.body).not.toContain("SUPERSECRETBSCSCANKEY");
+
+    const logs = await listAuditLogs(prisma, { limit: 10 });
+    const entry = logs.find((l) => l.action === "setting_set" && (l.details ?? "").includes("bscscan_api_key"));
+    expect(entry).toBeTruthy();
+    expect(entry!.details).not.toContain("SUPERSECRETBSCSCANKEY");
+  });
 });
 
 // ---- market USDT rate refresh (plan.md §15.8 resolved) ----------------------

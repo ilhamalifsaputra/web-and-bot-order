@@ -96,6 +96,27 @@ describe("notifier templates.render", () => {
     expect(out).toContain("&lt;b&gt;ORD&lt;/b&gt;");
   });
 
+  it("renders ORDER_PIPELINE_FAILED as a bilingual admin DM with the order code and reason", () => {
+    const out = render("ORDER_PIPELINE_FAILED", {
+      order_code: "ORD-BSC-FAIL-1",
+      reason: "transaction 0xabc not found on-chain after 10 consecutive lookups",
+    });
+    expect(out).toContain("<code>ORD-BSC-FAIL-1</code>");
+    expect(out).toContain("transaction 0xabc not found on-chain after 10 consecutive lookups");
+    expect(out).toMatch(/tracking failed/i);
+    expect(out).toMatch(/pelacakan|gagal/i); // Indonesian line
+  });
+
+  it("HTML-escapes ORDER_PIPELINE_FAILED interpolated values", () => {
+    const out = render("ORDER_PIPELINE_FAILED", {
+      order_code: "<b>ORD</b>",
+      reason: "<script>alert(1)</script>",
+    });
+    expect(out).not.toContain("<script>");
+    expect(out).not.toContain("<b>ORD</b>");
+    expect(out).toContain("&lt;b&gt;ORD&lt;/b&gt;");
+  });
+
   it("returns empty string for unknown events", () => {
     expect(render("something.else", payload)).toBe("");
     // lowercase value form is NOT what is stored -> must not match

@@ -27,6 +27,7 @@ import { clearCart, getCart } from "./cart";
 import { maybePayReferralCommission } from "./referrals";
 import { enqueueNotification } from "./notifications";
 import { logAdminAction } from "./audit";
+import { transitionOrderStatus } from "./orderStatus";
 
 const ZERO = new Decimal(0);
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
@@ -578,8 +579,19 @@ export async function cancelOrder(db: Db, orderId: number, reason: string) {
   if (order.status === OrderStatus.DELIVERED) {
     throw new ValidationError("error.order_already_delivered");
   }
-  // Prevent abuse: fake proof then cancel to recycle stock.
-  if (reason === "user_cancelled" && order.status === OrderStatus.PENDING_VERIFICATION) {
+  // Prevent abuse: fake proof then cancel to recycle stock. A customer can't
+  // self-cancel once their crypto is already incoming/confirming on-chain
+  // either (PAYMENT_DETECTED/CONFIRMING/CONFIRMED) — same "money is already
+  // in motion" rationale, just for the Bybit BSC auto-confirm rail instead of
+  // the manual-proof rail. Admin-initiated cancels (any other `reason`) are
+  // unaffected.
+  if (
+    reason === "user_cancelled" &&
+    (order.status === OrderStatus.PENDING_VERIFICATION ||
+      order.status === OrderStatus.PAYMENT_DETECTED ||
+      order.status === OrderStatus.CONFIRMING ||
+      order.status === OrderStatus.CONFIRMED)
+  ) {
     throw new ValidationError("error.cannot_cancel_after_proof");
   }
 
@@ -587,10 +599,10 @@ export async function cancelOrder(db: Db, orderId: number, reason: string) {
   await db.order.update({
     where: { id: orderId },
     data: {
-      status: OrderStatus.CANCELLED,
       adminNote: `${order.adminNote ?? ""}\n[cancel] ${reason}`,
     },
   });
+  await transitionOrderStatus(db, { orderId, from: order.status, to: OrderStatus.CANCELLED, meta: reason });
   logger.info(`Cancelled order ${order.orderCode} — reason: ${reason}`);
   return getOrder(db, orderId);
 }
@@ -656,9 +668,14 @@ export async function creditOrderToBalance(
   await db.order.update({
     where: { id: order.id },
     data: {
-      status: OrderStatus.CANCELLED,
       adminNote: `${order.adminNote ?? ""}\n[credit_to_balance] ${amount.toString()} ${currency} by admin_id=${args.adminId}`,
     },
+  });
+  await transitionOrderStatus(db, {
+    orderId: order.id,
+    from: order.status,
+    to: OrderStatus.CANCELLED,
+    meta: `credit_to_balance by admin_id=${args.adminId}`,
   });
 
   if (args.binanceTxId) {
@@ -691,10 +708,15 @@ export async function rejectOrder(
   await db.order.update({
     where: { id: orderId },
     data: {
-      status: OrderStatus.REJECTED,
       rejectionReason: args.reason,
       adminNote: `${order.adminNote ?? ""}\n[reject] by admin_id=${args.adminId}: ${args.reason}`,
     },
+  });
+  await transitionOrderStatus(db, {
+    orderId,
+    from: order.status,
+    to: OrderStatus.REJECTED,
+    meta: `by admin_id=${args.adminId}: ${args.reason}`,
   });
   logger.info(`Rejected order ${order.orderCode} by admin ${args.adminId} — reason: ${args.reason}`);
   return getOrder(db, orderId);
@@ -731,6 +753,15 @@ export async function approveOrder(
   if (claim.count !== 1) {
     throw new ValidationError("error.order_not_pending_verification");
   }
+  // This is the one call site that does NOT route through
+  // transitionOrderStatus() — see that function's doc-comment for why
+  // (the updateMany above IS the concurrency-safety claim for this exact
+  // race, and re-validating it through a generic helper would reintroduce
+  // the race rather than guard it). Still write the same audit-trail row a
+  // routed transition would, right after the claim succeeds.
+  await db.orderStatusHistory.create({
+    data: { orderId, status: OrderStatus.DELIVERED, meta: `approved by admin_id=${args.adminId}` },
+  });
 
   const credentials: string[] = [];
 

@@ -47,6 +47,7 @@ import { pollOnce as paydisiniPoll } from "../payments/paydisiniReconcile";
 import { pollOnce as internalPoll, triggerImmediatePoll as internalImmediatePoll } from "../payments/binanceInternal";
 import { pollOnce as bybitPoll, triggerImmediatePoll as bybitImmediatePoll } from "../payments/bybitDeposit";
 import { pollOnce as bybitBscPoll, triggerImmediatePoll as bybitBscImmediatePoll } from "../payments/bybitBscDeposit";
+import { triggerImmediatePoll as bybitBscTrackerImmediatePoll } from "../payments/bybitBscConfirmationTracker";
 import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
@@ -986,6 +987,17 @@ export async function cancelPendingOrder(ctx: MyContext, orderId: number): Promi
  * TokoPay/PayDisini the live-edit-to-success lands in a later task; NOWPayments
  * never flips. The toast is the immediate feedback in every case.
  */
+// Bybit BSC's in-flight pre-delivery states — a tap here must still trigger a
+// poll for any of these, not just the original PENDING_PAYMENT. Without this,
+// the "🔄 Refresh Status" button stops doing anything the instant a deposit
+// is first detected, which is exactly when a manual nudge is still useful.
+const REFRESHABLE_STATUSES: readonly string[] = [
+  OrderStatus.PENDING_PAYMENT,
+  OrderStatus.PAYMENT_DETECTED,
+  OrderStatus.CONFIRMING,
+  OrderStatus.CONFIRMED,
+];
+
 export async function refreshPaymentStatus(ctx: MyContext, orderId: number): Promise<void> {
   const info = requireUser(ctx);
   const order = await getOrder(prisma, orderId);
@@ -993,7 +1005,7 @@ export async function refreshPaymentStatus(ctx: MyContext, orderId: number): Pro
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_found"), show_alert: true });
     return;
   }
-  if (order.status !== OrderStatus.PENDING_PAYMENT) {
+  if (!REFRESHABLE_STATUSES.includes(order.status)) {
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.refresh_delivered_toast") });
     return;
   }
@@ -1012,6 +1024,10 @@ export async function refreshPaymentStatus(ctx: MyContext, orderId: number): Pro
       break;
     case PaymentMethod.BYBIT_BSC:
       await bybitBscPoll(ctx.api);
+      // Fire-and-forget, same pattern as bybitBscImmediatePoll after order
+      // creation — a manual refresh should also nudge the confirmation
+      // count, not just delivery state, without blocking on a BscScan call.
+      bybitBscTrackerImmediatePoll(ctx.api);
       break;
     case PaymentMethod.NOWPAYMENTS:
       await nowpaymentsPoll(ctx.api);
@@ -1022,10 +1038,10 @@ export async function refreshPaymentStatus(ctx: MyContext, orderId: number): Pro
       return;
   }
   const after = await getOrder(prisma, orderId);
-  const stillPending = !after || after.status === OrderStatus.PENDING_PAYMENT;
+  const delivered = after?.status === OrderStatus.DELIVERED;
   if (ctx.callbackQuery) {
     await ctx.answerCallbackQuery({
-      text: t(ctx, stillPending ? "checkout.still_pending_toast" : "checkout.refresh_delivered_toast"),
+      text: t(ctx, delivered ? "checkout.refresh_delivered_toast" : "checkout.still_pending_toast"),
     });
   }
 }

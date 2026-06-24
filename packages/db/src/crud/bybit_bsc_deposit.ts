@@ -26,6 +26,8 @@ import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, createOrderDirect, approveOrder, applyUsdtWalletToOrder } from "./orders";
+import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
+import { enqueueOrderPipelineFailed } from "./notifications";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY } from "./bybit_deposit";
@@ -96,6 +98,40 @@ export async function resolveBybitBscConfig(db: Db): Promise<BybitBscConfig> {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Confirmation tracker config — a separate, display-only concern from the
+// deposit-matching config above (no depositAddress/apiSecret needed here;
+// the explorer lookup is public/read-only and unrelated to Bybit's own API).
+// ---------------------------------------------------------------------------
+
+export const BSCSCAN_API_KEY_KEY = "bscscan_api_key";
+export const BYBIT_BSC_REQUIRED_CONFIRMATIONS_KEY = "bybit_bsc_required_confirmations";
+
+export interface BybitBscTrackerConfig {
+  apiBase: string;
+  /** Optional — BscScan's free tier works without one at a lower rate limit. */
+  apiKey: string;
+  requiredConfirmations: number;
+}
+
+/** Resolve the confirmation tracker's config from Settings (with .env
+ * fallback) — same Setting-wins pattern as `resolveBybitBscConfig`. */
+export async function resolveBybitBscTrackerConfig(db: Db): Promise<BybitBscTrackerConfig> {
+  const [keySetting, confirmSetting] = await Promise.all([
+    getSetting(db, BSCSCAN_API_KEY_KEY),
+    getSetting(db, BYBIT_BSC_REQUIRED_CONFIRMATIONS_KEY),
+  ]);
+  const apiKey = pick(keySetting, config.BSCSCAN_API_KEY);
+  const parsed = confirmSetting != null ? Number(confirmSetting) : NaN;
+  const requiredConfirmations =
+    Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : config.BYBIT_BSC_REQUIRED_CONFIRMATIONS;
+  return {
+    apiBase: config.BSCSCAN_API_BASE,
+    apiKey,
+    requiredConfirmations,
+  };
+}
+
 /**
  * Create a direct order, then stamp it as a USDT/Bybit BSC deposit payment:
  * the central-IDR total converts once at `rate` (rounded 0.1) + unique
@@ -140,10 +176,177 @@ export function listPendingBybitBscOrders(db: Db, now: Date) {
   });
 }
 
+/**
+ * Every Bybit BSC order still in flight — PENDING_PAYMENT (no deposit seen
+ * yet) PLUS the two states a still-confirming deposit can already occupy
+ * (PAYMENT_DETECTED/CONFIRMING). Used to re-match a deposit that was already
+ * tied to an order on a previous poll cycle by its own txid, instead of
+ * falling through to amount-matching (which only `listPendingBybitBscOrders`
+ * — PENDING_PAYMENT only — should ever be used for, since amount-matching a
+ * deposit that's already claimed by an order would be redundant at best and
+ * a confused-deputy risk at worst).
+ */
+export function listInFlightBybitBscOrders(db: Db, now: Date) {
+  return db.order.findMany({
+    where: {
+      status: { in: [OrderStatus.PENDING_PAYMENT, OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING] },
+      paymentMethod: PaymentMethod.BYBIT_BSC,
+      expiresAt: { gt: now },
+    },
+    include: { user: true },
+  });
+}
+
+/**
+ * Record that a still-confirming on-chain deposit (Bybit status 1/2, not yet
+ * its own "Success") has been matched to an order. Display-only — does NOT
+ * claim the `processed_bybit_tx` ledger (that stays exclusively
+ * `deliverPaidBybitBscOrder`'s job, gated on Bybit status 3) and does NOT
+ * gate delivery in any way.
+ *
+ * Safe to call every poll cycle for the same still-confirming deposit: it
+ * no-ops once the order has moved past PENDING_PAYMENT (either because a
+ * previous cycle already recorded it, or because the confirmation tracker —
+ * a separate poller — advanced it further in the meantime). The race
+ * between this check and the transition itself is closed by
+ * `transitionOrderStatus`'s own atomic claim, not by this read; a lost race
+ * there is swallowed as the same benign no-op.
+ *
+ * Returns whether the transition actually applied THIS call — the caller
+ * (bybitBscDeposit.ts) uses this to decide whether to push a live bubble
+ * edit, so a deposit still sitting at PAYMENT_DETECTED on cycle 2/3 doesn't
+ * keep re-editing the bubble back to "just detected" after the confirmation
+ * tracker has already moved it on to CONFIRMING.
+ */
+export async function recordBybitBscPaymentDetected(
+  db: Db,
+  args: { orderId: number; bybitTxId: string; network: string },
+): Promise<boolean> {
+  const order = await getOrder(db, args.orderId);
+  if (!order || order.status !== OrderStatus.PENDING_PAYMENT) return false;
+  await db.order.update({
+    where: { id: args.orderId },
+    data: {
+      bybitTxid: args.bybitTxId,
+      network: args.network,
+      firstDetectedAt: order.firstDetectedAt ?? new Date(),
+    },
+  });
+  return tryTransitionOrderStatus(db, {
+    orderId: args.orderId,
+    from: OrderStatus.PENDING_PAYMENT,
+    to: OrderStatus.PAYMENT_DETECTED,
+    meta: `bybitTxId=${args.bybitTxId}`,
+  });
+}
+
+/** Orders the confirmation tracker should poll: a Bybit BSC deposit already
+ * matched (bybitTxid set) but not yet Bybit-confirmed. Includes `user` (the
+ * tracker needs its language to render/push the live tracking bubble). */
+export function listTrackedBybitBscOrders(db: Db) {
+  return db.order.findMany({
+    where: {
+      paymentMethod: PaymentMethod.BYBIT_BSC,
+      status: { in: [OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING] },
+      bybitTxid: { not: null },
+    },
+    include: { user: true },
+  });
+}
+
+/**
+ * Record one confirmation-count observation from the block-explorer tracker.
+ * Always bumps `confirmations`/`requiredConfirmations` (a plain field
+ * update — no history row; writing one per confirmation tick would mean up
+ * to `requiredConfirmations` rows per order for no analytical value, unlike
+ * an actual status change). Transitions PAYMENT_DETECTED -> CONFIRMING on
+ * the first confirmation seen, then CONFIRMING -> CONFIRMED once
+ * `confirmations` reaches `requiredConfirmations` (stamping `confirmedAt`
+ * the first time only). Display-only: NEVER transitions toward
+ * PENDING_VERIFICATION/DELIVERED — that stays exclusively
+ * `deliverPaidBybitBscOrder`'s job, gated on Bybit's own status-3 report.
+ *
+ * Returns the order's status AFTER this call (so the caller can push a live
+ * bubble update with the right content even when a status transition
+ * happened mid-call), or `null` if it no-op'd because the order had already
+ * left PAYMENT_DETECTED/CONFIRMING by the time this ran (e.g. the deposit
+ * poller already delivered it on the same cycle) — `tryTransitionOrderStatus`
+ * makes the race-loss path safe, this guard just also avoids writing a stale
+ * confirmation count over a delivered order.
+ */
+export async function recordBybitBscConfirmationProgress(
+  db: Db,
+  args: { orderId: number; confirmations: number; requiredConfirmations: number },
+): Promise<string | null> {
+  const order = await getOrder(db, args.orderId);
+  if (!order) return null;
+  if (order.status !== OrderStatus.PAYMENT_DETECTED && order.status !== OrderStatus.CONFIRMING) return null;
+
+  await db.order.update({
+    where: { id: args.orderId },
+    data: { confirmations: args.confirmations, requiredConfirmations: args.requiredConfirmations },
+  });
+
+  let currentStatus: string = order.status;
+
+  if (currentStatus === OrderStatus.PAYMENT_DETECTED && args.confirmations >= 1) {
+    const moved = await tryTransitionOrderStatus(db, {
+      orderId: args.orderId,
+      from: OrderStatus.PAYMENT_DETECTED,
+      to: OrderStatus.CONFIRMING,
+      meta: `confirmations=${args.confirmations}/${args.requiredConfirmations}`,
+    });
+    if (moved) currentStatus = OrderStatus.CONFIRMING;
+  }
+
+  if (currentStatus === OrderStatus.CONFIRMING && args.confirmations >= args.requiredConfirmations) {
+    await db.order.update({ where: { id: args.orderId }, data: { confirmedAt: new Date() } });
+    const moved = await tryTransitionOrderStatus(db, {
+      orderId: args.orderId,
+      from: OrderStatus.CONFIRMING,
+      to: OrderStatus.CONFIRMED,
+      meta: `confirmations=${args.confirmations}/${args.requiredConfirmations}`,
+    });
+    if (moved) currentStatus = OrderStatus.CONFIRMED;
+  }
+
+  return currentStatus;
+}
+
+/**
+ * Escalate a tracked order to FAILED after the tracker's in-memory lookup-
+ * failure grace period is exhausted (the tx genuinely seems to have
+ * vanished/reorged off-chain, not just a transient explorer hiccup). Returns
+ * whether the transition actually applied (false if the order already left
+ * PAYMENT_DETECTED/CONFIRMING by the time this runs — e.g. delivered on the
+ * same cycle by the deposit poller).
+ */
+export async function recordBybitBscTrackingFailed(db: Db, args: { orderId: number; reason: string }): Promise<boolean> {
+  const order = await getOrder(db, args.orderId);
+  if (!order) return false;
+  if (order.status !== OrderStatus.PAYMENT_DETECTED && order.status !== OrderStatus.CONFIRMING) return false;
+  return tryTransitionOrderStatus(db, {
+    orderId: args.orderId,
+    from: order.status,
+    to: OrderStatus.FAILED,
+    meta: args.reason,
+  });
+}
+
 export type BybitBscDeliverResult =
   | { status: "delivered"; order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }
   | { status: "already_processed" }
   | { status: "stale" };
+
+/** Every pre-delivery state a Bybit BSC order can sit in before Bybit's own
+ * "Success" report — the confirmation tracker may have already advanced it
+ * through some of these; delivery accepts all of them (gap #2 fix). */
+const PRE_DELIVERY_STATUSES: string[] = [
+  OrderStatus.PENDING_PAYMENT,
+  OrderStatus.PAYMENT_DETECTED,
+  OrderStatus.CONFIRMING,
+  OrderStatus.CONFIRMED,
+];
 
 /**
  * Idempotently confirm + deliver a matched Bybit BSC deposit. Shares the
@@ -172,12 +375,18 @@ export async function deliverPaidBybitBscOrder(
   try {
     return await db.$transaction(async (tx: Tx) => {
       const order = await getOrder(tx, args.orderId);
-      if (!order || order.status !== OrderStatus.PENDING_PAYMENT) {
+      if (!order || !PRE_DELIVERY_STATUSES.includes(order.status)) {
         return { status: "stale" as const };
       }
       await tx.order.update({
         where: { id: args.orderId },
-        data: { status: OrderStatus.PENDING_VERIFICATION, bybitTxid: args.bybitTxId, paidAt: new Date() },
+        data: { bybitTxid: args.bybitTxId, paidAt: new Date() },
+      });
+      await transitionOrderStatus(tx, {
+        orderId: args.orderId,
+        from: order.status,
+        to: OrderStatus.PENDING_VERIFICATION,
+        meta: `bybitTxId=${args.bybitTxId}`,
       });
       const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: 0 });
       logger.info(`Auto-delivered Bybit BSC order ${delivered.orderCode} for transaction ${args.bybitTxId}`);
@@ -187,6 +396,30 @@ export async function deliverPaidBybitBscOrder(
     await db.processedBybitTx
       .update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "delivery_failed" } })
       .catch(() => undefined);
+    // Reflect this on the order too (the transaction above rolled back, so
+    // the order's actual current status is whatever it was before this
+    // attempt) and alert admins durably via the outbox — this crud layer has
+    // no Bot API handle for a direct send, and a FAILED transition needs a
+    // retryable alert regardless of which caller's context it originated
+    // from. Only enqueues once: a retry on the SAME bybitTxId never reaches
+    // this catch again (the ledger claim above already failed it as
+    // "already_processed" before this transaction even starts).
+    const order = await getOrder(db, args.orderId).catch(() => null);
+    if (order) {
+      const moved = await tryTransitionOrderStatus(db, {
+        orderId: args.orderId,
+        from: order.status,
+        to: OrderStatus.FAILED,
+        meta: `delivery_failed: ${String(e).slice(0, 200)}`,
+      });
+      if (moved) {
+        await enqueueOrderPipelineFailed(db, {
+          orderId: args.orderId,
+          orderCode: order.orderCode,
+          reason: `Delivery failed after payment was detected: ${String(e).slice(0, 200)}`,
+        }).catch(() => undefined);
+      }
+    }
     throw e;
   }
 }

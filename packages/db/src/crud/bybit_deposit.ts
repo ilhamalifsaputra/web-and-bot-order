@@ -21,6 +21,7 @@ import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, createOrderDirect, approveOrder, applyUsdtWalletToOrder } from "./orders";
+import { transitionOrderStatus } from "./orderStatus";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
@@ -166,7 +167,13 @@ export async function deliverPaidBybitOrder(
       }
       await tx.order.update({
         where: { id: args.orderId },
-        data: { status: OrderStatus.PENDING_VERIFICATION, bybitTxid: args.bybitTxId, paidAt: new Date() },
+        data: { bybitTxid: args.bybitTxId, paidAt: new Date() },
+      });
+      await transitionOrderStatus(tx, {
+        orderId: args.orderId,
+        from: OrderStatus.PENDING_PAYMENT,
+        to: OrderStatus.PENDING_VERIFICATION,
+        meta: `bybitTxId=${args.bybitTxId}`,
       });
       const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: 0 });
       logger.info(`Auto-delivered Bybit order ${delivered.orderCode} for transaction ${args.bybitTxId}`);

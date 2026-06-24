@@ -42,6 +42,7 @@ import {
   createCatalogProduct,
   createDenomination,
 } from "@app/db";
+import { OrderStatus } from "@app/core/enums";
 import { buildApp } from "../src/server";
 import { verifyTelegramLoginResult } from "../src/auth";
 import { resetLoginAttempts } from "../src/rateLimit";
@@ -1135,6 +1136,29 @@ describe("checkout — Bybit BSC on-chain option (2nd Bybit method, alongside In
     // by default, the same convention the "Bybit option" block above follows.
     await disableBybitBsc();
   });
+
+  it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
+    "polling partial shows 'confirming', not 'closed', once a BYBIT_BSC order is %s",
+    async (status) => {
+      await enableBybitBsc();
+      const { cookie, csrf } = await checkoutSession();
+      const created = await app.inject({
+        method: "POST",
+        url: "/checkout",
+        headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+        payload: new URLSearchParams({ method: "bybit_bsc", csrf_token: csrf }).toString(),
+      });
+      const code = created.headers.location!.split("/")[2]!;
+      await prisma.order.update({ where: { orderCode: code }, data: { status } });
+
+      const res = await app.inject({ method: "GET", url: `/checkout/${code}/status`, headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain("bg-pine-tint"); // "confirming" chip styling
+      expect(res.body).not.toContain("bg-sand"); // would mean it fell into the "closed" catch-all
+
+      await disableBybitBsc();
+    },
+  );
 });
 
 describe("checkout — PayDisini option (2nd IDR method, alongside TokoPay)", () => {

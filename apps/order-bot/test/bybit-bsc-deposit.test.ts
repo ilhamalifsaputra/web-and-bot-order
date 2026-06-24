@@ -9,7 +9,7 @@ import {
   deliverPaidBybitBscOrder,
   deliverPaidBybitOrder,
   recordUnmatchedBybitBscTx,
-  listPendingBybitBscOrders,
+  listInFlightBybitBscOrders,
   resolveBybitBscConfig,
   setSetting,
   getSetting,
@@ -76,10 +76,22 @@ describe("normalizeOnchainDeposit (Bybit on-chain deposit payload shape)", () =>
     expect(d.amount).toBeCloseTo(746.99);
   });
 
-  it("accepts status 3 (Success) and rejects other statuses", () => {
-    expect(normalizeOnchainDeposit({ ...real, status: 3 }, cfg)).not.toBeNull();
-    expect(normalizeOnchainDeposit({ ...real, status: 1 }, cfg)).toBeNull();
-    expect(normalizeOnchainDeposit({ ...real, status: 2 }, cfg)).toBeNull(); // 2=success on Internal Transfer, NOT here
+  // INTENTIONAL behavior change: status 1/2 used to be discarded entirely
+  // (the only consumer was delivery, which only ever wants status 3). Now
+  // they're kept too, so a still-confirming deposit can be tracked
+  // (PAYMENT_DETECTED) before Bybit itself reports it Success — delivery
+  // still only ever happens on status 3, unchanged.
+  it("accepts status 1/2 (still confirming) and 3 (Success); rejects unknown/failure codes", () => {
+    expect(normalizeOnchainDeposit({ ...real, status: 1 }, cfg)).not.toBeNull(); // toBeConfirmed
+    expect(normalizeOnchainDeposit({ ...real, status: 2 }, cfg)).not.toBeNull(); // processing
+    expect(normalizeOnchainDeposit({ ...real, status: 3 }, cfg)).not.toBeNull(); // success
+    expect(normalizeOnchainDeposit({ ...real, status: 0 }, cfg)).toBeNull(); // unknown
+    expect(normalizeOnchainDeposit({ ...real, status: 4 }, cfg)).toBeNull(); // failed (not handled here)
+  });
+
+  it("attaches the raw Bybit status to the normalized row", () => {
+    expect(normalizeOnchainDeposit({ ...real, status: 1 }, cfg)!.bybitStatus).toBe(1);
+    expect(normalizeOnchainDeposit({ ...real, status: 3 }, cfg)!.bybitStatus).toBe(3);
   });
 
   it("rejects a non-USDT coin", () => {
@@ -205,6 +217,25 @@ describe("deliverPaidBybitBscOrder (idempotency + delivery)", () => {
     expect(await prisma.stockItem.count({ where: { status: StockStatus.SOLD } })).toBe(1); // not re-delivered
   });
 
+  it("a delivery throw (out of stock) flags the ledger row, transitions the order to FAILED, and enqueues an admin alert via the outbox", async () => {
+    const order = (await makeBybitBscOrder())!;
+    // Force approveOrder's out-of-stock path: invalidate the order's own
+    // reserved stock item and leave no replacement available for the product.
+    await prisma.stockItem.updateMany({ where: { productId: sample.product.id }, data: { status: StockStatus.DEAD } });
+    const txId = "0x" + "8".repeat(64);
+
+    await expect(
+      deliverPaidBybitBscOrder(prisma, { orderId: order.id, bybitTxId: txId, amount: order.totalAmount }),
+    ).rejects.toMatchObject({ key: "error.cannot_deliver_out_of_stock" });
+
+    expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: txId } }))!.outcome).toBe("delivery_failed");
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe(OrderStatus.FAILED);
+    const failedRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: "ORDER_PIPELINE_FAILED" },
+    });
+    expect(failedRows.length).toBeGreaterThan(0);
+  });
+
   // The single most important test proving the shared-ledger reuse decision
   // is safe: an Internal Transfer (BYBIT) order and an on-chain (BYBIT_BSC)
   // order, each delivered with a realistic-format tx id for their own rail,
@@ -259,8 +290,12 @@ describe("processDeposits (poll-loop wiring)", () => {
     return { api, sent, edits };
   }
 
-  const pending = () => listPendingBybitBscOrders(prisma, new Date());
+  const inFlight = () => listInFlightBybitBscOrders(prisma, new Date());
+  // Default bybitStatus to Success (3) so every existing test below — written
+  // before still-confirming tracking existed — keeps its original immediate-
+  // delivery behavior unless a test explicitly overrides it.
   const dep = (over: Partial<BybitBscDeposit> & { txId: string; amount: number }): BybitBscDeposit => ({
+    bybitStatus: 3,
     ...over,
   });
 
@@ -268,7 +303,7 @@ describe("processDeposits (poll-loop wiring)", () => {
     const order = (await makeBybitBscOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
-    await processDeposits(api, [dep({ txId: "0x" + "f".repeat(64), amount: Number(order.totalAmount) })], await pending());
+    await processDeposits(api, [dep({ txId: "0x" + "f".repeat(64), amount: Number(order.totalAmount) })], await inFlight(), "BSC");
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
 
     expect(edits).toHaveLength(1);
@@ -285,7 +320,7 @@ describe("processDeposits (poll-loop wiring)", () => {
     const order = (await makeBybitBscOrder())!;
     const { api } = fakeApi();
     const txId = "0x" + "d".repeat(64);
-    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount) })], await pending());
+    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount) })], await inFlight(), "BSC");
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: txId } }))!.outcome).toBe("matched");
   });
@@ -296,7 +331,7 @@ describe("processDeposits (poll-loop wiring)", () => {
     expect(a.totalAmount).toEqual(b.totalAmount);
     const { api } = fakeApi();
     const txId = "0x" + "e".repeat(64);
-    await processDeposits(api, [dep({ txId, amount: Number(a.totalAmount) })], await pending());
+    await processDeposits(api, [dep({ txId, amount: Number(a.totalAmount) })], await inFlight(), "BSC");
     expect((await prisma.order.findUnique({ where: { id: a.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.order.findUnique({ where: { id: b.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: txId } }))!.outcome).toBe("unmatched");
@@ -306,8 +341,84 @@ describe("processDeposits (poll-loop wiring)", () => {
     await makeBybitBscOrder();
     const { api } = fakeApi();
     const txId = "0x" + "9".repeat(64);
-    await processDeposits(api, [dep({ txId, amount: 999.99 })], await pending());
+    await processDeposits(api, [dep({ txId, amount: 999.99 })], await inFlight(), "BSC");
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: txId } }))!.outcome).toBe("unmatched");
+  });
+
+  // ── Gap #1 + #2 regression tests ──────────────────────────────────────────
+  // These came from re-reading how the existing code actually behaves, not
+  // from the original feature request — without them, a still-confirming
+  // deposit would silently lose its order (gap #1) or its eventual real
+  // delivery would be rejected as stale (gap #2).
+
+  it("a still-confirming deposit (status 1/2) is recorded as PAYMENT_DETECTED, not delivered, and not claimed in the ledger yet", async () => {
+    const order = (await makeBybitBscOrder())!;
+    const { api } = fakeApi();
+    const txId = "0x" + "1".repeat(64);
+    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount), bybitStatus: 1 })], await inFlight(), "BSC");
+
+    const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(updated.status).toBe(OrderStatus.PAYMENT_DETECTED);
+    expect(updated.bybitTxid).toBe(txId);
+    expect(updated.network).toBe("BSC");
+    expect(updated.firstDetectedAt).not.toBeNull();
+    expect(await prisma.processedBybitTx.count({ where: { bybitTxId: txId } })).toBe(0);
+  });
+
+  it("re-seeing the same still-confirming deposit on a later cycle matches by txid, not amount — no spurious 'unmatched' row (gap #1)", async () => {
+    const order = (await makeBybitBscOrder())!;
+    const { api } = fakeApi();
+    const txId = "0x" + "2".repeat(64);
+
+    // Cycle 1: first sighting, still toBeConfirmed.
+    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount), bybitStatus: 1 })], await inFlight(), "BSC");
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PAYMENT_DETECTED);
+
+    // Cycle 2: still not final (now "processing"). The order is no longer
+    // PENDING_PAYMENT, so listInFlightBybitBscOrders is what makes it visible
+    // at all here — must match by its own txid, not fall through to
+    // "no candidate -> unmatched" for money that's already accounted for.
+    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount), bybitStatus: 2 })], await inFlight(), "BSC");
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PAYMENT_DETECTED);
+    expect(await prisma.processedBybitTx.count({ where: { bybitTxId: txId } })).toBe(0); // still not claimed
+
+    // Cycle 3: Bybit finally reports Success — delivers exactly as the
+    // existing status-3 path always has.
+    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount), bybitStatus: 3 })], await inFlight(), "BSC");
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
+    expect(await prisma.processedBybitTx.count({ where: { bybitTxId: txId } })).toBe(1);
+  });
+
+  it("pushes the live tracking screen to the anchored bubble exactly once — on the cycle that actually detects, not on later still-confirming cycles", async () => {
+    const order = (await makeBybitBscOrder())!;
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const { api, edits } = fakeApi();
+    const txId = "0x" + "7".repeat(64);
+
+    // Cycle 1: first sighting — pushes the tracking screen once.
+    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount), bybitStatus: 1 })], await inFlight(), "BSC");
+    expect(edits).toHaveLength(1);
+    expect(edits[0]!.chatId).toBe(555);
+    expect(edits[0]!.messageId).toBe(777);
+    expect(edits[0]!.text).toContain("Waiting for the first on-chain confirmation");
+
+    // Cycle 2: same deposit, still not final — must NOT push again (already
+    // detected; re-pushing here would stomp on whatever the confirmation
+    // tracker has since rendered, e.g. an actual confirmation count).
+    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount), bybitStatus: 2 })], await inFlight(), "BSC");
+    expect(edits).toHaveLength(1);
+  });
+
+  it("delivers from PAYMENT_DETECTED/CONFIRMING/CONFIRMED, not just PENDING_PAYMENT (gap #2)", async () => {
+    const statuses = [OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED];
+    for (let i = 0; i < statuses.length; i++) {
+      const order = (await makeBybitBscOrder())!;
+      await prisma.order.update({ where: { id: order.id }, data: { status: statuses[i] } });
+      const txId = "0x" + String(i).repeat(64);
+      const result = await deliverPaidBybitBscOrder(prisma, { orderId: order.id, bybitTxId: txId, amount: order.totalAmount });
+      expect(result.status).toBe("delivered");
+      expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
+    }
   });
 });
 

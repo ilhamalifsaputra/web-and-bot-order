@@ -9,6 +9,7 @@ export * from "./crud/stock";
 export * from "./crud/cart";
 export * from "./crud/vouchers";
 export * from "./crud/orders";
+export * from "./crud/orderStatus";
 export * from "./crud/referrals";
 export * from "./crud/reviews";
 export * from "./crud/support";

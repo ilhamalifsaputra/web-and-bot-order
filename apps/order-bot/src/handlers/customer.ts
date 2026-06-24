@@ -12,7 +12,7 @@ import { config } from "@app/core/config";
 import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ensureUtc, localize } from "@app/core/datetime";
-import { UserRole, OrderStatus, TicketStatus, SenderType } from "@app/core/enums";
+import { UserRole, OrderStatus, PaymentMethod, TicketStatus, SenderType } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
   prisma,
@@ -47,7 +47,7 @@ import { smartEdit, renderMenu } from "../util/chat";
 import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/banner";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
-import { esc, formatPrice, formatIdr, statusBadge, groupOrderItems, formatCountdown, priceIdr, orderAmount, mixedAmount } from "../util/format";
+import { esc, formatPrice, formatIdr, statusBadge, groupOrderItems, formatCountdown, priceIdr, orderAmount, mixedAmount, renderBybitBscTrackingScreen } from "../util/format";
 import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
 import { showFaq, showTerms } from "./static";
@@ -56,6 +56,15 @@ const PAGE_SIZE = 10;
 // USDT-denominated figures only (wallet balance, commissions). Catalog prices
 // are central Rupiah — use priceIdr(v, rate); order totals — orderAmount(o).
 const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimals);
+
+// Bybit BSC's in-flight pre-delivery states — viewOrder() routes these
+// through the live tracking screen instead of the generic order.detail path.
+// Every other payment method never reaches these (Bybit BSC only).
+const BSC_TRACKING_STATUSES: readonly string[] = [
+  OrderStatus.PAYMENT_DETECTED,
+  OrderStatus.CONFIRMING,
+  OrderStatus.CONFIRMED,
+];
 
 // --- session scratch accessors (mirror context.user_data keys) -------------
 // browseEntries snapshots the mid-tier Product ids on the current page (the new
@@ -685,6 +694,12 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
       binance_id: esc(binanceId),
       countdown,
     });
+  } else if (
+    order.paymentMethod === PaymentMethod.BYBIT_BSC &&
+    BSC_TRACKING_STATUSES.includes(order.status)
+  ) {
+    await smartEdit(ctx, renderBybitBscTrackingScreen(order, lang), ckb.bybitBscTrackingKb(order, lang));
+    return;
   } else {
     let credentialsBlock = "";
     if (order.status === OrderStatus.DELIVERED) {

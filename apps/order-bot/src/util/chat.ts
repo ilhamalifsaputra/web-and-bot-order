@@ -77,6 +77,7 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
   // inline (or absent); otherwise fall through to a fresh send carrying it.
   if (ctx.callbackQuery && (replyMarkup === undefined || isInline(replyMarkup))) {
     const cqMsg = ctx.callbackQuery.message;
+    let edited = true;
     try {
       // A photo+caption bubble (e.g. the QR payment screen) can't take an
       // editMessageText — edit its caption in place, like adminEdit does.
@@ -85,17 +86,26 @@ export async function smartEdit(ctx: MyContext, text: string, replyMarkup?: Mark
       } else {
         await ctx.editMessageText(body, { parse_mode: "HTML", reply_markup: replyMarkup });
       }
+    } catch (err) {
+      if (!isNotModified(err)) edited = false; // genuine failure — fall through to a fresh send
+    }
+    if (edited) {
       if (cqMsg) {
         // The tap may have landed on an older bubble — retire the previously
-        // active menu so two screens never stay live at once.
+        // active menu so two screens never stay live at once. This also runs
+        // when the edit no-op'd ("message is not modified" — the bubble
+        // already showed this exact content): that's still a successful
+        // render, so the tapped message must still become the anchor. A past
+        // bug returned early on that no-op without ever reaching this
+        // assignment, which left ctx.session.menuMsgId stale/unset whenever a
+        // re-render happened to match the bubble's existing content exactly
+        // — permanently breaking any later poller's "edit this order's
+        // anchored bubble" lookup for that chat.
         const prev = ctx.session.menuMsgId;
         if (prev !== undefined && prev !== cqMsg.message_id) await retireKeyboard(ctx, prev);
         ctx.session.menuMsgId = cqMsg.message_id;
       }
       return;
-    } catch (err) {
-      if (isNotModified(err)) return;
-      // fall through to a fresh send
     }
   }
   const prev = ctx.session.menuMsgId ?? ctx.callbackQuery?.message?.message_id;
@@ -135,15 +145,20 @@ export async function renderMenu(
     if (ctx.callbackQuery && (replyMarkup === undefined || isInline(replyMarkup))) {
       const cqMsg = ctx.callbackQuery.message;
       if (cqMsg && "photo" in cqMsg && cqMsg.photo) {
+        let edited = true;
         try {
           await ctx.editMessageCaption({ caption: body, parse_mode: "HTML", reply_markup: replyMarkup });
+        } catch (err) {
+          if (!isNotModified(err)) edited = false; // genuine failure — fall through to a fresh photo send
+        }
+        if (edited) {
+          // Same "no-op edit is still a successful render" fix as smartEdit
+          // above — see its comment for why returning early without this
+          // assignment was a bug.
           const prev = ctx.session.menuMsgId;
           if (prev !== undefined && prev !== cqMsg.message_id) await retireKeyboard(ctx, prev);
           ctx.session.menuMsgId = cqMsg.message_id;
           return;
-        } catch (err) {
-          if (isNotModified(err)) return;
-          // fall through to a fresh photo send
         }
       }
     }

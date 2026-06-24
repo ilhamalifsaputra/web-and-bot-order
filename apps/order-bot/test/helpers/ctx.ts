@@ -8,7 +8,20 @@
  * external), feeding scripted update contexts — this exercises the real
  * conversation flow + DB effects without the replay runtime.
  */
+import { GrammyError } from "grammy";
 import type { MyContext, MyConversation, SessionData } from "../../src/context";
+
+/** Mirrors the real Telegram "Bad Request: message is not modified" error
+ * grammY throws when an edit's text/caption + reply_markup are identical to
+ * what the message already shows. */
+function notModifiedError(method: string): GrammyError {
+  return new GrammyError(
+    `Call to '${method}' failed!`,
+    { ok: false, error_code: 400, description: "Bad Request: message is not modified" },
+    method,
+    {},
+  );
+}
 
 export interface SentCall {
   method: string;
@@ -33,6 +46,10 @@ export interface MakeCtxOptions {
   match?: string;
   /** Extra fields merged into replyWithPhoto's resolved Message (e.g. `photo`). */
   replyWithPhotoResult?: Record<string, unknown>;
+  /** Make ctx-level editMessageText/editMessageCaption reject with Telegram's
+   * real "message is not modified" error, as if the render produced content
+   * identical to what the tapped bubble already shows. */
+  editThrowsNotModified?: boolean;
 }
 
 export interface FakeCtx {
@@ -81,6 +98,9 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
       const cqMsgId = (callbackQuery?.message as { message_id?: number } | undefined)?.message_id;
       if (cqMsgId !== undefined && deletedIds.has(cqMsgId)) {
         return Promise.reject(new Error("message to edit not found"));
+      }
+      if (opts.editThrowsNotModified) {
+        return Promise.reject(notModifiedError(method));
       }
       sink.push({ method, args });
       return Promise.resolve({ message_id: ++msgSeq, chat, date: 0 });

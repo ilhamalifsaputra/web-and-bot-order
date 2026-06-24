@@ -14,7 +14,7 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
-import { prisma, createOrderDirect, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders } from "@app/db";
+import { prisma, createOrderDirect, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder } from "@app/db";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
@@ -349,6 +349,27 @@ describe("customer handlers", () => {
     await customer.viewOrder(stranger.ctx, order!.id);
     expect(offersForwardAction(stranger.sink)).toBe(true);
   });
+
+  it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
+    "viewOrder routes a BYBIT_BSC order at %s through the live tracking screen, not the generic order.detail",
+    async (status) => {
+      const order = (await prisma.$transaction((tx) =>
+        createBybitBscOrder(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1, rate: 1 }),
+      ))!;
+      await prisma.order.update({
+        where: { id: order.id },
+        data: { status, network: "BSC", confirmations: 4, requiredConfirmations: 15 },
+      });
+
+      const { ctx, sink } = customerCtx();
+      await customer.viewOrder(ctx, order.id);
+
+      const body = JSON.stringify(sink);
+      expect(body).toContain(order.orderCode);
+      expect(body).toContain("4/15"); // the real tracker count, not a generic detail screen
+      expect(body).not.toContain("Created:"); // order.detail's own field — proves the OTHER branch wasn't used
+    },
+  );
 
   it("viewMyTicket never strands the user when the ticket isn't found", async () => {
     const { ctx, sink } = customerCtx();
@@ -1001,6 +1022,32 @@ describe("Refresh Status button (§7)", () => {
     const toast = calls(sink, "answerCallbackQuery").at(-1);
     expect((toast!.args[0] as { text?: string }).text).toBe("✅ Payment confirmed!");
   });
+
+  async function makeBybitBscOrderAt(status: string) {
+    const order = (await prisma.$transaction((tx) =>
+      createBybitBscOrder(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: 1, rate: 1 }),
+    ))!;
+    await prisma.order.update({ where: { id: order.id }, data: { status } });
+    return order;
+  }
+
+  it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
+    "a BYBIT_BSC order at %s still gets polled (no early short-circuit) and toasts still_pending, not the stale PENDING_PAYMENT-only check",
+    async (status) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ retCode: 1, retMsg: "no creds in test" }) }));
+      const order = await makeBybitBscOrderAt(status);
+
+      const { ctx, sink } = customerCtx({ callbackData: `v1:checkout:refresh:${order.id}` });
+      await checkout.refreshPaymentStatus(ctx, order.id);
+
+      // Bybit BSC isn't configured in this test env, so the poll is a no-op —
+      // the order stays exactly where it was, not DELIVERED.
+      expect((await getOrder(prisma, order.id))!.status).toBe(status);
+      const toast = calls(sink, "answerCallbackQuery").at(-1);
+      expect((toast!.args[0] as { text?: string }).text).toBe("Payment not received yet. Still waiting…");
+      vi.unstubAllGlobals();
+    },
+  );
 
   // --- Router round-trip ------------------------------------------------------
   it("router: v1:checkout:refresh:<id> through routeCallback reaches refreshPaymentStatus", async () => {

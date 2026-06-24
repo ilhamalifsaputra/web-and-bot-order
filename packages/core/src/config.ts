@@ -144,6 +144,27 @@ export const Env = z.object({
   // Independent poll cadence for the BSC on-chain poller — tunable separately
   // from both Binance's and Bybit Internal Transfer's intervals.
   BYBIT_BSC_POLL_INTERVAL_SECONDS: z.coerce.number().default(5),
+
+  // ---- Bybit BSC confirmation tracker (display-only, separate from the
+  // deposit poller above) — a read-only BscScan-compatible block-explorer
+  // lookup for the live "x/15" confirmation count. Never gates delivery;
+  // that stays exclusively the deposit poller's job once Bybit itself
+  // reports a deposit as Success. ----
+  BSCSCAN_API_BASE: z.string().default("https://api.bscscan.com/api"),
+  // Optional — BscScan's free tier works without a key at a lower rate limit;
+  // a key just raises it. Never web-editable as a secret-looking value beyond
+  // the existing Settings whitelist pattern (web-admin Settings win, same as
+  // every other credential in this file).
+  BSCSCAN_API_KEY: z.string().optional(),
+  // Confirmations required before a tracked deposit shows as fully
+  // "Confirmed" — a display-grade milestone, not the delivery gate. 15 is a
+  // conservative default for BSC finality.
+  BYBIT_BSC_REQUIRED_CONFIRMATIONS: z.coerce.number().default(15),
+  // Independent of BYBIT_BSC_POLL_INTERVAL_SECONDS (which governs the deposit
+  // poller) — the tracker only ever runs against deposits already matched to
+  // an order, so it can poll faster without multiplying Bybit API load.
+  BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS: z.coerce.number().default(10),
+
   // Optional USDT→IDR rate; if set, instructions show an IDR equivalent.
   USDT_IDR_RATE: z.coerce.number().optional(),
 

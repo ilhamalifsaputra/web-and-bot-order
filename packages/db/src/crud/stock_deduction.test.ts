@@ -21,7 +21,7 @@ import {
   getUser,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
-import { NotificationEvent } from "@app/core/enums";
+import { NotificationEvent, OrderStatus } from "@app/core/enums";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 
 let db: TestDb;
@@ -105,6 +105,12 @@ describe("stock deduction", () => {
     // row; approveOrder only adds the auto-deliver row for adminId===0.
     const autoRows = await prisma.auditLog.findMany({ where: { action: "order.auto_deliver", targetId: created!.id } });
     expect(autoRows.length).toBe(0);
+
+    // approveOrder doesn't route through transitionOrderStatus (it keeps its
+    // own atomic claim) but still writes the same audit-trail row.
+    const history = await prisma.orderStatusHistory.findMany({ where: { orderId: created!.id } });
+    expect(history).toHaveLength(1);
+    expect(history[0]!.status).toBe("DELIVERED");
   });
 
   // Bot-2 fix (security audit, 2026-06-23): approveOrder claims
@@ -143,6 +149,9 @@ describe("stock deduction", () => {
 
     expect(await count(product.id, "AVAILABLE")).toBe(5);
     expect(await count(product.id, "RESERVED")).toBe(0);
+    const history = await prisma.orderStatusHistory.findMany({ where: { orderId: created!.id } });
+    expect(history).toHaveLength(1);
+    expect(history[0]!.status).toBe("CANCELLED");
   });
 
   it("reject releases the reservation back to AVAILABLE", async () => {
@@ -157,6 +166,9 @@ describe("stock deduction", () => {
 
     expect(await count(product.id, "AVAILABLE")).toBe(5);
     expect(await count(product.id, "RESERVED")).toBe(0);
+    const history = await prisma.orderStatusHistory.findMany({ where: { orderId: created!.id } });
+    expect(history).toHaveLength(1);
+    expect(history[0]!.status).toBe("REJECTED");
   });
 
   it("reject refunds wallet and rolls back voucher usage", async () => {
@@ -220,5 +232,48 @@ describe("stock deduction", () => {
       where: { orderId: created!.id, event: NotificationEvent.ORDER_DELIVERED },
     });
     expect(testimonialRows).toHaveLength(1);
+  });
+});
+
+// Anti-abuse guard: a customer can't self-cancel once their payment is
+// already under review/incoming — preventing "submit fake proof, then
+// cancel to recycle stock" (or the on-chain equivalent: tap cancel right as
+// a real deposit is detected). Admin-initiated cancels are unaffected.
+describe("cancelOrder — anti-abuse guard (user_cancelled vs. payment-in-flight)", () => {
+  it("rejects user_cancelled while PENDING_VERIFICATION (proof under review) — the original guard, previously untested", async () => {
+    const { user, product } = sample;
+    await addToCart(prisma, user.id, product.id, 1);
+    const created = await createOrderFromCart(prisma, { user });
+    await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
+
+    await expect(cancelOrder(prisma, created!.id, "user_cancelled")).rejects.toMatchObject({
+      key: "error.cannot_cancel_after_proof",
+    });
+    expect((await getOrder(prisma, created!.id))!.status).toBe(OrderStatus.PENDING_VERIFICATION);
+  });
+
+  it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
+    "rejects user_cancelled while %s (on-chain deposit already incoming/confirming)",
+    async (status) => {
+      const { user, product } = sample;
+      await addToCart(prisma, user.id, product.id, 1);
+      const created = await createOrderFromCart(prisma, { user });
+      await prisma.order.update({ where: { id: created!.id }, data: { status } });
+
+      await expect(cancelOrder(prisma, created!.id, "user_cancelled")).rejects.toMatchObject({
+        key: "error.cannot_cancel_after_proof",
+      });
+      expect((await getOrder(prisma, created!.id))!.status).toBe(status);
+    },
+  );
+
+  it("an admin-initiated cancel (different reason) still succeeds from PAYMENT_DETECTED", async () => {
+    const { user, product } = sample;
+    await addToCart(prisma, user.id, product.id, 1);
+    const created = await createOrderFromCart(prisma, { user });
+    await prisma.order.update({ where: { id: created!.id }, data: { status: OrderStatus.PAYMENT_DETECTED } });
+
+    await cancelOrder(prisma, created!.id, "underpaid_cancelled by admin_id=1");
+    expect((await getOrder(prisma, created!.id))!.status).toBe(OrderStatus.CANCELLED);
   });
 });

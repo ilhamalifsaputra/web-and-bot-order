@@ -157,6 +157,14 @@ diaktifkan bersamaan dan pembeli memilih salah satu saat checkout.
   ambang konfirmasi yang disyaratkan Bybit (status 3 tetap wajib) — hanya
   menghilangkan delay interval-poll yang menumpuk di atas lantai konfirmasi
   blockchain itu sendiri.
+- **Status 1/2 (belum "Success") TIDAK lagi dibuang begitu saja** (Phase 1
+  blockchain tracking) — baris masih-confirming dipakai untuk menandai order
+  `PAYMENT_DETECTED`/`CONFIRMING` (live tracking screen di bot, lihat
+  [ORDER_STATE_MACHINE.md](ORDER_STATE_MACHINE.md)), lewat poller terpisah
+  `bybitBscConfirmationTracker.ts` yang query block explorer
+  (BscScan-compatible) untuk hitungan konfirmasi ASLI. Ini murni
+  display-only — gerbang delivery TETAP sama persis: hanya status-3 Bybit
+  via `deliverPaidBybitBscOrder` yang pernah memicu `approveOrder`.
 
 ## Kontrak respons webhook (TokoPay/PayDisini/NOWPayments)
 

@@ -66,6 +66,9 @@ describe("creditOrderToBalance", () => {
     expect(Number(after.walletBalanceUsdt)).toBeCloseTo(Number(before.walletBalanceUsdt)); // USDT untouched
 
     expect((await getOrder(prisma, order.id))!.status).toBe("CANCELLED");
+    const history = await prisma.orderStatusHistory.findMany({ where: { orderId: order.id } });
+    expect(history).toHaveLength(1);
+    expect(history[0]!.status).toBe("CANCELLED");
 
     const led = await prisma.walletTransaction.findFirstOrThrow({
       where: { orderId: order.id, reason: "unfulfilled_credit" },

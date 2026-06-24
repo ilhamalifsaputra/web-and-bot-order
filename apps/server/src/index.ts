@@ -27,6 +27,8 @@ import { buildBot, setupCommandMenu, guardRunnerTask } from "@app/order-bot/main
 import { scheduleJobs, scheduleFxRefresh } from "@app/order-bot/jobs";
 import { startPolling, stopPolling } from "@app/order-bot/payments/binanceInternal";
 import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "@app/order-bot/payments/bybitDeposit";
+import { startPolling as startBybitBscPolling, stopPolling as stopBybitBscPolling } from "@app/order-bot/payments/bybitBscDeposit";
+import { startPolling as startBybitBscTracker, stopPolling as stopBybitBscTracker } from "@app/order-bot/payments/bybitBscConfirmationTracker";
 import { startPolling as startTokopayPolling, stopPolling as stopTokopayPolling } from "@app/order-bot/payments/tokopayReconcile";
 import { startPolling as startPaydisiniPolling, stopPolling as stopPaydisiniPolling } from "@app/order-bot/payments/paydisiniReconcile";
 import { startPolling as startNowpaymentsPolling, stopPolling as stopNowpaymentsPolling } from "@app/order-bot/payments/nowpaymentsReconcile";
@@ -259,7 +261,9 @@ export async function start(): Promise<void> {
     // poller is a no-op unless its creds are configured.
     jobs = scheduleJobs(bot.api);
     startPolling(bot.api); // Binance Internal Transfer
-    startBybitPolling(bot.api); // Bybit USDT-BSC deposits
+    startBybitPolling(bot.api); // Bybit Internal Transfer (off-chain, UID-based)
+    startBybitBscPolling(bot.api); // Bybit BSC on-chain (BEP20) USDT deposits
+    startBybitBscTracker(bot.api); // Bybit BSC live confirmation-count tracker (display-only)
     startTokopayPolling(bot.api); // TokoPay / QRIS reconcile (webhook safety net)
     startPaydisiniPolling(bot.api); // PayDisini / QRIS reconcile (webhook safety net)
     startNowpaymentsPolling(bot.api); // NOWPayments / USDT invoice reconcile (webhook safety net)
@@ -355,6 +359,8 @@ export async function start(): Promise<void> {
       for (const job of jobs) job.stop();
       stopPolling();
       stopBybitPolling();
+      stopBybitBscPolling();
+      stopBybitBscTracker();
       stopTokopayPolling();
       stopPaydisiniPolling();
       stopNowpaymentsPolling();

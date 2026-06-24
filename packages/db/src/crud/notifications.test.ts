@@ -3,6 +3,7 @@ import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import {
   enqueueNotification,
+  enqueueOrderPipelineFailed,
   fetchPendingNotifications,
   claimNotification,
   releaseNotificationClaim,
@@ -14,6 +15,7 @@ import {
   NOTIF_RETRY_BASE_MS,
   NOTIF_RETRY_MAX_MS,
 } from "./notifications";
+import { addAdminIdToDb } from "./admins";
 import { NotificationEvent } from "@app/core/enums";
 
 let db: TestDb;
@@ -261,5 +263,34 @@ describe("claimNotification / releaseNotificationClaim (crash-window double-send
     const r = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
     expect(r!.status).toBe("SENT");
     expect(r!.claimedAt).toBeNull();
+  });
+});
+
+describe("enqueueOrderPipelineFailed", () => {
+  // Runs before the "two admins" test below — addAdminIdToDb persists into
+  // the shared `admin_ids` Setting for the rest of this file's run, so the
+  // "no admin resolved" assumption only holds before that happens.
+  it("enqueues nothing when no admin is resolved", async () => {
+    const orderId = await seedOrder();
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.ORDER_PIPELINE_FAILED } });
+    await enqueueOrderPipelineFailed(prisma, { orderId, orderCode: "ORD-NOADMIN", reason: "no admins configured in this test" });
+    const after = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.ORDER_PIPELINE_FAILED } });
+    expect(after).toBe(before);
+  });
+
+  it("enqueues one ORDER_PIPELINE_FAILED DM per resolved admin, with chat_id/order_code/reason and a truncated reason", async () => {
+    await addAdminIdToDb(prisma, 4001);
+    await addAdminIdToDb(prisma, 4002);
+    const orderId = await seedOrder();
+
+    await enqueueOrderPipelineFailed(prisma, { orderId, orderCode: "ORD-FAILTEST", reason: "x".repeat(1000) });
+
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.ORDER_PIPELINE_FAILED, orderId } });
+    expect(rows).toHaveLength(2);
+    const chatIds = rows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort();
+    expect(chatIds).toEqual([4001, 4002]);
+    const payload = JSON.parse(rows[0]!.payloadJson) as { order_code: string; reason: string };
+    expect(payload.order_code).toBe("ORD-FAILTEST");
+    expect(payload.reason.length).toBe(300); // truncated, not the full 1000-char input
   });
 });

@@ -232,10 +232,20 @@ function payState(order: OrderRow) {
     order.expiresAt != null &&
     ensureUtc(order.expiresAt).toMillis() <= Date.now();
   if (order.status === OrderStatus.DELIVERED) return "delivered";
-  if (order.status === OrderStatus.PENDING_VERIFICATION || order.status === OrderStatus.PAID)
+  if (
+    order.status === OrderStatus.PENDING_VERIFICATION ||
+    order.status === OrderStatus.PAID ||
+    // Bybit BSC in-flight states (deposit seen / confirming on-chain / fully
+    // confirmed) — without these, a live Bybit BSC order would fall into the
+    // "closed" catch-all below and render as dead the moment a deposit is
+    // first detected.
+    order.status === OrderStatus.PAYMENT_DETECTED ||
+    order.status === OrderStatus.CONFIRMING ||
+    order.status === OrderStatus.CONFIRMED
+  )
     return "confirming";
   if (order.status === OrderStatus.PENDING_PAYMENT) return expired ? "expired" : "waiting";
-  return "closed"; // cancelled / rejected / refunded / underpaid
+  return "closed"; // cancelled / rejected / refunded / underpaid / failed
 }
 
 /**

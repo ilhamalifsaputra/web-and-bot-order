@@ -216,38 +216,55 @@ model StockItem {
 }
 
 model Order {
-  id                 Int       @id @default(autoincrement())
-  orderCode          String    @unique(map: "ix_orders_order_code") @map("order_code")
-  userId             Int       @map("user_id")
-  subtotalAmount     Decimal   @map("subtotal_amount")
-  discountAmount     Decimal   @default(0) @map("discount_amount")
-  uniqueCents        Decimal   @default(0) @map("unique_cents")
-  totalAmount        Decimal   @map("total_amount")
-  voucherId          Int?      @map("voucher_id")
-  walletUsed         Decimal   @default(0) @map("wallet_used")
-  bulkDiscountAmount Decimal   @default(0) @map("bulk_discount_amount")
-  status             String    @default("PENDING_PAYMENT")
+  id                    Int       @id @default(autoincrement())
+  orderCode             String    @unique(map: "ix_orders_order_code") @map("order_code")
+  userId                Int       @map("user_id")
+  subtotalAmount        Decimal   @map("subtotal_amount")
+  discountAmount        Decimal   @default(0) @map("discount_amount")
+  uniqueCents           Decimal   @default(0) @map("unique_cents")
+  totalAmount           Decimal   @map("total_amount")
+  voucherId             Int?      @map("voucher_id")
+  walletUsed            Decimal   @default(0) @map("wallet_used")
+  bulkDiscountAmount    Decimal   @default(0) @map("bulk_discount_amount")
+  status                String    @default("PENDING_PAYMENT")
   /// Transaction currency, set when the buyer picks a payment method
   /// (plan.md §15): "IDR" (TokoPay) or "USDT" (Binance). Catalog prices are
   /// central IDR; rows created before this column existed are USDT-era
   /// snapshots (see scripts/convert-prices-to-idr.ts).
-  currency           String    @default("IDR")
+  currency              String    @default("IDR")
   /// Rupiah-per-USDT snapshot taken when currency=USDT, so later rate edits
   /// never change what historical orders were charged.
-  fxRate             Decimal?  @map("fx_rate")
-  paymentMethod      String    @default("BINANCE_PAY") @map("payment_method")
-  paymentRef         String?   @unique(map: "ix_orders_payment_ref") @map("payment_ref")
-  paymentMsgChatId   BigInt?   @map("payment_msg_chat_id")
-  paymentMsgId       Int?      @map("payment_msg_id")
-  paymentProofFileId String?   @map("payment_proof_file_id")
-  binanceTxid        String?   @map("binance_txid")
-  bybitTxid          String?   @map("bybit_txid")
-  adminNote          String?   @map("admin_note")
-  rejectionReason    String?   @map("rejection_reason")
-  createdAt          DateTime  @default(now()) @map("created_at")
-  expiresAt          DateTime? @map("expires_at")
-  paidAt             DateTime? @map("paid_at")
-  deliveredAt        DateTime? @map("delivered_at")
+  fxRate                Decimal?  @map("fx_rate")
+  paymentMethod         String    @default("BINANCE_PAY") @map("payment_method")
+  paymentRef            String?   @unique(map: "ix_orders_payment_ref") @map("payment_ref")
+  paymentMsgChatId      BigInt?   @map("payment_msg_chat_id")
+  paymentMsgId          Int?      @map("payment_msg_id")
+  paymentProofFileId    String?   @map("payment_proof_file_id")
+  binanceTxid           String?   @map("binance_txid")
+  bybitTxid             String?   @map("bybit_txid")
+  adminNote             String?   @map("admin_note")
+  rejectionReason       String?   @map("rejection_reason")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  expiresAt             DateTime? @map("expires_at")
+  paidAt                DateTime? @map("paid_at")
+  deliveredAt           DateTime? @map("delivered_at")
+  /// On-chain network of the tracked deposit (e.g. "BSC"). Set only by the
+  /// Bybit BSC confirmation tracker — null forever for every other payment
+  /// method, which have no block-depth concept to report.
+  network               String?   @map("network")
+  /// Live confirmation count from a read-only block-explorer lookup. Null
+  /// means "no real count available" (the renderer's signal to never show a
+  /// fabricated number) — only the Bybit BSC rail ever sets this.
+  confirmations         Int?      @map("confirmations")
+  requiredConfirmations Int?      @map("required_confirmations")
+  /// When the deposit was first seen on-chain, before Bybit itself reports it
+  /// confirmed — distinct from `paidAt` (set only once Bybit's own status
+  /// reaches Success).
+  firstDetectedAt       DateTime? @map("first_detected_at")
+  /// When the tracker's own confirmation count first reached
+  /// `requiredConfirmations` — a display-grade milestone, intentionally
+  /// separate from `paidAt`/`deliveredAt` (which stay gated on Bybit's report).
+  confirmedAt           DateTime? @map("confirmed_at")
 
   user               User                 @relation(fields: [userId], references: [id], onUpdate: NoAction)
   voucher            Voucher?             @relation(fields: [voucherId], references: [id], onUpdate: NoAction)
@@ -257,6 +274,7 @@ model Order {
   referrals          Referral[]
   notificationOutbox NotificationOutbox[]
   voucherRedemptions VoucherRedemption[]
+  statusHistory      OrderStatusHistory[]
 
   @@index([userId], map: "ix_orders_user_id")
   @@index([status], map: "ix_orders_status")
@@ -264,6 +282,28 @@ model Order {
   @@index([bybitTxid], map: "ix_orders_bybit_txid")
   @@index([status, createdAt], map: "ix_orders_status_created")
   @@map("orders")
+}
+
+/// Append-only audit trail of every Order.status transition. A dedicated
+/// table (not a JSON column on Order) specifically because SQLite can't
+/// usefully index inside a JSON array, and [orderId, occurredAt] needs a
+/// real index for the live-tracking timeline render.
+model OrderStatusHistory {
+  id         Int      @id @default(autoincrement())
+  orderId    Int      @map("order_id")
+  status     String
+  occurredAt DateTime @default(now()) @map("occurred_at")
+  meta       String?
+
+  // Restrict, not Cascade — mirrors Review/Referral's existing policy for
+  // audit-significant Order children (Infra-5 fix, security audit
+  // 2026-06-23): no code path hard-deletes an Order today; this is a
+  // schema-level guardrail against ever adding one that would silently
+  // erase status history.
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict, onUpdate: NoAction)
+
+  @@index([orderId, occurredAt], map: "ix_order_status_history_order_occurred")
+  @@map("order_status_history")
 }
 
 model OrderItem {

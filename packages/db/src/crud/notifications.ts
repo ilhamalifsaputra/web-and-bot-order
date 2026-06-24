@@ -99,6 +99,34 @@ export async function enqueueAdminOverpaid(
 }
 
 /**
+ * Enqueue one admin DM per resolved admin alerting that a Bybit BSC order's
+ * automated tracking pipeline failed post-detection (tracker lookup-failure
+ * grace period exhausted, or a delivery throw after Bybit reported the
+ * deposit Success) and needs manual action. Same fan-out-per-admin shape as
+ * `enqueueAdminOverpaid`. `reason` is a short diagnostic string — never a
+ * secret/credential, but still not the kind of detail a buyer should see,
+ * hence an admin DM rather than anything customer-facing.
+ */
+export async function enqueueOrderPipelineFailed(
+  db: Db,
+  args: { orderId: number; orderCode: string; reason: string },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ORDER_PIPELINE_FAILED,
+        orderId: args.orderId,
+        payloadJson: JSON.stringify({
+          chat_id: adminId,
+          order_code: args.orderCode,
+          reason: args.reason.slice(0, 300),
+        }),
+      },
+    });
+  }
+}
+
+/**
  * A SENDING row whose claim is older than this is treated as abandoned (the
  * dispatcher that claimed it died mid-send, before reaching
  * markNotificationSent/Failed) and becomes claimable again. Infra-2 fix,

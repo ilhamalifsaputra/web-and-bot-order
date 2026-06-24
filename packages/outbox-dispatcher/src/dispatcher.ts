@@ -47,6 +47,7 @@ const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.ADMIN_PW_RESET,
   NotificationEvent.ADMIN_OVERPAID, // admin DM (gateway webhook overpayment)
   NotificationEvent.ORDER_DELIVERED_DM, // buyer DM (web auto-delivery)
+  NotificationEvent.ORDER_PIPELINE_FAILED, // admin DM (Bybit BSC tracking pipeline failure)
 ]);
 
 type PendingRow = Awaited<ReturnType<typeof fetchPendingNotifications>>[number];

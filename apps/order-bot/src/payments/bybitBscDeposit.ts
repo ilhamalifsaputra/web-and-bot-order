@@ -32,12 +32,13 @@ import { createHmac } from "node:crypto";
 import type { Api } from "grammy";
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
-import { langCode } from "@app/core/enums";
+import { langCode, OrderStatus } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
   prisma,
-  listPendingBybitBscOrders,
+  listInFlightBybitBscOrders,
   deliverPaidBybitBscOrder,
+  recordBybitBscPaymentDetected,
   recordUnmatchedBybitBscTx,
   recordBybitBscPollHealth,
   resolveBybitBscConfig,
@@ -45,10 +46,10 @@ import {
   type BybitBscDeliverResult,
 } from "@app/db";
 import { coreT } from "../util/i18n";
-import { esc } from "../util/format";
+import { esc, renderBybitBscTrackingScreen } from "../util/format";
 import { matchByAmount } from "./binanceInternal";
 import { createBackoffGate } from "./pollBackoff";
-import { paymentSuccessKb } from "../keyboards/customer";
+import { paymentSuccessKb, bybitBscTrackingKb } from "../keyboards/customer";
 import { sendAccountFile } from "../util/delivery";
 
 // USDT itself has no on-chain "gas deducted from the sent amount" semantics
@@ -56,18 +57,31 @@ import { sendAccountFile } from "../util/delivery";
 // Transfer uses is appropriate here too. Revisit with real data if on-chain
 // deposits show wider variance in practice.
 const AMOUNT_TOLERANCE = 0.001; // USDT
-/** Bybit on-chain deposit status: 3=Success (per Bybit V5 docs — DIFFERS
- * from the internal-transfer ledger, where 2=success). Deliver only on
- * Success. Re-verify the full status enum against current Bybit V5 docs
- * before relying on any code other than 3. */
+/** Bybit on-chain deposit status codes (per Bybit V5 docs — DIFFERS from the
+ * internal-transfer ledger, where 2=success). This is now load-bearing for
+ * PAYMENT_DETECTED/CONFIRMING tracking, not just an FYI — re-verify the full
+ * status enum against current Bybit V5 docs before relying on any code
+ * other than these three. Anything outside this set (e.g. an unknown or
+ * failure code) is treated as "nothing actionable yet" and skipped, same as
+ * before this change. */
+const STATUS_TO_BE_CONFIRMED = 1;
+const STATUS_PROCESSING = 2;
 const STATUS_SUCCESS = 3;
+const IN_FLIGHT_BYBIT_STATUSES: ReadonlySet<number> = new Set([
+  STATUS_TO_BE_CONFIRMED,
+  STATUS_PROCESSING,
+  STATUS_SUCCESS,
+]);
 
 export interface BybitBscDeposit {
   txId: string;
   amount: number; // positive = received, in USDT
+  /** Raw Bybit V5 deposit status. Used to decide PAYMENT_DETECTED/CONFIRMING
+   * (still confirming) vs. an actual delivery (status 3, "Success"). */
+  bybitStatus: number;
 }
 
-type PendingOrder = Awaited<ReturnType<typeof listPendingBybitBscOrders>>[number];
+type InFlightOrder = Awaited<ReturnType<typeof listInFlightBybitBscOrders>>[number];
 
 // ---------------------------------------------------------------------------
 // Signed Bybit V5 REST (read-only)
@@ -117,13 +131,16 @@ async function bybitGet(path: string, params: Record<string, string>, cfg: Bybit
 }
 
 /** Map a raw on-chain deposit row to our normalized shape (the swappable
- * bit). Only SUCCESS (status 3) deposits are kept; exported so a fixture
- * test can pin the real Bybit payload shape. The on-chain endpoint can
- * return deposits across multiple chains for the same coin, so `chain` is
- * filtered against the configured chain (default "BSC") — unlike Internal
- * Transfer, which has no chain concept at all. The destination `address` is
- * also checked when present, as a defense-in-depth check alongside the
- * primary amount match (belt-and-suspenders, not the primary disambiguator). */
+ * bit). Keeps still-confirming rows (status 1/2) as well as SUCCESS (status
+ * 3) — the still-confirming ones feed PAYMENT_DETECTED/CONFIRMING tracking,
+ * never delivery (see `bybitStatus` on the returned shape). Exported so a
+ * fixture test can pin the real Bybit payload shape. The on-chain endpoint
+ * can return deposits across multiple chains for the same coin, so `chain`
+ * is filtered against the configured chain (default "BSC") — unlike
+ * Internal Transfer, which has no chain concept at all. The destination
+ * `address` is also checked when present, as a defense-in-depth check
+ * alongside the primary amount match (belt-and-suspenders, not the primary
+ * disambiguator). */
 export function normalizeOnchainDeposit(raw: Record<string, unknown>, cfg: Pick<BybitBscConfig, "chain" | "depositAddress">): BybitBscDeposit | null {
   const txId = raw.txID ?? raw.id;
   const amount = Number(raw.amount);
@@ -133,10 +150,10 @@ export function normalizeOnchainDeposit(raw: Record<string, unknown>, cfg: Pick<
   const address = raw.address != null ? String(raw.address) : null;
   if (txId == null || !Number.isFinite(amount) || amount <= 0) return null; // received only
   if (coin !== config.CURRENCY.toUpperCase()) return null;
-  if (status !== STATUS_SUCCESS) return null; // not yet confirmed/failed → skip until credited
+  if (!IN_FLIGHT_BYBIT_STATUSES.has(status)) return null; // unknown/failed → nothing actionable yet
   if (chain !== cfg.chain.toUpperCase()) return null; // deposit on a different chain — never match
   if (address && cfg.depositAddress && address.toLowerCase() !== cfg.depositAddress.toLowerCase()) return null;
-  return { txId: String(txId), amount };
+  return { txId: String(txId), amount, bybitStatus: status };
 }
 
 /** Fetch recent successful on-chain USDT deposits (last 3 days).
@@ -182,6 +199,30 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
     } catch {
       /* bubble may be gone/uneditable — the credential DM already informed the buyer */
     }
+  }
+}
+
+/** Push the live tracking screen onto the anchored payment bubble right when
+ * a deposit is first detected (PENDING_PAYMENT -> PAYMENT_DETECTED). Same
+ * direct-edit-on-stored-bubble pattern as `onDelivered()` above — bot-
+ * process-direct, never via notification_outbox (that rule is about never
+ * sending Telegram from web code; an in-process poller calling the Bot API
+ * directly is the pattern every poller in this file already uses). */
+async function onPaymentDetected(api: Api, order: InFlightOrder, network: string): Promise<void> {
+  if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
+  const lang = langCode(order.user.language);
+  try {
+    await api.editMessageText(
+      Number(order.paymentMsgChatId),
+      order.paymentMsgId,
+      renderBybitBscTrackingScreen(
+        { orderCode: order.orderCode, status: OrderStatus.PAYMENT_DETECTED, network, confirmations: null, requiredConfirmations: null },
+        lang,
+      ),
+      { parse_mode: "HTML", reply_markup: bybitBscTrackingKb({ id: order.id, status: OrderStatus.PAYMENT_DETECTED }, lang) },
+    );
+  } catch {
+    /* bubble may be gone/uneditable — the order is still reachable via My Orders */
   }
 }
 
@@ -242,39 +283,73 @@ export async function pollOnce(api: Api): Promise<void> {
 
   backoff.recordSuccess();
   const now = new Date();
-  const orders = await listPendingBybitBscOrders(prisma, now);
-  if (deposits.length) logger.info(`Bybit BSC poll fetched ${deposits.length} deposit(s) against ${orders.length} pending order(s)`);
+  // In-flight, not just PENDING_PAYMENT: a still-confirming deposit already
+  // tied to an order on a previous cycle (PAYMENT_DETECTED/CONFIRMING) must
+  // still be re-matchable by its own txid this cycle (gap #1 fix) — if this
+  // queried PENDING_PAYMENT only, that order would vanish from the list the
+  // moment it left PENDING_PAYMENT, and the same deposit would wrongly fall
+  // through to "no candidate -> unmatched" on every later cycle.
+  const orders = await listInFlightBybitBscOrders(prisma, now);
+  if (deposits.length) logger.info(`Bybit BSC poll fetched ${deposits.length} deposit(s) against ${orders.length} in-flight order(s)`);
   await recordBybitBscPollHealth(prisma, { lastTxCount: deposits.length, backoffUntil: null, success: true }).catch(() => undefined);
 
-  await processDeposits(api, deposits, orders);
+  await processDeposits(api, deposits, orders, cfg.chain);
 }
 
 /**
- * Match a batch of fetched deposits against pending orders and act on each.
- * BEP20 has no memo, so matching is by UNIQUE amount only: a deposit maps to
- * an order iff exactly one pending order expects that amount (within
- * tolerance). On a collision (≥2 candidates) or no candidate it is recorded
- * "unmatched" and left for manual review — never guessed. Extracted from
- * pollOnce so it can be integration-tested against the real DB without the
- * API/env gate.
+ * Match a batch of fetched deposits against in-flight orders and act on
+ * each. A deposit already tied to an order (its `bybitTxid`) from a
+ * previous cycle is re-matched by that txid, never by amount again (gap #1
+ * fix). A genuinely new deposit is matched by UNIQUE amount (BEP20 has no
+ * memo) against orders that haven't seen one yet — on a collision (≥2
+ * candidates) or no candidate it is recorded "unmatched" and left for
+ * manual review, never guessed, but ONLY once Bybit reports it as Success;
+ * a still-confirming no-match deposit is simply skipped this cycle; a later
+ * deposit/order may yet resolve it, and claiming the ledger row before
+ * knowing which order (if any) it belongs to would be premature. Extracted
+ * from pollOnce so it can be integration-tested against the real DB without
+ * the API/env gate.
  */
-export async function processDeposits(api: Api, deposits: BybitBscDeposit[], orders: PendingOrder[]): Promise<void> {
+export async function processDeposits(
+  api: Api,
+  deposits: BybitBscDeposit[],
+  orders: InFlightOrder[],
+  network: string,
+): Promise<void> {
+  const pendingOnly = orders.filter((o) => o.status === OrderStatus.PENDING_PAYMENT);
   for (const dep of deposits) {
-    const order = matchByAmount({ amount: dep.amount }, orders, AMOUNT_TOLERANCE);
+    const order =
+      orders.find((o) => o.bybitTxid === dep.txId) ??
+      matchByAmount({ amount: dep.amount }, pendingOnly, AMOUNT_TOLERANCE);
+
     if (!order) {
-      if (await recordUnmatchedBybitBscTx(prisma, { bybitTxId: dep.txId, amount: dep.amount })) {
-        logger.info(`No pending order matched Bybit BSC deposit ${dep.txId} (amount: ${dep.amount}) — left for manual review`);
+      if (dep.bybitStatus === STATUS_SUCCESS) {
+        if (await recordUnmatchedBybitBscTx(prisma, { bybitTxId: dep.txId, amount: dep.amount })) {
+          logger.info(`No pending order matched Bybit BSC deposit ${dep.txId} (amount: ${dep.amount}) — left for manual review`);
+        }
       }
+      continue;
+    }
+
+    if (dep.bybitStatus !== STATUS_SUCCESS) {
+      // Still confirming — record/refresh PAYMENT_DETECTED only. Never
+      // claims the delivery ledger; that stays exclusively the branch below.
+      // Only push a bubble edit the cycle this ACTUALLY transitions — a
+      // deposit still sitting at PAYMENT_DETECTED on a later cycle (or
+      // already advanced to CONFIRMING by the tracker) must not keep
+      // re-editing the bubble back to "just detected".
+      const justDetected = await recordBybitBscPaymentDetected(prisma, { orderId: order.id, bybitTxId: dep.txId, network });
+      if (justDetected) await onPaymentDetected(api, order, network);
       continue;
     }
 
     try {
       const r = await deliverPaidBybitBscOrder(prisma, { orderId: order.id, bybitTxId: dep.txId, amount: dep.amount });
       if (r.status === "delivered") {
-        logger.info(`Matched by amount — delivered Bybit BSC order ${order.orderCode} (deposit ${dep.txId})`);
+        logger.info(`Delivered Bybit BSC order ${order.orderCode} (deposit ${dep.txId})`);
         await onDelivered(api, r.order);
       } else if (r.status === "stale") {
-        logger.warn(`Bybit BSC deposit ${dep.txId} matched order ${order.orderCode} but it was no longer PENDING — skipped to avoid double delivery, admin alerted`);
+        logger.warn(`Bybit BSC deposit ${dep.txId} matched order ${order.orderCode} but it was no longer in a deliverable state — skipped to avoid double delivery, admin alerted`);
         await alertAdmins(api, `⚠️ Bybit BSC deposit matched <code>${order.orderCode}</code> but it was no longer pending (tx ${esc(dep.txId)}).`);
       }
     } catch (err) {

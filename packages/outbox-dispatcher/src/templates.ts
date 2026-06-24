@@ -102,11 +102,33 @@ interface DeliveredDmPayload {
   order_url?: unknown;
 }
 
+interface OrderPipelineFailedPayload {
+  order_code?: unknown;
+  reason?: unknown;
+}
+
 /** Return the message body for an outbox event, or "" to skip. */
 export function render(
   event: string,
-  payload: DeliveredPayload & AdminResetPayload & DeliveredDmPayload & AdminOverpaidPayload,
+  payload: DeliveredPayload & AdminResetPayload & DeliveredDmPayload & AdminOverpaidPayload & OrderPipelineFailedPayload,
 ): string {
+  if (event === NotificationEvent.ORDER_PIPELINE_FAILED) {
+    // Admin DM: a Bybit BSC order's automated tracking pipeline failed
+    // post-detection and needs manual action. `reason` is a short
+    // diagnostic string, already truncated/escaped at enqueue time, but
+    // escaped again here too since every other template treats payload
+    // values as untrusted on principle.
+    const code = escape(String(payload.order_code ?? ""));
+    const reason = escape(String(payload.reason ?? ""));
+    return (
+      `⚠️ <b>Order <code>${code}</code> tracking failed</b>\n` +
+      `${reason}\n` +
+      `Manual action needed — check the order in the admin panel.\n\n` +
+      `⚠️ <b>Pelacakan pesanan <code>${code}</code> gagal</b>\n` +
+      `${reason}\n` +
+      `Perlu tindakan manual — cek pesanan ini di panel admin.`
+    );
+  }
   if (event === NotificationEvent.ADMIN_OVERPAID) {
     // Admin DM (not a channel post): a gateway webhook delivered an order
     // whose paid amount exceeded the total. All values are escaped even

@@ -9,10 +9,18 @@ vi.mock("@app/core/config", () => ({
     BYBIT_API_SECRET: "env-api-secret",
     BYBIT_API_BASE: "https://api.bybit.com",
     BYBIT_BSC_PAYMENT_WINDOW_MINUTES: 15,
+    BSCSCAN_API_BASE: "https://api.bscscan.com/api",
+    BSCSCAN_API_KEY: "env-bscscan-key",
+    BYBIT_BSC_REQUIRED_CONFIRMATIONS: 15,
   },
 }));
 
-import { resolveBybitBscConfig, getBybitBscPollHealth, recordBybitBscPollHealth } from "./bybit_bsc_deposit";
+import {
+  resolveBybitBscConfig,
+  resolveBybitBscTrackerConfig,
+  getBybitBscPollHealth,
+  recordBybitBscPollHealth,
+} from "./bybit_bsc_deposit";
 import type { Db } from "./_types";
 
 /** Mutable in-memory Setting store backing both `findUnique` and `upsert`,
@@ -108,6 +116,29 @@ describe("resolveBybitBscConfig — minAmount", () => {
     expect((await resolveBybitBscConfig(stubDb({ ...CREDS, bybit_bsc_min_amount: "not-a-number" }))).minAmount).toBeNull();
     expect((await resolveBybitBscConfig(stubDb({ ...CREDS, bybit_bsc_min_amount: "0" }))).minAmount).toBeNull();
     expect((await resolveBybitBscConfig(stubDb({ ...CREDS, bybit_bsc_min_amount: "-5" }))).minAmount).toBeNull();
+  });
+});
+
+describe("resolveBybitBscTrackerConfig", () => {
+  it("falls back to the env BscScan key and the default required-confirmations when no Setting is configured", async () => {
+    const cfg = await resolveBybitBscTrackerConfig(stubDb({}));
+    expect(cfg.apiKey).toBe("env-bscscan-key");
+    expect(cfg.requiredConfirmations).toBe(15);
+    expect(cfg.apiBase).toBe("https://api.bscscan.com/api");
+  });
+
+  it("Setting wins over the env fallback for both the key and the confirmation count", async () => {
+    const cfg = await resolveBybitBscTrackerConfig(
+      stubDb({ bscscan_api_key: "db-bscscan-key", bybit_bsc_required_confirmations: "20" }),
+    );
+    expect(cfg.apiKey).toBe("db-bscscan-key");
+    expect(cfg.requiredConfirmations).toBe(20);
+  });
+
+  it("treats a non-numeric or non-positive required-confirmations Setting as the env/default instead of throwing", async () => {
+    expect((await resolveBybitBscTrackerConfig(stubDb({ bybit_bsc_required_confirmations: "not-a-number" }))).requiredConfirmations).toBe(15);
+    expect((await resolveBybitBscTrackerConfig(stubDb({ bybit_bsc_required_confirmations: "0" }))).requiredConfirmations).toBe(15);
+    expect((await resolveBybitBscTrackerConfig(stubDb({ bybit_bsc_required_confirmations: "-3" }))).requiredConfirmations).toBe(15);
   });
 });
 

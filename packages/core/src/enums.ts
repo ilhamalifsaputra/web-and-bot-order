@@ -58,6 +58,21 @@ export const zStockStatus = z.nativeEnum(StockStatus);
 
 export const OrderStatus = {
   PENDING_PAYMENT: "PENDING_PAYMENT",
+  // ── Bybit BSC on-chain rail ONLY — every other payment method never writes
+  // these four values. PAYMENT_DETECTED/CONFIRMING/CONFIRMED are written by
+  // the deposit poller + confirmation tracker (apps/order-bot/src/payments/
+  // bybitBscDeposit.ts, bybitBscConfirmationTracker.ts); they are display-only
+  // milestones on the way to the SAME PENDING_VERIFICATION → DELIVERED path
+  // every other method already uses — they never skip or replace it.
+  /** A still-confirming on-chain deposit has been matched to this order
+   * (Bybit reports status 1/2, not yet its own "Success"). */
+  PAYMENT_DETECTED: "PAYMENT_DETECTED",
+  /** The block-explorer tracker has seen at least 1 confirmation. */
+  CONFIRMING: "CONFIRMING",
+  /** The tracker's confirmation count reached `requiredConfirmations` — a
+   * display-grade milestone, NOT a delivery trigger (that stays gated on
+   * Bybit's own status-3 report via deliverPaidBybitBscOrder). */
+  CONFIRMED: "CONFIRMED",
   PENDING_VERIFICATION: "PENDING_VERIFICATION",
   PAID: "PAID",
   DELIVERED: "DELIVERED",
@@ -68,9 +83,46 @@ export const OrderStatus = {
   // an order but the amount is short of the expected total (admin-reviewed,
   // never auto-delivered).
   UNDERPAID: "UNDERPAID",
+  /** An automated pipeline failure discovered after PAYMENT_DETECTED with no
+   * clean auto-resolution (tracker grace-period exhaustion, or a delivery
+   * throw post-payment-confirmation) — needs admin attention. Distinct from
+   * CANCELLED/REJECTED, which stay customer/admin-initiated only. */
+  FAILED: "FAILED",
 } as const;
 export type OrderStatus = (typeof OrderStatus)[keyof typeof OrderStatus];
 export const zOrderStatus = z.nativeEnum(OrderStatus);
+
+/** Customer-facing label (an i18n key, not literal text) for a stored
+ * OrderStatus. Several internal/automated states fold into the same coarse
+ * label — e.g. PENDING_VERIFICATION/PAID/UNDERPAID all read as "Processing"
+ * to a buyer, and CANCELLED/REJECTED/FAILED all read as "Failed". Storefront
+ * and bot rendering should both go through this single mapping rather than
+ * keeping their own parallel switch. */
+export function customerStatusLabel(status: string): string {
+  switch (status) {
+    case OrderStatus.PENDING_PAYMENT:
+      return "status.label.waiting_payment";
+    case OrderStatus.PAYMENT_DETECTED:
+      return "status.label.paid";
+    case OrderStatus.CONFIRMING:
+    case OrderStatus.CONFIRMED:
+      return "status.label.confirming";
+    case OrderStatus.PENDING_VERIFICATION:
+    case OrderStatus.PAID:
+    case OrderStatus.UNDERPAID:
+      return "status.label.processing";
+    case OrderStatus.DELIVERED:
+      return "status.label.delivered";
+    case OrderStatus.CANCELLED:
+    case OrderStatus.REJECTED:
+    case OrderStatus.FAILED:
+      return "status.label.failed";
+    case OrderStatus.REFUNDED:
+      return "status.label.refunded";
+    default:
+      return "status.label.processing";
+  }
+}
 
 /** How the buyer pays. Stored on orders.payment_method. */
 export const PaymentMethod = {
@@ -150,6 +202,13 @@ export const NotificationEvent = {
   // order is ready — view it on the site". Carries chat_id + order_code only,
   // NEVER credentials (the outbox table is visible in the admin /outbox panel).
   ORDER_DELIVERED_DM: "ORDER_DELIVERED_DM",
+  // Admin DM (not a channel post): a Bybit BSC order's automated tracking
+  // pipeline failed post-detection (tracker lookup-failure grace period
+  // exhausted, or a delivery throw after Bybit reported the deposit
+  // Success) — needs manual admin action. payload carries `chat_id` (the
+  // admin's telegram id) plus order_code/reason, same fan-out-per-admin
+  // shape as ADMIN_OVERPAID.
+  ORDER_PIPELINE_FAILED: "ORDER_PIPELINE_FAILED",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];

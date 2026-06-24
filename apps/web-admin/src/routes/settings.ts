@@ -78,6 +78,11 @@ const EDITABLE: Record<string, string> = {
   bybit_bsc_deposit_address: "Bybit BSC (BEP20) deposit address shown to buyers",
   bybit_bsc_enabled: "Bybit BSC on-chain USDT deposits on the website — true / false",
   bybit_bsc_min_amount: "Minimum payment shown to buyers for Bybit BSC (USDT) — leave blank to hide the note",
+  // Confirmation tracker (display-only "x/15" counter) — separate read-only
+  // block-explorer lookup, never gates delivery (that stays Bybit's own
+  // status-3 report via the deposit poller above).
+  bscscan_api_key: "BscScan API key (optional) — raises the rate limit for the live confirmation-count lookup; leave blank to use BscScan's free-tier limit",
+  bybit_bsc_required_confirmations: "Confirmations required before a Bybit BSC deposit shows as fully Confirmed — display only, leave blank for the default (15)",
   // ---- Binance Internal Transfer (UID-based auto-confirm; leave blank to disable) ----
   binance_receive_uid: "Binance UID buyers transfer to (Internal Transfer)",
   binance_api_key: "Binance API key — READ-ONLY (no trading/withdraw)",
@@ -107,7 +112,13 @@ const PAY_QRIS_KEYS = new Set(["tokopay_merchant_id", "tokopay_secret", "tokopay
 const PAY_PAYDISINI_KEYS = new Set(["paydisini_userkey", "paydisini_apikey", "paydisini_enabled", "paydisini_default_channel", "paydisini_min_amount"]);
 const PAY_NOWPAYMENTS_KEYS = new Set(["nowpayments_api_key", "nowpayments_ipn_secret", "nowpayments_enabled", "nowpayments_pay_currency", "nowpayments_min_amount"]);
 const PAY_BYBIT_KEYS = new Set(["bybit_uid", "bybit_api_key", "bybit_api_secret", "bybit_enabled", "bybit_min_amount"]);
-const PAY_BYBIT_BSC_KEYS = new Set(["bybit_bsc_deposit_address", "bybit_bsc_enabled", "bybit_bsc_min_amount"]);
+const PAY_BYBIT_BSC_KEYS = new Set([
+  "bybit_bsc_deposit_address",
+  "bybit_bsc_enabled",
+  "bybit_bsc_min_amount",
+  "bscscan_api_key",
+  "bybit_bsc_required_confirmations",
+]);
 const PAY_BINANCE_INTERNAL_KEYS = new Set(["binance_receive_uid", "binance_api_key", "binance_api_secret", "binance_internal_enabled", "binance_internal_min_amount"]);
 
 // Per-method on/off toggle — the whitelist guardrail for POST /settings/payments/toggle.
@@ -139,7 +150,7 @@ function paymentMethodState(method: { enabledKey: string; credKeys: string[] }, 
 
 // Write-only editable secrets: never echoed back into the form, hidden in the
 // "All saved options" table, audited as "(updated)" without the value.
-const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret"]);
+const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key"]);
 
 // Bot tokens get the §16.4 "don't brick the bot" treatment: owner-only, and
 // Telegram must accept the token (getMe) before anything is saved.
@@ -475,6 +486,16 @@ export default async function settingsRoutes(app: FastifyInstance): Promise<void
       }
       if (!valid) {
         return flashOrRedirect(req, reply, "/settings", "Minimum amount must be a positive number, or blank to disable the note.", "error");
+      }
+    }
+
+    // Confirmation-tracker threshold: a positive whole number, or blank to use
+    // the default (15). Same "explicit error over silent fallback" stance as
+    // *_min_amount above.
+    if (key === "bybit_bsc_required_confirmations" && value !== "") {
+      const n = Number(value);
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+        return flashOrRedirect(req, reply, "/settings", "Required confirmations must be a positive whole number, or blank for the default (15).", "error");
       }
     }
 

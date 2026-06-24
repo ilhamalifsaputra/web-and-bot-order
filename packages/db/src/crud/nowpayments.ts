@@ -23,6 +23,7 @@ import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, approveOrder } from "./orders";
+import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
@@ -108,7 +109,13 @@ export async function deliverPaidNowpaymentsOrder(
       }
       await tx.order.update({
         where: { id: args.orderId },
-        data: { status: OrderStatus.PENDING_VERIFICATION, paidAt: new Date() },
+        data: { paidAt: new Date() },
+      });
+      await transitionOrderStatus(tx, {
+        orderId: args.orderId,
+        from: OrderStatus.PENDING_PAYMENT,
+        to: OrderStatus.PENDING_VERIFICATION,
+        meta: `trxId=${args.trxId}`,
       });
       const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: 0 });
       // Buyer DM via the outbox — only if the buyer has a Telegram account.

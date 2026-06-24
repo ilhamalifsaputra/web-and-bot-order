@@ -68,6 +68,10 @@ export async function resetDb(prisma: PrismaClient) {
   await prisma.referral.deleteMany();
   await prisma.restockSubscription.deleteMany();
   await prisma.orderItem.deleteMany();
+  // OrderStatusHistory.order is onDelete:Restrict (audit trail, same policy as
+  // OrderItem/Review) — must be cleared before Order, or a row left over from
+  // a transitionOrderStatus() call blocks the delete.
+  await prisma.orderStatusHistory.deleteMany();
   await prisma.order.deleteMany();
   await prisma.cartItem.deleteMany();
   await prisma.bulkPricing.deleteMany();

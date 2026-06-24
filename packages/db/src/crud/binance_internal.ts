@@ -16,6 +16,7 @@ import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, createOrderDirect, approveOrder, applyUsdtWalletToOrder } from "./orders";
+import { transitionOrderStatus } from "./orderStatus";
 import { adjustWallet } from "./users";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
@@ -198,7 +199,13 @@ export async function deliverPaidInternalOrder(
       }
       await tx.order.update({
         where: { id: args.orderId },
-        data: { status: OrderStatus.PENDING_VERIFICATION, binanceTxid: args.binanceTxId, paidAt: new Date() },
+        data: { binanceTxid: args.binanceTxId, paidAt: new Date() },
+      });
+      await transitionOrderStatus(tx, {
+        orderId: args.orderId,
+        from: OrderStatus.PENDING_PAYMENT,
+        to: OrderStatus.PENDING_VERIFICATION,
+        meta: `binanceTxId=${args.binanceTxId}`,
       });
       const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: 0 });
       logger.info(`Auto-delivered internal-transfer order ${delivered.orderCode} for Binance transaction ${args.binanceTxId}`);
@@ -228,10 +235,15 @@ export async function markUnderpaid(
   await db.order.update({
     where: { id: args.orderId },
     data: {
-      status: OrderStatus.UNDERPAID,
       binanceTxid: args.binanceTxId,
       adminNote: `[underpaid] received ${new Decimal(args.amount).toString()} via tx ${args.binanceTxId}`,
     },
+  });
+  await transitionOrderStatus(db, {
+    orderId: args.orderId,
+    from: OrderStatus.PENDING_PAYMENT,
+    to: OrderStatus.UNDERPAID,
+    meta: `binanceTxId=${args.binanceTxId}`,
   });
   return true;
 }
@@ -330,7 +342,13 @@ export async function deliverUnderpaidOrder(
     }
     await tx.order.update({
       where: { id: args.orderId },
-      data: { status: OrderStatus.PENDING_VERIFICATION, paidAt: new Date() },
+      data: { paidAt: new Date() },
+    });
+    await transitionOrderStatus(tx, {
+      orderId: args.orderId,
+      from: OrderStatus.UNDERPAID,
+      to: OrderStatus.PENDING_VERIFICATION,
+      meta: `deliver_underpaid_anyway by admin_id=${args.adminId}`,
     });
     const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: args.adminId });
     logger.info(`Underpaid order ${delivered.orderCode} delivered anyway by admin ${args.adminId} — operator absorbed the shortfall`);
@@ -366,9 +384,14 @@ export async function refundUnderpaidOrder(
     await tx.order.update({
       where: { id: args.orderId },
       data: {
-        status: OrderStatus.REFUNDED,
         adminNote: `${order.adminNote ?? ""}\n[refund] ${received.toString()} to wallet by admin_id=${args.adminId}`,
       },
+    });
+    await transitionOrderStatus(tx, {
+      orderId: args.orderId,
+      from: OrderStatus.UNDERPAID,
+      to: OrderStatus.REFUNDED,
+      meta: `refund ${received.toString()} by admin_id=${args.adminId}`,
     });
     logger.info(`Refunded underpaid order ${order.orderCode} (${received.toString()}) to wallet by admin ${args.adminId}`);
     return { refunded: received };
@@ -403,10 +426,15 @@ export async function manualMatchTx(
     await tx.order.update({
       where: { id: args.orderId },
       data: {
-        status: OrderStatus.PENDING_VERIFICATION,
         binanceTxid: args.binanceTxId,
         paidAt: new Date(),
       },
+    });
+    await transitionOrderStatus(tx, {
+      orderId: args.orderId,
+      from: OrderStatus.PENDING_PAYMENT,
+      to: OrderStatus.PENDING_VERIFICATION,
+      meta: `manual_match binanceTxId=${args.binanceTxId} by admin_id=${args.adminId}`,
     });
     const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: args.adminId });
     logger.info(`Manually matched Binance transaction ${args.binanceTxId} to order ${delivered.orderCode} by admin ${args.adminId}`);

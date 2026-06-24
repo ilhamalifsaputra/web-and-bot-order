@@ -481,6 +481,23 @@ export function qrisWaitingKb(orderId: number, lang: string): InlineKeyboard {
   ]);
 }
 
+/**
+ * Bybit BSC live tracking screen's keyboard (PAYMENT_DETECTED/CONFIRMING/
+ * CONFIRMED). Refresh always; Cancel only while still PENDING_PAYMENT —
+ * which this screen is never actually shown for in practice (it has its own
+ * earlier render path), but kept consistent with cancelOrder's own
+ * anti-abuse guard rather than hardcoding "no Cancel ever" here.
+ */
+export function bybitBscTrackingKb(order: { id: number; status: string }, lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("checkout.refresh_status_btn", lang), data: cb("checkout", "refresh", order.id) }],
+    ...(order.status === OrderStatus.PENDING_PAYMENT
+      ? [[{ text: coreT("checkout.cancel_order", lang), data: cb("checkout", "cancel", order.id) }]]
+      : []),
+    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+  ]);
+}
+
 // ---------------------------------------------------------------------------
 // Support tickets
 // ---------------------------------------------------------------------------

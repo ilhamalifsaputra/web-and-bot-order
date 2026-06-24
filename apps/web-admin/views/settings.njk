@@ -3,11 +3,13 @@
 {% block title %}Settings · Shop Admin{% endblock %}
 
 {% block content %}
-{# Floating toast for htmx form saves — swapped in place so the page never
-   reloads or scrolls (apps/web-admin/views/_flash.njk). #}
-<div id="toast-slot" class="fixed top-4 right-4 z-50 w-80 max-w-[90vw]"></div>
+{# Floating toast for every save on this page: htmx form saves swap their
+   response straight into this slot (apps/web-admin/views/_flash.njk); the
+   password/2FA forms still full-navigate, so their msg/kind come back as
+   query params (flashOrRedirect's redirect path) and we render the same
+   partial here on load — one save → one toast, however the form submits. #}
+<div id="toast-slot" class="fixed top-4 right-4 z-50 w-80 max-w-[90vw]">{% include "_flash.njk" %}</div>
 {{ ui.page_header('Settings', "Your shop's options and your sign-in security — grouped by what they change.", 'settings', 'settings') }}
-{{ ui.flash(msg, kind) }}
 
 <p class="text-xs text-ink-soft mb-5 flex items-center gap-2">
   <i data-lucide="info" class="w-3.5 h-3.5"></i>

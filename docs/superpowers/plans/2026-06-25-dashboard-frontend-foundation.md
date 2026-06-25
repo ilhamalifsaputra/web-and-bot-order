@@ -29,7 +29,7 @@
 - Modify `apps/web-admin/src/plugins/auth.ts` — extend `csrfCheck` to accept an `X-CSRF-Token` header.
 - Modify `apps/web-admin/test/web.test.ts` — add the SPA-shell-serving test and the CSRF-header test.
 - Modify `vitest.config.ts` (root) — add a jsdom environment match for the client package.
-- Create `apps/web-admin/client/src/api/client.ts`, `apps/web-admin/client/src/api/types.ts`.
+- Create `apps/web-admin/client/src/api/client.ts` (+ test), `apps/web-admin/client/src/api/types.ts`.
 - Create `apps/web-admin/client/src/components/shared/CurrencyAmount.tsx` (+ test).
 - Create `apps/web-admin/client/src/hooks/useDashboardKpis.ts` (+ test).
 - Create `apps/web-admin/client/src/components/dashboard/RevenueKpiCard.tsx` (+ test).
@@ -462,6 +462,7 @@ git commit -m "feat(web-admin): serve the React SPA shell at / with the real CSR
 - Modify: `apps/web-admin/src/plugins/auth.ts:90-95` (`csrfCheck`)
 - Modify: `apps/web-admin/test/web.test.ts`
 - Create: `apps/web-admin/client/src/api/client.ts`
+- Create: `apps/web-admin/client/src/api/client.test.ts`
 
 **Interfaces:**
 - Produces: `csrfCheck` now accepts the CSRF token via `req.body.csrf_token` (existing, unchanged precedence) OR the `X-CSRF-Token` header (new) — either is sufficient.
@@ -512,13 +513,65 @@ const csrfCheck: preHandlerHookHandler = async (req, reply) => {
 Run: `pnpm vitest run apps/web-admin/test/web.test.ts`
 Expected: PASS — including every pre-existing CSRF-related test in this file (the body-field path is unchanged, since `bodyToken ?? ...` still prefers it when present).
 
-- [ ] **Step 5: Add the frontend fetch wrapper**
+- [ ] **Step 5: Write the failing frontend test**
+
+Create `apps/web-admin/client/src/api/client.test.ts`:
+
+```ts
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { apiGet, apiPost } from "./client";
+
+beforeEach(() => {
+  document.head.insertAdjacentHTML("beforeend", '<meta name="csrf-token" content="test-token">');
+});
+afterEach(() => {
+  document.head.innerHTML = "";
+  vi.unstubAllGlobals();
+});
+
+describe("apiGet", () => {
+  it("sends credentials and parses the JSON body", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ hello: "world" }) })));
+    const result = await apiGet<{ hello: string }>("/api/dashboard/kpis");
+    expect(result).toEqual({ hello: "world" });
+    expect(fetch).toHaveBeenCalledWith("/api/dashboard/kpis", expect.objectContaining({ credentials: "include" }));
+  });
+
+  it("throws when the response is not ok", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 403 })));
+    await expect(apiGet("/api/dashboard/kpis")).rejects.toThrow("403");
+  });
+});
+
+describe("apiPost", () => {
+  it("attaches the CSRF token read from the meta tag as an X-CSRF-Token header", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
+    await apiPost("/api/dashboard/something", { foo: "bar" });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(new Headers(init.headers).get("X-CSRF-Token")).toBe("test-token");
+    expect(init.credentials).toBe("include");
+    expect(JSON.parse(init.body as string)).toEqual({ foo: "bar" });
+  });
+});
+```
+
+- [ ] **Step 6: Run the test to verify it fails**
+
+Run: `pnpm vitest run apps/web-admin/client/src/api/client.test.ts`
+Expected: FAIL — `client.ts` doesn't exist yet.
+
+- [ ] **Step 7: Add the frontend fetch wrapper**
 
 Create `apps/web-admin/client/src/api/client.ts`:
 
 ```ts
-const CSRF_TOKEN =
-  document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") ?? "";
+/** Read fresh on every call (not cached at module-load time) — this is what
+ * makes the CSRF token testable independent of when this module happens to
+ * be imported relative to the meta tag existing in the DOM. */
+function csrfToken(): string {
+  return document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") ?? "";
+}
 
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(path, { credentials: "include" });
@@ -534,7 +587,7 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
     credentials: "include",
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF_TOKEN },
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`${path} responded ${res.status}`);
@@ -542,15 +595,20 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
 }
 ```
 
-- [ ] **Step 6: Run the full backend test file once more**
+- [ ] **Step 8: Run the test to verify it passes**
+
+Run: `pnpm vitest run apps/web-admin/client/src/api/client.test.ts`
+Expected: PASS (3 tests).
+
+- [ ] **Step 9: Run the full backend test file once more**
 
 Run: `pnpm vitest run apps/web-admin/test/web.test.ts`
 Expected: PASS (full file, no regressions).
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add apps/web-admin/src/plugins/auth.ts apps/web-admin/test/web.test.ts apps/web-admin/client/src/api/client.ts
+git add apps/web-admin/src/plugins/auth.ts apps/web-admin/test/web.test.ts apps/web-admin/client/src/api/client.ts apps/web-admin/client/src/api/client.test.ts
 git commit -m "feat(web-admin): accept CSRF token via X-CSRF-Token header alongside the form field"
 ```
 
@@ -980,7 +1038,11 @@ import { RevenueKpiCard } from "./components/dashboard/RevenueKpiCard";
 export default function App() {
   return (
     <div className="min-h-screen bg-paper p-6">
-      <h1 className="page-title mb-6">Shop Admin</h1>
+      {/* Matches .page-title's computed style from packages/web-ui/views/
+          _theme.njk (Outfit, 1.875rem/600/-0.025em, ink) as literal Tailwind
+          utilities — that CSS class lives in the Nunjucks pages' stylesheet,
+          not this bundle, so it can't be referenced by name here. */}
+      <h1 className="mb-6 font-display text-3xl font-semibold tracking-tight text-ink">Shop Admin</h1>
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <RevenueKpiCard />
       </div>

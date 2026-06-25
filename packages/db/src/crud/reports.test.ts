@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
-import { revenueByDay, revenueSummary } from "./reports";
+import { revenueByDay, revenueSummary, ordersByStatusSince } from "./reports";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -86,5 +86,21 @@ describe("revenueSummary", () => {
     });
     const result = await revenueSummary(prisma, new Date(now.getTime() - 60_000));
     expect(result.revenue_idr.toString()).toBe("5000");
+  });
+});
+
+describe("ordersByStatusSince", () => {
+  it("only counts orders created since the cutoff", async () => {
+    const now = new Date();
+    const old = new Date(now.getTime() - 86_400_000 * 2);
+    await prisma.order.create({
+      data: { orderCode: `ORD-old-${Math.random()}`, userId, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED", createdAt: old },
+    });
+    await prisma.order.create({
+      data: { orderCode: `ORD-new-${Math.random()}`, userId, subtotalAmount: "1", totalAmount: "1", status: "PENDING_PAYMENT", createdAt: now },
+    });
+
+    const result = await ordersByStatusSince(prisma, new Date(now.getTime() - 60_000));
+    expect(result).toEqual([{ status: "PENDING_PAYMENT", count: 1 }]);
   });
 });

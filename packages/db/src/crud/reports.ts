@@ -238,6 +238,18 @@ export async function ordersByStatus(db: Db): Promise<StatusCount[]> {
     .sort((a, b) => b.count - a.count);
 }
 
+/** Order counts grouped by status, restricted to orders created since `since` — the dashboard's "today" funnel. */
+export async function ordersByStatusSince(db: Db, since: Date): Promise<StatusCount[]> {
+  const grouped = await db.order.groupBy({
+    by: ["status"],
+    where: { createdAt: { gte: since } },
+    _count: { _all: true },
+  });
+  return grouped
+    .map((g) => ({ status: g.status, count: g._count._all }))
+    .sort((a, b) => b.count - a.count);
+}
+
 export interface VoucherUsage {
   id: number;
   code: string;

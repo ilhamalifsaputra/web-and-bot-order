@@ -68,3 +68,61 @@ describe("GET /api/dashboard/kpis", () => {
     expect(body.pendingActions).toEqual({ toReview: 0, refundDecisions: 0, failedDeliveries: 0, manualApprovals: 0 });
   });
 });
+
+describe("GET /api/dashboard/operations", () => {
+  it("anon is redirected to /login", async () => {
+    const res = await get("/api/dashboard/operations", null);
+    expect(res.statusCode).toBe(303);
+  });
+
+  it("reports the operation-center counts", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    await prisma.order.create({ data: { orderCode: "ORD-pp", userId: buyer.id, subtotalAmount: "1", totalAmount: "1", status: "PENDING_PAYMENT" } });
+    await prisma.order.create({ data: { orderCode: "ORD-proc", userId: buyer.id, subtotalAmount: "1", totalAmount: "1", status: "PAID" } });
+
+    const res = await get("/api/dashboard/operations", cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ pendingPayments: 1, ordersProcessing: 1 });
+  });
+});
+
+describe("GET /api/dashboard/inventory", () => {
+  it("anon is redirected to /login", async () => {
+    const res = await get("/api/dashboard/inventory", null);
+    expect(res.statusCode).toBe(303);
+  });
+
+  it("lists denominations at or below the threshold", async () => {
+    const category = await createCategory(prisma, "Cat");
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: "Parent", description: "x" });
+    const denom = await createDenomination(prisma, { productId: parent.id, name: "Low item", type: "SHARED", durationLabel: "1 Month", price: "1" });
+    await bulkAddStock(prisma, denom.id, ["a@b.com:pw"]);
+
+    const res = await get("/api/dashboard/inventory?threshold=3", cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual([{ denominationId: denom.id, productName: "Low item", available: 1, threshold: 3 }]);
+  });
+});
+
+describe("GET /api/dashboard/expirations", () => {
+  it("anon is redirected to /login", async () => {
+    const res = await get("/api/dashboard/expirations", null);
+    expect(res.statusCode).toBe(303);
+  });
+
+  it("lists order items whose warranty expires within the window", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const category = await createCategory(prisma, "Cat");
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: "Parent", description: "x" });
+    const denom = await createDenomination(prisma, { productId: parent.id, name: "Expiring item", type: "SHARED", durationLabel: "1 Month", price: "1", warrantyDays: 1 });
+    const deliveredAt = new Date(); // expires in 1 day, well inside a 7-day window
+    const order = await prisma.order.create({ data: { orderCode: "ORD-exp", userId: buyer.id, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED", deliveredAt } });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: denom.id, quantity: 1, unitPrice: "1", warrantyDaysSnapshot: 1 } });
+
+    const res = await get("/api/dashboard/expirations?withinDays=7", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body).toHaveLength(1);
+    expect(body[0]).toMatchObject({ orderId: order.id, orderCode: "ORD-exp", productName: "Expiring item", customerLabel: "buyer" });
+  });
+});

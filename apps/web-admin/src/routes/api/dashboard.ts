@@ -5,8 +5,9 @@
  * pages use — no separate auth model, no CSRF (nothing here mutates).
  */
 import type { FastifyInstance } from "fastify";
-import { startOfDayUtc } from "@app/core/datetime";
+import { startOfDayUtc, addDays } from "@app/core/datetime";
 import { Decimal } from "@app/core/money";
+import { config } from "@app/core/config";
 import {
   prisma,
   revenueSummary,
@@ -15,6 +16,11 @@ import {
   manualMatchQueueCounts,
   countPendingVerifications,
   countUnderpaid,
+  countPendingPaymentLike,
+  countProcessing,
+  countExpiredPending,
+  lowStockDenominations,
+  listOrderItemsExpiringWarranty,
 } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
 
@@ -74,5 +80,52 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
         manualApprovals: manualQueue.unmatched,
       },
     };
+  });
+
+  app.get("/api/dashboard/operations", { preHandler: currentAdmin }, async () => {
+    const now = new Date();
+    const [pendingPayments, manualReviews, manualQueue, ordersProcessing, expiredPayments] = await Promise.all([
+      countPendingPaymentLike(prisma),
+      countPendingVerifications(prisma),
+      manualMatchQueueCounts(prisma),
+      countProcessing(prisma),
+      countExpiredPending(prisma, now),
+    ]);
+    return {
+      pendingPayments,
+      manualReviews,
+      failedDeliveries: manualQueue.deliveryFailed,
+      ordersProcessing,
+      expiredPayments,
+    };
+  });
+
+  app.get("/api/dashboard/inventory", { preHandler: currentAdmin }, async (req) => {
+    const q = req.query as Record<string, string | undefined>;
+    const threshold = q.threshold ? Number(q.threshold) : config.LOW_STOCK_THRESHOLD;
+    const rows = await lowStockDenominations(prisma, threshold);
+    return rows.map((r) => ({
+      denominationId: r.denomination.id,
+      productName: r.denomination.name,
+      available: r.available,
+      threshold,
+    }));
+  });
+
+  app.get("/api/dashboard/expirations", { preHandler: currentAdmin }, async (req) => {
+    const q = req.query as Record<string, string | undefined>;
+    const withinDays = q.withinDays ? Number(q.withinDays) : 7;
+    const now = new Date();
+    const rows = await listOrderItemsExpiringWarranty(prisma, now, addDays(now, withinDays));
+    return rows.map((item) => ({
+      orderId: item.order.id,
+      orderCode: item.order.orderCode,
+      productName: item.product.name,
+      customerLabel: item.order.user.username ?? `Telegram ${item.order.user.telegramId}`,
+      remainingDays: Math.max(
+        0,
+        Math.ceil((addDays(item.order.deliveredAt!, item.warrantyDaysSnapshot).getTime() - now.getTime()) / 86_400_000),
+      ),
+    }));
   });
 }

@@ -450,6 +450,81 @@ export async function listOrderItemsExpiringWarranty(
   });
 }
 
+export interface DayOrderCounts {
+  day: string;
+  ordersIdr: number;
+  ordersUsdt: number;
+}
+
+/** Daily delivered-order counts for the last `days` days, oldest→newest,
+ * split by currency — the order-count counterpart to revenueByDay, for the
+ * Sales Analytics chart's "Orders" metric. Empty days are filled with zero. */
+export async function ordersByDay(db: Db, days = 30): Promise<DayOrderCounts[]> {
+  const now = new Date();
+  const since = addDays(now, -(days - 1));
+  since.setUTCHours(0, 0, 0, 0);
+
+  const orders = await db.order.findMany({
+    where: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } },
+    select: { deliveredAt: true, currency: true },
+  });
+
+  const buckets = new Map<string, { idr: number; usdt: number }>();
+  for (let i = 0; i < days; i++) {
+    buckets.set(addDays(since, i).toISOString().slice(0, 10), { idr: 0, usdt: 0 });
+  }
+  for (const o of orders) {
+    if (!o.deliveredAt) continue;
+    const key = o.deliveredAt.toISOString().slice(0, 10);
+    const b = buckets.get(key);
+    if (!b) continue;
+    if (o.currency === "IDR") b.idr += 1;
+    else b.usdt += 1;
+  }
+  return [...buckets.entries()].map(([day, b]) => ({ day, ordersIdr: b.idr, ordersUsdt: b.usdt }));
+}
+
+export interface DayCombinedRevenue {
+  day: string;
+  revenueIdrEquiv: string;
+}
+
+/**
+ * Daily delivered revenue for the last `days` days, oldest→newest, normalized
+ * to IDR-equivalent: IDR orders pass through unconverted, USDT orders
+ * convert via THEIR OWN fxRate snapshot — never a live rate, so a past day's
+ * combined total never moves when today's fx rate changes. This is the one
+ * place this function intentionally blends currencies — the "Combined"
+ * filter the user explicitly opts into, as opposed to revenueByDay's
+ * per-currency split.
+ */
+export async function combinedRevenueByDay(db: Db, days = 30): Promise<DayCombinedRevenue[]> {
+  const now = new Date();
+  const since = addDays(now, -(days - 1));
+  since.setUTCHours(0, 0, 0, 0);
+
+  const orders = await db.order.findMany({
+    where: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } },
+    select: { deliveredAt: true, totalAmount: true, currency: true, fxRate: true },
+  });
+
+  const buckets = new Map<string, Decimal>();
+  for (let i = 0; i < days; i++) {
+    buckets.set(addDays(since, i).toISOString().slice(0, 10), new Decimal(0));
+  }
+  for (const o of orders) {
+    if (!o.deliveredAt) continue;
+    const key = o.deliveredAt.toISOString().slice(0, 10);
+    const current = buckets.get(key);
+    if (!current) continue;
+    const idrEquiv = o.currency === "USDT" && o.fxRate != null
+      ? new Decimal(o.totalAmount).times(o.fxRate)
+      : new Decimal(o.totalAmount);
+    buckets.set(key, current.plus(idrEquiv));
+  }
+  return [...buckets.entries()].map(([day, total]) => ({ day, revenueIdrEquiv: q4(total).toString() }));
+}
+
 export interface RecentOrderRow {
   orderId: number;
   orderCode: string;

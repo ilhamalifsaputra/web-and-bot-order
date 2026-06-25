@@ -10,6 +10,8 @@ import {
   manualMatchQueueCounts,
   recentOrders,
   topProductsByMargin,
+  ordersByDay,
+  combinedRevenueByDay,
 } from "./reports"; // remaining new imports added in later tasks of this plan
 
 let db: TestDb;
@@ -258,5 +260,42 @@ describe("recentOrders", () => {
     const result = await recentOrders(prisma, 10);
     const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
     expect(result[0]!.customerLabel).toBe(`Telegram ${user.telegramId}`);
+  });
+});
+
+describe("ordersByDay", () => {
+  it("counts delivered orders per day, split by currency", async () => {
+    const now = new Date();
+    await prisma.order.create({ data: { orderCode: `ORD-a-${Math.random()}`, userId, subtotalAmount: "1", totalAmount: "1", currency: "IDR", status: "DELIVERED", deliveredAt: now } });
+    await prisma.order.create({ data: { orderCode: `ORD-b-${Math.random()}`, userId, subtotalAmount: "1", totalAmount: "1", currency: "IDR", status: "DELIVERED", deliveredAt: now } });
+    await prisma.order.create({ data: { orderCode: `ORD-c-${Math.random()}`, userId, subtotalAmount: "1", totalAmount: "1", currency: "USDT", status: "DELIVERED", deliveredAt: now } });
+
+    const days = await ordersByDay(prisma, 1);
+    expect(days).toEqual([{ day: days[0]!.day, ordersIdr: 2, ordersUsdt: 1 }]);
+  });
+
+  it("fills empty days with zero counts", async () => {
+    const days = await ordersByDay(prisma, 3);
+    expect(days).toHaveLength(3);
+    for (const d of days) expect(d).toMatchObject({ ordersIdr: 0, ordersUsdt: 0 });
+  });
+});
+
+describe("combinedRevenueByDay", () => {
+  it("converts a USDT order's total to IDR-equivalent via its own fxRate, and leaves IDR orders unconverted", async () => {
+    const now = new Date();
+    await prisma.order.create({ data: { orderCode: `ORD-idr-${Math.random()}`, userId, subtotalAmount: "1", totalAmount: "54000", currency: "IDR", status: "DELIVERED", deliveredAt: now } });
+    await prisma.order.create({ data: { orderCode: `ORD-usdt-${Math.random()}`, userId, subtotalAmount: "1", totalAmount: "3.43", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: now } });
+
+    const days = await combinedRevenueByDay(prisma, 1);
+    expect(days).toHaveLength(1);
+    // 54000 (IDR, unconverted) + 3.43 * 16000 = 54880 (USDT, via its own snapshot rate)
+    expect(days[0]!.revenueIdrEquiv).toBe("108880");
+  });
+
+  it("fills empty days with zero", async () => {
+    const days = await combinedRevenueByDay(prisma, 2);
+    expect(days).toHaveLength(2);
+    for (const d of days) expect(d.revenueIdrEquiv).toBe("0");
   });
 });

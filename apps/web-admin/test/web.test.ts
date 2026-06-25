@@ -437,6 +437,20 @@ describe("orders", () => {
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
   });
 
+  it("approve accepts the CSRF token via an X-CSRF-Token header, with no body field at all", async () => {
+    const orderId = await makePendingOrder();
+    setBotIdentity({ publicChannelId: -100123456789 });
+    const res = await app.inject({
+      method: "POST",
+      url: `/orders/${orderId}/approve`,
+      headers: { "content-type": "application/x-www-form-urlencoded", "x-csrf-token": seed.csrf },
+      cookies: { [COOKIE]: seed.cookie },
+      payload: form({}),
+    });
+    expect(res.statusCode).toBe(303);
+    expect((await getOrder(prisma, orderId))!.status).toBe("DELIVERED");
+  });
+
   it("credit-balance on a paid order → CANCELLED + buyer credited + audit", async () => {
     const orderId = await makePendingOrder(); // PENDING_VERIFICATION (paid)
     const order = (await getOrder(prisma, orderId))!;

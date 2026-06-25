@@ -88,7 +88,9 @@ export const currentAdmin: preHandlerHookHandler = async (req, reply) => {
 };
 
 const csrfCheck: preHandlerHookHandler = async (req, reply) => {
-  const token = (req.body as Record<string, unknown> | undefined)?.csrf_token;
+  const bodyToken = (req.body as Record<string, unknown> | undefined)?.csrf_token;
+  const headerToken = req.headers["x-csrf-token"];
+  const token = bodyToken ?? (typeof headerToken === "string" ? headerToken : undefined);
   if (!token || token !== req.admin?.csrf) {
     return reply.code(403).type("text/plain").send("CSRF check failed");
   }

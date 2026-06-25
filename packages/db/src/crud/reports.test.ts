@@ -8,6 +8,7 @@ import {
   ordersByStatusSince,
   profitSummarySince,
   manualMatchQueueCounts,
+  recentOrders,
 } from "./reports"; // remaining new imports added in later tasks of this plan
 
 let db: TestDb;
@@ -196,5 +197,35 @@ describe("manualMatchQueueCounts", () => {
 
     const result = await manualMatchQueueCounts(prisma);
     expect(result).toEqual({ unmatched: 2, deliveryFailed: 2 });
+  });
+});
+
+describe("recentOrders", () => {
+  it("returns newest first, with the first item's product name and an overflow count when there are more", async () => {
+    const now = new Date();
+    const productA = await createDenomination(prisma, { productId: parentProductId, name: "Product A", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+    const productB = await createDenomination(prisma, { productId: parentProductId, name: "Product B", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    const order1 = await prisma.order.create({ data: { orderCode: "ORD-1", userId, subtotalAmount: "1", totalAmount: "10000", currency: "IDR", status: "DELIVERED", createdAt: new Date(now.getTime() - 60_000) } });
+    await prisma.orderItem.create({ data: { orderId: order1.id, productId: productA.id, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+    await prisma.orderItem.create({ data: { orderId: order1.id, productId: productB.id, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const order2 = await prisma.order.create({ data: { orderCode: "ORD-2", userId, subtotalAmount: "1", totalAmount: "5000", currency: "IDR", status: "PENDING_PAYMENT", createdAt: now } });
+    await prisma.orderItem.create({ data: { orderId: order2.id, productId: productA.id, quantity: 1, unitPrice: "5000", warrantyDaysSnapshot: 30 } });
+
+    const result = await recentOrders(prisma, 10);
+    expect(result).toHaveLength(2);
+    expect(result[0]).toMatchObject({ orderId: order2.id, orderCode: "ORD-2", productLabel: "Product A", amount: "5000", currency: "IDR", status: "PENDING_PAYMENT" });
+    expect(result[1]).toMatchObject({ orderId: order1.id, orderCode: "ORD-1", productLabel: "Product A +1 more", amount: "10000" });
+  });
+
+  it("falls back to a Telegram-id label when the user has no username", async () => {
+    const product = await createDenomination(prisma, { productId: parentProductId, name: "Solo product", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+    const order = await prisma.order.create({ data: { orderCode: "ORD-solo", userId, subtotalAmount: "1", totalAmount: "10000", currency: "IDR", status: "DELIVERED" } });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: product.id, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const result = await recentOrders(prisma, 10);
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+    expect(result[0]!.customerLabel).toBe(`Telegram ${user.telegramId}`);
   });
 });

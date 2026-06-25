@@ -390,3 +390,41 @@ export async function listOrderItemsExpiringWarranty(
     return start.getTime() <= expiry.getTime() && expiry.getTime() <= end.getTime();
   });
 }
+
+export interface RecentOrderRow {
+  orderId: number;
+  orderCode: string;
+  productLabel: string;
+  customerLabel: string;
+  amount: string;
+  currency: string;
+  status: string;
+  createdAt: string;
+}
+
+/** Latest orders for the dashboard's Recent Orders table, newest first. */
+export async function recentOrders(db: Db, limit = 10): Promise<RecentOrderRow[]> {
+  const orders = await db.order.findMany({
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    include: {
+      user: { select: { username: true, telegramId: true } },
+      items: { select: { product: { select: { name: true } } }, orderBy: { id: "asc" }, take: 1 },
+      _count: { select: { items: true } },
+    },
+  });
+  return orders.map((o) => {
+    const firstItemName = o.items[0]?.product.name ?? "—";
+    const extra = o._count.items - 1;
+    return {
+      orderId: o.id,
+      orderCode: o.orderCode,
+      productLabel: extra > 0 ? `${firstItemName} +${extra} more` : firstItemName,
+      customerLabel: o.user.username ?? (o.user.telegramId != null ? `Telegram ${o.user.telegramId}` : "Unknown customer"),
+      amount: new Decimal(o.totalAmount).toString(),
+      currency: o.currency,
+      status: o.status,
+      createdAt: o.createdAt.toISOString(),
+    };
+  });
+}

@@ -23,6 +23,9 @@ import {
   listOrderItemsExpiringWarranty,
   recentOrders,
   topProductsByMargin,
+  revenueByDay,
+  ordersByDay,
+  combinedRevenueByDay,
   resolveBotCredentials,
   resolveBinanceInternalConfig,
   getBinancePollHealth,
@@ -168,5 +171,23 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
     const days = q.days ? Number(q.days) : 30;
     const limit = q.limit ? Number(q.limit) : 5;
     return topProductsByMargin(prisma, addDays(new Date(), -days), limit);
+  });
+
+  app.get("/api/dashboard/analytics", { preHandler: currentAdmin }, async (req) => {
+    const q = req.query as Record<string, string | undefined>;
+    const days = q.range === "30d" ? 30 : 7;
+    const currency = q.currency ?? "idr";
+    const metric = q.metric ?? "revenue";
+
+    if (metric === "orders") {
+      const rows = await ordersByDay(prisma, days);
+      return rows.map((r) => ({ day: r.day, value: currency === "usdt" ? r.ordersUsdt : r.ordersIdr }));
+    }
+    if (currency === "combined") {
+      const rows = await combinedRevenueByDay(prisma, days);
+      return rows.map((r) => ({ day: r.day, value: r.revenueIdrEquiv }));
+    }
+    const rows = await revenueByDay(prisma, days);
+    return rows.map((r) => ({ day: r.day, value: currency === "usdt" ? r.revenue_usdt : r.revenue_idr }));
   });
 }

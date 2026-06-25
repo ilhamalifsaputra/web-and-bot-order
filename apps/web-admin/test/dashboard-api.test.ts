@@ -183,3 +183,42 @@ describe("GET /api/dashboard/top-products", () => {
     expect(res.json()).toEqual([{ productId: denom.id, name: "Top item", unitsSold: 1, revenueIdrEquiv: "10000", profitIdrEquiv: "5000", costUnknownUnits: 0 }]);
   });
 });
+
+describe("GET /api/dashboard/analytics", () => {
+  it("anon is redirected to /login", async () => {
+    const res = await get("/api/dashboard/analytics", null);
+    expect(res.statusCode).toBe(303);
+  });
+
+  it("defaults to a 7-day IDR revenue series", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "1", totalAmount: "5000", currency: "IDR", status: "DELIVERED", deliveredAt: new Date() } });
+
+    const res = await get("/api/dashboard/analytics", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body).toHaveLength(7);
+    expect(body[6].value).toBe("5000"); // today is the last bucket
+  });
+
+  it("switches to order counts when metric=orders", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "1", totalAmount: "5000", currency: "IDR", status: "DELIVERED", deliveredAt: new Date() } });
+
+    const res = await get("/api/dashboard/analytics?metric=orders", cookie);
+    expect(res.json()[6].value).toBe(1);
+  });
+
+  it("switches to the IDR-equivalent combined series when currency=combined", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "1", totalAmount: "3", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: new Date() } });
+
+    const res = await get("/api/dashboard/analytics?currency=combined", cookie);
+    expect(res.json()[6].value).toBe("48000");
+  });
+
+  it("accepts range=30d", async () => {
+    const res = await get("/api/dashboard/analytics?range=30d", cookie);
+    expect(res.json()).toHaveLength(30);
+  });
+});

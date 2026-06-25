@@ -21,6 +21,11 @@ import {
   countExpiredPending,
   lowStockDenominations,
   listOrderItemsExpiringWarranty,
+  recentOrders,
+  topProductsByMargin,
+  resolveBotCredentials,
+  resolveBinanceInternalConfig,
+  getBinancePollHealth,
 } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
 
@@ -127,5 +132,41 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
         Math.ceil((addDays(item.order.deliveredAt!, item.warrantyDaysSnapshot).getTime() - now.getTime()) / 86_400_000),
       ),
     }));
+  });
+
+  app.get("/api/dashboard/orders/recent", { preHandler: currentAdmin }, async (req) => {
+    const q = req.query as Record<string, string | undefined>;
+    const limit = q.limit ? Number(q.limit) : 10;
+    return recentOrders(prisma, limit);
+  });
+
+  app.get("/api/dashboard/health", { preHandler: currentAdmin }, async () => {
+    const creds = await resolveBotCredentials(prisma);
+    const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
+    const binanceHealth = binanceEnabled ? await getBinancePollHealth(prisma) : null;
+
+    const binanceStatus = !binanceEnabled
+      ? "unmonitored"
+      : (binanceHealth!.consecutiveFailures ?? 0) > 0
+        ? "red"
+        : binanceHealth!.backoffUntil
+          ? "yellow"
+          : "green";
+
+    return {
+      telegramBot: creds.botToken === null ? "red" : "green",
+      binance: binanceStatus,
+      bybit: "unmonitored",
+      tokopay: "unmonitored",
+      paydisini: "unmonitored",
+      nowpayments: "unmonitored",
+    };
+  });
+
+  app.get("/api/dashboard/top-products", { preHandler: currentAdmin }, async (req) => {
+    const q = req.query as Record<string, string | undefined>;
+    const days = q.days ? Number(q.days) : 30;
+    const limit = q.limit ? Number(q.limit) : 5;
+    return topProductsByMargin(prisma, addDays(new Date(), -days), limit);
   });
 }

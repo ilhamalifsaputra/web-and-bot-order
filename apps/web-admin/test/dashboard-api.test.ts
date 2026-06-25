@@ -126,3 +126,60 @@ describe("GET /api/dashboard/expirations", () => {
     expect(body[0]).toMatchObject({ orderId: order.id, orderCode: "ORD-exp", productName: "Expiring item", customerLabel: "buyer" });
   });
 });
+
+describe("GET /api/dashboard/orders/recent", () => {
+  it("anon is redirected to /login", async () => {
+    const res = await get("/api/dashboard/orders/recent", null);
+    expect(res.statusCode).toBe(303);
+  });
+
+  it("returns the newest orders first", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    await prisma.order.create({ data: { orderCode: "ORD-1", userId: buyer.id, subtotalAmount: "1", totalAmount: "1", status: "DELIVERED" } });
+
+    const res = await get("/api/dashboard/orders/recent?limit=5", cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toHaveLength(1);
+  });
+});
+
+describe("GET /api/dashboard/health", () => {
+  it("anon is redirected to /login", async () => {
+    const res = await get("/api/dashboard/health", null);
+    expect(res.statusCode).toBe(303);
+  });
+
+  it("reports the bot token-present flag and an unmonitored status for unhealthed providers", async () => {
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    // setup-env.ts sets BOT_TOKEN to a non-blank test value and resetDb()
+    // clears any Settings-row override, so resolveBotCredentials() falls
+    // through to that env token — "green", not "red" — in this test env.
+    expect(body.telegramBot).toBe("green");
+    expect(body.bybit).toBe("unmonitored");
+    expect(body.tokopay).toBe("unmonitored");
+    expect(body.paydisini).toBe("unmonitored");
+    expect(body.nowpayments).toBe("unmonitored");
+  });
+});
+
+describe("GET /api/dashboard/top-products", () => {
+  it("anon is redirected to /login", async () => {
+    const res = await get("/api/dashboard/top-products", null);
+    expect(res.statusCode).toBe(303);
+  });
+
+  it("returns delivered products ranked by units sold", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    const category = await createCategory(prisma, "Cat");
+    const parent = await createCatalogProduct(prisma, { categoryId: category.id, name: "Parent", description: "x" });
+    const denom = await createDenomination(prisma, { productId: parent.id, name: "Top item", type: "SHARED", durationLabel: "1 Month", price: "10000", costPrice: "5000" });
+    const order = await prisma.order.create({ data: { orderCode: "ORD-top", userId: buyer.id, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status: "DELIVERED", deliveredAt: new Date() } });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: denom.id, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const res = await get("/api/dashboard/top-products?days=30&limit=5", cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual([{ productId: denom.id, name: "Top item", unitsSold: 1, revenueIdrEquiv: "10000", profitIdrEquiv: "5000", costUnknownUnits: 0 }]);
+  });
+});

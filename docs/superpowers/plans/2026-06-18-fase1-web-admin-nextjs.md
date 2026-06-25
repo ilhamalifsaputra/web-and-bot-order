@@ -1,5 +1,10 @@
 # Fase 1 — Migrasi web-admin ke Next.js (Planning Document)
 
+> **Status: Superseded 2026-06-25** — lihat
+> docs/superpowers/specs/2026-06-25-admin-dashboard-redesign-design.md.
+> Migrasi Postgres ini tidak pernah dimulai dan tidak lagi menjadi prasyarat
+> arah dashboard saat ini.
+
 > **Altitude:** Dokumen perencanaan tingkat-tinggi (bukan plan bite-sized TDD).
 > Plan eksekusi rinci ditulis ulang setelah Fase 0 hijau, saat inventory route &
 > signature `packages/ui`/Auth.js sudah pasti. Lihat

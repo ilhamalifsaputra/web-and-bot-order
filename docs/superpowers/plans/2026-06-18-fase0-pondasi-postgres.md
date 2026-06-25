@@ -1,5 +1,10 @@
 # Fase 0 — Pondasi Postgres Implementation Plan
 
+> **Status: Superseded 2026-06-25** — lihat
+> docs/superpowers/specs/2026-06-25-admin-dashboard-redesign-design.md.
+> Migrasi Postgres ini tidak pernah dimulai dan tidak lagi menjadi prasyarat
+> arah dashboard saat ini.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Migrasikan satu-satunya DB dari SQLite (`data/bot.db`) ke Postgres tanpa mengubah logika bisnis, sehingga bot, notifier, dan web lama berjalan di Postgres dengan suite Vitest hijau — pondasi yang dibutuhkan sebelum Next.js/Auth.js (Fase 1+).

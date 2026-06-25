@@ -2,6 +2,10 @@
 
 - **Tanggal:** 2026-06-18
 - **Status:** Disetujui (desain), menunggu rencana implementasi
+- **Status:** Superseded 2026-06-25 — lihat
+  docs/superpowers/specs/2026-06-25-admin-dashboard-redesign-design.md.
+  Pendekatan satu-proses (tanpa Postgres) dipilih sebagai gantinya; Fase 0
+  tidak pernah dimulai (schema.prisma masih sqlite).
 - **Pemicu:** Audit & redesign panel admin produk agar terasa seperti Stripe/Shopify/Linear/Vercel. Keputusan diperluas menjadi migrasi penuh kedua web ke React/Next.js.
 
 ## Ringkasan keputusan

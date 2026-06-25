@@ -1,5 +1,10 @@
 # Fase 2 — Migrasi storefront ke Next.js (Planning Document)
 
+> **Status: Superseded 2026-06-25** — lihat
+> docs/superpowers/specs/2026-06-25-admin-dashboard-redesign-design.md.
+> Migrasi Postgres ini tidak pernah dimulai dan tidak lagi menjadi prasyarat
+> arah dashboard saat ini.
+
 > **Altitude:** Dokumen perencanaan tingkat-tinggi. Plan eksekusi rinci ditulis
 > setelah Fase 1 selesai (pola `packages/ui` + Auth.js sudah mapan).
 

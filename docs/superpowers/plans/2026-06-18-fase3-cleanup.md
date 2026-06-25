@@ -1,5 +1,10 @@
 # Fase 3 — Bersih-bersih & finalisasi (Planning Document)
 
+> **Status: Superseded 2026-06-25** — lihat
+> docs/superpowers/specs/2026-06-25-admin-dashboard-redesign-design.md.
+> Migrasi Postgres ini tidak pernah dimulai dan tidak lagi menjadi prasyarat
+> arah dashboard saat ini.
+
 > **Altitude:** Dokumen perencanaan tingkat-tinggi. Plan eksekusi rinci ditulis
 > setelah Fase 2 cutover sukses (kedua web sudah Next.js di Postgres).
 

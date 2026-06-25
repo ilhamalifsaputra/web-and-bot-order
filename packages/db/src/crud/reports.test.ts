@@ -6,6 +6,7 @@ import {
   revenueByDay,
   revenueSummary,
   ordersByStatusSince,
+  profitSummarySince,
 } from "./reports"; // remaining new imports added in later tasks of this plan
 
 let db: TestDb;
@@ -121,5 +122,41 @@ describe("ordersByStatusSince", () => {
 
     const result = await ordersByStatusSince(prisma, new Date(now.getTime() - 60_000));
     expect(result).toEqual([{ status: "PENDING_PAYMENT", count: 1 }]);
+  });
+});
+
+describe("profitSummarySince", () => {
+  it("splits net profit and margin% by currency, converting a USDT bucket's IDR-native cost via the order's own fxRate — never blending IDR and USDT", async () => {
+    const now = new Date();
+    const idrProduct = await createDenomination(prisma, { productId: parentProductId, name: "IDR item", type: "SHARED", durationLabel: "1 Month", price: "10000", costPrice: "6000" });
+    const usdtProduct = await createDenomination(prisma, { productId: parentProductId, name: "USDT item", type: "SHARED", durationLabel: "1 Month", price: "160000", costPrice: "32000" });
+
+    const idrOrder = await prisma.order.create({ data: { orderCode: `ORD-idr-${Math.random()}`, userId, subtotalAmount: "20000", totalAmount: "20000", currency: "IDR", status: "DELIVERED", deliveredAt: now } });
+    await prisma.orderItem.create({ data: { orderId: idrOrder.id, productId: idrProduct.id, quantity: 2, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const usdtOrder = await prisma.order.create({ data: { orderCode: `ORD-usdt-${Math.random()}`, userId, subtotalAmount: "10", totalAmount: "10", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: now } });
+    await prisma.orderItem.create({ data: { orderId: usdtOrder.id, productId: usdtProduct.id, quantity: 1, unitPrice: "10", warrantyDaysSnapshot: 30 } });
+
+    const result = await profitSummarySince(prisma, new Date(now.getTime() - 60_000));
+    // IDR: revenue 2x10000=20000, cost 2x6000=12000 -> profit 8000, margin 40%
+    expect(result.idr).toEqual({ netProfit: "8000", marginPct: "40", excludedItemCount: 0 });
+    // USDT: revenue 10 USDT, cost 32000 IDR / fxRate 16000 = 2 USDT-equiv -> profit 8, margin 80%
+    expect(result.usdt).toEqual({ netProfit: "8", marginPct: "80", excludedItemCount: 0 });
+  });
+
+  it("excludes items with no costPrice from profit and margin%, but still counts them", async () => {
+    const now = new Date();
+    const noCostProduct = await createDenomination(prisma, { productId: parentProductId, name: "No cost item", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+    const order = await prisma.order.create({ data: { orderCode: `ORD-nc-${Math.random()}`, userId, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status: "DELIVERED", deliveredAt: now } });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: noCostProduct.id, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const result = await profitSummarySince(prisma, new Date(now.getTime() - 60_000));
+    expect(result.idr).toEqual({ netProfit: "0", marginPct: null, excludedItemCount: 1 });
+  });
+
+  it("returns null for a currency with no delivered items in range", async () => {
+    const result = await profitSummarySince(prisma, new Date());
+    expect(result.idr).toBeNull();
+    expect(result.usdt).toBeNull();
   });
 });

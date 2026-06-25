@@ -273,6 +273,68 @@ export async function voucherUsage(db: Db, limit = 20): Promise<VoucherUsage[]> 
   }));
 }
 
+export interface CurrencyProfit {
+  netProfit: string;
+  marginPct: string | null;
+  excludedItemCount: number;
+}
+
+export interface ProfitSummary {
+  idr: CurrencyProfit | null;
+  usdt: CurrencyProfit | null;
+}
+
+/**
+ * Net profit + margin for delivered OrderItems since `since`, split by the
+ * order's currency — never blended (the "Rp137 + 20.25 USDT" bug this
+ * dashboard exists to fix). `Denomination.costPrice` is always catalog-
+ * central IDR; a USDT-currency line converts it to USDT-equivalent via THAT
+ * order's own `fxRate` snapshot (never a live rate) before subtracting it
+ * from the USDT revenue it corresponds to. Items whose Denomination has no
+ * costPrice are excluded from both the profit sum and the margin%
+ * denominator (counting them at cost=0 would read as a fabricated 100%
+ * margin) and counted in `excludedItemCount` instead.
+ */
+export async function profitSummarySince(db: Db, since: Date): Promise<ProfitSummary> {
+  const items = await db.orderItem.findMany({
+    where: { order: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } } },
+    select: {
+      quantity: true,
+      unitPrice: true,
+      product: { select: { costPrice: true } },
+      order: { select: { currency: true, fxRate: true } },
+    },
+  });
+
+  const byCurrency: Record<"IDR" | "USDT", { revenue: Decimal; cost: Decimal; excluded: number }> = {
+    IDR: { revenue: new Decimal(0), cost: new Decimal(0), excluded: 0 },
+    USDT: { revenue: new Decimal(0), cost: new Decimal(0), excluded: 0 },
+  };
+
+  for (const item of items) {
+    const isUsdt = item.order.currency === "USDT";
+    const bucket = isUsdt ? byCurrency.USDT : byCurrency.IDR;
+    if (item.product.costPrice == null) {
+      bucket.excluded += 1;
+      continue;
+    }
+    const lineRevenue = new Decimal(item.unitPrice).times(item.quantity);
+    const lineCostIdr = new Decimal(item.product.costPrice).times(item.quantity);
+    const lineCost = isUsdt && item.order.fxRate != null ? lineCostIdr.div(item.order.fxRate) : lineCostIdr;
+    bucket.revenue = bucket.revenue.plus(lineRevenue);
+    bucket.cost = bucket.cost.plus(lineCost);
+  }
+
+  const shape = (b: { revenue: Decimal; cost: Decimal; excluded: number }): CurrencyProfit | null => {
+    if (b.revenue.isZero() && b.excluded === 0) return null;
+    const profit = b.revenue.minus(b.cost);
+    const marginPct = b.revenue.isZero() ? null : profit.div(b.revenue).times(100).toDecimalPlaces(2).toString();
+    return { netProfit: q4(profit).toString(), marginPct, excludedItemCount: b.excluded };
+  };
+
+  return { idr: shape(byCurrency.IDR), usdt: shape(byCurrency.USDT) };
+}
+
 /** OrderItems whose warranty (delivered_at + snapshot days) falls in [start,end]. */
 export async function listOrderItemsExpiringWarranty(
   db: Db,

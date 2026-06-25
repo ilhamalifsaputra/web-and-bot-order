@@ -9,6 +9,7 @@ import {
   profitSummarySince,
   manualMatchQueueCounts,
   recentOrders,
+  topProductsByMargin,
 } from "./reports"; // remaining new imports added in later tasks of this plan
 
 let db: TestDb;
@@ -184,6 +185,36 @@ describe("profitSummarySince", () => {
     const result = await profitSummarySince(prisma, new Date());
     expect(result.idr).toBeNull();
     expect(result.usdt).toBeNull();
+  });
+});
+
+describe("topProductsByMargin", () => {
+  it("ranks by units sold and normalizes USDT lines to IDR-equivalent via the order's own fxRate", async () => {
+    const now = new Date();
+    const productA = await createDenomination(prisma, { productId: parentProductId, name: "Product A", type: "SHARED", durationLabel: "1 Month", price: "10000", costPrice: "6000" });
+    const productB = await createDenomination(prisma, { productId: parentProductId, name: "Product B", type: "SHARED", durationLabel: "1 Month", price: "80000", costPrice: "32000" });
+
+    const idrOrder = await prisma.order.create({ data: { orderCode: `ORD-a-${Math.random()}`, userId, subtotalAmount: "30000", totalAmount: "30000", currency: "IDR", status: "DELIVERED", deliveredAt: now } });
+    await prisma.orderItem.create({ data: { orderId: idrOrder.id, productId: productA.id, quantity: 3, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const usdtOrder = await prisma.order.create({ data: { orderCode: `ORD-b-${Math.random()}`, userId, subtotalAmount: "5", totalAmount: "5", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: now } });
+    await prisma.orderItem.create({ data: { orderId: usdtOrder.id, productId: productB.id, quantity: 1, unitPrice: "5", warrantyDaysSnapshot: 30 } });
+
+    const result = await topProductsByMargin(prisma, new Date(now.getTime() - 60_000), 5);
+    expect(result).toEqual([
+      { productId: productA.id, name: "Product A", unitsSold: 3, revenueIdrEquiv: "30000", profitIdrEquiv: "12000", costUnknownUnits: 0 },
+      { productId: productB.id, name: "Product B", unitsSold: 1, revenueIdrEquiv: "80000", profitIdrEquiv: "48000", costUnknownUnits: 0 },
+    ]);
+  });
+
+  it("nulls profit for a product with any cost-unknown units, but still reports its revenue", async () => {
+    const now = new Date();
+    const product = await createDenomination(prisma, { productId: parentProductId, name: "No cost", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+    const order = await prisma.order.create({ data: { orderCode: `ORD-nc-${Math.random()}`, userId, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status: "DELIVERED", deliveredAt: now } });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: product.id, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const result = await topProductsByMargin(prisma, new Date(now.getTime() - 60_000), 5);
+    expect(result[0]).toEqual({ productId: product.id, name: "No cost", unitsSold: 1, revenueIdrEquiv: "10000", profitIdrEquiv: null, costUnknownUnits: 1 });
   });
 });
 

@@ -225,6 +225,65 @@ export async function topProducts(db: Db, limit = 10): Promise<TopProduct[]> {
     .slice(0, limit);
 }
 
+export interface TopProductMargin {
+  productId: number;
+  name: string;
+  unitsSold: number;
+  revenueIdrEquiv: string;
+  profitIdrEquiv: string | null;
+  costUnknownUnits: number;
+}
+
+/**
+ * Best-selling products since `since`, ranked by units sold, with revenue and
+ * profit normalized to IDR-equivalent — USDT lines convert via each order's
+ * own `fxRate` snapshot, the same "Combined" conversion `combinedRevenueByDay`
+ * uses, never a live rate. `costPrice` is always catalog-central IDR, so it
+ * needs no conversion. Any cost-unknown unit nulls that product's profit
+ * (rather than silently treating unknown cost as zero) while still reporting
+ * its revenue and the count of affected units.
+ */
+export async function topProductsByMargin(db: Db, since: Date, limit = 5): Promise<TopProductMargin[]> {
+  const items = await db.orderItem.findMany({
+    where: { order: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } } },
+    select: {
+      productId: true,
+      quantity: true,
+      unitPrice: true,
+      product: { select: { name: true, costPrice: true } },
+      order: { select: { currency: true, fxRate: true } },
+    },
+  });
+
+  const acc = new Map<number, { name: string; units: number; revenue: Decimal; cost: Decimal; costUnknownUnits: number }>();
+  for (const item of items) {
+    const idrUnitPrice = item.order.currency === "USDT" && item.order.fxRate != null
+      ? new Decimal(item.unitPrice).times(item.order.fxRate)
+      : new Decimal(item.unitPrice);
+    const a = acc.get(item.productId) ?? { name: item.product.name, units: 0, revenue: new Decimal(0), cost: new Decimal(0), costUnknownUnits: 0 };
+    a.units += item.quantity;
+    a.revenue = a.revenue.plus(idrUnitPrice.times(item.quantity));
+    if (item.product.costPrice == null) {
+      a.costUnknownUnits += item.quantity;
+    } else {
+      a.cost = a.cost.plus(new Decimal(item.product.costPrice).times(item.quantity));
+    }
+    acc.set(item.productId, a);
+  }
+
+  return [...acc.entries()]
+    .map(([productId, a]) => ({
+      productId,
+      name: a.name,
+      unitsSold: a.units,
+      revenueIdrEquiv: q4(a.revenue).toString(),
+      profitIdrEquiv: a.costUnknownUnits > 0 ? null : q4(a.revenue.minus(a.cost)).toString(),
+      costUnknownUnits: a.costUnknownUnits,
+    }))
+    .sort((a, b) => b.unitsSold - a.unitsSold)
+    .slice(0, limit);
+}
+
 export interface StatusCount {
   status: string;
   count: number;

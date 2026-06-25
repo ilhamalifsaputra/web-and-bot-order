@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
-import { revenueByDay } from "./reports";
+import { revenueByDay, revenueSummary } from "./reports";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -60,5 +60,31 @@ describe("revenueByDay", () => {
       expect(d.revenue_usdt).toBe("0");
       expect(d.orders).toBe(0);
     }
+  });
+});
+
+describe("revenueSummary", () => {
+  it("excludes orders delivered after `until`", async () => {
+    const now = new Date();
+    const before = new Date(now.getTime() - 60_000);
+    await prisma.order.create({
+      data: { orderCode: `ORD-a-${Math.random()}`, userId, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status: "DELIVERED", deliveredAt: before },
+    });
+    await prisma.order.create({
+      data: { orderCode: `ORD-b-${Math.random()}`, userId, subtotalAmount: "20000", totalAmount: "20000", currency: "IDR", status: "DELIVERED", deliveredAt: now },
+    });
+
+    const result = await revenueSummary(prisma, new Date(now.getTime() - 120_000), before);
+    expect(result.revenue_idr.toString()).toBe("10000");
+    expect(result.orders).toBe(1);
+  });
+
+  it("defaults `until` to now when omitted", async () => {
+    const now = new Date();
+    await prisma.order.create({
+      data: { orderCode: `ORD-c-${Math.random()}`, userId, subtotalAmount: "5000", totalAmount: "5000", currency: "IDR", status: "DELIVERED", deliveredAt: now },
+    });
+    const result = await revenueSummary(prisma, new Date(now.getTime() - 60_000));
+    expect(result.revenue_idr.toString()).toBe("5000");
   });
 });

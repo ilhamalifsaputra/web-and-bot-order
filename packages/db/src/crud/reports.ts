@@ -132,8 +132,9 @@ export async function botOverallStats(db: Db): Promise<{
 export async function revenueSummary(
   db: Db,
   since: Date,
+  until: Date = new Date(),
 ): Promise<{ revenue_idr: Decimal; revenue_usdt: Decimal; orders: number }> {
-  const rev = await deliveredRevenueByCurrency(db, { deliveredAt: { gte: since } });
+  const rev = await deliveredRevenueByCurrency(db, { deliveredAt: { gte: since, lte: until } });
   return { revenue_idr: rev.idr, revenue_usdt: rev.usdt, orders: rev.orders };
 }
 

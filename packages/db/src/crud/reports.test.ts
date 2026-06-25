@@ -154,6 +154,30 @@ describe("profitSummarySince", () => {
     expect(result.idr).toEqual({ netProfit: "0", marginPct: null, excludedItemCount: 1 });
   });
 
+  it("excludes a USDT item with no costPrice from profit and margin%, but still counts it", async () => {
+    const now = new Date();
+    const noCostProduct = await createDenomination(prisma, { productId: parentProductId, name: "No cost USDT item", type: "SHARED", durationLabel: "1 Month", price: "160000" });
+    const order = await prisma.order.create({ data: { orderCode: `ORD-nc-usdt-${Math.random()}`, userId, subtotalAmount: "10", totalAmount: "10", currency: "USDT", fxRate: "16000", status: "DELIVERED", deliveredAt: now } });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: noCostProduct.id, quantity: 1, unitPrice: "10", warrantyDaysSnapshot: 30 } });
+
+    const result = await profitSummarySince(prisma, new Date(now.getTime() - 60_000));
+    expect(result.usdt).toEqual({ netProfit: "0", marginPct: null, excludedItemCount: 1 });
+  });
+
+  it("excludes a no-cost item's revenue from the bucket while still summing a priced item alongside it", async () => {
+    const now = new Date();
+    const pricedProduct = await createDenomination(prisma, { productId: parentProductId, name: "Priced item", type: "SHARED", durationLabel: "1 Month", price: "10000", costPrice: "6000" });
+    const noCostProduct = await createDenomination(prisma, { productId: parentProductId, name: "No cost item", type: "SHARED", durationLabel: "1 Month", price: "5000" });
+    const order = await prisma.order.create({ data: { orderCode: `ORD-mix-${Math.random()}`, userId, subtotalAmount: "15000", totalAmount: "15000", currency: "IDR", status: "DELIVERED", deliveredAt: now } });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: pricedProduct.id, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: noCostProduct.id, quantity: 1, unitPrice: "5000", warrantyDaysSnapshot: 30 } });
+
+    const result = await profitSummarySince(prisma, new Date(now.getTime() - 60_000));
+    // Only the priced item contributes: revenue 10000, cost 6000 -> profit 4000, margin 40%.
+    // The no-cost item's 5000 revenue must not leak into the bucket.
+    expect(result.idr).toEqual({ netProfit: "4000", marginPct: "40", excludedItemCount: 1 });
+  });
+
   it("returns null for a currency with no delivered items in range", async () => {
     const result = await profitSummarySince(prisma, new Date());
     expect(result.idr).toBeNull();

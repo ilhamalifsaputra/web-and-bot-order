@@ -34,4 +34,8 @@ export const addMinutes = (d: Date, minutes: number): Date =>
 export const addDays = (d: Date, days: number): Date =>
   new Date(d.getTime() + days * 86_400_000);
 
+/** Start of the calendar day in `zone` (default config.TIMEZONE), as a UTC Date. */
+export const startOfDayUtc = (from: Date = new Date(), zone: string = config.TIMEZONE): Date =>
+  DateTime.fromJSDate(from, { zone: "utc" }).setZone(zone).startOf("day").toUTC().toJSDate();
+
 export { DateTime };

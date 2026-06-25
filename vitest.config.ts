@@ -1,6 +1,16 @@
+import path from "node:path";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      // Mirrors apps/web-admin/client/vite.config.ts's "@" alias (and the
+      // matching tsconfig "paths") so shadcn-generated components under
+      // apps/web-admin/client/src (e.g. ui/card.tsx's "@/lib/utils" import)
+      // resolve correctly when Vitest runs from the repo root.
+      "@": path.resolve(__dirname, "./apps/web-admin/client/src"),
+    },
+  },
   test: {
     include: [
       "packages/**/*.test.ts",

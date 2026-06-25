@@ -507,6 +507,36 @@ export function listExpiredPendingOrders(db: Db, now: Date) {
   });
 }
 
+/** Orders awaiting payment confirmation right now — covers every payment
+ * method's pre-confirmation states, including the Bybit BSC on-chain
+ * milestones ("Pending Payments" on the dashboard). */
+export function countPendingPaymentLike(db: Db): Promise<number> {
+  return db.order.count({
+    where: { status: { in: [OrderStatus.PENDING_PAYMENT, OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING] } },
+  });
+}
+
+/** Orders confirmed-paid but not yet delivered ("Orders Processing"). */
+export function countProcessing(db: Db): Promise<number> {
+  return db.order.count({ where: { status: { in: [OrderStatus.CONFIRMED, OrderStatus.PAID] } } });
+}
+
+/** Orders awaiting admin payment-proof confirmation — the true count, unlike
+ * `listPendingVerifications(db, limit)`, which is capped at its page size. */
+export function countPendingVerifications(db: Db): Promise<number> {
+  return db.order.count({ where: { status: OrderStatus.PENDING_VERIFICATION } });
+}
+
+/** Orders an admin must manually resolve (paid short of the expected total). */
+export function countUnderpaid(db: Db): Promise<number> {
+  return db.order.count({ where: { status: OrderStatus.UNDERPAID } });
+}
+
+/** PENDING_PAYMENT orders whose window has already lapsed — the count form of `listExpiredPendingOrders`. */
+export function countExpiredPending(db: Db, now: Date): Promise<number> {
+  return db.order.count({ where: { status: OrderStatus.PENDING_PAYMENT, expiresAt: { not: null, lt: now } } });
+}
+
 // ---- SLA widgets (web-admin dashboard) ------------------------------------
 
 /** Orders aging in PENDING_VERIFICATION beyond `cutoff` (oldest first). */

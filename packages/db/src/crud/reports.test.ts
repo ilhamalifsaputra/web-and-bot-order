@@ -7,6 +7,7 @@ import {
   revenueSummary,
   ordersByStatusSince,
   profitSummarySince,
+  manualMatchQueueCounts,
 } from "./reports"; // remaining new imports added in later tasks of this plan
 
 let db: TestDb;
@@ -182,5 +183,18 @@ describe("profitSummarySince", () => {
     const result = await profitSummarySince(prisma, new Date());
     expect(result.idr).toBeNull();
     expect(result.usdt).toBeNull();
+  });
+});
+
+describe("manualMatchQueueCounts", () => {
+  it("sums unmatched and delivery_failed rows across all five processed-tx tables", async () => {
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: `bn-${Math.random()}`, amount: "1", outcome: "unmatched" } });
+    await prisma.processedBybitTx.create({ data: { bybitTxId: `by-${Math.random()}`, amount: "1", outcome: "delivery_failed" } });
+    await prisma.processedTokopayTx.create({ data: { trxId: `tp-${Math.random()}`, amount: "1", outcome: "unmatched" } });
+    await prisma.processedPaydisiniTx.create({ data: { trxId: `pd-${Math.random()}`, amount: "1", outcome: "matched" } });
+    await prisma.processedNowpaymentsTx.create({ data: { trxId: `np-${Math.random()}`, amount: "1", outcome: "delivery_failed" } });
+
+    const result = await manualMatchQueueCounts(prisma);
+    expect(result).toEqual({ unmatched: 2, deliveryFailed: 2 });
   });
 });

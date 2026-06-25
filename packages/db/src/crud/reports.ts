@@ -335,6 +335,38 @@ export async function profitSummarySince(db: Db, since: Date): Promise<ProfitSum
   return { idr: shape(byCurrency.IDR), usdt: shape(byCurrency.USDT) };
 }
 
+export interface ManualMatchQueueCounts {
+  unmatched: number;
+  deliveryFailed: number;
+}
+
+/**
+ * Counts of `unmatched` / `delivery_failed` ledger rows across all five
+ * payment-method idempotency tables (Binance, Bybit, TokoPay, Paydisini,
+ * NOWPayments) — generalizes the Binance-only `processedTxOutcomeCounts()`
+ * (binance_internal.ts) for the dashboard's cross-provider "manual
+ * approvals" / "failed deliveries" counts.
+ */
+export async function manualMatchQueueCounts(db: Db): Promise<ManualMatchQueueCounts> {
+  const groups = await Promise.all([
+    db.processedBinanceTx.groupBy({ by: ["outcome"], _count: { _all: true } }),
+    db.processedBybitTx.groupBy({ by: ["outcome"], _count: { _all: true } }),
+    db.processedTokopayTx.groupBy({ by: ["outcome"], _count: { _all: true } }),
+    db.processedPaydisiniTx.groupBy({ by: ["outcome"], _count: { _all: true } }),
+    db.processedNowpaymentsTx.groupBy({ by: ["outcome"], _count: { _all: true } }),
+  ]);
+
+  let unmatched = 0;
+  let deliveryFailed = 0;
+  for (const grouped of groups) {
+    for (const g of grouped) {
+      if (g.outcome === "unmatched") unmatched += g._count._all;
+      if (g.outcome === "delivery_failed") deliveryFailed += g._count._all;
+    }
+  }
+  return { unmatched, deliveryFailed };
+}
+
 /** OrderItems whose warranty (delivered_at + snapshot days) falls in [start,end]. */
 export async function listOrderItemsExpiringWarranty(
   db: Db,

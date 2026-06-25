@@ -1,11 +1,17 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
-import { revenueByDay, revenueSummary, ordersByStatusSince } from "./reports";
+import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
+import {
+  revenueByDay,
+  revenueSummary,
+  ordersByStatusSince,
+} from "./reports"; // remaining new imports added in later tasks of this plan
 
 let db: TestDb;
 let prisma: PrismaClient;
 let userId: number;
+let parentProductId: number;
 
 beforeAll(async () => {
   db = await makeTestDb();
@@ -15,12 +21,25 @@ afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
+  await prisma.orderItem.deleteMany();
   await prisma.order.deleteMany();
+  await prisma.denomination.deleteMany();
+  await prisma.product.deleteMany();
+  await prisma.category.deleteMany();
   await prisma.user.deleteMany();
+  await prisma.processedBinanceTx.deleteMany();
+  await prisma.processedBybitTx.deleteMany();
+  await prisma.processedTokopayTx.deleteMany();
+  await prisma.processedPaydisiniTx.deleteMany();
+  await prisma.processedNowpaymentsTx.deleteMany();
+
   const user = await prisma.user.create({
     data: { telegramId: BigInt(Math.floor(Math.random() * 1e15)), referralCode: `r${Math.random()}` },
   });
   userId = user.id;
+  const category = await createCategory(prisma, `Cat-${Math.random()}`);
+  const parentProduct = await createCatalogProduct(prisma, { categoryId: category.id, name: `Prod-${Math.random()}`, description: "x" });
+  parentProductId = parentProduct.id;
 });
 
 describe("revenueByDay", () => {

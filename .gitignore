@@ -32,6 +32,7 @@ dist/
 build/
 *.tsbuildinfo
 coverage/
+apps/web-admin/static/dashboard-app/
 
 # --- Prisma generated client (regenerated via prisma generate) ---
 **/generated/

@@ -19,6 +19,7 @@ import setupGatePlugin from "./plugins/setupGate";
 import authRoutes from "./routes/auth";
 import setupRoutes from "./routes/setup";
 import dashboardRoutes from "./routes/dashboard";
+import dashboardApiRoutes from "./routes/api/dashboard";
 import stockRoutes from "./routes/stock";
 import ordersRoutes from "./routes/orders";
 import paymentsRoutes from "./routes/payments";
@@ -95,6 +96,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(authRoutes);
   await app.register(setupRoutes);
   await app.register(dashboardRoutes);
+  await app.register(dashboardApiRoutes);
   await app.register(stockRoutes);
   await app.register(ordersRoutes);
   await app.register(paymentsRoutes);

@@ -26,15 +26,12 @@ describe("apiGet", () => {
 
 describe("apiPost", () => {
   it("attaches the CSRF token read from the meta tag as an X-CSRF-Token header", async () => {
-    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
+    const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({ ok: true, json: async () => ({}) }));
     vi.stubGlobal("fetch", fetchMock);
     await apiPost("/api/dashboard/something", { foo: "bar" });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/dashboard/something",
-      expect.objectContaining({
-        credentials: "include",
-        headers: expect.objectContaining({ "X-CSRF-Token": "test-token" }),
-      }),
-    );
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(new Headers(init.headers).get("X-CSRF-Token")).toBe("test-token");
+    expect(init.credentials).toBe("include");
+    expect(JSON.parse(init.body as string)).toEqual({ foo: "bar" });
   });
 });

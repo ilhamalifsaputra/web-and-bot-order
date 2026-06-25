@@ -1,5 +1,3 @@
-/// <reference lib="dom" />
-
 /** Read fresh on every call (not cached at module-load time) — this is what
  * makes the CSRF token testable independent of when this module happens to
  * be imported relative to the meta tag existing in the DOM. */

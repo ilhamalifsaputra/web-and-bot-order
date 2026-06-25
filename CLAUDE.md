@@ -79,7 +79,15 @@ schema at `prisma/schema.prisma` (datasource `DATABASE_URL_PRISMA`). See `DOCS.m
 - Both `apps/web-admin` and `apps/storefront` are Fastify+Nunjucks+HTMX and share
   the `packages/web-ui` theme. Routes live in `<app>/src/routes/*`.
 - **CSRF**: every mutating route uses the `csrfProtect` preHandler; admin reads use
-  `currentAdmin`. New routes get the happy/auth-fail/bad-csrf test trio.
+  `currentAdmin`. New routes get the happy/auth-fail/bad-csrf test trio. `csrfCheck`
+  also accepts the token via an `X-CSRF-Token` header (alongside the existing
+  `csrf_token` form field) — the bridge the `apps/web-admin/client` React pages use.
+- **`apps/web-admin`'s dashboard (`GET /`) is a built React SPA**, not Nunjucks —
+  run `pnpm --filter @app/web-admin-client build` once after a fresh clone (and
+  again after editing anything under `apps/web-admin/client/`) before `pnpm test`
+  or `pnpm dev:web` will serve it correctly; the build output
+  (`apps/web-admin/static/dashboard-app/`) is gitignored, same as a generated
+  Prisma client — a required one-time step, not optional.
 - **Settings edits are whitelist-only** (admin) — the main "don't brick the bot"
   guardrail; never widen the whitelist without review.
 - Bind `127.0.0.1` by default; public exposure needs reverse proxy + TLS + a

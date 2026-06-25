@@ -176,6 +176,14 @@ describe("auth", () => {
     expect(res.headers.location).toBe("/login");
   });
 
+  it("serves the dashboard SPA shell with the real CSRF token baked in, not the build-time placeholder", async () => {
+    const res = await get("/", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.body).toContain(`name="csrf-token" content="${seed.csrf}"`);
+    expect(res.body).not.toContain("__CSRF_TOKEN__");
+  });
+
   it("login happy path sets a working cookie", async () => {
     await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("supersecret"));
     const res = await post("/login", null, { telegram_id: String(ADMIN_TG), password: "supersecret" });
@@ -2371,54 +2379,18 @@ describe("broadcast", () => {
 
 // ---- smoke: every GET page renders 200 for an admin -----------------------
 
-describe("dashboard", () => {
-  it("shows delivered revenue as a Rupiah amount, not a dash", async () => {
-    // Regression: the cards read rev.revenue / overall.total_revenue, but the
-    // DB layer returns revenue_idr / revenue_usdt — so every card rendered "—"
-    // even with delivered orders. Deliver one (product price 5.00) and assert
-    // the headline shows the amount.
-    const orderId = await makePendingOrder();
-    await post(`/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
-
-    const res = await get("/", seed.cookie);
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("Rp5");
-  });
-
-  it("leads with the USDT amount when a period's only delivered order was USDT, instead of a misleading Rp0 headline", async () => {
-    // Bug: the card always showed `c.rev.idr` as the big bold headline number
-    // and squeezed USDT into a tiny subtitle. A period with one real USDT
-    // sale and zero IDR sales rendered a giant "Rp0" — reading as "no sales
-    // happened" when a sale for real money actually did.
-    const user = (await getUser(prisma, seed.customerId))!;
-    const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
-    await finalizeOrderPayment(prisma, order.id, { currency: "USDT", rate: "1" });
-    await attachPaymentProof(prisma, order.id, { fileId: "proof123", txid: "TX1234567890" });
-    const approveRes = await post(`/orders/${order.id}/approve`, seed.cookie, { csrf_token: seed.csrf });
-    expect(approveRes.statusCode).toBe(303);
-    expect(approveRes.headers.location).toContain("kind=success");
-
-    const res = await get("/", seed.cookie);
-    expect(res.statusCode).toBe(200);
-    expect(res.body).not.toContain('<div class="stat-value tabular">Rp0</div>');
-    expect(res.body).toContain("USDT");
-  });
-
-  it("shows both currencies on one headline when a period has both an IDR and a USDT sale", async () => {
-    const orderId = await makePendingOrder(); // IDR, product price 5.00
-    await post(`/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
-
-    const user2 = (await getUser(prisma, seed.customerId))!;
-    const usdtOrder = (await createOrderDirect(prisma, { user: user2, productId: seed.productId, quantity: 1 }))!;
-    await finalizeOrderPayment(prisma, usdtOrder.id, { currency: "USDT", rate: "1" });
-    await attachPaymentProof(prisma, usdtOrder.id, { fileId: "proof123", txid: "TX1234567890" });
-    await post(`/orders/${usdtOrder.id}/approve`, seed.cookie, { csrf_token: seed.csrf });
-
-    const res = await get("/", seed.cookie);
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain('<div class="stat-value tabular">Rp5 + 5.00 USDT</div>');
-  });
-});
+// NOTE: the `dashboard` describe block that lived here asserted on
+// dashboard.njk's server-rendered revenue HTML at GET / ("shows delivered
+// revenue as a Rupiah amount", "leads with the USDT amount...", "shows both
+// currencies on one headline..."). Task 4 (see .superpowers/sdd/task-4-brief.md)
+// replaced that render with the React SPA shell (apps/web-admin/src/routes/spaShell.ts),
+// so GET / no longer renders revenue figures server-side at all — those three
+// regression tests were asserting on HTML that the route no longer produces by
+// design, not a regression. They were removed rather than left permanently red.
+// The revenue-shaping logic they protected (shapeRevenue's null-when-zero,
+// dual-currency headline) is unchanged and still lives in dashboard.ts pending
+// a future task that ports it into the React dashboard (per the dashboard-app
+// plan, Tasks 5-8) with its own client-side or API-level test coverage.
 
 describe("page smoke tests", () => {
   it("all nav pages render 200", async () => {

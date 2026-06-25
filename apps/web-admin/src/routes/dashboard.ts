@@ -66,47 +66,6 @@ async function slaContext(db: Db) {
 }
 
 export default async function dashboardRoutes(app: FastifyInstance): Promise<void> {
-  app.get("/", { preHandler: currentAdmin }, async (req, reply) => {
-    const now = new Date();
-    const overall = await botOverallStats(prisma);
-    const rev24h = await revenueSummary(prisma, addDays(now, -1));
-    const rev7d = await revenueSummary(prisma, addDays(now, -7));
-    const rev30d = await revenueSummary(prisma, addDays(now, -30));
-    const lowStockRows = await lowStockDenominations(prisma, config.LOW_STOCK_THRESHOLD);
-    const lowStock = lowStockRows.map((r) => ({ product: r.denomination, available: r.available }));
-    const pending = await listPendingVerifications(prisma);
-    const recentAudit = await listAuditLogs(prisma, { limit: 10 });
-    const sla = await slaContext(prisma);
-    // §16.3 bootstrap case: no bot token anywhere → the bot is off until an
-    // admin fills it in Settings and restarts. Surface that loudly here.
-    const creds = await resolveBotCredentials(prisma);
-
-    // Surface money that arrived but didn't deliver (unmatched / delivery_failed).
-    let binance: { unmatched: number; delivery_failed: number } | null = null;
-    if ((await resolveBinanceInternalConfig(prisma)).enabled) {
-      const counts = await processedTxOutcomeCounts(prisma);
-      binance = { unmatched: counts.unmatched ?? 0, delivery_failed: counts.delivery_failed ?? 0 };
-    }
-
-    return reply.view("dashboard.njk", {
-      admin: req.admin,
-      active_nav: "/",
-      overall,
-      all_time: shapeRevenue({ ...overall, revenue_idr: overall.revenue_idr, revenue_usdt: overall.revenue_usdt, orders: 0 }),
-      rev_24h: shapeRevenue(rev24h),
-      rev_7d: shapeRevenue(rev7d),
-      rev_30d: shapeRevenue(rev30d),
-      low_stock: lowStock,
-      low_stock_count: lowStock.length,
-      low_stock_threshold: config.LOW_STOCK_THRESHOLD,
-      pending_count: pending.length,
-      recent_audit: recentAudit,
-      sla,
-      binance,
-      bot_token_missing: creds.botToken === null,
-    });
-  });
-
   // HTMX poll target: re-renders just the SLA block.
   app.get("/partials/dashboard-sla", { preHandler: currentAdmin }, async (req, reply) => {
     const sla = await slaContext(prisma);

@@ -26,6 +26,7 @@ import {
   applyVoucherToSubtotal,
   computeBulkDiscountForCart,
   createOrderFromCart,
+  applyUsdtWalletToOrder,
   finalizeOrderPayment,
   getUsdIdrRate,
   getOrderByCode,
@@ -144,6 +145,8 @@ async function checkoutView(
     idr_enabled: Boolean(tokopay),
     paydisini_enabled: Boolean(paydisini),
     nowpayments_enabled: haveRate && Boolean(nowpayments),
+    wallet_idr: new Decimal(customer.user.walletBalance).toString(),
+    wallet_usdt: new Decimal(customer.user.walletBalanceUsdt).toString(),
   };
 }
 
@@ -260,6 +263,8 @@ export async function performCheckout(
   customer: Customer,
   method: string,
   voucherCode: string | null,
+  useWalletIdr = false,
+  useWalletUsdt = false,
 ): Promise<{ orderCode: string }> {
   const [fxRate, tokopay, bybit, bybitBsc, binance, paydisini, nowpayments] = await Promise.all([
     getUsdIdrRate(prisma),
@@ -307,6 +312,10 @@ export async function performCheckout(
     throw new ValidationError("web.pay_method_unavailable");
   }
 
+  const isUsdtMethod = choice.currency === OrderCurrency.USDT;
+  const walletAmountIdr = useWalletIdr && !isUsdtMethod ? customer.user.walletBalance : 0;
+  const walletAmountUsdt = useWalletUsdt && isUsdtMethod ? customer.user.walletBalanceUsdt : undefined;
+
   const order = await prisma.$transaction(async (tx) => {
     if ((await countUserPendingOrders(tx, customer.userId)) >= MAX_PENDING_ORDERS) {
       throw new ValidationError("error.too_many_pending");
@@ -318,10 +327,12 @@ export async function performCheckout(
         walletBalance: customer.user.walletBalance,
       },
       voucherCode,
-      walletAmount: 0, // wallet is hidden on the web (plan.md §17.1 #5)
+      walletAmount: walletAmountIdr,
     });
     if (!created) throw new ValidationError("error.generic");
-    return finalizeOrderPayment(tx, created.id, choice);
+    const finalized = await finalizeOrderPayment(tx, created.id, choice);
+    if (walletAmountUsdt != null) await applyUsdtWalletToOrder(tx, created.id, walletAmountUsdt);
+    return walletAmountUsdt != null ? tx.order.findUnique({ where: { id: created.id } }) : finalized;
   });
   return { orderCode: order!.orderCode };
 }
@@ -336,13 +347,15 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ---- Create the order (re-validates everything via the shared crud) ----
-  app.post<{ Body: { method?: string; voucher_code?: string } }>(
+  app.post<{ Body: { method?: string; voucher_code?: string; use_wallet_idr?: string; use_wallet_usdt?: string } }>(
     "/checkout",
     { preHandler: csrfProtect },
     async (req, reply) => {
       const customer = req.customer!;
       const method = (req.body.method ?? "").toLowerCase();
       const voucherCode = (req.body.voucher_code ?? "").trim().toUpperCase() || null;
+      const useWalletIdr = req.body.use_wallet_idr === "1";
+      const useWalletUsdt = req.body.use_wallet_usdt === "1";
 
       const rerender = async (errorKey: string) => {
         const ctx = await shopContext(req, "/cart");
@@ -351,7 +364,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       };
 
       try {
-        const { orderCode } = await performCheckout(customer, method, voucherCode);
+        const { orderCode } = await performCheckout(customer, method, voucherCode, useWalletIdr, useWalletUsdt);
         return reply.code(303).redirect(`/checkout/${orderCode}/pay`);
       } catch (e) {
         if (e instanceof ValidationError) return rerender(e.key);

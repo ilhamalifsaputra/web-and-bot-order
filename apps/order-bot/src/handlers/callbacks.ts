@@ -140,6 +140,13 @@ const dispatchRef: DomainDispatcher = async (ctx, parts) => {
 
 const dispatchWallet: DomainDispatcher = async (ctx, parts) => {
   if (parts[2] === "view") await customer.viewWallet(ctx);
+  else if (parts[2] === "idr") {
+    ctx.session.scratch.useWalletIdr = !ctx.session.scratch.useWalletIdr;
+    await checkout.showOrderConfirmation(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
+  } else if (parts[2] === "usdt") {
+    ctx.session.scratch.useWalletUsdt = !ctx.session.scratch.useWalletUsdt;
+    await checkout.showOrderConfirmation(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
+  }
 };
 
 const dispatchLang: DomainDispatcher = async (ctx, parts) => {

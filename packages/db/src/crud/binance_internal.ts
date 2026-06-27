@@ -112,17 +112,18 @@ export async function createInternalOrder(
     walletAmount?: Decimal.Value;
   },
 ) {
-  const created = await createOrderDirect(db, args);
+  const { walletAmount, rate, ...baseArgs } = args;
+  const created = await createOrderDirect(db, baseArgs);
   if (!created) return null;
   const finalized = await finalizeOrderPayment(db, created.id, {
     currency: OrderCurrency.USDT,
-    rate: args.rate,
+    rate,
     method: PaymentMethod.BINANCE_INTERNAL,
   });
   // Spend the USDT credit balance against the finalized USDT total (no-op when
   // walletAmount is unset). Re-read so callers see the updated walletUsed/total.
-  await applyUsdtWalletToOrder(db, created.id, args.walletAmount);
-  return args.walletAmount != null ? getOrder(db, created.id) : finalized;
+  await applyUsdtWalletToOrder(db, created.id, walletAmount);
+  return walletAmount != null ? getOrder(db, created.id) : finalized;
 }
 
 /** Remember which message holds the payment instructions, so the poller can edit it. */

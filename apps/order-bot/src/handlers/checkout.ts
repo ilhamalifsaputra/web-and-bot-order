@@ -29,6 +29,7 @@ import {
   createInternalOrder,
   createBybitOrder,
   createBybitBscOrder,
+  applyUsdtWalletToOrder,
   resolveBybitConfig,
   resolveBybitBscConfig,
   resolveBinanceInternalConfig,
@@ -136,6 +137,11 @@ interface ConfirmRender {
   subtotal: Decimal;
   voucherLine: string;
   voucherCode: string;
+  walletLine: string;
+  idrBalance: Decimal;
+  usdtBalance: Decimal;
+  useWalletIdr: boolean;
+  useWalletUsdt: boolean;
 }
 
 /** Compute the confirmation totals (shared by the inline path + voucher conv). */
@@ -147,8 +153,11 @@ async function computeConfirmation(
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
 
-  const product = await getDenomination(prisma, productId);
-  if (product === null) return null;
+  const [product, user] = await Promise.all([
+    getDenomination(prisma, productId),
+    getUser(prisma, info.id),
+  ]);
+  if (product === null || user === null) return null;
   const bulkRule = await getBulkPricingForDenomination(prisma, productId);
 
   const isReseller = info.role === UserRole.RESELLER;
@@ -182,7 +191,19 @@ async function computeConfirmation(
     }
   }
 
-  return { productName: product.name, unitPrice, subtotal, voucherLine, voucherCode };
+  const idrBalance = new Decimal(user.walletBalance);
+  const usdtBalance = new Decimal(user.walletBalanceUsdt);
+  const useWalletIdr = Boolean(ctx.session.scratch.useWalletIdr);
+  const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
+
+  let walletLine = "";
+  if (useWalletIdr && idrBalance.greaterThan(0)) {
+    const deduction = Decimal.min(idrBalance, subtotal);
+    walletLine = coreT("checkout.confirm_wallet_line", lang, { amount: formatIdr(deduction) });
+    subtotal = subtotal.minus(deduction);
+  }
+
+  return { productName: product.name, unitPrice, subtotal, voucherLine, voucherCode, walletLine, idrBalance, usdtBalance, useWalletIdr, useWalletUsdt };
 }
 
 export async function showOrderConfirmation(
@@ -233,6 +254,7 @@ export async function showOrderConfirmation(
       qty: quantity,
       unit_price: priceIdr(r.unitPrice, rate),
       voucher_line: r.voucherLine,
+      wallet_line: r.walletLine,
       total: priceIdr(r.subtotal, rate),
     }),
     ckb.orderConfirmKb(
@@ -246,6 +268,10 @@ export async function showOrderConfirmation(
       paydisiniEnabled,
       nowpaymentsEnabled && rate !== null,
       bybitBscEnabled && rate !== null,
+      r.idrBalance,
+      r.useWalletIdr,
+      r.usdtBalance,
+      r.useWalletUsdt,
     ),
   );
 }
@@ -273,6 +299,7 @@ export async function renderOrderConfirmation(
       qty: quantity,
       unit_price: priceIdr(r.unitPrice, rate),
       voucher_line: r.voucherLine,
+      wallet_line: r.walletLine,
       total: priceIdr(r.subtotal, rate),
     }),
     {
@@ -288,6 +315,10 @@ export async function renderOrderConfirmation(
         paydisiniEnabled,
         nowpaymentsEnabled && rate !== null,
         bybitBscEnabled && rate !== null,
+        r.idrBalance,
+        r.useWalletIdr,
+        r.usdtBalance,
+        r.useWalletUsdt,
       ),
     },
   );
@@ -324,6 +355,7 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
       qty: quantity,
       unit_price: priceIdr(r.unitPrice, rate),
       voucher_line: r.voucherLine,
+      wallet_line: r.walletLine,
       total: priceIdr(r.subtotal, rate),
     }),
     ckb.usdtMethodsKb(
@@ -366,10 +398,18 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BINANCE_INTERNAL)) return;
 
+  const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
   let order: Awaited<ReturnType<typeof createInternalOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
-      createInternalOrder(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode, rate }),
+      createInternalOrder(tx, {
+        user: { id: user.id, role: user.role },
+        productId,
+        quantity,
+        voucherCode,
+        rate,
+        walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
+      }),
     );
   } catch (e) {
     if (e instanceof ValidationError) {
@@ -382,10 +422,11 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
-  // Consume the voucher only now that an order actually exists for it — a
-  // failed attempt above (out of stock, etc.) leaves it applied for a retry
-  // (Pricing-3 fix, security audit 2026-06-23).
+  // Consume the voucher and wallet toggle now that an order actually exists —
+  // a failed attempt above (out of stock, etc.) leaves them for a retry.
   delete ctx.session.scratch.appliedVoucherCode;
+  delete ctx.session.scratch.useWalletIdr;
+  delete ctx.session.scratch.useWalletUsdt;
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -440,10 +481,18 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BYBIT)) return;
 
+  const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
   let order: Awaited<ReturnType<typeof createBybitOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
-      createBybitOrder(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode, rate }),
+      createBybitOrder(tx, {
+        user: { id: user.id, role: user.role },
+        productId,
+        quantity,
+        voucherCode,
+        rate,
+        walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
+      }),
     );
   } catch (e) {
     if (e instanceof ValidationError) {
@@ -456,10 +505,11 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
-  // Consume the voucher only now that an order actually exists for it — a
-  // failed attempt above (out of stock, etc.) leaves it applied for a retry
-  // (Pricing-3 fix, security audit 2026-06-23).
+  // Consume the voucher and wallet toggle now that an order actually exists —
+  // a failed attempt above (out of stock, etc.) leaves them for a retry.
   delete ctx.session.scratch.appliedVoucherCode;
+  delete ctx.session.scratch.useWalletIdr;
+  delete ctx.session.scratch.useWalletUsdt;
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -515,10 +565,18 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.BYBIT_BSC)) return;
 
+  const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
   let order: Awaited<ReturnType<typeof createBybitBscOrder>>;
   try {
     order = await prisma.$transaction((tx) =>
-      createBybitBscOrder(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode, rate }),
+      createBybitBscOrder(tx, {
+        user: { id: user.id, role: user.role },
+        productId,
+        quantity,
+        voucherCode,
+        rate,
+        walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
+      }),
     );
   } catch (e) {
     if (e instanceof ValidationError) {
@@ -531,10 +589,11 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
-  // Consume the voucher only now that an order actually exists for it — a
-  // failed attempt above (out of stock, etc.) leaves it applied for a retry
-  // (Pricing-3 fix, security audit 2026-06-23).
+  // Consume the voucher and wallet toggle now that an order actually exists —
+  // a failed attempt above (out of stock, etc.) leaves them for a retry.
   delete ctx.session.scratch.appliedVoucherCode;
+  delete ctx.session.scratch.useWalletIdr;
+  delete ctx.session.scratch.useWalletUsdt;
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -600,16 +659,19 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.NOWPAYMENTS)) return;
 
+  const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
     order = await prisma.$transaction(async (tx) => {
       const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode });
       if (!created) return created;
-      return finalizeOrderPayment(tx, created.id, {
+      const finalized = await finalizeOrderPayment(tx, created.id, {
         currency: OrderCurrency.USDT,
         rate,
         method: PaymentMethod.NOWPAYMENTS,
       });
+      if (useWalletUsdt) await applyUsdtWalletToOrder(tx, created.id, user.walletBalanceUsdt);
+      return useWalletUsdt ? getOrder(tx, created.id) : finalized;
     });
   } catch (e) {
     if (e instanceof ValidationError) {
@@ -622,10 +684,11 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
-  // Consume the voucher only now that an order actually exists for it — a
-  // failed attempt above (out of stock, etc.) leaves it applied for a retry
-  // (Pricing-3 fix, security audit 2026-06-23).
+  // Consume the voucher and wallet toggle now that an order actually exists —
+  // a failed attempt above (out of stock, etc.) leaves them for a retry.
   delete ctx.session.scratch.appliedVoucherCode;
+  delete ctx.session.scratch.useWalletIdr;
+  delete ctx.session.scratch.useWalletUsdt;
 
   // Create the hosted invoice + cache it. order.totalAmount is ALREADY in USDT
   // (finalizeOrderPayment's USDT branch) — pass it straight through as
@@ -709,10 +772,17 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.TOKOPAY)) return;
 
+  const useWalletIdr = Boolean(ctx.session.scratch.useWalletIdr);
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
     order = await prisma.$transaction(async (tx) => {
-      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode });
+      const created = await createOrderDirect(tx, {
+        user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
+        productId,
+        quantity,
+        voucherCode,
+        walletAmount: useWalletIdr ? user.walletBalance : undefined,
+      });
       if (!created) return created;
       return finalizeOrderPayment(tx, created.id, { currency: OrderCurrency.IDR });
     });
@@ -727,10 +797,11 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
-  // Consume the voucher only now that an order actually exists for it — a
-  // failed attempt above (out of stock, etc.) leaves it applied for a retry
-  // (Pricing-3 fix, security audit 2026-06-23).
+  // Consume the voucher and wallet toggle now that an order actually exists —
+  // a failed attempt above (out of stock, etc.) leaves them for a retry.
   delete ctx.session.scratch.appliedVoucherCode;
+  delete ctx.session.scratch.useWalletIdr;
+  delete ctx.session.scratch.useWalletUsdt;
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   let gateway;
@@ -824,10 +895,17 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   }
   if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.PAYDISINI)) return;
 
+  const useWalletIdr = Boolean(ctx.session.scratch.useWalletIdr);
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
     order = await prisma.$transaction(async (tx) => {
-      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode });
+      const created = await createOrderDirect(tx, {
+        user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
+        productId,
+        quantity,
+        voucherCode,
+        walletAmount: useWalletIdr ? user.walletBalance : undefined,
+      });
       if (!created) return created;
       return finalizeOrderPayment(tx, created.id, { currency: OrderCurrency.IDR, method: PaymentMethod.PAYDISINI });
     });
@@ -842,10 +920,11 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
-  // Consume the voucher only now that an order actually exists for it — a
-  // failed attempt above (out of stock, etc.) leaves it applied for a retry
-  // (Pricing-3 fix, security audit 2026-06-23).
+  // Consume the voucher and wallet toggle now that an order actually exists —
+  // a failed attempt above (out of stock, etc.) leaves them for a retry.
   delete ctx.session.scratch.appliedVoucherCode;
+  delete ctx.session.scratch.useWalletIdr;
+  delete ctx.session.scratch.useWalletUsdt;
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   let gateway;

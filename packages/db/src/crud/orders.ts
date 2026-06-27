@@ -271,10 +271,12 @@ export async function createOrderFromCart(
 export async function createOrderDirect(
   db: Db,
   args: {
-    user: { id: number; role: string };
+    user: { id: number; role: string; walletBalance?: Decimal.Value };
     productId: number;
     quantity: number;
     voucherCode?: string | null;
+    /** IDR credit balance to spend on this order (clamped to order total). */
+    walletAmount?: Decimal.Value;
   },
 ) {
   // args.productId is a denomination id (the sellable SKU).
@@ -359,11 +361,28 @@ export async function createOrderDirect(
   }
 
   const afterDiscount = subtotal.minus(bulkDiscount).minus(voucherDiscount);
+
+  // IDR wallet credit — mirrors createOrderFromCart's deduction logic.
+  const walletAmountReq = q4(Decimal.max(ZERO, new Decimal(args.walletAmount ?? 0)));
+  const walletUsed = q4(Decimal.min(walletAmountReq, afterDiscount));
+  if (walletUsed.greaterThan(ZERO)) {
+    const balance = new Decimal(args.user.walletBalance ?? 0);
+    if (walletUsed.greaterThan(balance)) throw new ValidationError("error.insufficient_wallet");
+  }
+
   const cents = config.USE_UNIQUE_CENTS ? computeUniqueCents(order.id) : ZERO;
   await db.order.update({
     where: { id: order.id },
-    data: { uniqueCents: cents, totalAmount: q4(afterDiscount.plus(cents)) },
+    data: { uniqueCents: cents, walletUsed, totalAmount: q4(afterDiscount.minus(walletUsed).plus(cents)) },
   });
+
+  if (walletUsed.greaterThan(ZERO)) {
+    await adjustWallet(db, args.user.id, walletUsed.negated(), {
+      currency: "IDR",
+      reason: "order_payment",
+      orderId: order.id,
+    });
+  }
 
   logger.info(
     `Created direct order ${orderCode} for user ${args.user.id}, product ${args.productId}, quantity ${args.quantity}`,

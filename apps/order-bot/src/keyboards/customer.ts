@@ -10,7 +10,7 @@ import type { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { OrderStatus, StockStatus, TicketStatus } from "@app/core/enums";
 import { t as coreT } from "@app/core/i18n";
-import { formatPrice, truncLabel } from "../util/format";
+import { formatPrice, formatIdr, truncLabel } from "../util/format";
 
 export const CB_PREFIX = "v1";
 
@@ -399,6 +399,10 @@ export function orderConfirmKb(
   paydisiniEnabled = false,
   nowpaymentsEnabled = false,
   bybitBscEnabled = false,
+  idrBalance: Decimal | null = null,
+  useWalletIdr = false,
+  usdtBalance: Decimal | null = null,
+  useWalletUsdt = false,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   if (voucherCode) {
@@ -408,6 +412,22 @@ export function orderConfirmKb(
   } else {
     rows.push([
       { text: coreT("checkout.use_voucher", lang), data: cb("voucher", "start", productId, qty) },
+    ]);
+  }
+  if (idrBalance && idrBalance.greaterThan(0)) {
+    const amt = formatIdr(idrBalance);
+    rows.push([
+      useWalletIdr
+        ? { text: coreT("checkout.wallet_idr_active_btn", lang, { amount: amt }), data: cb("wallet", "idr", productId, qty) }
+        : { text: coreT("checkout.use_wallet_idr_btn", lang, { amount: amt }), data: cb("wallet", "idr", productId, qty) },
+    ]);
+  }
+  if (usdtBalance && usdtBalance.greaterThan(0)) {
+    const amt = formatPrice(usdtBalance, "USDT", 4);
+    rows.push([
+      useWalletUsdt
+        ? { text: coreT("checkout.wallet_usdt_active_btn", lang, { amount: amt }), data: cb("wallet", "usdt", productId, qty) }
+        : { text: coreT("checkout.use_wallet_usdt_btn", lang, { amount: amt }), data: cb("wallet", "usdt", productId, qty) },
     ]);
   }
   const hasUsdt = internalEnabled || bybitEnabled || bybitBscEnabled || nowpaymentsEnabled;

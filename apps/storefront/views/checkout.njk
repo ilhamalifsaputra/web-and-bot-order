@@ -103,6 +103,30 @@
         <button type="submit" class="btn btn-soft shrink-0">{{ t('web.voucher_apply', lang) }}</button>
       </div>
     </div>
+
+    {# Wallet credits (only shown when user has a positive balance) #}
+    {% if wallet_idr and wallet_idr != "0" %}
+    <div class="card card-pad">
+      <h2 class="section-title mb-2">{{ t('web.wallet_label', lang) }}</h2>
+      <label class="flex items-center gap-3 cursor-pointer">
+        <input type="checkbox" name="use_wallet_idr" value="1" class="w-4 h-4 accent-pine">
+        <span class="text-sm">{{ t('web.wallet_use_idr', lang, { amount: wallet_idr | idr }) }}</span>
+      </label>
+      <p class="text-xs text-ink-soft mt-1.5">{{ t('web.wallet_idr_note', lang) }}</p>
+    </div>
+    {% endif %}
+    {% if wallet_usdt and wallet_usdt != "0" %}
+    <div class="card card-pad">
+      {% if not (wallet_idr and wallet_idr != "0") %}
+      <h2 class="section-title mb-2">{{ t('web.wallet_label', lang) }}</h2>
+      {% endif %}
+      <label class="flex items-center gap-3 cursor-pointer">
+        <input type="checkbox" name="use_wallet_usdt" value="1" class="w-4 h-4 accent-pine">
+        <span class="text-sm">{{ t('web.wallet_use_usdt', lang, { amount: (wallet_usdt | money) + ' USDT' }) }}</span>
+      </label>
+      <p class="text-xs text-ink-soft mt-1.5">{{ t('web.wallet_usdt_note', lang) }}</p>
+    </div>
+    {% endif %}
   </div>
 
   {# Totals #}

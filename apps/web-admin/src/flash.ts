@@ -78,10 +78,12 @@ export function renderError(
   reply: FastifyReply,
   opts: { statusCode: number; title: string; message: string },
 ): FastifyReply {
+  const safeTitle = opts.title.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const safeMsg = opts.message.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const html =
     `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">` +
-    `<title>${opts.statusCode} ${opts.title}</title></head><body>` +
-    `<h1>${opts.statusCode} — ${opts.title}</h1><p>${opts.message}</p>` +
+    `<title>${opts.statusCode} ${safeTitle}</title></head><body>` +
+    `<h1>${opts.statusCode} — ${safeTitle}</h1><p>${safeMsg}</p>` +
     `</body></html>`;
   void reply.code(opts.statusCode).header("content-type", "text/html; charset=utf-8").send(html);
   return reply;

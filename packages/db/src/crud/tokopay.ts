@@ -150,7 +150,7 @@ export async function deliverPaidTokopayOrder(
       }
       logger.info(`Auto-delivered TokoPay order ${delivered.orderCode} for transaction ${args.trxId}`);
       return { status: "delivered" as const, order: delivered, credentials };
-    });
+    }, { timeout: 15000 });
   } catch (e) {
     await db.processedTokopayTx
       .update({ where: { trxId: args.trxId }, data: { outcome: "delivery_failed" } })

@@ -151,7 +151,7 @@ export async function deliverPaidNowpaymentsOrder(
       }
       logger.info(`Auto-delivered NOWPayments order ${delivered.orderCode} for transaction ${args.trxId}`);
       return { status: "delivered" as const, order: delivered, credentials };
-    });
+    }, { timeout: 15000 });
   } catch (e) {
     await db.processedNowpaymentsTx
       .update({ where: { trxId: args.trxId }, data: { outcome: "delivery_failed" } })

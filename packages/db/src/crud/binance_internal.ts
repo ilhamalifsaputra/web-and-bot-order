@@ -210,7 +210,7 @@ export async function deliverPaidInternalOrder(
       const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: 0 });
       logger.info(`Auto-delivered internal-transfer order ${delivered.orderCode} for Binance transaction ${args.binanceTxId}`);
       return { status: "delivered" as const, order: delivered, credentials };
-    });
+    }, { timeout: 15000 });
   } catch (e) {
     await db.processedBinanceTx
       .update({ where: { binanceTxId: args.binanceTxId }, data: { outcome: "delivery_failed" } })

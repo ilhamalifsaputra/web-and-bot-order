@@ -149,7 +149,7 @@ export async function deliverPaidPaydisiniOrder(
       }
       logger.info(`Auto-delivered PayDisini order ${delivered.orderCode} for transaction ${args.trxId}`);
       return { status: "delivered" as const, order: delivered, credentials };
-    });
+    }, { timeout: 15000 });
   } catch (e) {
     await db.processedPaydisiniTx
       .update({ where: { trxId: args.trxId }, data: { outcome: "delivery_failed" } })

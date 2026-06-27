@@ -1,0 +1,42 @@
+{
+  "name": "@app/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./config": "./src/config.ts",
+    "./money": "./src/money.ts",
+    "./datetime": "./src/datetime.ts",
+    "./i18n": "./src/i18n.ts",
+    "./formatters": "./src/formatters.ts",
+    "./errors": "./src/errors.ts",
+    "./logger": "./src/logger.ts",
+    "./enums": "./src/enums.ts",
+    "./runtime": "./src/runtime.ts",
+    "./fx": "./src/fx.ts",
+    "./password": "./src/password.ts",
+    "./mailer": "./src/mailer.ts",
+    "./delivery": "./src/delivery.ts",
+    "./payments/tokopay": "./src/payments/tokopay.ts",
+    "./payments/paydisini": "./src/payments/paydisini.ts",
+    "./payments/nowpayments": "./src/payments/nowpayments.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "decimal.js": "^10.4.3",
+    "dotenv": "^16.4.5",
+    "luxon": "^3.5.0",
+    "nodemailer": "^8.0.11",
+    "pino": "^9.5.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/luxon": "^3.4.2",
+    "@types/nodemailer": "^8.0.1"
+  }
+}

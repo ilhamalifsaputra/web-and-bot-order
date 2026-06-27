@@ -1,0 +1,17 @@
+{
+  "name": "@app/outbox-dispatcher",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@app/core": "workspace:*",
+    "@app/db": "workspace:*",
+    "grammy": "^1.30.0"
+  }
+}

@@ -1,0 +1,298 @@
+/**
+ * CRUD for the Bybit Internal Transfer (UID→UID, off-chain, instant) payment
+ * method.
+ *
+ * Mirrors binance_internal.ts but simpler: internal transfers carry NO memo, so
+ * an incoming deposit is matched to a PENDING order purely by its unique total
+ * amount (USE_UNIQUE_CENTS keeps every order distinct). There is therefore no
+ * underpaid auto-path — a deposit whose amount matches no order is "unmatched"
+ * and left for manual review.
+ *
+ * Idempotency on SQLite: the `processed_bybit_tx.bybit_tx_id` UNIQUE constraint
+ * is the concurrency gate — claiming the internal-deposit txID is an atomic
+ * insert; a duplicate insert throws and is treated as "already processed", so
+ * repeated poll cycles never double-deliver.
+ */
+import { config } from "@app/core/config";
+import { OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
+import { Decimal } from "@app/core/money";
+import { logger } from "@app/core/logger";
+import type { PrismaClient, Tx } from "../client";
+import type { Db } from "./_types";
+import { isUniqueViolation } from "./_types";
+import { getOrder, createOrderDirect, approveOrder, applyUsdtWalletToOrder } from "./orders";
+import { transitionOrderStatus } from "./orderStatus";
+import { getSetting, setSetting } from "./settings";
+import { finalizeOrderPayment } from "./pricing";
+import { parseMinAmount } from "./_minAmount";
+
+// ---------------------------------------------------------------------------
+// Resolved config (web-admin Settings win; .env is the bootstrap/recovery
+// fallback, plan.md §16). Read per-request/per-poll so an edit in /settings
+// takes effect on the next cycle without a restart (like TokoPay).
+// ---------------------------------------------------------------------------
+
+export const BYBIT_UID_KEY = "bybit_uid";
+export const BYBIT_API_KEY_KEY = "bybit_api_key";
+export const BYBIT_API_SECRET_KEY = "bybit_api_secret";
+// On/off toggle (web admin). Default ON: only the literal "false" disables.
+export const BYBIT_ENABLED_KEY = "bybit_enabled";
+// Minimum-payment-amount note shown at checkout (USDT) — blank = no note.
+export const BYBIT_MIN_AMOUNT_KEY = "bybit_min_amount";
+
+export interface BybitConfig {
+  /** True only when uid + apiKey + apiSecret are all present. */
+  enabled: boolean;
+  uid: string;
+  apiKey: string;
+  apiSecret: string;
+  apiBase: string;
+  windowMinutes: number;
+  minAmount: Decimal | null;
+}
+
+/** First non-empty (trimmed) value, else "". DB value wins over the env fallback. */
+function pick(dbVal: string | null, envVal?: string): string {
+  const a = (dbVal ?? "").trim();
+  if (a) return a;
+  return (envVal ?? "").trim();
+}
+
+/**
+ * Resolve the Bybit Internal Transfer config from Settings (with .env
+ * fallback). `enabled` gates the poller, the watchdog, and the checkout
+ * option. The API base and payment window stay env-only (rarely change);
+ * only the UID and the API key/secret are web-editable.
+ */
+export async function resolveBybitConfig(db: Db): Promise<BybitConfig> {
+  const [uidSetting, key, secret, flag, minAmountSetting] = await Promise.all([
+    getSetting(db, BYBIT_UID_KEY),
+    getSetting(db, BYBIT_API_KEY_KEY),
+    getSetting(db, BYBIT_API_SECRET_KEY),
+    getSetting(db, BYBIT_ENABLED_KEY),
+    getSetting(db, BYBIT_MIN_AMOUNT_KEY),
+  ]);
+  const uid = pick(uidSetting, config.BYBIT_UID);
+  const apiKey = pick(key, config.BYBIT_API_KEY);
+  const apiSecret = pick(secret, config.BYBIT_API_SECRET);
+  return {
+    // Default ON: an unset/empty flag means enabled; only the literal "false"
+    // (trimmed, case-insensitive) disables the method without touching creds.
+    enabled: Boolean(uid && apiKey && apiSecret) && (flag ?? "").trim().toLowerCase() !== "false",
+    uid,
+    apiKey,
+    apiSecret,
+    apiBase: config.BYBIT_API_BASE,
+    windowMinutes: config.BYBIT_PAYMENT_WINDOW_MINUTES,
+    minAmount: parseMinAmount(minAmountSetting),
+  };
+}
+
+/**
+ * Create a direct order, then stamp it as a USDT/Bybit deposit payment: the
+ * central-IDR total converts once at `rate` (rounded 0.1) + unique cents, with
+ * the Bybit auto-confirm payment window. No transfer note (internal transfers
+ * carry none).
+ */
+export async function createBybitOrder(
+  db: Db,
+  args: {
+    user: { id: number; role: string };
+    productId: number;
+    quantity: number;
+    voucherCode?: string | null;
+    /** Rupiah per 1 USDT (usd_idr_rate) — required for the USDT path. */
+    rate: Decimal.Value;
+    /** Optional USDT credit balance to spend on this order (clamped to total). */
+    walletAmount?: Decimal.Value;
+  },
+) {
+  const created = await createOrderDirect(db, args);
+  if (!created) return null;
+  const finalized = await finalizeOrderPayment(db, created.id, {
+    currency: OrderCurrency.USDT,
+    rate: args.rate,
+    method: PaymentMethod.BYBIT,
+  });
+  // Spend the USDT credit balance against the finalized USDT total (no-op when
+  // walletAmount is unset). Re-read so callers see the updated walletUsed/total.
+  await applyUsdtWalletToOrder(db, created.id, args.walletAmount);
+  return args.walletAmount != null ? getOrder(db, created.id) : finalized;
+}
+
+/** PENDING, not-yet-expired Bybit orders the deposit poller should match against. */
+export function listPendingBybitOrders(db: Db, now: Date) {
+  return db.order.findMany({
+    where: {
+      status: OrderStatus.PENDING_PAYMENT,
+      paymentMethod: PaymentMethod.BYBIT,
+      expiresAt: { gt: now },
+    },
+    include: { user: true },
+  });
+}
+
+export type BybitDeliverResult =
+  | { status: "delivered"; order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }
+  | { status: "already_processed" }
+  | { status: "stale" };
+
+/**
+ * Idempotently confirm + deliver a matched Bybit deposit.
+ * Claims the on-chain txID (UNIQUE gate) then runs the normal approve/deliver
+ * path. Returns "already_processed" if the tx was seen before, "stale" if the
+ * order is no longer awaiting payment (delivered/expired elsewhere).
+ */
+export async function deliverPaidBybitOrder(
+  db: PrismaClient,
+  args: { orderId: number; bybitTxId: string; amount: Decimal.Value },
+): Promise<BybitDeliverResult> {
+  // 1. Claim the tx id. A duplicate means another cycle already handled it.
+  try {
+    await db.processedBybitTx.create({
+      data: { bybitTxId: args.bybitTxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
+    });
+  } catch (e) {
+    if (isUniqueViolation(e)) return { status: "already_processed" };
+    throw e;
+  }
+
+  // 2. Deliver. On failure, flag the ledger row so we don't silently retry
+  //    forever (e.g. paid but out of stock) and let the caller alert an admin.
+  try {
+    return await db.$transaction(async (tx: Tx) => {
+      const order = await getOrder(tx, args.orderId);
+      if (!order || order.status !== OrderStatus.PENDING_PAYMENT) {
+        return { status: "stale" as const };
+      }
+      await tx.order.update({
+        where: { id: args.orderId },
+        data: { bybitTxid: args.bybitTxId, paidAt: new Date() },
+      });
+      await transitionOrderStatus(tx, {
+        orderId: args.orderId,
+        from: OrderStatus.PENDING_PAYMENT,
+        to: OrderStatus.PENDING_VERIFICATION,
+        meta: `bybitTxId=${args.bybitTxId}`,
+      });
+      const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: 0 });
+      logger.info(`Auto-delivered Bybit order ${delivered.orderCode} for transaction ${args.bybitTxId}`);
+      return { status: "delivered" as const, order: delivered, credentials };
+    });
+  } catch (e) {
+    await db.processedBybitTx
+      .update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "delivery_failed" } })
+      .catch(() => undefined);
+    throw e;
+  }
+}
+
+/** A deposit that matched no PENDING order — record once for manual review. */
+export async function recordUnmatchedBybitTx(db: Db, args: { bybitTxId: string; amount: Decimal.Value }): Promise<boolean> {
+  try {
+    await db.processedBybitTx.create({
+      data: { bybitTxId: args.bybitTxId, amount: new Decimal(args.amount), outcome: "unmatched" },
+    });
+    return true;
+  } catch (e) {
+    if (isUniqueViolation(e)) return false;
+    throw e;
+  }
+}
+
+// ---- Poller heartbeat (written by the order-bot poller, read by the web) ----
+
+/** Single settings key holding the Bybit poller's last-cycle heartbeat as JSON. */
+export const BYBIT_POLL_HEALTH_KEY = "bybit_poll_health";
+
+export interface BybitPollHealth {
+  lastRun: string | null;
+  /** Last cycle that completed WITHOUT error (0 new deposits still counts). */
+  lastSuccessAt: string | null;
+  lastTxCount: number | null;
+  backoffUntil: string | null;
+  /** Current consecutive rate-limit hit streak (0 when healthy). */
+  consecutiveRateLimitHits: number | null;
+  /** Sticky — last time a rate-limit hit occurred, even after recovery. */
+  lastRateLimitAt: string | null;
+  /** Consecutive non-rate-limit failures (network/HTTP errors); 0 when
+   * healthy. Tracked separately from rate limits, which already have their
+   * own backoff/counter above — `lastRun` alone can't surface this, since it
+   * advances on every cycle whether that cycle succeeded or failed. */
+  consecutiveFailures: number | null;
+  /** Sticky — last error message seen (any failure type), for diagnostics. */
+  lastError: string | null;
+}
+
+const EMPTY_BYBIT_HEALTH: BybitPollHealth = {
+  lastRun: null,
+  lastSuccessAt: null,
+  lastTxCount: null,
+  backoffUntil: null,
+  consecutiveRateLimitHits: null,
+  lastRateLimitAt: null,
+  consecutiveFailures: null,
+  lastError: null,
+};
+
+/** Read the Bybit poller heartbeat; all-null when it has never run. */
+export async function getBybitPollHealth(db: Db): Promise<BybitPollHealth> {
+  const raw = await getSetting(db, BYBIT_POLL_HEALTH_KEY);
+  if (!raw) return EMPTY_BYBIT_HEALTH;
+  try {
+    const p = JSON.parse(raw) as Partial<BybitPollHealth>;
+    return {
+      lastRun: p.lastRun ?? null,
+      lastSuccessAt: p.lastSuccessAt ?? null,
+      lastTxCount: typeof p.lastTxCount === "number" ? p.lastTxCount : null,
+      backoffUntil: p.backoffUntil ?? null,
+      consecutiveRateLimitHits: typeof p.consecutiveRateLimitHits === "number" ? p.consecutiveRateLimitHits : null,
+      lastRateLimitAt: p.lastRateLimitAt ?? null,
+      consecutiveFailures: typeof p.consecutiveFailures === "number" ? p.consecutiveFailures : null,
+      lastError: p.lastError ?? null,
+    };
+  } catch {
+    return EMPTY_BYBIT_HEALTH;
+  }
+}
+
+/** Record one Bybit poll cycle's heartbeat. Called by the poller each tick.
+ * `lastRateLimitAt`/`lastError` are sticky (carried forward from the prior
+ * heartbeat) so a rare hit stays visible after the poller recovers.
+ * `consecutiveFailures` counts non-rate-limit failures only — a rate-limit
+ * hit neither increments nor resets it, since that streak already has its own
+ * dedicated counter/backoff above. */
+export async function recordBybitPollHealth(
+  db: Db,
+  args: {
+    lastTxCount: number;
+    backoffUntil?: number | null;
+    consecutiveRateLimitHits?: number;
+    rateLimited?: boolean;
+    success: boolean;
+    error?: string | null;
+  },
+): Promise<void> {
+  const prev = await getBybitPollHealth(db);
+  const lastRateLimitAt = args.rateLimited ? new Date().toISOString() : prev.lastRateLimitAt;
+  const consecutiveFailures = args.success
+    ? 0
+    : args.rateLimited
+      ? prev.consecutiveFailures ?? 0
+      : (prev.consecutiveFailures ?? 0) + 1;
+  const nowIso = new Date().toISOString();
+  await setSetting(
+    db,
+    BYBIT_POLL_HEALTH_KEY,
+    JSON.stringify({
+      lastRun: nowIso,
+      lastSuccessAt: args.success ? nowIso : prev.lastSuccessAt,
+      lastTxCount: args.lastTxCount,
+      backoffUntil: args.backoffUntil ? new Date(args.backoffUntil).toISOString() : null,
+      consecutiveRateLimitHits: args.consecutiveRateLimitHits ?? 0,
+      lastRateLimitAt,
+      consecutiveFailures,
+      lastError: args.success ? prev.lastError : (args.error ?? prev.lastError) ?? null,
+    } satisfies BybitPollHealth),
+  );
+}

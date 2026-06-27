@@ -1,0 +1,38 @@
+{
+  "name": "project-bot-order",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "prisma:pull": "prisma db pull",
+    "prisma:generate": "prisma generate",
+    "build": "pnpm -r build",
+    "build:bundle": "tsx scripts/build-bundle.ts",
+    "reset-admin-password": "tsx scripts/reset-admin-password.ts",
+    "migrate-catalog-rename": "tsx scripts/migrate-catalog-rename.ts",
+    "backfill-catalog-slugs": "tsx scripts/backfill-catalog-slugs.ts",
+    "bybit-probe": "tsx scripts/bybit-internal-probe.ts",
+    "start": "tsx apps/server/src/index.ts",
+    "typecheck": "pnpm -r typecheck && tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "dev:web": "pnpm --filter @app/web-admin dev",
+    "dev:store": "pnpm --filter @app/storefront dev",
+    "dev:bot": "pnpm --filter @app/order-bot dev"
+  },
+  "devDependencies": {
+    "@app/core": "workspace:*",
+    "@app/db": "workspace:*",
+    "@types/node": "^22.9.0",
+    "esbuild": "^0.24.0",
+    "prisma": "^5.22.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0"
+  }
+}

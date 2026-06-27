@@ -1,0 +1,24 @@
+{
+  "name": "@app/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./index": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@app/core": "workspace:*",
+    "@app/db": "workspace:*",
+    "@app/order-bot": "workspace:*",
+    "@app/outbox-dispatcher": "workspace:*",
+    "@app/storefront": "workspace:*",
+    "@app/web-admin": "workspace:*",
+    "@grammyjs/runner": "^2.0.3",
+    "grammy": "^1.30.0"
+  }
+}

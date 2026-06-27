@@ -1,0 +1,67 @@
+# Compose for the Node stack. ONE image, ONE SQLite file (./data/bot.db, WAL mode)
+# via the mounted ./data volume.
+#
+# ONE combined process. `pnpm start` (apps/server) is the composition root: it
+# boots the web-admin, the storefront, the order-bot (polling/webhook), AND the
+# in-process workers — the outbox dispatcher (@app/outbox-dispatcher, which drains
+# notification_outbox → Telegram) and the payment-reconcile pollers. A single
+# process is the safe topology for the shared single-writer SQLite DB (one
+# PrismaClient, WAL) and guarantees each worker runs exactly once.
+#
+# This replaces the previous split per-app services (order-bot / web-admin /
+# storefront / notifier). Outbox delivery only happens inside this combined
+# process, so the standalone notifier service is gone.
+#
+#   docker compose up -d            # bring the whole stack up
+#   docker compose logs -f server   # tail logs
+#
+# IMPORTANT (migrate.md §14.12): never run the Python order-bot and the Node
+# order-bot against the same DB simultaneously — two order-flow writers corrupt
+# state.
+#
+# MULTI-INSTANCE: container names are NOT hardcoded — Compose derives them from
+# COMPOSE_PROJECT_NAME (set per .env), so two independent shops can run on one
+# host from two repo directories (e.g. /opt/trustance + /opt/trustoriax) with
+# their own .env, ./data DB, ports, and bot tokens. Published ports bind to
+# 127.0.0.1 only; nginx is the sole public surface (deploy/README.md).
+
+services:
+  server:
+    build:
+      context: .
+    image: bot-order-node:latest
+    restart: unless-stopped
+    command: ["pnpm", "start"]
+    # required: false — credentials (bot token, Binance/Bybit UID+keys) live in
+    # web-admin Settings now, not `.env`, so a missing `.env` file must not
+    # block `docker compose up`. Needs Docker Compose v2.24+ (Jan 2024).
+    env_file:
+      - path: .env
+        required: false
+    # Bind 0.0.0.0 inside the container (config default is 127.0.0.1) so the
+    # published ports reach the app.
+    environment:
+      WEB_HOST: "0.0.0.0"
+    volumes:
+      - ./data:/app/data
+    # Publish to the host loopback ONLY — nginx terminates TLS and proxies in.
+    # Admin always listens on WEB_PORT; the storefront listens on STOREFRONT_PORT
+    # (unless SHOP_PUBLIC_URL routes both through WEB_PORT by Host header).
+    ports:
+      - "127.0.0.1:${WEB_PORT:-8000}:${WEB_PORT:-8000}"
+      - "127.0.0.1:${STOREFRONT_PORT:-8100}:${STOREFRONT_PORT:-8100}"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:'+(process.env.WEB_PORT||8000)+'/login').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

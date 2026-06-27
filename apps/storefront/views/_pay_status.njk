@@ -1,0 +1,22 @@
+{# Polled payment-status fragment (swapped into #pay-status every ~5s). When
+   the order flips to DELIVERED the route adds HX-Redirect, so this fragment is
+   mostly informational while the buyer waits. #}
+{% if state == "waiting" %}
+<div class="chip bg-amberx-tint text-amberx">
+  <i data-lucide="clock" class="w-3.5 h-3.5"></i> {{ t('web.status_waiting', lang) }}
+</div>
+{% elif state == "confirming" %}
+<div class="chip bg-pine-tint text-pine-dark">
+  <i data-lucide="loader" class="w-3.5 h-3.5 animate-spin"></i> {{ t('web.status_confirming', lang) }}
+</div>
+{% elif state == "delivered" %}
+<div class="chip bg-grass-tint text-grass-dark">
+  <i data-lucide="badge-check" class="w-3.5 h-3.5"></i> {{ t('web.status_paid', lang) }}
+</div>
+{% elif state == "expired" %}
+<div class="chip bg-rust-tint text-rust-dark">
+  <i data-lucide="timer-off" class="w-3.5 h-3.5"></i> {{ t('web.status_expired', lang) }}
+</div>
+{% else %}
+<div class="chip bg-sand text-ink-soft">{{ t('web.status_closed', lang) }}</div>
+{% endif %}

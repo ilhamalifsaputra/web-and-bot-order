@@ -1,0 +1,39 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+
+{% block title %}{{ t('web.forgot_title', lang) }} — {{ shop_name }}{% endblock %}
+
+{% block nav %}{% endblock %}
+{% block footer %}{% endblock %}
+
+{% block content %}
+<div class="min-h-[100svh] flex items-center justify-center -my-8">
+  <div class="w-full max-w-md card card-pad">
+    <a href="/" class="text-center block">
+      <i data-lucide="key-round" class="w-8 h-8 text-pine mx-auto"></i>
+      <h1 class="font-display text-xl font-semibold mt-3">{{ t('web.forgot_title', lang) }}</h1>
+      <p class="text-sm text-ink-soft mt-2">{{ t('web.forgot_hint', lang) }}</p>
+    </a>
+
+    {% if error %}
+    <div class="mt-6">{{ ui.flash(error, 'error') }}</div>
+    {% elif unavailable %}
+    <div class="mt-6">{{ ui.flash(t('web.forgot_unavailable', lang), 'error') }}</div>
+    {% elif sent %}
+    <div class="mt-6">{{ ui.flash(t('web.forgot_sent', lang), 'info') }}</div>
+    {% else %}
+    <form method="post" action="/forgot" class="mt-6 space-y-4">
+      <div>
+        <label class="text-sm font-semibold" for="email">{{ t('web.register_email', lang) }}</label>
+        <input class="field mt-1" type="email" id="email" name="email" autocomplete="email" required>
+      </div>
+      <button type="submit" class="btn btn-primary w-full">{{ t('web.forgot_submit', lang) }}</button>
+    </form>
+    {% endif %}
+
+    <div class="text-center text-sm mt-6">
+      <a href="/login" class="text-pine hover:underline">{{ t('web.register_have_account', lang) }}</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

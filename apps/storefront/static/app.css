@@ -1,0 +1,122 @@
+/* Clean Modern — plain-CSS layer for the storefront. Mirrors the web-admin
+   app.css so both webs feel like one product; storefront-only bits at the end. */
+
+:root {
+  --paper:      #f6f8fb;
+  --card:       #ffffff;
+  --sand:       #eef1f6;
+  --line:       #e3e8ef;
+  --ink:        #1b2330;
+  --ink-soft:   #5a6473;
+  --ink-faint:  #97a1b1;
+  --pine:       #2563eb;
+  --pine-dark:  #1d4ed8;
+  --pine-tint:  #e6effe;
+  --grass:      #16a34a;
+  --grass-dark: #15803d;
+  --grass-tint: #e7f6ec;
+  --amberx:     #b45c0a;
+  --amberx-tint:#fdedcf;
+  --rust:       #dc2626;
+  --rust-dark:  #b91c1c;
+  --rust-tint:  #fde7e7;
+  --accent:     #2563eb;
+  --pine-rgb:   37 99 235;
+  --r-xs:       .25rem;
+  --r-sm:       .5rem;
+  --r-md:       .75rem;
+  --r-lg:       1rem;
+  --r-pill:     9999px;
+}
+
+/* A barely-there cool wash for depth, not decoration. */
+body {
+  background-image:
+    radial-gradient(48rem 32rem at 100% -8%, rgb(var(--pine-rgb) / .05), transparent 60%);
+  background-attachment: fixed;
+}
+
+/* Slim, cool scrollbar. */
+* { scrollbar-width: thin; scrollbar-color: #c5cbd6 transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+  background: #c5cbd6;
+  border-radius: 999px;
+  border: 3px solid var(--paper);
+}
+*::-webkit-scrollbar-thumb:hover { background: #aab2c2; }
+
+/* Selection + focus polish. */
+::selection { background: rgb(var(--pine-rgb) / .16); }
+:focus-visible { outline: 2px solid rgb(var(--pine-rgb) / .4); outline-offset: 2px; }
+
+/* Native controls pick up the brand accent. */
+input, select, textarea, button { accent-color: var(--accent); }
+
+/* Numeric tabular alignment for money/counts. */
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* Quiet entrance: main content fades + lifts on load. Respects reduced motion. */
+@media (prefers-reduced-motion: no-preference) {
+  main { animation: rise .5s cubic-bezier(.22, 1, .36, 1) both; }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+}
+
+/* ---- Component classes (authoritative CSS — overrides @layer components from CDN) ---- */
+
+body { font-family: 'Manrope', system-ui, sans-serif; background-color: var(--paper); color: var(--ink); -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+h1, h2, h3 { font-family: 'Outfit', system-ui, sans-serif; }
+
+.card     { background: var(--card); border-radius: var(--r-lg); border: 1px solid var(--line); box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px -14px rgba(16,24,40,.12); }
+.card-pad { padding: 1.25rem; }
+@media (min-width: 640px) { .card-pad { padding: 1.5rem; } }
+
+.page-title    { font-family: 'Outfit', system-ui, sans-serif; font-size: 1.875rem; font-weight: 600; letter-spacing: -0.025em; color: var(--ink); display: flex; align-items: center; gap: 0.625rem; }
+.page-lead     { font-size: 0.875rem; color: var(--ink-soft); margin-top: 0.25rem; }
+.section-title { font-family: 'Outfit', system-ui, sans-serif; font-size: 1.125rem; font-weight: 600; color: var(--ink); }
+
+.btn         { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; border-radius: var(--r-md); padding: 0.5rem 1rem; font-size: 0.875rem; font-weight: 600; transition: background-color .15s, color .15s; cursor: pointer; border: none; text-decoration: none; line-height: 1.25; }
+.btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgb(var(--pine-rgb) / .35); }
+.btn-primary { background: var(--pine); color: #fff; box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px -14px rgba(16,24,40,.12); }
+.btn-primary:hover { background: var(--pine-dark); }
+.btn-soft    { background: var(--pine-tint); color: var(--pine-dark); }
+.btn-soft:hover { background: rgba(37,99,235,.15); }
+.btn-ghost   { color: var(--ink-soft); background: transparent; }
+.btn-ghost:hover { background: var(--sand); color: var(--ink); }
+.btn-danger  { background: var(--rust); color: #fff; }
+.btn-danger:hover { background: var(--rust-dark); }
+.btn-sm      { padding: .375rem .75rem; font-size: .75rem; border-radius: var(--r-sm); }
+
+.field-label { display: block; font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); margin-bottom: .375rem; }
+.field       { display: block; width: 100%; border-radius: var(--r-md); border: 1px solid var(--line); background: var(--card); padding: .5rem .75rem; font-size: .875rem; color: var(--ink); transition: border-color .15s, box-shadow .15s; outline: none; font-family: inherit; box-sizing: border-box; }
+.field::placeholder { color: var(--ink-faint); }
+.field:focus { border-color: var(--pine); box-shadow: 0 0 0 3px rgb(var(--pine-rgb) / .2); outline: none; }
+select.field { -webkit-appearance: auto; appearance: auto; }
+input[type="file"].field { -webkit-appearance: auto; appearance: auto; padding: .25rem .5rem; }
+textarea.field { resize: vertical; }
+
+.stat-label { font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); }
+.stat-value { font-family: 'Outfit', system-ui, sans-serif; font-size: 1.875rem; font-weight: 600; color: var(--ink); margin-top: .5rem; line-height: 1; }
+.stat-sub   { font-size: .75rem; color: var(--ink-soft); margin-top: .5rem; }
+
+.data-table          { min-width: 100%; font-size: .875rem; border-collapse: collapse; }
+.data-table thead th { padding: .75rem 1rem; text-align: left; font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); background: rgba(238,241,246,.5); }
+.data-table tbody td { padding: .75rem 1rem; vertical-align: middle; }
+.data-table tbody tr { border-top: 1px solid var(--line); }
+.data-table tbody tr:hover { background: rgba(238,241,246,.3); }
+
+.link    { color: var(--pine); font-weight: 600; text-decoration: none; text-underline-offset: .125rem; }
+.link:hover { color: var(--pine-dark); text-decoration: underline; }
+.codeish { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .75rem; background: rgba(238,241,246,.6); border-radius: var(--r-xs); padding: .125rem .375rem; color: var(--ink); }
+.chip    { display: inline-flex; align-items: center; gap: .25rem; border-radius: var(--r-pill); padding: .125rem .625rem; font-size: .75rem; font-weight: 600; }
+
+/* Storefront: clamp product names to two tidy lines on cards. */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

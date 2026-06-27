@@ -1,0 +1,42 @@
+name: CI
+
+# Gate regresi: typecheck + test pada setiap PR dan push ke master.
+# Dinonaktifkan sementara — akun GitHub Actions terkunci karena masalah billing
+# (semua run gagal instan dengan "account is locked due to a billing issue").
+# Pulihkan trigger pull_request/push di bawah setelah billing diselesaikan.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prisma generate
+        run: pnpm exec prisma generate
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: Test
+        run: npx vitest run

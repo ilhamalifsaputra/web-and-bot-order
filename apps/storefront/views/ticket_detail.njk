@@ -1,0 +1,48 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+
+{% block title %}{{ t('web.ticket', lang) }} #{{ ticket.id }} — {{ shop_name }}{% endblock %}
+
+{% block content %}
+<div class="mb-6 flex items-center justify-between gap-3 flex-wrap">
+  <div>
+    <div class="text-xs text-ink-faint mb-1">
+      <a href="/account/support" class="hover:text-pine">{{ t('web.account_support', lang) }}</a>
+      <span class="mx-1">/</span> #{{ ticket.id }}
+    </div>
+    <h1 class="page-title !text-2xl">{{ t('web.ticket', lang) }} #{{ ticket.id }}</h1>
+  </div>
+  {{ ui.status_badge(ticket.status) }}
+</div>
+
+<div class="space-y-3 max-w-2xl">
+  <div class="card card-pad">
+    <div class="text-xs text-ink-faint mb-1">{{ ticket.created_at | localdt }}</div>
+    <p class="text-sm whitespace-pre-line">{{ ticket.message }}</p>
+  </div>
+  {% if ticket.admin_reply %}
+  <div class="card card-pad bg-pine-tint/40 ml-6">
+    <div class="text-xs text-pine-dark font-semibold mb-1">{{ t('web.account_support', lang) }}</div>
+    <p class="text-sm whitespace-pre-line">{{ ticket.admin_reply }}</p>
+  </div>
+  {% endif %}
+  {% for m in messages %}
+  <div class="card card-pad {% if not m.from_user %}bg-pine-tint/40 ml-6{% else %}mr-6{% endif %}">
+    <div class="text-xs text-ink-faint mb-1">{{ m.created_at | localdt }}</div>
+    <p class="text-sm whitespace-pre-line">{{ m.content }}</p>
+  </div>
+  {% endfor %}
+</div>
+
+{% if not ticket.closed %}
+<form method="post" action="/account/support/{{ ticket.id }}/reply" class="card card-pad mt-5 max-w-2xl">
+  {{ ui.csrf_field(customer) }}
+  <textarea name="message" rows="2" required class="field" placeholder="{{ t('web.support_placeholder', lang) }}"></textarea>
+  <div class="mt-3 text-right">
+    <button type="submit" class="btn btn-primary btn-sm">
+      <i data-lucide="send" class="w-3.5 h-3.5"></i> {{ t('web.support_reply', lang) }}
+    </button>
+  </div>
+</form>
+{% endif %}
+{% endblock %}

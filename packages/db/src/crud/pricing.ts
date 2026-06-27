@@ -1,0 +1,233 @@
+/**
+ * Central-IDR price model (plan.md §15): Product.price holds Rupiah — the one
+ * source of truth — and the USDT figure is DERIVED from the admin-set
+ * `usd_idr_rate` setting, rounded to the nearest 0.1. The transaction currency
+ * is chosen at PAY time (USDT → Binance, IDR → TokoPay) and snapshotted on the
+ * order together with the fx rate, so later rate edits never rewrite history.
+ */
+import { config } from "@app/core/config";
+import { fetchUsdIdrMarketRate, roundRateToStep } from "@app/core/fx";
+import { OrderCurrency, PaymentMethod, OrderStatus } from "@app/core/enums";
+import {
+  usdtFromIdr,
+  quantizeMoney,
+  computeUniqueCents,
+  generatePaymentRef,
+} from "@app/core/formatters";
+import { Decimal } from "@app/core/money";
+import { addMinutes } from "@app/core/datetime";
+import { ValidationError } from "@app/core/errors";
+import { logger } from "@app/core/logger";
+import type { Db } from "./_types";
+import { getSetting, setSetting } from "./settings";
+import { getOrder } from "./orders";
+
+/** Settings key: Rupiah per 1 USDT (e.g. "16000"), set in web-admin. */
+export const USD_IDR_RATE_KEY = "usd_idr_rate";
+/** "false" turns the market auto-update off (unset/anything else = ON). */
+export const USD_IDR_RATE_AUTO_KEY = "usd_idr_rate_auto";
+/** Rounding step in Rupiah applied to the fetched market rate. */
+export const USD_IDR_RATE_ROUNDING_KEY = "usd_idr_rate_rounding";
+export const DEFAULT_RATE_ROUNDING = "100";
+
+// Swappable market-rate fetcher so tests never hit the network.
+let fxFetcher: () => Promise<Decimal> = () => fetchUsdIdrMarketRate();
+/** Test hook: stub the market-rate fetch. */
+export function setFxRateFetcher(fn: () => Promise<Decimal>): void {
+  fxFetcher = fn;
+}
+
+export type FxRefreshResult =
+  | { status: "updated"; rate: Decimal; market: Decimal; previous: Decimal | null }
+  | { status: "unchanged"; rate: Decimal; market: Decimal }
+  | { status: "disabled" };
+
+/**
+ * Pull the live USD→IDR market rate, round it to the configured step (default
+ * Rp100), and save it as `usd_idr_rate`. The user-facing rule (plan.md §15.8
+ * resolved): the rate FOLLOWS the real market, with rounding on top. Auto is
+ * ON unless `usd_idr_rate_auto` is "false"; `force` (the admin's "update now"
+ * button) bypasses that switch. Fetch failures throw — callers log/flash and
+ * the previously saved rate stays in effect (orders snapshot their own fxRate).
+ */
+export async function refreshUsdIdrRate(db: Db, opts: { force?: boolean } = {}): Promise<FxRefreshResult> {
+  if (!opts.force) {
+    const auto = await getSetting(db, USD_IDR_RATE_AUTO_KEY);
+    if (auto === "false") return { status: "disabled" };
+  }
+  const step = (await getSetting(db, USD_IDR_RATE_ROUNDING_KEY)) ?? DEFAULT_RATE_ROUNDING;
+  const market = await fxFetcher();
+  const rate = roundRateToStep(market, step);
+  if (!rate.isFinite() || rate.lessThanOrEqualTo(0)) {
+    throw new ValidationError("error.generic");
+  }
+  const previousRaw = await getSetting(db, USD_IDR_RATE_KEY);
+  const previous = previousRaw ? new Decimal(previousRaw) : null;
+  if (previous && rate.equals(previous)) return { status: "unchanged", rate, market };
+  await setSetting(db, USD_IDR_RATE_KEY, rate.toString());
+  logger.info(
+    `USD/IDR rate ${previous ? `updated from ${previous.toString()} to` : "set to"} ${rate.toString()} ` +
+      `(market rate ${market.toString()}, rounded to the nearest ${step})`,
+  );
+  return { status: "updated", rate, market, previous };
+}
+
+/**
+ * Current Rupiah-per-USDT rate: the `usd_idr_rate` setting wins, the
+ * USDT_IDR_RATE env is the bootstrap fallback. Null (= unset/invalid) hides
+ * the USDT info everywhere and disables the Binance/USDT payment path; the
+ * IDR/TokoPay path keeps working (design.md §8b).
+ */
+export async function getUsdIdrRate(db: Db): Promise<Decimal | null> {
+  const raw = (await getSetting(db, USD_IDR_RATE_KEY)) ?? config.USDT_IDR_RATE;
+  if (raw == null || raw === "") return null;
+  try {
+    const rate = new Decimal(raw);
+    return rate.isFinite() && rate.greaterThan(0) ? rate : null;
+  } catch {
+    return null;
+  }
+}
+
+export type PaymentChoice =
+  | {
+      currency: typeof OrderCurrency.IDR;
+      /** TOKOPAY (default jika tidak diisi — caller existing TIDAK pass ini,
+       *  jadi perilaku TokoPay byte-identik) atau PAYDISINI. */
+      method?: typeof PaymentMethod.TOKOPAY | typeof PaymentMethod.PAYDISINI;
+    }
+  /** Pay in USDT via Binance — charged the derived, rounded USDT total. */
+  | {
+      currency: typeof OrderCurrency.USDT;
+      rate: Decimal.Value;
+      /**
+       * BINANCE_INTERNAL (auto-confirm via note, default), BYBIT (auto-confirm
+       * via Bybit Internal Transfer UID, matched by unique amount), BYBIT_BSC
+       * (auto-confirm via on-chain BSC deposit, also matched by unique
+       * amount), BINANCE_PAY (manual proof, bot only), or NOWPAYMENTS
+       * (auto-confirm via hosted invoice IPN webhook).
+       */
+      method?:
+        | typeof PaymentMethod.BINANCE_INTERNAL
+        | typeof PaymentMethod.BYBIT
+        | typeof PaymentMethod.BYBIT_BSC
+        | typeof PaymentMethod.BINANCE_PAY
+        | typeof PaymentMethod.NOWPAYMENTS;
+    };
+
+/**
+ * Stamp a freshly created PENDING order with the buyer's payment choice
+ * (plan.md §15.4). Orders are created with central-IDR totals; this converts
+ * the TOTAL once (never per item — §15.7 #1):
+ *  - IDR  → whole-Rupiah total, unique cents stripped (QRIS confirms by
+ *           callback, not by amount matching), method TOKOPAY.
+ *  - USDT → totalAmount = round(idr/rate, 0.1) + unique cents (kept: the
+ *           Binance poller's amount fallback needs distinct totals), fxRate
+ *           snapshot, a unique paymentRef + the short internal payment window
+ *           for the auto-confirm path.
+ * Run inside the same $transaction as the order creation.
+ */
+export async function finalizeOrderPayment(db: Db, orderId: number, choice: PaymentChoice) {
+  const order = await db.order.findUnique({ where: { id: orderId } });
+  if (!order) throw new ValidationError("error.order_not_found");
+  if (order.status !== OrderStatus.PENDING_PAYMENT) {
+    throw new ValidationError("error.order_not_pending");
+  }
+
+  // The central-IDR amount before any unique-cents noise.
+  const baseIdr = new Decimal(order.totalAmount).minus(order.uniqueCents);
+
+  if (choice.currency === OrderCurrency.IDR) {
+    await db.order.update({
+      where: { id: orderId },
+      data: {
+        currency: OrderCurrency.IDR,
+        fxRate: null,
+        paymentMethod: choice.method ?? PaymentMethod.TOKOPAY,
+        uniqueCents: new Decimal(0),
+        totalAmount: quantizeMoney(baseIdr, 0),
+      },
+    });
+    return getOrder(db, orderId);
+  }
+
+  const rate = new Decimal(choice.rate);
+  if (!rate.isFinite() || rate.lessThanOrEqualTo(0)) {
+    throw new ValidationError("error.generic");
+  }
+  const method = choice.method ?? PaymentMethod.BINANCE_INTERNAL;
+  const usdt = usdtFromIdr(baseIdr, rate);
+  let cents = config.USE_UNIQUE_CENTS ? computeUniqueCents(order.id) : new Decimal(0);
+  let totalAmount = usdt.plus(cents);
+
+  // Auto-confirm paths get a bounded payment window. Binance Internal also gets
+  // a unique transfer note (paymentRef); neither Bybit rail (Internal
+  // Transfer or on-chain BSC) has a memo, so both rely on the unique-cents
+  // amount alone for matching — no paymentRef.
+  let paymentRef: string | null = null;
+  let expiresAt: Date | null = null;
+  if (method === PaymentMethod.BINANCE_INTERNAL) {
+    paymentRef = generatePaymentRef();
+    for (let i = 0; i < 5; i++) {
+      const clash = await db.order.findUnique({ where: { paymentRef } });
+      if (!clash) break;
+      paymentRef = generatePaymentRef();
+    }
+    expiresAt = addMinutes(new Date(), config.INTERNAL_PAYMENT_WINDOW_MINUTES);
+  } else if (method === PaymentMethod.BYBIT || method === PaymentMethod.BYBIT_BSC) {
+    expiresAt = addMinutes(
+      new Date(),
+      method === PaymentMethod.BYBIT ? config.BYBIT_PAYMENT_WINDOW_MINUTES : config.BYBIT_BSC_PAYMENT_WINDOW_MINUTES,
+    );
+    // Neither Bybit rail has a memo (Internal Transfer or on-chain BEP20) —
+    // amount is the ONLY disambiguator. The 49-bucket space in
+    // computeUniqueCents can still collide for two orders with the same base
+    // USDT amount whose ids land in the same bucket. Guarantee uniqueness
+    // among the SAME pool the matcher itself reads (listPendingBybitOrders /
+    // listPendingBybitBscOrders: PENDING_PAYMENT, this method, not-yet-
+    // expired) instead of just statistically reducing the odds (Checkout-4
+    // fix, security audit 2026-06-23). `paymentMethod: method` scopes this to
+    // the order's own method, so BYBIT and BYBIT_BSC orders never collide
+    // with each other's pool — each is matched against its own independent
+    // poller. Bumping the seed by +1 each retry cycles through all 49 buckets
+    // before repeating.
+    if (config.USE_UNIQUE_CENTS) {
+      for (let attempt = 1; attempt <= 49; attempt++) {
+        const clash = await db.order.findFirst({
+          where: {
+            id: { not: orderId },
+            paymentMethod: method,
+            status: OrderStatus.PENDING_PAYMENT,
+            expiresAt: { gt: new Date() },
+            totalAmount,
+          },
+        });
+        if (!clash) break;
+        cents = computeUniqueCents(order.id + attempt);
+        totalAmount = usdt.plus(cents);
+      }
+    }
+  } else if (method === PaymentMethod.NOWPAYMENTS) {
+    expiresAt = addMinutes(new Date(), config.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES);
+    // tidak ada paymentRef di sini — NOWPayments invoice id dibuat & dicache di
+    // order.paymentRef oleh caller storefront/bot setelah finalizeOrderPayment,
+    // sama seperti TokoPay/PayDisini melakukannya untuk paymentRef JSON cache.
+  }
+
+  await db.order.update({
+    where: { id: orderId },
+    data: {
+      currency: OrderCurrency.USDT,
+      fxRate: rate,
+      paymentMethod: method,
+      uniqueCents: cents,
+      totalAmount,
+      ...(paymentRef ? { paymentRef } : {}),
+      ...(expiresAt ? { expiresAt } : {}),
+    },
+  });
+  logger.info(
+    `Order ${order.orderCode} finalized as USDT (${usdt.toString()} @ ${rate.toString()}, via ${method})`,
+  );
+  return getOrder(db, orderId);
+}

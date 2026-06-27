@@ -1,0 +1,3 @@
+- [Shopping flow landmarks](shopping-flow-landmarks.md) — file:fn map for catalog→cart→checkout handlers, keyboards, smartEdit, locales
+- [Recurring UX anti-patterns](ux-antipatterns.md) — the 10 H/M/L flow issues (all fixed 2026-05-31); formatIdr vs formatPrice note
+- [Persistent keyboard i18n](persistent-keyboard-i18n.md) — language-aware build+match for reply-keyboard labels (matchPersistentLabel, supportLabels)

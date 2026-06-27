@@ -1,0 +1,61 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+
+{% block title %}{{ t('web.login_title', lang) }} — {{ shop_name }}{% endblock %}
+
+{% block nav %}{% endblock %}
+{% block footer %}{% endblock %}
+
+{% block content %}
+<div class="min-h-[100svh] flex items-center justify-center -my-8">
+  <div class="w-full max-w-md card card-pad">
+    <a href="/" class="text-center block">
+      <i data-lucide="log-in" class="w-8 h-8 text-pine mx-auto"></i>
+      <h1 class="font-display text-xl font-semibold mt-3">{{ t('web.login_title', lang) }}</h1>
+      <p class="text-sm text-ink-soft mt-2">{{ t('web.login_hint', lang) }}</p>
+    </a>
+
+    {% if error %}
+    <div class="mt-4">{{ ui.flash(error, 'error') }}</div>
+    {% endif %}
+    {% if notice %}
+    <div class="mt-4">{{ ui.flash(notice, 'info') }}</div>
+    {% endif %}
+
+    <form method="post" action="/login" class="mt-6 space-y-4">
+      <input type="hidden" name="next" value="{{ next }}">
+      <div>
+        <label class="text-sm font-semibold" for="identifier">{{ t('web.login_identifier', lang) }}</label>
+        <input class="field mt-1" type="text" id="identifier" name="identifier" value="{{ identifier }}"
+               autocomplete="username" required>
+      </div>
+      <div>
+        <label class="text-sm font-semibold" for="password">{{ t('web.login_password', lang) }}</label>
+        <input class="field mt-1" type="password" id="password" name="password"
+               autocomplete="current-password" required>
+      </div>
+      <button type="submit" class="btn btn-primary w-full">{{ t('web.login_submit', lang) }}</button>
+      <div class="flex items-center justify-between text-sm">
+        <a href="/forgot" class="text-pine hover:underline">{{ t('web.forgot_link', lang) }}</a>
+        <a href="/register{% if next != '/' %}?next={{ next | urlencode }}{% endif %}" class="text-pine hover:underline">{{ t('web.register_cta', lang) }}</a>
+      </div>
+    </form>
+
+    {% if bot_username %}
+    <div class="mt-6 flex items-center gap-3 text-xs text-ink-faint">
+      <span class="flex-1 border-t border-line"></span>{{ t('web.login_or', lang) }}<span class="flex-1 border-t border-line"></span>
+    </div>
+    <div class="mt-4 flex justify-center">
+      <script async src="https://telegram.org/js/telegram-widget.js?22"
+              data-telegram-login="{{ bot_username }}"
+              data-size="large"
+              data-userpic="false"
+              data-radius="12"
+              data-auth-url="{{ auth_url }}"
+              data-request-access="write"></script>
+      <noscript class="text-xs text-ink-faint">{{ t('web.login_telegram', lang) }}</noscript>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

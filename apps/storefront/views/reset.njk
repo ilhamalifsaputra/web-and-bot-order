@@ -1,0 +1,36 @@
+{% extends "base.njk" %}
+{% import "_macros.njk" as ui %}
+
+{% block title %}{{ t('web.reset_title', lang) }} — {{ shop_name }}{% endblock %}
+
+{% block nav %}{% endblock %}
+{% block footer %}{% endblock %}
+
+{% block content %}
+<div class="min-h-[100svh] flex items-center justify-center -my-8">
+  <div class="w-full max-w-md card card-pad">
+    <a href="/" class="text-center block">
+      <i data-lucide="lock-keyhole" class="w-8 h-8 text-pine mx-auto"></i>
+      <h1 class="font-display text-xl font-semibold mt-3">{{ t('web.reset_title', lang) }}</h1>
+    </a>
+
+    {% if error %}
+    <div class="mt-4">{{ ui.flash(error, 'error') }}</div>
+    {% endif %}
+
+    <form method="post" action="/reset/{{ token }}" class="mt-6 space-y-4">
+      <div>
+        <label class="text-sm font-semibold" for="password">{{ t('web.login_password', lang) }}</label>
+        <input class="field mt-1" type="password" id="password" name="password"
+               autocomplete="new-password" required minlength="8">
+      </div>
+      <div>
+        <label class="text-sm font-semibold" for="password2">{{ t('web.register_password2', lang) }}</label>
+        <input class="field mt-1" type="password" id="password2" name="password2"
+               autocomplete="new-password" required minlength="8">
+      </div>
+      <button type="submit" class="btn btn-primary w-full">{{ t('web.reset_submit', lang) }}</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

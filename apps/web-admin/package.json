@@ -1,0 +1,29 @@
+{
+  "name": "@app/web-admin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./server": "./src/server.ts",
+    "./auth": "./src/auth.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@app/core": "workspace:*",
+    "@app/db": "workspace:*",
+    "@fastify/cookie": "^11.0.1",
+    "@fastify/formbody": "^8.0.1",
+    "@fastify/multipart": "^10.0.0",
+    "@fastify/static": "^9.1.1",
+    "bcryptjs": "^2.4.3",
+    "fastify": "^5.1.0",
+    "fastify-plugin": "^5.0.1"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6"
+  }
+}

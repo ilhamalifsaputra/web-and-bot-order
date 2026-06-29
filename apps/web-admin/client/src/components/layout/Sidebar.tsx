@@ -192,17 +192,15 @@ export function Sidebar({ open, onClose }: SidebarProps): JSX.Element {
       </aside>
 
       {/* Mobile: drawer + backdrop */}
-      {open && (
-        <>
-          <div
-            className="fixed inset-0 z-30 bg-ink/40 lg:hidden"
-            onClick={onClose}
-          />
-          <aside className="fixed inset-y-0 left-0 z-40 w-56 lg:hidden">
-            <SidebarContent onClose={onClose} />
-          </aside>
-        </>
-      )}
+      <div
+        className={`fixed inset-0 z-30 bg-ink/40 lg:hidden transition-opacity duration-200 ${open ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`}
+        onClick={onClose}
+      />
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 w-56 lg:hidden transition-transform duration-200 ease-in-out ${open ? "translate-x-0" : "-translate-x-full"}`}
+      >
+        <SidebarContent onClose={onClose} />
+      </aside>
     </>
   );
 }

@@ -33,7 +33,7 @@ export function AppShell(): JSX.Element {
             onMenuClick={() => setSidebarOpen((o) => !o)}
             onSearchOpen={() => setSearchOpen(true)}
           />
-          <main className="flex-1 overflow-y-auto bg-paper p-4 sm:p-6">
+          <main className="flex flex-col flex-1 overflow-y-auto bg-paper p-4 sm:p-6">
             <Outlet />
           </main>
         </div>

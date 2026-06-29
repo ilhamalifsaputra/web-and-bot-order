@@ -47,23 +47,19 @@ export function SearchModal({ open, onClose }: SearchModalProps): JSX.Element {
   useEffect(() => {
     if (!query.trim()) {
       setResults([]);
+      setLoading(false);
       return;
     }
-    let cancelled = false;
     setLoading(true);
-    apiGet<SearchResult[]>(`/api/search?q=${encodeURIComponent(query.trim())}`)
-      .then((data) => {
-        if (!cancelled) setResults(Array.isArray(data) ? data : []);
-      })
-      .catch(() => {
-        if (!cancelled) setResults([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+    const timer = setTimeout(() => {
+      let cancelled = false;
+      apiGet<SearchResult[]>(`/api/search?q=${encodeURIComponent(query.trim())}`)
+        .then(data => { if (!cancelled) setResults(Array.isArray(data) ? data : []); })
+        .catch(() => { if (!cancelled) setResults([]); })
+        .finally(() => { if (!cancelled) setLoading(false); });
+      return () => { cancelled = true; };
+    }, 300);
+    return () => clearTimeout(timer);
   }, [query]);
 
   useEffect(() => {

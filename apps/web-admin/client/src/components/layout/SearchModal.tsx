@@ -51,15 +51,14 @@ export function SearchModal({ open, onClose }: SearchModalProps): JSX.Element {
       return;
     }
     setLoading(true);
+    let cancelled = false;
     const timer = setTimeout(() => {
-      let cancelled = false;
       apiGet<SearchResult[]>(`/api/search?q=${encodeURIComponent(query.trim())}`)
         .then(data => { if (!cancelled) setResults(Array.isArray(data) ? data : []); })
         .catch(() => { if (!cancelled) setResults([]); })
         .finally(() => { if (!cancelled) setLoading(false); });
-      return () => { cancelled = true; };
     }, 300);
-    return () => clearTimeout(timer);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [query]);
 
   useEffect(() => {

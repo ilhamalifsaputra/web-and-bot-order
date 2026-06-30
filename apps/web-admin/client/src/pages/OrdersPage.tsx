@@ -2,6 +2,21 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { FilterBar } from "../components/shared/FilterBar";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { StatusBadge } from "../components/shared/StatusBadge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
+import { ShoppingCart } from "lucide-react";
 
 interface OrderRow {
   id: number;
@@ -52,12 +67,12 @@ export function OrdersPage() {
   const [draft, setDraft] = useState({ status: "", q: "", since: "", until: "" });
   const [filters, setFilters] = useState<Filters>({ status: "", q: "", since: "", until: "", page: 1 });
 
-  const { data, isError } = useOrders(filters);
+  const { data, isLoading, isError } = useOrders(filters);
 
   if (isError) {
     return (
       <PageLayout title="Orders">
-        <p style={{ color: "red" }}>Failed to load orders.</p>
+        <p className="text-rust">Failed to load orders.</p>
       </PageLayout>
     );
   }
@@ -75,107 +90,159 @@ export function OrdersPage() {
 
   return (
     <PageLayout title="Orders">
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
-        <select
-          value={draft.status}
-          onChange={(e) => setDraft((f) => ({ ...f, status: e.target.value }))}
-          style={{ padding: "6px 8px" }}
-        >
-          <option value="">All statuses</option>
-          {statuses.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
-          ))}
-        </select>
-        <input
-          value={draft.q}
-          onChange={(e) => setDraft((f) => ({ ...f, q: e.target.value }))}
-          placeholder="Order code…"
-          style={{ padding: "6px 10px", border: "1px solid #ccc", borderRadius: 4, width: 160 }}
-        />
-        <input
-          type="date"
-          value={draft.since}
-          onChange={(e) => setDraft((f) => ({ ...f, since: e.target.value }))}
-          style={{ padding: "6px 8px" }}
-        />
-        <input
-          type="date"
-          value={draft.until}
-          onChange={(e) => setDraft((f) => ({ ...f, until: e.target.value }))}
-          style={{ padding: "6px 8px" }}
-        />
-        <button type="button" onClick={applyFilters} style={{ padding: "6px 16px" }}>
-          Filter
-        </button>
-        <button type="button" onClick={clearFilters} style={{ padding: "6px 12px" }}>
-          Clear
-        </button>
-      </div>
+      <PageHeader title="Orders" />
 
-      {!data ? (
-        <p>Loading…</p>
-      ) : data.orders.length === 0 ? (
-        <p>No orders found.</p>
-      ) : (
-        <>
-          <p style={{ color: "#666", fontSize: 13, marginBottom: 8 }}>
-            {data.total} order{data.total !== 1 ? "s" : ""} total — page {data.page}
-          </p>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ background: "#f5f5f5" }}>
-                <th style={{ textAlign: "left", padding: "6px 8px" }}>Code</th>
-                <th style={{ textAlign: "left", padding: "6px 8px" }}>Customer</th>
-                <th style={{ textAlign: "left", padding: "6px 8px" }}>Status</th>
-                <th style={{ textAlign: "right", padding: "6px 8px" }}>Total</th>
-                <th style={{ textAlign: "left", padding: "6px 8px" }}>Date</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.orders.map((o) => (
-                <tr
-                  key={o.id}
-                  style={{ borderTop: "1px solid #eee", cursor: "pointer" }}
-                  onClick={() => navigate(`/orders/${o.id}`)}
-                >
-                  <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{o.orderCode}</td>
-                  <td style={{ padding: "6px 8px" }}>
-                    {o.user?.fullName ?? o.user?.username ?? "—"}
-                  </td>
-                  <td style={{ padding: "6px 8px" }}>{o.status}</td>
-                  <td style={{ padding: "6px 8px", textAlign: "right" }}>
-                    {o.totalAmount} {o.currency}
-                  </td>
-                  <td style={{ padding: "6px 8px", fontSize: 12 }}>
-                    {new Date(o.createdAt).toLocaleDateString()}
-                  </td>
-                </tr>
+      <FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4">
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-soft">Status</label>
+          <Select
+            value={draft.status || "_all_"}
+            onValueChange={(v) =>
+              setDraft((f) => ({ ...f, status: v === "_all_" ? "" : v }))
+            }
+          >
+            <SelectTrigger className="w-36">
+              <SelectValue placeholder="All statuses" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="_all_">All</SelectItem>
+              {statuses.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {s}
+                </SelectItem>
               ))}
-            </tbody>
-          </table>
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            {data.page > 1 && (
-              <button
-                type="button"
-                onClick={() => setFilters((f) => ({ ...f, page: f.page - 1 }))}
-                style={{ padding: "5px 12px" }}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-soft">Search</label>
+          <Input
+            placeholder="Order code…"
+            value={draft.q}
+            onChange={(e) => setDraft((f) => ({ ...f, q: e.target.value }))}
+            className="w-48"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-soft">From</label>
+          <Input
+            type="date"
+            value={draft.since}
+            onChange={(e) => setDraft((f) => ({ ...f, since: e.target.value }))}
+            className="w-36"
+          />
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-soft">To</label>
+          <Input
+            type="date"
+            value={draft.until}
+            onChange={(e) => setDraft((f) => ({ ...f, until: e.target.value }))}
+            className="w-36"
+          />
+        </div>
+      </FilterBar>
+
+      {data && (
+        <p className="mb-2 text-xs text-ink-soft">
+          {data.total} order{data.total !== 1 ? "s" : ""} total — page {data.page}
+        </p>
+      )}
+
+      <DataTable
+        columns={[
+          {
+            key: "code",
+            header: "Code",
+            render: (row) => (
+              <span className="font-mono text-sm">{row.orderCode}</span>
+            ),
+          },
+          {
+            key: "customer",
+            header: "Customer",
+            render: (row) => (
+              <span className="text-sm">
+                {row.user?.fullName ?? row.user?.username ?? "—"}
+              </span>
+            ),
+          },
+          {
+            key: "status",
+            header: "Status",
+            render: (row) => <StatusBadge status={row.status} />,
+          },
+          {
+            key: "total",
+            header: "Total",
+            render: (row) => (
+              <span className="text-sm">
+                {row.totalAmount} {row.currency}
+              </span>
+            ),
+          },
+          {
+            key: "date",
+            header: "Date",
+            render: (row) => (
+              <span className="text-xs text-ink-faint">
+                {new Date(row.createdAt).toLocaleDateString()}
+              </span>
+            ),
+          },
+          {
+            key: "actions",
+            header: "",
+            render: (row) => (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate(`/orders/${row.id}`);
+                }}
               >
-                ← Prev
-              </button>
-            )}
-            {data.hasNext && (
-              <button
-                type="button"
-                onClick={() => setFilters((f) => ({ ...f, page: f.page + 1 }))}
-                style={{ padding: "5px 12px" }}
-              >
-                Next →
-              </button>
-            )}
-          </div>
-        </>
+                View
+              </Button>
+            ),
+          },
+        ]}
+        data={data?.orders ?? []}
+        isLoading={isLoading}
+        keyExtractor={(row) => row.id}
+        onRowClick={(row) => navigate(`/orders/${row.id}`)}
+        empty={
+          <EmptyState
+            icon={ShoppingCart}
+            title="No orders found"
+            description="Try adjusting your filters."
+            action={{ label: "Clear filters", onClick: clearFilters }}
+          />
+        }
+      />
+
+      {data && (
+        <div className="flex gap-2 mt-4">
+          {data.page > 1 && (
+            <Button
+              variant="outline"
+              onClick={() => setFilters((f) => ({ ...f, page: f.page - 1 }))}
+            >
+              ← Prev
+            </Button>
+          )}
+          {data.hasNext && (
+            <Button
+              variant="outline"
+              onClick={() => setFilters((f) => ({ ...f, page: f.page + 1 }))}
+            >
+              Next →
+            </Button>
+          )}
+        </div>
       )}
     </PageLayout>
   );

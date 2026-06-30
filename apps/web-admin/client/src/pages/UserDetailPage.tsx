@@ -139,7 +139,7 @@ export function UserDetailPage() {
           { key: "code", header: "Code", render: o => <span className="font-mono text-xs">{o.orderCode}</span> },
           { key: "status", header: "Status", render: o => <StatusBadge status={o.status} /> },
           { key: "total", header: "Total", render: o => <span className="text-sm">{o.totalIdr}</span> },
-          { key: "date", header: "Date", render: o => <span className="text-xs text-ink-faint">{new Date(o.createdAt).toLocaleDateString()}</span> },
+          { key: "date", header: "Date", render: o => <span className="text-xs text-ink-soft">{new Date(o.createdAt).toLocaleDateString()}</span> },
         ]}
         data={data.orders}
         keyExtractor={o => o.id}
@@ -155,7 +155,7 @@ export function UserDetailPage() {
           { key: "balance", header: "Balance", render: l => <span className="font-mono text-sm">{l.balance}</span> },
           { key: "reason", header: "Reason", render: l => <span className="text-sm">{l.reason}</span> },
           { key: "note", header: "Note", render: l => <span className="text-xs text-ink-soft">{l.note ?? "—"}</span> },
-          { key: "date", header: "Date", render: l => <span className="text-xs text-ink-faint">{new Date(l.createdAt).toLocaleDateString()}</span> },
+          { key: "date", header: "Date", render: l => <span className="text-xs text-ink-soft">{new Date(l.createdAt).toLocaleDateString()}</span> },
         ]}
         data={data.ledger}
         keyExtractor={l => l.id}

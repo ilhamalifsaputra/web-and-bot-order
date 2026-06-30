@@ -23,7 +23,7 @@ export function RecentOrdersTable() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs uppercase tracking-wide text-ink-faint">
+                <tr className="text-left text-xs uppercase tracking-wide text-ink-soft">
                   <th className="py-1.5 pr-3 font-semibold">Order</th>
                   <th className="py-1.5 pr-3 font-semibold">Product</th>
                   <th className="py-1.5 pr-3 font-semibold">Customer</th>
@@ -44,7 +44,7 @@ export function RecentOrdersTable() {
                     <td className="py-2 pr-3 text-ink-soft">{o.customerLabel}</td>
                     <td className="py-2 pr-3 font-mono text-ink">{formatCurrencyDisplay(o.amount, o.currency)}</td>
                     <td className="py-2 pr-3"><StatusBadge status={o.status} /></td>
-                    <td className="py-2 text-xs text-ink-faint">{shortTime(o.createdAt)}</td>
+                    <td className="py-2 text-xs text-ink-soft">{shortTime(o.createdAt)}</td>
                   </tr>
                 ))}
               </tbody>

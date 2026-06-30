@@ -158,7 +158,7 @@ export function BroadcastPage() {
             key: "scheduled",
             header: "Scheduled",
             render: b => (
-              <span className="text-xs text-ink-faint">
+              <span className="text-xs text-ink-soft">
                 {b.scheduledAt ? new Date(b.scheduledAt).toLocaleString() : "immediate"}
               </span>
             ),

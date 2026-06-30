@@ -92,7 +92,7 @@ export function UsersPage() {
                 <div className="font-medium text-sm text-ink">
                   {row.fullName ?? "—"}
                 </div>
-                <div className="text-xs text-ink-faint">
+                <div className="text-xs text-ink-soft">
                   {row.username ? `@${row.username}` : ""}
                 </div>
               </div>
@@ -124,7 +124,7 @@ export function UsersPage() {
             key: "joined",
             header: "Joined",
             render: (row) => (
-              <span className="text-xs text-ink-faint">
+              <span className="text-xs text-ink-soft">
                 {new Date(row.createdAt).toLocaleDateString()}
               </span>
             ),

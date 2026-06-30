@@ -110,7 +110,7 @@ export function ReviewsPage() {
                     </span>
                   </div>
                   {r.comment && <p className="text-sm text-ink">{r.comment}</p>}
-                  <p className="text-xs text-ink-faint">{new Date(r.createdAt).toLocaleDateString()}</p>
+                  <p className="text-xs text-ink-soft">{new Date(r.createdAt).toLocaleDateString()}</p>
                 </div>
                 <Button
                   variant="outline"

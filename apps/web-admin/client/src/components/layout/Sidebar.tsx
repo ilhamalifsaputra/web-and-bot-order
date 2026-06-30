@@ -131,7 +131,7 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
         {NAV_GROUPS.map((group, gi) => (
           <div key={gi} className={gi > 0 ? "mt-4" : ""}>
             {group.header && (
-              <div className="px-3 py-1 text-xs font-semibold uppercase tracking-wider text-ink-faint">
+              <div className="px-3 py-1 text-xs font-semibold uppercase tracking-wider text-ink-soft">
                 {group.header}
               </div>
             )}
@@ -175,7 +175,7 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
 
       {/* Footer */}
       <div className="border-t border-line px-4 py-3">
-        <a href="/logout" className="text-xs text-ink-faint hover:text-rust">
+        <a href="/logout" className="text-xs text-ink-soft hover:text-rust">
           Logout
         </a>
       </div>

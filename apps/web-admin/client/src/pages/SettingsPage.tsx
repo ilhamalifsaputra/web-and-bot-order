@@ -166,9 +166,9 @@ function FieldRow({ field, onSaved }: { field: SettingsField; onSaved: () => voi
         {!editing && (
           <div className="mt-1 text-xs text-ink-soft">
             {field.secret ? (
-              field.hasValue ? "••••••••" : <em className="text-ink-faint">not set</em>
+              field.hasValue ? "••••••••" : <em className="text-ink-soft">not set</em>
             ) : (
-              field.value || <em className="text-ink-faint">not set</em>
+              field.value || <em className="text-ink-soft">not set</em>
             )}
           </div>
         )}
@@ -522,7 +522,7 @@ export function SettingsPage() {
                     <code className="block rounded bg-sand px-2 py-1 text-sm font-mono break-all text-ink">
                       {data.twoFaPending.secret}
                     </code>
-                    <p className="text-xs text-ink-faint break-all">
+                    <p className="text-xs text-ink-soft break-all">
                       {data.twoFaPending.uri}
                     </p>
                     <div className="flex flex-wrap gap-2 items-center">

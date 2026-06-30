@@ -159,7 +159,7 @@ export function PaymentsPage() {
             key: "date",
             header: "Date",
             render: tx => (
-              <span className="text-xs text-ink-faint whitespace-nowrap">
+              <span className="text-xs text-ink-soft whitespace-nowrap">
                 {new Date(tx.processedAt).toLocaleString()}
               </span>
             ),

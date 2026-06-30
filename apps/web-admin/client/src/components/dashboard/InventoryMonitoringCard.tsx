@@ -23,7 +23,7 @@ export function InventoryMonitoringCard() {
                 <span className="text-sm text-ink">{r.productName}</span>
                 <span className={`text-sm font-semibold ${r.available === 0 ? "text-rust" : "text-amberx"}`}>
                   {r.available} left
-                  <span className="ml-1 text-xs font-normal text-ink-faint">/ {r.threshold}</span>
+                  <span className="ml-1 text-xs font-normal text-ink-soft">/ {r.threshold}</span>
                 </span>
               </li>
             ))}

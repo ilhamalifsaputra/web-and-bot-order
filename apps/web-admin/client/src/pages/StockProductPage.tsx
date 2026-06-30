@@ -128,7 +128,7 @@ export function StockProductPage() {
           { key: "id", header: "#", render: item => <span className="font-mono text-xs text-ink-soft">{item.id}</span> },
           { key: "status", header: "Status", render: item => <StatusBadge status={item.status} /> },
           { key: "note", header: "Note", render: item => <span className="text-xs text-ink-soft">{item.note ?? "—"}</span> },
-          { key: "added", header: "Added", render: item => <span className="text-xs text-ink-faint">{new Date(item.createdAt).toLocaleDateString()}</span> },
+          { key: "added", header: "Added", render: item => <span className="text-xs text-ink-soft">{new Date(item.createdAt).toLocaleDateString()}</span> },
         ]}
         data={items}
         keyExtractor={item => item.id}

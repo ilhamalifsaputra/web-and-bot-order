@@ -61,7 +61,7 @@ export function SupportPage() {
             key: "date",
             header: "Date",
             render: t => (
-              <span className="text-xs text-ink-faint">
+              <span className="text-xs text-ink-soft">
                 {new Date(t.createdAt).toLocaleDateString()}
               </span>
             ),

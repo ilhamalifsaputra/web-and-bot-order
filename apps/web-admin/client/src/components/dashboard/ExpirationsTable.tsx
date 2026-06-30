@@ -17,7 +17,7 @@ export function ExpirationsTable() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-left text-xs uppercase tracking-wide text-ink-faint">
+                <tr className="text-left text-xs uppercase tracking-wide text-ink-soft">
                   <th className="py-1.5 pr-3 font-semibold">Product</th>
                   <th className="py-1.5 pr-3 font-semibold">Customer</th>
                   <th className="py-1.5 pr-3 font-semibold">Remaining</th>

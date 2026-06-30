@@ -84,7 +84,7 @@ function TextFieldRow({
       </div>
       {!editing && (
         <div className="mt-1 text-sm text-ink-soft">
-          {value || <em className="text-ink-faint">not set</em>}
+          {value || <em className="text-ink-soft">not set</em>}
         </div>
       )}
       {editing && (
@@ -176,7 +176,7 @@ function ImageUploadRow({
           className="max-h-20 max-w-[200px] block mb-2 border border-line rounded"
         />
       ) : (
-        <p className="text-xs text-ink-faint mb-2">No image set</p>
+        <p className="text-xs text-ink-soft mb-2">No image set</p>
       )}
       <label className="cursor-pointer">
         <input

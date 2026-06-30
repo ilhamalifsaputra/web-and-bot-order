@@ -13,7 +13,7 @@ export function PendingActionsKpiCard() {
       <CardContent>
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
         {isError && <p className="text-sm text-rust">Couldn't load pending actions.</p>}
-        {pa && total === 0 && <p className="text-sm text-ink-faint">All caught up.</p>}
+        {pa && total === 0 && <p className="text-sm text-ink-soft">All caught up.</p>}
         {pa && total > 0 && (
           <>
             <p className="font-display text-3xl font-semibold text-ink">{total}</p>

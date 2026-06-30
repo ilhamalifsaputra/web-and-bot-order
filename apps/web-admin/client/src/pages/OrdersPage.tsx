@@ -189,7 +189,7 @@ export function OrdersPage() {
             key: "date",
             header: "Date",
             render: (row) => (
-              <span className="text-xs text-ink-faint">
+              <span className="text-xs text-ink-soft">
                 {new Date(row.createdAt).toLocaleDateString()}
               </span>
             ),

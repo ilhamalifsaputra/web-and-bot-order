@@ -164,7 +164,7 @@ export function StockPage() {
                 <div className="min-w-[120px]">
                   <div className="flex justify-between text-xs mb-1">
                     <span className="text-ink-soft">{available} ready</span>
-                    <span className="text-ink-faint">{pct}%</span>
+                    <span className="text-ink-soft">{pct}%</span>
                   </div>
                   <div className="h-1.5 w-full rounded-full bg-sand overflow-hidden">
                     <div

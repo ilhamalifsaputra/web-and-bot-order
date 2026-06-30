@@ -22,7 +22,7 @@ export function ProfitKpiCard() {
       <CardContent>
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
         {(isError || (data && !data.profit.idr && !data.profit.usdt)) && (
-          <p className="text-sm text-ink-faint">No profit yet today.</p>
+          <p className="text-sm text-ink-soft">No profit yet today.</p>
         )}
         {data && (data.profit.idr || data.profit.usdt) && (
           <>

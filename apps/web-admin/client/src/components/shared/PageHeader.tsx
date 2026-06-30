@@ -12,7 +12,7 @@ export function PageHeader({ title, breadcrumb, actions }: PageHeaderProps): JSX
   return (
     <div className="mb-6">
       {breadcrumb && breadcrumb.length > 0 && (
-        <nav className="mb-1 flex items-center gap-1 text-xs text-ink-faint">
+        <nav className="mb-1 flex items-center gap-1 text-xs text-ink-soft">
           {breadcrumb.map((crumb, i) => (
             <React.Fragment key={i}>
               {i > 0 && <span>/</span>}

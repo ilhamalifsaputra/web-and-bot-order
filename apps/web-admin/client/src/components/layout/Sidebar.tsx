@@ -119,7 +119,7 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
         <button
           type="button"
           onClick={onClose}
-          className="rounded-md p-1 text-ink-faint hover:text-ink lg:hidden"
+          className="rounded-md p-2 min-h-11 min-w-11 flex items-center justify-center text-ink-soft hover:text-ink lg:hidden"
           aria-label="Close navigation"
         >
           <X className="h-4 w-4" />

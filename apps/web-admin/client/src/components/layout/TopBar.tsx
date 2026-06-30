@@ -33,7 +33,7 @@ export function TopBar({ onMenuClick, onSearchOpen }: TopBarProps): JSX.Element 
       <button
         type="button"
         onClick={onMenuClick}
-        className="rounded-md p-2 text-ink-soft hover:bg-sand hover:text-ink lg:hidden"
+        className="rounded-md min-h-11 min-w-11 flex items-center justify-center text-ink-soft hover:bg-sand hover:text-ink lg:hidden"
         aria-label="Open navigation"
       >
         <Menu className="h-5 w-5" />

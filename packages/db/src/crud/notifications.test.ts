@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+
+// resolveAdminIds merges config.ADMIN_IDS (env) with DB-persisted IDs. The
+// enqueueOrderPipelineFailed tests need a predictable baseline (no env admins),
+// so we stub the config export to return an empty ADMIN_IDS list.
+vi.mock("@app/core/config", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@app/core/config")>();
+  return { ...actual, config: { ...actual.config, ADMIN_IDS: [] } };
+});
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import {

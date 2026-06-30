@@ -31,15 +31,6 @@ interface SettingsData {
   twoFaPending: { secret: string; uri: string } | null;
 }
 
-const PAYMENT_METHOD_LABELS: Record<string, string> = {
-  tokopay: "TokoPay",
-  paydisini: "PayDisini",
-  nowpayments: "NOWPayments",
-  bybit: "Bybit",
-  bybit_bsc: "Bybit BSC",
-  binance_internal: "Binance Internal Transfer",
-};
-
 // Field groupings — must match the server-side EDITABLE keys exactly.
 const BRANDING_KEYS = new Set([
   "shop_name",
@@ -69,42 +60,70 @@ const FX_KEYS = new Set([
   "usd_idr_rate_rounding",
 ]);
 
+// Per-method credential field groupings. The _enabled field for each method
+// is intentionally excluded here — it's surfaced as a toggle in the card header
+// via payMethodState/togglePayment instead. Still included in PAY_CRED_KEYS
+// so it doesn't fall through to "Other Settings".
+const PAY_CRED_GROUPS = [
+  {
+    methodKey: "tokopay",
+    label: "TokoPay",
+    fieldKeys: ["tokopay_merchant_id", "tokopay_secret", "tokopay_min_amount"],
+  },
+  {
+    methodKey: "paydisini",
+    label: "PayDisini",
+    fieldKeys: [
+      "paydisini_userkey",
+      "paydisini_apikey",
+      "paydisini_default_channel",
+      "paydisini_min_amount",
+    ],
+  },
+  {
+    methodKey: "nowpayments",
+    label: "NOWPayments",
+    fieldKeys: [
+      "nowpayments_api_key",
+      "nowpayments_ipn_secret",
+      "nowpayments_pay_currency",
+      "nowpayments_min_amount",
+    ],
+  },
+  {
+    methodKey: "bybit",
+    label: "Bybit",
+    fieldKeys: ["bybit_uid", "bybit_api_key", "bybit_api_secret", "bybit_min_amount"],
+  },
+  {
+    methodKey: "bybit_bsc",
+    label: "Bybit BSC",
+    fieldKeys: [
+      "bybit_bsc_deposit_address",
+      "bybit_bsc_min_amount",
+      "bscscan_api_key",
+      "bybit_bsc_required_confirmations",
+    ],
+  },
+  {
+    methodKey: "binance_internal",
+    label: "Binance Internal Transfer",
+    fieldKeys: [
+      "binance_receive_uid",
+      "binance_api_key",
+      "binance_api_secret",
+      "binance_internal_min_amount",
+    ],
+  },
+] as const;
+
 const PAY_CRED_KEYS = new Set([
-  // TokoPay
-  "tokopay_merchant_id",
-  "tokopay_secret",
-  "tokopay_enabled",
-  "tokopay_min_amount",
-  // PayDisini
-  "paydisini_userkey",
-  "paydisini_apikey",
-  "paydisini_enabled",
-  "paydisini_default_channel",
-  "paydisini_min_amount",
-  // NOWPayments
-  "nowpayments_api_key",
-  "nowpayments_ipn_secret",
-  "nowpayments_enabled",
-  "nowpayments_pay_currency",
-  "nowpayments_min_amount",
-  // Bybit
-  "bybit_uid",
-  "bybit_api_key",
-  "bybit_api_secret",
-  "bybit_enabled",
-  "bybit_min_amount",
-  // Bybit BSC
-  "bybit_bsc_deposit_address",
-  "bybit_bsc_enabled",
-  "bybit_bsc_min_amount",
-  "bscscan_api_key",
-  "bybit_bsc_required_confirmations",
-  // Binance Internal Transfer
-  "binance_receive_uid",
-  "binance_api_key",
-  "binance_api_secret",
-  "binance_internal_enabled",
-  "binance_internal_min_amount",
+  "tokopay_merchant_id", "tokopay_secret", "tokopay_enabled", "tokopay_min_amount",
+  "paydisini_userkey", "paydisini_apikey", "paydisini_enabled", "paydisini_default_channel", "paydisini_min_amount",
+  "nowpayments_api_key", "nowpayments_ipn_secret", "nowpayments_enabled", "nowpayments_pay_currency", "nowpayments_min_amount",
+  "bybit_uid", "bybit_api_key", "bybit_api_secret", "bybit_enabled", "bybit_min_amount",
+  "bybit_bsc_deposit_address", "bybit_bsc_enabled", "bybit_bsc_min_amount", "bscscan_api_key", "bybit_bsc_required_confirmations",
+  "binance_receive_uid", "binance_api_key", "binance_api_secret", "binance_internal_enabled", "binance_internal_min_amount",
 ]);
 
 const ALL_GROUPED_KEYS = new Set([
@@ -349,19 +368,46 @@ export function SettingsPage() {
             </Card>
           )}
 
-          {/* Payment Credentials */}
-          {fieldGroup(data.fields, PAY_CRED_KEYS).length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Payment Credentials</CardTitle>
-              </CardHeader>
-              <CardContent className="divide-y divide-line">
-                {fieldGroup(data.fields, PAY_CRED_KEYS).map((field) => (
-                  <FieldRow key={field.key} field={field} onSaved={invalidate} />
-                ))}
-              </CardContent>
-            </Card>
-          )}
+          {/* Payment Credentials — one card per method */}
+          {PAY_CRED_GROUPS.map(({ methodKey, label, fieldKeys }) => {
+            const credFields = data.fields.filter((f) => (fieldKeys as readonly string[]).includes(f.key));
+            const methodState = data.payMethodState[methodKey];
+            if (credFields.length === 0 && !methodState) return null;
+            return (
+              <Card key={methodKey}>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+                  <div className="flex items-center gap-2">
+                    <CardTitle>{label}</CardTitle>
+                    {methodState && !methodState.configured && (
+                      <span className="text-xs text-amberx">not configured</span>
+                    )}
+                  </div>
+                  {methodState && (
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={methodState.enabled}
+                        onChange={(e) =>
+                          togglePayment.mutate({ method: methodKey, enabled: e.target.checked })
+                        }
+                        className="h-4 w-4"
+                      />
+                      <span className="text-sm text-ink-soft">
+                        {methodState.enabled ? "Enabled" : "Disabled"}
+                      </span>
+                    </label>
+                  )}
+                </CardHeader>
+                {credFields.length > 0 && (
+                  <CardContent className="divide-y divide-line pt-0">
+                    {credFields.map((field) => (
+                      <FieldRow key={field.key} field={field} onSaved={invalidate} />
+                    ))}
+                  </CardContent>
+                )}
+              </Card>
+            );
+          })}
 
           {/* Other / catch-all for any future fields */}
           {fieldsOther(data.fields).length > 0 && (
@@ -400,44 +446,6 @@ export function SettingsPage() {
                   <span className="text-sm text-ink-soft">{fxStatus}</span>
                 )}
               </div>
-            </CardContent>
-          </Card>
-
-          {/* Payment Methods */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Payment Methods</CardTitle>
-            </CardHeader>
-            <CardContent className="divide-y divide-line">
-              {Object.entries(data.payMethodState).map(([method, state]) => (
-                <div
-                  key={method}
-                  className="flex items-center justify-between py-3"
-                >
-                  <div>
-                    <span className="text-sm font-medium text-ink">
-                      {PAYMENT_METHOD_LABELS[method] ?? method}
-                    </span>
-                    {!state.configured && (
-                      <span className="text-xs text-amberx ml-2">
-                        not configured
-                      </span>
-                    )}
-                  </div>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={state.enabled}
-                      onChange={(e) =>
-                        togglePayment.mutate({ method, enabled: e.target.checked })
-                      }
-                    />
-                    <span className="text-sm text-ink-soft">
-                      {state.enabled ? "Enabled" : "Disabled"}
-                    </span>
-                  </label>
-                </div>
-              ))}
             </CardContent>
           </Card>
 

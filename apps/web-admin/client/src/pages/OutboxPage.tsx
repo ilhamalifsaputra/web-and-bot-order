@@ -1,7 +1,17 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { FilterBar } from "../components/shared/FilterBar";
 import { EmptyState } from "../components/shared/EmptyState";
+import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
 import { apiPost } from "../api/client";
 
 interface OutboxRow {
@@ -67,6 +77,8 @@ export function OutboxPage() {
 
   return (
     <PageLayout title="Outbox">
+      <PageHeader title="Outbox" />
+
       <div className="flex flex-col gap-4">
         {data?.counts && (
           <div className="flex gap-3">
@@ -78,29 +90,24 @@ export function OutboxPage() {
           </div>
         )}
 
-        <div className="flex gap-2">
-          <select
-            className="rounded border border-line bg-card px-3 py-1.5 text-sm text-ink"
-            value={status}
-            onChange={(e) => setStatus(e.target.value)}
-          >
-            <option value="">All statuses</option>
-            {["PENDING", "SENT", "FAILED"].map((s) => (
-              <option key={s} value={s}>{s}</option>
-            ))}
-          </select>
-          <button
-            onClick={apply}
-            className="rounded bg-pine px-3 py-1.5 text-sm font-medium text-white hover:bg-pine/90"
-          >
-            Filter
-          </button>
-        </div>
+        <FilterBar onApply={apply}>
+          <Select value={status || "_all_"} onValueChange={v => setStatus(v === "_all_" ? "" : v)}>
+            <SelectTrigger className="w-40">
+              <SelectValue placeholder="All statuses" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="_all_">All statuses</SelectItem>
+              {["PENDING", "SENT", "FAILED"].map((s) => (
+                <SelectItem key={s} value={s}>{s}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FilterBar>
 
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
         {isError && <p className="text-sm text-rust">Failed to load outbox.</p>}
 
-        {data && data.rows.length === 0 && <EmptyState message="No notifications found." />}
+        {data && data.rows.length === 0 && <EmptyState title="No notifications found." />}
 
         {data && data.rows.length > 0 && (
           <div className="overflow-x-auto rounded-lg border border-line bg-card">
@@ -135,13 +142,14 @@ export function OutboxPage() {
                     <td className="whitespace-nowrap px-4 py-2 text-ink-soft">{formatTs(row.sentAt)}</td>
                     <td className="px-4 py-2">
                       {row.status === "FAILED" && (
-                        <button
+                        <Button
+                          variant="outline"
+                          size="sm"
                           disabled={retrying.has(row.id)}
                           onClick={() => retry(row.id)}
-                          className="rounded border border-line px-2 py-1 text-xs text-ink hover:bg-sand disabled:opacity-40"
                         >
                           Retry
-                        </button>
+                        </Button>
                       )}
                     </td>
                   </tr>
@@ -153,15 +161,23 @@ export function OutboxPage() {
 
         {data && (data.hasNext || page > 1) && (
           <div className="flex items-center gap-2">
-            <button disabled={page <= 1} onClick={() => goPage(page - 1)}
-              className="rounded border border-line px-3 py-1.5 text-sm text-ink disabled:opacity-40">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page <= 1}
+              onClick={() => goPage(page - 1)}
+            >
               ← Prev
-            </button>
+            </Button>
             <span className="text-sm text-ink-soft">Page {page}</span>
-            <button disabled={!data.hasNext} onClick={() => goPage(page + 1)}
-              className="rounded border border-line px-3 py-1.5 text-sm text-ink disabled:opacity-40">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!data.hasNext}
+              onClick={() => goPage(page + 1)}
+            >
               Next →
-            </button>
+            </Button>
           </div>
         )}
       </div>

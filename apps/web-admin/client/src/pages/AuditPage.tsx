@@ -1,6 +1,10 @@
 import { useState } from "react";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { FilterBar } from "../components/shared/FilterBar";
 import { EmptyState } from "../components/shared/EmptyState";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { useAudit } from "../hooks/useAudit";
 
 function formatTs(iso: string) {
@@ -31,51 +35,47 @@ export function AuditPage() {
 
   return (
     <PageLayout title="Audit Log">
+      <PageHeader title="Audit Log" />
+
       <div className="flex flex-col gap-4">
         {/* Filter bar */}
-        <div className="flex flex-wrap gap-2">
-          <input
-            className="rounded border border-line bg-card px-3 py-1.5 text-sm text-ink placeholder:text-ink-faint"
+        <FilterBar onApply={applyFilters}>
+          <Input
             placeholder="Action"
             value={action}
             onChange={(e) => setAction(e.target.value)}
+            className="w-36"
           />
-          <input
-            className="rounded border border-line bg-card px-3 py-1.5 text-sm text-ink placeholder:text-ink-faint"
+          <Input
             placeholder="Target type"
             value={targetType}
             onChange={(e) => setTargetType(e.target.value)}
+            className="w-36"
           />
-          <input
-            className="rounded border border-line bg-card px-3 py-1.5 text-sm text-ink placeholder:text-ink-faint"
+          <Input
             placeholder="Admin ID"
             value={adminId}
             onChange={(e) => setAdminId(e.target.value)}
+            className="w-32"
           />
-          <input
+          <Input
             type="date"
-            className="rounded border border-line bg-card px-3 py-1.5 text-sm text-ink"
             value={since}
             onChange={(e) => setSince(e.target.value)}
+            className="w-36"
           />
-          <input
+          <Input
             type="date"
-            className="rounded border border-line bg-card px-3 py-1.5 text-sm text-ink"
             value={until}
             onChange={(e) => setUntil(e.target.value)}
+            className="w-36"
           />
-          <button
-            onClick={applyFilters}
-            className="rounded bg-pine px-3 py-1.5 text-sm font-medium text-white hover:bg-pine/90"
-          >
-            Filter
-          </button>
-        </div>
+        </FilterBar>
 
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
         {isError && <p className="text-sm text-rust">Failed to load audit log.</p>}
 
-        {data && data.rows.length === 0 && <EmptyState message="No audit entries found." />}
+        {data && data.rows.length === 0 && <EmptyState title="No audit entries found." />}
 
         {data && data.rows.length > 0 && (
           <div className="overflow-x-auto rounded-lg border border-line bg-card">
@@ -110,21 +110,23 @@ export function AuditPage() {
         {/* Pagination */}
         {data && (data.hasNext || page > 1) && (
           <div className="flex items-center gap-2">
-            <button
+            <Button
+              variant="outline"
+              size="sm"
               disabled={page <= 1}
               onClick={() => goPage(page - 1)}
-              className="rounded border border-line px-3 py-1.5 text-sm text-ink disabled:opacity-40"
             >
               ← Prev
-            </button>
+            </Button>
             <span className="text-sm text-ink-soft">Page {page}</span>
-            <button
+            <Button
+              variant="outline"
+              size="sm"
               disabled={!data.hasNext}
               onClick={() => goPage(page + 1)}
-              className="rounded border border-line px-3 py-1.5 text-sm text-ink disabled:opacity-40"
             >
               Next →
-            </button>
+            </Button>
           </div>
         )}
       </div>

@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
 import { EmptyState } from "../components/shared/EmptyState";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 
@@ -34,6 +35,8 @@ export function ReportsPage() {
 
   return (
     <PageLayout title="Reports">
+      <PageHeader title="Reports" />
+
       <div className="flex flex-col gap-6">
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
         {isError && <p className="text-sm text-rust">Failed to load reports.</p>}
@@ -73,7 +76,7 @@ export function ReportsPage() {
                 </ResponsiveContainer>
               </div>
             ) : (
-              <EmptyState message="No revenue data yet." />
+              <EmptyState title="No revenue data yet." />
             )}
 
             {/* Order funnel */}

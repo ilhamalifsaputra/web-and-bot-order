@@ -55,6 +55,7 @@ export function ProductCreatePage() {
         ...(emoji.trim() ? { emoji: emoji.trim() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
       }),
+    onMutate: () => setError(null),
     onSuccess: (product) => {
       void qc.invalidateQueries({ queryKey: ["catalog"] });
       navigate(`/catalog/${product.id}`);

@@ -732,6 +732,12 @@ describe("catalog JSON API — create product", () => {
     expect(res.headers.location).toBe("/login");
   });
 
+  it("rejects a non-existent categoryId with 400", async () => {
+    const res = await postProductJson(seed.cookie, seed.csrf, { name: "X", categoryId: 99999 });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/category/i);
+  });
+
   it("rejects bad CSRF with 403", async () => {
     const res = await postProductJson(seed.cookie, "bad-token", { name: "X", categoryId: seed.categoryId });
     expect(res.statusCode).toBe(403);

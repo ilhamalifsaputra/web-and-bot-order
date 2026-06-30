@@ -40,6 +40,9 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`${path} responded ${res.status}`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error ?? `${path} responded ${res.status}`);
+  }
   return res.json() as Promise<T>;
 }

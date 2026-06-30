@@ -5,6 +5,11 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ProductCreatePage } from "./ProductCreatePage";
+import { apiPost } from "../api/client";
+
+vi.mock("../api/client", () => ({
+  apiPost: vi.fn(),
+}));
 
 const CATALOG_DATA = {
   categories: [{ id: 2, name: "Apps", isActive: true }],
@@ -34,12 +39,6 @@ beforeEach(() => {
   Element.prototype.hasPointerCapture = vi.fn(() => false);
   Element.prototype.setPointerCapture = vi.fn();
   Element.prototype.releasePointerCapture = vi.fn();
-  // apiPost reads CSRF from meta tag — provide empty string
-  Object.defineProperty(document, "querySelector", {
-    writable: true,
-    value: (sel: string) =>
-      sel === 'meta[name="csrf-token"]' ? { getAttribute: () => "" } : null,
-  });
 });
 
 describe("ProductCreatePage", () => {
@@ -72,6 +71,8 @@ describe("ProductCreatePage", () => {
   it("navigates to product detail page on successful create", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
 
+    vi.mocked(apiPost).mockResolvedValueOnce({ id: 42, name: "Netflix", slug: "netflix" });
+
     // First call: GET /api/catalog for categories
     vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(
@@ -80,14 +81,7 @@ describe("ProductCreatePage", () => {
           headers: { "Content-Type": "application/json" },
         }),
       )
-      // Second call: POST /api/catalog/products
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ id: 42, name: "Netflix", slug: "netflix" }), {
-          status: 201,
-          headers: { "Content-Type": "application/json" },
-        }),
-      )
-      // Third call: invalidateQueries triggers a re-fetch of ["catalog"]
+      // Second call: invalidateQueries triggers a re-fetch of ["catalog"]
       .mockResolvedValueOnce(
         new Response(JSON.stringify(CATALOG_DATA), {
           status: 200,
@@ -122,19 +116,14 @@ describe("ProductCreatePage", () => {
   it("shows error message when create fails", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
 
-    vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify(CATALOG_DATA), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ error: "Category not found." }), {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        }),
-      );
+    vi.mocked(apiPost).mockRejectedValueOnce(new Error("Category not found."));
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(CATALOG_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
 
     render(<ProductCreatePage />, { wrapper: Wrapper });
     await waitFor(() => screen.getByPlaceholderText(/capcut pro/i));
@@ -152,7 +141,7 @@ describe("ProductCreatePage", () => {
     await user.click(btn);
 
     await waitFor(() =>
-      expect(screen.getByText(/400/i)).toBeInTheDocument(),
+      expect(screen.getByText(/category not found/i)).toBeInTheDocument(),
     );
   });
 });

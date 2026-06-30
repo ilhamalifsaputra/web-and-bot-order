@@ -17,6 +17,7 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { ShoppingCart } from "lucide-react";
+import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 
 interface OrderRow {
   id: number;
@@ -179,8 +180,8 @@ export function OrdersPage() {
             key: "total",
             header: "Total",
             render: (row) => (
-              <span className="text-sm">
-                {row.totalAmount} {row.currency}
+              <span className="font-mono text-sm">
+                {formatCurrencyDisplay(row.totalAmount, row.currency as "IDR" | "USDT" | "USD")}
               </span>
             ),
           },

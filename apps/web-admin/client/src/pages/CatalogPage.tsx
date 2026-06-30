@@ -126,17 +126,22 @@ export function CatalogPage() {
       <PageHeader
         title="Catalog"
         actions={
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setShowImport(!showImport);
-              setPreview(null);
-              setCsv("");
-            }}
-          >
-            Import CSV
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setShowImport(!showImport);
+                setPreview(null);
+                setCsv("");
+              }}
+            >
+              Import CSV
+            </Button>
+            <Button size="sm" onClick={() => navigate("/catalog/new")}>
+              + Add Product
+            </Button>
+          </div>
         }
       />
 

@@ -119,6 +119,16 @@ export function StockPage() {
             },
           },
           {
+            key: "reserved",
+            header: "Reserved",
+            render: (row) => {
+              const cnt = data?.counts[String(row.id)];
+              return (
+                <span className="text-sm text-ink-soft">{cnt?.reserved ?? 0}</span>
+              );
+            },
+          },
+          {
             key: "sold",
             header: "Sold",
             render: (row) => {
@@ -187,16 +197,28 @@ export function StockPage() {
             key: "actions",
             header: "",
             render: (row) => (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  navigate(`/stock/${row.id}`);
-                }}
-              >
-                View
-              </Button>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    navigate(`/stock/${row.id}`);
+                  }}
+                >
+                  View
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    navigate(`/stock/${row.id}/add`);
+                  }}
+                >
+                  + Stock
+                </Button>
+              </div>
             ),
           },
         ]}

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -47,6 +48,12 @@ const BRANDING_KEYS = new Set([
   "banner_image",
   "support_contact",
   "support_whatsapp",
+]);
+
+const STORE_KEYS = new Set([
+  "min_order_amount",
+  "order_expiry_minutes",
+  "stock_low_threshold",
 ]);
 
 const TELEGRAM_KEYS = new Set([
@@ -102,6 +109,7 @@ const PAY_CRED_KEYS = new Set([
 
 const ALL_GROUPED_KEYS = new Set([
   ...BRANDING_KEYS,
+  ...STORE_KEYS,
   ...TELEGRAM_KEYS,
   ...FX_KEYS,
   ...PAY_CRED_KEYS,
@@ -292,20 +300,35 @@ export function SettingsPage() {
 
   return (
     <PageLayout title="Settings">
+      <PageHeader title="Settings" />
       {isLoading && <p className="text-ink-soft">Loading settings…</p>}
       {isError && <p className="text-rust">Failed to load settings.</p>}
 
       {data && (
         <div className="flex flex-col gap-6 max-w-2xl">
 
-          {/* Branding & Content */}
+          {/* General */}
           {fieldGroup(data.fields, BRANDING_KEYS).length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Branding &amp; Content</CardTitle>
+                <CardTitle>General</CardTitle>
               </CardHeader>
               <CardContent className="divide-y divide-line">
                 {fieldGroup(data.fields, BRANDING_KEYS).map((field) => (
+                  <FieldRow key={field.key} field={field} onSaved={invalidate} />
+                ))}
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Store */}
+          {fieldGroup(data.fields, STORE_KEYS).length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Store</CardTitle>
+              </CardHeader>
+              <CardContent className="divide-y divide-line">
+                {fieldGroup(data.fields, STORE_KEYS).map((field) => (
                   <FieldRow key={field.key} field={field} onSaved={invalidate} />
                 ))}
               </CardContent>

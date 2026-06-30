@@ -110,12 +110,18 @@ export function BroadcastPage() {
                 className="w-52"
               />
             </div>
-            <Button
-              onClick={() => send.mutate()}
-              disabled={!form.message || !form.segment || send.isPending}
-            >
-              {form.scheduled_at ? "Schedule" : "Send now"}
-            </Button>
+            <ConfirmDialog
+              trigger={
+                <Button disabled={!form.message || !form.segment || send.isPending}>
+                  {form.scheduled_at ? "Schedule" : "Send now"}
+                </Button>
+              }
+              title={form.scheduled_at ? "Schedule broadcast?" : "Send broadcast now?"}
+              description={`This will ${form.scheduled_at ? "schedule a" : "immediately send a"} broadcast to ${data?.counts[form.segment] ?? 0} ${form.segment} users. This cannot be undone.`}
+              confirmLabel={form.scheduled_at ? "Schedule" : "Send"}
+              variant="default"
+              onConfirm={() => send.mutate()}
+            />
           </div>
         </CardContent>
       </Card>

@@ -1,6 +1,22 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { StatusBadge } from "../components/shared/StatusBadge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiPost } from "../api/client";
 
 interface BroadcastRow {
@@ -53,91 +69,113 @@ export function BroadcastPage() {
     onError: (e: Error) => alert(e.message),
   });
 
-  if (isError) return <PageLayout title="Broadcast"><p style={{ color: "red" }}>Failed to load broadcast.</p></PageLayout>;
+  if (isError) return <PageLayout title="Broadcast"><p className="text-sm text-rust">Failed to load broadcast.</p></PageLayout>;
 
   return (
     <PageLayout title="Broadcast">
-      <section style={{ background: "#f9f9f9", padding: 16, borderRadius: 6, marginBottom: 24 }}>
-        <h2 style={{ fontSize: 15, marginBottom: 12 }}>Compose Broadcast</h2>
-        {formError && <p style={{ color: "red", margin: "0 0 8px" }}>{formError}</p>}
-        <textarea
-          placeholder="Message (max 4000 chars)"
-          value={form.message}
-          onChange={e => setForm(f => ({ ...f, message: e.target.value }))}
-          rows={5}
-          style={{ width: "100%", padding: "6px 10px", marginBottom: 10, boxSizing: "border-box" }}
-        />
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <select
-            value={form.segment}
-            onChange={e => setForm(f => ({ ...f, segment: e.target.value }))}
-            style={{ padding: "5px 8px" }}
-          >
-            <option value="">— pick segment —</option>
-            {(data?.segments ?? []).map(s => (
-              <option key={s} value={s}>{s} ({data?.counts[s] ?? 0})</option>
-            ))}
-          </select>
-          <input
-            type="datetime-local"
-            value={form.scheduled_at}
-            onChange={e => setForm(f => ({ ...f, scheduled_at: e.target.value }))}
-            style={{ padding: "5px 8px" }}
-          />
-          <button
-            onClick={() => send.mutate()}
-            disabled={!form.message || !form.segment || send.isPending}
-            style={{ padding: "6px 16px" }}
-          >
-            {form.scheduled_at ? "Schedule" : "Send now"}
-          </button>
-        </div>
-      </section>
+      <PageHeader title="Broadcast" />
 
-      <h2 style={{ fontSize: 15, marginBottom: 10 }}>History</h2>
-      {!data ? (
-        <p>Loading…</p>
-      ) : data.history.length === 0 ? (
-        <p>No broadcasts yet.</p>
-      ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: "#f5f5f5" }}>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Message</th>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Segment</th>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Status</th>
-              <th style={{ textAlign: "right", padding: "6px 8px" }}>Sent</th>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Scheduled</th>
-              <th style={{ padding: "6px 8px" }} />
-            </tr>
-          </thead>
-          <tbody>
-            {data.history.map(b => (
-              <tr key={b.id} style={{ borderTop: "1px solid #eee" }}>
-                <td style={{ padding: "6px 8px", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {b.message.slice(0, 80)}{b.message.length > 80 ? "…" : ""}
-                </td>
-                <td style={{ padding: "6px 8px" }}>{b.segment}</td>
-                <td style={{ padding: "6px 8px" }}>{b.status}</td>
-                <td style={{ padding: "6px 8px", textAlign: "right" }}>{b.sent}/{b.total}</td>
-                <td style={{ padding: "6px 8px", fontSize: 12 }}>
-                  {b.scheduledAt ? new Date(b.scheduledAt).toLocaleString() : "immediate"}
-                </td>
-                <td style={{ padding: "6px 8px" }}>
-                  {b.status === "PENDING" && (
-                    <button
-                      onClick={() => { if (confirm("Cancel this broadcast?")) cancel.mutate(b.id); }}
-                      style={{ fontSize: 12, color: "red", background: "none", border: "1px solid #ccc", borderRadius: 3, cursor: "pointer", padding: "2px 8px" }}
-                    >
-                      Cancel
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <Card className="mb-6">
+        <CardHeader><CardTitle>Compose Broadcast</CardTitle></CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          {formError && <p className="text-sm text-rust">{formError}</p>}
+          <Textarea
+            placeholder="Message (max 4000 chars)"
+            value={form.message}
+            onChange={e => setForm(f => ({ ...f, message: e.target.value }))}
+            rows={5}
+          />
+          <div className="flex flex-wrap gap-2 items-end">
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-ink-soft">Segment</label>
+              <Select
+                value={form.segment || "_none_"}
+                onValueChange={v => setForm(f => ({ ...f, segment: v === "_none_" ? "" : v }))}
+              >
+                <SelectTrigger className="w-48"><SelectValue placeholder="— pick segment —" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="_none_">— pick segment —</SelectItem>
+                  {(data?.segments ?? []).map(s => (
+                    <SelectItem key={s} value={s}>{s} ({data?.counts[s] ?? 0})</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-ink-soft">Schedule (optional)</label>
+              <Input
+                type="datetime-local"
+                value={form.scheduled_at}
+                onChange={e => setForm(f => ({ ...f, scheduled_at: e.target.value }))}
+                className="w-52"
+              />
+            </div>
+            <Button
+              onClick={() => send.mutate()}
+              disabled={!form.message || !form.segment || send.isPending}
+            >
+              {form.scheduled_at ? "Schedule" : "Send now"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <h2 className="text-sm font-semibold text-ink mb-3">History</h2>
+
+      <DataTable
+        columns={[
+          {
+            key: "message",
+            header: "Message",
+            render: b => (
+              <span className="text-sm text-ink truncate max-w-[240px] block">
+                {b.message.slice(0, 80)}{b.message.length > 80 ? "…" : ""}
+              </span>
+            ),
+          },
+          {
+            key: "segment",
+            header: "Segment",
+            render: b => b.segment,
+          },
+          {
+            key: "status",
+            header: "Status",
+            render: b => <StatusBadge status={b.status} />,
+          },
+          {
+            key: "sent",
+            header: "Sent",
+            render: b => `${b.sent}/${b.total}`,
+          },
+          {
+            key: "scheduled",
+            header: "Scheduled",
+            render: b => (
+              <span className="text-xs text-ink-faint">
+                {b.scheduledAt ? new Date(b.scheduledAt).toLocaleString() : "immediate"}
+              </span>
+            ),
+          },
+          {
+            key: "actions",
+            header: "",
+            render: b => b.status === "PENDING" ? (
+              <ConfirmDialog
+                trigger={<Button variant="ghost" size="sm" className="text-rust">Cancel</Button>}
+                title="Cancel broadcast?"
+                description="This will stop the scheduled broadcast."
+                confirmLabel="Cancel broadcast"
+                onConfirm={() => cancel.mutate(b.id)}
+              />
+            ) : null,
+          },
+        ]}
+        data={data?.history ?? []}
+        isLoading={!data}
+        keyExtractor={b => b.id}
+        empty={<EmptyState title="No broadcasts yet" />}
+      />
     </PageLayout>
   );
 }

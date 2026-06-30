@@ -1,6 +1,21 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { FilterBar } from "../components/shared/FilterBar";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
 import { apiPost } from "../api/client";
 
 interface AdminRow {
@@ -56,82 +71,106 @@ export function AdminsPage() {
     onError: (e: Error) => alert(e.message),
   });
 
-  if (isError) return <PageLayout title="Admins"><p style={{ color: "red" }}>Failed to load admins.</p></PageLayout>;
+  if (isError) return <PageLayout title="Admins"><p className="text-sm text-rust">Failed to load admins.</p></PageLayout>;
 
   return (
     <PageLayout title="Admins">
-      <div style={{ marginBottom: 20, display: "flex", gap: 8, alignItems: "center" }}>
-        <input
+      <PageHeader title="Admins" />
+
+      <FilterBar className="mb-6">
+        <Input
           placeholder="Telegram ID"
           value={addId}
           onChange={e => setAddId(e.target.value)}
-          style={{ padding: "5px 8px", width: 160 }}
+          className="w-44"
         />
-        <button onClick={() => add.mutate()} disabled={!addId || add.isPending} style={{ padding: "5px 14px" }}>
+        <Button onClick={() => add.mutate()} disabled={!addId || add.isPending}>
           + Add Admin
-        </button>
-        {addError && <span style={{ color: "red" }}>{addError}</span>}
-      </div>
+        </Button>
+        {addError && <span className="text-sm text-rust">{addError}</span>}
+      </FilterBar>
 
-      {!data ? (
-        <p>Loading…</p>
-      ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: "#f5f5f5" }}>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Telegram ID</th>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Name</th>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Role</th>
-              <th style={{ textAlign: "center", padding: "6px 8px" }}>Pwd</th>
-              <th style={{ textAlign: "center", padding: "6px 8px" }}>2FA</th>
-              <th style={{ textAlign: "center", padding: "6px 8px" }}>Session</th>
-              <th style={{ padding: "6px 8px" }} />
-            </tr>
-          </thead>
-          <tbody>
-            {data.admins.map(a => (
-              <tr key={a.telegramId} style={{ borderTop: "1px solid #eee" }}>
-                <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>
-                  {a.telegramId}{a.isSelf ? " (you)" : ""}
-                </td>
-                <td style={{ padding: "6px 8px" }}>{a.name ?? "—"}</td>
-                <td style={{ padding: "6px 8px" }}>
-                  <select
-                    value={a.role}
-                    onChange={e => setRole.mutate({ tgId: a.telegramId, role: e.target.value })}
-                    disabled={a.isSelf}
-                  >
-                    {data.roles.map(r => <option key={r}>{r}</option>)}
-                  </select>
-                </td>
-                <td style={{ padding: "6px 8px", textAlign: "center" }}>{a.passwordSet ? "✓" : "—"}</td>
-                <td style={{ padding: "6px 8px", textAlign: "center" }}>{a.twoFa ? "✓" : "—"}</td>
-                <td style={{ padding: "6px 8px", textAlign: "center" }}>
-                  {a.hasSession ? (
-                    <button
-                      onClick={() => forceLogout.mutate(a.telegramId)}
-                      disabled={a.isSelf}
-                      style={{ fontSize: 12, color: "orange", background: "none", border: "none", cursor: "pointer" }}
-                    >
-                      Logout
-                    </button>
-                  ) : "—"}
-                </td>
-                <td style={{ padding: "6px 8px" }}>
-                  {!a.fromEnv && !a.isSelf && (
-                    <button
-                      onClick={() => { if (confirm(`Remove admin ${a.telegramId}?`)) remove.mutate(a.telegramId); }}
-                      style={{ color: "red", background: "none", border: "none", cursor: "pointer" }}
-                    >
-                      Remove
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <DataTable
+        columns={[
+          {
+            key: "tid",
+            header: "Telegram ID",
+            render: a => (
+              <span className="font-mono text-sm">
+                {a.telegramId}{a.isSelf ? <Badge className="ml-2">You</Badge> : ""}
+              </span>
+            ),
+          },
+          {
+            key: "name",
+            header: "Name",
+            render: a => a.name ?? "—",
+          },
+          {
+            key: "role",
+            header: "Role",
+            render: a => (
+              <Select
+                value={a.role}
+                onValueChange={role => setRole.mutate({ tgId: a.telegramId, role })}
+                disabled={a.isSelf}
+              >
+                <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {(data?.roles ?? []).map(r => (
+                    <SelectItem key={r} value={r}>{r}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ),
+          },
+          {
+            key: "pwd",
+            header: "Pwd",
+            render: a => a.passwordSet
+              ? <Badge variant="default">✓</Badge>
+              : <span className="text-ink-faint">—</span>,
+          },
+          {
+            key: "twofa",
+            header: "2FA",
+            render: a => a.twoFa
+              ? <Badge variant="default">✓</Badge>
+              : <span className="text-ink-faint">—</span>,
+          },
+          {
+            key: "session",
+            header: "Session",
+            render: a => a.hasSession ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => forceLogout.mutate(a.telegramId)}
+                disabled={a.isSelf}
+              >
+                Logout
+              </Button>
+            ) : "—",
+          },
+          {
+            key: "actions",
+            header: "",
+            render: a => !a.fromEnv && !a.isSelf ? (
+              <ConfirmDialog
+                trigger={<Button variant="ghost" size="sm" className="text-rust">Remove</Button>}
+                title="Remove admin?"
+                description={`Remove admin ${a.telegramId} from the system.`}
+                confirmLabel="Remove"
+                onConfirm={() => remove.mutate(a.telegramId)}
+              />
+            ) : null,
+          },
+        ]}
+        data={data?.admins ?? []}
+        isLoading={!data}
+        keyExtractor={a => a.telegramId}
+        empty={<EmptyState title="No admins" />}
+      />
     </PageLayout>
   );
 }

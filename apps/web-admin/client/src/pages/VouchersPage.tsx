@@ -1,6 +1,21 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiPost } from "../api/client";
 
 interface Voucher {
@@ -56,79 +71,133 @@ export function VouchersPage() {
     onError: (e: Error) => alert(e.message),
   });
 
-  if (isError) return <PageLayout title="Vouchers"><p style={{ color: "red" }}>Failed to load vouchers.</p></PageLayout>;
+  if (isError) return <PageLayout title="Vouchers"><p className="text-sm text-rust">Failed to load vouchers.</p></PageLayout>;
 
   return (
     <PageLayout title="Vouchers">
-      <div style={{ marginBottom: 16 }}>
-        <button onClick={() => setShowForm(v => !v)} style={{ padding: "6px 14px" }}>
-          {showForm ? "Cancel" : "+ New Voucher"}
-        </button>
-      </div>
+      <PageHeader
+        title="Vouchers"
+        actions={
+          <Button onClick={() => setShowForm(v => !v)}>
+            {showForm ? "Cancel" : "+ New Voucher"}
+          </Button>
+        }
+      />
 
       {showForm && (
-        <form
-          onSubmit={e => { e.preventDefault(); create.mutate(form); }}
-          style={{ background: "#f9f9f9", padding: 16, borderRadius: 6, marginBottom: 20, display: "flex", flexWrap: "wrap", gap: 10 }}
-        >
-          {formError && <p style={{ width: "100%", color: "red", margin: 0 }}>{formError}</p>}
-          <input required placeholder="Code" value={form.code} onChange={e => setForm(f => ({ ...f, code: e.target.value }))} style={{ padding: "5px 8px", width: 120 }} />
-          <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} style={{ padding: "5px 8px" }}>
-            {(data?.types ?? ["PERCENT", "FIXED"]).map(t => <option key={t}>{t}</option>)}
-          </select>
-          <input required placeholder="Value" value={form.value} onChange={e => setForm(f => ({ ...f, value: e.target.value }))} style={{ padding: "5px 8px", width: 90 }} />
-          <input placeholder="Min purchase" value={form.min_purchase} onChange={e => setForm(f => ({ ...f, min_purchase: e.target.value }))} style={{ padding: "5px 8px", width: 110 }} />
-          <input placeholder="Usage limit" value={form.usage_limit} onChange={e => setForm(f => ({ ...f, usage_limit: e.target.value }))} style={{ padding: "5px 8px", width: 100 }} />
-          <input type="date" placeholder="Expires" value={form.expires_at} onChange={e => setForm(f => ({ ...f, expires_at: e.target.value }))} style={{ padding: "5px 8px" }} />
-          <button type="submit" disabled={create.isPending} style={{ padding: "5px 14px" }}>Create</button>
-        </form>
+        <Card className="mb-6">
+          <CardHeader><CardTitle>New Voucher</CardTitle></CardHeader>
+          <CardContent>
+            <form
+              onSubmit={e => { e.preventDefault(); create.mutate(form); }}
+              className="flex flex-wrap gap-2"
+            >
+              {formError && <p className="w-full text-sm text-rust">{formError}</p>}
+              <Input
+                required
+                placeholder="Code"
+                value={form.code}
+                onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
+                className="w-32"
+              />
+              <Select value={form.type} onValueChange={v => setForm(f => ({ ...f, type: v }))}>
+                <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {(data?.types ?? ["PERCENT", "FIXED"]).map(t => (
+                    <SelectItem key={t} value={t}>{t}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Input
+                required
+                placeholder="Value"
+                value={form.value}
+                onChange={e => setForm(f => ({ ...f, value: e.target.value }))}
+                className="w-24"
+              />
+              <Input
+                placeholder="Min purchase"
+                value={form.min_purchase}
+                onChange={e => setForm(f => ({ ...f, min_purchase: e.target.value }))}
+                className="w-28"
+              />
+              <Input
+                placeholder="Usage limit"
+                value={form.usage_limit}
+                onChange={e => setForm(f => ({ ...f, usage_limit: e.target.value }))}
+                className="w-28"
+              />
+              <Input
+                type="date"
+                placeholder="Expires"
+                value={form.expires_at}
+                onChange={e => setForm(f => ({ ...f, expires_at: e.target.value }))}
+                className="w-36"
+              />
+              <Button type="submit" disabled={create.isPending}>Create</Button>
+            </form>
+          </CardContent>
+        </Card>
       )}
 
-      {!data ? (
-        <p>Loading…</p>
-      ) : data.vouchers.length === 0 ? (
-        <p>No vouchers found.</p>
-      ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: "#f5f5f5" }}>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Code</th>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Type</th>
-              <th style={{ textAlign: "right", padding: "6px 8px" }}>Value</th>
-              <th style={{ textAlign: "right", padding: "6px 8px" }}>Used</th>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Expires</th>
-              <th style={{ textAlign: "center", padding: "6px 8px" }}>Active</th>
-              <th style={{ padding: "6px 8px" }} />
-            </tr>
-          </thead>
-          <tbody>
-            {data.vouchers.map(v => (
-              <tr key={v.id} style={{ borderTop: "1px solid #eee" }}>
-                <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{v.code}</td>
-                <td style={{ padding: "6px 8px" }}>{v.type}</td>
-                <td style={{ padding: "6px 8px", textAlign: "right" }}>{v.value}</td>
-                <td style={{ padding: "6px 8px", textAlign: "right" }}>{v.usedCount}{v.usageLimit ? `/${v.usageLimit}` : ""}</td>
-                <td style={{ padding: "6px 8px" }}>{v.expiresAt ? v.expiresAt.slice(0, 10) : "—"}</td>
-                <td style={{ padding: "6px 8px", textAlign: "center" }}>
-                  <input
-                    type="checkbox"
-                    checked={v.isActive}
-                    onChange={e => toggle.mutate({ id: v.id, active: e.target.checked })}
-                  />
-                </td>
-                <td style={{ padding: "6px 8px" }}>
-                  <button
-                    onClick={() => { if (confirm(`Delete voucher ${v.code}?`)) del.mutate(v.id); }}
-                    style={{ color: "red", background: "none", border: "none", cursor: "pointer" }}
-                  >
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <DataTable
+        columns={[
+          {
+            key: "code",
+            header: "Code",
+            render: v => <span className="font-mono text-sm">{v.code}</span>,
+          },
+          {
+            key: "type",
+            header: "Type",
+            render: v => <Badge variant="outline">{v.type}</Badge>,
+          },
+          {
+            key: "value",
+            header: "Value",
+            render: v => v.value,
+          },
+          {
+            key: "used",
+            header: "Used",
+            render: v => `${v.usedCount}${v.usageLimit ? `/${v.usageLimit}` : ""}`,
+          },
+          {
+            key: "expires",
+            header: "Expires",
+            render: v => v.expiresAt ? v.expiresAt.slice(0, 10) : "—",
+          },
+          {
+            key: "active",
+            header: "Active",
+            render: v => (
+              <input
+                type="checkbox"
+                checked={v.isActive}
+                onChange={e => toggle.mutate({ id: v.id, active: e.target.checked })}
+                className="h-4 w-4"
+              />
+            ),
+          },
+          {
+            key: "actions",
+            header: "",
+            render: v => (
+              <ConfirmDialog
+                trigger={<Button variant="ghost" size="sm" className="text-rust">Delete</Button>}
+                title="Delete voucher?"
+                description={`Permanently delete voucher "${v.code}".`}
+                confirmLabel="Delete"
+                onConfirm={() => del.mutate(v.id)}
+              />
+            ),
+          },
+        ]}
+        data={data?.vouchers ?? []}
+        isLoading={!data}
+        keyExtractor={v => v.id}
+        empty={<EmptyState title="No vouchers found" description="Create your first voucher to offer discounts." />}
+      />
     </PageLayout>
   );
 }

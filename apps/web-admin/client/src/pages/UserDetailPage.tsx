@@ -2,6 +2,15 @@ import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { StatusBadge } from "../components/shared/StatusBadge";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiPost } from "../api/client";
 
 interface UserDetail {
@@ -49,103 +58,109 @@ export function UserDetailPage() {
     onError: (e: Error) => alert(e.message),
   });
 
-  if (isError) return <PageLayout title="Customer"><p style={{ color: "red" }}>Failed to load user.</p></PageLayout>;
+  if (isError) return <PageLayout title="Customer"><p className="text-sm text-rust">Failed to load user.</p></PageLayout>;
   if (!data) return <PageLayout title="Customer"><p>Loading…</p></PageLayout>;
 
   const { user } = data;
   return (
     <PageLayout title={user.fullName ?? user.username ?? `User #${user.id}`}>
-      <button onClick={() => navigate("/users")} style={{ marginBottom: 16, background: "none", border: "1px solid #ccc", borderRadius: 4, padding: "4px 12px", cursor: "pointer" }}>
-        ← Back to Customers
-      </button>
+      <PageHeader
+        title={user.fullName ?? user.username ?? `User #${user.id}`}
+        breadcrumb={[{ label: "Customers", href: "/users" }]}
+        actions={<Button variant="outline" size="sm" onClick={() => navigate("/users")}>← Back</Button>}
+      />
 
-      <section style={{ marginBottom: 20 }}>
-        <p><strong>Telegram ID:</strong> {user.telegramId}</p>
-        <p><strong>Username:</strong> {user.username ? `@${user.username}` : "—"}</p>
-        <p><strong>Role:</strong> {user.role}</p>
-        <p><strong>Wallet:</strong> {user.walletBalance} {user.walletCurrency}</p>
-        <p><strong>Total spent:</strong> {data.totalSpent}</p>
-        {user.banned && <p style={{ color: "red" }}><strong>BANNED</strong>{user.banReason ? ` — ${user.banReason}` : ""}</p>}
-      </section>
+      {/* User info */}
+      <div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-2">
+        <Card>
+          <CardHeader><CardTitle>Profile</CardTitle></CardHeader>
+          <CardContent className="flex flex-col gap-1 text-sm">
+            {user.banned && (
+              <div className="mb-2 rounded bg-rust/10 px-3 py-2 text-xs font-medium text-rust">
+                BANNED{user.banReason ? ` — ${user.banReason}` : ""}
+              </div>
+            )}
+            <div className="flex justify-between"><span className="text-ink-soft">Telegram ID</span><span className="font-mono text-xs">{user.telegramId}</span></div>
+            <div className="flex justify-between"><span className="text-ink-soft">Username</span><span>{user.username ? `@${user.username}` : "—"}</span></div>
+            <div className="flex justify-between"><span className="text-ink-soft">Role</span><span><Badge variant="outline">{user.role}</Badge></span></div>
+            <div className="flex justify-between"><span className="text-ink-soft">Wallet</span><span className="font-mono">{user.walletBalance} {user.walletCurrency}</span></div>
+            <div className="flex justify-between"><span className="text-ink-soft">Total spent</span><span>{data.totalSpent}</span></div>
+          </CardContent>
+        </Card>
 
-      {/* Wallet adjust */}
-      <section style={{ background: "#f9f9f9", padding: 16, borderRadius: 6, marginBottom: 20 }}>
-        <h2 style={{ fontSize: 15, marginBottom: 10 }}>Wallet Adjustment</h2>
-        {walletError && <p style={{ color: "red", margin: "0 0 8px" }}>{walletError}</p>}
-        <div style={{ display: "flex", gap: 8 }}>
-          <input placeholder="Amount (+ or −)" value={walletForm.delta} onChange={e => setWalletForm(f => ({ ...f, delta: e.target.value }))} style={{ width: 120, padding: "5px 8px" }} />
-          <input placeholder="Reason (required)" value={walletForm.note} onChange={e => setWalletForm(f => ({ ...f, note: e.target.value }))} style={{ flex: 1, padding: "5px 8px" }} />
-          <button onClick={() => wallet.mutate()} disabled={wallet.isPending} style={{ padding: "5px 14px" }}>Adjust</button>
+        <div className="flex flex-col gap-4">
+          {/* Wallet adjust */}
+          <Card>
+            <CardHeader><CardTitle>Wallet Adjustment</CardTitle></CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              {walletError && <p className="text-xs text-rust">{walletError}</p>}
+              <div className="flex gap-2">
+                <Input placeholder="Amount (+ or −)" value={walletForm.delta} onChange={e => setWalletForm(f => ({ ...f, delta: e.target.value }))} className="w-32" />
+                <Input placeholder="Reason (required)" value={walletForm.note} onChange={e => setWalletForm(f => ({ ...f, note: e.target.value }))} className="flex-1" />
+                <Button onClick={() => wallet.mutate()} disabled={wallet.isPending}>Adjust</Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Ban / unban */}
+          <Card>
+            <CardHeader><CardTitle>Account</CardTitle></CardHeader>
+            <CardContent>
+              {user.banned ? (
+                <ConfirmDialog
+                  trigger={<Button variant="outline">Unban user</Button>}
+                  title="Unban this user?"
+                  description="The user will be able to use the bot again."
+                  confirmLabel="Unban"
+                  variant="default"
+                  onConfirm={() => ban.mutate(false)}
+                />
+              ) : (
+                <div className="flex gap-2">
+                  <Input placeholder="Ban reason (optional)" value={banReason} onChange={e => setBanReason(e.target.value)} className="flex-1" />
+                  <ConfirmDialog
+                    trigger={<Button variant="destructive">Ban user</Button>}
+                    title="Ban this user?"
+                    description="The user will be blocked from using the bot."
+                    confirmLabel="Ban"
+                    onConfirm={() => ban.mutate(true)}
+                  />
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
-      </section>
-
-      {/* Ban / unban */}
-      <section style={{ marginBottom: 20 }}>
-        {user.banned ? (
-          <button onClick={() => ban.mutate(false)} style={{ padding: "6px 14px", background: "#28a745", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" }}>
-            Unban user
-          </button>
-        ) : (
-          <div style={{ display: "flex", gap: 8 }}>
-            <input placeholder="Ban reason (optional)" value={banReason} onChange={e => setBanReason(e.target.value)} style={{ flex: 1, padding: "5px 8px" }} />
-            <button onClick={() => { if (confirm("Ban this user?")) ban.mutate(true); }} style={{ padding: "5px 14px", background: "#dc3545", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" }}>
-              Ban user
-            </button>
-          </div>
-        )}
-      </section>
+      </div>
 
       {/* Orders */}
-      <section style={{ marginBottom: 20 }}>
-        <h2 style={{ fontSize: 15, marginBottom: 8 }}>Recent Orders ({data.orders.length})</h2>
-        {data.orders.length === 0 ? <p>No orders.</p> : (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr style={{ background: "#f5f5f5" }}>
-              <th style={{ textAlign: "left", padding: "5px 8px" }}>Code</th>
-              <th style={{ textAlign: "left", padding: "5px 8px" }}>Status</th>
-              <th style={{ textAlign: "right", padding: "5px 8px" }}>Total</th>
-              <th style={{ textAlign: "left", padding: "5px 8px" }}>Date</th>
-            </tr></thead>
-            <tbody>
-              {data.orders.map(o => (
-                <tr key={o.id} style={{ borderTop: "1px solid #eee", cursor: "pointer" }} onClick={() => navigate(`/orders/${o.id}`)}>
-                  <td style={{ padding: "5px 8px", fontFamily: "monospace" }}>{o.orderCode}</td>
-                  <td style={{ padding: "5px 8px" }}>{o.status}</td>
-                  <td style={{ padding: "5px 8px", textAlign: "right" }}>{o.totalIdr}</td>
-                  <td style={{ padding: "5px 8px", fontSize: 12 }}>{new Date(o.createdAt).toLocaleDateString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
+      <h2 className="text-sm font-semibold text-ink mb-3">Recent Orders ({data.orders.length})</h2>
+      <DataTable
+        columns={[
+          { key: "code", header: "Code", render: o => <span className="font-mono text-xs">{o.orderCode}</span> },
+          { key: "status", header: "Status", render: o => <StatusBadge status={o.status} /> },
+          { key: "total", header: "Total", render: o => <span className="text-sm">{o.totalIdr}</span> },
+          { key: "date", header: "Date", render: o => <span className="text-xs text-ink-faint">{new Date(o.createdAt).toLocaleDateString()}</span> },
+        ]}
+        data={data.orders}
+        keyExtractor={o => o.id}
+        onRowClick={o => navigate(`/orders/${o.id}`)}
+        empty={<EmptyState title="No orders" />}
+      />
 
       {/* Wallet ledger */}
-      <section>
-        <h2 style={{ fontSize: 15, marginBottom: 8 }}>Wallet Ledger ({data.ledger.length})</h2>
-        {data.ledger.length === 0 ? <p>No ledger entries.</p> : (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead><tr style={{ background: "#f5f5f5" }}>
-              <th style={{ textAlign: "right", padding: "5px 8px" }}>Delta</th>
-              <th style={{ textAlign: "right", padding: "5px 8px" }}>Balance</th>
-              <th style={{ textAlign: "left", padding: "5px 8px" }}>Reason</th>
-              <th style={{ textAlign: "left", padding: "5px 8px" }}>Note</th>
-              <th style={{ textAlign: "left", padding: "5px 8px" }}>Date</th>
-            </tr></thead>
-            <tbody>
-              {data.ledger.map(l => (
-                <tr key={l.id} style={{ borderTop: "1px solid #eee" }}>
-                  <td style={{ padding: "5px 8px", textAlign: "right", color: l.delta.startsWith("-") ? "red" : "green" }}>{l.delta}</td>
-                  <td style={{ padding: "5px 8px", textAlign: "right" }}>{l.balance}</td>
-                  <td style={{ padding: "5px 8px" }}>{l.reason}</td>
-                  <td style={{ padding: "5px 8px", color: "#666" }}>{l.note ?? "—"}</td>
-                  <td style={{ padding: "5px 8px", fontSize: 12 }}>{new Date(l.createdAt).toLocaleDateString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
+      <h2 className="text-sm font-semibold text-ink mb-3 mt-6">Wallet Ledger ({data.ledger.length})</h2>
+      <DataTable
+        columns={[
+          { key: "delta", header: "Delta", render: l => <span className={`font-mono text-sm ${l.delta.startsWith("-") ? "text-rust" : "text-grass"}`}>{l.delta}</span> },
+          { key: "balance", header: "Balance", render: l => <span className="font-mono text-sm">{l.balance}</span> },
+          { key: "reason", header: "Reason", render: l => <span className="text-sm">{l.reason}</span> },
+          { key: "note", header: "Note", render: l => <span className="text-xs text-ink-soft">{l.note ?? "—"}</span> },
+          { key: "date", header: "Date", render: l => <span className="text-xs text-ink-faint">{new Date(l.createdAt).toLocaleDateString()}</span> },
+        ]}
+        data={data.ledger}
+        keyExtractor={l => l.id}
+        empty={<EmptyState title="No ledger entries" />}
+      />
     </PageLayout>
   );
 }

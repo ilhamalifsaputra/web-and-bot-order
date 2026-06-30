@@ -45,8 +45,8 @@ describe("StockProductPage", () => {
       }),
     );
     render(<StockProductPage />, { wrapper: Wrapper });
-    // Wait for data — "AVAILABLE" is in the status td (unique leaf cell)
-    await waitFor(() => expect(screen.getByText("AVAILABLE")).toBeInTheDocument());
+    // Wait for data — StatusBadge renders "Available" (title-cased) in the status td
+    await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
     // Item id appears in its own td
     expect(screen.getByText("101")).toBeInTheDocument();
   });

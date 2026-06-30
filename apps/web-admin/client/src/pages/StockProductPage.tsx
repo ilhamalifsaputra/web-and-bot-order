@@ -2,6 +2,13 @@ import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { StatusBadge } from "../components/shared/StatusBadge";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiPost } from "../api/client";
 
 interface StockItem {
@@ -65,7 +72,7 @@ export function StockProductPage() {
   if (isError) {
     return (
       <PageLayout title="Stock — Product">
-        <p style={{ color: "red" }}>Failed to load product.</p>
+        <p className="text-sm text-rust">Failed to load product.</p>
       </PageLayout>
     );
   }
@@ -81,85 +88,52 @@ export function StockProductPage() {
 
   return (
     <PageLayout title={product.name}>
-      <button
-        onClick={() => navigate("/stock")}
-        style={{
-          marginBottom: 16,
-          background: "none",
-          border: "1px solid #ccc",
-          borderRadius: 4,
-          padding: "4px 12px",
-          cursor: "pointer",
-        }}
-      >
-        ← Back to Stock
-      </button>
+      <PageHeader
+        title={product.name}
+        breadcrumb={[{ label: "Stock", href: "/stock" }]}
+        actions={<Button variant="outline" size="sm" onClick={() => navigate("/stock")}>← Back</Button>}
+      />
 
-      <section style={{ marginBottom: 16 }}>
-        <p>
-          <strong>Product:</strong> {product.product?.name ?? "—"}
-        </p>
-        <p>
-          <strong>Category:</strong> {product.product?.category?.name ?? "—"}
-        </p>
-        <p>
-          <strong>Available:</strong> {available} &nbsp; <strong>Waiting:</strong> {waiting}
-        </p>
-      </section>
+      {/* Stats row */}
+      <div className="mb-4 flex gap-4 text-sm">
+        <span className="text-ink-soft">Product: <span className="text-ink">{product.product?.name ?? "—"}</span></span>
+        <span className="text-ink-soft">Category: <span className="text-ink">{product.product?.category?.name ?? "—"}</span></span>
+        <span className="text-ink-soft">Available: <span className="font-semibold text-ink">{available}</span></span>
+        <span className="text-ink-soft">Waiting: <span className="text-ink">{waiting}</span></span>
+      </div>
 
-      <section
-        style={{ background: "#f9f9f9", padding: 16, borderRadius: 6, marginBottom: 20 }}
-      >
-        <h2 style={{ fontSize: 15, marginBottom: 10 }}>Bulk Add Credentials</h2>
-        {bulkMsg && <p style={{ color: "green", margin: "0 0 8px" }}>{bulkMsg}</p>}
-        {bulkError && <p style={{ color: "red", margin: "0 0 8px" }}>{bulkError}</p>}
-        <textarea
-          value={credentials}
-          onChange={(e) => setCredentials(e.target.value)}
-          placeholder="One credential per line…"
-          rows={6}
-          style={{ width: "100%", padding: "6px 8px", boxSizing: "border-box", fontFamily: "monospace" }}
-        />
-        <button
-          onClick={() => bulkAdd.mutate()}
-          disabled={bulkAdd.isPending || !credentials.trim()}
-          style={{ marginTop: 8, padding: "6px 16px" }}
-        >
-          {bulkAdd.isPending ? "Adding…" : "Add Stock"}
-        </button>
-      </section>
+      {/* Bulk add */}
+      <Card className="mb-6">
+        <CardHeader><CardTitle>Bulk Add Credentials</CardTitle></CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          {bulkMsg && <p className="text-sm text-grass">{bulkMsg}</p>}
+          {bulkError && <p className="text-sm text-rust">{bulkError}</p>}
+          <Textarea
+            value={credentials}
+            onChange={e => setCredentials(e.target.value)}
+            placeholder="One credential per line…"
+            rows={6}
+            className="font-mono text-sm"
+          />
+          <Button onClick={() => bulkAdd.mutate()} disabled={bulkAdd.isPending || !credentials.trim()} className="self-start">
+            {bulkAdd.isPending ? "Adding…" : "Add Stock"}
+          </Button>
+        </CardContent>
+      </Card>
 
-      <section>
-        <h2 style={{ fontSize: 15, marginBottom: 8 }}>
-          Stock Items ({items.length})
-        </h2>
-        {items.length === 0 ? (
-          <p>No stock items.</p>
-        ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ background: "#f5f5f5" }}>
-                <th style={{ textAlign: "left", padding: "5px 8px" }}>#</th>
-                <th style={{ textAlign: "left", padding: "5px 8px" }}>Status</th>
-                <th style={{ textAlign: "left", padding: "5px 8px" }}>Note</th>
-                <th style={{ textAlign: "left", padding: "5px 8px" }}>Added</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item) => (
-                <tr key={item.id} style={{ borderTop: "1px solid #eee" }}>
-                  <td style={{ padding: "5px 8px", fontFamily: "monospace" }}>{item.id}</td>
-                  <td style={{ padding: "5px 8px" }}>{item.status}</td>
-                  <td style={{ padding: "5px 8px", color: "#666" }}>{item.note ?? "—"}</td>
-                  <td style={{ padding: "5px 8px", fontSize: 12 }}>
-                    {new Date(item.createdAt).toLocaleDateString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
+      {/* Items table */}
+      <h2 className="text-sm font-semibold text-ink mb-3">Stock Items ({items.length})</h2>
+      <DataTable
+        columns={[
+          { key: "id", header: "#", render: item => <span className="font-mono text-xs text-ink-soft">{item.id}</span> },
+          { key: "status", header: "Status", render: item => <StatusBadge status={item.status} /> },
+          { key: "note", header: "Note", render: item => <span className="text-xs text-ink-soft">{item.note ?? "—"}</span> },
+          { key: "added", header: "Added", render: item => <span className="text-xs text-ink-faint">{new Date(item.createdAt).toLocaleDateString()}</span> },
+        ]}
+        data={items}
+        keyExtractor={item => item.id}
+        empty={<EmptyState title="No stock items" description="Add credentials above to stock this denomination." />}
+      />
     </PageLayout>
   );
 }

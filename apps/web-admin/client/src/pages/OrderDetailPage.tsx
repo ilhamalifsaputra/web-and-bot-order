@@ -2,6 +2,14 @@ import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { StatusBadge } from "../components/shared/StatusBadge";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiPost } from "../api/client";
 
 interface OrderItem {
@@ -86,7 +94,7 @@ export function OrderDetailPage() {
   if (isError) {
     return (
       <PageLayout title="Order Detail">
-        <p style={{ color: "red" }}>Failed to load order.</p>
+        <p className="text-sm text-rust">Failed to load order.</p>
       </PageLayout>
     );
   }
@@ -102,163 +110,127 @@ export function OrderDetailPage() {
 
   return (
     <PageLayout title={`Order ${order.orderCode}`}>
-      <button
-        onClick={() => navigate("/orders")}
-        style={{
-          marginBottom: 16,
-          background: "none",
-          border: "1px solid #ccc",
-          borderRadius: 4,
-          padding: "4px 12px",
-          cursor: "pointer",
-        }}
-      >
-        ← Back to Orders
-      </button>
+      <PageHeader
+        title={`Order ${order.orderCode}`}
+        breadcrumb={[{ label: "Orders", href: "/orders" }]}
+        actions={<Button variant="outline" size="sm" onClick={() => navigate("/orders")}>← Back</Button>}
+      />
 
-      {actionError && (
-        <p style={{ color: "red", marginBottom: 12 }}>{actionError}</p>
-      )}
+      {actionError && <p className="mb-4 text-sm text-rust">{actionError}</p>}
 
-      <section style={{ marginBottom: 20 }}>
-        <p>
-          <strong>Status:</strong> {order.status}
-        </p>
-        <p>
-          <strong>Customer:</strong>{" "}
-          {order.user?.fullName ?? order.user?.username ?? "—"}{" "}
-          {order.user ? `(TG: ${order.user.telegramId})` : ""}
-        </p>
-        <p>
-          <strong>Date:</strong> {new Date(order.createdAt).toLocaleString()}
-        </p>
-        {order.voucher && (
-          <p>
-            <strong>Voucher:</strong> {order.voucher.code} ({order.voucher.type})
-          </p>
-        )}
-      </section>
+      {/* Order info */}
+      <div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-2">
+        <Card>
+          <CardHeader><CardTitle>Order Info</CardTitle></CardHeader>
+          <CardContent className="flex flex-col gap-1 text-sm">
+            <div className="flex justify-between">
+              <span className="text-ink-soft">Status</span>
+              <StatusBadge status={order.status} />
+            </div>
+            <div className="flex justify-between">
+              <span className="text-ink-soft">Customer</span>
+              <span className="text-ink">{order.user?.fullName ?? order.user?.username ?? "—"}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-ink-soft">Telegram ID</span>
+              <span className="font-mono text-xs text-ink-soft">{order.user?.telegramId ?? "—"}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-ink-soft">Date</span>
+              <span className="text-ink">{new Date(order.createdAt).toLocaleString()}</span>
+            </div>
+            {order.voucher && (
+              <div className="flex justify-between">
+                <span className="text-ink-soft">Voucher</span>
+                <span className="font-mono text-xs">{order.voucher.code} ({order.voucher.type})</span>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
-      <section style={{ marginBottom: 20 }}>
-        <h2 style={{ fontSize: 15, marginBottom: 8 }}>Payment</h2>
-        <p>Items: {money.itemsTotal} {money.currency}</p>
-        {money.bulkDiscount && <p>Bulk discount: −{money.bulkDiscount}</p>}
-        {money.discount && <p>Discount: −{money.discount}</p>}
-        {money.walletCredit && <p>Wallet credit: −{money.walletCredit}</p>}
-        {money.amountMarker && <p>Unique cents: +{money.amountMarker}</p>}
-        <p>
-          <strong>Total: {money.totalToPay} {money.currency}</strong>
-        </p>
-        {money.equivalentIdr && <p>≈ {money.equivalentIdr} IDR</p>}
-      </section>
+        <Card>
+          <CardHeader><CardTitle>Payment</CardTitle></CardHeader>
+          <CardContent className="flex flex-col gap-1 text-sm">
+            <div className="flex justify-between">
+              <span className="text-ink-soft">Items</span>
+              <span>{money.itemsTotal} {money.currency}</span>
+            </div>
+            {money.bulkDiscount && <div className="flex justify-between"><span className="text-ink-soft">Bulk discount</span><span className="text-rust">−{money.bulkDiscount}</span></div>}
+            {money.discount && <div className="flex justify-between"><span className="text-ink-soft">Discount</span><span className="text-rust">−{money.discount}</span></div>}
+            {money.walletCredit && <div className="flex justify-between"><span className="text-ink-soft">Wallet credit</span><span className="text-rust">−{money.walletCredit}</span></div>}
+            {money.amountMarker && <div className="flex justify-between"><span className="text-ink-soft">Unique cents</span><span>+{money.amountMarker}</span></div>}
+            <div className="flex justify-between border-t border-line pt-1 mt-1">
+              <span className="font-medium text-ink">Total</span>
+              <span className="font-semibold">{money.totalToPay} {money.currency}</span>
+            </div>
+            {money.equivalentIdr && <div className="flex justify-between"><span className="text-ink-soft">≈ IDR</span><span className="text-ink-soft">{money.equivalentIdr}</span></div>}
+          </CardContent>
+        </Card>
+      </div>
 
-      <section style={{ marginBottom: 20 }}>
-        <h2 style={{ fontSize: 15, marginBottom: 8 }}>Items ({order.items.length})</h2>
-        {order.items.length === 0 ? (
-          <p>No items.</p>
-        ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ background: "#f5f5f5" }}>
-                <th style={{ textAlign: "left", padding: "5px 8px" }}>Product</th>
-                <th style={{ textAlign: "center", padding: "5px 8px" }}>Qty</th>
-                <th style={{ textAlign: "right", padding: "5px 8px" }}>Unit Price</th>
-                <th style={{ textAlign: "left", padding: "5px 8px" }}>Credentials</th>
-              </tr>
-            </thead>
-            <tbody>
-              {order.items.map((item) => (
-                <tr key={item.id} style={{ borderTop: "1px solid #eee" }}>
-                  <td style={{ padding: "5px 8px" }}>{item.product.name}</td>
-                  <td style={{ padding: "5px 8px", textAlign: "center" }}>{item.quantity}</td>
-                  <td style={{ padding: "5px 8px", textAlign: "right" }}>{item.unitPrice}</td>
-                  <td style={{ padding: "5px 8px", fontFamily: "monospace", fontSize: 12 }}>
-                    {item.stockItem?.credentials ?? "—"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
+      {/* Items table */}
+      <h2 className="text-sm font-semibold text-ink mb-3">Items ({order.items.length})</h2>
+      <DataTable
+        columns={[
+          { key: "product", header: "Product", render: item => <span className="text-sm">{item.product.name}</span> },
+          { key: "qty", header: "Qty", render: item => <span className="text-sm text-center">{item.quantity}</span> },
+          { key: "price", header: "Unit Price", render: item => <span className="text-sm font-mono">{item.unitPrice}</span> },
+          { key: "credentials", header: "Credentials", render: item => <span className="font-mono text-xs text-ink-soft">{item.stockItem?.credentials ?? "—"}</span> },
+        ]}
+        data={order.items}
+        keyExtractor={item => item.id}
+        empty={<EmptyState title="No items" />}
+      />
 
+      {/* Actions */}
       {(canAct || canCredit) && (
-        <section style={{ background: "#f9f9f9", padding: 16, borderRadius: 6 }}>
-          <h2 style={{ fontSize: 15, marginBottom: 12 }}>Actions</h2>
-
-          {canAct && (
-            <div style={{ marginBottom: 12 }}>
-              <button
-                onClick={() => {
-                  if (confirm("Approve and deliver this order?")) approve.mutate();
-                }}
-                disabled={approve.isPending}
-                style={{
-                  padding: "6px 16px",
-                  background: "#28a745",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: 4,
-                  cursor: "pointer",
-                  marginRight: 8,
-                }}
-              >
-                {approve.isPending ? "Approving…" : "Approve & Deliver"}
-              </button>
-            </div>
-          )}
-
-          {canAct && (
-            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              <input
-                value={rejectReason}
-                onChange={(e) => setRejectReason(e.target.value)}
-                placeholder="Rejection reason (required)"
-                style={{ flex: 1, padding: "5px 8px" }}
+        <Card className="mt-6">
+          <CardHeader><CardTitle>Actions</CardTitle></CardHeader>
+          <CardContent className="flex flex-wrap gap-3">
+            {canAct && (
+              <ConfirmDialog
+                trigger={<Button disabled={approve.isPending}>{approve.isPending ? "Approving…" : "Approve & Deliver"}</Button>}
+                title="Approve and deliver order?"
+                description="Stock will be delivered to the customer and the order marked as delivered."
+                confirmLabel="Approve"
+                variant="default"
+                onConfirm={() => approve.mutate()}
               />
-              <button
-                onClick={() => {
-                  if (!rejectReason.trim()) {
-                    setActionError("Rejection reason is required.");
-                    return;
-                  }
-                  if (confirm("Reject this order?")) reject.mutate();
-                }}
-                disabled={reject.isPending}
-                style={{
-                  padding: "5px 14px",
-                  background: "#dc3545",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: 4,
-                  cursor: "pointer",
-                }}
-              >
-                {reject.isPending ? "Rejecting…" : "Reject"}
-              </button>
-            </div>
-          )}
+            )}
 
-          {canCredit && (
-            <button
-              onClick={() => {
-                if (confirm("Credit the paid amount to the buyer's balance?"))
-                  creditBalance.mutate();
-              }}
-              disabled={creditBalance.isPending}
-              style={{
-                padding: "6px 16px",
-                background: "#6c757d",
-                color: "#fff",
-                border: "none",
-                borderRadius: 4,
-                cursor: "pointer",
-              }}
-            >
-              {creditBalance.isPending ? "Processing…" : "Credit to Balance"}
-            </button>
-          )}
-        </section>
+            {canAct && (
+              <div className="flex gap-2 items-start">
+                <Input
+                  value={rejectReason}
+                  onChange={e => setRejectReason(e.target.value)}
+                  placeholder="Rejection reason (required)"
+                  className="w-64"
+                />
+                <ConfirmDialog
+                  trigger={<Button variant="destructive" disabled={reject.isPending}>{reject.isPending ? "Rejecting…" : "Reject"}</Button>}
+                  title="Reject this order?"
+                  description={rejectReason.trim() ? `Reason: ${rejectReason}` : "A reason is required to reject."}
+                  confirmLabel="Reject"
+                  onConfirm={() => {
+                    if (!rejectReason.trim()) { setActionError("Rejection reason is required."); return; }
+                    reject.mutate();
+                  }}
+                />
+              </div>
+            )}
+
+            {canCredit && (
+              <ConfirmDialog
+                trigger={<Button variant="outline" disabled={creditBalance.isPending}>{creditBalance.isPending ? "Processing…" : "Credit to Balance"}</Button>}
+                title="Credit to wallet balance?"
+                description="The paid amount will be credited to the buyer's wallet balance."
+                confirmLabel="Credit"
+                variant="default"
+                onConfirm={() => creditBalance.mutate()}
+              />
+            )}
+          </CardContent>
+        </Card>
       )}
     </PageLayout>
   );

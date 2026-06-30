@@ -1,6 +1,11 @@
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 
 interface DenominationRow {
   id: number;
@@ -52,7 +57,7 @@ export function ProductDetailPage() {
   if (isError) {
     return (
       <PageLayout title="Product Detail">
-        <p style={{ color: "red" }}>Failed to load product.</p>
+        <p className="text-sm text-rust">Failed to load product.</p>
       </PageLayout>
     );
   }
@@ -68,79 +73,32 @@ export function ProductDetailPage() {
 
   return (
     <PageLayout title={product.name}>
-      <button
-        onClick={() => navigate("/catalog")}
-        style={{
-          marginBottom: 16,
-          background: "none",
-          border: "1px solid #ccc",
-          borderRadius: 4,
-          padding: "4px 12px",
-          cursor: "pointer",
-        }}
-      >
-        ← Back to Catalog
-      </button>
+      <PageHeader
+        title={product.name}
+        breadcrumb={[{ label: "Catalog", href: "/catalog" }]}
+        actions={<Button variant="outline" size="sm" onClick={() => navigate("/catalog")}>← Back</Button>}
+      />
 
-      <section style={{ marginBottom: 20 }}>
-        <p>
-          <strong>Category:</strong> {product.category?.name ?? "—"}
-        </p>
-        <p>
-          <strong>Status:</strong> {product.isActive ? "Active" : "Inactive"}
-        </p>
-      </section>
+      <div className="mb-4 flex gap-4 text-sm">
+        <span className="text-ink-soft">Category: <span className="text-ink">{product.category?.name ?? "—"}</span></span>
+        <Badge variant={product.isActive ? "default" : "secondary"}>{product.isActive ? "Active" : "Inactive"}</Badge>
+      </div>
 
-      <section>
-        <h2 style={{ fontSize: 16, marginBottom: 10 }}>
-          Denominations ({product.denominations.length})
-        </h2>
-        {product.denominations.length === 0 ? (
-          <p>No denominations.</p>
-        ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ background: "#f5f5f5" }}>
-                <th style={{ textAlign: "left", padding: "5px 8px" }}>Name</th>
-                <th style={{ textAlign: "left", padding: "5px 8px" }}>Type</th>
-                <th style={{ textAlign: "left", padding: "5px 8px" }}>Duration</th>
-                <th style={{ textAlign: "right", padding: "5px 8px" }}>Price</th>
-                <th style={{ textAlign: "center", padding: "5px 8px" }}>Stock</th>
-                <th style={{ textAlign: "center", padding: "5px 8px" }}>Waiting</th>
-                <th style={{ textAlign: "center", padding: "5px 8px" }}>Active</th>
-              </tr>
-            </thead>
-            <tbody>
-              {product.denominations.map((d) => {
-                const stat = statsByDenom[String(d.id)];
-                return (
-                  <tr
-                    key={d.id}
-                    style={{
-                      borderTop: "1px solid #eee",
-                      color: d.isActive ? undefined : "#999",
-                    }}
-                  >
-                    <td style={{ padding: "5px 8px" }}>{d.name}</td>
-                    <td style={{ padding: "5px 8px" }}>{d.type}</td>
-                    <td style={{ padding: "5px 8px" }}>{d.durationLabel}</td>
-                    <td style={{ padding: "5px 8px", textAlign: "right" }}>{d.price}</td>
-                    <td style={{ padding: "5px 8px", textAlign: "center" }}>
-                      {stat?.available ?? 0}
-                    </td>
-                    <td style={{ padding: "5px 8px", textAlign: "center" }}>
-                      {stat?.waiting ?? 0}
-                    </td>
-                    <td style={{ padding: "5px 8px", textAlign: "center" }}>
-                      {d.isActive ? "Yes" : "—"}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </section>
+      <h2 className="text-sm font-semibold text-ink mb-3">Denominations ({product.denominations.length})</h2>
+      <DataTable
+        columns={[
+          { key: "name", header: "Name", render: d => <span className={`text-sm ${!d.isActive ? "text-ink-faint" : "text-ink"}`}>{d.name}</span> },
+          { key: "type", header: "Type", render: d => <Badge variant="outline">{d.type}</Badge> },
+          { key: "duration", header: "Duration", render: d => <span className="text-sm text-ink-soft">{d.durationLabel}</span> },
+          { key: "price", header: "Price", render: d => <span className="font-mono text-sm">{d.price}</span> },
+          { key: "stock", header: "Stock", render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm">{stat?.available ?? 0}</span>; } },
+          { key: "waiting", header: "Waiting", render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm text-ink-soft">{stat?.waiting ?? 0}</span>; } },
+          { key: "active", header: "Active", render: d => d.isActive ? <Badge variant="default">Yes</Badge> : <span className="text-ink-faint">—</span> },
+        ]}
+        data={product.denominations}
+        keyExtractor={d => d.id}
+        empty={<EmptyState title="No denominations" />}
+      />
     </PageLayout>
   );
 }

@@ -2,6 +2,12 @@ import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { StatusBadge } from "../components/shared/StatusBadge";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiPost } from "../api/client";
 
 interface TicketDetail {
@@ -45,65 +51,70 @@ export function TicketDetailPage() {
     onError: (e: Error) => alert(e.message),
   });
 
-  if (isError) return <PageLayout title="Ticket"><p style={{ color: "red" }}>Failed to load ticket.</p></PageLayout>;
+  if (isError) return <PageLayout title="Ticket"><p className="text-sm text-rust">Failed to load ticket.</p></PageLayout>;
   if (!data) return <PageLayout title="Ticket"><p>Loading…</p></PageLayout>;
 
   const { ticket, messages, user } = data;
 
   return (
     <PageLayout title={`Ticket #${ticket.id}`}>
-      <button onClick={() => navigate("/support")} style={{ marginBottom: 16, background: "none", border: "1px solid #ccc", borderRadius: 4, padding: "4px 12px", cursor: "pointer" }}>
-        ← Back to Support
-      </button>
+      <PageHeader
+        title={`Ticket #${ticket.id}: ${ticket.subject}`}
+        breadcrumb={[{ label: "Support", href: "/support" }]}
+        actions={<Button variant="outline" size="sm" onClick={() => navigate("/support")}>← Back</Button>}
+      />
 
-      <section style={{ marginBottom: 16 }}>
-        <p><strong>Subject:</strong> {ticket.subject}</p>
-        <p><strong>Status:</strong> {ticket.status}</p>
-        <p><strong>Customer:</strong> {user?.fullName ?? user?.username ?? "Unknown"}</p>
-      </section>
+      {/* Ticket meta */}
+      <div className="mb-4 flex gap-3 items-center text-sm">
+        <StatusBadge status={ticket.status} />
+        <span className="text-ink-soft">Customer: <span className="text-ink">{user?.fullName ?? user?.username ?? "Unknown"}</span></span>
+      </div>
 
-      <section style={{ marginBottom: 20 }}>
+      {/* Message thread */}
+      <div className="flex flex-col gap-3 mb-6">
         {messages.map(m => (
           <div
             key={m.id}
-            style={{
-              padding: "10px 14px",
-              marginBottom: 8,
-              borderRadius: 6,
-              background: m.senderType === "ADMIN" ? "#e8f4fd" : "#f9f9f9",
-              borderLeft: `3px solid ${m.senderType === "ADMIN" ? "#0078d4" : "#ccc"}`,
-            }}
+            className={`rounded-lg border-l-2 px-4 py-3 ${
+              m.senderType === "ADMIN"
+                ? "border-pine bg-pine-tint"
+                : "border-line bg-sand"
+            }`}
           >
-            <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>
+            <div className="mb-1 text-xs text-ink-soft">
               {m.senderType === "ADMIN" ? "Admin" : "Customer"} — {new Date(m.createdAt).toLocaleString()}
             </div>
-            <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
+            <div className="text-sm text-ink whitespace-pre-wrap">{m.content}</div>
           </div>
         ))}
-      </section>
+      </div>
 
+      {/* Reply + close */}
       {ticket.status !== "CLOSED" && (
-        <>
-          <section style={{ marginBottom: 16 }}>
-            {replyError && <p style={{ color: "red", margin: "0 0 8px" }}>{replyError}</p>}
-            <textarea
+        <Card>
+          <CardHeader><CardTitle>Reply</CardTitle></CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            {replyError && <p className="text-sm text-rust">{replyError}</p>}
+            <Textarea
               value={reply}
               onChange={e => setReply(e.target.value)}
               placeholder="Write a reply…"
               rows={4}
-              style={{ width: "100%", padding: "6px 10px", marginBottom: 8, boxSizing: "border-box" }}
             />
-            <button onClick={() => sendReply.mutate()} disabled={!reply || sendReply.isPending} style={{ padding: "6px 16px" }}>
-              Save Reply
-            </button>
-          </section>
-          <button
-            onClick={() => { if (confirm("Close this ticket?")) close.mutate(); }}
-            style={{ padding: "6px 14px", background: "#dc3545", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" }}
-          >
-            Close Ticket
-          </button>
-        </>
+            <div className="flex gap-2">
+              <Button onClick={() => sendReply.mutate()} disabled={!reply || sendReply.isPending}>
+                {sendReply.isPending ? "Saving…" : "Send Reply"}
+              </Button>
+              <ConfirmDialog
+                trigger={<Button variant="destructive">Close Ticket</Button>}
+                title="Close this ticket?"
+                description="The ticket will be marked as closed and no further replies can be added."
+                confirmLabel="Close"
+                onConfirm={() => close.mutate()}
+              />
+            </div>
+          </CardContent>
+        </Card>
       )}
     </PageLayout>
   );

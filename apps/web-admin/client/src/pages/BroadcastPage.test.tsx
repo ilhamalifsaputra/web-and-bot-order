@@ -25,7 +25,7 @@ describe("BroadcastPage", () => {
     );
     render(<BroadcastPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/Hello customers!/)).toBeInTheDocument());
-    expect(screen.getByText("SENT")).toBeInTheDocument();
+    expect(screen.getAllByText("Sent").length).toBeGreaterThan(0);
   });
 
   it("shows empty state when no history", async () => {

@@ -7,6 +7,7 @@ import {
   countAvailableStock,
   countRestockSubscribers,
   getBulkPricingForDenomination,
+  createCatalogProduct,
   createDenomination,
   logAdminAction,
 } from "@app/db";
@@ -22,8 +23,33 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     return reply.send({ categories, products });
   });
 
+  app.post("/api/catalog/products", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const name = (typeof body.name === "string" ? body.name : "").trim();
+    const categoryId = Number(body.categoryId);
+    if (!name) return reply.code(400).send({ error: "Name is required." });
+    if (!Number.isInteger(categoryId) || categoryId <= 0)
+      return reply.code(400).send({ error: "A valid category is required." });
+
+    const product = await createCatalogProduct(prisma, {
+      categoryId,
+      name,
+      emoji: typeof body.emoji === "string" ? body.emoji.trim() || null : null,
+      description: typeof body.description === "string" ? body.description.trim() || null : null,
+    });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "catalog_product_create",
+      targetType: "product",
+      targetId: product.id,
+      details: `Created product "${name}".`,
+    });
+    return reply.code(201).send({ id: product.id, name: product.name, slug: product.slug });
+  });
+
   app.get("/api/catalog/:productId", { preHandler: currentAdmin }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
+    if (!Number.isInteger(productId)) return reply.code(404).send({ error: "Product not found." });
     const product = await getCatalogProductWithDenominations(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
 

@@ -672,6 +672,72 @@ describe("catalog", () => {
   });
 });
 
+// ---- catalog JSON API — create product (acceptance #5b) -------------------
+
+describe("catalog JSON API — create product", () => {
+  function postProductJson(cookie: string | null, csrf: string | null, body: Record<string, unknown>) {
+    return app.inject({
+      method: "POST",
+      url: "/api/catalog/products",
+      headers: {
+        "content-type": "application/json",
+        ...(csrf ? { "x-csrf-token": csrf } : {}),
+      },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+
+  it("happy path: creates product and logs audit", async () => {
+    const before = await prisma.product.count();
+    const res = await postProductJson(seed.cookie, seed.csrf, {
+      name: "Netflix Premium",
+      categoryId: seed.categoryId,
+      emoji: "🎬",
+      description: "Streaming service",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number; name: string; slug: string };
+    expect(body.name).toBe("Netflix Premium");
+    expect(typeof body.slug).toBe("string");
+    expect(body.slug.length).toBeGreaterThan(0);
+    expect(await prisma.product.count()).toBe(before + 1);
+    const audit = await prisma.auditLog.findMany({
+      where: { action: "catalog_product_create", targetId: body.id },
+    });
+    expect(audit.length).toBe(1);
+  });
+
+  it("rejects missing name with 400", async () => {
+    const res = await postProductJson(seed.cookie, seed.csrf, { categoryId: seed.categoryId });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects missing categoryId with 400", async () => {
+    const res = await postProductJson(seed.cookie, seed.csrf, { name: "X" });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects non-integer categoryId with 400", async () => {
+    const res = await postProductJson(seed.cookie, seed.csrf, { name: "X", categoryId: "abc" });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects missing auth (anon → 303 /login)", async () => {
+    const res = await postProductJson(null, "x", { name: "X", categoryId: seed.categoryId });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("rejects bad CSRF with 403", async () => {
+    const res = await postProductJson(seed.cookie, "bad-token", { name: "X", categoryId: seed.categoryId });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
 describe("denominations (leaf SKU, inside product detail)", () => {
   it("create denomination happy + audit", async () => {
     const res = await post(`/catalog/product/${seed.catalogProductId}/denomination`, seed.cookie, {

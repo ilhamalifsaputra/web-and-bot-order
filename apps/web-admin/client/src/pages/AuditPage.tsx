@@ -2,7 +2,7 @@ import { useState } from "react";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { FilterBar } from "../components/shared/FilterBar";
-import { EmptyState } from "../components/shared/EmptyState";
+import { DataTable } from "../components/shared/DataTable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAudit } from "../hooks/useAudit";
@@ -10,6 +10,55 @@ import { useAudit } from "../hooks/useAudit";
 function formatTs(iso: string) {
   return new Date(iso).toLocaleString();
 }
+
+interface AuditRow {
+  id: number;
+  createdAt: string;
+  adminId: string | number;
+  action: string;
+  targetType: string | null;
+  targetId: string | number | null;
+  details: string | null;
+}
+
+const AUDIT_COLUMNS = [
+  {
+    key: "time",
+    header: "Time",
+    render: (r: AuditRow) => (
+      <span className="text-ink-soft whitespace-nowrap">{formatTs(r.createdAt)}</span>
+    ),
+  },
+  {
+    key: "admin",
+    header: "Admin",
+    render: (r: AuditRow) => (
+      <span className="font-mono text-xs text-ink">{r.adminId}</span>
+    ),
+  },
+  {
+    key: "action",
+    header: "Action",
+    render: (r: AuditRow) => <span className="text-ink">{r.action}</span>,
+  },
+  {
+    key: "target",
+    header: "Target",
+    render: (r: AuditRow) => (
+      <span className="text-ink-soft">
+        {r.targetType ?? "—"}
+        {r.targetId ? ` #${r.targetId}` : ""}
+      </span>
+    ),
+  },
+  {
+    key: "details",
+    header: "Details",
+    render: (r: AuditRow) => (
+      <span className="text-ink-soft">{r.details ?? "—"}</span>
+    ),
+  },
+];
 
 export function AuditPage() {
   const [page, setPage] = useState(1);
@@ -28,9 +77,8 @@ export function AuditPage() {
   }
 
   function goPage(n: number) {
-    const next = { ...filters, page: n };
     setPage(n);
-    setFilters(next);
+    setFilters({ ...filters, page: n });
   }
 
   return (
@@ -38,7 +86,6 @@ export function AuditPage() {
       <PageHeader title="Audit Log" />
 
       <div className="flex flex-col gap-4">
-        {/* Filter bar */}
         <FilterBar onApply={applyFilters}>
           <Input
             placeholder="Action"
@@ -72,42 +119,15 @@ export function AuditPage() {
           />
         </FilterBar>
 
-        {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
         {isError && <p className="text-sm text-rust">Failed to load audit log.</p>}
 
-        {data && data.rows.length === 0 && <EmptyState title="No audit entries found." />}
+        <DataTable
+          columns={AUDIT_COLUMNS}
+          data={data?.rows ?? []}
+          isLoading={isLoading && !data}
+          keyExtractor={(r) => r.id}
+        />
 
-        {data && data.rows.length > 0 && (
-          <div className="overflow-x-auto rounded-lg border border-line bg-card">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-line text-left text-ink-soft">
-                  <th className="px-4 py-3 font-medium">Time</th>
-                  <th className="px-4 py-3 font-medium">Admin</th>
-                  <th className="px-4 py-3 font-medium">Action</th>
-                  <th className="px-4 py-3 font-medium">Target</th>
-                  <th className="px-4 py-3 font-medium">Details</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line">
-                {data.rows.map((row) => (
-                  <tr key={row.id} className="hover:bg-sand/40">
-                    <td className="whitespace-nowrap px-4 py-2 text-ink-soft">{formatTs(row.createdAt)}</td>
-                    <td className="px-4 py-2 font-mono text-xs text-ink">{row.adminId}</td>
-                    <td className="px-4 py-2 text-ink">{row.action}</td>
-                    <td className="px-4 py-2 text-ink-soft">
-                      {row.targetType ?? "—"}
-                      {row.targetId ? ` #${row.targetId}` : ""}
-                    </td>
-                    <td className="px-4 py-2 text-ink-soft">{row.details ?? "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {/* Pagination */}
         {data && (data.hasNext || page > 1) && (
           <div className="flex items-center gap-2">
             <Button

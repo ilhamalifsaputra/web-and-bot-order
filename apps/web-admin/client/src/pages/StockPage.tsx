@@ -2,6 +2,14 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { FilterBar } from "../components/shared/FilterBar";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Boxes } from "lucide-react";
 
 interface DenominationRow {
   id: number;
@@ -33,13 +41,13 @@ function useStock() {
 
 export function StockPage() {
   const navigate = useNavigate();
-  const { data, isError } = useStock();
+  const { data, isLoading, isError } = useStock();
   const [filter, setFilter] = useState("");
 
   if (isError) {
     return (
       <PageLayout title="Stock">
-        <p style={{ color: "red" }}>Failed to load stock.</p>
+        <p className="text-rust">Failed to load stock.</p>
       </PageLayout>
     );
   }
@@ -54,70 +62,156 @@ export function StockPage() {
 
   return (
     <PageLayout title="Stock">
-      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-        <input
+      <PageHeader title="Stock" />
+
+      <FilterBar
+        onClear={filter ? () => setFilter("") : undefined}
+        className="mb-4"
+      >
+        <Input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter by denomination, product, or category…"
-          style={{ flex: 1, padding: "6px 10px", border: "1px solid #ccc", borderRadius: 4 }}
+          className="w-80"
         />
-        {filter && (
-          <button type="button" onClick={() => setFilter("")} style={{ padding: "6px 12px" }}>
-            Clear
-          </button>
-        )}
-      </div>
+      </FilterBar>
 
-      {!data ? (
-        <p>Loading…</p>
-      ) : filtered.length === 0 ? (
-        <p>No denominations found.</p>
-      ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: "#f5f5f5" }}>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Denomination</th>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Product</th>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Category</th>
-              <th style={{ textAlign: "center", padding: "6px 8px" }}>Available</th>
-              <th style={{ textAlign: "center", padding: "6px 8px" }}>Sold</th>
-              <th style={{ textAlign: "center", padding: "6px 8px" }}>Waiting</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((d) => {
-              const cnt = data.counts[String(d.id)];
-              const wait = data.waiting[String(d.id)] ?? 0;
+      <DataTable
+        columns={[
+          {
+            key: "denomination",
+            header: "Denomination",
+            render: (row) => (
+              <div>
+                <div className="font-medium text-sm text-ink">{row.name}</div>
+                <div className="text-xs text-ink-soft">
+                  {row.product?.category?.name ?? "—"}
+                </div>
+              </div>
+            ),
+          },
+          {
+            key: "product",
+            header: "Product",
+            render: (row) => (
+              <span className="text-sm text-ink-soft">
+                {row.product?.name ?? "—"}
+              </span>
+            ),
+          },
+          {
+            key: "available",
+            header: "Available",
+            render: (row) => {
+              const cnt = data?.counts[String(row.id)];
+              const available = cnt?.available ?? 0;
               return (
-                <tr
-                  key={d.id}
-                  style={{ borderTop: "1px solid #eee", cursor: "pointer" }}
-                  onClick={() => navigate(`/stock/${d.id}`)}
+                <span
+                  className={
+                    available === 0
+                      ? "font-semibold text-rust"
+                      : "text-sm text-ink"
+                  }
                 >
-                  <td style={{ padding: "6px 8px" }}>{d.name}</td>
-                  <td style={{ padding: "6px 8px" }}>{d.product?.name ?? "—"}</td>
-                  <td style={{ padding: "6px 8px" }}>{d.product?.category?.name ?? "—"}</td>
-                  <td
-                    style={{
-                      padding: "6px 8px",
-                      textAlign: "center",
-                      color: (cnt?.available ?? 0) === 0 ? "#c00" : undefined,
-                    }}
-                  >
-                    {cnt?.available ?? 0}
-                  </td>
-                  <td style={{ padding: "6px 8px", textAlign: "center" }}>
-                    {cnt?.sold ?? 0}
-                  </td>
-                  <td style={{ padding: "6px 8px", textAlign: "center" }}>
-                    {wait > 0 ? wait : "—"}
-                  </td>
-                </tr>
+                  {available}
+                </span>
               );
-            })}
-          </tbody>
-        </table>
-      )}
+            },
+          },
+          {
+            key: "sold",
+            header: "Sold",
+            render: (row) => {
+              const cnt = data?.counts[String(row.id)];
+              return (
+                <span className="text-sm text-ink-soft">{cnt?.sold ?? 0}</span>
+              );
+            },
+          },
+          {
+            key: "waiting",
+            header: "Waiting",
+            render: (row) => {
+              const wait = data?.waiting[String(row.id)] ?? 0;
+              return (
+                <span className="text-sm text-ink-soft">
+                  {wait > 0 ? wait : "—"}
+                </span>
+              );
+            },
+          },
+          {
+            key: "stock",
+            header: "Stock",
+            render: (row) => {
+              const cnt = data?.counts[String(row.id)];
+              const available = cnt?.available ?? 0;
+              const reserved = cnt?.reserved ?? 0;
+              const sold = cnt?.sold ?? 0;
+              const total = available + reserved + sold;
+              const pct = total > 0 ? Math.round((available / total) * 100) : 0;
+              return (
+                <div className="min-w-[120px]">
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-ink-soft">{available} ready</span>
+                    <span className="text-ink-faint">{pct}%</span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-sand overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${
+                        pct < 20 ? "bg-rust" : pct < 50 ? "bg-amberx" : "bg-grass"
+                      }`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            },
+          },
+          {
+            key: "status",
+            header: "Status",
+            render: (row) => {
+              const cnt = data?.counts[String(row.id)];
+              const available = cnt?.available ?? 0;
+              if (available === 0) {
+                return <Badge variant="destructive">Out of Stock</Badge>;
+              }
+              if (available < 5) {
+                return <Badge variant="destructive">Low Stock</Badge>;
+              }
+              return null;
+            },
+          },
+          {
+            key: "actions",
+            header: "",
+            render: (row) => (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate(`/stock/${row.id}`);
+                }}
+              >
+                View
+              </Button>
+            ),
+          },
+        ]}
+        data={filtered}
+        isLoading={isLoading}
+        keyExtractor={(row) => row.id}
+        onRowClick={(row) => navigate(`/stock/${row.id}`)}
+        empty={
+          <EmptyState
+            icon={Boxes}
+            title="No denominations found"
+            description="Try adjusting your filter."
+          />
+        }
+      />
     </PageLayout>
   );
 }

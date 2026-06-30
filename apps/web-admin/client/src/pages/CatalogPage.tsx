@@ -2,6 +2,24 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { FilterBar } from "../components/shared/FilterBar";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Table,
+  TableHeader,
+  TableRow,
+  TableHead,
+  TableBody,
+  TableCell,
+} from "@/components/ui/table";
+import { Package } from "lucide-react";
 import { apiPost } from "../api/client";
 
 interface CategoryRow {
@@ -53,7 +71,7 @@ function useCatalog() {
 
 export function CatalogPage() {
   const navigate = useNavigate();
-  const { data, isError } = useCatalog();
+  const { data, isLoading, isError } = useCatalog();
   const [filter, setFilter] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [csv, setCsv] = useState("");
@@ -91,7 +109,7 @@ export function CatalogPage() {
   if (isError) {
     return (
       <PageLayout title="Catalog">
-        <p style={{ color: "red" }}>Failed to load catalog.</p>
+        <p className="text-rust">Failed to load catalog.</p>
       </PageLayout>
     );
   }
@@ -105,169 +123,198 @@ export function CatalogPage() {
 
   return (
     <PageLayout title="Catalog">
-      <div style={{ display: "flex", gap: 8, marginBottom: 20 }}>
-        <input
+      <PageHeader
+        title="Catalog"
+        actions={
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setShowImport(!showImport);
+              setPreview(null);
+              setCsv("");
+            }}
+          >
+            Import CSV
+          </Button>
+        }
+      />
+
+      <FilterBar
+        onClear={filter ? () => setFilter("") : undefined}
+        className="mb-4"
+      >
+        <Input
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter by product or category…"
-          style={{ flex: 1, padding: "6px 10px", border: "1px solid #ccc", borderRadius: 4 }}
+          className="w-64"
         />
-        {filter && (
-          <button
-            type="button"
-            onClick={() => setFilter("")}
-            style={{ padding: "6px 12px" }}
-          >
-            Clear
-          </button>
-        )}
-        <button
-          className="btn btn-ghost btn-sm"
-          type="button"
-          onClick={() => {
-            setShowImport(!showImport);
-            setPreview(null);
-            setCsv("");
-          }}
-        >
-          Import CSV
-        </button>
-      </div>
+      </FilterBar>
 
       {showImport && (
-        <div className="card card-pad mt-4">
-          <h3 className="section-title mb-3">Import denominations from CSV</h3>
-          <p className="text-sm text-ink-soft mb-2">
-            Format: category|product|denomination|type|duration|price
-          </p>
-          <textarea
-            className="field font-mono text-sm"
-            rows={6}
-            value={csv}
-            onChange={(e) => {
-              setCsv(e.target.value);
-              setPreview(null);
-            }}
-            placeholder="Seed Category|Product Name|1GB|PRIVATE|30 days|50000"
-          />
-          {importError && (
-            <p className="text-sm text-danger mt-2">{importError}</p>
-          )}
-          <div className="flex gap-2 mt-3">
-            <button
-              className="btn btn-primary btn-sm"
-              type="button"
-              onClick={() => void handlePreview()}
-              disabled={!csv.trim()}
-            >
-              Preview
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              type="button"
-              onClick={() => {
-                setShowImport(false);
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Import denominations from CSV</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <p className="text-sm text-ink-soft">
+              Format: category|product|denomination|type|duration|price
+            </p>
+            <Textarea
+              rows={6}
+              value={csv}
+              onChange={(e) => {
+                setCsv(e.target.value);
                 setPreview(null);
-                setCsv("");
               }}
-            >
-              Cancel
-            </button>
-          </div>
-          {preview && (
-            <div className="mt-4">
-              <p className="text-sm mb-2">
-                <span className="text-success">{preview.validCount} valid</span>
-                {preview.invalidCount > 0 && (
-                  <span className="text-danger ml-2">
-                    {preview.invalidCount} invalid
-                  </span>
-                )}
-              </p>
-              <div className="overflow-x-auto">
-                <table className="data-table text-sm">
-                  <thead>
-                    <tr>
-                      <th>#</th>
-                      <th>Status</th>
-                      <th>Category</th>
-                      <th>Product</th>
-                      <th>Denomination</th>
-                      <th>Price</th>
-                      <th>Error</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {preview.rows.map((row) => (
-                      <tr key={row.line} className={row.ok ? "" : "text-danger"}>
-                        <td>{row.line}</td>
-                        <td>{row.ok ? "✓" : "✗"}</td>
-                        <td>{row.category ?? ""}</td>
-                        <td>{row.product ?? ""}</td>
-                        <td>{row.denomination ?? ""}</td>
-                        <td>{row.price ?? ""}</td>
-                        <td>{row.error ?? ""}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {preview.validCount > 0 && (
-                <button
-                  className="btn btn-primary btn-sm mt-3"
-                  type="button"
-                  onClick={() => void handleApply()}
-                  disabled={importing}
-                >
-                  {importing
-                    ? "Importing…"
-                    : `Import ${preview.validCount} denomination(s)`}
-                </button>
-              )}
+              placeholder="Seed Category|Product Name|1GB|PRIVATE|30 days|50000"
+              className="font-mono text-sm"
+            />
+            {importError && (
+              <p className="text-sm text-rust">{importError}</p>
+            )}
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                onClick={() => void handlePreview()}
+                disabled={!csv.trim()}
+              >
+                Preview
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setShowImport(false);
+                  setPreview(null);
+                  setCsv("");
+                }}
+              >
+                Cancel
+              </Button>
             </div>
-          )}
-        </div>
+
+            {preview && (
+              <div>
+                <p className="text-sm mb-2">
+                  <span className="text-grass">{preview.validCount} valid</span>
+                  {preview.invalidCount > 0 && (
+                    <span className="text-rust ml-2">
+                      {preview.invalidCount} invalid
+                    </span>
+                  )}
+                </p>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>#</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Category</TableHead>
+                        <TableHead>Product</TableHead>
+                        <TableHead>Denomination</TableHead>
+                        <TableHead>Price</TableHead>
+                        <TableHead>Error</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {preview.rows.map((row) => (
+                        <TableRow
+                          key={row.line}
+                          className={row.ok ? "" : "text-rust"}
+                        >
+                          <TableCell>{row.line}</TableCell>
+                          <TableCell>{row.ok ? "✓" : "✗"}</TableCell>
+                          <TableCell>{row.category ?? ""}</TableCell>
+                          <TableCell>{row.product ?? ""}</TableCell>
+                          <TableCell>{row.denomination ?? ""}</TableCell>
+                          <TableCell>{row.price ?? ""}</TableCell>
+                          <TableCell>{row.error ?? ""}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                {preview.validCount > 0 && (
+                  <Button
+                    size="sm"
+                    className="mt-3"
+                    onClick={() => void handleApply()}
+                    disabled={importing}
+                  >
+                    {importing
+                      ? "Importing…"
+                      : `Import ${preview.validCount} denomination(s)`}
+                  </Button>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       )}
 
-      {!data ? (
-        <p>Loading…</p>
-      ) : filtered.length === 0 ? (
-        <p>No products found.</p>
-      ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: "#f5f5f5" }}>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Product</th>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Category</th>
-              <th style={{ textAlign: "center", padding: "6px 8px" }}>Denominations</th>
-              <th style={{ textAlign: "center", padding: "6px 8px" }}>Active</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((p) => (
-              <tr
-                key={p.id}
-                style={{
-                  borderTop: "1px solid #eee",
-                  cursor: "pointer",
-                  background: p.isActive ? undefined : "#fafafa",
-                  color: p.isActive ? undefined : "#999",
+      <DataTable
+        columns={[
+          {
+            key: "name",
+            header: "Product",
+            render: (row) => (
+              <div>
+                <div className="font-medium text-sm text-ink">{row.name}</div>
+                <div className="text-xs text-ink-soft">
+                  {row.category?.name ?? "—"}
+                </div>
+              </div>
+            ),
+          },
+          {
+            key: "denominations",
+            header: "Denominations",
+            render: (row) => (
+              <span className="text-sm text-ink-soft">
+                {row._count.denominations}
+              </span>
+            ),
+          },
+          {
+            key: "active",
+            header: "Status",
+            render: (row) => (
+              <Badge variant={row.isActive ? "default" : "secondary"}>
+                {row.isActive ? "Active" : "Hidden"}
+              </Badge>
+            ),
+          },
+          {
+            key: "actions",
+            header: "",
+            render: (row) => (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate(`/catalog/${row.id}`);
                 }}
-                onClick={() => navigate(`/catalog/${p.id}`)}
               >
-                <td style={{ padding: "6px 8px" }}>{p.name}</td>
-                <td style={{ padding: "6px 8px" }}>{p.category?.name ?? "—"}</td>
-                <td style={{ padding: "6px 8px", textAlign: "center" }}>
-                  {p._count.denominations}
-                </td>
-                <td style={{ padding: "6px 8px", textAlign: "center" }}>
-                  {p.isActive ? "Yes" : "—"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+                Edit
+              </Button>
+            ),
+          },
+        ]}
+        data={filtered}
+        isLoading={isLoading}
+        keyExtractor={(row) => row.id}
+        onRowClick={(row) => navigate(`/catalog/${row.id}`)}
+        empty={
+          <EmptyState
+            icon={Package}
+            title="No products yet"
+            description="Add your first product to start selling."
+          />
+        }
+      />
     </PageLayout>
   );
 }

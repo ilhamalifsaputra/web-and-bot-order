@@ -47,7 +47,7 @@ describe("CatalogPage", () => {
       }),
     );
     render(<CatalogPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText(/no products found/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/no products yet/i)).toBeInTheDocument());
   });
 
   it("shows error on fetch failure", async () => {

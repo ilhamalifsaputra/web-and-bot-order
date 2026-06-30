@@ -469,6 +469,7 @@
   "web.pay_done_sub": "Akunmu sudah siap di Pesananku.",
   "web.view_credentials": "Lihat akunku",
   "web.pay_confirming": "Pembayaran diterima — pesananmu sedang diselesaikan…",
+  "web.pay_confirming_sub": "Pembayaran terdeteksi — menunggu konfirmasi blockchain. Biasanya selesai dalam 1–5 menit.",
   "web.pay_expired": "Waktu bayar pesanan ini sudah habis. Stok masih ada — pesan lagi dari keranjangmu.",
   "web.pay_closed": "Pesanan ini sudah ditutup.",
   "web.status_waiting": "Menunggu pembayaranmu",

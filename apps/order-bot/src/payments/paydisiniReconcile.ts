@@ -22,6 +22,7 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { PaymentMethod, langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
 import { t as coreT } from "@app/core/i18n";
 import { checkTransaction } from "@app/core/payments/paydisini";
@@ -120,7 +121,8 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
       shopUrl: null,
     });
     if (r.status === "delivered") {
-      logger.info(`PayDisini reconcile delivered order ${order.orderCode} — notifier will DM the account file`);
+      logger.info(`PayDisini reconcile delivered order ${order.orderCode} — nudging notifier to DM the account file immediately`);
+      nudgeOutboxDispatcher();
       await editBubbleToSuccess(api, r.order);
       await clearOrderPaymentMessage(prisma, r.order.id);
     } else if (r.status === "stale") {

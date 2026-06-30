@@ -20,7 +20,8 @@
     "./delivery": "./src/delivery.ts",
     "./payments/tokopay": "./src/payments/tokopay.ts",
     "./payments/paydisini": "./src/payments/paydisini.ts",
-    "./payments/nowpayments": "./src/payments/nowpayments.ts"
+    "./payments/nowpayments": "./src/payments/nowpayments.ts",
+    "./nudge": "./src/nudge.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

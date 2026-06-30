@@ -27,7 +27,7 @@ import { createHmac } from "node:crypto";
 import type { Api } from "grammy";
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
-import { langCode } from "@app/core/enums";
+import { langCode, NotificationEvent } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import {
@@ -38,6 +38,7 @@ import {
   recordUnmatchedTx,
   recordBinancePollHealth,
   resolveBinanceInternalConfig,
+  enqueueNotification,
   type BinanceInternalConfig,
   type DeliverResult,
 } from "@app/db";
@@ -273,7 +274,18 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   try {
     await sendAccountFile(api, tgId, order, lang);
   } catch (err) {
-    logger.error({ err }, `Failed to DM the account file for order ${order.orderCode} — buyer paid but has not received their credentials yet`);
+    logger.error(
+      { err },
+      `Failed to DM the account file for order ${order.orderCode} — enqueuing outbox retry so the buyer still receives their credentials`,
+    );
+    try {
+      await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, order.id, {
+        chat_id: tgId,
+        order_code: order.orderCode,
+      });
+    } catch (eq) {
+      logger.error({ err: eq }, `Failed to enqueue outbox fallback for order ${order.orderCode} — buyer may not receive credentials without manual admin resend`);
+    }
   }
 
   // Turn the payment-instructions bubble into a success message in place.

@@ -469,6 +469,7 @@
   "web.pay_done_sub": "Your credentials are ready in My orders.",
   "web.view_credentials": "View my credentials",
   "web.pay_confirming": "Payment received — finishing up your order…",
+  "web.pay_confirming_sub": "Payment detected — waiting for blockchain confirmation. This usually takes 1–5 minutes.",
   "web.pay_expired": "This order's payment window has expired. Your items are still in stock — order again from your cart.",
   "web.pay_closed": "This order is closed.",
   "web.status_waiting": "Waiting for your payment",

@@ -29,6 +29,7 @@ import {
   getOrderByCodeFull,
 } from "@app/db";
 import { config } from "@app/core/config";
+import { registerOutboxNudge } from "@app/core/nudge";
 import { publicChannelId } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { NotificationEvent, langCode } from "@app/core/enums";
@@ -55,6 +56,27 @@ type PendingRow = Awaited<ReturnType<typeof fetchPendingNotifications>>[number];
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /**
+ * Sleep for `ms` milliseconds, but wake immediately if `nudgeOutboxDispatcher`
+ * is called or the AbortSignal fires. Replaces the plain `sleep()` so webhook
+ * handlers can cut the poll gap from up to NOTIF_POLL_INTERVAL_SECONDS to
+ * near-zero after enqueueing ORDER_DELIVERED_DM.
+ */
+function sleepOrNudge(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      registerOutboxNudge(null);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    registerOutboxNudge(() => {
+      clearTimeout(timer);
+      done();
+    });
+    signal?.addEventListener("abort", () => { clearTimeout(timer); done(); }, { once: true });
+  });
+}
+
+/**
  * Drain the outbox forever. Pass an `AbortSignal` to stop the loop gracefully
  * (used by the combined single-process server on SIGTERM/SIGINT); the standalone
  * notifier omits it and loops until the process exits.
@@ -67,7 +89,7 @@ export async function runDispatcher(bot: Bot, signal?: AbortSignal): Promise<voi
       logger.error({ err: e }, "Outbox dispatcher tick failed — will retry on the next poll interval");
     }
     if (signal?.aborted) break;
-    await sleep(config.NOTIF_POLL_INTERVAL_SECONDS * 1000);
+    await sleepOrNudge(config.NOTIF_POLL_INTERVAL_SECONDS * 1000, signal);
   }
 }
 

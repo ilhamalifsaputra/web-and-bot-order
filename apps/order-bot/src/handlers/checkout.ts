@@ -1088,39 +1088,39 @@ export async function refreshPaymentStatus(ctx: MyContext, orderId: number): Pro
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.refresh_delivered_toast") });
     return;
   }
-  switch (order.paymentMethod) {
-    case PaymentMethod.TOKOPAY:
-      await tokopayPoll(ctx.api);
-      break;
-    case PaymentMethod.PAYDISINI:
-      await paydisiniPoll(ctx.api);
-      break;
-    case PaymentMethod.BINANCE_INTERNAL:
-      await internalPoll(ctx.api);
-      break;
-    case PaymentMethod.BYBIT:
-      await bybitPoll(ctx.api);
-      break;
-    case PaymentMethod.BYBIT_BSC:
-      await bybitBscPoll(ctx.api);
-      // Fire-and-forget, same pattern as bybitBscImmediatePoll after order
-      // creation — a manual refresh should also nudge the confirmation
-      // count, not just delivery state, without blocking on a BscScan call.
-      bybitBscTrackerImmediatePoll(ctx.api);
-      break;
-    case PaymentMethod.NOWPAYMENTS:
-      await nowpaymentsPoll(ctx.api);
-      break;
-    default:
-      // Manual Binance Pay has no on-demand check; shouldn't reach here (no button).
-      if (ctx.callbackQuery) await ctx.answerCallbackQuery();
-      return;
-  }
-  const after = await getOrder(prisma, orderId);
-  const delivered = after?.status === OrderStatus.DELIVERED;
-  if (ctx.callbackQuery) {
-    await ctx.answerCallbackQuery({
-      text: t(ctx, delivered ? "checkout.refresh_delivered_toast" : "checkout.still_pending_toast"),
-    });
-  }
+  // Answer the callback query immediately so the button feels instant — no
+  // gateway wait before the user sees feedback. The poll and any resulting
+  // bubble edit happen in the background.
+  if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "checkout.still_pending_toast") });
+  void (async () => {
+    switch (order.paymentMethod) {
+      case PaymentMethod.TOKOPAY:
+        await tokopayPoll(ctx.api);
+        break;
+      case PaymentMethod.PAYDISINI:
+        await paydisiniPoll(ctx.api);
+        break;
+      case PaymentMethod.BINANCE_INTERNAL:
+        await internalPoll(ctx.api);
+        break;
+      case PaymentMethod.BYBIT:
+        await bybitPoll(ctx.api);
+        break;
+      case PaymentMethod.BYBIT_BSC:
+        await bybitBscPoll(ctx.api);
+        // Fire-and-forget, same pattern as bybitBscImmediatePoll after order
+        // creation — a manual refresh should also nudge the confirmation
+        // count, not just delivery state, without blocking on a BscScan call.
+        bybitBscTrackerImmediatePoll(ctx.api);
+        break;
+      case PaymentMethod.NOWPAYMENTS:
+        await nowpaymentsPoll(ctx.api);
+        break;
+      default:
+        // Manual Binance Pay has no on-demand check; shouldn't reach here (no button).
+        return;
+    }
+    // Bubble edit (if delivered) already happens inside each poller's onDelivered().
+    // Nothing more to do here.
+  })();
 }

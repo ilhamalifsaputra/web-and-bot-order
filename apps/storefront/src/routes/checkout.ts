@@ -59,6 +59,7 @@ import {
   verifyIpn,
   type NowpaymentsInvoice,
 } from "@app/core/payments/nowpayments";
+import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
 import { shopContext, requestLang, resolveBotUsername } from "../shop";
 import { loadCartLines } from "./cart";
@@ -665,6 +666,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         amount: live.amount,
         shopUrl: shopPublicUrl(),
       });
+      if (r.status === "delivered") nudgeOutboxDispatcher();
       return reply.send({ status: r.status });
     } catch (err) {
       logger.error({ err }, `Failed to deliver paid TokoPay order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);
@@ -713,6 +715,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         amount: cb.amount,
         shopUrl: shopPublicUrl(),
       });
+      if (r.status === "delivered") nudgeOutboxDispatcher();
       return reply.send({ status: r.status });
     } catch (err) {
       logger.error({ err }, `Failed to deliver paid PayDisini order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);
@@ -770,6 +773,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         amount: cb.amount,
         shopUrl: shopPublicUrl(),
       });
+      if (r.status === "delivered") nudgeOutboxDispatcher();
       return reply.send({ status: r.status });
     } catch (err) {
       logger.error({ err }, `Failed to deliver paid NOWPayments order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);

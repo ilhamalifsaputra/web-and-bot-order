@@ -39,6 +39,7 @@ import type { Api } from "grammy";
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
+import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
 import { getPaymentStatus } from "@app/core/payments/nowpayments";
 import {
@@ -119,7 +120,8 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
       shopUrl: null,
     });
     if (r.status === "delivered") {
-      logger.info(`NOWPayments reconcile delivered order ${order.orderCode} — notifier will DM the account file`);
+      logger.info(`NOWPayments reconcile delivered order ${order.orderCode} — nudging notifier to DM the account file immediately`);
+      nudgeOutboxDispatcher();
     } else if (r.status === "stale") {
       logger.warn(`Order ${order.orderCode} was paid but is no longer PENDING — likely already delivered by the webhook, no action needed`);
     }

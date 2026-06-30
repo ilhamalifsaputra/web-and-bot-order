@@ -27,7 +27,7 @@ export function FilterBar({
             </Button>
           )}
           {onApply && (
-            <Button variant="default" onClick={onApply}>
+            <Button variant="outline" onClick={onApply}>
               Apply
             </Button>
           )}

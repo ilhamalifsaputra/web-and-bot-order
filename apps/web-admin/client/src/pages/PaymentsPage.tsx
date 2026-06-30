@@ -100,7 +100,7 @@ export function PaymentsPage() {
               onChange={e => setMatchForm(f => ({ ...f, order_code: e.target.value }))}
               className="w-40"
             />
-            <Button onClick={() => match.mutate()} disabled={match.isPending}>Match</Button>
+            <Button variant="outline" onClick={() => match.mutate()} disabled={match.isPending}>Match</Button>
           </div>
         </CardContent>
       </Card>

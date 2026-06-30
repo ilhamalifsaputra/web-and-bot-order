@@ -63,6 +63,7 @@ describe("ProductDetailPage", () => {
   it("shows error on fetch failure", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("network"));
     render(<ProductDetailPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/failed to load product/i)).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
 });

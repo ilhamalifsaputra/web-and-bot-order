@@ -53,7 +53,8 @@ describe("CatalogPage", () => {
   it("shows error on fetch failure", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("network"));
     render(<CatalogPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/failed to load catalog/i)).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
   });
 
   it("shows Import CSV button", async () => {

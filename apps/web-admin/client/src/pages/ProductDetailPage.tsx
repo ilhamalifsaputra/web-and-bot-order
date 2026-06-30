@@ -6,6 +6,8 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { AlertCircle } from "lucide-react";
+import { apiGet } from "../api/client";
 
 interface DenominationRow {
   id: number;
@@ -40,11 +42,7 @@ interface ProductDetailData {
 function useProductDetail(productId: string) {
   return useQuery<ProductDetailData>({
     queryKey: ["catalog", productId],
-    queryFn: async () => {
-      const res = await fetch(`/api/catalog/${productId}`);
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<ProductDetailData>;
-    },
+    queryFn: async () => apiGet<ProductDetailData>(`/api/catalog/${productId}`),
     enabled: !!productId,
   });
 }
@@ -52,12 +50,20 @@ function useProductDetail(productId: string) {
 export function ProductDetailPage() {
   const { productId } = useParams<{ productId: string }>();
   const navigate = useNavigate();
-  const { data, isError } = useProductDetail(productId ?? "");
+  const { data, isError, refetch } = useProductDetail(productId ?? "");
 
   if (isError) {
     return (
       <PageLayout title="Product Detail">
-        <p className="text-sm text-rust">Failed to load product.</p>
+        <EmptyState
+          icon={AlertCircle}
+          title="Failed to load product"
+          description="An error occurred while loading the product details. Please try again."
+          action={{
+            label: "Retry",
+            onClick: () => void refetch(),
+          }}
+        />
       </PageLayout>
     );
   }

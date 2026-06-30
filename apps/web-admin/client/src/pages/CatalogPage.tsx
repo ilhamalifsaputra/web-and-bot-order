@@ -19,8 +19,8 @@ import {
   TableBody,
   TableCell,
 } from "@/components/ui/table";
-import { Package } from "lucide-react";
-import { apiPost } from "../api/client";
+import { AlertCircle, Package } from "lucide-react";
+import { apiGet, apiPost } from "../api/client";
 
 interface CategoryRow {
   id: number;
@@ -61,17 +61,13 @@ interface ImportPreview {
 function useCatalog() {
   return useQuery<CatalogData>({
     queryKey: ["catalog"],
-    queryFn: async () => {
-      const res = await fetch("/api/catalog");
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<CatalogData>;
-    },
+    queryFn: async () => apiGet<CatalogData>("/api/catalog"),
   });
 }
 
 export function CatalogPage() {
   const navigate = useNavigate();
-  const { data, isLoading, isError } = useCatalog();
+  const { data, isLoading, isError, refetch } = useCatalog();
   const [filter, setFilter] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [csv, setCsv] = useState("");
@@ -109,7 +105,15 @@ export function CatalogPage() {
   if (isError) {
     return (
       <PageLayout title="Catalog">
-        <p className="text-rust">Failed to load catalog.</p>
+        <EmptyState
+          icon={AlertCircle}
+          title="Failed to load catalog"
+          description="An error occurred while loading the catalog. Please try again."
+          action={{
+            label: "Retry",
+            onClick: () => void refetch(),
+          }}
+        />
       </PageLayout>
     );
   }

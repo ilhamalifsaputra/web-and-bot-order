@@ -182,3 +182,37 @@
 
   --radius-xl2: 1.25rem;
 }
+
+/* Dark-mode overrides for custom design tokens.
+   The @theme static block above pins these as fixed hex values; we need
+   explicit CSS-variable overrides under .dark so utilities like text-ink,
+   bg-paper, border-line, etc. invert correctly when dark mode is active. */
+.dark {
+  --color-paper: oklch(0.145 0 0);
+  --color-card-ported: oklch(0.205 0 0);
+  --color-sand: oklch(0.22 0 0);
+  --color-line: oklch(1 0 0 / 10%);
+
+  --color-ink: oklch(0.985 0 0);
+  --color-ink-soft: oklch(0.708 0 0);
+  --color-ink-faint: oklch(0.50 0 0);
+
+  /* Brand blue — lightened so it reads on dark bg (stays ≥ AA vs oklch(0.145)) */
+  --color-pine: oklch(0.65 0.19 263);
+  --color-pine-dark: oklch(0.55 0.17 263);
+  --color-pine-tint: oklch(0.26 0.05 263);
+
+  /* Green */
+  --color-grass: oklch(0.67 0.16 150);
+  --color-grass-dark: oklch(0.57 0.14 150);
+  --color-grass-tint: oklch(0.25 0.04 150);
+
+  /* Amber */
+  --color-amberx: oklch(0.78 0.13 68);
+  --color-amberx-tint: oklch(0.27 0.05 68);
+
+  /* Red */
+  --color-rust: oklch(0.67 0.2 25);
+  --color-rust-dark: oklch(0.57 0.18 25);
+  --color-rust-tint: oklch(0.25 0.06 25);
+}

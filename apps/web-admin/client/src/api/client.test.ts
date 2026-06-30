@@ -19,7 +19,7 @@ describe("apiGet", () => {
   });
 
   it("throws when the response is not ok", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 403 })));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 403, json: async () => ({}) })));
     await expect(apiGet("/api/dashboard/kpis")).rejects.toThrow("403");
   });
 });

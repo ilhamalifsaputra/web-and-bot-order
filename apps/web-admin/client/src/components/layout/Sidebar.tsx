@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
 import { NavLink } from "react-router-dom";
+import { useShopInfo } from "../../hooks/useShopInfo";
 import {
   LayoutDashboard,
   ShoppingCart,
@@ -94,6 +95,7 @@ const NAV_GROUPS: NavGroup[] = [
 function SidebarContent({ onClose }: { onClose: () => void }) {
   const { data: operations } = useOperations();
   const { data: inventory } = useInventory();
+  const { shopName } = useShopInfo();
 
   const ordersBadge = operations
     ? (operations.pendingPayments + operations.manualReviews) || 0
@@ -114,7 +116,7 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
       {/* Logo row */}
       <div className="flex items-center justify-between px-4 py-5">
         <span className="font-display text-lg font-semibold text-ink">
-          Shop Admin
+          {shopName || "Shop Admin"}
         </span>
         <button
           type="button"

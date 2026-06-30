@@ -5,6 +5,7 @@ import { FilterBar } from "../components/shared/FilterBar";
 import { DataTable } from "../components/shared/DataTable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DateInput } from "../components/shared/DateInput";
 import { useAudit } from "../hooks/useAudit";
 
 function formatTs(iso: string) {
@@ -105,14 +106,12 @@ export function AuditPage() {
             onChange={(e) => setAdminId(e.target.value)}
             className="w-32"
           />
-          <Input
-            type="date"
+          <DateInput
             value={since}
             onChange={(e) => setSince(e.target.value)}
             className="w-36"
           />
-          <Input
-            type="date"
+          <DateInput
             value={until}
             onChange={(e) => setUntil(e.target.value)}
             className="w-36"

@@ -9,6 +9,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DateInput } from "../components/shared/DateInput";
 import {
   Select,
   SelectTrigger,
@@ -128,8 +129,7 @@ export function OrdersPage() {
 
         <div className="flex flex-col gap-1">
           <label className="text-xs text-ink-soft">From</label>
-          <Input
-            type="date"
+          <DateInput
             value={draft.since}
             onChange={(e) => setDraft((f) => ({ ...f, since: e.target.value }))}
             className="w-36"
@@ -138,8 +138,7 @@ export function OrdersPage() {
 
         <div className="flex flex-col gap-1">
           <label className="text-xs text-ink-soft">To</label>
-          <Input
-            type="date"
+          <DateInput
             value={draft.until}
             onChange={(e) => setDraft((f) => ({ ...f, until: e.target.value }))}
             className="w-36"

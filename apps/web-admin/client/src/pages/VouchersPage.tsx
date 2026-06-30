@@ -6,6 +6,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { Button } from "@/components/ui/button";
+import { DateInput } from "../components/shared/DateInput";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -127,8 +128,7 @@ export function VouchersPage() {
                 onChange={e => setForm(f => ({ ...f, usage_limit: e.target.value }))}
                 className="w-28"
               />
-              <Input
-                type="date"
+              <DateInput
                 placeholder="Expires"
                 value={form.expires_at}
                 onChange={e => setForm(f => ({ ...f, expires_at: e.target.value }))}

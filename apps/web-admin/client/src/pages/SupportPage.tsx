@@ -1,6 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { StatusBadge } from "../components/shared/StatusBadge";
 
 interface Ticket {
   id: number;
@@ -25,42 +29,50 @@ export function SupportPage() {
   const navigate = useNavigate();
   const { data, isError } = useTickets();
 
-  if (isError) return <PageLayout title="Support"><p style={{ color: "red" }}>Failed to load tickets.</p></PageLayout>;
+  if (isError) return <PageLayout title="Support"><p className="text-sm text-rust">Failed to load tickets.</p></PageLayout>;
 
   return (
     <PageLayout title="Support">
-      {!data ? (
-        <p>Loading…</p>
-      ) : data.tickets.length === 0 ? (
-        <p>No open tickets.</p>
-      ) : (
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr style={{ background: "#f5f5f5" }}>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>#</th>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Subject</th>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Customer</th>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Status</th>
-              <th style={{ textAlign: "left", padding: "6px 8px" }}>Date</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.tickets.map(t => (
-              <tr
-                key={t.id}
-                style={{ borderTop: "1px solid #eee", cursor: "pointer" }}
-                onClick={() => navigate(`/support/${t.id}`)}
-              >
-                <td style={{ padding: "6px 8px", fontFamily: "monospace" }}>{t.id}</td>
-                <td style={{ padding: "6px 8px" }}>{t.subject}</td>
-                <td style={{ padding: "6px 8px" }}>{t.user?.fullName ?? t.user?.username ?? "—"}</td>
-                <td style={{ padding: "6px 8px" }}>{t.status}</td>
-                <td style={{ padding: "6px 8px", fontSize: 12 }}>{new Date(t.createdAt).toLocaleDateString()}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      <PageHeader title="Support" />
+
+      <DataTable
+        columns={[
+          {
+            key: "id",
+            header: "#",
+            render: t => <span className="font-mono text-sm">{t.id}</span>,
+          },
+          {
+            key: "subject",
+            header: "Subject",
+            render: t => t.subject,
+          },
+          {
+            key: "customer",
+            header: "Customer",
+            render: t => t.user?.fullName ?? t.user?.username ?? "—",
+          },
+          {
+            key: "status",
+            header: "Status",
+            render: t => <StatusBadge status={t.status} />,
+          },
+          {
+            key: "date",
+            header: "Date",
+            render: t => (
+              <span className="text-xs text-ink-faint">
+                {new Date(t.createdAt).toLocaleDateString()}
+              </span>
+            ),
+          },
+        ]}
+        data={data?.tickets ?? []}
+        isLoading={!data}
+        keyExtractor={t => t.id}
+        onRowClick={t => navigate(`/support/${t.id}`)}
+        empty={<EmptyState title="No open tickets" description="All support tickets will appear here." />}
+      />
     </PageLayout>
   );
 }

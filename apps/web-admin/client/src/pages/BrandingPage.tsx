@@ -1,6 +1,11 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiPost } from "../api/client";
 
 interface BrandingData {
@@ -64,60 +69,55 @@ function TextFieldRow({
   }
 
   return (
-    <div style={{ padding: "8px 0", borderBottom: "1px solid #eee" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <span style={{ fontWeight: 500 }}>{label}</span>
+    <div className="py-3 border-b border-line last:border-b-0">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium text-ink">{label}</span>
         {!editing && (
-          <button
-            onClick={() => {
-              setEditing(true);
-              setDraft(value);
-            }}
-            style={{ padding: "3px 8px", fontSize: 12 }}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => { setEditing(true); setDraft(value); }}
           >
             Edit
-          </button>
+          </Button>
         )}
       </div>
       {!editing && (
-        <div style={{ fontSize: 13, color: "#555", marginTop: 2 }}>
-          {value || <em style={{ color: "#aaa" }}>not set</em>}
+        <div className="mt-1 text-sm text-ink-soft">
+          {value || <em className="text-ink-faint">not set</em>}
         </div>
       )}
       {editing && (
-        <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+        <div className="mt-2 flex flex-col gap-2">
           {multiline ? (
-            <textarea
+            <Textarea
               rows={4}
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              style={{ padding: "6px 8px", resize: "vertical" }}
+              onChange={e => setDraft(e.target.value)}
               autoFocus
             />
           ) : (
-            <input
+            <Input
               type="text"
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              style={{ padding: "6px 8px" }}
+              onChange={e => setDraft(e.target.value)}
               autoFocus
+              className="max-w-sm"
             />
           )}
-          <div style={{ display: "flex", gap: 6 }}>
-            <button onClick={save} disabled={saving} style={{ padding: "4px 10px" }}>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={save} disabled={saving}>
               {saving ? "Saving…" : "Save"}
-            </button>
-            <button
-              onClick={() => {
-                setEditing(false);
-                setError(null);
-              }}
-              style={{ padding: "4px 10px" }}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => { setEditing(false); setError(null); }}
             >
               Cancel
-            </button>
+            </Button>
           </div>
-          {error && <p style={{ color: "red", margin: 0, fontSize: 12 }}>{error}</p>}
+          {error && <p className="text-xs text-rust">{error}</p>}
         </div>
       )}
     </div>
@@ -167,43 +167,30 @@ function ImageUploadRow({
   }
 
   return (
-    <div style={{ padding: "8px 0", borderBottom: "1px solid #eee" }}>
-      <div style={{ fontWeight: 500, marginBottom: 6 }}>{label}</div>
+    <div className="py-3 border-b border-line last:border-b-0">
+      <div className="text-sm font-medium text-ink mb-2">{label}</div>
       {imageUrl ? (
         <img
           src={imageUrl}
           alt={label}
-          style={{
-            maxHeight: 80,
-            maxWidth: 200,
-            display: "block",
-            marginBottom: 6,
-            border: "1px solid #ddd",
-          }}
+          className="max-h-20 max-w-[200px] block mb-2 border border-line rounded"
         />
       ) : (
-        <p style={{ fontSize: 13, color: "#aaa", margin: "0 0 6px" }}>No image set</p>
+        <p className="text-xs text-ink-faint mb-2">No image set</p>
       )}
-      <label style={{ fontSize: 13, cursor: "pointer" }}>
+      <label className="cursor-pointer">
         <input
           type="file"
           accept={accept}
           onChange={handleFile}
-          style={{ display: "none" }}
+          className="hidden"
         />
-        <span
-          style={{
-            padding: "4px 10px",
-            background: "#f0f0f0",
-            border: "1px solid #ccc",
-            borderRadius: 4,
-          }}
-        >
+        <span className="inline-flex items-center rounded border border-line bg-card px-3 py-1 text-sm text-ink hover:bg-sand">
           {uploading ? "Uploading…" : "Choose file…"}
         </span>
       </label>
       {uploadError && (
-        <p style={{ color: "red", fontSize: 12, margin: "4px 0 0" }}>{uploadError}</p>
+        <p className="mt-1 text-xs text-rust">{uploadError}</p>
       )}
     </div>
   );
@@ -217,76 +204,80 @@ export function BrandingPage() {
 
   return (
     <PageLayout title="Branding">
-      {isLoading && <p>Loading branding…</p>}
-      {isError && <p style={{ color: "red" }}>Failed to load branding.</p>}
+      <PageHeader title="Branding" />
+
+      {isLoading && <p className="text-sm text-ink-soft">Loading branding…</p>}
+      {isError && <p className="text-sm text-rust">Failed to load branding.</p>}
 
       {data && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 32, maxWidth: 600 }}>
-          {/* Images */}
-          <section>
-            <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Images</h2>
-            <ImageUploadRow
-              label="Favicon"
-              imageUrl={data.faviconUrl}
-              uploadPath="/branding/favicon"
-              fieldName="favicon"
-              accept=".png,.ico,.svg"
-              onUploaded={invalidate}
-            />
-            <ImageUploadRow
-              label="Logo"
-              imageUrl={data.logoUrl}
-              uploadPath="/branding/logo"
-              fieldName="logo"
-              accept=".png,.svg,.webp"
-              onUploaded={invalidate}
-            />
-            <ImageUploadRow
-              label="Hero image"
-              imageUrl={data.heroUrl}
-              uploadPath="/branding/hero"
-              fieldName="hero"
-              accept=".jpg,.jpeg,.png,.webp"
-              onUploaded={invalidate}
-            />
-            <ImageUploadRow
-              label="Banner"
-              imageUrl={data.bannerUrl}
-              uploadPath="/branding/banner"
-              fieldName="banner"
-              accept=".jpg,.jpeg,.png,.webp"
-              onUploaded={invalidate}
-            />
-            {data.bannerIsLegacy && (
-              <p style={{ fontSize: 12, color: "#f59e0b", marginTop: 4 }}>
-                Banner is stored as a Telegram file_id. Upload an image file to replace it.
-              </p>
-            )}
-          </section>
+        <div className="flex flex-col gap-6 max-w-2xl">
+          <Card>
+            <CardHeader><CardTitle>Images</CardTitle></CardHeader>
+            <CardContent className="divide-y divide-line">
+              <ImageUploadRow
+                label="Favicon"
+                imageUrl={data.faviconUrl}
+                uploadPath="/branding/favicon"
+                fieldName="favicon"
+                accept=".png,.ico,.svg"
+                onUploaded={invalidate}
+              />
+              <ImageUploadRow
+                label="Logo"
+                imageUrl={data.logoUrl}
+                uploadPath="/branding/logo"
+                fieldName="logo"
+                accept=".png,.svg,.webp"
+                onUploaded={invalidate}
+              />
+              <ImageUploadRow
+                label="Hero image"
+                imageUrl={data.heroUrl}
+                uploadPath="/branding/hero"
+                fieldName="hero"
+                accept=".jpg,.jpeg,.png,.webp"
+                onUploaded={invalidate}
+              />
+              <ImageUploadRow
+                label="Banner"
+                imageUrl={data.bannerUrl}
+                uploadPath="/branding/banner"
+                fieldName="banner"
+                accept=".jpg,.jpeg,.png,.webp"
+                onUploaded={invalidate}
+              />
+              {data.bannerIsLegacy && (
+                <p className="pt-2 text-xs text-amberx">
+                  Banner is stored as a Telegram file_id. Upload an image file to replace it.
+                </p>
+              )}
+            </CardContent>
+          </Card>
 
-          {/* Text fields */}
-          <section>
-            <h2 style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Text</h2>
-            <TextFieldRow
-              label="Shop name"
-              fieldKey="shop_name"
-              value={data.shopName}
-              onSaved={invalidate}
-            />
-            <TextFieldRow
-              label="Shop tagline"
-              fieldKey="shop_tagline"
-              value={data.shopTagline}
-              onSaved={invalidate}
-            />
-            <TextFieldRow
-              label="Welcome message"
-              fieldKey="welcome"
-              value={data.welcome}
-              onSaved={invalidate}
-              multiline
-            />
-          </section>
+          <Card>
+            <CardHeader><CardTitle>Text</CardTitle></CardHeader>
+            <CardContent className="divide-y divide-line">
+              <TextFieldRow
+                label="Shop name"
+                fieldKey="shop_name"
+                value={data.shopName}
+                onSaved={invalidate}
+              />
+              <TextFieldRow
+                label="Shop tagline"
+                fieldKey="shop_tagline"
+                value={data.shopTagline}
+                onSaved={invalidate}
+              />
+              <TextFieldRow
+                label="Welcome message"
+                fieldKey="welcome"
+                value={data.welcome}
+                onSaved={invalidate}
+                multiline
+              />
+            </CardContent>
+          </Card>
         </div>
       )}
     </PageLayout>

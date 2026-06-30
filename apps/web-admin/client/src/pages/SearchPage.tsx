@@ -2,6 +2,11 @@ import { useSearchParams, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { PageLayout } from "../components/shared/PageLayout";
+import { PageHeader } from "../components/shared/PageHeader";
+import { DataTable } from "../components/shared/DataTable";
+import { EmptyState } from "../components/shared/EmptyState";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 interface UserHit {
   id: number;
@@ -55,74 +60,79 @@ export function SearchPage() {
 
   return (
     <PageLayout title="Search">
-      <form onSubmit={submit} style={{ display: "flex", gap: 8, marginBottom: 24 }}>
-        <input
+      <PageHeader title="Search" />
+
+      <form onSubmit={submit} className="flex gap-2 mb-6">
+        <Input
           value={input}
           onChange={e => setInput(e.target.value)}
           placeholder="Order code, username, or product…"
-          style={{ flex: 1, padding: "6px 10px", border: "1px solid #ccc", borderRadius: 4 }}
+          className="flex-1"
         />
-        <button type="submit" style={{ padding: "6px 16px" }}>Search</button>
+        <Button type="submit">Search</Button>
       </form>
 
-      {isError && <p style={{ color: "red" }}>Failed to load results.</p>}
-      {isFetching && <p>Searching…</p>}
+      {isError && <p className="text-sm text-rust">Failed to load results.</p>}
+      {isFetching && <p className="text-sm text-ink-soft">Searching…</p>}
 
       {data && !isFetching && (
         <>
           {data.users.length === 0 && data.products.length === 0 && (
-            <p>No results for "{data.q}".</p>
+            <EmptyState title={`No results for "${data.q}"`} />
           )}
+
           {data.users.length > 0 && (
-            <section style={{ marginBottom: 24 }}>
-              <h2 style={{ fontSize: 16, marginBottom: 8 }}>Customers ({data.users.length})</h2>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ background: "#f5f5f5" }}>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Name</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Username</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Telegram ID</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.users.map(u => (
-                    <tr
-                      key={u.id}
-                      style={{ borderTop: "1px solid #eee", cursor: "pointer" }}
-                      onClick={() => navigate(`/users/${u.id}`)}
-                    >
-                      <td style={{ padding: "6px 8px" }}>{u.fullName ?? "—"}</td>
-                      <td style={{ padding: "6px 8px" }}>{u.username ? `@${u.username}` : "—"}</td>
-                      <td style={{ padding: "6px 8px" }}>{u.telegramId}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <section className="mb-6">
+              <h2 className="text-sm font-semibold text-ink mb-3">
+                Customers ({data.users.length})
+              </h2>
+              <DataTable
+                columns={[
+                  {
+                    key: "name",
+                    header: "Name",
+                    render: u => u.fullName ?? "—",
+                  },
+                  {
+                    key: "username",
+                    header: "Username",
+                    render: u => u.username ? `@${u.username}` : "—",
+                  },
+                  {
+                    key: "tid",
+                    header: "Telegram ID",
+                    render: u => <span className="font-mono text-xs">{u.telegramId}</span>,
+                  },
+                ]}
+                data={data.users}
+                keyExtractor={u => u.id}
+                onRowClick={u => navigate(`/users/${u.id}`)}
+              />
             </section>
           )}
+
           {data.products.length > 0 && (
             <section>
-              <h2 style={{ fontSize: 16, marginBottom: 8 }}>Products ({data.products.length})</h2>
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr style={{ background: "#f5f5f5" }}>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Denomination</th>
-                    <th style={{ textAlign: "left", padding: "6px 8px" }}>Product</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.products.map(p => (
-                    <tr
-                      key={p.id}
-                      style={{ borderTop: "1px solid #eee", cursor: "pointer" }}
-                      onClick={() => navigate(`/catalog/${p.id}`)}
-                    >
-                      <td style={{ padding: "6px 8px" }}>{p.name}</td>
-                      <td style={{ padding: "6px 8px" }}>{p.product?.name ?? "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <h2 className="text-sm font-semibold text-ink mb-3">
+                Products ({data.products.length})
+              </h2>
+              <DataTable
+                columns={[
+                  {
+                    key: "denom",
+                    header: "Denomination",
+                    render: p => p.name,
+                  },
+                  {
+                    key: "product",
+                    header: "Product",
+                    render: p => p.product?.name ?? "—",
+                  },
+                ]}
+                data={data.products}
+                keyExtractor={p => p.id}
+                onRowClick={p => navigate(`/catalog/${p.id}`)}
+              />
             </section>
           )}
         </>

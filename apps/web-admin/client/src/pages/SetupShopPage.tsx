@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { publicPost } from "../api/client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 interface ShopPostResult {
   ok: boolean;
@@ -47,53 +50,52 @@ export function SetupShopPage() {
 
         <div className="mb-6 flex flex-col gap-4">
           <div>
-            <label htmlFor="shop_name" className="mb-1 block text-sm font-medium text-ink">
+            <Label htmlFor="shop_name">
               Shop name <span className="text-ink-soft text-xs">(optional)</span>
-            </label>
-            <input
+            </Label>
+            <Input
               id="shop_name"
               type="text"
               value={shopName}
               onChange={(e) => setShopName(e.target.value)}
               placeholder="My Shop"
-              className="w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
               disabled={loading}
             />
           </div>
 
           <div>
-            <label htmlFor="shop_tagline" className="mb-1 block text-sm font-medium text-ink">
+            <Label htmlFor="shop_tagline">
               Tagline <span className="text-ink-soft text-xs">(optional)</span>
-            </label>
-            <input
+            </Label>
+            <Input
               id="shop_tagline"
               type="text"
               value={shopTagline}
               onChange={(e) => setShopTagline(e.target.value)}
               placeholder="The best shop around"
-              className="w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
               disabled={loading}
             />
           </div>
         </div>
 
         <div className="flex flex-col gap-3">
-          <button
+          <Button
             type="button"
             onClick={() => void handleSubmit(false)}
             disabled={loading}
-            className="w-full rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+            className="w-full"
           >
             {loading ? "Saving…" : "Save & finish"}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="outline"
             onClick={() => void handleSubmit(true)}
             disabled={loading}
-            className="w-full rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink-soft transition-colors hover:bg-paper disabled:opacity-40"
+            className="w-full"
           >
             Skip
-          </button>
+          </Button>
         </div>
       </div>
     </div>

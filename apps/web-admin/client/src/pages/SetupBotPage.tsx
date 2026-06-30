@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { publicPost } from "../api/client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 interface BotPostResult {
   ok: boolean;
@@ -47,37 +50,35 @@ export function SetupBotPage() {
         )}
 
         <div className="mb-6">
-          <label htmlFor="bot_token" className="mb-1 block text-sm font-medium text-ink">
-            Bot token
-          </label>
-          <input
+          <Label htmlFor="bot_token">Bot token</Label>
+          <Input
             id="bot_token"
             type="text"
             value={botToken}
             onChange={(e) => setBotToken(e.target.value)}
             placeholder="123456789:ABCDEF..."
-            className="w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
             disabled={loading}
           />
         </div>
 
         <div className="flex flex-col gap-3">
-          <button
+          <Button
             type="button"
             onClick={() => void handleSubmit(false)}
             disabled={loading || !botToken.trim()}
-            className="w-full rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+            className="w-full"
           >
             {loading ? "Saving…" : "Save and continue"}
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
+            variant="outline"
             onClick={() => void handleSubmit(true)}
             disabled={loading}
-            className="w-full rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink-soft transition-colors hover:bg-paper disabled:opacity-40"
+            className="w-full"
           >
             Skip for now
-          </button>
+          </Button>
         </div>
       </div>
     </div>

@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { publicPost } from "../api/client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 interface OwnerPostResult {
   ok: boolean;
@@ -56,41 +59,39 @@ export function SetupOwnerPage() {
 
         <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-4">
           <div>
-            <label htmlFor="telegram_id" className="mb-1 block text-sm font-medium text-ink">
+            <Label htmlFor="telegram_id">
               Telegram ID <span className="text-red-500">*</span>
-            </label>
-            <input
+            </Label>
+            <Input
               id="telegram_id"
               type="number"
               value={telegramId}
               onChange={(e) => setTelegramId(e.target.value)}
               placeholder="123456789"
               required
-              className="w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
               disabled={loading}
             />
           </div>
 
           <div>
-            <label htmlFor="username" className="mb-1 block text-sm font-medium text-ink">
+            <Label htmlFor="username">
               Username <span className="text-ink-soft text-xs">(optional)</span>
-            </label>
-            <input
+            </Label>
+            <Input
               id="username"
               type="text"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder="@username"
-              className="w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
               disabled={loading}
             />
           </div>
 
           <div>
-            <label htmlFor="password" className="mb-1 block text-sm font-medium text-ink">
+            <Label htmlFor="password">
               Password <span className="text-red-500">*</span>
-            </label>
-            <input
+            </Label>
+            <Input
               id="password"
               type="password"
               value={password}
@@ -98,34 +99,28 @@ export function SetupOwnerPage() {
               placeholder="Min. 8 characters"
               required
               minLength={8}
-              className="w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
               disabled={loading}
             />
           </div>
 
           <div>
-            <label htmlFor="password_confirm" className="mb-1 block text-sm font-medium text-ink">
+            <Label htmlFor="password_confirm">
               Confirm password <span className="text-red-500">*</span>
-            </label>
-            <input
+            </Label>
+            <Input
               id="password_confirm"
               type="password"
               value={passwordConfirm}
               onChange={(e) => setPasswordConfirm(e.target.value)}
               placeholder="Repeat password"
               required
-              className="w-full rounded-lg border border-line bg-paper px-3 py-2 text-sm text-ink placeholder:text-ink-soft focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
               disabled={loading}
             />
           </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
-          >
+          <Button type="submit" disabled={loading} className="w-full">
             {loading ? "Creating account…" : "Create account and continue"}
-          </button>
+          </Button>
         </form>
       </div>
     </div>

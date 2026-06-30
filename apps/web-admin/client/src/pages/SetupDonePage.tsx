@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { publicPost } from "../api/client";
+import { Button } from "@/components/ui/button";
 
 interface RestartResult {
   ok: boolean;
@@ -68,14 +69,14 @@ export function SetupDonePage() {
               </div>
             )}
             <div className="mt-6 flex flex-col gap-3">
-              <button
+              <Button
                 type="button"
                 onClick={() => void handleRestart()}
                 disabled={loading}
-                className="w-full rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+                className="w-full"
               >
                 {loading ? "Restarting…" : "Restart server"}
-              </button>
+              </Button>
               <a
                 href="/"
                 className="w-full rounded-lg border border-line px-4 py-2 text-sm font-medium text-ink-soft transition-colors hover:bg-paper inline-block"

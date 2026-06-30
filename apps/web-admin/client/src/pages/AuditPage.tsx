@@ -125,6 +125,7 @@ export function AuditPage() {
           data={data?.rows ?? []}
           isLoading={isLoading && !data}
           keyExtractor={(r) => r.id}
+          empty={<div className="py-8 text-center text-sm text-ink-soft">No audit entries found.</div>}
         />
 
         {data && (data.hasNext || page > 1) && (

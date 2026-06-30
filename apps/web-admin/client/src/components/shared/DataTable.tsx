@@ -1,4 +1,5 @@
 import * as React from "react"
+import { useState, useEffect } from "react"
 import type { ReactNode } from "react"
 import {
   Table,
@@ -11,6 +12,23 @@ import {
 import { cn } from "@/lib/utils"
 import { SkeletonRow } from "./SkeletonRow"
 import { EmptyState } from "./EmptyState"
+
+/** Returns true once mounted on a viewport narrower than `breakpoint` px.
+ *  Defaults to false in SSR / test environments (no matchMedia). */
+function useIsMobile(breakpoint = 768): boolean {
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia(`(max-width: ${breakpoint - 1}px)`);
+    setIsMobile(mq.matches);
+    const handler = (e: MediaQueryListEvent) => setIsMobile(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, [breakpoint]);
+
+  return isMobile;
+}
 
 interface Column<T> {
   key: string;
@@ -43,17 +61,18 @@ export function DataTable<T>({
   keyExtractor,
   onRowClick,
 }: DataTableProps<T>): JSX.Element {
+  const isMobile = useIsMobile();
   const emptyNode = empty ?? <EmptyState title="No results found." />
 
   // Columns with a visible header label are data columns; empty-header
-  // columns (action buttons) are rendered in a footer row on cards.
+  // columns (action buttons) are rendered in a footer row on mobile cards.
   const dataColumns = columns.filter((col) => col.header !== "")
   const actionColumns = columns.filter((col) => col.header === "")
 
-  return (
-    <>
-      {/* ── Mobile: card stack (< md) ─────────────────────────────────── */}
-      <div className="flex flex-col gap-3 md:hidden">
+  if (isMobile) {
+    /* ── Mobile: card stack ──────────────────────────────────────────── */
+    return (
+      <div className="flex flex-col gap-3">
         {isLoading ? (
           Array.from({ length: skeletonRows }).map((_, i) => (
             <div
@@ -97,46 +116,48 @@ export function DataTable<T>({
           ))
         )}
       </div>
+    );
+  }
 
-      {/* ── Desktop: table (≥ md) ─────────────────────────────────────── */}
-      <div className="hidden md:block w-full max-w-[1100px]">
-        <Table>
-          <TableHeader>
+  /* ── Desktop: table ─────────────────────────────────────────────── */
+  return (
+    <div className="w-full max-w-[1100px]">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            {columns.map((col) => (
+              <TableHead key={col.key}>{col.header}</TableHead>
+            ))}
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {isLoading ? (
+            Array.from({ length: skeletonRows }).map((_, i) => (
+              <SkeletonRow key={i} columns={columns.length} />
+            ))
+          ) : data.length === 0 ? (
             <TableRow>
-              {columns.map((col) => (
-                <TableHead key={col.key}>{col.header}</TableHead>
-              ))}
+              <TableCell colSpan={columns.length} className="p-0">
+                {emptyNode}
+              </TableCell>
             </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              Array.from({ length: skeletonRows }).map((_, i) => (
-                <SkeletonRow key={i} columns={columns.length} />
-              ))
-            ) : data.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={columns.length} className="p-0">
-                  {emptyNode}
-                </TableCell>
+          ) : (
+            data.map((row) => (
+              <TableRow
+                key={keyExtractor(row)}
+                className={cn(onRowClick && "cursor-pointer hover:bg-sand")}
+                onClick={onRowClick ? () => onRowClick(row) : undefined}
+              >
+                {columns.map((col) => (
+                  <TableCell key={col.key} className={col.className}>
+                    {col.render(row)}
+                  </TableCell>
+                ))}
               </TableRow>
-            ) : (
-              data.map((row) => (
-                <TableRow
-                  key={keyExtractor(row)}
-                  className={cn(onRowClick && "cursor-pointer hover:bg-sand")}
-                  onClick={onRowClick ? () => onRowClick(row) : undefined}
-                >
-                  {columns.map((col) => (
-                    <TableCell key={col.key} className={col.className}>
-                      {col.render(row)}
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))
-            )}
-          </TableBody>
-        </Table>
-      </div>
-    </>
-  )
+            ))
+          )}
+        </TableBody>
+      </Table>
+    </div>
+  );
 }

@@ -16,8 +16,20 @@ import {
   bulkSetDenominationsActive,
   logAdminAction,
 } from "@app/db";
+import { Decimal } from "@app/core/money";
+import { ProductType } from "@app/core/enums";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { parseDenominationCsv, categoryNameMap, resolveOrCreateProduct } from "../../lib/catalogImport";
+
+/** Parse a possibly-blank string into a Decimal, or null if blank/invalid. */
+function parseDecimal(value: unknown): Decimal | null {
+  if (typeof value !== "string" || value.trim() === "") return null;
+  try {
+    return new Decimal(value.trim());
+  } catch {
+    return null;
+  }
+}
 
 export default async function catalogApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/catalog", { preHandler: currentAdmin }, async (req, reply) => {
@@ -69,6 +81,64 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       details: `Created category "${name}".`,
     });
     return reply.code(201).send({ category: cat });
+  });
+
+  app.post("/api/catalog/products/:productId/denominations", { preHandler: csrfProtect }, async (req, reply) => {
+    const productId = Number((req.params as { productId: string }).productId);
+    if (!Number.isInteger(productId)) return reply.code(404).send({ error: "Product not found." });
+    const product = await getCatalogProduct(prisma, productId);
+    if (!product) return reply.code(404).send({ error: "Product not found." });
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const name = (typeof body.name === "string" ? body.name : "").trim();
+    if (!name) return reply.code(400).send({ error: "Name is required." });
+
+    const type = typeof body.type === "string" ? body.type.toUpperCase() : "";
+    if (!Object.values(ProductType).includes(type as ProductType)) {
+      return reply.code(400).send({ error: "A valid type is required." });
+    }
+
+    const durationLabel = (typeof body.durationLabel === "string" ? body.durationLabel : "").trim();
+    if (!durationLabel) return reply.code(400).send({ error: "Duration is required." });
+
+    const price = parseDecimal(body.price);
+    if (price === null) return reply.code(400).send({ error: "A valid price is required." });
+
+    const costPrice = body.costPrice != null ? parseDecimal(body.costPrice) : null;
+    if (body.costPrice != null && costPrice === null) {
+      return reply.code(400).send({ error: "Cost price must be a valid number." });
+    }
+    const resellerPrice = body.resellerPrice != null ? parseDecimal(body.resellerPrice) : null;
+    if (body.resellerPrice != null && resellerPrice === null) {
+      return reply.code(400).send({ error: "Reseller price must be a valid number." });
+    }
+
+    let warrantyDays: number | null = null;
+    if (body.warrantyDays != null && body.warrantyDays !== "") {
+      const n = Number(body.warrantyDays);
+      if (!Number.isInteger(n)) return reply.code(400).send({ error: "Warranty days must be a whole number." });
+      warrantyDays = n;
+    }
+
+    const denom = await createDenomination(prisma, {
+      productId,
+      name,
+      type: type as ProductType,
+      durationLabel,
+      price,
+      costPrice,
+      resellerPrice,
+      warrantyDays,
+      description: typeof body.description === "string" ? body.description.trim() || null : null,
+    });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "denomination_create",
+      targetType: "denomination",
+      targetId: denom.id,
+      details: `Created denomination "${name}" for product ${productId}.`,
+    });
+    return reply.code(201).send({ id: denom.id, name: denom.name, slug: denom.slug });
   });
 
   app.post("/api/catalog/products/:id/active", { preHandler: csrfProtect }, async (req, reply) => {

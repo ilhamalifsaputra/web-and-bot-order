@@ -130,7 +130,12 @@ export function ProductDetailPage() {
         </div>
       </div>
 
-      <h2 className="text-sm font-semibold text-ink mb-3">Denominations ({product.denominations.length})</h2>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-semibold text-ink">Denominations ({product.denominations.length})</h2>
+        <Button size="sm" onClick={() => navigate(`/catalog/${productId}/denominations/new`)}>
+          + Add Denomination
+        </Button>
+      </div>
       <DataTable
         columns={[
           { key: "name", header: "Name", render: d => <span className={`text-sm ${!d.isActive ? "text-ink-faint" : "text-ink"}`}>{d.name}</span> },

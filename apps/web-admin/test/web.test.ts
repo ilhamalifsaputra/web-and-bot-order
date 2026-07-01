@@ -855,6 +855,122 @@ describe("catalog JSON API — create category", () => {
   });
 });
 
+// ---- catalog JSON API — create denomination --------------------------------
+
+describe("catalog JSON API — create denomination", () => {
+  function postDenominationJson(
+    productId: number,
+    cookie: string | null,
+    csrf: string | null,
+    body: Record<string, unknown>,
+  ) {
+    return app.inject({
+      method: "POST",
+      url: `/api/catalog/products/${productId}/denominations`,
+      headers: {
+        "content-type": "application/json",
+        ...(csrf ? { "x-csrf-token": csrf } : {}),
+      },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+
+  it("happy path: creates denomination and logs audit", async () => {
+    const before = await prisma.denomination.count();
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number; name: string; slug: string };
+    expect(body.name).toBe("1 Month");
+    expect(typeof body.slug).toBe("string");
+    expect(body.slug.length).toBeGreaterThan(0);
+    expect(await prisma.denomination.count()).toBe(before + 1);
+    const audit = await prisma.auditLog.findMany({
+      where: { action: "denomination_create", targetId: body.id },
+    });
+    expect(audit.length).toBe(1);
+    expect(audit[0]?.details).toBe(`Created denomination "1 Month" for product ${seed.catalogProductId}.`);
+  });
+
+  it("rejects missing name with 400", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects invalid type with 400", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "BOGUS",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects missing durationLabel with 400", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects an invalid price with 400", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "not-a-number",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects a non-existent productId with 404", async () => {
+    const res = await postDenominationJson(99999, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("rejects missing auth (anon → 303 /login)", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, null, "x", {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("rejects bad CSRF with 403", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, "bad-token", {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
 // ---- catalog JSON API — active toggle --------------------------------------
 
 describe("catalog JSON API — active toggle", () => {

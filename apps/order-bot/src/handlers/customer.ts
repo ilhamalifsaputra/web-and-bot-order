@@ -66,6 +66,21 @@ const BSC_TRACKING_STATUSES: readonly string[] = [
   OrderStatus.CONFIRMED,
 ];
 
+// Rail label shown on the generic pending-payment screen (viewOrder) — reuses
+// the exact copy already shown on the "pick a gateway" buttons
+// (checkout.pay_*_btn / usdtMethodsKb), so the wording matches what the buyer
+// tapped instead of inventing new copy. BINANCE_PAY (legacy manual transfer,
+// retired for new orders) is deliberately absent — it keeps the original
+// order.pending_payment_detail text below.
+const PENDING_PAYMENT_METHOD_LABEL_KEYS: Partial<Record<string, string>> = {
+  [PaymentMethod.BINANCE_INTERNAL]: "checkout.pay_internal_btn",
+  [PaymentMethod.BYBIT]: "checkout.pay_bybit_btn",
+  [PaymentMethod.BYBIT_BSC]: "checkout.pay_bybit_bsc_btn",
+  [PaymentMethod.TOKOPAY]: "checkout.pay_qris_btn",
+  [PaymentMethod.PAYDISINI]: "checkout.pay_paydisini_btn",
+  [PaymentMethod.NOWPAYMENTS]: "checkout.pay_nowpayments_btn",
+};
+
 // --- session scratch accessors (mirror context.user_data keys) -------------
 // browseEntries snapshots the mid-tier Product ids on the current page (the new
 // flat catalog has no "group vs product" kind — every list row is a Product).
@@ -685,15 +700,35 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
 
   let text: string;
   if (order.status === OrderStatus.PENDING_PAYMENT) {
-    const binanceId = (await getSetting(prisma, "binance_pay_id")) || config.BINANCE_PAY_ID;
     const countdown = order.expiresAt ? formatCountdown(order.expiresAt) : `${config.PAYMENT_WINDOW_MINUTES}:00`;
-    text = t(ctx, "order.pending_payment_detail", {
-      code: order.orderCode,
-      lines: itemLines.join("\n"),
-      total: orderAmount(order, 4),
-      binance_id: esc(binanceId),
-      countdown,
-    });
+    if (order.paymentMethod === PaymentMethod.BINANCE_PAY) {
+      // Legacy manual-transfer rail (retired for new orders, but existing
+      // rows can still carry it) — the only method this Binance-ID copy is
+      // actually correct for.
+      const binanceId = (await getSetting(prisma, "binance_pay_id")) || config.BINANCE_PAY_ID;
+      text = t(ctx, "order.pending_payment_detail", {
+        code: order.orderCode,
+        lines: itemLines.join("\n"),
+        total: orderAmount(order, 4),
+        binance_id: esc(binanceId),
+        countdown,
+      });
+    } else {
+      // Every auto-confirm rail (Internal/Bybit/BybitBSC/Tokopay/Paydisini/
+      // NOWPayments) — was wrongly shown the Binance-ID text above (audit
+      // 2026-07-01). Show a generic rail-labeled notice instead; the
+      // "🔄 Refresh Status" button orderDetailKb adds below reuses the same
+      // on-demand reconcile (checkout.refreshPaymentStatus) the wait screens
+      // already use, rather than duplicating each rail's full instructions.
+      const methodKey = PENDING_PAYMENT_METHOD_LABEL_KEYS[order.paymentMethod];
+      text = t(ctx, "order.pending_payment_rail", {
+        code: order.orderCode,
+        method: methodKey ? t(ctx, methodKey) : order.paymentMethod,
+        lines: itemLines.join("\n"),
+        total: orderAmount(order, 4),
+        countdown,
+      });
+    }
   } else if (
     order.paymentMethod === PaymentMethod.BYBIT_BSC &&
     BSC_TRACKING_STATUSES.includes(order.status)

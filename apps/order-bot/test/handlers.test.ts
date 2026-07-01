@@ -350,6 +350,30 @@ describe("customer handlers", () => {
     expect(offersForwardAction(stranger.sink)).toBe(true);
   });
 
+  it("viewOrder shows rail-specific pending-payment text (not the legacy Binance-ID copy) for a non-legacy payment method", async () => {
+    const order = await makeOrder();
+    // makeOrder() uses createOrderDirect only, which leaves paymentMethod at
+    // the schema default "BINANCE_PAY" — stamp it to a real auto-confirm rail
+    // the way finalizeOrderPayment would, without needing a live gateway mock.
+    await prisma.order.update({ where: { id: order!.id }, data: { paymentMethod: PaymentMethod.TOKOPAY } });
+
+    const { ctx, sink } = customerCtx();
+    await customer.viewOrder(ctx, order!.id);
+
+    const body = JSON.stringify(sink);
+    expect(body).toContain(order!.orderCode);
+    // The legacy order.pending_payment_detail copy must NOT appear for a
+    // TOKOPAY order — this is the confirmed bug (audit 2026-07-01).
+    expect(body).not.toContain("Pay to Binance ID");
+    // The rail label is reused verbatim from checkout.pay_qris_btn ("QRIS"),
+    // not invented new copy.
+    expect(body).toContain("QRIS");
+    // orderDetailKb must offer the same on-demand reconcile the wait screens
+    // use, not just Cancel/Back/Menu.
+    const markup = lastMarkup(sink);
+    expect(JSON.stringify(markup)).toContain(`v1:checkout:refresh:${order!.id}`);
+  });
+
   it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
     "viewOrder routes a BYBIT_BSC order at %s through the live tracking screen, not the generic order.detail",
     async (status) => {

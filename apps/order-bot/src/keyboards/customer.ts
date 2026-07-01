@@ -8,7 +8,7 @@
 import { InlineKeyboard, Keyboard } from "grammy";
 import type { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
-import { OrderStatus, StockStatus, TicketStatus } from "@app/core/enums";
+import { OrderStatus, PaymentMethod, StockStatus, TicketStatus } from "@app/core/enums";
 import { t as coreT } from "@app/core/i18n";
 import { formatPrice, formatIdr, truncLabel } from "../util/format";
 
@@ -41,6 +41,7 @@ interface OrderLike {
   id: number;
   orderCode: string;
   status: string;
+  paymentMethod: string;
   totalAmount: Decimal.Value;
 }
 interface TicketLike {
@@ -373,6 +374,15 @@ export function ordersListKb(orders: OrderLike[], lang: string): InlineKeyboard 
 export function orderDetailKb(order: OrderLike, lang: string): InlineKeyboard {
   const rows: Btn[][] = [];
   if (order.status === OrderStatus.PENDING_PAYMENT) {
+    // Every rail except the legacy manual Binance Pay has an on-demand
+    // reconcile poller (checkout.refreshPaymentStatus already no-ops for
+    // BINANCE_PAY's default case) — offer the same "🔄 Refresh Status" button
+    // the wait screens show, so My Orders → Pay isn't a dead end while waiting.
+    if (order.paymentMethod !== PaymentMethod.BINANCE_PAY) {
+      rows.push([
+        { text: coreT("checkout.refresh_status_btn", lang), data: cb("checkout", "refresh", order.id) },
+      ]);
+    }
     rows.push([
       { text: coreT("checkout.cancel_order", lang), data: cb("checkout", "cancel", order.id) },
     ]);

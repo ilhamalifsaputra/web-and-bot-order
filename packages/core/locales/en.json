@@ -225,6 +225,7 @@
   "order.list_title": "📦 <b>Last {count} Orders</b>",
   "order.page_info": "Page {page} of {total}",
   "order.pending_payment_detail": "<b>Order {code}</b> — ⏳ Awaiting Payment\n\n{lines}\nAmount: <b>{total}</b>\nPay to Binance ID: <code>{binance_id}</code>\n\n⏳ Time remaining: <b>{countdown}</b>",
+  "order.pending_payment_rail": "<b>Order {code}</b> — ⏳ Awaiting Payment ({method})\n\n{lines}\nAmount: <b>{total}</b>\n\n⏳ Time remaining: <b>{countdown}</b>\n\nTap \"🔄 Refresh Status\" below to check if we've received your payment, or \"✕ Cancel Order\" if you'd like to stop waiting.",
   "order.rejected": "Order <code>{code}</code> was rejected.\nReason: {reason}\n\nContact support if you believe this is an error.",
   "order.tracking_detail": "🧾 <b>Order {code}</b>\n\nAsset: {asset}\nNetwork: {network}\n\nStatus: {status}\n{confirmations_line}\n\n<b>Progress:</b>\n{timeline}",
   "order.tracking_confirmations_line": "Confirmations:\n{bar} {confirmations}/{required}",

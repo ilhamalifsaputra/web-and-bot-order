@@ -33,15 +33,17 @@ interface Voucher {
   expiresAt: string | null;
 }
 
-type VoucherStatus = "active" | "expired" | "usedUp" | "inactive";
+type VoucherStatus = "active" | "expired" | "usedUp";
 
 /** Precedence: an expired code is "expired" even if never used; a fully-used
  *  code is "usedUp" even if not yet expired; otherwise it's "active" only
- *  when the admin hasn't manually disabled it. */
-function getVoucherStatus(v: Voucher, now: Date): VoucherStatus {
+ *  when the admin hasn't manually disabled it — a manually-disabled voucher
+ *  that's neither expired nor used up matches none of the three status
+ *  filters (it's still visible via the existing Active column). */
+function getVoucherStatus(v: Voucher, now: Date): VoucherStatus | null {
   if (v.expiresAt && new Date(v.expiresAt).getTime() < now.getTime()) return "expired";
   if (v.usageLimit != null && v.usedCount >= v.usageLimit) return "usedUp";
-  return v.isActive ? "active" : "inactive";
+  return v.isActive ? "active" : null;
 }
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -76,9 +78,12 @@ export function VouchersPage() {
   const [copiedId, setCopiedId] = useState<number | null>(null);
 
   function handleCopy(v: Voucher) {
-    void navigator.clipboard.writeText(v.code).then(() => {
+    if (!navigator.clipboard) return;
+    navigator.clipboard.writeText(v.code).then(() => {
       setCopiedId(v.id);
       setTimeout(() => setCopiedId(id => (id === v.id ? null : id)), 1500);
+    }).catch(err => {
+      console.error("Failed to copy voucher code to clipboard", err);
     });
   }
 
@@ -192,7 +197,6 @@ export function VouchersPage() {
               <SelectItem value="active">Active</SelectItem>
               <SelectItem value="expired">Expired</SelectItem>
               <SelectItem value="usedUp">Used up</SelectItem>
-              <SelectItem value="inactive">Inactive</SelectItem>
             </SelectContent>
           </Select>
         </div>

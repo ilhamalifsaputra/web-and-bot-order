@@ -41,12 +41,6 @@ const BRANDING_KEYS = new Set([
   "support_whatsapp",
 ]);
 
-const STORE_KEYS = new Set([
-  "min_order_amount",
-  "order_expiry_minutes",
-  "stock_low_threshold",
-]);
-
 const TELEGRAM_KEYS = new Set([
   "bot_token",
   "bot_username",
@@ -128,7 +122,6 @@ const PAY_CRED_KEYS = new Set([
 
 const ALL_GROUPED_KEYS = new Set([
   ...BRANDING_KEYS,
-  ...STORE_KEYS,
   ...TELEGRAM_KEYS,
   ...FX_KEYS,
   ...PAY_CRED_KEYS,
@@ -387,20 +380,6 @@ export function SettingsPage() {
               </CardHeader>
               <CardContent className="divide-y divide-line">
                 {fieldGroup(data.fields, BRANDING_KEYS).map((field) => (
-                  <FieldRow key={field.key} field={field} onSaved={invalidate} />
-                ))}
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Store */}
-          {fieldGroup(data.fields, STORE_KEYS).length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Store</CardTitle>
-              </CardHeader>
-              <CardContent className="divide-y divide-line">
-                {fieldGroup(data.fields, STORE_KEYS).map((field) => (
                   <FieldRow key={field.key} field={field} onSaved={invalidate} />
                 ))}
               </CardContent>

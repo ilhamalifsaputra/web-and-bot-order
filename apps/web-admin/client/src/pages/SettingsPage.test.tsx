@@ -114,4 +114,25 @@ describe("SettingsPage", () => {
       expect(screen.getByText("Incorrect current password")).toBeInTheDocument(),
     );
   });
+
+  it("never renders a 'Store' card — min_order_amount/order_expiry_minutes/stock_low_threshold are not real settings (dead STORE_KEYS code removed)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...SETTINGS_DATA,
+          fields: [
+            ...SETTINGS_DATA.fields,
+            { key: "min_order_amount", label: "Min order amount", secret: false, hasValue: true, value: "10000", needsRestart: false },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    expect(screen.queryByText("Store")).not.toBeInTheDocument();
+    // The stray field still renders somewhere (Other Settings), not silently dropped.
+    expect(screen.getByText("Min order amount")).toBeInTheDocument();
+  });
 });

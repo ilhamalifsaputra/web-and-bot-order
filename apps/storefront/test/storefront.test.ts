@@ -659,6 +659,38 @@ describe("login widget — live bot username, placeholder filtered", () => {
   });
 });
 
+describe("home page — Telegram contact link hidden when bot isn't configured (Task 9 fix)", () => {
+  it("never renders a dead https://t.me/ link when bot_username resolves empty", async () => {
+    await setSetting(prisma, "bot_username", "YourBot"); // .env.example placeholder → resolves to ""
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain('href="https://t.me/"');
+    await deleteSetting(prisma, "bot_username");
+  });
+
+  it("shows the Telegram contact link when a real bot_username is configured", async () => {
+    await setSetting(prisma, "bot_username", "realtoko_bot");
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('href="https://t.me/realtoko_bot"');
+    await deleteSetting(prisma, "bot_username");
+  });
+
+  it("uses a 1-column contact grid when only the support-ticket card remains (no WA, no bot)", async () => {
+    await deleteSetting(prisma, "support_whatsapp");
+    await setSetting(prisma, "bot_username", "YourBot"); // → ""
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.statusCode).toBe(200);
+    // Scope to the #kontak section — the page has other unrelated
+    // sm:grid-cols-2/3 grids (stats, categories, products, testimonials),
+    // so a page-wide match would false-fail regardless of this fix.
+    const kontakSection = res.body.match(/<section[^>]*id="kontak"[\s\S]*?<\/section>/)?.[0] ?? "";
+    expect(kontakSection).not.toBe("");
+    expect(kontakSection).not.toMatch(/sm:grid-cols-[23]/);
+    await deleteSetting(prisma, "bot_username");
+  });
+});
+
 describe("register", () => {
   it("renders the form", async () => {
     const res = await app.inject({ method: "GET", url: "/register" });

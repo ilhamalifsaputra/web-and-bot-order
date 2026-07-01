@@ -1161,6 +1161,79 @@ describe("checkout — Bybit BSC on-chain option (2nd Bybit method, alongside In
   );
 });
 
+describe("checkout — voucher preview does not create an order (Task 8 fix)", () => {
+  let voucherBuyerId: number;
+  let voucherCode: string;
+
+  beforeAll(async () => {
+    const { hashPassword } = await import("@app/core/password");
+    const { createVoucher } = await import("@app/db");
+    const { VoucherType } = await import("@app/core/enums");
+    const u = await prisma.user.create({
+      data: {
+        loginUsername: "voucherbuyer",
+        email: "voucher@buyer.test",
+        passwordHash: hashPassword("voucher-pass-99"),
+        referralCode: "VCHR001",
+      },
+    });
+    voucherBuyerId = u.id;
+    const v = await createVoucher(prisma, { code: "SAVE10", type: VoucherType.PERCENT, value: "10" });
+    voucherCode = v.code;
+  });
+
+  async function voucherSession() {
+    const cookie = await loginAs("voucherbuyer", "voucher-pass-99");
+    await addToCart(prisma, voucherBuyerId, productId, 1);
+    const page = await app.inject({ method: "GET", url: "/checkout", headers: { cookie } });
+    return { cookie, csrf: csrfFrom(page.body) };
+  }
+
+  it("POST /checkout/voucher/preview recomputes totals but never creates an order", async () => {
+    const { cookie, csrf } = await voucherSession();
+    const before = await prisma.order.count({ where: { userId: voucherBuyerId } });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout/voucher/preview",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ voucher_code: voucherCode, csrf_token: csrf }).toString(),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("Voucher"); // web.voucher_discount label, applied 10% off
+    const after = await prisma.order.count({ where: { userId: voucherBuyerId } });
+    expect(after).toBe(before); // <-- the actual bug: this used to be before + 1
+  });
+
+  it("shows an inline error for an unknown voucher code, still without creating an order", async () => {
+    const { cookie, csrf } = await voucherSession();
+    const before = await prisma.order.count({ where: { userId: voucherBuyerId } });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout/voucher/preview",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ voucher_code: "NOPE-DOES-NOT-EXIST", csrf_token: csrf }).toString(),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const after = await prisma.order.count({ where: { userId: voucherBuyerId } });
+    expect(after).toBe(before);
+  });
+
+  it("rejects the preview request without a valid CSRF token", async () => {
+    const { cookie } = await voucherSession();
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout/voucher/preview",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ voucher_code: voucherCode, csrf_token: "wrong" }).toString(),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
 describe("checkout — PayDisini option (2nd IDR method, alongside TokoPay)", () => {
   let buyerId: number;
   beforeAll(async () => {

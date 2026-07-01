@@ -374,6 +374,40 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
+  // ---- Voucher preview (Task 8 fix): recompute totals with the voucher
+  // code WITHOUT creating an order — reuses the SAME checkoutView() that
+  // powers GET /checkout, so this can never drift from the real totals.
+  // The Apply button on checkout.njk calls this via HTMX instead of
+  // submitting the main form, so a valid voucher code can no longer be
+  // indistinguishable from clicking "Place Order".
+  app.post<{ Body: { voucher_code?: string } }>(
+    "/checkout/voucher/preview",
+    { preHandler: csrfProtect },
+    async (req, reply) => {
+      const customer = req.customer!;
+      const voucherCode = (req.body.voucher_code ?? "").trim().toUpperCase() || null;
+      const [view, fxRate] = await Promise.all([
+        checkoutView(customer, voucherCode, null),
+        getUsdIdrRate(prisma),
+      ]);
+      return reply.view("_checkout_totals.njk", {
+        lang: requestLang(req),
+        fx: fxRate ? fxRate.toString() : null,
+        subtotal: view.subtotal,
+        bulk_discount: view.bulk_discount,
+        voucher_discount: view.voucher_discount,
+        total: view.total,
+        voucher_error_key: view.error_key,
+        idr_enabled: view.idr_enabled,
+        paydisini_enabled: view.paydisini_enabled,
+        binance_enabled: view.binance_enabled,
+        bybit_enabled: view.bybit_enabled,
+        bybit_bsc_enabled: view.bybit_bsc_enabled,
+        nowpayments_enabled: view.nowpayments_enabled,
+      });
+    },
+  );
+
   // ---- Payment instructions (status-aware) ----
   app.get<{ Params: { code: string } }>(
     "/checkout/:code/pay",

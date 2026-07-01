@@ -94,13 +94,22 @@
       </div>
     </div>
 
-    {# Voucher #}
+    {# Voucher — Apply is a plain button (never type="submit"): it previews
+       the discount via HTMX against /checkout/voucher/preview instead of
+       submitting the real checkout form (Task 8 fix — this used to be
+       indistinguishable from clicking Place Order for a valid code).
+       hx-include="closest form" carries voucher_code + csrf_token (and any
+       other form fields) along; the swap only replaces #checkout-summary,
+       so this input's live value is untouched and still submits with the
+       real "Place Order" click afterwards. #}
     <div class="card card-pad">
       <label class="field-label" for="voucher_code">{{ t('web.voucher_label', lang) }}</label>
       <div class="flex gap-2">
         <input id="voucher_code" name="voucher_code" value="{{ voucher_code }}" class="field uppercase"
                placeholder="{{ t('web.voucher_placeholder', lang) }}" maxlength="32">
-        <button type="submit" class="btn btn-soft shrink-0">{{ t('web.voucher_apply', lang) }}</button>
+        <button type="button" hx-post="/checkout/voucher/preview" hx-include="closest form"
+                hx-target="#checkout-summary" hx-swap="innerHTML"
+                class="btn btn-soft shrink-0">{{ t('web.voucher_apply', lang) }}</button>
       </div>
     </div>
 
@@ -129,38 +138,10 @@
     {% endif %}
   </div>
 
-  {# Totals #}
-  <div class="card card-pad">
-    <h2 class="section-title mb-3">{{ t('web.summary', lang) }}</h2>
-    <div class="text-sm divide-y divide-line">
-      <div class="flex justify-between py-2">
-        <span class="text-ink-soft">{{ t('web.subtotal', lang) }}</span>
-        <span>{{ subtotal | idr }}</span>
-      </div>
-      {% if bulk_discount != "0" %}
-      <div class="flex justify-between py-2 text-grass-dark">
-        <span>{{ t('web.bulk_discount', lang) }}</span>
-        <span>−{{ bulk_discount | idr }}</span>
-      </div>
-      {% endif %}
-      {% if voucher_discount != "0" %}
-      <div class="flex justify-between py-2 text-grass-dark">
-        <span>{{ t('web.voucher_discount', lang) }}</span>
-        <span>−{{ voucher_discount | idr }}</span>
-      </div>
-      {% endif %}
-      <div class="flex justify-between py-3 items-baseline">
-        <span class="font-semibold">{{ t('web.order_total', lang) }}</span>
-        {{ shop.price(total, fx, "text-lg") }}
-      </div>
-    </div>
-    {% if fx %}
-    <p class="text-xs text-ink-faint">{{ t('web.usdt_note', lang) }}</p>
-    {% endif %}
-    <button type="submit" class="btn btn-primary w-full mt-4" {% if not any_method %}disabled style="opacity:.5;cursor:not-allowed"{% endif %}>
-      {{ t('web.place_order', lang) }} <i data-lucide="chevron-right" class="w-4 h-4"></i>
-    </button>
-    <a href="/cart" class="btn btn-ghost w-full mt-2">{{ t('web.back_to_cart', lang) }}</a>
+  {# Totals — extracted into _checkout_totals.njk (Task 8 fix) so the
+     voucher-preview HTMX response can re-render just this card. #}
+  <div id="checkout-summary">
+    {% include "_checkout_totals.njk" %}
   </div>
 </form>
 {% endblock %}

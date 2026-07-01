@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { apiPost } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 
 interface TxRow {
   id: number;
@@ -39,6 +39,25 @@ interface PaymentsData {
   counts: Record<string, number>;
 }
 
+/** Shape of GET /api/search (apps/web-admin/src/routes/api/search.ts) — only
+ * `q` and `exactOrderId` are used here; an order code either matches exactly
+ * or the endpoint returns no order info at all (it has no partial/prefix
+ * search over order codes). */
+interface OrderCodeSearchResult {
+  q: string;
+  exactOrderId: number | null;
+}
+
+/** Outcomes a "pending"/"failed" stat card maps to — matches the lowercase
+ * values written by packages/db/src/crud/binance_internal.ts (compared
+ * case-insensitively since the field is a free-form string column). */
+const PENDING_OUTCOMES = new Set(["unmatched"]);
+const FAILED_OUTCOMES = new Set(["delivery_failed"]);
+
+function isSameLocalDay(a: Date, b: Date): boolean {
+  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+
 function usePayments(outcome: string, page: number) {
   return useQuery<PaymentsData>({
     queryKey: ["payments", outcome, page],
@@ -52,13 +71,62 @@ function usePayments(outcome: string, page: number) {
   });
 }
 
+/** Debounce-calls GET /api/search as the admin types an order code and
+ * reports whether that exact code currently matches an order. 300ms debounce
+ * so we're not firing a request on every keystroke. */
+function useOrderCodeSuggest(orderCode: string) {
+  const [suggestion, setSuggestion] = useState<{ code: string } | null>(null);
+  const [searched, setSearched] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const query = orderCode.trim();
+    if (!query) {
+      setSuggestion(null);
+      setSearched(false);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      apiGet<OrderCodeSearchResult>(`/api/search?q=${encodeURIComponent(query)}`)
+        .then(data => {
+          if (cancelled) return;
+          setSuggestion(data.exactOrderId ? { code: data.q.toUpperCase() } : null);
+          setSearched(true);
+        })
+        .catch(() => { if (!cancelled) { setSuggestion(null); setSearched(true); } })
+        .finally(() => { if (!cancelled) setLoading(false); });
+    }, 300);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [orderCode]);
+
+  return { suggestion, searched, loading };
+}
+
 export function PaymentsPage() {
   const qc = useQueryClient();
   const [outcome, setOutcome] = useState("");
   const [page, setPage] = useState(1);
   const [matchForm, setMatchForm] = useState({ binance_tx_id: "", order_code: "" });
   const [matchError, setMatchError] = useState<string | null>(null);
+  const [orderCodeFocused, setOrderCodeFocused] = useState(false);
   const { data, isError } = usePayments(outcome, page);
+  const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
+
+  const stats = useMemo(() => {
+    const ledger = data?.ledger ?? [];
+    const today = new Date();
+    let todayTotal = 0, pending = 0, failed = 0;
+    for (const tx of ledger) {
+      const outcomeLower = tx.outcome.toLowerCase();
+      if (isSameLocalDay(new Date(tx.processedAt), today)) todayTotal += 1;
+      if (PENDING_OUTCOMES.has(outcomeLower)) pending += 1;
+      if (FAILED_OUTCOMES.has(outcomeLower)) failed += 1;
+    }
+    return { todayTotal, pending, failed };
+  }, [data?.ledger]);
 
   const match = useMutation({
     mutationFn: () => apiPost("/api/payments/match", matchForm),
@@ -78,29 +146,92 @@ export function PaymentsPage() {
 
   if (isError) return <PageLayout title="Payments"><p className="text-sm text-rust">Failed to load payments.</p></PageLayout>;
 
+  const canSubmitMatch = matchForm.binance_tx_id.trim().length > 0 && matchForm.order_code.trim().length > 0;
+  const showSuggestions = orderCodeFocused && matchForm.order_code.trim().length > 0 && (suggestLoading || searched);
+
   return (
     <PageLayout title="Payments">
       <PageHeader title="Payments" />
+
+      {/* Summary stats — computed client-side from the already-fetched (current page of) transactions */}
+      <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
+        <Card>
+          <CardHeader><CardTitle>Today&apos;s Transactions</CardTitle></CardHeader>
+          <CardContent>
+            <p className="font-display text-3xl font-semibold text-ink">{stats.todayTotal}</p>
+            <p className="mt-1 text-xs text-ink-soft">Processed today, this page</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Pending</CardTitle></CardHeader>
+          <CardContent>
+            <p className="font-display text-3xl font-semibold text-ink">{stats.pending}</p>
+            <p className="mt-1 text-xs text-ink-soft">Unmatched transfers</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Failed</CardTitle></CardHeader>
+          <CardContent>
+            <p className="font-display text-3xl font-semibold text-ink">{stats.failed}</p>
+            <p className="mt-1 text-xs text-ink-soft">Delivery failures</p>
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Manual match form */}
       <Card className="mb-6">
         <CardHeader><CardTitle>Manual Match</CardTitle></CardHeader>
         <CardContent className="flex flex-col gap-3">
           {matchError && <p className="text-sm text-rust">{matchError}</p>}
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-start gap-2">
             <Input
               placeholder="Transfer ID"
               value={matchForm.binance_tx_id}
               onChange={e => setMatchForm(f => ({ ...f, binance_tx_id: e.target.value }))}
               className="w-48"
             />
-            <Input
-              placeholder="Order code"
-              value={matchForm.order_code}
-              onChange={e => setMatchForm(f => ({ ...f, order_code: e.target.value }))}
-              className="w-40"
+            <div className="relative w-40">
+              <Input
+                placeholder="Order code"
+                value={matchForm.order_code}
+                onChange={e => setMatchForm(f => ({ ...f, order_code: e.target.value }))}
+                onFocus={() => setOrderCodeFocused(true)}
+                onBlur={() => setTimeout(() => setOrderCodeFocused(false), 150)}
+                autoComplete="off"
+              />
+              {showSuggestions && (
+                <div className="absolute left-0 right-0 top-full z-10 mt-1 rounded-md border border-line bg-card shadow-lift">
+                  {suggestLoading && (
+                    <div className="px-3 py-2 text-xs text-ink-faint">Searching…</div>
+                  )}
+                  {!suggestLoading && suggestion && (
+                    <button
+                      type="button"
+                      className="block w-full px-3 py-2 text-left text-sm hover:bg-sand"
+                      onMouseDown={e => e.preventDefault()}
+                      onClick={() => {
+                        setMatchForm(f => ({ ...f, order_code: suggestion.code }));
+                        setOrderCodeFocused(false);
+                      }}
+                    >
+                      <span className="font-mono">{suggestion.code}</span>
+                      <span className="ml-2 text-xs text-ink-soft">order found</span>
+                    </button>
+                  )}
+                  {!suggestLoading && !suggestion && (
+                    <div className="px-3 py-2 text-xs text-ink-faint">No matching order code</div>
+                  )}
+                </div>
+              )}
+            </div>
+            <ConfirmDialog
+              trigger={<Button variant="outline" disabled={match.isPending || !canSubmitMatch}>Match</Button>}
+              title="Confirm manual match?"
+              description={`Match transfer ${matchForm.binance_tx_id} to order ${matchForm.order_code}.`}
+              confirmLabel="Match"
+              variant="default"
+              onConfirm={() => match.mutate()}
             />
-            <Button variant="outline" onClick={() => match.mutate()} disabled={match.isPending}>Match</Button>
           </div>
         </CardContent>
       </Card>

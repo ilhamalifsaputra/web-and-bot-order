@@ -10,6 +10,7 @@ import {
   countRestockSubscribers,
   getBulkPricingForDenomination,
   createCatalogProduct,
+  createCategory,
   createDenomination,
   bulkSetCatalogProductsActive,
   bulkSetDenominationsActive,
@@ -52,6 +53,22 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       details: `Created product "${name}".`,
     });
     return reply.code(201).send({ id: product.id, name: product.name, slug: product.slug });
+  });
+
+  app.post("/api/catalog/categories", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const name = (typeof body.name === "string" ? body.name : "").trim();
+    if (!name) return reply.code(400).send({ error: "Name is required." });
+
+    const cat = await createCategory(prisma, { name });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "category_create",
+      targetType: "category",
+      targetId: cat.id,
+      details: `Created category "${name}".`,
+    });
+    return reply.code(201).send({ category: cat });
   });
 
   app.post("/api/catalog/products/:id/active", { preHandler: csrfProtect }, async (req, reply) => {

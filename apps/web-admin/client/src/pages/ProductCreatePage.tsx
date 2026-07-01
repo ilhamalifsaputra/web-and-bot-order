@@ -26,6 +26,8 @@ interface CatalogData {
   products: unknown[];
 }
 
+const NEW_CATEGORY_SENTINEL = "__new__";
+
 function useCatalog() {
   return useQuery<CatalogData>({
     queryKey: ["catalog"],
@@ -46,6 +48,24 @@ export function ProductCreatePage() {
   const [emoji, setEmoji] = useState("");
   const [description, setDescription] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [creatingCategory, setCreatingCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState("");
+  const [categoryError, setCategoryError] = useState<string | null>(null);
+
+  const createCategory = useMutation({
+    mutationFn: () =>
+      apiPost<{ category: { id: number; name: string } }>("/api/catalog/categories", {
+        name: newCategoryName.trim(),
+      }),
+    onMutate: () => setCategoryError(null),
+    onSuccess: ({ category }) => {
+      void qc.invalidateQueries({ queryKey: ["catalog"] });
+      setCategoryId(category.id);
+      setCreatingCategory(false);
+      setNewCategoryName("");
+    },
+    onError: (e: Error) => setCategoryError(e.message),
+  });
 
   const create = useMutation({
     mutationFn: () =>
@@ -82,18 +102,60 @@ export function ProductCreatePage() {
           <label className="text-sm font-medium text-ink">
             Category <span className="text-rust">*</span>
           </label>
-          <Select onValueChange={(v) => setCategoryId(Number(v))}>
-            <SelectTrigger className="mt-1">
-              <SelectValue placeholder="Select category" />
-            </SelectTrigger>
-            <SelectContent>
-              {(data?.categories ?? []).map((cat) => (
-                <SelectItem key={cat.id} value={String(cat.id)}>
-                  {cat.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {creatingCategory ? (
+            <div className="mt-1 flex flex-col gap-2">
+              <Input
+                autoFocus
+                placeholder="New category name"
+                value={newCategoryName}
+                onChange={(e) => setNewCategoryName(e.target.value)}
+              />
+              {categoryError && <p className="text-sm text-rust">{categoryError}</p>}
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  disabled={newCategoryName.trim().length === 0 || createCategory.isPending}
+                  onClick={() => createCategory.mutate()}
+                >
+                  {createCategory.isPending ? "Creating…" : "Confirm"}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setCreatingCategory(false);
+                    setNewCategoryName("");
+                    setCategoryError(null);
+                  }}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <Select
+              value={categoryId !== null ? String(categoryId) : ""}
+              onValueChange={(v) => {
+                if (v === NEW_CATEGORY_SENTINEL) {
+                  setCreatingCategory(true);
+                  return;
+                }
+                setCategoryId(Number(v));
+              }}
+            >
+              <SelectTrigger className="mt-1">
+                <SelectValue placeholder="Select category" />
+              </SelectTrigger>
+              <SelectContent>
+                {(data?.categories ?? []).map((cat) => (
+                  <SelectItem key={cat.id} value={String(cat.id)}>
+                    {cat.name}
+                  </SelectItem>
+                ))}
+                <SelectItem value={NEW_CATEGORY_SENTINEL}>+ New category</SelectItem>
+              </SelectContent>
+            </Select>
+          )}
         </div>
 
         <div>

@@ -113,6 +113,80 @@ describe("ProductCreatePage", () => {
     );
   });
 
+  it("creates a new category inline via the + New category affordance", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+    vi.mocked(apiPost).mockResolvedValueOnce({ category: { id: 9, name: "Streaming" } });
+
+    // First call: GET /api/catalog for categories
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(CATALOG_DATA), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
+      // Second call: invalidateQueries triggers a re-fetch of ["catalog"]
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            categories: [...CATALOG_DATA.categories, { id: 9, name: "Streaming", isActive: true }],
+            products: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+
+    render(<ProductCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => screen.getByPlaceholderText(/capcut pro/i));
+
+    // Open the category combobox and pick "+ New category"
+    await user.click(screen.getByRole("combobox"));
+    await waitFor(() => screen.getByRole("option", { name: "+ New category" }));
+    await user.click(screen.getByRole("option", { name: "+ New category" }));
+
+    // The Select swaps for an Input + Confirm/Cancel
+    const input = await screen.findByPlaceholderText(/new category name/i);
+    fireEvent.change(input, { target: { value: "Streaming" } });
+
+    const confirmBtn = screen.getByRole("button", { name: /confirm/i });
+    await waitFor(() => expect(confirmBtn).not.toBeDisabled());
+    await user.click(confirmBtn);
+
+    expect(apiPost).toHaveBeenCalledWith("/api/catalog/categories", { name: "Streaming" });
+
+    // Collapses back to the Select, with the new category selected
+    await waitFor(() => expect(screen.queryByPlaceholderText(/new category name/i)).not.toBeInTheDocument());
+    expect(screen.getByRole("combobox")).toHaveTextContent("Streaming");
+  });
+
+  it("cancelling inline category creation returns to the Select without submitting", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(CATALOG_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    render(<ProductCreatePage />, { wrapper: Wrapper });
+    await waitFor(() => screen.getByPlaceholderText(/capcut pro/i));
+
+    await user.click(screen.getByRole("combobox"));
+    await waitFor(() => screen.getByRole("option", { name: "+ New category" }));
+    await user.click(screen.getByRole("option", { name: "+ New category" }));
+
+    const input = await screen.findByPlaceholderText(/new category name/i);
+    fireEvent.change(input, { target: { value: "Streaming" } });
+
+    await user.click(screen.getByRole("button", { name: /cancel/i }));
+
+    expect(screen.queryByPlaceholderText(/new category name/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox")).toBeInTheDocument();
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
   it("shows error message when create fails", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
 

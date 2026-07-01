@@ -744,6 +744,62 @@ describe("catalog JSON API — create product", () => {
   });
 });
 
+// ---- catalog JSON API — create category ------------------------------------
+
+describe("catalog JSON API — create category", () => {
+  function postCategoryJson(cookie: string | null, csrf: string | null, body: Record<string, unknown>) {
+    return app.inject({
+      method: "POST",
+      url: "/api/catalog/categories",
+      headers: {
+        "content-type": "application/json",
+        ...(csrf ? { "x-csrf-token": csrf } : {}),
+      },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+
+  it("happy path: creates category and logs audit", async () => {
+    const before = await prisma.category.count();
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Streaming" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number; name: string; slug: string } };
+    expect(body.category.name).toBe("Streaming");
+    expect(typeof body.category.slug).toBe("string");
+    expect(body.category.slug.length).toBeGreaterThan(0);
+    expect(await prisma.category.count()).toBe(before + 1);
+    const audit = await prisma.auditLog.findMany({
+      where: { action: "category_create", targetId: body.category.id },
+    });
+    expect(audit.length).toBe(1);
+    expect(audit[0]?.details).toBe(`Created category "Streaming".`);
+  });
+
+  it("rejects empty name with 400", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "" });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects whitespace-only name with 400", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "   " });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects missing auth (anon → 303 /login)", async () => {
+    const res = await postCategoryJson(null, "x", { name: "Streaming" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("rejects bad CSRF with 403", async () => {
+    const res = await postCategoryJson(seed.cookie, "bad-token", { name: "Streaming" });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
 // ---- catalog JSON API — active toggle --------------------------------------
 
 describe("catalog JSON API — active toggle", () => {

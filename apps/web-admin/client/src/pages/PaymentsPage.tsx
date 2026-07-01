@@ -29,6 +29,27 @@ interface TxRow {
   memo: string | null;
   processedAt: string;
 }
+interface OrderPartyRow {
+  fullName: string | null;
+  username: string | null;
+}
+interface UnderpaidOrderRow {
+  id: number;
+  orderCode: string;
+  totalAmount: string;
+  currency: string;
+  createdAt: string;
+  user: OrderPartyRow | null;
+}
+interface PendingInternalOrderRow {
+  id: number;
+  orderCode: string;
+  totalAmount: string;
+  currency: string;
+  paymentRef: string | null;
+  expiresAt: string | null;
+  user: OrderPartyRow | null;
+}
 interface PaymentsData {
   enabled: boolean;
   ledger: TxRow[];
@@ -37,6 +58,8 @@ interface PaymentsData {
   hasNext: boolean;
   outcomes: readonly string[];
   counts: Record<string, number>;
+  underpaid: UnderpaidOrderRow[];
+  pendingInternal: PendingInternalOrderRow[];
 }
 
 /** Shape of GET /api/search (apps/web-admin/src/routes/api/search.ts) — only
@@ -114,6 +137,8 @@ export function PaymentsPage() {
   const [orderCodeFocused, setOrderCodeFocused] = useState(false);
   const { data, isError } = usePayments(outcome, page);
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
+  const underpaid = data?.underpaid ?? [];
+  const pendingInternal = data?.pendingInternal ?? [];
 
   const stats = useMemo(() => {
     const ledger = data?.ledger ?? [];
@@ -140,6 +165,24 @@ export function PaymentsPage() {
 
   const dismiss = useMutation({
     mutationFn: (txId: string) => apiPost("/api/payments/dismiss", { binance_tx_id: txId }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["payments"] }); },
+    onError: (e: Error) => alert(e.message),
+  });
+
+  const deliverAnyway = useMutation({
+    mutationFn: (orderId: number) => apiPost(`/api/payments/order/${orderId}/deliver`, {}),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["payments"] }); },
+    onError: (e: Error) => alert(e.message),
+  });
+
+  const refundUnderpaid = useMutation({
+    mutationFn: (orderId: number) => apiPost(`/api/payments/order/${orderId}/refund`, {}),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["payments"] }); },
+    onError: (e: Error) => alert(e.message),
+  });
+
+  const cancelUnderpaid = useMutation({
+    mutationFn: (orderId: number) => apiPost(`/api/payments/order/${orderId}/cancel`, {}),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["payments"] }); },
     onError: (e: Error) => alert(e.message),
   });
@@ -235,6 +278,88 @@ export function PaymentsPage() {
           </div>
         </CardContent>
       </Card>
+
+      {underpaid.length > 0 && (
+        <div className="mb-6">
+          <h2 className="text-sm font-semibold text-ink mb-3">Underpaid Orders ({underpaid.length})</h2>
+          <DataTable
+            columns={[
+              {
+                key: "order",
+                header: "Order",
+                render: o => (
+                  <div className="flex flex-col">
+                    <span className="font-mono text-xs">{o.orderCode}</span>
+                    <span className="text-xs text-ink-soft">{o.user?.fullName ?? o.user?.username ?? "Unknown"}</span>
+                  </div>
+                ),
+              },
+              {
+                key: "amount",
+                header: "Amount",
+                render: o => <span className="font-mono text-sm">{formatCurrencyDisplay(o.totalAmount, o.currency as "IDR" | "USDT" | "USD")}</span>,
+              },
+              {
+                key: "date",
+                header: "Date",
+                render: o => <span className="text-xs text-ink-soft whitespace-nowrap">{new Date(o.createdAt).toLocaleString()}</span>,
+              },
+              {
+                key: "actions",
+                header: "",
+                render: o => (
+                  <div className="flex gap-2">
+                    <ConfirmDialog
+                      trigger={<Button variant="outline" size="sm" disabled={deliverAnyway.isPending}>Deliver anyway</Button>}
+                      title="Deliver this order anyway?"
+                      description={`Order ${o.orderCode} was underpaid. Deliver it anyway — this writes off the shortfall.`}
+                      confirmLabel="Deliver anyway"
+                      variant="default"
+                      onConfirm={() => deliverAnyway.mutate(o.id)}
+                    />
+                    <ConfirmDialog
+                      trigger={<Button variant="outline" size="sm" disabled={refundUnderpaid.isPending}>Refund</Button>}
+                      title="Refund to the buyer's wallet?"
+                      description={`Refund order ${o.orderCode}'s payment to the buyer's wallet balance.`}
+                      confirmLabel="Refund"
+                      variant="default"
+                      onConfirm={() => refundUnderpaid.mutate(o.id)}
+                    />
+                    <ConfirmDialog
+                      trigger={<Button variant="destructive" size="sm" disabled={cancelUnderpaid.isPending}>Cancel order</Button>}
+                      title="Cancel this order?"
+                      description={`Cancel order ${o.orderCode}. Any reserved stock or wallet holds are released.`}
+                      confirmLabel="Cancel order"
+                      onConfirm={() => cancelUnderpaid.mutate(o.id)}
+                    />
+                  </div>
+                ),
+              },
+            ]}
+            data={underpaid}
+            keyExtractor={o => o.id}
+            empty={<EmptyState title="No underpaid orders" />}
+          />
+        </div>
+      )}
+
+      {pendingInternal.length > 0 && (
+        <div className="mb-6">
+          <h2 className="text-sm font-semibold text-ink mb-3">Pending Internal Transfers ({pendingInternal.length})</h2>
+          <DataTable
+            columns={[
+              { key: "order", header: "Order", render: o => <span className="font-mono text-xs">{o.orderCode}</span> },
+              { key: "user", header: "Buyer", render: o => <span className="text-xs text-ink-soft">{o.user?.fullName ?? o.user?.username ?? "Unknown"}</span> },
+              { key: "amount", header: "Amount", render: o => <span className="font-mono text-sm">{formatCurrencyDisplay(o.totalAmount, o.currency as "IDR" | "USDT" | "USD")}</span> },
+              { key: "ref", header: "Transfer Ref", render: o => <span className="font-mono text-xs">{o.paymentRef ?? "—"}</span> },
+              { key: "expires", header: "Expires", render: o => <span className="text-xs text-ink-soft whitespace-nowrap">{o.expiresAt ? new Date(o.expiresAt).toLocaleString() : "—"}</span> },
+            ]}
+            data={pendingInternal}
+            keyExtractor={o => o.id}
+            empty={<EmptyState title="No pending internal transfers" />}
+          />
+        </div>
+      )}
 
       {/* Outcome filter */}
       <FilterBar className="mb-4">

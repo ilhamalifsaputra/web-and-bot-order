@@ -152,3 +152,83 @@ describe("PaymentsPage", () => {
     expect(screen.getByRole("button", { name: "Match" })).not.toBeDisabled();
   });
 });
+
+const UNDERPAID = {
+  id: 501,
+  orderCode: "ORD-UP1",
+  totalAmount: "45000",
+  currency: "IDR",
+  createdAt: "2026-06-20T08:00:00.000Z",
+  user: { fullName: "Sari Dewi", username: "saridewi" },
+};
+const PENDING_INTERNAL = {
+  id: 502,
+  orderCode: "ORD-PI1",
+  totalAmount: "3",
+  currency: "USDT",
+  paymentRef: "REF-abc123",
+  expiresAt: "2026-07-01T12:00:00.000Z",
+  user: { fullName: "Budi", username: "budi99" },
+};
+
+describe("PaymentsPage — underpaid order resolution", () => {
+  it("lists underpaid orders and delivers one anyway", async () => {
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [UNDERPAID], pendingInternal: [] });
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Deliver anyway" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/deliver", {}));
+  });
+
+  it("refunds an underpaid order to the buyer's wallet", async () => {
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [UNDERPAID], pendingInternal: [] });
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Refund" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Refund" }));
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/refund", {}));
+  });
+
+  it("cancels an underpaid order", async () => {
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [UNDERPAID], pendingInternal: [] });
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel order" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel order" }));
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/order/501/cancel", {}));
+  });
+
+  it("lists pending internal transfers awaiting confirmation", async () => {
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [], pendingInternal: [PENDING_INTERNAL] });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-PI1")).toBeInTheDocument());
+    expect(screen.getByText("REF-abc123")).toBeInTheDocument();
+  });
+
+  it("shows an alert when resolving an underpaid order fails", async () => {
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [UNDERPAID], pendingInternal: [] });
+    vi.mocked(apiPost).mockRejectedValueOnce(new Error("Order is no longer underpaid."));
+    const alertSpy = vi.spyOn(globalThis, "alert").mockImplementation(() => {});
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Deliver anyway" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
+
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith("Order is no longer underpaid."));
+  });
+});

@@ -14,7 +14,17 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
-const USER = { id: 1, username: "andi", fullName: "Andi Santoso", telegramId: "111", role: "CUSTOMER", banned: false, createdAt: "2026-01-01T00:00:00.000Z" };
+const USER = {
+  id: 1,
+  username: "andi",
+  fullName: "Andi Santoso",
+  telegramId: "111",
+  role: "CUSTOMER",
+  banned: false,
+  createdAt: "2026-01-01T00:00:00.000Z",
+  lastSeenAt: "2026-01-02T00:00:00.000Z",
+  totalSpent: { idr: "150000", usdt: "0" },
+};
 
 beforeEach(() => { vi.restoreAllMocks(); });
 
@@ -26,6 +36,8 @@ describe("UsersPage", () => {
     render(<UsersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
     expect(screen.getByText("@andi")).toBeInTheDocument();
+    expect(screen.getByText("A")).toBeInTheDocument(); // avatar initial
+    expect(screen.getByText("Rp150.000")).toBeInTheDocument(); // totalSpent.idr
   });
 
   it("shows empty state when no users", async () => {

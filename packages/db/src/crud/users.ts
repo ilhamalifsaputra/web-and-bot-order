@@ -211,6 +211,33 @@ export async function userTotalSpent(
   return { idr, usdt };
 }
 
+/** Batched DELIVERED-order totals for a page of users, split per transaction
+ * currency (orders predating the currency column count as USDT — their
+ * snapshot unit). One `groupBy` for the whole page instead of one query per
+ * row (the N+1 pattern `userTotalSpent` has when called per-row). Users with
+ * no DELIVERED orders are absent from the returned Map — callers should
+ * default to `{ idr: new Decimal(0), usdt: new Decimal(0) }` on a miss. */
+export async function totalSpentByUserIds(
+  db: Db,
+  userIds: number[],
+): Promise<Map<number, { idr: Decimal; usdt: Decimal }>> {
+  const result = new Map<number, { idr: Decimal; usdt: Decimal }>();
+  if (userIds.length === 0) return result;
+  const groups = await db.order.groupBy({
+    by: ["userId", "currency"],
+    where: { userId: { in: userIds }, status: "DELIVERED" },
+    _sum: { totalAmount: true },
+  });
+  for (const g of groups) {
+    const sum = new Decimal(g._sum.totalAmount ?? 0);
+    const entry = result.get(g.userId) ?? { idr: new Decimal(0), usdt: new Decimal(0) };
+    if (g.currency === "IDR") entry.idr = entry.idr.plus(sum);
+    else entry.usdt = entry.usdt.plus(sum);
+    result.set(g.userId, entry);
+  }
+  return result;
+}
+
 export interface WalletLedgerEntry {
   createdAt: Date;
   delta: string;

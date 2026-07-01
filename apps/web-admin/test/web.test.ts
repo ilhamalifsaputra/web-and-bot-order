@@ -744,6 +744,122 @@ describe("catalog JSON API — create product", () => {
   });
 });
 
+// ---- catalog JSON API — active toggle --------------------------------------
+
+describe("catalog JSON API — active toggle", () => {
+  function postJson(url: string, cookie: string | null, csrf: string | null, body: Record<string, unknown>) {
+    return app.inject({
+      method: "POST",
+      url,
+      headers: {
+        "content-type": "application/json",
+        ...(csrf ? { "x-csrf-token": csrf } : {}),
+      },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+
+  describe("POST /api/catalog/products/:id/active", () => {
+    it("happy path: deactivates a product and audits", async () => {
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/active`, seed.cookie, seed.csrf, {
+        active: false,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ id: seed.catalogProductId, isActive: false });
+      expect((await getCatalogProduct(prisma, seed.catalogProductId))!.isActive).toBe(false);
+
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: "product_active_toggle", targetId: seed.catalogProductId },
+      });
+      expect(audit).toBeTruthy();
+      expect(audit?.targetType).toBe("product");
+      expect(audit?.adminId).toBe(seed.adminId);
+      const product = await getCatalogProduct(prisma, seed.catalogProductId);
+      expect(audit?.details).toBe(`Deactivated product "${product!.name}".`);
+    });
+
+    it("happy path: reactivates a product and audits", async () => {
+      await postJson(`/api/catalog/products/${seed.catalogProductId}/active`, seed.cookie, seed.csrf, { active: false });
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/active`, seed.cookie, seed.csrf, {
+        active: true,
+      });
+      expect(res.statusCode).toBe(200);
+      expect((await getCatalogProduct(prisma, seed.catalogProductId))!.isActive).toBe(true);
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: "product_active_toggle", targetId: seed.catalogProductId },
+        orderBy: { id: "desc" },
+      });
+      const product = await getCatalogProduct(prisma, seed.catalogProductId);
+      expect(audit?.details).toBe(`Activated product "${product!.name}".`);
+    });
+
+    it("rejects a non-boolean active with 400", async () => {
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/active`, seed.cookie, seed.csrf, {
+        active: "false",
+      });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toBeTruthy();
+    });
+
+    it("rejects a non-existent product id with 404", async () => {
+      const res = await postJson(`/api/catalog/products/99999/active`, seed.cookie, seed.csrf, { active: false });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/active`, null, "x", { active: false });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/active`, seed.cookie, "bad-token", {
+        active: false,
+      });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("POST /api/catalog/denominations/:id/active", () => {
+    it("happy path: deactivates a denomination and audits", async () => {
+      const res = await postJson(`/api/catalog/denominations/${seed.productId}/active`, seed.cookie, seed.csrf, {
+        active: false,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ id: seed.productId, isActive: false });
+      expect((await getDenomination(prisma, seed.productId))!.isActive).toBe(false);
+
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: "denomination_active_toggle", targetId: seed.productId },
+      });
+      expect(audit).toBeTruthy();
+      expect(audit?.targetType).toBe("denomination");
+      expect(audit?.adminId).toBe(seed.adminId);
+      const denom = await getDenomination(prisma, seed.productId);
+      expect(audit?.details).toBe(`Deactivated denomination "${denom!.name}".`);
+    });
+
+    it("rejects a non-existent denomination id with 404", async () => {
+      const res = await postJson(`/api/catalog/denominations/99999/active`, seed.cookie, seed.csrf, { active: false });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/catalog/denominations/${seed.productId}/active`, null, "x", { active: false });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/catalog/denominations/${seed.productId}/active`, seed.cookie, "bad-token", {
+        active: false,
+      });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+});
+
 describe("denominations (leaf SKU, inside product detail)", () => {
   it("create denomination happy + audit", async () => {
     const res = await post(`/catalog/product/${seed.catalogProductId}/denomination`, seed.cookie, {

@@ -3,12 +3,16 @@ import {
   prisma,
   listAllCategories,
   listProducts,
+  getCatalogProduct,
   getCatalogProductWithDenominations,
+  getDenomination,
   countAvailableStock,
   countRestockSubscribers,
   getBulkPricingForDenomination,
   createCatalogProduct,
   createDenomination,
+  bulkSetCatalogProductsActive,
+  bulkSetDenominationsActive,
   logAdminAction,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
@@ -48,6 +52,48 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       details: `Created product "${name}".`,
     });
     return reply.code(201).send({ id: product.id, name: product.name, slug: product.slug });
+  });
+
+  app.post("/api/catalog/products/:id/active", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid product id." });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body.active !== "boolean") return reply.code(400).send({ error: "active must be a boolean." });
+    const active = body.active;
+
+    const product = await getCatalogProduct(prisma, id);
+    if (!product) return reply.code(404).send({ error: "Product not found." });
+
+    await bulkSetCatalogProductsActive(prisma, [id], active);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "product_active_toggle",
+      targetType: "product",
+      targetId: id,
+      details: `${active ? "Activated" : "Deactivated"} product "${product.name}".`,
+    });
+    return reply.send({ id, isActive: active });
+  });
+
+  app.post("/api/catalog/denominations/:id/active", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid denomination id." });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body.active !== "boolean") return reply.code(400).send({ error: "active must be a boolean." });
+    const active = body.active;
+
+    const denomination = await getDenomination(prisma, id);
+    if (!denomination) return reply.code(404).send({ error: "Denomination not found." });
+
+    await bulkSetDenominationsActive(prisma, [id], active);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "denomination_active_toggle",
+      targetType: "denomination",
+      targetId: id,
+      details: `${active ? "Activated" : "Deactivated"} denomination "${denomination.name}".`,
+    });
+    return reply.send({ id, isActive: active });
   });
 
   app.get("/api/catalog/:productId", { preHandler: currentAdmin }, async (req, reply) => {

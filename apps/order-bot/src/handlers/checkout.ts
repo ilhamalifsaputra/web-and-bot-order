@@ -53,6 +53,7 @@ import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
+import { logErrorRef } from "../util/errors";
 import { esc, formatPrice, formatIdr, priceIdr } from "../util/format";
 import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
@@ -185,7 +186,27 @@ async function computeConfirmation(
         delete ctx.session.scratch.appliedVoucherCode;
         voucherCode = "";
       }
-    } catch {
+    } catch (e) {
+      // The voucher was valid when first applied but no longer is (expired /
+      // used up / minimum purchase no longer met after a quantity or wallet-
+      // toggle change) — this is EXPECTED, so surface the *specific* reason
+      // instead of silently dropping the discount (the customer would
+      // otherwise just see the total jump with zero explanation). Reuses the
+      // same slot checkout.confirm_order's {voucher_line} already renders
+      // into on success — matches how the first-apply path
+      // (conversations/checkout.ts:81-87) surfaces the same ValidationError.
+      if (e instanceof ValidationError) {
+        voucherLine = `${coreT(e.key, lang, e.formatArgs)}\n`;
+      } else {
+        // Anything else (DB error, etc.) is unexpected — log it under a ref
+        // so a customer report maps to the stack trace, same convention as
+        // customer.ts's browse_denomination catch block.
+        const ref = logErrorRef(e, `computeConfirmation: voucher re-validation failed for code=${voucherCode}`, {
+          userId: info.id,
+          productId,
+        });
+        voucherLine = `${coreT("error.generic_ref", lang, { ref })}\n`;
+      }
       delete ctx.session.scratch.appliedVoucherCode;
       voucherCode = "";
     }

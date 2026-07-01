@@ -769,6 +769,24 @@ describe("checkout handlers", () => {
     expect(await prisma.order.count()).toBe(0);
   });
 
+  it("showOrderConfirmation surfaces the voucher's specific error when re-validation fails, instead of silently dropping the discount (checkout.ts computeConfirmation)", async () => {
+    // SAVE10 was valid when first applied; expire it now so the re-render's
+    // silent re-validation (computeConfirmation) hits the same ValidationError
+    // path applyVoucherToSubtotal throws on first apply.
+    await prisma.voucher.update({ where: { id: sample.voucher.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    const { ctx, sink } = customerCtx({
+      session: { ...userSession(), scratch: { appliedVoucherCode: "SAVE10" } },
+    });
+
+    await checkout.showOrderConfirmation(ctx, sample.product.id, 2);
+
+    // The specific reason must reach the user — not a silently-changed total.
+    expect(sentIncludes(sink, "This voucher has expired.")).toBe(true);
+    // The now-invalid voucher is still dropped from session (same behavior as
+    // before, just no longer silent).
+    expect(ctx.session.scratch.appliedVoucherCode).toBeUndefined();
+  });
+
   it("buyNowTokopay creates an IDR/TOKOPAY order and sends the QR as one photo+caption bubble", async () => {
     await setSetting(prisma, "tokopay_merchant_id", "M1");
     await setSetting(prisma, "tokopay_secret", "S1");

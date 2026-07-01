@@ -60,4 +60,58 @@ describe("SettingsPage", () => {
       expect(screen.getByText(/failed to load settings/i)).toBeInTheDocument(),
     );
   });
+
+  it("shows a success banner after changing the password", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText("Current password"), "old-password");
+    await user.type(screen.getByPlaceholderText("New password (min 8 chars)"), "new-password");
+    await user.click(screen.getByRole("button", { name: "Change Password" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Password changed successfully.")).toBeInTheDocument(),
+    );
+  });
+
+  it("shows an error banner when changing the password fails", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "Incorrect current password" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText("Current password"), "wrong-password");
+    await user.type(screen.getByPlaceholderText("New password (min 8 chars)"), "new-password");
+    await user.click(screen.getByRole("button", { name: "Change Password" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Incorrect current password")).toBeInTheDocument(),
+    );
+  });
 });

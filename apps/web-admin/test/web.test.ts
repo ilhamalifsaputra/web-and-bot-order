@@ -1575,6 +1575,86 @@ describe("support", () => {
     const res = await post(`/support/${tid}/reply`, seed.cookie, { csrf_token: "bad", content: "hi" });
     expect(res.statusCode).toBe(403);
   });
+
+  function postJson(url: string, cookie: string | null, csrf: string | null, body: Record<string, unknown>) {
+    return app.inject({
+      method: "POST",
+      url,
+      headers: {
+        "content-type": "application/json",
+        ...(csrf ? { "x-csrf-token": csrf } : {}),
+      },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+
+  describe("POST /api/support/:ticketId/assign", () => {
+    async function makeSecondAdmin() {
+      return upsertUser(prisma, { telegramId: 1000, username: "second", fullName: "Second Admin" });
+    }
+
+    it("happy path: assigns a ticket to an admin and audits", async () => {
+      const tid = await makeTicket();
+      const second = await makeSecondAdmin();
+      const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: second.id });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true });
+      expect((await prisma.supportTicket.findUnique({ where: { id: tid } }))!.adminId).toBe(second.id);
+
+      const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_assign", targetId: tid } });
+      expect(audit).toBeTruthy();
+      expect(audit?.targetType).toBe("ticket");
+      expect(audit?.adminId).toBe(seed.adminId);
+      expect(audit?.details).toBe(`Assigned ticket #${tid} to "Second Admin".`);
+    });
+
+    it("unassign (adminId: null) clears the assignment and audits", async () => {
+      const tid = await makeTicket();
+      const second = await makeSecondAdmin();
+      await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: second.id });
+
+      const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: null });
+      expect(res.statusCode).toBe(200);
+      expect((await prisma.supportTicket.findUnique({ where: { id: tid } }))!.adminId).toBeNull();
+
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: "ticket_assign", targetId: tid },
+        orderBy: { id: "desc" },
+      });
+      expect(audit?.details).toBe(`Unassigned ticket #${tid}.`);
+    });
+
+    it("rejects a non-existent ticket id with 404", async () => {
+      const res = await postJson(`/api/support/99999/assign`, seed.cookie, seed.csrf, { adminId: null });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects a non-existent admin id with 400", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: 999999 });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects a non-number, non-null adminId with 400", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: "7" });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("requires auth (anon -> 303 /login)", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/assign`, null, "x", { adminId: null });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, "bad-token", { adminId: null });
+      expect(res.statusCode).toBe(403);
+    });
+  });
 });
 
 // ---- settings (acceptance #4 secret-redaction + #5) -----------------------

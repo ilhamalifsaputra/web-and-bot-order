@@ -8,6 +8,7 @@ import {
   getUser,
   addTicketMessage,
   closeTicket,
+  assignTicket,
   logAdminAction,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
@@ -58,6 +59,37 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       action: "ticket_close",
       targetType: "ticket",
       targetId: ticketId,
+    });
+    return reply.send({ ok: true });
+  });
+
+  app.post("/api/support/:ticketId/assign", { preHandler: csrfProtect }, async (req, reply) => {
+    const ticketId = Number((req.params as { ticketId: string }).ticketId);
+    if (!Number.isInteger(ticketId)) return reply.code(400).send({ error: "Invalid ticket id." });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.adminId !== null && typeof body.adminId !== "number") {
+      return reply.code(400).send({ error: "adminId must be a number or null." });
+    }
+    const adminId = body.adminId as number | null;
+
+    if (!(await getTicket(prisma, ticketId))) return reply.code(404).send({ error: "Ticket not found." });
+
+    let adminName: string | null = null;
+    if (adminId !== null) {
+      const assignee = await getUser(prisma, adminId);
+      if (!assignee) return reply.code(400).send({ error: "Admin not found." });
+      adminName = assignee.fullName ?? assignee.username ?? `Telegram ID ${assignee.telegramId}`;
+    }
+
+    await assignTicket(prisma, ticketId, adminId);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "ticket_assign",
+      targetType: "ticket",
+      targetId: ticketId,
+      details: adminId !== null
+        ? `Assigned ticket #${ticketId} to "${adminName}".`
+        : `Unassigned ticket #${ticketId}.`,
     });
     return reply.send({ ok: true });
   });

@@ -59,8 +59,9 @@ export function ReviewsPage() {
 
   const toggleHide = useMutation({
     mutationFn: ({ id, hide }: { id: number; hide: boolean }) =>
-      apiPost<void>(`/reviews/${id}/hide`, { hidden: hide ? "1" : "0" }),
+      apiPost<void>(`/api/reviews/${id}/hide`, { hidden: hide }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["reviews"] }),
+    onError: (e: Error) => alert(e.message),
   });
 
   function goPage(n: number) {

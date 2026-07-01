@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
-import { prisma, listReviews, countReviews, productRatingSummaries } from "@app/db";
-import { currentAdmin } from "../../plugins/auth";
+import { prisma, listReviews, countReviews, productRatingSummaries, setReviewHidden, logAdminAction } from "@app/db";
+import { currentAdmin, csrfProtect } from "../../plugins/auth";
 
 const PAGE_SIZE = 50;
 
@@ -20,5 +20,25 @@ export default async function reviewsApiRoutes(app: FastifyInstance): Promise<vo
     ]);
 
     return reply.send({ reviews, total, page, hasNext: offset + reviews.length < total, summaries });
+  });
+
+  // JSON counterpart of the legacy POST /reviews/:reviewId/hide
+  // (routes/reviews.ts) — see api/outbox.ts's retry route for why a parallel
+  // JSON route exists instead of reusing the legacy 303-redirect one.
+  app.post("/api/reviews/:reviewId/hide", { preHandler: csrfProtect }, async (req, reply) => {
+    const reviewId = Number((req.params as { reviewId: string }).reviewId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body.hidden !== "boolean") return reply.code(400).send({ error: "hidden must be a boolean." });
+    const hide = body.hidden;
+    const existing = await prisma.review.findUnique({ where: { id: reviewId } });
+    if (!existing) return reply.code(404).send({ error: "Review not found." });
+    await setReviewHidden(prisma, reviewId, hide);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: hide ? "review_hide" : "review_unhide",
+      targetType: "review",
+      targetId: reviewId,
+    });
+    return reply.send({ ok: true, hidden: hide });
   });
 }

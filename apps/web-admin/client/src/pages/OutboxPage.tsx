@@ -58,7 +58,7 @@ export function OutboxPage() {
   async function retry(id: number) {
     setRetrying((s) => new Set([...s, id]));
     try {
-      await apiPost(`/outbox/${id}/retry`, {});
+      await apiPost(`/api/outbox/${id}/retry`, {});
       await refetch();
     } finally {
       setRetrying((s) => { const n = new Set(s); n.delete(id); return n; });

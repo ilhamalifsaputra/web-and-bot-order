@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { OutboxPage } from "./OutboxPage";
@@ -55,5 +55,34 @@ describe("OutboxPage", () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("network"));
     render(<OutboxPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
+  });
+
+  it("retries a failed notification via /api/outbox/:id/retry and refetches", async () => {
+    const failedRow = { ...ROW, id: 9, status: "FAILED" };
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ rows: [failedRow], total: 1, page: 1, hasNext: false, counts: { FAILED: 1 } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ rows: [{ ...failedRow, status: "PENDING" }], total: 1, page: 1, hasNext: false, counts: { PENDING: 1 } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OutboxPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/outbox/9/retry", expect.objectContaining({ method: "POST" })),
+    );
+    await waitFor(() => expect(screen.getAllByText("PENDING").length).toBeGreaterThan(0));
   });
 });

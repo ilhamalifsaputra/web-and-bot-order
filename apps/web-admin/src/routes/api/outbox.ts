@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { NotificationStatus } from "@app/core/enums";
-import { prisma, listNotifications, countNotifications, outboxStatusCounts } from "@app/db";
-import { currentAdmin } from "../../plugins/auth";
+import { prisma, listNotifications, countNotifications, outboxStatusCounts, retryNotification, logAdminAction } from "@app/db";
+import { logger } from "@app/core/logger";
+import { currentAdmin, csrfProtect } from "../../plugins/auth";
 
 const PAGE_SIZE = 50;
 const STATUS_VALUES = Object.values(NotificationStatus) as string[];
@@ -20,5 +21,24 @@ export default async function outboxApiRoutes(app: FastifyInstance): Promise<voi
     ]);
 
     return reply.send({ rows, total, page, hasNext: offset + rows.length < total, counts });
+  });
+
+  // JSON counterpart of the legacy POST /outbox/:id/retry (routes/outbox.ts),
+  // which 303-redirects to a retired GET /outbox and breaks fetch()'s
+  // res.json() once the SPA catch-all serves HTML there instead. The web
+  // panel's React page calls this one; the legacy route is left in place
+  // (still covered by test/web.test.ts) since nothing requires removing it.
+  app.post("/api/outbox/:id/retry", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const ok = await retryNotification(prisma, id);
+    if (!ok) return reply.code(404).send({ error: "That notification no longer exists." });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "outbox_retry",
+      targetType: "notification",
+      targetId: id,
+    });
+    logger.info(`Admin ${req.admin!.userId} requeued outbox notification ${id} for delivery via the web panel`);
+    return reply.send({ ok: true });
   });
 }

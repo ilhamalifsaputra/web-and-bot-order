@@ -69,4 +69,19 @@ describe("BrandingPage", () => {
       expect(noImageMessages.length).toBeGreaterThan(0);
     });
   });
+
+  it("displays dimension hints for all image upload fields", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(BRANDING_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<BrandingPage />, { wrapper: Wrapper });
+    await waitFor(() => {
+      expect(screen.getByText(/Recommended: 512x512px/)).toBeInTheDocument(); // Favicon
+      expect(screen.getByText(/Recommended: 400x200px/)).toBeInTheDocument(); // Logo
+      expect(screen.getAllByText(/Recommended: 1200x400px/)).toHaveLength(2); // Hero + Banner
+    });
+  });
 });

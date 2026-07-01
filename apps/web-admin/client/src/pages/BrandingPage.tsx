@@ -131,6 +131,7 @@ function ImageUploadRow({
   fieldName,
   accept,
   onUploaded,
+  dimensions,
 }: {
   label: string;
   imageUrl: string;
@@ -138,6 +139,7 @@ function ImageUploadRow({
   fieldName: string;
   accept: string;
   onUploaded: () => void;
+  dimensions?: string;
 }) {
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -168,7 +170,10 @@ function ImageUploadRow({
 
   return (
     <div className="py-3 border-b border-line last:border-b-0">
-      <div className="text-sm font-medium text-ink mb-2">{label}</div>
+      <div className="text-sm font-medium text-ink mb-1">{label}</div>
+      {dimensions && (
+        <p className="text-xs text-ink-soft mb-2">Recommended: {dimensions}</p>
+      )}
       {imageUrl ? (
         <img
           src={imageUrl}
@@ -221,6 +226,7 @@ export function BrandingPage() {
                 fieldName="favicon"
                 accept=".png,.ico,.svg"
                 onUploaded={invalidate}
+                dimensions="512x512px"
               />
               <ImageUploadRow
                 label="Logo"
@@ -229,6 +235,7 @@ export function BrandingPage() {
                 fieldName="logo"
                 accept=".png,.svg,.webp"
                 onUploaded={invalidate}
+                dimensions="400x200px"
               />
               <ImageUploadRow
                 label="Hero image"
@@ -237,6 +244,7 @@ export function BrandingPage() {
                 fieldName="hero"
                 accept=".jpg,.jpeg,.png,.webp"
                 onUploaded={invalidate}
+                dimensions="1200x400px"
               />
               <ImageUploadRow
                 label="Banner"
@@ -245,6 +253,7 @@ export function BrandingPage() {
                 fieldName="banner"
                 accept=".jpg,.jpeg,.png,.webp"
                 onUploaded={invalidate}
+                dimensions="1200x400px"
               />
               {data.bannerIsLegacy && (
                 <p className="pt-2 text-xs text-amberx">

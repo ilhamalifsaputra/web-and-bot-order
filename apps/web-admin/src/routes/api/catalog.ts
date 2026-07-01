@@ -12,6 +12,8 @@ import {
   createCatalogProduct,
   createCategory,
   createDenomination,
+  updateDenomination,
+  deleteDenomination,
   bulkSetCatalogProductsActive,
   bulkSetDenominationsActive,
   logAdminAction,
@@ -181,6 +183,88 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       details: `${active ? "Activated" : "Deactivated"} denomination "${denomination.name}".`,
     });
     return reply.send({ id, isActive: active });
+  });
+
+  app.patch("/api/catalog/denominations/:id", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid denomination id." });
+    const existing = await getDenomination(prisma, id);
+    if (!existing) return reply.code(404).send({ error: "Denomination not found." });
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const name = (typeof body.name === "string" ? body.name : "").trim();
+    if (!name) return reply.code(400).send({ error: "Name is required." });
+
+    const type = typeof body.type === "string" ? body.type.toUpperCase() : "";
+    if (!Object.values(ProductType).includes(type as ProductType)) {
+      return reply.code(400).send({ error: "A valid type is required." });
+    }
+
+    const durationLabel = (typeof body.durationLabel === "string" ? body.durationLabel : "").trim();
+    if (!durationLabel) return reply.code(400).send({ error: "Duration is required." });
+
+    const price = parseDecimal(body.price);
+    if (price === null) return reply.code(400).send({ error: "A valid price is required." });
+
+    const costPrice = body.costPrice != null ? parseDecimal(body.costPrice) : null;
+    if (body.costPrice != null && costPrice === null) {
+      return reply.code(400).send({ error: "Cost price must be a valid number." });
+    }
+    const resellerPrice = body.resellerPrice != null ? parseDecimal(body.resellerPrice) : null;
+    if (body.resellerPrice != null && resellerPrice === null) {
+      return reply.code(400).send({ error: "Reseller price must be a valid number." });
+    }
+
+    // warrantyDays is a required (non-nullable) column — only touch it when
+    // the request actually provided a value, otherwise leave the existing
+    // value in place (matching updateDenomination's partial-update semantics).
+    let warrantyDays: number | undefined;
+    if (body.warrantyDays != null && body.warrantyDays !== "") {
+      const n = Number(body.warrantyDays);
+      if (!Number.isInteger(n)) return reply.code(400).send({ error: "Warranty days must be a whole number." });
+      warrantyDays = n;
+    }
+
+    await updateDenomination(prisma, id, {
+      name,
+      type: type as ProductType,
+      durationLabel,
+      price,
+      costPrice,
+      resellerPrice,
+      ...(warrantyDays !== undefined ? { warrantyDays } : {}),
+      description: typeof body.description === "string" ? body.description.trim() || null : null,
+    });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "denomination_update",
+      targetType: "denomination",
+      targetId: id,
+      details: `Updated denomination "${name}".`,
+    });
+    return reply.send({ id, name });
+  });
+
+  app.delete("/api/catalog/denominations/:id", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid denomination id." });
+    const existing = await getDenomination(prisma, id);
+    if (!existing) return reply.code(404).send({ error: "Denomination not found." });
+    try {
+      await deleteDenomination(prisma, id);
+    } catch (err) {
+      if (err instanceof Error && err.message === "cannot delete a denomination with order history") {
+        return reply.code(409).send({ error: "Cannot delete a denomination with order history." });
+      }
+      throw err;
+    }
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "denomination_delete",
+      targetType: "denomination",
+      targetId: id,
+    });
+    return reply.send({ ok: true });
   });
 
   app.get("/api/catalog/:productId", { preHandler: currentAdmin }, async (req, reply) => {

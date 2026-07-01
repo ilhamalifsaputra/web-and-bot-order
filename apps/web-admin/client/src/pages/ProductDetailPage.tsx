@@ -5,11 +5,12 @@ import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { AlertCircle } from "lucide-react";
-import { apiGet, apiPost } from "../api/client";
+import { apiGet, apiPost, apiDelete } from "../api/client";
 
 interface DenominationRow {
   id: number;
@@ -85,6 +86,15 @@ export function ProductDetailPage() {
     }
   }
 
+  async function deleteDenomination(id: number) {
+    try {
+      await apiDelete(`/api/catalog/denominations/${id}`);
+      await queryClient.invalidateQueries({ queryKey: ["catalog", productId] });
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed to delete denomination.");
+    }
+  }
+
   if (isError) {
     return (
       <PageLayout title="Product Detail">
@@ -153,6 +163,24 @@ export function ProductDetailPage() {
                 onCheckedChange={(checked) => void toggleDenominationActive(d.id, checked)}
                 disabled={togglingDenom.has(d.id)}
               />
+            ),
+          },
+          {
+            key: "actions",
+            header: "",
+            render: d => (
+              <div className="flex gap-2">
+                <Button variant="ghost" size="sm" onClick={() => navigate(`/catalog/${productId}/denominations/${d.id}/edit`)}>
+                  Edit
+                </Button>
+                <ConfirmDialog
+                  trigger={<Button variant="ghost" size="sm" className="text-rust">Delete</Button>}
+                  title="Delete this denomination?"
+                  description={`Delete "${d.name}". This is refused if it has order history.`}
+                  confirmLabel="Delete"
+                  onConfirm={() => deleteDenomination(d.id)}
+                />
+              </div>
             ),
           },
         ]}

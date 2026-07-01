@@ -67,4 +67,20 @@ describe("LoginPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
     await waitFor(() => expect(loc.href).toBe("/"));
   });
+
+  it("toggles password visibility when eye icon is clicked", () => {
+    render(
+      <MemoryRouter>
+        <LoginPage />
+      </MemoryRouter>,
+    );
+    const passwordInput = screen.getByLabelText(/^password$/i) as HTMLInputElement;
+    const toggleButton = screen.getByRole("button", { name: /show password/i });
+
+    expect(passwordInput.type).toBe("password");
+    fireEvent.click(toggleButton);
+    expect(passwordInput.type).toBe("text");
+    fireEvent.click(toggleButton);
+    expect(passwordInput.type).toBe("password");
+  });
 });

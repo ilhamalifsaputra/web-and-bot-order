@@ -1264,6 +1264,38 @@ describe("checkout — voucher preview does not create an order (Task 8 fix)", (
     });
     expect(res.statusCode).toBe(403);
   });
+
+  // Regression for the reviewer finding on Task 8: once Apply became
+  // type="button", "Place Order" is the checkout <form>'s ONLY type="submit"
+  // control, so implicit HTML form submission (pressing Enter while focused in
+  // #voucher_code) would silently submit it and create a real order. Fastify's
+  // .inject() can't simulate a browser's native implicit-submission or a real
+  // keydown event, so this asserts the structural/JS properties that make that
+  // impossible instead: exactly one type="submit" control on the page (so if
+  // implicit submission ever fired, it could ONLY reach Place Order — proving
+  // the DOM claim in the fix's reasoning), and that #voucher_code has a keydown
+  // interceptor wired to the SAME element (#voucher_apply) that issues the
+  // htmx preview request, so Enter is redirected to Apply's behavior instead.
+  it("GET /checkout ships an Enter-key interceptor on #voucher_code, with Place Order as the page's only submit control", async () => {
+    const { cookie } = await voucherSession();
+    const res = await app.inject({ method: "GET", url: "/checkout", headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+
+    const submitCount = (res.body.match(/type="submit"/g) ?? []).length;
+    expect(submitCount).toBe(1); // Place Order — the only real submit button on the page
+
+    expect(res.body).toContain('id="voucher_code"');
+    expect(res.body).toContain('id="voucher_apply"');
+    expect(res.body).toContain('<button type="button" id="voucher_apply"'); // Apply is never a submit button
+
+    // The keydown interceptor: prevents native Enter-submission and re-fires
+    // Apply's own htmx request instead of letting Enter reach Place Order.
+    expect(res.body).toContain("getElementById('voucher_code')");
+    expect(res.body).toContain("getElementById('voucher_apply')");
+    expect(res.body).toContain("e.key !== 'Enter'");
+    expect(res.body).toContain("e.preventDefault()");
+    expect(res.body).toContain("htmx.trigger(applyBtn, 'click')");
+  });
 });
 
 describe("checkout — PayDisini option (2nd IDR method, alongside TokoPay)", () => {

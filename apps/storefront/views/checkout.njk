@@ -101,17 +101,40 @@
        hx-include="closest form" carries voucher_code + csrf_token (and any
        other form fields) along; the swap only replaces #checkout-summary,
        so this input's live value is untouched and still submits with the
-       real "Place Order" click afterwards. #}
+       real "Place Order" click afterwards.
+
+       Once Apply stopped being type="submit", "Place Order" (in
+       _checkout_totals.njk) became this <form>'s ONLY submit button — so
+       pressing Enter while focused in #voucher_code would trigger HTML's
+       implicit-submission rule and silently place a real order (reviewer
+       finding on Task 8). The script below intercepts Enter on this input,
+       prevents the native submit, and fires the exact same htmx request the
+       Apply button issues instead — so Enter previews, it never orders. #}
     <div class="card card-pad">
       <label class="field-label" for="voucher_code">{{ t('web.voucher_label', lang) }}</label>
       <div class="flex gap-2">
         <input id="voucher_code" name="voucher_code" value="{{ voucher_code }}" class="field uppercase"
                placeholder="{{ t('web.voucher_placeholder', lang) }}" maxlength="32">
-        <button type="button" hx-post="/checkout/voucher/preview" hx-include="closest form"
+        <button type="button" id="voucher_apply" hx-post="/checkout/voucher/preview" hx-include="closest form"
                 hx-target="#checkout-summary" hx-swap="innerHTML"
                 class="btn btn-soft shrink-0">{{ t('web.voucher_apply', lang) }}</button>
       </div>
     </div>
+    <script>
+      // Enter in #voucher_code must never fall through to the form's only
+      // real submit button (Place Order) via implicit submission — stop
+      // the native submit and trigger the same htmx request Apply uses.
+      (function () {
+        var input = document.getElementById('voucher_code');
+        var applyBtn = document.getElementById('voucher_apply');
+        if (!input || !applyBtn) return;
+        input.addEventListener('keydown', function (e) {
+          if (e.key !== 'Enter' || e.isComposing) return;
+          e.preventDefault();
+          htmx.trigger(applyBtn, 'click');
+        });
+      })();
+    </script>
 
     {# Wallet credits (only shown when user has a positive balance) #}
     {% if wallet_idr and wallet_idr != "0" %}

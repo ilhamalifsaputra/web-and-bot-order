@@ -26,6 +26,7 @@ interface OrderRow {
   status: string;
   currency: string;
   totalAmount: string;
+  paymentMethod: string;
   createdAt: string;
   user: { id: number; fullName: string | null; username: string | null } | null;
 }
@@ -182,6 +183,13 @@ export function OrdersPage() {
               <span className="font-mono text-sm">
                 {formatCurrencyDisplay(row.totalAmount, row.currency as "IDR" | "USDT" | "USD")}
               </span>
+            ),
+          },
+          {
+            key: "paymentMethod",
+            header: "Payment Method",
+            render: (row) => (
+              <span className="text-xs text-ink-soft">{row.paymentMethod}</span>
             ),
           },
           {

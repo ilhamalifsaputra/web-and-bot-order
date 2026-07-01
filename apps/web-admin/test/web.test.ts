@@ -454,6 +454,61 @@ describe("orders", () => {
     expect(data.orders.some((o) => o.user?.loginUsername === "weshopper")).toBe(true);
   });
 
+  describe("CSV export", () => {
+    it("returns CSV headers, Content-Disposition, and the matching rows", async () => {
+      await makePendingOrder();
+      const res = await get("/api/orders/export", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toContain("text/csv");
+      expect(res.headers["content-disposition"]).toBe('attachment; filename="orders.csv"');
+      const lines = res.body.trim().split("\r\n");
+      expect(lines[0]).toBe(
+        "Order Code,Customer,Status,Currency,Total Amount,Payment Method,Created At",
+      );
+      expect(lines.length).toBe(2); // header + the one seeded order
+    });
+
+    it("returns more than 50 rows when more than 50 orders match (proves the limit override)", async () => {
+      const items = Array.from({ length: 55 }, (_, i) => `bulk${counter}_${i}@e.com:p`);
+      await bulkAddStock(prisma, seed.productId, items);
+      const user = (await getUser(prisma, seed.customerId))!;
+      for (let i = 0; i < 55; i++) {
+        await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 });
+      }
+
+      const res = await get("/api/orders/export", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      const lines = res.body.trim().split("\r\n");
+      expect(lines.length - 1).toBe(55); // header excluded — proves no 50-row truncation
+    });
+
+    it("quotes a customer name containing a comma", async () => {
+      const commaUser = await upsertUser(prisma, {
+        telegramId: 555555,
+        username: "commauser",
+        fullName: "Doe, Jane",
+      });
+      await createOrderDirect(prisma, { user: commaUser, productId: seed.productId, quantity: 1 });
+
+      const res = await get("/api/orders/export", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('"Doe, Jane"');
+    });
+
+    it("respects the status filter", async () => {
+      setBotIdentity({ publicChannelId: -100123456789 });
+      const deliveredId = await makePendingOrder();
+      await post(`/orders/${deliveredId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+      await makePendingOrder(); // stays PENDING_VERIFICATION — must be excluded below
+
+      const res = await get("/api/orders/export?status=DELIVERED", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      const lines = res.body.trim().split("\r\n");
+      expect(lines.length - 1).toBe(1); // header + exactly the one DELIVERED order
+      expect(lines[1]).toContain(",DELIVERED,");
+    });
+  });
+
   it("reject → REJECTED + audit", async () => {
     const orderId = await makePendingOrder();
     const res = await post(`/orders/${orderId}/reject`, seed.cookie, { csrf_token: seed.csrf, reason: "blurry proof" });

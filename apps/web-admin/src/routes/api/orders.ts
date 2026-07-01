@@ -24,6 +24,19 @@ function parseDate(value: string | undefined): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/** Quotes a CSV field per RFC 4180: wrap in double quotes if it contains a
+ * comma, quote, or newline, doubling any embedded quotes. */
+function csvField(value: string): string {
+  if (/[",\r\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+function csvRow(fields: string[]): string {
+  return fields.map(csvField).join(",") + "\r\n";
+}
+
 function serializeMoneyView(mv: ReturnType<typeof orderMoneyView>) {
   return {
     currency: mv.currency,
@@ -61,6 +74,48 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       hasNext: offset + orders.length < total,
       statuses: STATUS_VALUES,
     });
+  });
+
+  // Exports the full filtered result set (not just the current page) as a CSV
+  // download — `listOrders` defaults to `take: 50`, so this must pass an
+  // explicit override or the export would silently truncate.
+  app.get("/api/orders/export", { preHandler: currentAdmin }, async (req, reply) => {
+    const q = req.query as Record<string, string | undefined>;
+    const statusFilter =
+      q.status && STATUS_VALUES.includes(q.status) ? (q.status as OrderStatus) : null;
+    const since = parseDate(q.since);
+    const until = parseDate(q.until);
+
+    const filter = { status: statusFilter, orderCode: q.q || null, since, until };
+    const orders = await listOrders(prisma, { ...filter, limit: 100000 });
+
+    const header = [
+      "Order Code",
+      "Customer",
+      "Status",
+      "Currency",
+      "Total Amount",
+      "Payment Method",
+      "Created At",
+    ];
+    let csv = csvRow(header);
+    for (const order of orders) {
+      const customer =
+        order.user?.fullName ?? order.user?.username ?? order.user?.loginUsername ?? "";
+      csv += csvRow([
+        order.orderCode,
+        customer,
+        order.status,
+        order.currency,
+        order.totalAmount.toString(),
+        order.paymentMethod,
+        order.createdAt.toISOString(),
+      ]);
+    }
+
+    reply.header("Content-Type", "text/csv; charset=utf-8");
+    reply.header("Content-Disposition", 'attachment; filename="orders.csv"');
+    return reply.send(csv);
   });
 
   app.get("/api/orders/:orderId", { preHandler: currentAdmin }, async (req, reply) => {

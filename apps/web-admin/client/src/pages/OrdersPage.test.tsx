@@ -20,6 +20,7 @@ const ORDER = {
   status: "PENDING_VERIFICATION",
   currency: "IDR",
   totalAmount: "50000",
+  paymentMethod: "BINANCE_PAY",
   createdAt: "2026-01-01T00:00:00.000Z",
   user: { id: 10, fullName: "Andi Santoso", username: "andi" },
 };
@@ -48,6 +49,7 @@ describe("OrdersPage", () => {
     render(<OrdersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("ORD-0001")).toBeInTheDocument());
     expect(screen.getByText("Andi Santoso")).toBeInTheDocument();
+    expect(screen.getByText("BINANCE_PAY")).toBeInTheDocument();
   });
 
   it("shows empty state when no orders", async () => {

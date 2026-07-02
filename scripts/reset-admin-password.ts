@@ -16,11 +16,11 @@
  * NEVER prints the password hash. The action is audited with adminId=null so
  * it's distinguishable from an in-app change in /audit.
  */
-import { config } from "@app/core/config";
-import { isAdmin } from "@app/core/runtime";
+import { isAdmin, setAdminIds, adminIds } from "@app/core/runtime";
 import {
   prisma,
   initDb,
+  resolveAdminIds,
   setSetting,
   deleteSetting,
   getUserByTelegramId,
@@ -94,11 +94,18 @@ async function main(): Promise<void> {
   }
   const { telegramId, newPassword, keep2fa } = args;
 
+  await initDb(); // WAL + busy_timeout PRAGMAs, same as the app
+
+  // The allow-list is env ADMIN_IDS ∪ the DB `admin_ids` Setting (same as the
+  // composition root at boot, webauth.ts) — admins added live via /admins only
+  // live in the DB, so checking env alone would wrongly reject them here.
+  setAdminIds(await resolveAdminIds(prisma));
+
   // Only Telegram IDs in the bot's allow-list can be web admins — guard against
   // typos that would write orphaned settings rows.
   if (!isAdmin(telegramId)) {
     console.error(
-      `Telegram ID ${telegramId} is not in ADMIN_IDS (${config.ADMIN_IDS.join(", ") || "empty"}).`,
+      `Telegram ID ${telegramId} is not in ADMIN_IDS (${adminIds().join(", ") || "empty"}).`,
     );
     process.exit(1);
   }
@@ -106,8 +113,6 @@ async function main(): Promise<void> {
     console.error("--set password must be at least 8 characters.");
     process.exit(1);
   }
-
-  await initDb(); // WAL + busy_timeout PRAGMAs, same as the app
 
   const user = await getUserByTelegramId(prisma, telegramId);
   const label = user?.fullName ?? user?.username ?? "(unknown user)";

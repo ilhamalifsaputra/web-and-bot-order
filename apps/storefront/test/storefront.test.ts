@@ -305,6 +305,13 @@ describe("category page — product cards only", () => {
     expect(res.body).toContain("Notify me when ready");
   });
 
+  it("renders a valid denomination id in the restock form's default action (Task 10 fix)", async () => {
+    const res = await app.inject({ method: "GET", url: `/p/${emptyProductSlug}` });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(`action="/restock/${emptyProductId}"`);
+    expect(res.body).not.toContain('action="/restock/"');
+  });
+
   it("404s an inactive product", async () => {
     await prisma.product.update({ where: { slug: emptyProductSlug }, data: { isActive: false } });
     const res = await app.inject({ method: "GET", url: `/p/${emptyProductSlug}` });

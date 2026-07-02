@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
-import { ThemeProvider } from "./ThemeProvider";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { SearchModal } from "./SearchModal";
@@ -23,7 +22,7 @@ export function AppShell(): JSX.Element {
   }, []);
 
   return (
-    <ThemeProvider>
+    <>
       <div className="flex h-screen overflow-hidden bg-paper">
         <Sidebar
           open={sidebarOpen}
@@ -43,6 +42,6 @@ export function AppShell(): JSX.Element {
       </div>
       <SearchModal open={searchOpen} onClose={() => setSearchOpen(false)} />
       <Toaster />
-    </ThemeProvider>
+    </>
   );
 }

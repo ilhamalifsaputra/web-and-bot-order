@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { SearchModal } from "./SearchModal";
 import { Toaster } from "@/components/ui/sonner";
+import { ErrorBoundary } from "../shared/ErrorBoundary";
 
 export function AppShell(): JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const location = useLocation();
 
   // Ctrl+K / Cmd+K shortcut to open search
   useEffect(() => {
@@ -35,7 +37,9 @@ export function AppShell(): JSX.Element {
           />
           <main className="flex flex-1 flex-col overflow-y-auto bg-paper">
             <div className="mx-auto w-full max-w-[1440px] flex-1 px-4 py-4 sm:px-5 sm:py-6 lg:px-6 xl:px-8">
-              <Outlet />
+              <ErrorBoundary key={location.pathname}>
+                <Outlet />
+              </ErrorBoundary>
             </div>
           </main>
         </div>

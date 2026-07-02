@@ -77,4 +77,54 @@ describe("OrderDetailPage", () => {
     render(<OrderDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
   });
+
+  it("shows a Resend button for a delivered order with a Telegram buyer", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...ORDER_DETAIL_DATA,
+          order: { ...ORDER_DETAIL_DATA.order, status: "DELIVERED" },
+          isDelivered: true,
+          canAct: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /resend to telegram/i })).toBeInTheDocument();
+  });
+
+  it("hides the Resend button before the order is delivered", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(ORDER_DETAIL_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /resend to telegram/i })).not.toBeInTheDocument();
+  });
+
+  it("hides the Resend button for a web-only buyer (no Telegram id)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...ORDER_DETAIL_DATA,
+          order: {
+            ...ORDER_DETAIL_DATA.order,
+            status: "DELIVERED",
+            user: { id: 20, fullName: null, username: null, telegramId: null },
+          },
+          isDelivered: true,
+          canAct: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /resend to telegram/i })).not.toBeInTheDocument();
+  });
 });

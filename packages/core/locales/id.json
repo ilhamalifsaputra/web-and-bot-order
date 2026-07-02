@@ -183,7 +183,7 @@
   "help.terms_btn": "📄 Ketentuan",
   "help.tickets_btn": "📩 Tiket Saya",
   "help.title": "🆘 <b>Pusat Bantuan</b>\n\nKamu butuh bantuan apa?",
-  "howtopay.content": "<b>Cara Bayar via Binance Pay</b>\n\n1. Buka Binance → Pay → Send.\n2. Masukkan Binance Pay ID yang tertera saat checkout.\n3. Kirim jumlah <b>tepat</b> sesuai yang ditampilkan (dengan desimal unik).\n4. Screenshot bukti transfer.\n5. Tap \"Sudah Bayar\" dan upload screenshot + Transaction ID.\n\nVerifikasi manual — biasanya dalam 30 menit pada jam kerja.",
+  "howtopay.content": "<b>Cara Bayar</b>\n\nSaat checkout, pilih metode pembayaran — transfer USDT via Binance/Bybit, QRIS/e-wallet via TokoPay atau PayDisini, atau invoice USDT via NOWPayments — lalu kirim jumlah <b>tepat</b> sesuai yang ditampilkan sebelum waktu habis.\n\nSemua metode dikonfirmasi otomatis — tidak perlu upload screenshot atau Transaction ID. Pesananmu terkirim otomatis dalam hitungan detik hingga semenit setelah pembayaran terdeteksi.",
   "language.choose": "Pilih bahasa:",
   "language.set": "Bahasa diperbarui.",
   "menu.back": "← Kembali",

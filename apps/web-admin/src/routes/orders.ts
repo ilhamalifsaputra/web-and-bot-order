@@ -8,11 +8,13 @@ import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import { usdtFromIdr } from "@app/core/formatters";
+import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
   prisma,
   approveOrder,
   rejectOrder,
   creditOrderToBalance,
+  enqueueOrderDeliveredDm,
   logAdminAction,
 } from "@app/db";
 import { csrfProtect } from "../plugins/auth";
@@ -105,6 +107,12 @@ export default async function ordersRoutes(app: FastifyInstance): Promise<void> 
     try {
       await prisma.$transaction(async (tx) => {
         const { order } = await approveOrder(tx, orderId, { adminId: req.admin!.userId });
+        await enqueueOrderDeliveredDm(tx, {
+          orderId: order.id,
+          orderCode: order.orderCode,
+          telegramId: order.user.telegramId,
+          language: order.user.language,
+        });
         await logAdminAction(tx, {
           adminId: req.admin!.userId,
           action: "approve_order",
@@ -119,6 +127,7 @@ export default async function ordersRoutes(app: FastifyInstance): Promise<void> 
       }
       throw e;
     }
+    nudgeOutboxDispatcher();
     // NB: never put credentials in the redirect URL — they'd leak into logs.
     logger.info(`Admin ${req.admin!.userId} approved and delivered order ${orderId} via the web panel`);
     return redirectWithFlash(

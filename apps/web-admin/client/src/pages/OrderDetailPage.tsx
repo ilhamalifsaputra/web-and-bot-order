@@ -27,7 +27,7 @@ interface OrderDetail {
   currency: string;
   totalAmount: string;
   createdAt: string;
-  user: { id: number; fullName: string | null; username: string | null; telegramId: string } | null;
+  user: { id: number; fullName: string | null; username: string | null; telegramId: string | null } | null;
   items: OrderItem[];
   voucher: { code: string; type: string } | null;
 }
@@ -91,6 +91,12 @@ export function OrderDetailPage() {
     onError: (e: Error) => setActionError(e.message),
   });
 
+  const resend = useMutation({
+    mutationFn: () => apiPost(`/api/orders/${orderId}/resend`, {}),
+    onSuccess: () => { setActionError(null); },
+    onError: (e: Error) => setActionError(e.message),
+  });
+
   if (isError) {
     return (
       <PageLayout title="Order Detail">
@@ -106,7 +112,8 @@ export function OrderDetailPage() {
     );
   }
 
-  const { order, money, canAct, canCredit } = data;
+  const { order, money, canAct, canCredit, isDelivered } = data;
+  const canResend = isDelivered && order.user?.telegramId != null;
 
   return (
     <PageLayout title={`Order ${order.orderCode}`}>
@@ -183,10 +190,21 @@ export function OrderDetailPage() {
       />
 
       {/* Actions */}
-      {(canAct || canCredit) && (
+      {(canAct || canCredit || canResend) && (
         <Card className="mt-6">
           <CardHeader><CardTitle>Actions</CardTitle></CardHeader>
           <CardContent className="flex flex-wrap gap-3">
+            {canResend && (
+              <ConfirmDialog
+                trigger={<Button variant="outline" disabled={resend.isPending}>{resend.isPending ? "Resending…" : "Resend to Telegram"}</Button>}
+                title="Resend credentials to the buyer?"
+                description="Queues a fresh account-credentials message to the buyer's Telegram — use this if they say they never received it."
+                confirmLabel="Resend"
+                variant="default"
+                onConfirm={() => resend.mutate()}
+              />
+            )}
+
             {canAct && (
               <ConfirmDialog
                 trigger={<Button disabled={approve.isPending}>{approve.isPending ? "Approving…" : "Approve & Deliver"}</Button>}

@@ -183,7 +183,7 @@
   "help.terms_btn": "📄 Terms",
   "help.tickets_btn": "📩 My Tickets",
   "help.title": "🆘 <b>Help Center</b>\n\nWhat do you need help with?",
-  "howtopay.content": "<b>How to Pay via Binance Pay</b>\n\n1. Open Binance → Pay → Send.\n2. Enter the Binance Pay ID shown at checkout.\n3. Send the <b>exact</b> amount (with unique decimals).\n4. Take a screenshot of the successful transfer.\n5. Tap \"I've Paid\" and upload the screenshot + Transaction ID.\n\nVerification is manual — usually within 30 minutes during business hours.",
+  "howtopay.content": "<b>How to Pay</b>\n\nAt checkout, pick a payment method — USDT transfer via Binance/Bybit, QRIS/e-wallet via TokoPay or PayDisini, or a USDT invoice via NOWPayments — and send the <b>exact</b> amount shown before it expires.\n\nEvery method confirms automatically — no screenshot or Transaction ID upload needed. Your order delivers within seconds to a minute of payment being detected.",
   "language.choose": "Choose your language:",
   "language.set": "Language updated.",
   "menu.back": "← Back",

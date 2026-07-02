@@ -9,9 +9,11 @@
  * transaction so the outbox row lands atomically with the state change.
  */
 import type { PrismaClient, Tx } from "../client";
+import { config } from "@app/core/config";
 import {
   NotificationEvent,
   NotificationStatus,
+  langCode,
 } from "@app/core/enums";
 import type { Decimal } from "@app/core/money";
 import { resolveAdminIds } from "./admins";
@@ -239,6 +241,34 @@ export async function markNotificationFailed(
       claimedAt: null,
       status: failed ? NotificationStatus.FAILED : NotificationStatus.PENDING,
       nextRetryAt: failed ? null : new Date(now.getTime() + notificationBackoffMs(attempts)),
+    },
+  });
+}
+
+/**
+ * Enqueue the buyer's account-credentials DM for a DELIVERED order, for
+ * callers that don't send it themselves — the web-admin panel's approve and
+ * resend actions (CLAUDE.md: the web NEVER sends Telegram, only enqueues).
+ * Same payload shape the payment-gateway auto-confirm rails already enqueue
+ * (see tokopay.ts `deliverPaidTokopayOrder`). No-op for web-only buyers
+ * (telegramId=null) — they see their order on the storefront instead.
+ */
+export async function enqueueOrderDeliveredDm(
+  db: Db,
+  args: { orderId: number; orderCode: string; telegramId: bigint | null; language: string | null },
+): Promise<void> {
+  if (args.telegramId == null) return;
+  const shopUrl = config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null;
+  await db.notificationOutbox.create({
+    data: {
+      event: NotificationEvent.ORDER_DELIVERED_DM,
+      orderId: args.orderId,
+      payloadJson: JSON.stringify({
+        chat_id: Number(args.telegramId),
+        order_code: args.orderCode,
+        order_url: shopUrl ? `${shopUrl.replace(/\/+$/, "")}/account/orders/${args.orderCode}` : null,
+        buyer_language: langCode(args.language),
+      }),
     },
   });
 }

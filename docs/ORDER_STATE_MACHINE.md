@@ -24,7 +24,7 @@ status ini.
 stateDiagram-v2
     [*] --> PENDING_PAYMENT: createOrderDirect/createOrderFromCart<br/>(stok DIRESERVASI atomik)
 
-    PENDING_PAYMENT --> PENDING_VERIFICATION: attachPaymentProof (manual proof)<br/>ATAU deliverPaid*Order (auto-confirm, transien)
+    PENDING_PAYMENT --> PENDING_VERIFICATION: deliverPaid*Order (auto-confirm, transien)<br/>ATAU attachPaymentProof (test-only — lihat catatan di bawah)
     PENDING_PAYMENT --> UNDERPAID: markUnderpaid (Binance: note cocok, amount kurang)
     PENDING_PAYMENT --> CANCELLED: autoCancelExpiredOrders (lewat expiresAt)<br/>ATAU user cancel (HANYA jika belum ada proof)
     PENDING_PAYMENT --> CANCELLED: gateway createTransaction gagal (Checkout-3 fix)
@@ -85,7 +85,7 @@ stateDiagram-v2
 | `PAYMENT_DETECTED` | **Bybit BSC saja.** Deposit on-chain terlihat (Bybit status 1/2), belum "Success" Bybit sendiri. `bybitTxid`/`network`/`firstDetectedAt` sudah terisi. | RESERVED | Ya → `CONFIRMING`, `PENDING_VERIFICATION`, atau `FAILED` |
 | `CONFIRMING` | **Bybit BSC saja.** Tracker block-explorer sudah melihat ≥1 konfirmasi. `confirmations` terisi (angka asli, bukan fabrikasi). | RESERVED | Ya → `CONFIRMED`, `PENDING_VERIFICATION`, atau `FAILED` |
 | `CONFIRMED` | **Bybit BSC saja.** `confirmations >= requiredConfirmations` — milestone display-only, BUKAN trigger delivery. `confirmedAt` terisi. | RESERVED | Ya → `PENDING_VERIFICATION` atau `FAILED` |
-| `PENDING_VERIFICATION` | Pembayaran terdeteksi (manual proof ATAU auto-confirm gateway) — status **transien**, hampir selalu langsung diikuti `approveOrder` dalam transaksi yang sama. | RESERVED | Ya → `DELIVERED` atau `REJECTED` |
+| `PENDING_VERIFICATION` | Pembayaran terdeteksi oleh gateway auto-confirm — status **transien**, hampir selalu langsung diikuti `approveOrder` dalam transaksi yang sama. | RESERVED | Ya → `DELIVERED` atau `REJECTED` |
 | `UNDERPAID` | (Hanya Binance Internal) Note transfer cocok tapi nominal kurang dari total. Menunggu keputusan admin. | RESERVED (tidak pernah dilepas sampai resolve) | Ya → `PENDING_VERIFICATION` atau `REFUNDED` |
 | `DELIVERED` | **Terminal.** Stok `SOLD`, kredensial sudah/akan dikirim via outbox. | SOLD | Tidak — `creditOrderToBalance`/`cancelOrder` menolak (`error.order_already_delivered`) |
 | `CANCELLED` | **Terminal.** Stok dilepas (`AVAILABLE`), wallet/voucher di-refund. | Dilepas | Tidak (re-cancel = no-op idempoten) |
@@ -99,7 +99,6 @@ stateDiagram-v2
 | Transisi | Trigger | File |
 |---|---|---|
 | `→ PENDING_PAYMENT` | Checkout bot/storefront | `packages/db/src/crud/orders.ts` (`createOrderDirect`/`createOrderFromCart`) |
-| `PENDING_PAYMENT → PENDING_VERIFICATION` (manual) | Bot: upload bukti+TxID | `attachPaymentProof` |
 | `PENDING_PAYMENT → PENDING_VERIFICATION → DELIVERED` (auto, satu transaksi) | Webhook/poller gateway | `deliverPaid{Tokopay,Paydisini,Nowpayments,Internal,Bybit}Order` |
 | `PENDING_PAYMENT → UNDERPAID` | Binance poller, note cocok amount kurang | `markUnderpaid` |
 | `PENDING_VERIFICATION → DELIVERED` | Admin approve (manual) ATAU sistem (`adminId: 0`, auto-confirm) | `approveOrder` — **chokepoint tunggal** alokasi stok untuk SEMUA jalur |
@@ -147,6 +146,14 @@ stateDiagram-v2
   `creditOrderToBalance` keduanya cek daftar status terminal dan menolak
   (atau no-op idempoten untuk `CANCELLED`/`REJECTED`/`REFUNDED` yang
   di-cancel ulang).
+- **`attachPaymentProof` (manual "upload bukti+TxID") sudah retired dari bot** —
+  lihat komentar `apps/order-bot/src/handlers/checkout.ts` ("the legacy manual
+  Binance-Pay proof/verification path is retired"). Tidak ada handler bot yang
+  memanggilnya lagi; satu-satunya pemanggil yang tersisa adalah test suite,
+  yang memakainya sebagai cara cepat mendorong sebuah order ke
+  `PENDING_VERIFICATION` tanpa menjalankan gateway auto-confirm sungguhan.
+  Fungsinya tetap ada di `packages/db/src/crud/orders.ts` untuk keperluan
+  test itu, bukan sebagai alur produksi aktif.
 - **`UNDERPAID` eksklusif untuk Binance Internal Transfer** — gateway lain
   (webhook-based) menolak pembayaran kurang sebagai `"amount mismatch"` tanpa
   pernah mengubah status order (order tetap `PENDING_PAYMENT`, baris ledger

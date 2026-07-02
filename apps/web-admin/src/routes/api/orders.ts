@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { OrderStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
+import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
   prisma,
   listOrders,
@@ -10,6 +11,7 @@ import {
   approveOrder,
   rejectOrder,
   creditOrderToBalance,
+  enqueueOrderDeliveredDm,
   logAdminAction,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
@@ -138,6 +140,12 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     try {
       await prisma.$transaction(async (tx) => {
         const { order } = await approveOrder(tx, orderId, { adminId: req.admin!.userId });
+        await enqueueOrderDeliveredDm(tx, {
+          orderId: order.id,
+          orderCode: order.orderCode,
+          telegramId: order.user.telegramId,
+          language: order.user.language,
+        });
         await logAdminAction(tx, {
           adminId: req.admin!.userId,
           action: "approve_order",
@@ -152,8 +160,50 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       }
       throw e;
     }
+    nudgeOutboxDispatcher();
     logger.info(
       `Admin ${req.admin!.userId} approved and delivered order ${orderId} via the web panel`,
+    );
+    return reply.send({ ok: true });
+  });
+
+  // Manual re-send of the buyer's account-credentials DM — the fallback for
+  // when the automatic enqueue above never reached the buyer (e.g. the
+  // dispatcher hit a permanent Telegram error, or the admin approved before
+  // this route enqueued anything). Mirrors the bot's one-tap "Resend" button
+  // (apps/order-bot/src/handlers/verification.ts resendCredentials): only
+  // works once the order is actually DELIVERED, and only for buyers with a
+  // Telegram id — web-only buyers see their order on the storefront instead.
+  app.post("/api/orders/:orderId/resend", { preHandler: csrfProtect }, async (req, reply) => {
+    const orderId = Number((req.params as { orderId: string }).orderId);
+    const order = await getOrder(prisma, orderId);
+    if (!order) return reply.code(404).send({ error: "Order not found." });
+    if (order.status !== OrderStatus.DELIVERED) {
+      return reply.code(422).send({ error: "Only a delivered order's credentials can be resent." });
+    }
+    if (order.user.telegramId == null) {
+      return reply.code(422).send({
+        error: "This buyer has no Telegram account to notify — they see their order on the storefront.",
+      });
+    }
+    await prisma.$transaction(async (tx) => {
+      await enqueueOrderDeliveredDm(tx, {
+        orderId: order.id,
+        orderCode: order.orderCode,
+        telegramId: order.user.telegramId,
+        language: order.user.language,
+      });
+      await logAdminAction(tx, {
+        adminId: req.admin!.userId,
+        action: "order_resend_credentials",
+        targetType: "order",
+        targetId: orderId,
+        details: `Resent the account-credentials notification for order ${order.orderCode}.`,
+      });
+    });
+    nudgeOutboxDispatcher();
+    logger.info(
+      `Admin ${req.admin!.userId} requeued the account-credentials DM for order ${orderId} via the web panel`,
     );
     return reply.send({ ok: true });
   });

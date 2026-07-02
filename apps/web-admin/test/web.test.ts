@@ -393,9 +393,12 @@ describe("account lockout", () => {
 // ---- orders (acceptance #3 + #5) ------------------------------------------
 
 describe("orders", () => {
-  it("approve → DELIVERED + outbox row (buyer_language) + audit", async () => {
+  it("approve → DELIVERED + outbox rows (testimonial + buyer DM) + audit", async () => {
     // The testimonial channel post (ORDER_DELIVERED) only gets enqueued when
-    // a public channel is configured.
+    // a public channel is configured. The buyer DM (ORDER_DELIVERED_DM) is
+    // enqueued whenever the buyer has a Telegram id — web-admin never sends
+    // Telegram itself, so this outbox row is the only way a web-approved
+    // order's credentials ever reach a Telegram buyer.
     setBotIdentity({ publicChannelId: -100123456789 });
     const orderId = await makePendingOrder();
     const res = await post(`/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
@@ -408,8 +411,13 @@ describe("orders", () => {
     expect(order.status).toBe("DELIVERED");
 
     const rows = await prisma.notificationOutbox.findMany({ where: { orderId } });
-    expect(rows.length).toBe(1);
-    expect(JSON.parse(rows[0]!.payloadJson).buyer_language).toBe("en");
+    expect(rows.length).toBe(2);
+    const testimonial = rows.find((r) => r.event === "ORDER_DELIVERED")!;
+    expect(JSON.parse(testimonial.payloadJson).buyer_language).toBe("en");
+    const dm = rows.find((r) => r.event === "ORDER_DELIVERED_DM")!;
+    const dmPayload = JSON.parse(dm.payloadJson);
+    expect(dmPayload.chat_id).toBe(CUSTOMER_TG);
+    expect(dmPayload.order_code).toBe(order.orderCode);
 
     const audit = await prisma.auditLog.findMany({ where: { action: "approve_order", targetId: orderId } });
     expect(audit.length).toBe(1);
@@ -616,6 +624,99 @@ describe("orders", () => {
     const res = await post(`/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: "bad" });
     expect(res.statusCode).toBe(403);
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
+  });
+});
+
+// ---- orders API (React panel): approve/resend deliver via the outbox ------
+
+describe("orders API — approve/resend enqueue the buyer's account DM", () => {
+  function postJson(url: string, cookie: string | null, csrf: string | null, body: Record<string, unknown> = {}) {
+    return app.inject({
+      method: "POST",
+      url,
+      headers: { "content-type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+
+  async function makeWebOnlyDeliveredOrder(loginUsername: string): Promise<number> {
+    const web = await createWebUser(prisma, {
+      loginUsername,
+      email: `${loginUsername}@shop.test`,
+      passwordHash: "x",
+    });
+    const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
+    await attachPaymentProof(prisma, order.id, { fileId: "proof", txid: `TX${loginUsername.toUpperCase()}` });
+    return order.id;
+  }
+
+  it("approve enqueues the buyer's ORDER_DELIVERED_DM for a Telegram buyer", async () => {
+    const orderId = await makePendingOrder();
+    const res = await postJson(`/api/orders/${orderId}/approve`, seed.cookie, seed.csrf);
+    expect(res.statusCode).toBe(200);
+    expect((await getOrder(prisma, orderId))!.status).toBe("DELIVERED");
+
+    const dm = await prisma.notificationOutbox.findFirst({ where: { orderId, event: "ORDER_DELIVERED_DM" } });
+    expect(dm).not.toBeNull();
+    expect(JSON.parse(dm!.payloadJson).chat_id).toBe(CUSTOMER_TG);
+  });
+
+  it("approve skips the DM for a web-only buyer (no Telegram id)", async () => {
+    const orderId = await makeWebOnlyDeliveredOrder("webbuyer1");
+    const res = await postJson(`/api/orders/${orderId}/approve`, seed.cookie, seed.csrf);
+    expect(res.statusCode).toBe(200);
+
+    const dm = await prisma.notificationOutbox.findFirst({ where: { orderId, event: "ORDER_DELIVERED_DM" } });
+    expect(dm).toBeNull();
+  });
+
+  it("resend re-enqueues the DM for an already-delivered order", async () => {
+    const orderId = await makePendingOrder();
+    await postJson(`/api/orders/${orderId}/approve`, seed.cookie, seed.csrf);
+    expect(
+      await prisma.notificationOutbox.count({ where: { orderId, event: "ORDER_DELIVERED_DM" } }),
+    ).toBe(1);
+
+    const res = await postJson(`/api/orders/${orderId}/resend`, seed.cookie, seed.csrf);
+    expect(res.statusCode).toBe(200);
+    expect(
+      await prisma.notificationOutbox.count({ where: { orderId, event: "ORDER_DELIVERED_DM" } }),
+    ).toBe(2);
+
+    const audit = await prisma.auditLog.findMany({
+      where: { action: "order_resend_credentials", targetId: orderId },
+    });
+    expect(audit.length).toBe(1);
+  });
+
+  it("resend rejects an order that isn't delivered yet (422)", async () => {
+    const orderId = await makePendingOrder(); // still PENDING_VERIFICATION
+    const res = await postJson(`/api/orders/${orderId}/resend`, seed.cookie, seed.csrf);
+    expect(res.statusCode).toBe(422);
+  });
+
+  it("resend rejects a web-only buyer's order (422)", async () => {
+    const orderId = await makeWebOnlyDeliveredOrder("webbuyer2");
+    await postJson(`/api/orders/${orderId}/approve`, seed.cookie, seed.csrf);
+
+    const res = await postJson(`/api/orders/${orderId}/resend`, seed.cookie, seed.csrf);
+    expect(res.statusCode).toBe(422);
+  });
+
+  it("resend requires auth (anon → 303 /login)", async () => {
+    const orderId = await makePendingOrder();
+    await postJson(`/api/orders/${orderId}/approve`, seed.cookie, seed.csrf);
+    const res = await postJson(`/api/orders/${orderId}/resend`, null, "anything");
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("resend rejects bad CSRF (403)", async () => {
+    const orderId = await makePendingOrder();
+    await postJson(`/api/orders/${orderId}/approve`, seed.cookie, seed.csrf);
+    const res = await postJson(`/api/orders/${orderId}/resend`, seed.cookie, "wrong-token");
+    expect(res.statusCode).toBe(403);
   });
 });
 

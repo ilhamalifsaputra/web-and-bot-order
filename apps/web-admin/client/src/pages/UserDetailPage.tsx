@@ -7,6 +7,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { CurrencyStack } from "../components/shared/CurrencyAmount";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -22,7 +23,7 @@ import { apiPost } from "../api/client";
 
 interface UserDetail {
   user: { id: number; username: string | null; fullName: string | null; telegramId: string; role: string; banned: boolean; banReason: string | null; walletBalance: string; walletCurrency: string };
-  totalSpent: string;
+  totalSpent: { idr: string; usdt: string };
   orders: { id: number; orderCode: string; status: string; totalIdr: string; createdAt: string }[];
   tickets: { id: number; subject: string; status: string; createdAt: string }[];
   ledger: { id: number; delta: string; balance: string; reason: string; note: string | null; createdAt: string }[];
@@ -111,7 +112,7 @@ export function UserDetailPage() {
               )}
             </div>
             <div className="flex justify-between"><span className="text-ink-soft">Wallet</span><span className="font-mono">{user.walletBalance} {user.walletCurrency}</span></div>
-            <div className="flex justify-between"><span className="text-ink-soft">Total spent</span><span>{data.totalSpent}</span></div>
+            <div className="flex justify-between"><span className="text-ink-soft">Total spent</span><CurrencyStack amounts={[{ currency: "IDR", value: data.totalSpent.idr }, { currency: "USDT", value: data.totalSpent.usdt }]} /></div>
           </CardContent>
         </Card>
 

@@ -26,7 +26,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 
 const USER_DETAIL = {
   user: { id: 7, username: "andi", fullName: "Andi Santoso", telegramId: "111", role: "CUSTOMER", banned: false, banReason: null, walletBalance: "0", walletCurrency: "IDR" },
-  totalSpent: "150000",
+  totalSpent: { idr: "150000", usdt: "0" },
   orders: [],
   tickets: [],
   ledger: [],

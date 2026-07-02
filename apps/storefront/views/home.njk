@@ -275,7 +275,9 @@
   <h2 class="mt-1 text-center font-display text-3xl font-bold text-ink">{{ t('web.contact_title', lang) }}</h2>
   <p class="mt-2 text-center text-ink-soft">{{ t('web.contact_sub', lang) }}</p>
 
-  <div class="mt-8 grid grid-cols-1 {{ 'sm:grid-cols-3' if wa_number else 'sm:grid-cols-2' }} gap-4 max-w-2xl mx-auto">
+  {% set contact_count = 1 + (1 if wa_number else 0) + (1 if bot_username else 0) %}
+  {% set contact_cols = "sm:grid-cols-3" if contact_count == 3 else ("sm:grid-cols-2" if contact_count == 2 else "") %}
+  <div class="mt-8 grid grid-cols-1 {{ contact_cols }} gap-4 max-w-2xl mx-auto">
     {% if wa_number %}
     <a href="https://wa.me/{{ wa_number }}" target="_blank" rel="noopener noreferrer"
        class="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-sm transition hover:shadow-md">
@@ -289,6 +291,7 @@
     </a>
     {% endif %}
 
+    {% if bot_username %}
     <a href="https://t.me/{{ bot_username }}" target="_blank" rel="noopener noreferrer"
        class="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-sm transition hover:shadow-md">
       <div class="grid h-12 w-12 place-items-center rounded-2xl bg-[#eff6ff]">
@@ -299,6 +302,7 @@
         <p class="mt-1 text-xs text-ink-faint">{{ t('web.contact_tg_sub', lang) }}</p>
       </div>
     </a>
+    {% endif %}
 
     <a href="/account/support"
        class="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-sm transition hover:shadow-md">

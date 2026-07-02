@@ -19,6 +19,11 @@ export default async function adminsApiRoutes(app: FastifyInstance): Promise<voi
     for (const tgId of adminIds()) {
       const user = await getUserByTelegramId(prisma, tgId);
       admins.push({
+        // Internal User.id — null when this admin has no User row yet (e.g.
+        // added via /admins/add but never messaged the bot). Support ticket
+        // assignment (SupportTicket.adminId, a User.id FK) needs this, unlike
+        // telegramId which is what the rest of this page keys off of.
+        id: user?.id ?? null,
         telegramId: tgId,
         role: await loadWebRole(tgId),
         passwordSet: (await getSetting(prisma, passwordHashKey(tgId))) !== null,

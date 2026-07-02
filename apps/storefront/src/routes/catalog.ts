@@ -99,6 +99,13 @@ const catalogRoutes: FastifyPluginAsync = async (app) => {
         bulk: rule ? { min_quantity: rule.minQuantity, discount_percent: rule.discountPercent } : null,
       };
     });
+    // Default restock-form target (Task 10 fix): mirrors product.njk's inline
+    // JS selection order ("first in-stock denomination, else the first
+    // denomination" — see product.njk's `firstEnabled || radios[0]`) so the
+    // form already has a valid /restock/:id action at page-load time, before
+    // that JS runs (or with JS disabled) — `denominations` is never empty
+    // here (guarded by the 404 check above).
+    const defaultRestockDenominationId = (denominations.find((d) => d.in_stock) ?? denominations[0])!.id;
 
     return reply.view("product.njk", {
       ...ctx,
@@ -111,6 +118,7 @@ const catalogRoutes: FastifyPluginAsync = async (app) => {
         image: product.webImageUrl ?? productImage(product, catName),
       },
       denominations,
+      default_restock_denomination_id: defaultRestockDenominationId,
       reviews: reviews.map((r) => ({
         rating: r.rating,
         comment: r.comment,

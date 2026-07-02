@@ -4,6 +4,8 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { CatalogPage } from "./pages/CatalogPage";
 import { ProductDetailPage } from "./pages/ProductDetailPage";
 import { ProductCreatePage } from "./pages/ProductCreatePage";
+import { DenominationCreatePage } from "./pages/DenominationCreatePage";
+import { DenominationEditPage } from "./pages/DenominationEditPage";
 import { StockPage } from "./pages/StockPage";
 import { StockProductPage } from "./pages/StockProductPage";
 import { OrdersPage } from "./pages/OrdersPage";
@@ -50,6 +52,8 @@ export default function App() {
         <Route path="/orders/:orderId" element={<OrderDetailPage />} />
         <Route path="/catalog" element={<CatalogPage />} />
         <Route path="/catalog/new" element={<ProductCreatePage />} />
+        <Route path="/catalog/:productId/denominations/new" element={<DenominationCreatePage />} />
+        <Route path="/catalog/:productId/denominations/:denomId/edit" element={<DenominationEditPage />} />
         <Route path="/catalog/:productId" element={<ProductDetailPage />} />
         <Route path="/stock" element={<StockPage />} />
         <Route path="/stock/:productId" element={<StockProductPage />} />

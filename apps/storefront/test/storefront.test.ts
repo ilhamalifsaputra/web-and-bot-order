@@ -305,6 +305,13 @@ describe("category page — product cards only", () => {
     expect(res.body).toContain("Notify me when ready");
   });
 
+  it("renders a valid denomination id in the restock form's default action (Task 10 fix)", async () => {
+    const res = await app.inject({ method: "GET", url: `/p/${emptyProductSlug}` });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(`action="/restock/${emptyProductId}"`);
+    expect(res.body).not.toContain('action="/restock/"');
+  });
+
   it("404s an inactive product", async () => {
     await prisma.product.update({ where: { slug: emptyProductSlug }, data: { isActive: false } });
     const res = await app.inject({ method: "GET", url: `/p/${emptyProductSlug}` });
@@ -655,6 +662,38 @@ describe("login widget — live bot username, placeholder filtered", () => {
     await setSetting(prisma, "bot_username", "YourBot");
     const res = await app.inject({ method: "GET", url: "/login" });
     expect(res.body).not.toContain("telegram-widget.js");
+    await deleteSetting(prisma, "bot_username");
+  });
+});
+
+describe("home page — Telegram contact link hidden when bot isn't configured (Task 9 fix)", () => {
+  it("never renders a dead https://t.me/ link when bot_username resolves empty", async () => {
+    await setSetting(prisma, "bot_username", "YourBot"); // .env.example placeholder → resolves to ""
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain('href="https://t.me/"');
+    await deleteSetting(prisma, "bot_username");
+  });
+
+  it("shows the Telegram contact link when a real bot_username is configured", async () => {
+    await setSetting(prisma, "bot_username", "realtoko_bot");
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('href="https://t.me/realtoko_bot"');
+    await deleteSetting(prisma, "bot_username");
+  });
+
+  it("uses a 1-column contact grid when only the support-ticket card remains (no WA, no bot)", async () => {
+    await deleteSetting(prisma, "support_whatsapp");
+    await setSetting(prisma, "bot_username", "YourBot"); // → ""
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.statusCode).toBe(200);
+    // Scope to the #kontak section — the page has other unrelated
+    // sm:grid-cols-2/3 grids (stats, categories, products, testimonials),
+    // so a page-wide match would false-fail regardless of this fix.
+    const kontakSection = res.body.match(/<section[^>]*id="kontak"[\s\S]*?<\/section>/)?.[0] ?? "";
+    expect(kontakSection).not.toBe("");
+    expect(kontakSection).not.toMatch(/sm:grid-cols-[23]/);
     await deleteSetting(prisma, "bot_username");
   });
 });
@@ -1159,6 +1198,111 @@ describe("checkout — Bybit BSC on-chain option (2nd Bybit method, alongside In
       await disableBybitBsc();
     },
   );
+});
+
+describe("checkout — voucher preview does not create an order (Task 8 fix)", () => {
+  let voucherBuyerId: number;
+  let voucherCode: string;
+
+  beforeAll(async () => {
+    const { hashPassword } = await import("@app/core/password");
+    const { createVoucher } = await import("@app/db");
+    const { VoucherType } = await import("@app/core/enums");
+    const u = await prisma.user.create({
+      data: {
+        loginUsername: "voucherbuyer",
+        email: "voucher@buyer.test",
+        passwordHash: hashPassword("voucher-pass-99"),
+        referralCode: "VCHR001",
+      },
+    });
+    voucherBuyerId = u.id;
+    const v = await createVoucher(prisma, { code: "SAVE10", type: VoucherType.PERCENT, value: "10" });
+    voucherCode = v.code;
+  });
+
+  async function voucherSession() {
+    const cookie = await loginAs("voucherbuyer", "voucher-pass-99");
+    await addToCart(prisma, voucherBuyerId, productId, 1);
+    const page = await app.inject({ method: "GET", url: "/checkout", headers: { cookie } });
+    return { cookie, csrf: csrfFrom(page.body) };
+  }
+
+  it("POST /checkout/voucher/preview recomputes totals but never creates an order", async () => {
+    const { cookie, csrf } = await voucherSession();
+    const before = await prisma.order.count({ where: { userId: voucherBuyerId } });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout/voucher/preview",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ voucher_code: voucherCode, csrf_token: csrf }).toString(),
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("Voucher"); // web.voucher_discount label, applied 10% off
+    const after = await prisma.order.count({ where: { userId: voucherBuyerId } });
+    expect(after).toBe(before); // <-- the actual bug: this used to be before + 1
+  });
+
+  it("shows an inline error for an unknown voucher code, still without creating an order", async () => {
+    const { cookie, csrf } = await voucherSession();
+    const before = await prisma.order.count({ where: { userId: voucherBuyerId } });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout/voucher/preview",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ voucher_code: "NOPE-DOES-NOT-EXIST", csrf_token: csrf }).toString(),
+    });
+
+    expect(res.statusCode).toBe(200);
+    const after = await prisma.order.count({ where: { userId: voucherBuyerId } });
+    expect(after).toBe(before);
+  });
+
+  it("rejects the preview request without a valid CSRF token", async () => {
+    const { cookie } = await voucherSession();
+    const res = await app.inject({
+      method: "POST",
+      url: "/checkout/voucher/preview",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      payload: new URLSearchParams({ voucher_code: voucherCode, csrf_token: "wrong" }).toString(),
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  // Regression for the reviewer finding on Task 8: once Apply became
+  // type="button", "Place Order" is the checkout <form>'s ONLY type="submit"
+  // control, so implicit HTML form submission (pressing Enter while focused in
+  // #voucher_code) would silently submit it and create a real order. Fastify's
+  // .inject() can't simulate a browser's native implicit-submission or a real
+  // keydown event, so this asserts the structural/JS properties that make that
+  // impossible instead: exactly one type="submit" control on the page (so if
+  // implicit submission ever fired, it could ONLY reach Place Order — proving
+  // the DOM claim in the fix's reasoning), and that #voucher_code has a keydown
+  // interceptor wired to the SAME element (#voucher_apply) that issues the
+  // htmx preview request, so Enter is redirected to Apply's behavior instead.
+  it("GET /checkout ships an Enter-key interceptor on #voucher_code, with Place Order as the page's only submit control", async () => {
+    const { cookie } = await voucherSession();
+    const res = await app.inject({ method: "GET", url: "/checkout", headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+
+    const submitCount = (res.body.match(/type="submit"/g) ?? []).length;
+    expect(submitCount).toBe(1); // Place Order — the only real submit button on the page
+
+    expect(res.body).toContain('id="voucher_code"');
+    expect(res.body).toContain('id="voucher_apply"');
+    expect(res.body).toContain('<button type="button" id="voucher_apply"'); // Apply is never a submit button
+
+    // The keydown interceptor: prevents native Enter-submission and re-fires
+    // Apply's own htmx request instead of letting Enter reach Place Order.
+    expect(res.body).toContain("getElementById('voucher_code')");
+    expect(res.body).toContain("getElementById('voucher_apply')");
+    expect(res.body).toContain("e.key !== 'Enter'");
+    expect(res.body).toContain("e.preventDefault()");
+    expect(res.body).toContain("htmx.trigger(applyBtn, 'click')");
+  });
 });
 
 describe("checkout — PayDisini option (2nd IDR method, alongside TokoPay)", () => {

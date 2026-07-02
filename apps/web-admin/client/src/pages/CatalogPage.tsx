@@ -8,7 +8,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -19,8 +19,8 @@ import {
   TableBody,
   TableCell,
 } from "@/components/ui/table";
-import { Package } from "lucide-react";
-import { apiPost } from "../api/client";
+import { AlertCircle, Package } from "lucide-react";
+import { apiGet, apiPost } from "../api/client";
 
 interface CategoryRow {
   id: number;
@@ -61,24 +61,35 @@ interface ImportPreview {
 function useCatalog() {
   return useQuery<CatalogData>({
     queryKey: ["catalog"],
-    queryFn: async () => {
-      const res = await fetch("/api/catalog");
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<CatalogData>;
-    },
+    queryFn: async () => apiGet<CatalogData>("/api/catalog"),
   });
 }
 
 export function CatalogPage() {
   const navigate = useNavigate();
-  const { data, isLoading, isError } = useCatalog();
+  const { data, isLoading, isError, refetch } = useCatalog();
   const [filter, setFilter] = useState("");
   const [showImport, setShowImport] = useState(false);
   const [csv, setCsv] = useState("");
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [togglingProduct, setTogglingProduct] = useState<Set<number>>(new Set());
   const queryClient = useQueryClient();
+
+  async function toggleProductActive(id: number, active: boolean) {
+    setTogglingProduct((s) => new Set([...s, id]));
+    try {
+      await apiPost(`/api/catalog/products/${id}/active`, { active });
+      await queryClient.invalidateQueries({ queryKey: ["catalog"] });
+    } finally {
+      setTogglingProduct((s) => {
+        const n = new Set(s);
+        n.delete(id);
+        return n;
+      });
+    }
+  }
 
   const handlePreview = async () => {
     setImportError(null);
@@ -109,7 +120,15 @@ export function CatalogPage() {
   if (isError) {
     return (
       <PageLayout title="Catalog">
-        <p className="text-rust">Failed to load catalog.</p>
+        <EmptyState
+          icon={AlertCircle}
+          title="Failed to load catalog"
+          description="An error occurred while loading the catalog. Please try again."
+          action={{
+            label: "Retry",
+            onClick: () => void refetch(),
+          }}
+        />
       </PageLayout>
     );
   }
@@ -286,9 +305,12 @@ export function CatalogPage() {
             key: "active",
             header: "Status",
             render: (row) => (
-              <Badge variant={row.isActive ? "default" : "secondary"}>
-                {row.isActive ? "Active" : "Hidden"}
-              </Badge>
+              <Switch
+                checked={row.isActive}
+                onCheckedChange={(checked) => void toggleProductActive(row.id, checked)}
+                disabled={togglingProduct.has(row.id)}
+                onClick={(e) => e.stopPropagation()}
+              />
             ),
           },
           {

@@ -25,7 +25,10 @@ export async function publicPost<T>(path: string, body: unknown): Promise<T> {
 
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(path, { credentials: "include" });
-  if (!res.ok) throw new Error(`${path} responded ${res.status}`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error ?? `${path} responded ${res.status}`);
+  }
   return res.json() as Promise<T>;
 }
 
@@ -39,6 +42,33 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
     credentials: "include",
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
     body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error ?? `${path} responded ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { error?: string };
+    throw new Error(data.error ?? `${path} responded ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export async function apiDelete<T>(path: string): Promise<T> {
+  const res = await fetch(path, {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "X-CSRF-Token": csrfToken() },
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({})) as { error?: string };

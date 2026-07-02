@@ -9,6 +9,13 @@ import { StatusBadge } from "../components/shared/StatusBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiPost } from "../api/client";
@@ -52,6 +59,12 @@ export function UserDetailPage() {
     onError: (e: Error) => setWalletError(e.message),
   });
 
+  const setRole = useMutation({
+    mutationFn: (role: string) => apiPost(`/api/users/${userId}/role`, { role }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["user", userId] }); },
+    onError: (e: Error) => alert(e.message),
+  });
+
   const ban = useMutation({
     mutationFn: (doBan: boolean) => apiPost(`/api/users/${userId}/ban`, { banned: doBan ? "1" : "0", reason: banReason }),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["user", userId] }); setBanReason(""); },
@@ -82,7 +95,21 @@ export function UserDetailPage() {
             )}
             <div className="flex justify-between"><span className="text-ink-soft">Telegram ID</span><span className="font-mono text-xs">{user.telegramId}</span></div>
             <div className="flex justify-between"><span className="text-ink-soft">Username</span><span>{user.username ? `@${user.username}` : "—"}</span></div>
-            <div className="flex justify-between"><span className="text-ink-soft">Role</span><span><Badge variant="outline">{user.role}</Badge></span></div>
+            <div className="flex justify-between items-center">
+              <span className="text-ink-soft">Role</span>
+              {user.role === "ADMIN" ? (
+                <Badge variant="outline">{user.role}</Badge>
+              ) : (
+                <Select value={user.role} onValueChange={(role) => setRole.mutate(role)} disabled={setRole.isPending}>
+                  <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {data.roles.map((r) => (
+                      <SelectItem key={r} value={r}>{r}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
             <div className="flex justify-between"><span className="text-ink-soft">Wallet</span><span className="font-mono">{user.walletBalance} {user.walletCurrency}</span></div>
             <div className="flex justify-between"><span className="text-ink-soft">Total spent</span><span>{data.totalSpent}</span></div>
           </CardContent>

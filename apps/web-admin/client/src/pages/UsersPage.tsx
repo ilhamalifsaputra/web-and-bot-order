@@ -6,6 +6,7 @@ import { PageHeader } from "../components/shared/PageHeader";
 import { FilterBar } from "../components/shared/FilterBar";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
+import { CurrencyStack } from "../components/shared/CurrencyAmount";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -19,6 +20,15 @@ interface UserRow {
   role: string;
   banned: boolean;
   createdAt: string;
+  lastSeenAt: string | null;
+  totalSpent: { idr: string; usdt: string };
+}
+
+/** First letter of the name shown for this row — full name, else username,
+ * else "?" for the rare row with neither. */
+function initialFor(row: UserRow): string {
+  const source = row.fullName ?? row.username;
+  return source && source.length > 0 ? source[0]!.toUpperCase() : "?";
 }
 
 function useUsers(q: string) {
@@ -88,12 +98,17 @@ export function UsersPage() {
             key: "name",
             header: "Name",
             render: (row) => (
-              <div>
-                <div className="font-medium text-sm text-ink">
-                  {row.fullName ?? "—"}
+              <div className="flex items-center gap-3">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-teal text-xs font-semibold text-white">
+                  {initialFor(row)}
                 </div>
-                <div className="text-xs text-ink-soft">
-                  {row.username ? `@${row.username}` : ""}
+                <div>
+                  <div className="font-medium text-sm text-ink">
+                    {row.fullName ?? "—"}
+                  </div>
+                  <div className="text-xs text-ink-soft">
+                    {row.username ? `@${row.username}` : ""}
+                  </div>
                 </div>
               </div>
             ),
@@ -127,6 +142,27 @@ export function UsersPage() {
               <span className="text-xs text-ink-soft">
                 {new Date(row.createdAt).toLocaleDateString()}
               </span>
+            ),
+          },
+          {
+            key: "lastSeen",
+            header: "Last Seen",
+            render: (row) => (
+              <span className="text-xs text-ink-soft">
+                {row.lastSeenAt ? new Date(row.lastSeenAt).toLocaleString() : "—"}
+              </span>
+            ),
+          },
+          {
+            key: "totalSpent",
+            header: "Total Spent",
+            render: (row) => (
+              <CurrencyStack
+                amounts={[
+                  { currency: "IDR", value: row.totalSpent.idr },
+                  { currency: "USDT", value: row.totalSpent.usdt },
+                ]}
+              />
             ),
           },
         ]}

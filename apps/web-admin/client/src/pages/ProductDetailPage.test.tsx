@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ProductDetailPage } from "./ProductDetailPage";
@@ -12,6 +13,8 @@ function Wrapper({ children }: { children: React.ReactNode }) {
       <QueryClientProvider client={qc}>
         <Routes>
           <Route path="/catalog/:productId" element={children} />
+          <Route path="/catalog/:productId/denominations/new" element={<div>denomination-create-page</div>} />
+          <Route path="/catalog/:productId/denominations/:denomId/edit" element={<div>denomination-edit-page</div>} />
         </Routes>
       </QueryClientProvider>
     </MemoryRouter>
@@ -60,9 +63,64 @@ describe("ProductDetailPage", () => {
     expect(screen.getByText("1 Month")).toBeInTheDocument();
   });
 
+  it("navigates to the denomination create page on '+ Add Denomination' click", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(PRODUCT_DETAIL), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("PRIVATE")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: /add denomination/i }));
+
+    await waitFor(() => expect(screen.getByText("denomination-create-page")).toBeInTheDocument());
+  });
+
   it("shows error on fetch failure", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("network"));
     render(<ProductDetailPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/failed to load product/i)).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+
+  it("navigates to the denomination edit page on 'Edit' click", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(PRODUCT_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("PRIVATE")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+
+    await waitFor(() => expect(screen.getByText("denomination-edit-page")).toBeInTheDocument());
+  });
+
+  it("deletes a denomination after confirming", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(PRODUCT_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...PRODUCT_DETAIL, product: { ...PRODUCT_DETAIL.product, denominations: [] } }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("PRIVATE")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/catalog/denominations/10", expect.objectContaining({ method: "DELETE" })),
+    );
+    await waitFor(() => expect(screen.queryByText("PRIVATE")).not.toBeInTheDocument());
   });
 });

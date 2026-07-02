@@ -1,0 +1,47 @@
+{# Checkout Totals card — extracted into its own fragment so it can be
+   re-rendered standalone by POST /checkout/voucher/preview (Task 8 fix)
+   without creating an order. Self-contained: imports its own macros and
+   recomputes any_method itself rather than relying on the parent template's
+   {% set %} scope, so it renders correctly both embedded (full GET /checkout
+   page) and standalone (the HTMX voucher-preview response). #}
+{% import "_shop.njk" as shop %}
+{% set any_method = idr_enabled or paydisini_enabled or binance_enabled or bybit_enabled or bybit_bsc_enabled or nowpayments_enabled %}
+
+{% if voucher_error_key %}
+<div class="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mb-3">
+  <i data-lucide="alert-triangle" class="w-4 h-4"></i> {{ t(voucher_error_key, lang) }}
+</div>
+{% endif %}
+
+<div class="card card-pad">
+  <h2 class="section-title mb-3">{{ t('web.summary', lang) }}</h2>
+  <div class="text-sm divide-y divide-line">
+    <div class="flex justify-between py-2">
+      <span class="text-ink-soft">{{ t('web.subtotal', lang) }}</span>
+      <span>{{ subtotal | idr }}</span>
+    </div>
+    {% if bulk_discount != "0" %}
+    <div class="flex justify-between py-2 text-grass-dark">
+      <span>{{ t('web.bulk_discount', lang) }}</span>
+      <span>−{{ bulk_discount | idr }}</span>
+    </div>
+    {% endif %}
+    {% if voucher_discount != "0" %}
+    <div class="flex justify-between py-2 text-grass-dark">
+      <span>{{ t('web.voucher_discount', lang) }}</span>
+      <span>−{{ voucher_discount | idr }}</span>
+    </div>
+    {% endif %}
+    <div class="flex justify-between py-3 items-baseline">
+      <span class="font-semibold">{{ t('web.order_total', lang) }}</span>
+      {{ shop.price(total, fx, "text-lg") }}
+    </div>
+  </div>
+  {% if fx %}
+  <p class="text-xs text-ink-faint">{{ t('web.usdt_note', lang) }}</p>
+  {% endif %}
+  <button type="submit" class="btn btn-primary w-full mt-4" {% if not any_method %}disabled style="opacity:.5;cursor:not-allowed"{% endif %}>
+    {{ t('web.place_order', lang) }} <i data-lucide="chevron-right" class="w-4 h-4"></i>
+  </button>
+  <a href="/cart" class="btn btn-ghost w-full mt-2">{{ t('web.back_to_cart', lang) }}</a>
+</div>

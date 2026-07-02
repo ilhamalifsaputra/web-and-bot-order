@@ -225,6 +225,7 @@
   "order.list_title": "📦 <b>{count} PESANAN TERAKHIR</b>",
   "order.page_info": "Halaman {page} dari {total}",
   "order.pending_payment_detail": "<b>Pesanan {code}</b> — ⏳ Menunggu Pembayaran\n\n{lines}\nNominal: <b>{total}</b>\nKirim ke Binance ID: <code>{binance_id}</code>\n\n⏳ Sisa waktu: <b>{countdown}</b>",
+  "order.pending_payment_rail": "<b>Pesanan {code}</b> — ⏳ Menunggu Pembayaran ({method})\n\n{lines}\nNominal: <b>{total}</b>\n\n⏳ Sisa waktu: <b>{countdown}</b>\n\nTekan \"🔄 Refresh Status\" di bawah untuk mengecek apakah pembayaran sudah kami terima, atau \"✕ Batalkan Pesanan\" jika ingin berhenti menunggu.",
   "order.rejected": "Pesanan <code>{code}</code> ditolak.\nAlasan: {reason}\n\nHubungi support jika ini kesalahan.",
   "order.tracking_detail": "🧾 <b>Pesanan {code}</b>\n\nAset: {asset}\nJaringan: {network}\n\nStatus: {status}\n{confirmations_line}\n\n<b>Progres:</b>\n{timeline}",
   "order.tracking_confirmations_line": "Konfirmasi:\n{bar} {confirmations}/{required}",

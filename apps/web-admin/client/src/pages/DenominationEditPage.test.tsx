@@ -1,0 +1,104 @@
+import "@testing-library/jest-dom";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { DenominationEditPage } from "./DenominationEditPage";
+import { apiGet, apiPatch } from "../api/client";
+
+vi.mock("../api/client", () => ({
+  apiGet: vi.fn(),
+  apiPatch: vi.fn(),
+}));
+
+function Wrapper({ children }: { children: React.ReactNode }) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return (
+    <MemoryRouter initialEntries={["/catalog/42/denominations/10/edit"]}>
+      <QueryClientProvider client={qc}>
+        <Routes>
+          <Route path="/catalog/:productId/denominations/:denomId/edit" element={children} />
+          <Route path="/catalog/:productId" element={<div>product-detail-page</div>} />
+        </Routes>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+const PRODUCT_DETAIL = {
+  product: {
+    id: 42,
+    denominations: [
+      {
+        id: 10,
+        name: "Netflix 1 Month",
+        type: "SHARED",
+        durationLabel: "1 Month",
+        price: "15000",
+        costPrice: "10000",
+        resellerPrice: null,
+        warrantyDays: 30,
+        description: "Shared profile",
+      },
+    ],
+  },
+};
+
+beforeEach(() => {
+  vi.restoreAllMocks();
+  vi.mocked(apiGet).mockReset();
+  vi.mocked(apiPatch).mockReset();
+  Element.prototype.scrollIntoView = vi.fn();
+  Element.prototype.hasPointerCapture = vi.fn(() => false);
+  Element.prototype.setPointerCapture = vi.fn();
+  Element.prototype.releasePointerCapture = vi.fn();
+});
+
+describe("DenominationEditPage", () => {
+  it("prefills the form from the existing denomination", async () => {
+    vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    expect(screen.getByDisplayValue("15000")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("10000")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /save changes/i })).toBeInTheDocument();
+  });
+
+  it("submits the edited fields via PATCH and navigates back to the product detail page", async () => {
+    vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
+    vi.mocked(apiPatch).mockResolvedValueOnce({ id: 10, name: "Netflix 1 Month Plan" });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    fireEvent.change(screen.getByDisplayValue("Netflix 1 Month"), { target: { value: "Netflix 1 Month Plan" } });
+
+    const btn = screen.getByRole("button", { name: /save changes/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    fireEvent.click(btn);
+
+    await waitFor(() =>
+      expect(apiPatch).toHaveBeenCalledWith("/api/catalog/denominations/10", {
+        name: "Netflix 1 Month Plan",
+        type: "SHARED",
+        durationLabel: "1 Month",
+        price: "15000",
+        costPrice: "10000",
+        warrantyDays: 30,
+        description: "Shared profile",
+      }),
+    );
+    await waitFor(() => expect(screen.getByText("product-detail-page")).toBeInTheDocument());
+  });
+
+  it("shows an error message when saving fails", async () => {
+    vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
+    vi.mocked(apiPatch).mockRejectedValueOnce(new Error("A valid type is required."));
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
+
+    await waitFor(() => expect(screen.getByText(/a valid type is required/i)).toBeInTheDocument());
+  });
+});

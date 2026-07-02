@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SettingsPage } from "./SettingsPage";
@@ -58,5 +59,80 @@ describe("SettingsPage", () => {
     await waitFor(() =>
       expect(screen.getByText(/failed to load settings/i)).toBeInTheDocument(),
     );
+  });
+
+  it("shows a success banner after changing the password", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText("Current password"), "old-password");
+    await user.type(screen.getByPlaceholderText("New password (min 8 chars)"), "new-password");
+    await user.click(screen.getByRole("button", { name: "Change Password" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Password changed successfully.")).toBeInTheDocument(),
+    );
+  });
+
+  it("shows an error banner when changing the password fails", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "Incorrect current password" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const user = userEvent.setup();
+    await user.type(screen.getByPlaceholderText("Current password"), "wrong-password");
+    await user.type(screen.getByPlaceholderText("New password (min 8 chars)"), "new-password");
+    await user.click(screen.getByRole("button", { name: "Change Password" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("Incorrect current password")).toBeInTheDocument(),
+    );
+  });
+
+  it("never renders a 'Store' card — min_order_amount/order_expiry_minutes/stock_low_threshold are not real settings (dead STORE_KEYS code removed)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...SETTINGS_DATA,
+          fields: [
+            ...SETTINGS_DATA.fields,
+            { key: "min_order_amount", label: "Min order amount", secret: false, hasValue: true, value: "10000", needsRestart: false },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    expect(screen.queryByText("Store")).not.toBeInTheDocument();
+    // The stray field still renders somewhere (Other Settings), not silently dropped.
+    expect(screen.getByText("Min order amount")).toBeInTheDocument();
   });
 });

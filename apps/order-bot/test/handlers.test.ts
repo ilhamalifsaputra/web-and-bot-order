@@ -350,6 +350,30 @@ describe("customer handlers", () => {
     expect(offersForwardAction(stranger.sink)).toBe(true);
   });
 
+  it("viewOrder shows rail-specific pending-payment text (not the legacy Binance-ID copy) for a non-legacy payment method", async () => {
+    const order = await makeOrder();
+    // makeOrder() uses createOrderDirect only, which leaves paymentMethod at
+    // the schema default "BINANCE_PAY" — stamp it to a real auto-confirm rail
+    // the way finalizeOrderPayment would, without needing a live gateway mock.
+    await prisma.order.update({ where: { id: order!.id }, data: { paymentMethod: PaymentMethod.TOKOPAY } });
+
+    const { ctx, sink } = customerCtx();
+    await customer.viewOrder(ctx, order!.id);
+
+    const body = JSON.stringify(sink);
+    expect(body).toContain(order!.orderCode);
+    // The legacy order.pending_payment_detail copy must NOT appear for a
+    // TOKOPAY order — this is the confirmed bug (audit 2026-07-01).
+    expect(body).not.toContain("Pay to Binance ID");
+    // The rail label is reused verbatim from checkout.pay_qris_btn ("QRIS"),
+    // not invented new copy.
+    expect(body).toContain("QRIS");
+    // orderDetailKb must offer the same on-demand reconcile the wait screens
+    // use, not just Cancel/Back/Menu.
+    const markup = lastMarkup(sink);
+    expect(JSON.stringify(markup)).toContain(`v1:checkout:refresh:${order!.id}`);
+  });
+
   it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
     "viewOrder routes a BYBIT_BSC order at %s through the live tracking screen, not the generic order.detail",
     async (status) => {
@@ -743,6 +767,24 @@ describe("checkout handlers", () => {
     await checkout.showOrderConfirmation(ctx, sample.product.id, 2);
     expect(sink.length).toBeGreaterThan(0);
     expect(await prisma.order.count()).toBe(0);
+  });
+
+  it("showOrderConfirmation surfaces the voucher's specific error when re-validation fails, instead of silently dropping the discount (checkout.ts computeConfirmation)", async () => {
+    // SAVE10 was valid when first applied; expire it now so the re-render's
+    // silent re-validation (computeConfirmation) hits the same ValidationError
+    // path applyVoucherToSubtotal throws on first apply.
+    await prisma.voucher.update({ where: { id: sample.voucher.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    const { ctx, sink } = customerCtx({
+      session: { ...userSession(), scratch: { appliedVoucherCode: "SAVE10" } },
+    });
+
+    await checkout.showOrderConfirmation(ctx, sample.product.id, 2);
+
+    // The specific reason must reach the user — not a silently-changed total.
+    expect(sentIncludes(sink, "This voucher has expired.")).toBe(true);
+    // The now-invalid voucher is still dropped from session (same behavior as
+    // before, just no longer silent).
+    expect(ctx.session.scratch.appliedVoucherCode).toBeUndefined();
   });
 
   it("buyNowTokopay creates an IDR/TOKOPAY order and sends the QR as one photo+caption bubble", async () => {

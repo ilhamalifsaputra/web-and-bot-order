@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
@@ -39,12 +39,6 @@ const BRANDING_KEYS = new Set([
   "banner_image",
   "support_contact",
   "support_whatsapp",
-]);
-
-const STORE_KEYS = new Set([
-  "min_order_amount",
-  "order_expiry_minutes",
-  "stock_low_threshold",
 ]);
 
 const TELEGRAM_KEYS = new Set([
@@ -128,7 +122,6 @@ const PAY_CRED_KEYS = new Set([
 
 const ALL_GROUPED_KEYS = new Set([
   ...BRANDING_KEYS,
-  ...STORE_KEYS,
   ...TELEGRAM_KEYS,
   ...FX_KEYS,
   ...PAY_CRED_KEYS,
@@ -157,14 +150,23 @@ function FieldRow({ field, onSaved }: { field: SettingsField; onSaved: () => voi
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(field.value);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!success) return;
+    const timer = setTimeout(() => setSuccess(false), 2500);
+    return () => clearTimeout(timer);
+  }, [success]);
 
   async function save() {
     setSaving(true);
     setError(null);
+    setSuccess(false);
     try {
       await apiPost("/api/settings/edit", { key: field.key, value });
       setEditing(false);
+      setSuccess(true);
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to save");
@@ -215,6 +217,7 @@ function FieldRow({ field, onSaved }: { field: SettingsField; onSaved: () => voi
               Cancel
             </Button>
             {error && <p className="text-xs text-rust">{error}</p>}
+            {success && <p className="text-xs text-grass">Saved successfully</p>}
           </div>
         )}
       </div>
@@ -242,8 +245,14 @@ export function SettingsPage() {
   const [pwCurrent, setPwCurrent] = useState("");
   const [pwNew, setPwNew] = useState("");
   const [pwError, setPwError] = useState<string | null>(null);
-  const [pwOk, setPwOk] = useState(false);
+  const [pwSuccess, setPwSuccess] = useState(false);
   const [pwSaving, setPwSaving] = useState(false);
+
+  useEffect(() => {
+    if (!pwSuccess) return;
+    const timer = setTimeout(() => setPwSuccess(false), 2500);
+    return () => clearTimeout(timer);
+  }, [pwSuccess]);
 
   // 2FA
   const [totpCode, setTotpCode] = useState("");
@@ -253,23 +262,37 @@ export function SettingsPage() {
   const [disableTotp, setDisableTotp] = useState("");
 
   // FX refresh
-  const [fxStatus, setFxStatus] = useState<string | null>(null);
+  const [fxSuccess, setFxSuccess] = useState<string | null>(null);
+  const [fxError, setFxError] = useState<string | null>(null);
   const [fxRefreshing, setFxRefreshing] = useState(false);
+
+  useEffect(() => {
+    if (!fxSuccess) return;
+    const timer = setTimeout(() => setFxSuccess(null), 2500);
+    return () => clearTimeout(timer);
+  }, [fxSuccess]);
+
+  useEffect(() => {
+    if (!fxError) return;
+    const timer = setTimeout(() => setFxError(null), 2500);
+    return () => clearTimeout(timer);
+  }, [fxError]);
 
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ["settings"] }); };
 
   async function refreshFx() {
     setFxRefreshing(true);
-    setFxStatus(null);
+    setFxSuccess(null);
+    setFxError(null);
     try {
       const result = await apiPost<{ ok: boolean; status: string; rate: string }>(
         "/api/settings/fx/refresh",
         {},
       );
-      setFxStatus(`Rate updated to ${result.rate} (${result.status})`);
+      setFxSuccess(`Rate updated to ${result.rate} (${result.status})`);
       invalidate();
     } catch (e) {
-      setFxStatus(e instanceof Error ? e.message : "Failed to refresh rate");
+      setFxError(e instanceof Error ? e.message : "Failed to refresh rate");
     } finally {
       setFxRefreshing(false);
     }
@@ -279,13 +302,13 @@ export function SettingsPage() {
     e.preventDefault();
     setPwSaving(true);
     setPwError(null);
-    setPwOk(false);
+    setPwSuccess(false);
     try {
       await apiPost("/api/settings/password", {
         current_password: pwCurrent,
         new_password: pwNew,
       });
-      setPwOk(true);
+      setPwSuccess(true);
       setPwCurrent("");
       setPwNew("");
     } catch (err) {
@@ -311,10 +334,33 @@ export function SettingsPage() {
     }
   }
 
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [paymentSuccess, setPaymentSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!paymentSuccess) return;
+    const timer = setTimeout(() => setPaymentSuccess(null), 2500);
+    return () => clearTimeout(timer);
+  }, [paymentSuccess]);
+
+  useEffect(() => {
+    if (!paymentError) return;
+    const timer = setTimeout(() => setPaymentError(null), 2500);
+    return () => clearTimeout(timer);
+  }, [paymentError]);
+
   const togglePayment = useMutation({
     mutationFn: ({ method, enabled }: { method: string; enabled: boolean }) =>
       apiPost("/api/settings/payments/toggle", { method, enabled: enabled ? "true" : "false" }),
-    onSuccess: () => { invalidate(); },
+    onSuccess: () => {
+      invalidate();
+      setPaymentSuccess("Payment method updated");
+      setPaymentError(null);
+    },
+    onError: (error: Error) => {
+      setPaymentError(error.message || "Failed to update payment method");
+      setPaymentSuccess(null);
+    },
   });
 
   return (
@@ -340,20 +386,6 @@ export function SettingsPage() {
             </Card>
           )}
 
-          {/* Store */}
-          {fieldGroup(data.fields, STORE_KEYS).length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Store</CardTitle>
-              </CardHeader>
-              <CardContent className="divide-y divide-line">
-                {fieldGroup(data.fields, STORE_KEYS).map((field) => (
-                  <FieldRow key={field.key} field={field} onSaved={invalidate} />
-                ))}
-              </CardContent>
-            </Card>
-          )}
-
           {/* Telegram & Bot */}
           {fieldGroup(data.fields, TELEGRAM_KEYS).length > 0 && (
             <Card>
@@ -369,6 +401,16 @@ export function SettingsPage() {
           )}
 
           {/* Payment Credentials — one card per method */}
+          {paymentError && (
+            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+              {paymentError}
+            </div>
+          )}
+          {paymentSuccess && (
+            <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+              {paymentSuccess}
+            </div>
+          )}
           {PAY_CRED_GROUPS.map(({ methodKey, label, fieldKeys }) => {
             const credFields = data.fields.filter((f) => (fieldKeys as readonly string[]).includes(f.key));
             const methodState = data.payMethodState[methodKey];
@@ -434,6 +476,16 @@ export function SettingsPage() {
                   <FieldRow key={field.key} field={field} onSaved={invalidate} />
                 ))}
               </div>
+              {fxError && (
+                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                  {fxError}
+                </div>
+              )}
+              {fxSuccess && (
+                <div className="mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                  {fxSuccess}
+                </div>
+              )}
               <div className="flex items-center gap-3 pt-3">
                 <Button
                   onClick={refreshFx}
@@ -442,9 +494,6 @@ export function SettingsPage() {
                 >
                   {fxRefreshing ? "Refreshing…" : "Refresh USDT Rate"}
                 </Button>
-                {fxStatus && (
-                  <span className="text-sm text-ink-soft">{fxStatus}</span>
-                )}
               </div>
             </CardContent>
           </Card>
@@ -461,18 +510,20 @@ export function SettingsPage() {
                 <div className="text-sm font-medium text-ink mb-3">
                   Change Password
                 </div>
+                {pwError && (
+                  <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {pwError}
+                  </div>
+                )}
+                {pwSuccess && (
+                  <div className="mb-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                    Password changed successfully.
+                  </div>
+                )}
                 <form
                   onSubmit={changePassword}
                   className="flex flex-col gap-2 max-w-xs"
                 >
-                  {pwError && (
-                    <p className="text-sm text-rust">{pwError}</p>
-                  )}
-                  {pwOk && (
-                    <p className="text-sm text-grass">
-                      Password changed successfully.
-                    </p>
-                  )}
                   <Input
                     type="password"
                     placeholder="Current password"

@@ -105,6 +105,15 @@ export async function addTicketMessage(
   return msg;
 }
 
+/** Assign (or, with `adminId: null`, unassign) a ticket to an admin. Does
+ * not touch `status` — assignment and reply/close are independent actions. */
+export function assignTicket(db: Db, ticketId: number, adminId: number | null) {
+  return db.supportTicket.update({
+    where: { id: ticketId },
+    data: { adminId },
+  });
+}
+
 /** Last N messages for a ticket, chronological order. */
 export async function listTicketMessages(db: Db, ticketId: number, limit = 10) {
   const rows = await db.ticketMessage.findMany({

@@ -454,6 +454,61 @@ describe("orders", () => {
     expect(data.orders.some((o) => o.user?.loginUsername === "weshopper")).toBe(true);
   });
 
+  describe("CSV export", () => {
+    it("returns CSV headers, Content-Disposition, and the matching rows", async () => {
+      await makePendingOrder();
+      const res = await get("/api/orders/export", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toContain("text/csv");
+      expect(res.headers["content-disposition"]).toBe('attachment; filename="orders.csv"');
+      const lines = res.body.trim().split("\r\n");
+      expect(lines[0]).toBe(
+        "Order Code,Customer,Status,Currency,Total Amount,Payment Method,Created At",
+      );
+      expect(lines.length).toBe(2); // header + the one seeded order
+    });
+
+    it("returns more than 50 rows when more than 50 orders match (proves the limit override)", async () => {
+      const items = Array.from({ length: 55 }, (_, i) => `bulk${counter}_${i}@e.com:p`);
+      await bulkAddStock(prisma, seed.productId, items);
+      const user = (await getUser(prisma, seed.customerId))!;
+      for (let i = 0; i < 55; i++) {
+        await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 });
+      }
+
+      const res = await get("/api/orders/export", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      const lines = res.body.trim().split("\r\n");
+      expect(lines.length - 1).toBe(55); // header excluded — proves no 50-row truncation
+    });
+
+    it("quotes a customer name containing a comma", async () => {
+      const commaUser = await upsertUser(prisma, {
+        telegramId: 555555,
+        username: "commauser",
+        fullName: "Doe, Jane",
+      });
+      await createOrderDirect(prisma, { user: commaUser, productId: seed.productId, quantity: 1 });
+
+      const res = await get("/api/orders/export", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('"Doe, Jane"');
+    });
+
+    it("respects the status filter", async () => {
+      setBotIdentity({ publicChannelId: -100123456789 });
+      const deliveredId = await makePendingOrder();
+      await post(`/orders/${deliveredId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+      await makePendingOrder(); // stays PENDING_VERIFICATION — must be excluded below
+
+      const res = await get("/api/orders/export?status=DELIVERED", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      const lines = res.body.trim().split("\r\n");
+      expect(lines.length - 1).toBe(1); // header + exactly the one DELIVERED order
+      expect(lines[1]).toContain(",DELIVERED,");
+    });
+  });
+
   it("reject → REJECTED + audit", async () => {
     const orderId = await makePendingOrder();
     const res = await post(`/orders/${orderId}/reject`, seed.cookie, { csrf_token: seed.csrf, reason: "blurry proof" });
@@ -741,6 +796,294 @@ describe("catalog JSON API — create product", () => {
   it("rejects bad CSRF with 403", async () => {
     const res = await postProductJson(seed.cookie, "bad-token", { name: "X", categoryId: seed.categoryId });
     expect(res.statusCode).toBe(403);
+  });
+});
+
+// ---- catalog JSON API — create category ------------------------------------
+
+describe("catalog JSON API — create category", () => {
+  function postCategoryJson(cookie: string | null, csrf: string | null, body: Record<string, unknown>) {
+    return app.inject({
+      method: "POST",
+      url: "/api/catalog/categories",
+      headers: {
+        "content-type": "application/json",
+        ...(csrf ? { "x-csrf-token": csrf } : {}),
+      },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+
+  it("happy path: creates category and logs audit", async () => {
+    const before = await prisma.category.count();
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "Streaming" });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { category: { id: number; name: string; slug: string } };
+    expect(body.category.name).toBe("Streaming");
+    expect(typeof body.category.slug).toBe("string");
+    expect(body.category.slug.length).toBeGreaterThan(0);
+    expect(await prisma.category.count()).toBe(before + 1);
+    const audit = await prisma.auditLog.findMany({
+      where: { action: "category_create", targetId: body.category.id },
+    });
+    expect(audit.length).toBe(1);
+    expect(audit[0]?.details).toBe(`Created category "Streaming".`);
+  });
+
+  it("rejects empty name with 400", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "" });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects whitespace-only name with 400", async () => {
+    const res = await postCategoryJson(seed.cookie, seed.csrf, { name: "   " });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects missing auth (anon → 303 /login)", async () => {
+    const res = await postCategoryJson(null, "x", { name: "Streaming" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("rejects bad CSRF with 403", async () => {
+    const res = await postCategoryJson(seed.cookie, "bad-token", { name: "Streaming" });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+// ---- catalog JSON API — create denomination --------------------------------
+
+describe("catalog JSON API — create denomination", () => {
+  function postDenominationJson(
+    productId: number,
+    cookie: string | null,
+    csrf: string | null,
+    body: Record<string, unknown>,
+  ) {
+    return app.inject({
+      method: "POST",
+      url: `/api/catalog/products/${productId}/denominations`,
+      headers: {
+        "content-type": "application/json",
+        ...(csrf ? { "x-csrf-token": csrf } : {}),
+      },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+
+  it("happy path: creates denomination and logs audit", async () => {
+    const before = await prisma.denomination.count();
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number; name: string; slug: string };
+    expect(body.name).toBe("1 Month");
+    expect(typeof body.slug).toBe("string");
+    expect(body.slug.length).toBeGreaterThan(0);
+    expect(await prisma.denomination.count()).toBe(before + 1);
+    const audit = await prisma.auditLog.findMany({
+      where: { action: "denomination_create", targetId: body.id },
+    });
+    expect(audit.length).toBe(1);
+    expect(audit[0]?.details).toBe(`Created denomination "1 Month" for product ${seed.catalogProductId}.`);
+  });
+
+  it("rejects missing name with 400", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects invalid type with 400", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "BOGUS",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects missing durationLabel with 400", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects an invalid price with 400", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "not-a-number",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects a non-existent productId with 404", async () => {
+    const res = await postDenominationJson(99999, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("rejects missing auth (anon → 303 /login)", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, null, "x", {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("rejects bad CSRF with 403", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, "bad-token", {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+// ---- catalog JSON API — active toggle --------------------------------------
+
+describe("catalog JSON API — active toggle", () => {
+  function postJson(url: string, cookie: string | null, csrf: string | null, body: Record<string, unknown>) {
+    return app.inject({
+      method: "POST",
+      url,
+      headers: {
+        "content-type": "application/json",
+        ...(csrf ? { "x-csrf-token": csrf } : {}),
+      },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+
+  describe("POST /api/catalog/products/:id/active", () => {
+    it("happy path: deactivates a product and audits", async () => {
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/active`, seed.cookie, seed.csrf, {
+        active: false,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ id: seed.catalogProductId, isActive: false });
+      expect((await getCatalogProduct(prisma, seed.catalogProductId))!.isActive).toBe(false);
+
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: "product_active_toggle", targetId: seed.catalogProductId },
+      });
+      expect(audit).toBeTruthy();
+      expect(audit?.targetType).toBe("product");
+      expect(audit?.adminId).toBe(seed.adminId);
+      const product = await getCatalogProduct(prisma, seed.catalogProductId);
+      expect(audit?.details).toBe(`Deactivated product "${product!.name}".`);
+    });
+
+    it("happy path: reactivates a product and audits", async () => {
+      await postJson(`/api/catalog/products/${seed.catalogProductId}/active`, seed.cookie, seed.csrf, { active: false });
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/active`, seed.cookie, seed.csrf, {
+        active: true,
+      });
+      expect(res.statusCode).toBe(200);
+      expect((await getCatalogProduct(prisma, seed.catalogProductId))!.isActive).toBe(true);
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: "product_active_toggle", targetId: seed.catalogProductId },
+        orderBy: { id: "desc" },
+      });
+      const product = await getCatalogProduct(prisma, seed.catalogProductId);
+      expect(audit?.details).toBe(`Activated product "${product!.name}".`);
+    });
+
+    it("rejects a non-boolean active with 400", async () => {
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/active`, seed.cookie, seed.csrf, {
+        active: "false",
+      });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toBeTruthy();
+    });
+
+    it("rejects a non-existent product id with 404", async () => {
+      const res = await postJson(`/api/catalog/products/99999/active`, seed.cookie, seed.csrf, { active: false });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/active`, null, "x", { active: false });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/active`, seed.cookie, "bad-token", {
+        active: false,
+      });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("POST /api/catalog/denominations/:id/active", () => {
+    it("happy path: deactivates a denomination and audits", async () => {
+      const res = await postJson(`/api/catalog/denominations/${seed.productId}/active`, seed.cookie, seed.csrf, {
+        active: false,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ id: seed.productId, isActive: false });
+      expect((await getDenomination(prisma, seed.productId))!.isActive).toBe(false);
+
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: "denomination_active_toggle", targetId: seed.productId },
+      });
+      expect(audit).toBeTruthy();
+      expect(audit?.targetType).toBe("denomination");
+      expect(audit?.adminId).toBe(seed.adminId);
+      const denom = await getDenomination(prisma, seed.productId);
+      expect(audit?.details).toBe(`Deactivated denomination "${denom!.name}".`);
+    });
+
+    it("rejects a non-existent denomination id with 404", async () => {
+      const res = await postJson(`/api/catalog/denominations/99999/active`, seed.cookie, seed.csrf, { active: false });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/catalog/denominations/${seed.productId}/active`, null, "x", { active: false });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/catalog/denominations/${seed.productId}/active`, seed.cookie, "bad-token", {
+        active: false,
+      });
+      expect(res.statusCode).toBe(403);
+    });
   });
 });
 
@@ -1347,6 +1690,86 @@ describe("support", () => {
     const tid = await makeTicket();
     const res = await post(`/support/${tid}/reply`, seed.cookie, { csrf_token: "bad", content: "hi" });
     expect(res.statusCode).toBe(403);
+  });
+
+  function postJson(url: string, cookie: string | null, csrf: string | null, body: Record<string, unknown>) {
+    return app.inject({
+      method: "POST",
+      url,
+      headers: {
+        "content-type": "application/json",
+        ...(csrf ? { "x-csrf-token": csrf } : {}),
+      },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+
+  describe("POST /api/support/:ticketId/assign", () => {
+    async function makeSecondAdmin() {
+      return upsertUser(prisma, { telegramId: 1000, username: "second", fullName: "Second Admin" });
+    }
+
+    it("happy path: assigns a ticket to an admin and audits", async () => {
+      const tid = await makeTicket();
+      const second = await makeSecondAdmin();
+      const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: second.id });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true });
+      expect((await prisma.supportTicket.findUnique({ where: { id: tid } }))!.adminId).toBe(second.id);
+
+      const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_assign", targetId: tid } });
+      expect(audit).toBeTruthy();
+      expect(audit?.targetType).toBe("ticket");
+      expect(audit?.adminId).toBe(seed.adminId);
+      expect(audit?.details).toBe(`Assigned ticket #${tid} to "Second Admin".`);
+    });
+
+    it("unassign (adminId: null) clears the assignment and audits", async () => {
+      const tid = await makeTicket();
+      const second = await makeSecondAdmin();
+      await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: second.id });
+
+      const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: null });
+      expect(res.statusCode).toBe(200);
+      expect((await prisma.supportTicket.findUnique({ where: { id: tid } }))!.adminId).toBeNull();
+
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: "ticket_assign", targetId: tid },
+        orderBy: { id: "desc" },
+      });
+      expect(audit?.details).toBe(`Unassigned ticket #${tid}.`);
+    });
+
+    it("rejects a non-existent ticket id with 404", async () => {
+      const res = await postJson(`/api/support/99999/assign`, seed.cookie, seed.csrf, { adminId: null });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects a non-existent admin id with 400", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: 999999 });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects a non-number, non-null adminId with 400", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, seed.csrf, { adminId: "7" });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("requires auth (anon -> 303 /login)", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/assign`, null, "x", { adminId: null });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, "bad-token", { adminId: null });
+      expect(res.statusCode).toBe(403);
+    });
   });
 });
 

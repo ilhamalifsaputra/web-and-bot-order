@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ReviewsPage } from "./ReviewsPage";
@@ -54,5 +54,56 @@ describe("ReviewsPage", () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("network"));
     render(<ReviewsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
+  });
+
+  it("hides a review via /api/reviews/:id/hide and refetches", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ reviews: [REVIEW], total: 1, page: 1, hasNext: false, summaries: [] }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, hidden: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ reviews: [{ ...REVIEW, hidden: true }], total: 1, page: 1, hasNext: false, summaries: [] }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<ReviewsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Hide" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/reviews/1/hide",
+        expect.objectContaining({ method: "POST" }),
+      ),
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Restore" })).toBeInTheDocument());
+  });
+
+  it("shows an alert when hiding a review fails (previously silently swallowed)", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ reviews: [REVIEW], total: 1, page: 1, hasNext: false, summaries: [] }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "Review not found." }), { status: 404, headers: { "Content-Type": "application/json" } }),
+    );
+    const alertSpy = vi.spyOn(globalThis, "alert").mockImplementation(() => {});
+    render(<ReviewsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Hide" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith("Review not found."));
   });
 });

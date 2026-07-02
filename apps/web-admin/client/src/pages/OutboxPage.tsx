@@ -60,6 +60,8 @@ export function OutboxPage() {
     try {
       await apiPost(`/api/outbox/${id}/retry`, {});
       await refetch();
+    } catch (e: unknown) {
+      alert((e instanceof Error ? e.message : String(e)) || "Failed to retry notification");
     } finally {
       setRetrying((s) => { const n = new Set(s); n.delete(id); return n; });
     }

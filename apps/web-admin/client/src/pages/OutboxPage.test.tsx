@@ -85,4 +85,31 @@ describe("OutboxPage", () => {
     );
     await waitFor(() => expect(screen.getAllByText("PENDING").length).toBeGreaterThan(0));
   });
+
+  it("shows an alert when retrying a notification fails", async () => {
+    const failedRow = { ...ROW, id: 9, status: "FAILED" };
+    const alertSpy = vi.spyOn(globalThis, "alert").mockImplementation(() => {});
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ rows: [failedRow], total: 1, page: 1, hasNext: false, counts: { FAILED: 1 } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    // Simulate POST /api/outbox/9/retry returning 404 error with server message
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ error: "That notification no longer exists." }),
+        { status: 404, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OutboxPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() =>
+      expect(alertSpy).toHaveBeenCalledWith("That notification no longer exists."),
+    );
+  });
 });

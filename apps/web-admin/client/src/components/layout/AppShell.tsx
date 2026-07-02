@@ -4,6 +4,7 @@ import { ThemeProvider } from "./ThemeProvider";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { SearchModal } from "./SearchModal";
+import { Toaster } from "@/components/ui/sonner";
 
 export function AppShell(): JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -33,12 +34,15 @@ export function AppShell(): JSX.Element {
             onMenuClick={() => setSidebarOpen((o) => !o)}
             onSearchOpen={() => setSearchOpen(true)}
           />
-          <main className="flex flex-col flex-1 overflow-y-auto bg-paper p-4 sm:p-6">
-            <Outlet />
+          <main className="flex flex-1 flex-col overflow-y-auto bg-paper">
+            <div className="mx-auto w-full max-w-[1440px] flex-1 px-4 py-4 sm:px-5 sm:py-6 lg:px-6 xl:px-8">
+              <Outlet />
+            </div>
           </main>
         </div>
       </div>
       <SearchModal open={searchOpen} onClose={() => setSearchOpen(false)} />
+      <Toaster />
     </ThemeProvider>
   );
 }

@@ -1,13 +1,21 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
-@import "@fontsource-variable/geist";
+@import "@fontsource/outfit/500.css";
+@import "@fontsource/outfit/600.css";
+@import "@fontsource/outfit/700.css";
+@import "@fontsource/manrope/400.css";
+@import "@fontsource/manrope/500.css";
+@import "@fontsource/manrope/600.css";
+@import "@fontsource/manrope/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
 
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-    --font-heading: var(--font-sans);
-    --font-sans: 'Geist Variable', sans-serif;
+    --font-heading: var(--font-display);
+    --font-sans: Manrope, system-ui, sans-serif;
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-border: var(--sidebar-border);
     --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -39,40 +47,40 @@
     --color-card: var(--card);
     --color-foreground: var(--foreground);
     --color-background: var(--background);
-    --radius-sm: calc(var(--radius) * 0.6);
-    --radius-md: calc(var(--radius) * 0.8);
-    --radius-lg: var(--radius);
-    --radius-xl: calc(var(--radius) * 1.4);
-    --radius-2xl: calc(var(--radius) * 1.8);
-    --radius-3xl: calc(var(--radius) * 2.2);
-    --radius-4xl: calc(var(--radius) * 2.6);
+    --radius-xs: 0.25rem;
+    --radius-sm: 0.5rem;
+    --radius-md: 0.75rem;
+    --radius-lg: 0.75rem;
+    --radius-xl: 1rem;
+    --radius-2xl: 1.25rem;
+    --radius-3xl: 1.5rem;
+    --radius-4xl: 9999px;
 }
 
 :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
+    --background: #f6f8fb;
+    --foreground: #1b2330;
+    --card: #ffffff;
+    --card-foreground: #1b2330;
+    --popover: #ffffff;
+    --popover-foreground: #1b2330;
+    --primary: #2563eb;
+    --primary-foreground: #ffffff;
+    --secondary: #eef1f6;
+    --secondary-foreground: #1b2330;
+    --muted: #eef1f6;
+    --muted-foreground: #5a6473;
+    --accent: #eef1f6;
+    --accent-foreground: #1b2330;
+    --destructive: #dc2626;
+    --border: #e3e8ef;
+    --input: #e3e8ef;
+    --ring: #2563eb;
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
     --sidebar: oklch(0.985 0 0);
     --sidebar-foreground: oklch(0.145 0 0);
     --sidebar-primary: oklch(0.205 0 0);
@@ -90,18 +98,18 @@
     --card-foreground: oklch(0.985 0 0);
     --popover: oklch(0.205 0 0);
     --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
+    --primary: #2563eb;
+    --primary-foreground: #ffffff;
+    --secondary: oklch(0.22 0 0);
     --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
+    --muted: oklch(0.22 0 0);
     --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
+    --accent: oklch(0.22 0 0);
     --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
+    --destructive: oklch(0.67 0.2 25);
     --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
+    --input: oklch(1 0 0 / 10%);
+    --ring: oklch(0.65 0.19 263);
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);
     --chart-3: oklch(0.439 0 0);
@@ -137,20 +145,16 @@
    `@theme inline` block above, rather than editing a JS config.
 
    `static` (instead of plain `@theme`) makes Tailwind always emit these as
-   CSS variables/utilities even though nothing in the source tree references
-   them yet (App.tsx is still Task 1's inert placeholder — Task 8 builds the
-   real page). Without `static`, v4's content-detection tree-shakes unused
-   theme values entirely, which would make every ported token vanish from
-   the build output until a later task starts using the classes.
+   CSS variables/utilities even though not every key is referenced by class
+   name in every build — without `static`, v4's content-detection would
+   tree-shake unused theme values entirely.
 
-   Two names collide with tokens shadcn's own block already defines above
-   (--color-card, --font-sans) — kept under a `-ported` suffix here so
-   shadcn's own Card component background and Geist font stay intact, per
-   the brief's instruction not to overwrite shadcn's own tokens. Every other
-   key matches the brief's token name exactly. */
+   shadcn's own grayscale tokens above (--color-card, --font-sans, --radius-*)
+   are repointed directly at this same palette, so there's no longer a
+   `-ported` suffix needed for collision avoidance — every key here matches
+   the storefront's token name exactly. */
 @theme static {
   --color-paper: #f6f8fb;
-  --color-card-ported: #ffffff;
   --color-sand: #eef1f6;
   --color-line: #e3e8ef;
 
@@ -174,13 +178,10 @@
   --color-rust-tint: #fde7e7;
 
   --font-display: Outfit, system-ui, sans-serif;
-  --font-sans-ported: Manrope, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 
   --shadow-soft: 0 1px 2px rgba(16, 24, 40, .04), 0 8px 24px -14px rgba(16, 24, 40, .12);
   --shadow-lift: 0 2px 4px rgba(16, 24, 40, .06), 0 16px 36px -18px rgba(16, 24, 40, .18);
-
-  --radius-xl2: 1.25rem;
 }
 
 /* Dark-mode overrides for custom design tokens.
@@ -189,7 +190,6 @@
    bg-paper, border-line, etc. invert correctly when dark mode is active. */
 .dark {
   --color-paper: oklch(0.145 0 0);
-  --color-card-ported: oklch(0.205 0 0);
   --color-sand: oklch(0.22 0 0);
   --color-line: oklch(1 0 0 / 10%);
 

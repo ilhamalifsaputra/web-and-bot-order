@@ -6,6 +6,7 @@ import { PageHeader } from "../components/shared/PageHeader";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { ImageUploadField } from "../components/shared/ImageUploadField";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
@@ -26,6 +27,7 @@ interface ProductDetail {
   id: number;
   name: string;
   isActive: boolean;
+  webImageUrl: string | null;
   category: { id: number; name: string } | null;
   denominations: DenominationRow[];
 }
@@ -138,6 +140,17 @@ export function ProductDetailPage() {
           />
           <span className="text-ink-soft">{product.isActive ? "Active" : "Inactive"}</span>
         </div>
+      </div>
+
+      <div className="mb-4 max-w-sm">
+        <ImageUploadField
+          label="Product photo"
+          imageUrl={product.webImageUrl ?? ""}
+          uploadPath={`/catalog/product/${productId}/photo`}
+          fieldName="photo"
+          accept=".jpg,.jpeg,.png,.webp"
+          onUploaded={() => void queryClient.invalidateQueries({ queryKey: ["catalog", productId] })}
+        />
       </div>
 
       <div className="flex items-center justify-between mb-3">

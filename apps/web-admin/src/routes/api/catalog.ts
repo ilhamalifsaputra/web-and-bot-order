@@ -3,12 +3,18 @@ import {
   prisma,
   listAllCategories,
   listProducts,
+  getCategory,
+  updateCategory,
   getCatalogProduct,
   getCatalogProductWithDenominations,
+  deleteCatalogProduct,
   getDenomination,
+  getDenominationWithProduct,
   countAvailableStock,
   countRestockSubscribers,
   getBulkPricingForDenomination,
+  upsertBulkPricing,
+  deleteBulkPricing,
   createCatalogProduct,
   createCategory,
   createDenomination,
@@ -20,6 +26,7 @@ import {
 } from "@app/db";
 import { Decimal } from "@app/core/money";
 import { ProductType } from "@app/core/enums";
+import { ValidationError } from "@app/core/errors";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { parseDenominationCsv, categoryNameMap, resolveOrCreateProduct } from "../../lib/catalogImport";
 
@@ -83,6 +90,53 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       details: `Created category "${name}".`,
     });
     return reply.code(201).send({ category: cat });
+  });
+
+  app.patch("/api/catalog/categories/:id", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid category id." });
+    const existing = await getCategory(prisma, id);
+    if (!existing) return reply.code(404).send({ error: "Category not found." });
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const name = (typeof body.name === "string" ? body.name : "").trim();
+    if (!name) return reply.code(400).send({ error: "Name is required." });
+
+    await updateCategory(prisma, id, {
+      name,
+      emoji: typeof body.emoji === "string" ? body.emoji.trim() || null : null,
+      description: typeof body.description === "string" ? body.description.trim() || null : null,
+      sortOrder: Number(body.sortOrder) || 0,
+    });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "category_update",
+      targetType: "category",
+      targetId: id,
+      details: `Updated category "${name}".`,
+    });
+    return reply.send({ id, name });
+  });
+
+  app.post("/api/catalog/categories/:id/active", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid category id." });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body.active !== "boolean") return reply.code(400).send({ error: "active must be a boolean." });
+    const active = body.active;
+
+    const existing = await getCategory(prisma, id);
+    if (!existing) return reply.code(404).send({ error: "Category not found." });
+
+    await updateCategory(prisma, id, { isActive: active });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "category_toggle",
+      targetType: "category",
+      targetId: id,
+      details: `${active ? "Activated" : "Deactivated"} category "${existing.name}".`,
+    });
+    return reply.send({ id, isActive: active });
   });
 
   app.post("/api/catalog/products/:productId/denominations", { preHandler: csrfProtect }, async (req, reply) => {
@@ -162,6 +216,46 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       details: `${active ? "Activated" : "Deactivated"} product "${product.name}".`,
     });
     return reply.send({ id, isActive: active });
+  });
+
+  app.post("/api/catalog/products/bulk-active", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const ids = Array.isArray(body.ids) ? body.ids.filter((n): n is number => Number.isInteger(n)) : [];
+    if (ids.length === 0) return reply.code(400).send({ error: "At least one product id is required." });
+    if (typeof body.active !== "boolean") return reply.code(400).send({ error: "active must be a boolean." });
+    const active = body.active;
+
+    const count = await bulkSetCatalogProductsActive(prisma, ids, active);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "product_bulk_active",
+      targetType: "product",
+      details: `${active ? "Activated" : "Deactivated"} ${count} product${count === 1 ? "" : "s"}.`,
+    });
+    return reply.send({ ok: true, count });
+  });
+
+  app.delete("/api/catalog/products/:id", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid product id." });
+    const existing = await getCatalogProduct(prisma, id);
+    if (!existing) return reply.code(404).send({ error: "Product not found." });
+    try {
+      await deleteCatalogProduct(prisma, id);
+    } catch (err) {
+      if (err instanceof Error && err.message === "product not empty: move or delete its denominations first") {
+        return reply.code(409).send({ error: "Cannot delete: move or delete its denominations first." });
+      }
+      throw err;
+    }
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "product_delete",
+      targetType: "product",
+      targetId: id,
+      details: `Deleted product "${existing.name}".`,
+    });
+    return reply.send({ ok: true });
   });
 
   app.post("/api/catalog/denominations/:id/active", { preHandler: csrfProtect }, async (req, reply) => {
@@ -265,6 +359,55 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       targetId: id,
     });
     return reply.send({ ok: true });
+  });
+
+  app.post("/api/catalog/denominations/:id/bulk-pricing", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid denomination id." });
+    const existing = await getDenominationWithProduct(prisma, id);
+    if (!existing) return reply.code(404).send({ error: "Denomination not found." });
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const minQuantity = Number(body.minQuantity);
+    if (!Number.isInteger(minQuantity) || minQuantity < 1) {
+      return reply.code(400).send({ error: "Min quantity must be a whole number of at least 1." });
+    }
+    const discountPercent = parseDecimal(body.discountPercent);
+    if (discountPercent === null) return reply.code(400).send({ error: "A valid discount percent is required." });
+
+    try {
+      await upsertBulkPricing(prisma, { denominationId: id, minQuantity, discountPercent });
+    } catch (e) {
+      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      throw e;
+    }
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "bulk_pricing_set",
+      targetType: "denomination",
+      targetId: id,
+      details: `Set bulk pricing for "${existing.name}": ${discountPercent.toString()}% off at ${minQuantity}+ quantity.`,
+    });
+    return reply.send({ ok: true });
+  });
+
+  app.delete("/api/catalog/denominations/:id/bulk-pricing", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid denomination id." });
+    const existing = await getDenominationWithProduct(prisma, id);
+    if (!existing) return reply.code(404).send({ error: "Denomination not found." });
+
+    const removed = await deleteBulkPricing(prisma, id);
+    if (removed) {
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "bulk_pricing_delete",
+        targetType: "denomination",
+        targetId: id,
+        details: `Removed bulk pricing for "${existing.name}".`,
+      });
+    }
+    return reply.send({ ok: true, removed });
   });
 
   app.get("/api/catalog/:productId", { preHandler: currentAdmin }, async (req, reply) => {

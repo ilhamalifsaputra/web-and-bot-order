@@ -44,13 +44,10 @@ import catalogRoutes from "./routes/catalog";
 import vouchersRoutes from "./routes/vouchers";
 import usersRoutes from "./routes/users";
 import reviewsRoutes from "./routes/reviews";
-import reportsRoutes from "./routes/reports";
-import searchRoutes from "./routes/search";
 import adminsRoutes from "./routes/admins";
 import broadcastRoutes from "./routes/broadcast";
 import supportRoutes from "./routes/support";
 import settingsRoutes from "./routes/settings";
-import auditRoutes from "./routes/audit";
 import brandingRoutes from "./routes/branding";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -138,13 +135,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(vouchersRoutes);
   await app.register(usersRoutes);
   await app.register(reviewsRoutes);
-  await app.register(reportsRoutes);
-  await app.register(searchRoutes);
   await app.register(adminsRoutes);
   await app.register(broadcastRoutes);
   await app.register(supportRoutes);
   await app.register(settingsRoutes);
-  await app.register(auditRoutes);
   await app.register(brandingRoutes);
   // Wildcard SPA catch-all — MUST be last so specific API/auth routes win.
   await app.register(spaShellRoutes);

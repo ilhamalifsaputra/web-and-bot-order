@@ -63,6 +63,26 @@ describe("ProductDetailPage", () => {
     expect(screen.getByText("1 Month")).toBeInTheDocument();
   });
 
+  it("shows the product photo upload field with no image set", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(PRODUCT_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Product photo")).toBeInTheDocument());
+    expect(screen.getByText(/no image set/i)).toBeInTheDocument();
+  });
+
+  it("shows the product photo image when webImageUrl is set", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ ...PRODUCT_DETAIL, product: { ...PRODUCT_DETAIL.product, webImageUrl: "/uploads/products/product-abc.png" } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByRole("img", { name: "Product photo" })).toHaveAttribute("src", "/uploads/products/product-abc.png"));
+  });
+
   it("navigates to the denomination create page on '+ Add Denomination' click", async () => {
     const user = userEvent.setup();
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(

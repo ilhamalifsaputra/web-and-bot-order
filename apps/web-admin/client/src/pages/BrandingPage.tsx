@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { ImageUploadField } from "../components/shared/ImageUploadField";
 import { apiPost } from "../api/client";
 
 interface BrandingData {
@@ -28,12 +29,6 @@ function useBranding() {
       return res.json() as Promise<BrandingData>;
     },
   });
-}
-
-function csrfToken(): string {
-  return (
-    document.querySelector('meta[name="csrf-token"]')?.getAttribute("content") ?? ""
-  );
 }
 
 function TextFieldRow({
@@ -124,83 +119,6 @@ function TextFieldRow({
   );
 }
 
-function ImageUploadRow({
-  label,
-  imageUrl,
-  uploadPath,
-  fieldName,
-  accept,
-  onUploaded,
-  dimensions,
-}: {
-  label: string;
-  imageUrl: string;
-  uploadPath: string;
-  fieldName: string;
-  accept: string;
-  onUploaded: () => void;
-  dimensions?: string;
-}) {
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-
-  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    setUploadError(null);
-    const form = new FormData();
-    form.append(fieldName, file);
-    try {
-      const res = await fetch(uploadPath, {
-        method: "POST",
-        credentials: "include",
-        headers: { "X-CSRF-Token": csrfToken() },
-        body: form,
-      });
-      if (!res.ok) throw new Error(`Upload failed (${res.status})`);
-      onUploaded();
-    } catch (err) {
-      setUploadError(err instanceof Error ? err.message : "Upload failed");
-    } finally {
-      setUploading(false);
-      e.target.value = "";
-    }
-  }
-
-  return (
-    <div className="py-3 border-b border-line last:border-b-0">
-      <div className="text-sm font-medium text-ink mb-1">{label}</div>
-      {dimensions && (
-        <p className="text-xs text-ink-soft mb-2">Recommended: {dimensions}</p>
-      )}
-      {imageUrl ? (
-        <img
-          src={imageUrl}
-          alt={label}
-          className="max-h-20 max-w-[200px] block mb-2 border border-line rounded"
-        />
-      ) : (
-        <p className="text-xs text-ink-soft mb-2">No image set</p>
-      )}
-      <label className="cursor-pointer">
-        <input
-          type="file"
-          accept={accept}
-          onChange={handleFile}
-          className="hidden"
-        />
-        <span className="inline-flex items-center rounded border border-line bg-card px-3 py-1 text-sm text-ink hover:bg-sand">
-          {uploading ? "Uploading…" : "Choose file…"}
-        </span>
-      </label>
-      {uploadError && (
-        <p className="mt-1 text-xs text-rust">{uploadError}</p>
-      )}
-    </div>
-  );
-}
-
 export function BrandingPage() {
   const qc = useQueryClient();
   const { data, isLoading, isError } = useBranding();
@@ -219,7 +137,7 @@ export function BrandingPage() {
           <Card>
             <CardHeader><CardTitle>Images</CardTitle></CardHeader>
             <CardContent className="divide-y divide-line">
-              <ImageUploadRow
+              <ImageUploadField
                 label="Favicon"
                 imageUrl={data.faviconUrl}
                 uploadPath="/branding/favicon"
@@ -228,7 +146,7 @@ export function BrandingPage() {
                 onUploaded={invalidate}
                 dimensions="512x512px"
               />
-              <ImageUploadRow
+              <ImageUploadField
                 label="Logo"
                 imageUrl={data.logoUrl}
                 uploadPath="/branding/logo"
@@ -237,7 +155,7 @@ export function BrandingPage() {
                 onUploaded={invalidate}
                 dimensions="400x200px"
               />
-              <ImageUploadRow
+              <ImageUploadField
                 label="Hero image"
                 imageUrl={data.heroUrl}
                 uploadPath="/branding/hero"
@@ -246,7 +164,7 @@ export function BrandingPage() {
                 onUploaded={invalidate}
                 dimensions="1200x400px"
               />
-              <ImageUploadRow
+              <ImageUploadField
                 label="Banner"
                 imageUrl={data.bannerUrl}
                 uploadPath="/branding/banner"

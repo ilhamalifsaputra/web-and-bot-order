@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CatalogPage } from "./CatalogPage";
@@ -20,6 +20,15 @@ const PRODUCT = {
   isActive: true,
   category: { id: 2, name: "Apps" },
   _count: { denominations: 3 },
+};
+
+const CATEGORY = {
+  id: 2,
+  name: "Apps",
+  emoji: "📱",
+  description: null,
+  sortOrder: 0,
+  isActive: true,
 };
 
 beforeEach(() => {
@@ -121,6 +130,123 @@ describe("CatalogPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /preview/i }));
     await waitFor(() =>
       expect(screen.getByText("1 valid")).toBeInTheDocument(),
+    );
+  });
+
+  it("shows categories and toggles one active when 'Manage categories' is clicked", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ categories: [CATEGORY], products: [PRODUCT] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<CatalogPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: /manage categories/i }));
+    expect(screen.getByText(/📱 Apps/)).toBeInTheDocument();
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: 2, isActive: false }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ categories: [{ ...CATEGORY, isActive: false }], products: [PRODUCT] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    fireEvent.click(screen.getByRole("switch", { name: "Apps active" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/catalog/categories/2/active", expect.objectContaining({ method: "POST" })),
+    );
+  });
+
+  it("edits a category via the edit dialog", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ categories: [CATEGORY], products: [PRODUCT] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<CatalogPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: /manage categories/i }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit category" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Renamed" } });
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: 2, name: "Renamed" }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ categories: [{ ...CATEGORY, name: "Renamed" }], products: [PRODUCT] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/catalog/categories/2", expect.objectContaining({ method: "PATCH" })),
+    );
+  });
+
+  it("deletes a product after confirming", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ categories: [], products: [PRODUCT] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<CatalogPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const dialog = await screen.findByRole("dialog");
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ categories: [], products: [] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/catalog/products/1", expect.objectContaining({ method: "DELETE" })),
+    );
+    await waitFor(() => expect(screen.queryByText("CapCut Pro")).not.toBeInTheDocument());
+  });
+
+  it("selects products and bulk-deactivates them", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ categories: [], products: [PRODUCT] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<CatalogPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /select capcut pro/i }));
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, count: 1 }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ categories: [], products: [{ ...PRODUCT, isActive: false }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Deactivate" }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/catalog/products/bulk-active",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ ids: [1], active: false }) }),
+      ),
     );
   });
 });

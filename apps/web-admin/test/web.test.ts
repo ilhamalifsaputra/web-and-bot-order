@@ -39,6 +39,7 @@ import {
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
+import { UPLOADS_DIR } from "../src/paths";
 import { setTokenValidator, setChannelValidator } from "../src/routes/settings";
 import { setTokenValidator as setSetupTokenValidator } from "../src/routes/setup";
 import { Decimal } from "@app/core/money";
@@ -158,6 +159,38 @@ function post(url: string, cookie: string | null, fields: Record<string, string>
 
 function get(url: string, cookie: string | null) {
   return app.inject({ method: "GET", url, cookies: cookie ? { [COOKIE]: cookie } : {} });
+}
+
+// 1x1 PNG, mirrors apps/web-admin/test/branding.test.ts's fixture.
+const PNG_1x1 = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+function multipart(
+  fields: Record<string, string>,
+  file?: { field: string; filename: string; contentType: string; content: Buffer },
+): { payload: Buffer; headers: Record<string, string> } {
+  const boundary = "----vitest" + Math.random().toString(16).slice(2);
+  const chunks: Buffer[] = [];
+  for (const [k, v] of Object.entries(fields)) {
+    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+  }
+  if (file) {
+    chunks.push(
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${file.field}"; filename="${file.filename}"\r\n` +
+          `Content-Type: ${file.contentType}\r\n\r\n`,
+      ),
+    );
+    chunks.push(file.content, Buffer.from("\r\n"));
+  }
+  chunks.push(Buffer.from(`--${boundary}--\r\n`));
+  return { payload: Buffer.concat(chunks), headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
+}
+
+function postMultipart(url: string, cookie: string | null, mp: ReturnType<typeof multipart>) {
+  return app.inject({ method: "POST", url, headers: mp.headers, cookies: cookie ? { [COOKIE]: cookie } : {}, payload: mp.payload });
 }
 
 async function makePendingOrder(): Promise<number> {
@@ -725,6 +758,80 @@ describe("catalog", () => {
     const res = await post(`/catalog/product/${seed.catalogProductId}/delete`, seed.cookie, { csrf_token: "bad" });
     expect(res.statusCode).toBe(403);
   });
+
+  it("product photo upload sets webImageUrl and audits with the product name", async () => {
+    const mp = multipart(
+      { csrf_token: seed.csrf },
+      { field: "photo", filename: "p.png", contentType: "image/png", content: PNG_1x1 },
+    );
+    const res = await postMultipart(`/catalog/product/${seed.catalogProductId}/photo`, seed.cookie, mp);
+    expect(res.statusCode).toBe(303);
+    const product = await getCatalogProduct(prisma, seed.catalogProductId);
+    expect(product!.webImageUrl).toMatch(/^\/uploads\/products\/product-[0-9a-f]+\.png$/);
+    const audit = await prisma.auditLog.findFirst({ where: { action: "product_photo_upload" } });
+    expect(audit).toBeTruthy();
+    expect(audit!.targetType).toBe("product");
+    expect(audit!.targetId).toBe(seed.catalogProductId);
+    expect(audit!.details).toContain(product!.name);
+  });
+
+  it("product photo upload replaces the old file", async () => {
+    const mp1 = multipart(
+      { csrf_token: seed.csrf },
+      { field: "photo", filename: "p1.png", contentType: "image/png", content: PNG_1x1 },
+    );
+    await postMultipart(`/catalog/product/${seed.catalogProductId}/photo`, seed.cookie, mp1);
+    const first = (await getCatalogProduct(prisma, seed.catalogProductId))!.webImageUrl;
+
+    const mp2 = multipart(
+      { csrf_token: seed.csrf },
+      { field: "photo", filename: "p2.png", contentType: "image/png", content: PNG_1x1 },
+    );
+    await postMultipart(`/catalog/product/${seed.catalogProductId}/photo`, seed.cookie, mp2);
+    const second = (await getCatalogProduct(prisma, seed.catalogProductId))!.webImageUrl;
+
+    expect(second).not.toBe(first);
+    expect(existsSync(join(UPLOADS_DIR, "products", first!.replace(/^\/uploads\/products\//, "")))).toBe(false);
+  });
+
+  it("product photo upload rejects a spoofed MIME (image/png header, non-image bytes)", async () => {
+    const mp = multipart(
+      { csrf_token: seed.csrf },
+      { field: "photo", filename: "evil.png", contentType: "image/png", content: Buffer.from("GIF89a not really a png <?php ?>") },
+    );
+    const res = await postMultipart(`/catalog/product/${seed.catalogProductId}/photo`, seed.cookie, mp);
+    expect(res.statusCode).toBe(303);
+    expect((await getCatalogProduct(prisma, seed.catalogProductId))!.webImageUrl).toBeNull();
+  });
+
+  it("product photo upload 404s for an unknown product", async () => {
+    const mp = multipart(
+      { csrf_token: seed.csrf },
+      { field: "photo", filename: "p.png", contentType: "image/png", content: PNG_1x1 },
+    );
+    const res = await postMultipart("/catalog/product/999999/photo", seed.cookie, mp);
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toContain("kind=error");
+  });
+
+  it("product photo upload rejects bad CSRF", async () => {
+    const mp = multipart(
+      { csrf_token: "bad" },
+      { field: "photo", filename: "p.png", contentType: "image/png", content: PNG_1x1 },
+    );
+    const res = await postMultipart(`/catalog/product/${seed.catalogProductId}/photo`, seed.cookie, mp);
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("product photo upload requires auth", async () => {
+    const mp = multipart(
+      { csrf_token: seed.csrf },
+      { field: "photo", filename: "p.png", contentType: "image/png", content: PNG_1x1 },
+    );
+    const res = await postMultipart(`/catalog/product/${seed.catalogProductId}/photo`, null, mp);
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
 });
 
 // ---- catalog JSON API — create product (acceptance #5b) -------------------
@@ -1081,6 +1188,241 @@ describe("catalog JSON API — active toggle", () => {
     it("rejects bad CSRF with 403", async () => {
       const res = await postJson(`/api/catalog/denominations/${seed.productId}/active`, seed.cookie, "bad-token", {
         active: false,
+      });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+});
+
+describe("catalog JSON API — category update/toggle, product delete/bulk-active, bulk pricing", () => {
+  function postJson(url: string, cookie: string | null, csrf: string | null, body: Record<string, unknown>) {
+    return app.inject({
+      method: "POST",
+      url,
+      headers: { "content-type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+  function patchJson(url: string, cookie: string | null, csrf: string | null, body: Record<string, unknown>) {
+    return app.inject({
+      method: "PATCH",
+      url,
+      headers: { "content-type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+  function deleteJson(url: string, cookie: string | null, csrf: string | null) {
+    return app.inject({
+      method: "DELETE",
+      url,
+      headers: csrf ? { "x-csrf-token": csrf } : {},
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+    });
+  }
+
+  describe("PATCH /api/catalog/categories/:id", () => {
+    it("happy path: updates a category and audits", async () => {
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, {
+        name: "Renamed Cat",
+        emoji: "🌟",
+        description: "desc",
+        sortOrder: 2,
+      });
+      expect(res.statusCode).toBe(200);
+      const cat = await prisma.category.findUnique({ where: { id: seed.categoryId } });
+      expect(cat!.name).toBe("Renamed Cat");
+      expect(cat!.description).toBe("desc");
+      const audit = await prisma.auditLog.findFirst({ where: { action: "category_update", targetId: seed.categoryId } });
+      expect(audit?.details).toBe(`Updated category "Renamed Cat".`);
+    });
+
+    it("rejects empty name with 400", async () => {
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, seed.csrf, { name: "" });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects a non-existent category id with 404", async () => {
+      const res = await patchJson(`/api/catalog/categories/99999`, seed.cookie, seed.csrf, { name: "X" });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, null, "x", { name: "X" });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await patchJson(`/api/catalog/categories/${seed.categoryId}`, seed.cookie, "bad-token", { name: "X" });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("POST /api/catalog/categories/:id/active", () => {
+    it("happy path: toggles a category and audits", async () => {
+      const res = await postJson(`/api/catalog/categories/${seed.categoryId}/active`, seed.cookie, seed.csrf, { active: false });
+      expect(res.statusCode).toBe(200);
+      expect((await prisma.category.findUnique({ where: { id: seed.categoryId } }))!.isActive).toBe(false);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "category_toggle", targetId: seed.categoryId } });
+      expect(audit).toBeTruthy();
+    });
+
+    it("rejects a non-boolean active with 400", async () => {
+      const res = await postJson(`/api/catalog/categories/${seed.categoryId}/active`, seed.cookie, seed.csrf, { active: "false" });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/catalog/categories/${seed.categoryId}/active`, null, "x", { active: false });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/catalog/categories/${seed.categoryId}/active`, seed.cookie, "bad-token", { active: false });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("DELETE /api/catalog/products/:id", () => {
+    it("happy path: deletes an empty product and audits", async () => {
+      await prisma.denomination.deleteMany({ where: { productId: seed.catalogProductId } });
+      const res = await deleteJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(200);
+      expect(await getCatalogProduct(prisma, seed.catalogProductId)).toBeNull();
+      const audit = await prisma.auditLog.findFirst({ where: { action: "product_delete", targetId: seed.catalogProductId } });
+      expect(audit).toBeTruthy();
+    });
+
+    it("refuses with 409 while the product still has denominations", async () => {
+      const res = await deleteJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(409);
+      expect(await getCatalogProduct(prisma, seed.catalogProductId)).not.toBeNull();
+    });
+
+    it("rejects a non-existent product id with 404", async () => {
+      const res = await deleteJson(`/api/catalog/products/99999`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await deleteJson(`/api/catalog/products/${seed.catalogProductId}`, null, "x");
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await deleteJson(`/api/catalog/products/${seed.catalogProductId}`, seed.cookie, "bad-token");
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("POST /api/catalog/products/bulk-active", () => {
+    it("happy path: deactivates multiple products and audits with a count", async () => {
+      const other = await createCatalogProduct(prisma, { categoryId: seed.categoryId, name: "Other" });
+      const res = await postJson(`/api/catalog/products/bulk-active`, seed.cookie, seed.csrf, {
+        ids: [seed.catalogProductId, other.id],
+        active: false,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, count: 2 });
+      expect((await getCatalogProduct(prisma, seed.catalogProductId))!.isActive).toBe(false);
+      expect((await getCatalogProduct(prisma, other.id))!.isActive).toBe(false);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "product_bulk_active" } });
+      expect(audit?.details).toBe("Deactivated 2 products.");
+    });
+
+    it("rejects an empty ids array with 400", async () => {
+      const res = await postJson(`/api/catalog/products/bulk-active`, seed.cookie, seed.csrf, { ids: [], active: false });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/catalog/products/bulk-active`, null, "x", { ids: [seed.catalogProductId], active: false });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/catalog/products/bulk-active`, seed.cookie, "bad-token", { ids: [seed.catalogProductId], active: false });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("bulk pricing (POST/DELETE /api/catalog/denominations/:id/bulk-pricing)", () => {
+    it("happy path: sets bulk pricing and audits", async () => {
+      const res = await postJson(`/api/catalog/denominations/${seed.productId}/bulk-pricing`, seed.cookie, seed.csrf, {
+        minQuantity: 5,
+        discountPercent: "10",
+      });
+      expect(res.statusCode).toBe(200);
+      const rule = await prisma.bulkPricing.findUnique({ where: { productId: seed.productId } });
+      expect(rule!.minQuantity).toBe(5);
+      expect(Number(rule!.discountPercent)).toBe(10);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "bulk_pricing_set", targetId: seed.productId } });
+      expect(audit).toBeTruthy();
+    });
+
+    it("happy path: removes bulk pricing and audits", async () => {
+      await postJson(`/api/catalog/denominations/${seed.productId}/bulk-pricing`, seed.cookie, seed.csrf, {
+        minQuantity: 5,
+        discountPercent: "10",
+      });
+      const res = await deleteJson(`/api/catalog/denominations/${seed.productId}/bulk-pricing`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, removed: true });
+      expect(await prisma.bulkPricing.findUnique({ where: { productId: seed.productId } })).toBeNull();
+      const audit = await prisma.auditLog.findFirst({ where: { action: "bulk_pricing_delete", targetId: seed.productId } });
+      expect(audit).toBeTruthy();
+    });
+
+    it("removing when no rule exists returns removed: false and does not audit", async () => {
+      const res = await deleteJson(`/api/catalog/denominations/${seed.productId}/bulk-pricing`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, removed: false });
+      expect(await prisma.auditLog.findFirst({ where: { action: "bulk_pricing_delete" } })).toBeNull();
+    });
+
+    it("rejects a discount percent outside (0,100] with 422", async () => {
+      const res = await postJson(`/api/catalog/denominations/${seed.productId}/bulk-pricing`, seed.cookie, seed.csrf, {
+        minQuantity: 5,
+        discountPercent: "150",
+      });
+      expect(res.statusCode).toBe(422);
+      expect(await prisma.bulkPricing.findUnique({ where: { productId: seed.productId } })).toBeNull();
+    });
+
+    it("rejects an invalid minQuantity with 400", async () => {
+      const res = await postJson(`/api/catalog/denominations/${seed.productId}/bulk-pricing`, seed.cookie, seed.csrf, {
+        minQuantity: 0,
+        discountPercent: "10",
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects a non-existent denomination id with 404", async () => {
+      const res = await postJson(`/api/catalog/denominations/99999/bulk-pricing`, seed.cookie, seed.csrf, {
+        minQuantity: 5,
+        discountPercent: "10",
+      });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/catalog/denominations/${seed.productId}/bulk-pricing`, null, "x", {
+        minQuantity: 5,
+        discountPercent: "10",
+      });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/catalog/denominations/${seed.productId}/bulk-pricing`, seed.cookie, "bad-token", {
+        minQuantity: 5,
+        discountPercent: "10",
       });
       expect(res.statusCode).toBe(403);
     });
@@ -1504,6 +1846,166 @@ describe("stock", () => {
     const res = await get(`/stock/${seed.productId}/download`, null);
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
+  });
+});
+
+describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", () => {
+  function postJson(url: string, cookie: string | null, csrf: string | null, body: Record<string, unknown>) {
+    return app.inject({
+      method: "POST",
+      url,
+      headers: { "content-type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+
+  describe("POST /api/stock/:productId/bulk-dead", () => {
+    it("happy path marks items dead and audits without leaking credentials", async () => {
+      const items = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" } });
+      const ids = items.slice(0, 2).map((i) => i.id);
+      const res = await postJson(`/api/stock/${seed.productId}/bulk-dead`, seed.cookie, seed.csrf, { ids, note: "leaked batch" });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, count: 2 });
+      for (const id of ids) expect((await prisma.stockItem.findUnique({ where: { id } }))!.status).toBe("DEAD");
+      const audit = await prisma.auditLog.findMany({ where: { action: "stock_bulk_dead", targetId: seed.productId } });
+      expect(audit.length).toBe(1);
+      expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
+    });
+
+    it("rejects an empty ids array with 400", async () => {
+      const res = await postJson(`/api/stock/${seed.productId}/bulk-dead`, seed.cookie, seed.csrf, { ids: [] });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/stock/${seed.productId}/bulk-dead`, null, "x", { ids: [1] });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/stock/${seed.productId}/bulk-dead`, seed.cookie, "bad-token", { ids: [1] });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("POST /api/stock/:productId/bulk-delete", () => {
+    it("happy path deletes available rows, keeps sold, and audits without leaking credentials", async () => {
+      const avail = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" } });
+      const delId = avail[0]!.id;
+      const sold = await prisma.stockItem.update({ where: { id: avail[1]!.id }, data: { status: "SOLD", soldAt: new Date() } });
+      const res = await postJson(`/api/stock/${seed.productId}/bulk-delete`, seed.cookie, seed.csrf, { ids: [delId, sold.id] });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, count: 1, skipped: 1 });
+      expect(await prisma.stockItem.findUnique({ where: { id: delId } })).toBeNull();
+      expect(await prisma.stockItem.findUnique({ where: { id: sold.id } })).not.toBeNull();
+      const audit = await prisma.auditLog.findMany({ where: { action: "stock_bulk_delete", targetId: seed.productId } });
+      expect(audit.length).toBe(1);
+      expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
+    });
+
+    it("rejects an empty ids array with 400", async () => {
+      const res = await postJson(`/api/stock/${seed.productId}/bulk-delete`, seed.cookie, seed.csrf, { ids: [] });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/stock/${seed.productId}/bulk-delete`, null, "x", { ids: [1] });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/stock/${seed.productId}/bulk-delete`, seed.cookie, "bad-token", { ids: [1] });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("POST /api/stock/item/:stockId/dead", () => {
+    it("happy path marks a single item dead and audits without leaking credentials", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/dead`, seed.cookie, seed.csrf, { note: "checked and dead" });
+      expect(res.statusCode).toBe(200);
+      expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.status).toBe("DEAD");
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_mark_dead", targetId: item.id } });
+      expect(audit).toBeTruthy();
+      expect((audit!.details ?? "").includes("@")).toBe(false);
+    });
+
+    it("rejects a non-existent stock item id with 404", async () => {
+      const res = await postJson(`/api/stock/item/999999/dead`, seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/dead`, null, "x", {});
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/dead`, seed.cookie, "bad-token", {});
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("POST /api/stock/item/:stockId/note", () => {
+    it("happy path updates the note and audits", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/note`, seed.cookie, seed.csrf, { note: "checked ok" });
+      expect(res.statusCode).toBe(200);
+      expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.note).toBe("checked ok");
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_edit_note", targetId: item.id } });
+      expect(audit).toBeTruthy();
+    });
+
+    it("rejects a non-existent stock item id with 404", async () => {
+      const res = await postJson(`/api/stock/item/999999/note`, seed.cookie, seed.csrf, { note: "x" });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/note`, null, "x", { note: "x" });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
+      const res = await postJson(`/api/stock/item/${item.id}/note`, seed.cookie, "bad-token", { note: "x" });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("GET /api/stock/:productId/download", () => {
+    it("returns AVAILABLE credentials as a text attachment + audit by count", async () => {
+      const avail = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" }, orderBy: { id: "asc" } });
+      const res = await get(`/api/stock/${seed.productId}/download`, seed.cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toContain("text/plain");
+      expect(res.headers["content-disposition"]).toContain("attachment");
+      expect(res.headers["content-disposition"]).toContain(".txt");
+      for (const it of avail) expect(res.body).toContain(it.credentials);
+
+      const audit = await prisma.auditLog.findMany({ where: { action: "stock_download", targetId: seed.productId } });
+      expect(audit.length).toBeGreaterThanOrEqual(1);
+      expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
+    });
+
+    it("rejects a non-existent product id with 404", async () => {
+      const res = await get(`/api/stock/999999/download`, seed.cookie);
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await get(`/api/stock/${seed.productId}/download`, null);
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
   });
 });
 

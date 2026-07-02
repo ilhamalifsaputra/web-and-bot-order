@@ -9,6 +9,12 @@ import {
   countAvailableStock,
   countRestockSubscribers,
   bulkAddStock,
+  bulkMarkStockDead,
+  bulkDeleteStock,
+  listAvailableCredentials,
+  getStockItem,
+  markStockDead,
+  setStockNote,
   restockSubscriberCounts,
   logAdminAction,
 } from "@app/db";
@@ -66,5 +72,108 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
         ? `Added ${added} stock item(s). Skipped ${skipped} duplicate(s).`
         : `Added ${added} stock item(s).`;
     return reply.send({ ok: true, added, skipped, message });
+  });
+
+  // Bulk mark selected stock items dead (one writer, audited once). Never logs
+  // credentials — only the count and ids.
+  app.post("/api/stock/:productId/bulk-dead", { preHandler: csrfProtect }, async (req, reply) => {
+    const productId = Number((req.params as { productId: string }).productId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const ids = Array.isArray(body.ids) ? body.ids.filter((n): n is number => Number.isInteger(n) && n > 0) : [];
+    if (!ids.length) return reply.code(400).send({ error: "Select at least one stock item." });
+    const note = (typeof body.note === "string" ? body.note.trim() : "") || "bulk marked dead via web";
+
+    const count = await bulkMarkStockDead(prisma, ids, note);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "stock_bulk_dead",
+      targetType: "product",
+      targetId: productId,
+      details: `Marked ${count} stock items dead. Note: "${note.slice(0, 160)}".`, // never the credentials
+    });
+    logger.info(`Bulk-marked ${count} stock items dead on product ${productId}`);
+    return reply.send({ ok: true, count });
+  });
+
+  // Hard-delete selected stock items (one writer, audited once). The crud guard
+  // refuses SOLD rows and anything tied to an order item, so the count returned
+  // may be < the number selected.
+  app.post("/api/stock/:productId/bulk-delete", { preHandler: csrfProtect }, async (req, reply) => {
+    const productId = Number((req.params as { productId: string }).productId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const ids = Array.isArray(body.ids) ? body.ids.filter((n): n is number => Number.isInteger(n) && n > 0) : [];
+    if (!ids.length) return reply.code(400).send({ error: "Select at least one stock item." });
+
+    const count = await bulkDeleteStock(prisma, ids);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "stock_bulk_delete",
+      targetType: "product",
+      targetId: productId,
+      details: `Deleted ${count} of ${ids.length} requested stock items.`, // never the credentials
+    });
+    logger.info(`Bulk-deleted ${count} stock items on product ${productId}`);
+    return reply.send({ ok: true, count, skipped: ids.length - count });
+  });
+
+  app.post("/api/stock/item/:stockId/dead", { preHandler: csrfProtect }, async (req, reply) => {
+    const stockId = Number((req.params as { stockId: string }).stockId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const note = (typeof body.note === "string" ? body.note.trim() : "");
+    const item = await getStockItem(prisma, stockId);
+    if (!item) return reply.code(404).send({ error: "Stock item not found." });
+
+    await markStockDead(prisma, stockId, note || "marked dead via web");
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "stock_mark_dead",
+      targetType: "stock_item",
+      targetId: stockId,
+      details: `Marked stock item dead. Note: "${note.slice(0, 200)}".`, // never the credentials
+    });
+    return reply.send({ ok: true });
+  });
+
+  app.post("/api/stock/item/:stockId/note", { preHandler: csrfProtect }, async (req, reply) => {
+    const stockId = Number((req.params as { stockId: string }).stockId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const note = (typeof body.note === "string" ? body.note.trim() : "");
+    const item = await getStockItem(prisma, stockId);
+    if (!item) return reply.code(404).send({ error: "Stock item not found." });
+
+    await setStockNote(prisma, stockId, note || null);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "stock_edit_note",
+      targetType: "stock_item",
+      targetId: stockId,
+      details: `Updated stock item note to: "${note.slice(0, 200)}".`, // never the credentials
+    });
+    return reply.send({ ok: true });
+  });
+
+  // Download remaining (AVAILABLE) credentials as a plain-text file, one login
+  // per line. Read-only, so currentAdmin (not csrfProtect); still audited by
+  // count. The credentials themselves are never logged.
+  app.get("/api/stock/:productId/download", { preHandler: currentAdmin }, async (req, reply) => {
+    const productId = Number((req.params as { productId: string }).productId);
+    const product = await getDenominationWithProduct(prisma, productId);
+    if (!product) return reply.code(404).send({ error: "Product not found." });
+
+    const creds = await listAvailableCredentials(prisma, productId);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "stock_download",
+      targetType: "product",
+      targetId: productId,
+      details: `Downloaded ${creds.length} available credentials.`, // never the credentials
+    });
+    const slug = product.name.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "stock";
+    const body = creds.length ? creds.join("\n") + "\n" : "";
+    return reply
+      .header("Content-Type", "text/plain; charset=utf-8")
+      .header("Content-Disposition", `attachment; filename="stock-${slug}-${productId}.txt"`)
+      .header("Cache-Control", "no-store")
+      .send(body);
   });
 }

@@ -24,12 +24,18 @@ export interface HandleUploadOpts {
   destDir: string;
   /** Public URL prefix the saved path is built from, e.g. "/uploads/branding". */
   urlPrefix: string;
-  /** Settings key the resulting URL is stored under. */
-  settingKey: string;
+  /** Settings key the resulting URL is stored under. Omit when the URL is persisted elsewhere (see `afterSave`). */
+  settingKey?: string;
+  /** Alternate source for the "delete previous upload" lookup when there's no `settingKey`. */
+  getOldUrl?: () => Promise<string | null>;
+  /** Audit log target; defaults to `{ type: "setting" }` (today's behavior) when omitted. */
+  auditTarget?: { type: string; id?: number };
   auditAction: string;
   /** Where to redirect on both success and failure. */
   redirectPath: string;
-  afterSave?: () => Promise<void>;
+  /** Natural-language audit `details` sentence for the saved filename. */
+  details: (filename: string) => string;
+  afterSave?: (url: string) => Promise<void>;
 }
 
 /**
@@ -92,16 +98,23 @@ export async function handleUpload(
     return redirectWithFlash(reply, opts.redirectPath, "That file type is not allowed.", "error");
   }
   const filename = `${opts.kind}-${randomBytes(8).toString("hex")}.${ext}`;
+  const url = `${opts.urlPrefix}/${filename}`;
+  const oldValue = opts.settingKey
+    ? await getSetting(prisma, opts.settingKey)
+    : opts.getOldUrl
+      ? await opts.getOldUrl()
+      : null;
+  await deleteOldUpload(opts.urlPrefix, opts.destDir, oldValue);
   await mkdir(opts.destDir, { recursive: true });
   await writeFile(join(opts.destDir, filename), fileBuffer);
-  await deleteOldUpload(opts.urlPrefix, opts.destDir, await getSetting(prisma, opts.settingKey));
-  await setSetting(prisma, opts.settingKey, `${opts.urlPrefix}/${filename}`);
-  if (opts.afterSave) await opts.afterSave();
+  if (opts.settingKey) await setSetting(prisma, opts.settingKey, url);
+  if (opts.afterSave) await opts.afterSave(url);
   await logAdminAction(prisma, {
     adminId: req.admin!.userId,
     action: opts.auditAction,
-    targetType: "setting",
-    details: `Uploaded a new ${opts.kind} image (${filename}).`,
+    targetType: opts.auditTarget?.type ?? "setting",
+    targetId: opts.auditTarget?.id,
+    details: opts.details(filename),
   });
   return redirectWithFlash(reply, opts.redirectPath, "Saved.", "success");
 }

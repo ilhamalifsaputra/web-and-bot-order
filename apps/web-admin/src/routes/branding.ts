@@ -49,6 +49,7 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
       settingKey: "web_favicon_url",
       auditAction: "branding_favicon_upload",
       redirectPath: "/branding",
+      details: (filename) => `Uploaded a new favicon image (${filename}).`,
     }),
   );
 
@@ -63,6 +64,7 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
       settingKey: "web_logo_url",
       auditAction: "branding_logo_upload",
       redirectPath: "/branding",
+      details: (filename) => `Uploaded a new logo image (${filename}).`,
     }),
   );
 
@@ -77,6 +79,7 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
       settingKey: "web_hero_url",
       auditAction: "branding_hero_upload",
       redirectPath: "/branding",
+      details: (filename) => `Uploaded a new hero image (${filename}).`,
     }),
   );
 
@@ -91,6 +94,7 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
       settingKey: "banner_image",
       auditAction: "branding_banner_upload",
       redirectPath: "/branding",
+      details: (filename) => `Uploaded a new banner image (${filename}).`,
       afterSave: () => deleteSetting(prisma, "banner_image_fileid").then(() => undefined),
     }),
   );

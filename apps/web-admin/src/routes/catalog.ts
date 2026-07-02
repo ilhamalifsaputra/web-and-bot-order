@@ -3,11 +3,10 @@
  * management. Port of routers/catalog.py, reworked for the 3-tier catalog
  * (plan: docs/superpowers/plans/2026-06-19-catalog-3tier-rename.md Phase 2).
  */
-import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { UPLOADS_DIR } from "../paths";
+import { handleUpload } from "../lib/upload";
 import { ProductType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import type { Db } from "@app/db";
@@ -32,8 +31,16 @@ import {
   logAdminAction,
   CategoryMismatchError,
 } from "@app/db";
-import { currentAdmin, csrfProtect, canMutate } from "../plugins/auth";
+import { currentAdmin, csrfProtect } from "../plugins/auth";
 import { redirectWithFlash, safeReturnTo } from "../flash";
+
+const PRODUCT_PHOTO_MIME: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+};
+const PRODUCTS_DIR = join(UPLOADS_DIR, "products");
+const PRODUCTS_URL_PREFIX = "/uploads/products";
 
 function dec(value: string | undefined): Decimal | null {
   if (value === undefined || String(value).trim() === "") return null;
@@ -368,84 +375,34 @@ export default async function catalogRoutes(app: FastifyInstance): Promise<void>
   });
 
   // ---- Product photo upload ----
-  // Accepts multipart/form-data so CSRF is checked manually (formbody doesn't
-  // parse multipart); the role gate (catalog = super-only) is done inline.
+  // Multipart route (CSRF checked inside handleUpload since formbody doesn't
+  // parse multipart) mirroring apps/web-admin/src/routes/branding.ts's pattern.
   app.post<{ Params: { productId: string } }>(
     "/catalog/product/:productId/photo",
     { preHandler: currentAdmin },
     async (req, reply) => {
-      if (!canMutate(req.admin!.role, req.url)) {
-        return reply.code(403).type("text/plain").send("Insufficient permissions for this action.");
-      }
-
       const productId = Number(req.params.productId);
       if (!Number.isInteger(productId) || productId <= 0) {
         return redirectWithFlash(reply, "/catalog", "Invalid product.", "error");
       }
-
-      const ALLOWED_MIME: Record<string, string> = {
-        "image/jpeg": "jpg",
-        "image/png": "png",
-        "image/webp": "webp",
-      };
-
-      let csrfField: string | null = null;
-      let returnToField: string | null = null;
-      let fileBuffer: Buffer | null = null;
-      let mimetype = "";
-
-      for await (const part of req.parts({ limits: { fileSize: 5 * 1024 * 1024 } })) {
-        if (part.type === "field" && part.fieldname === "csrf_token") {
-          csrfField = part.value as string;
-        } else if (part.type === "field" && part.fieldname === "return_to") {
-          returnToField = part.value as string;
-        } else if (part.type === "file" && part.fieldname === "photo") {
-          mimetype = part.mimetype;
-          const chunks: Buffer[] = [];
-          for await (const chunk of part.file) chunks.push(chunk);
-          if (chunks.length > 0) fileBuffer = Buffer.concat(chunks);
-        }
-      }
-
-      // Land back on the product detail tab when posted from there; else /catalog.
-      const back = safeReturnTo(returnToField, "/catalog");
-
-      if (!csrfField || csrfField !== req.admin!.csrf) {
-        return reply.code(403).type("text/plain").send("CSRF check failed");
-      }
-      if (!fileBuffer || fileBuffer.length === 0) {
-        return redirectWithFlash(reply, back, "No file selected.", "error");
-      }
-      const ext = ALLOWED_MIME[mimetype];
-      if (!ext) {
-        return redirectWithFlash(reply, back, "Only JPG, PNG, or WebP images are allowed.", "error");
-      }
-
       const product = await getCatalogProduct(prisma, productId);
       if (!product) {
-        return redirectWithFlash(reply, back, "Product not found.", "error");
+        return redirectWithFlash(reply, "/catalog", "Product not found.", "error");
       }
-
-      const filename = `${productId}-${randomBytes(8).toString("hex")}.${ext}`;
-      const uploadsDir = join(UPLOADS_DIR, "products");
-      await mkdir(uploadsDir, { recursive: true });
-      await writeFile(join(uploadsDir, filename), fileBuffer);
-
-      // Remove the old local upload when replacing it. webImageUrl is "/uploads/…"
-      // so strip the prefix and re-anchor under UPLOADS_DIR.
-      if (product.webImageUrl?.startsWith("/uploads/")) {
-        await unlink(join(UPLOADS_DIR, product.webImageUrl.replace(/^\/uploads\//, ""))).catch(() => undefined);
-      }
-
-      await updateCatalogProduct(prisma, productId, { webImageUrl: `/uploads/products/${filename}` });
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "product_photo_upload",
-        targetType: "product",
-        targetId: productId,
-        details: `Uploaded a new photo (${filename}) for product ${productId}.`,
+      return handleUpload(req, reply, {
+        kind: "product",
+        field: "photo",
+        allowed: PRODUCT_PHOTO_MIME,
+        maxBytes: 5 * 1024 * 1024,
+        destDir: PRODUCTS_DIR,
+        urlPrefix: PRODUCTS_URL_PREFIX,
+        getOldUrl: async () => product.webImageUrl,
+        auditAction: "product_photo_upload",
+        auditTarget: { type: "product", id: productId },
+        redirectPath: `/catalog/${productId}`,
+        details: (filename) => `Uploaded a new photo for product "${product.name}" (${filename}).`,
+        afterSave: (url) => updateCatalogProduct(prisma, productId, { webImageUrl: url }),
       });
-      return redirectWithFlash(reply, back, "Photo uploaded.", "success");
     },
   );
 

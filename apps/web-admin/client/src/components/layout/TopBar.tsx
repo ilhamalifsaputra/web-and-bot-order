@@ -1,7 +1,6 @@
 import { useState } from "react";
-import { Menu, Search, Plus, Sun, Moon } from "lucide-react";
+import { Menu, Search, Plus } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useTheme } from "./ThemeProvider";
 
 interface TopBarProps {
   onMenuClick: () => void;
@@ -17,7 +16,6 @@ const QUICK_ACTIONS = [
 ] as const;
 
 export function TopBar({ onMenuClick, onSearchOpen }: TopBarProps): JSX.Element {
-  const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const [actionsOpen, setActionsOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
@@ -89,20 +87,6 @@ export function TopBar({ onMenuClick, onSearchOpen }: TopBarProps): JSX.Element 
           </>
         )}
       </div>
-
-      {/* Theme toggle */}
-      <button
-        type="button"
-        onClick={toggleTheme}
-        className="rounded-md p-2 text-ink-soft hover:bg-sand hover:text-ink"
-        aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-      >
-        {theme === "dark" ? (
-          <Sun className="h-4 w-4" />
-        ) : (
-          <Moon className="h-4 w-4" />
-        )}
-      </button>
 
       {/* User avatar */}
       <div className="relative">

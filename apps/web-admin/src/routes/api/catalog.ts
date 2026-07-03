@@ -7,9 +7,12 @@ import {
   updateCategory,
   getCatalogProduct,
   getCatalogProductWithDenominations,
+  updateCatalogProduct,
   deleteCatalogProduct,
   getDenomination,
   getDenominationWithProduct,
+  assignDenominationToProduct,
+  CategoryMismatchError,
   countAvailableStock,
   countRestockSubscribers,
   getBulkPricingForDenomination,
@@ -197,6 +200,30 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     return reply.code(201).send({ id: denom.id, name: denom.name, slug: denom.slug });
   });
 
+  app.patch("/api/catalog/products/:id", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid product id." });
+    const existing = await getCatalogProduct(prisma, id);
+    if (!existing) return reply.code(404).send({ error: "Product not found." });
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const name = (typeof body.name === "string" ? body.name : "").trim();
+    if (!name) return reply.code(400).send({ error: "Name is required." });
+
+    await updateCatalogProduct(prisma, id, {
+      name,
+      description: typeof body.description === "string" ? body.description.trim() || null : null,
+    });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "product_update",
+      targetType: "product",
+      targetId: id,
+      details: `Updated product "${name}".`,
+    });
+    return reply.send({ id, name });
+  });
+
   app.post("/api/catalog/products/:id/active", { preHandler: csrfProtect }, async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
     if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid product id." });
@@ -319,6 +346,31 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       warrantyDays = n;
     }
 
+    let sortOrder: number | undefined;
+    if (body.sortOrder != null && body.sortOrder !== "") {
+      const n = Number(body.sortOrder);
+      if (!Number.isInteger(n)) return reply.code(400).send({ error: "Sort order must be a whole number." });
+      sortOrder = n;
+    }
+
+    // Re-parenting (moving this denomination to a different mid-tier Product)
+    // is validated and applied FIRST, before any other field, so a rejected
+    // cross-category move leaves every other field untouched too.
+    if (body.productId != null && body.productId !== "") {
+      const newProductId = Number(body.productId);
+      if (!Number.isInteger(newProductId)) return reply.code(400).send({ error: "Invalid product id." });
+      if (newProductId !== existing.productId) {
+        try {
+          await assignDenominationToProduct(prisma, id, newProductId);
+        } catch (e) {
+          if (e instanceof CategoryMismatchError) {
+            return reply.code(422).send({ error: "Denomination and product must be in the same category." });
+          }
+          throw e;
+        }
+      }
+    }
+
     await updateDenomination(prisma, id, {
       name,
       type: type as ProductType,
@@ -327,6 +379,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       costPrice,
       resellerPrice,
       ...(warrantyDays !== undefined ? { warrantyDays } : {}),
+      ...(sortOrder !== undefined ? { sortOrder } : {}),
       description: typeof body.description === "string" ? body.description.trim() || null : null,
     });
     await logAdminAction(prisma, {

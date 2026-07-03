@@ -40,7 +40,7 @@ import {
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
 import { UPLOADS_DIR } from "../src/paths";
-import { setTokenValidator, setChannelValidator } from "../src/routes/settings";
+import { setTokenValidator, setChannelValidator } from "../src/lib/telegramCheck";
 import { setTokenValidator as setSetupTokenValidator } from "../src/routes/setup";
 import { Decimal } from "@app/core/money";
 import { setFxRateFetcher } from "@app/db";
@@ -159,6 +159,29 @@ function post(url: string, cookie: string | null, fields: Record<string, string>
 
 function get(url: string, cookie: string | null) {
   return app.inject({ method: "GET", url, cookies: cookie ? { [COOKIE]: cookie } : {} });
+}
+
+// Form-encoded PATCH/DELETE — for the JSON API routes whose bodies are read
+// as plain strings (no boolean/array typing), @fastify/formbody parses these
+// the same as a JSON body would.
+function patchForm(url: string, cookie: string | null, fields: Record<string, string>) {
+  return app.inject({
+    method: "PATCH",
+    url,
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    cookies: cookie ? { [COOKIE]: cookie } : {},
+    payload: form(fields),
+  });
+}
+
+function deleteForm(url: string, cookie: string | null, fields: Record<string, string> = {}) {
+  return app.inject({
+    method: "DELETE",
+    url,
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    cookies: cookie ? { [COOKIE]: cookie } : {},
+    payload: form(fields),
+  });
 }
 
 // 1x1 PNG, mirrors apps/web-admin/test/branding.test.ts's fixture.
@@ -401,11 +424,11 @@ describe("orders", () => {
     // order's credentials ever reach a Telegram buyer.
     setBotIdentity({ publicChannelId: -100123456789 });
     const orderId = await makePendingOrder();
-    const res = await post(`/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toMatch(new RegExp(`^/orders/${orderId}`));
-    // Credentials must never leak into the redirect URL (it lands in logs).
-    expect(res.headers.location).not.toContain("@");
+    const res = await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
+    // JSON API responds with just { ok: true } — no redirect URL for
+    // credentials to ever leak into (that was the legacy 303's risk).
+    expect(res.body).not.toContain("@");
 
     const order = (await getOrder(prisma, orderId))!;
     expect(order.status).toBe("DELIVERED");
@@ -454,10 +477,8 @@ describe("orders", () => {
       where: { productId: seed.productId, status: "AVAILABLE" },
     });
 
-    const res = await post(`/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toMatch(new RegExp(`^/orders/${orderId}`));
-    expect(res.headers.location).toContain("kind=error");
+    const res = await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(422);
 
     // Order must be unchanged — the failed second allocation must not leave a
     // partial DELIVERED/approve side-effect behind.
@@ -539,7 +560,7 @@ describe("orders", () => {
     it("respects the status filter", async () => {
       setBotIdentity({ publicChannelId: -100123456789 });
       const deliveredId = await makePendingOrder();
-      await post(`/orders/${deliveredId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+      await post(`/api/orders/${deliveredId}/approve`, seed.cookie, { csrf_token: seed.csrf });
       await makePendingOrder(); // stays PENDING_VERIFICATION — must be excluded below
 
       const res = await get("/api/orders/export?status=DELIVERED", seed.cookie);
@@ -552,8 +573,8 @@ describe("orders", () => {
 
   it("reject → REJECTED + audit", async () => {
     const orderId = await makePendingOrder();
-    const res = await post(`/orders/${orderId}/reject`, seed.cookie, { csrf_token: seed.csrf, reason: "blurry proof" });
-    expect(res.statusCode).toBe(303);
+    const res = await post(`/api/orders/${orderId}/reject`, seed.cookie, { csrf_token: seed.csrf, reason: "blurry proof" });
+    expect(res.statusCode).toBe(200);
     const order = (await getOrder(prisma, orderId))!;
     expect(order.status).toBe("REJECTED");
     const audit = await prisma.auditLog.findMany({ where: { action: "reject_order", targetId: orderId } });
@@ -562,15 +583,14 @@ describe("orders", () => {
 
   it("reject requires a reason", async () => {
     const orderId = await makePendingOrder();
-    const res = await post(`/orders/${orderId}/reject`, seed.cookie, { csrf_token: seed.csrf, reason: "   " });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    const res = await post(`/api/orders/${orderId}/reject`, seed.cookie, { csrf_token: seed.csrf, reason: "   " });
+    expect(res.statusCode).toBe(400);
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
   });
 
   it("approve requires auth (anon → 303 /login)", async () => {
     const orderId = await makePendingOrder();
-    const res = await post(`/orders/${orderId}/approve`, null, { csrf_token: "anything" });
+    const res = await post(`/api/orders/${orderId}/approve`, null, { csrf_token: "anything" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
@@ -578,7 +598,7 @@ describe("orders", () => {
 
   it("approve rejects bad CSRF (403)", async () => {
     const orderId = await makePendingOrder();
-    const res = await post(`/orders/${orderId}/approve`, seed.cookie, { csrf_token: "wrong-token" });
+    const res = await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: "wrong-token" });
     expect(res.statusCode).toBe(403);
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
   });
@@ -588,12 +608,12 @@ describe("orders", () => {
     setBotIdentity({ publicChannelId: -100123456789 });
     const res = await app.inject({
       method: "POST",
-      url: `/orders/${orderId}/approve`,
+      url: `/api/orders/${orderId}/approve`,
       headers: { "content-type": "application/x-www-form-urlencoded", "x-csrf-token": seed.csrf },
       cookies: { [COOKIE]: seed.cookie },
       payload: form({}),
     });
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(200);
     expect((await getOrder(prisma, orderId))!.status).toBe("DELIVERED");
   });
 
@@ -601,9 +621,8 @@ describe("orders", () => {
     const orderId = await makePendingOrder(); // PENDING_VERIFICATION (paid)
     const order = (await getOrder(prisma, orderId))!;
     const before = Number((await getUser(prisma, seed.customerId))!.walletBalance);
-    const res = await post(`/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    const res = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
     expect((await getOrder(prisma, orderId))!.status).toBe("CANCELLED");
     const after = Number((await getUser(prisma, seed.customerId))!.walletBalance);
     expect(after - before).toBeCloseTo(Number(order.totalAmount));
@@ -613,7 +632,7 @@ describe("orders", () => {
 
   it("credit-balance requires auth (anon → /login)", async () => {
     const orderId = await makePendingOrder();
-    const res = await post(`/orders/${orderId}/credit-balance`, null, { csrf_token: "x" });
+    const res = await post(`/api/orders/${orderId}/credit-balance`, null, { csrf_token: "x" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
@@ -621,7 +640,7 @@ describe("orders", () => {
 
   it("credit-balance rejects bad CSRF (403)", async () => {
     const orderId = await makePendingOrder();
-    const res = await post(`/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: "bad" });
+    const res = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: "bad" });
     expect(res.statusCode).toBe(403);
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
   });
@@ -730,135 +749,17 @@ describe("catalog", () => {
     expect(data.products.some((p) => p.id === seed.catalogProductId)).toBe(true);
   });
 
-  it("create category happy + audit", async () => {
-    const res = await post("/catalog/category", seed.cookie, { csrf_token: seed.csrf, name: "VPNs", emoji: "🔒", sort_order: "1" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    const cats = await prisma.category.findMany({ where: { name: "VPNs" } });
-    expect(cats.length).toBe(1);
-    const audit = await prisma.auditLog.findMany({ where: { action: "category_create" } });
-    expect(audit.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("update category happy + audit", async () => {
-    const res = await post(`/catalog/category/${seed.categoryId}/update`, seed.cookie, {
-      csrf_token: seed.csrf,
-      name: "Renamed Cat",
-      emoji: "🌟",
-      description: "desc",
-      sort_order: "2",
-      is_active: "true",
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    const cat = await prisma.category.findUnique({ where: { id: seed.categoryId } });
-    expect(cat!.name).toBe("Renamed Cat");
-    expect(cat!.description).toBe("desc");
-    const audit = await prisma.auditLog.findMany({ where: { action: "category_update" } });
-    expect(audit.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("update category requires auth", async () => {
-    const res = await post(`/catalog/category/${seed.categoryId}/update`, null, { csrf_token: "x", name: "Hax" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
-  });
-
-  it("update category rejects bad CSRF", async () => {
-    const res = await post(`/catalog/category/${seed.categoryId}/update`, seed.cookie, { csrf_token: "bad", name: "Hax" });
-    expect(res.statusCode).toBe(403);
-  });
-
-  it("create product happy — no price/type/duration on the mid-tier Product", async () => {
-    const product = await getCatalogProduct(prisma, seed.catalogProductId);
-    const res = await post("/catalog/product", seed.cookie, {
-      csrf_token: seed.csrf,
-      category_id: String(product!.categoryId),
-      name: "Netflix",
-      description: "shared",
-      emoji: "🎬",
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    const created = await prisma.product.findFirst({ where: { name: "Netflix" } });
-    expect(created).toBeTruthy();
-    // The mid-tier product carries no price/type/duration columns at all.
-    expect(created).not.toHaveProperty("price");
-    expect(created).not.toHaveProperty("type");
-    expect(created).not.toHaveProperty("durationLabel");
-  });
-
-  it("create product requires auth", async () => {
-    const res = await post("/catalog/product", null, { csrf_token: "x", category_id: String(seed.categoryId), name: "Hax" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
-  });
-
-  it("create product rejects bad CSRF", async () => {
-    const res = await post("/catalog/product", seed.cookie, { csrf_token: "bad", category_id: String(seed.categoryId), name: "Hax" });
-    expect(res.statusCode).toBe(403);
-  });
-
-  it("update product happy + audit", async () => {
-    const res = await post(`/catalog/product/${seed.catalogProductId}/update`, seed.cookie, {
-      csrf_token: seed.csrf,
-      name: "Renamed Product",
-      description: "new desc",
-      is_active: "true",
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    expect((await getCatalogProduct(prisma, seed.catalogProductId))!.name).toBe("Renamed Product");
-    const audit = await prisma.auditLog.findMany({ where: { action: "product_update" } });
-    expect(audit.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it("update product requires auth", async () => {
-    const res = await post(`/catalog/product/${seed.catalogProductId}/update`, null, { csrf_token: "x", name: "Hax" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
-  });
-
-  it("update product rejects bad CSRF", async () => {
-    const res = await post(`/catalog/product/${seed.catalogProductId}/update`, seed.cookie, { csrf_token: "bad", name: "Hax" });
-    expect(res.statusCode).toBe(403);
-  });
-
-  it("delete product refuses while it still has a denomination, succeeds once emptied", async () => {
-    const blocked = await post(`/catalog/product/${seed.catalogProductId}/delete`, seed.cookie, { csrf_token: seed.csrf });
-    expect(blocked.statusCode).toBe(303);
-    expect(blocked.headers.location).toContain("kind=error");
-    expect(await getCatalogProduct(prisma, seed.catalogProductId)).not.toBeNull();
-
-    await prisma.denomination.deleteMany({ where: { productId: seed.catalogProductId } });
-    const ok = await post(`/catalog/product/${seed.catalogProductId}/delete`, seed.cookie, { csrf_token: seed.csrf });
-    expect(ok.statusCode).toBe(303);
-    expect(ok.headers.location).toContain("kind=success");
-    expect(await getCatalogProduct(prisma, seed.catalogProductId)).toBeNull();
-  });
-
-  it("delete product on an unrelated failure does NOT flash the 'move or delete denominations' message", async () => {
-    // Deleting a non-existent product throws Prisma's "record to delete does
-    // not exist" (P2025) — a real Error, but NOT the crud's specific "product
-    // not empty: move or delete its denominations first" message. The route
-    // must not mislabel this as the denominations-not-empty case; it should
-    // rethrow into the app's generic 500 error page instead.
-    const missingId = 999999;
-    const res = await post(`/catalog/product/${missingId}/delete`, seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(500);
-    expect(res.body).not.toContain("move or delete its denominations first");
-  });
-
-  it("delete product requires auth", async () => {
-    const res = await post(`/catalog/product/${seed.catalogProductId}/delete`, null, { csrf_token: "x" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
-  });
-
-  it("delete product rejects bad CSRF", async () => {
-    const res = await post(`/catalog/product/${seed.catalogProductId}/delete`, seed.cookie, { csrf_token: "bad" });
-    expect(res.statusCode).toBe(403);
-  });
+  // NOTE: create/update category, create/update product, and delete-product
+  // legacy-route tests were removed here — their behavior (happy path + audit,
+  // auth-fail, bad-CSRF, and the "not empty" / 404 error shapes) is now
+  // covered against the live JSON API in the "catalog JSON API — create
+  // product", "catalog JSON API — create category", and "catalog JSON API —
+  // category update/toggle, product delete/bulk-active, bulk pricing" describe
+  // blocks below. Editing a mid-tier Product's own name/description (and its
+  // `return_to` redirect) has no JSON API replacement at all — the React
+  // ProductDetailPage only ever calls the active-toggle and delete endpoints
+  // (apps/web-admin/client/src/pages/ProductDetailPage.tsx), so that specific
+  // capability is genuinely gone rather than moved.
 
   it("product photo upload sets webImageUrl and audits with the product name", async () => {
     const mp = multipart(
@@ -1531,47 +1432,26 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
 });
 
 describe("denominations (leaf SKU, inside product detail)", () => {
-  it("create denomination happy + audit", async () => {
-    const res = await post(`/catalog/product/${seed.catalogProductId}/denomination`, seed.cookie, {
-      csrf_token: seed.csrf,
-      name: "1 Week",
-      type: "shared",
-      duration_label: "1 Week",
-      price: "2.50",
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    const d = await prisma.denomination.findFirst({ where: { name: "1 Week", productId: seed.catalogProductId } });
-    expect(d).toBeTruthy();
-    expect(Number(d!.price)).toBeCloseTo(2.5);
-    const audit = await prisma.auditLog.findMany({ where: { action: "denomination_create" } });
-    expect(audit.length).toBeGreaterThanOrEqual(1);
-  });
+  // create denomination happy/auth/CSRF: covered by "catalog JSON API — create
+  // denomination" (POST /api/catalog/products/:productId/denominations).
 
-  it("create denomination requires auth", async () => {
-    const res = await post(`/catalog/product/${seed.catalogProductId}/denomination`, null, {
-      csrf_token: "x", name: "Hax", type: "shared", duration_label: "1 Week", price: "1",
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
-  });
-
-  it("create denomination rejects bad CSRF", async () => {
-    const res = await post(`/catalog/product/${seed.catalogProductId}/denomination`, seed.cookie, {
-      csrf_token: "bad", name: "Hax", type: "shared", duration_label: "1 Week", price: "1",
-    });
-    expect(res.statusCode).toBe(403);
-  });
+  // NOTE: sort_order and cross-product re-parenting (product_id) aren't read
+  // by the JSON PATCH route at all (apps/web-admin/src/routes/api/catalog.ts)
+  // and the React ProductDetailPage never sends them — genuinely dropped
+  // capabilities, not moved ones. The old "quick toggle" test's guarantee
+  // (toggling active doesn't touch other columns) is preserved by the
+  // dedicated POST /api/catalog/denominations/:id/active endpoint tested in
+  // "catalog JSON API — active toggle" instead of this full-update route.
 
   it("update denomination happy + audit", async () => {
-    const res = await post(`/catalog/denomination/${seed.productId}/update`, seed.cookie, {
+    const res = await patchForm(`/api/catalog/denominations/${seed.productId}`, seed.cookie, {
       csrf_token: seed.csrf,
       name: "Renamed Denom",
-      duration_label: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
       price: "7.00",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     const d = await getDenomination(prisma, seed.productId);
     expect(d!.name).toBe("Renamed Denom");
     expect(Number(d!.price)).toBeCloseTo(7);
@@ -1579,133 +1459,38 @@ describe("denominations (leaf SKU, inside product detail)", () => {
     expect(audit.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("quick toggle (Hide/Show) only sends name/duration_label/price/is_active and must not null other columns", async () => {
-    // Give the denomination cost/reseller/auto-delivery/description first, the
-    // way the full edit dropdown would.
+  it("full edit form CAN clear cost_price/reseller_price/description by omitting them", async () => {
     await updateDenomination(prisma, seed.productId, {
       costPrice: new Decimal("3.00"),
       resellerPrice: new Decimal("4.00"),
-      autoDeliverySource: "stock-pool-a",
       description: "Shared profile",
     });
-    // The quick Hide/Show toggle form (product_detail.njk) posts ONLY these 4
-    // fields — it must not be treated as "the rest are cleared".
-    const res = await post(`/catalog/denomination/${seed.productId}/update`, seed.cookie, {
+    // The JSON PATCH route always writes costPrice/resellerPrice/description
+    // from the body — a field absent (or blank) from the request clears it,
+    // there's no separate "quick toggle" partial-update shape anymore.
+    const res = await patchForm(`/api/catalog/denominations/${seed.productId}`, seed.cookie, {
       csrf_token: seed.csrf,
       name: "Renamed Denom",
-      duration_label: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
       price: "7.00",
-      is_active: "false",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    const d = await getDenomination(prisma, seed.productId);
-    expect(d!.isActive).toBe(false);
-    expect(d!.name).toBe("Renamed Denom");
-    // The columns absent from the toggle's body must survive untouched.
-    expect(Number(d!.costPrice)).toBeCloseTo(3);
-    expect(Number(d!.resellerPrice)).toBeCloseTo(4);
-    expect(d!.autoDeliverySource).toBe("stock-pool-a");
-    expect(d!.description).toBe("Shared profile");
-  });
-
-  it("full edit form CAN clear cost_price/reseller_price/auto_delivery_source/description by sending them empty", async () => {
-    await updateDenomination(prisma, seed.productId, {
-      costPrice: new Decimal("3.00"),
-      resellerPrice: new Decimal("4.00"),
-      autoDeliverySource: "stock-pool-a",
-      description: "Shared profile",
-    });
-    const res = await post(`/catalog/denomination/${seed.productId}/update`, seed.cookie, {
-      csrf_token: seed.csrf,
-      name: "Renamed Denom",
-      duration_label: "1 Month",
-      price: "7.00",
-      cost_price: "",
-      reseller_price: "",
-      auto_delivery_source: "",
-      description: "",
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     const d = await getDenomination(prisma, seed.productId);
     expect(d!.costPrice).toBeNull();
     expect(d!.resellerPrice).toBeNull();
-    expect(d!.autoDeliverySource).toBeNull();
     expect(d!.description).toBeNull();
   });
 
-  it("update denomination accepts sort_order and the list re-orders by it", async () => {
-    const other = await createDenomination(prisma, {
-      productId: seed.catalogProductId,
-      name: "OtherDenom",
-      type: ProductType.SHARED,
-      durationLabel: "1 Month",
-      price: "9.00",
-      sortOrder: 0,
-    });
-    // seed.productId's denomination currently has sortOrder 0 (default) too;
-    // price-asc tiebreak would put it before `other` (price 9 > 5). Push it
-    // after `other` purely via sort_order.
-    const res = await post(`/catalog/denomination/${seed.productId}/update`, seed.cookie, {
-      csrf_token: seed.csrf,
-      name: "Renamed Denom",
-      duration_label: "1 Month",
-      price: "7.00",
-      sort_order: "10",
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    const d = await getDenomination(prisma, seed.productId);
-    expect(d!.sortOrder).toBe(10);
-
-    const product = await getCatalogProductWithDenominations(prisma, seed.catalogProductId);
-    const ids = product!.denominations.map((x) => x.id);
-    expect(ids.indexOf(other.id)).toBeLessThan(ids.indexOf(seed.productId));
-  });
-
   it("update denomination requires auth", async () => {
-    const res = await post(`/catalog/denomination/${seed.productId}/update`, null, { csrf_token: "x", name: "Hax", duration_label: "x", price: "1" });
+    const res = await patchForm(`/api/catalog/denominations/${seed.productId}`, null, { name: "Hax", type: "SHARED", durationLabel: "x", price: "1" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
   });
 
   it("update denomination rejects bad CSRF", async () => {
-    const res = await post(`/catalog/denomination/${seed.productId}/update`, seed.cookie, { csrf_token: "bad", name: "Hax", duration_label: "x", price: "1" });
+    const res = await patchForm(`/api/catalog/denominations/${seed.productId}`, seed.cookie, { csrf_token: "bad", name: "Hax", type: "SHARED", durationLabel: "x", price: "1" });
     expect(res.statusCode).toBe(403);
-  });
-
-  it("re-parenting to a product in a different category is rejected", async () => {
-    const otherCat = await createCategory(prisma, `OtherCat${Math.random()}`);
-    const otherProduct = await prisma.product.create({
-      data: { categoryId: otherCat.id, name: "OtherProd", slug: `other-prod-${Math.random()}` },
-    });
-    const res = await post(`/catalog/denomination/${seed.productId}/update`, seed.cookie, {
-      csrf_token: seed.csrf,
-      name: "Cross",
-      duration_label: "1 Month",
-      price: "5",
-      product_id: String(otherProduct.id),
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
-    expect((await getDenomination(prisma, seed.productId))!.productId).toBe(seed.catalogProductId);
-  });
-
-  it("re-parenting to a product in the SAME category succeeds", async () => {
-    const sibling = await prisma.product.create({
-      data: { categoryId: seed.categoryId, name: "SiblingProd", slug: `sibling-prod-${Math.random()}` },
-    });
-    const res = await post(`/catalog/denomination/${seed.productId}/update`, seed.cookie, {
-      csrf_token: seed.csrf,
-      name: "Moved",
-      duration_label: "1 Month",
-      price: "5",
-      product_id: String(sibling.id),
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    expect((await getDenomination(prisma, seed.productId))!.productId).toBe(sibling.id);
   });
 
   it("delete denomination refuses with order history, succeeds without", async () => {
@@ -1716,9 +1501,8 @@ describe("denominations (leaf SKU, inside product detail)", () => {
       durationLabel: "1 Month",
       price: "3.00",
     });
-    const res = await post(`/catalog/denomination/${extra.id}/delete`, seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    const res = await deleteForm(`/api/catalog/denominations/${extra.id}`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
     expect(await getDenomination(prisma, extra.id)).toBeNull();
   });
 
@@ -1726,51 +1510,25 @@ describe("denominations (leaf SKU, inside product detail)", () => {
     // seed.productId is already stocked — place an order against it first.
     const user = (await getUser(prisma, seed.customerId))!;
     await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 });
-    const blocked = await post(`/catalog/denomination/${seed.productId}/delete`, seed.cookie, { csrf_token: seed.csrf });
-    expect(blocked.statusCode).toBe(303);
-    expect(blocked.headers.location).toContain("kind=error");
+    const blocked = await deleteForm(`/api/catalog/denominations/${seed.productId}`, seed.cookie, { csrf_token: seed.csrf });
+    expect(blocked.statusCode).toBe(409);
     expect(await getDenomination(prisma, seed.productId)).not.toBeNull();
   });
 
   it("delete denomination requires auth", async () => {
-    const res = await post(`/catalog/denomination/${seed.productId}/delete`, null, { csrf_token: "x" });
+    const res = await deleteForm(`/api/catalog/denominations/${seed.productId}`, null, { csrf_token: "x" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
   });
 
   it("delete denomination rejects bad CSRF", async () => {
-    const res = await post(`/catalog/denomination/${seed.productId}/delete`, seed.cookie, { csrf_token: "bad" });
+    const res = await deleteForm(`/api/catalog/denominations/${seed.productId}`, seed.cookie, { csrf_token: "bad" });
     expect(res.statusCode).toBe(403);
   });
 
-  it("bulk-pricing set + remove on a denomination + audit", async () => {
-    const set = await post(`/catalog/denomination/${seed.productId}/bulk-pricing`, seed.cookie, {
-      csrf_token: seed.csrf, min_quantity: "3", discount_percent: "10",
-    });
-    expect(set.statusCode).toBe(303);
-    expect(set.headers.location).toContain("kind=success");
-    expect(await prisma.bulkPricing.findUnique({ where: { productId: seed.productId } })).toBeTruthy();
-
-    const remove = await post(`/catalog/denomination/${seed.productId}/bulk-pricing`, seed.cookie, {
-      csrf_token: seed.csrf, min_quantity: "", discount_percent: "",
-    });
-    expect(remove.statusCode).toBe(303);
-    expect(await prisma.bulkPricing.findUnique({ where: { productId: seed.productId } })).toBeNull();
-
-    const audit = await prisma.auditLog.findMany({ where: { action: { in: ["bulk_pricing_set", "bulk_pricing_delete"] } } });
-    expect(audit.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("bulk-pricing requires auth", async () => {
-    const res = await post(`/catalog/denomination/${seed.productId}/bulk-pricing`, null, { csrf_token: "x", min_quantity: "3", discount_percent: "10" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
-  });
-
-  it("bulk-pricing rejects bad CSRF", async () => {
-    const res = await post(`/catalog/denomination/${seed.productId}/bulk-pricing`, seed.cookie, { csrf_token: "bad", min_quantity: "3", discount_percent: "10" });
-    expect(res.statusCode).toBe(403);
-  });
+  // bulk-pricing set/remove/auth/CSRF: covered by "catalog JSON API —
+  // category update/toggle, product delete/bulk-active, bulk pricing" (POST
+  // /DELETE /api/catalog/denominations/:id/bulk-pricing).
 });
 
 // ---- product detail page (new /catalog/product/:id) -----------------------
@@ -1795,72 +1553,25 @@ describe("product detail page", () => {
     expect(res.statusCode).toBe(404);
   });
 
-  it("honors an allowlisted return_to on update", async () => {
-    const product = await getCatalogProduct(prisma, seed.catalogProductId);
-    const back = `/catalog/product/${seed.catalogProductId}`;
-    const res = await post(`/catalog/product/${seed.catalogProductId}/update`, seed.cookie, {
-      csrf_token: seed.csrf,
-      name: product!.name,
-      return_to: back,
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toMatch(new RegExp(`^${back}\\?`));
-    expect(res.headers.location).toContain("kind=success");
-  });
-
-  it("rejects a hostile return_to and falls back to /catalog", async () => {
-    const product = await getCatalogProduct(prisma, seed.catalogProductId);
-    const res = await post(`/catalog/product/${seed.catalogProductId}/update`, seed.cookie, {
-      csrf_token: seed.csrf,
-      name: product!.name,
-      return_to: "https://evil.example.com/phish",
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toMatch(/^\/catalog\?/);
-    expect(res.headers.location).not.toContain("evil.example.com");
-  });
+  // NOTE: the return_to-honoring/hostile-return_to tests that lived here were
+  // removed along with the legacy POST /catalog/product/:id/update route —
+  // there's no JSON API replacement for editing a Product's own
+  // name/description (see the note in the "catalog" describe block above), so
+  // return_to (a legacy-form-only redirect concept) has nothing left to test.
 });
 
 describe("denomination-to-product assignment (carry-over: parent is mandatory)", () => {
-  // NOTE: pre-rework, an old SKU's `product_group_id` could be unlinked to
-  // null (no parent). In the 3-tier model a Denomination's parent Product is
-  // mandatory — `assignDenominationToProduct` always requires a real target,
-  // and the route never offers a "no parent" option. These tests close that
-  // carry-over gap: moving within the category succeeds, across categories is
-  // rejected with a friendly error (not a 500), and the column itself is non-null.
-  it("moving a denomination to a sibling product in the same category succeeds", async () => {
-    const sibling = await prisma.product.create({
-      data: { categoryId: seed.categoryId, name: `Sibling${Math.random()}`, slug: `sibling-${Math.random()}` },
-    });
-    const res = await post(`/catalog/denomination/${seed.productId}/update`, seed.cookie, {
-      csrf_token: seed.csrf,
-      name: "Moved Denom",
-      duration_label: "1 Month",
-      price: "5",
-      product_id: String(sibling.id),
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    expect((await getDenomination(prisma, seed.productId))!.productId).toBe(sibling.id);
-  });
-
-  it("moving a denomination across categories is rejected with a flash error, not a 500", async () => {
-    const otherCat = await createCategory(prisma, `OtherCat${Math.random()}`);
-    const otherProduct = await prisma.product.create({
-      data: { categoryId: otherCat.id, name: `Other${Math.random()}`, slug: `other-${Math.random()}` },
-    });
-    const res = await post(`/catalog/denomination/${seed.productId}/update`, seed.cookie, {
-      csrf_token: seed.csrf,
-      name: "Should Not Move",
-      duration_label: "1 Month",
-      price: "5",
-      product_id: String(otherProduct.id),
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
-    expect((await getDenomination(prisma, seed.productId))!.productId).toBe(seed.catalogProductId);
-  });
-
+  // NOTE: the "moving a denomination to a sibling product" / "across
+  // categories" tests that lived here were removed — the legacy
+  // POST /catalog/denomination/:id/update route supported re-parenting via a
+  // product_id field, but PATCH /api/catalog/denominations/:id (its JSON
+  // replacement; see "denominations (leaf SKU, inside product detail)" above)
+  // never reads productId from the body, and the React
+  // ProductDetailPage has no move-to-another-product UI at all
+  // (apps/web-admin/client/src/pages/ProductDetailPage.tsx only calls
+  // active-toggle and delete) — so re-parenting a denomination is genuinely
+  // gone, not moved. The schema invariant below (parent is mandatory at the DB
+  // level) still holds regardless.
   it("the productId column on Denomination is non-null at the schema level", async () => {
     const d = await getDenomination(prisma, seed.productId);
     expect(d!.productId).not.toBeNull();
@@ -1873,12 +1584,11 @@ describe("denomination-to-product assignment (carry-over: parent is mandatory)",
 describe("stock", () => {
   it("bulk add happy + audit never logs raw credentials", async () => {
     const before = await countAvailableStock(prisma, seed.productId);
-    const res = await post(`/stock/${seed.productId}/add`, seed.cookie, {
+    const res = await post(`/api/stock/${seed.productId}/bulk-add`, seed.cookie, {
       csrf_token: seed.csrf,
       credentials: "new1@e.com:p\nnew2@e.com:p",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect(await countAvailableStock(prisma, seed.productId)).toBe(before + 2);
 
     const audit = await prisma.auditLog.findMany({ where: { action: "stock_upload", targetId: seed.productId } });
@@ -1887,64 +1597,21 @@ describe("stock", () => {
   });
 
   it("bulk add requires auth", async () => {
-    const res = await post(`/stock/${seed.productId}/add`, null, { csrf_token: "x", credentials: "leak@e.com:p" });
+    const res = await post(`/api/stock/${seed.productId}/bulk-add`, null, { csrf_token: "x", credentials: "leak@e.com:p" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
   });
 
   it("bulk add rejects bad CSRF", async () => {
-    const res = await post(`/stock/${seed.productId}/add`, seed.cookie, { csrf_token: "nope", credentials: "x@e.com:p" });
+    const res = await post(`/api/stock/${seed.productId}/bulk-add`, seed.cookie, { csrf_token: "nope", credentials: "x@e.com:p" });
     expect(res.statusCode).toBe(403);
   });
 
-  it("bulk delete removes available rows but keeps sold + audit never logs credentials", async () => {
-    const avail = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" } });
-    const delId = avail[0]!.id;
-    const sold = await prisma.stockItem.update({
-      where: { id: avail[1]!.id },
-      data: { status: "SOLD", soldAt: new Date() },
-    });
-    const res = await post(`/stock/${seed.productId}/bulk-delete`, seed.cookie, {
-      csrf_token: seed.csrf,
-      ids: `${delId},${sold.id}`,
-    });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    expect(await prisma.stockItem.findUnique({ where: { id: delId } })).toBeNull();
-    expect(await prisma.stockItem.findUnique({ where: { id: sold.id } })).not.toBeNull();
-
-    const audit = await prisma.auditLog.findMany({ where: { action: "stock_bulk_delete", targetId: seed.productId } });
-    expect(audit.length).toBe(1);
-    expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
-  });
-
-  it("bulk delete requires auth", async () => {
-    const res = await post(`/stock/${seed.productId}/bulk-delete`, null, { csrf_token: "x", ids: "1" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login");
-  });
-
-  it("bulk delete rejects bad CSRF", async () => {
-    const res = await post(`/stock/${seed.productId}/bulk-delete`, seed.cookie, { csrf_token: "nope", ids: "1" });
-    expect(res.statusCode).toBe(403);
-  });
-
-  it("download returns AVAILABLE credentials as a text attachment + audit by count", async () => {
-    const avail = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" }, orderBy: { id: "asc" } });
-    const res = await get(`/stock/${seed.productId}/download`, seed.cookie);
-    expect(res.statusCode).toBe(200);
-    expect(res.headers["content-type"]).toContain("text/plain");
-    expect(res.headers["content-disposition"]).toContain("attachment");
-    expect(res.headers["content-disposition"]).toContain(".txt");
-    for (const it of avail) expect(res.body).toContain(it.credentials);
-
-    const audit = await prisma.auditLog.findMany({ where: { action: "stock_download", targetId: seed.productId } });
-    expect(audit.length).toBeGreaterThanOrEqual(1);
-    expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
-  });
+  // bulk delete / download happy paths: covered by "stock JSON API —
+  // bulk-dead, bulk-delete, item note/dead, download" below.
 
   it("download requires auth", async () => {
-    const res = await get(`/stock/${seed.productId}/download`, null);
+    const res = await get(`/api/stock/${seed.productId}/download`, null);
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
   });
@@ -2136,9 +1803,8 @@ describe("users", () => {
 
   it("wallet adjust happy (+ audit row — L-9)", async () => {
     const before = (await getUser(prisma, seed.customerId))!.walletBalance;
-    const res = await post(`/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "5.00", note: "goodwill" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    const res = await post(`/api/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "5.00", note: "goodwill" });
+    expect(res.statusCode).toBe(200);
     const after = (await getUser(prisma, seed.customerId))!.walletBalance;
     expect(Number(after) - Number(before)).toBeCloseTo(5);
     // L-9 (execution/10): a money-moving admin route must leave an audit trail.
@@ -2148,8 +1814,8 @@ describe("users", () => {
   });
 
   it("set role happy (lowercase accepted)", async () => {
-    const res = await post(`/users/${seed.customerId}/role`, seed.cookie, { csrf_token: seed.csrf, role: "reseller" });
-    expect(res.statusCode).toBe(303);
+    const res = await post(`/api/users/${seed.customerId}/role`, seed.cookie, { csrf_token: seed.csrf, role: "reseller" });
+    expect(res.statusCode).toBe(200);
     expect((await getUser(prisma, seed.customerId))!.role).toBe("RESELLER");
   });
 
@@ -2157,26 +1823,25 @@ describe("users", () => {
   // door to ADMIN — that's a derived field synced from admin_ids, and
   // promotion goes through /admins only.
   it("set role refuses ADMIN — that's managed via /admins, not here", async () => {
-    const res = await post(`/users/${seed.customerId}/role`, seed.cookie, { csrf_token: seed.csrf, role: "admin" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    const res = await post(`/api/users/${seed.customerId}/role`, seed.cookie, { csrf_token: seed.csrf, role: "admin" });
+    expect(res.statusCode).toBe(403);
     expect((await getUser(prisma, seed.customerId))!.role).not.toBe("ADMIN");
   });
 
   it("ban happy", async () => {
-    const res = await post(`/users/${seed.customerId}/ban`, seed.cookie, { csrf_token: seed.csrf, banned: "true", reason: "abuse" });
-    expect(res.statusCode).toBe(303);
+    const res = await post(`/api/users/${seed.customerId}/ban`, seed.cookie, { csrf_token: seed.csrf, banned: "true", reason: "abuse" });
+    expect(res.statusCode).toBe(200);
     expect((await getUser(prisma, seed.customerId))!.banned).toBe(true);
   });
 
   it("wallet requires auth", async () => {
-    const res = await post(`/users/${seed.customerId}/wallet`, null, { csrf_token: "x", delta: "1000" });
+    const res = await post(`/api/users/${seed.customerId}/wallet`, null, { csrf_token: "x", delta: "1000" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
   });
 
   it("wallet rejects bad CSRF", async () => {
-    const res = await post(`/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: "bad", delta: "1000" });
+    const res = await post(`/api/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: "bad", delta: "1000" });
     expect(res.statusCode).toBe(403);
   });
 });
@@ -2233,11 +1898,10 @@ describe("users API — wallet currency", () => {
 
 describe("vouchers", () => {
   it("create happy (lowercase code+type normalized)", async () => {
-    const res = await post("/vouchers", seed.cookie, {
+    const res = await post("/api/vouchers", seed.cookie, {
       csrf_token: seed.csrf, code: "save10", type: "percent", value: "10", usage_limit: "100", min_purchase: "0",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(201);
     const v = await getVoucherByCode(prisma, "SAVE10");
     expect(v).not.toBeNull();
     expect(v!.isActive).toBe(true);
@@ -2245,55 +1909,53 @@ describe("vouchers", () => {
 
   it("duplicate code rejected", async () => {
     const fields = { csrf_token: seed.csrf, code: "dup1", type: "percent", value: "5" };
-    expect((await post("/vouchers", seed.cookie, fields)).statusCode).toBe(303);
-    const res = await post("/vouchers", seed.cookie, fields);
-    expect(res.headers.location).toContain("kind=error");
+    expect((await post("/api/vouchers", seed.cookie, fields)).statusCode).toBe(201);
+    const res = await post("/api/vouchers", seed.cookie, fields);
+    expect(res.statusCode).toBe(409);
   });
 
   it("toggle voucher", async () => {
-    await post("/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "tog1", type: "percent", value: "5" });
+    await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "tog1", type: "percent", value: "5" });
     const v = (await getVoucherByCode(prisma, "TOG1"))!;
-    const res = await post(`/vouchers/${v.id}/toggle`, seed.cookie, { csrf_token: seed.csrf, is_active: "false" });
-    expect(res.statusCode).toBe(303);
+    const res = await post(`/api/vouchers/${v.id}/toggle`, seed.cookie, { csrf_token: seed.csrf, is_active: "false" });
+    expect(res.statusCode).toBe(200);
     expect((await prisma.voucher.findUnique({ where: { id: v.id } }))!.isActive).toBe(false);
   });
 
   it("create requires auth", async () => {
-    const res = await post("/vouchers", null, { csrf_token: "x", code: "HAX", type: "percent", value: "99" });
+    const res = await post("/api/vouchers", null, { csrf_token: "x", code: "HAX", type: "percent", value: "99" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
   });
 
   it("create rejects bad CSRF", async () => {
-    const res = await post("/vouchers", seed.cookie, { csrf_token: "bad", code: "HAX2", type: "percent", value: "99" });
+    const res = await post("/api/vouchers", seed.cookie, { csrf_token: "bad", code: "HAX2", type: "percent", value: "99" });
     expect(res.statusCode).toBe(403);
   });
 
   it("delete voucher succeeds when never used, refuses once used", async () => {
-    await post("/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "del1", type: "percent", value: "5" });
+    await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "del1", type: "percent", value: "5" });
     const v = (await getVoucherByCode(prisma, "DEL1"))!;
 
     await prisma.voucher.update({ where: { id: v.id }, data: { usedCount: 1 } });
-    const blocked = await post(`/vouchers/${v.id}/delete`, seed.cookie, { csrf_token: seed.csrf });
-    expect(blocked.statusCode).toBe(303);
-    expect(blocked.headers.location).toContain("kind=error");
+    const blocked = await post(`/api/vouchers/${v.id}/delete`, seed.cookie, { csrf_token: seed.csrf });
+    expect(blocked.statusCode).toBe(409);
     expect(await prisma.voucher.findUnique({ where: { id: v.id } })).not.toBeNull();
 
     await prisma.voucher.update({ where: { id: v.id }, data: { usedCount: 0 } });
-    const ok = await post(`/vouchers/${v.id}/delete`, seed.cookie, { csrf_token: seed.csrf });
-    expect(ok.statusCode).toBe(303);
-    expect(ok.headers.location).toContain("kind=success");
+    const ok = await post(`/api/vouchers/${v.id}/delete`, seed.cookie, { csrf_token: seed.csrf });
+    expect(ok.statusCode).toBe(200);
     expect(await prisma.voucher.findUnique({ where: { id: v.id } })).toBeNull();
   });
 
   it("delete voucher requires auth", async () => {
-    const res = await post("/vouchers/99999/delete", null, { csrf_token: "x" });
+    const res = await post("/api/vouchers/99999/delete", null, { csrf_token: "x" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
   });
 
   it("delete voucher rejects bad CSRF", async () => {
-    const res = await post("/vouchers/99999/delete", seed.cookie, { csrf_token: "bad" });
+    const res = await post("/api/vouchers/99999/delete", seed.cookie, { csrf_token: "bad" });
     expect(res.statusCode).toBe(403);
   });
 });
@@ -2316,8 +1978,8 @@ describe("support", () => {
 
   it("reply records a message (never sent to Telegram)", async () => {
     const tid = await makeTicket();
-    const res = await post(`/support/${tid}/reply`, seed.cookie, { csrf_token: seed.csrf, content: "Looking into it." });
-    expect(res.statusCode).toBe(303);
+    const res = await post(`/api/support/${tid}/reply`, seed.cookie, { csrf_token: seed.csrf, content: "Looking into it." });
+    expect(res.statusCode).toBe(200);
     const msgs = await listTicketMessages(prisma, tid, 10);
     const adminMsgs = msgs.filter((m) => m.senderType === "ADMIN");
     expect(adminMsgs.some((m) => m.content === "Looking into it.")).toBe(true);
@@ -2325,21 +1987,21 @@ describe("support", () => {
 
   it("close ticket", async () => {
     const tid = await makeTicket();
-    const res = await post(`/support/${tid}/close`, seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(303);
+    const res = await post(`/api/support/${tid}/close`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
     expect((await prisma.supportTicket.findUnique({ where: { id: tid } }))!.status).toBe("CLOSED");
   });
 
   it("reply requires auth", async () => {
     const tid = await makeTicket();
-    const res = await post(`/support/${tid}/reply`, null, { csrf_token: "x", content: "hi" });
+    const res = await post(`/api/support/${tid}/reply`, null, { csrf_token: "x", content: "hi" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
   });
 
   it("reply rejects bad CSRF", async () => {
     const tid = await makeTicket();
-    const res = await post(`/support/${tid}/reply`, seed.cookie, { csrf_token: "bad", content: "hi" });
+    const res = await post(`/api/support/${tid}/reply`, seed.cookie, { csrf_token: "bad", content: "hi" });
     expect(res.statusCode).toBe(403);
   });
 
@@ -2428,18 +2090,16 @@ describe("support", () => {
 
 describe("settings", () => {
   it("edit whitelisted key happy", async () => {
-    const res = await post("/settings/edit", seed.cookie, { csrf_token: seed.csrf, key: "support_contact", value: "@helpdesk" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    const res = await post("/api/settings/edit", seed.cookie, { csrf_token: seed.csrf, key: "support_contact", value: "@helpdesk" });
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "support_contact")).toBe("@helpdesk");
   });
 
   it("non-whitelisted key rejected, protected value untouched", async () => {
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "web_admin_password_hash:999", value: "x",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    expect(res.statusCode).toBe(400);
     expect(await getSetting(prisma, "web_admin_password_hash:999")).not.toBe("x");
   });
 
@@ -2458,33 +2118,31 @@ describe("settings", () => {
 
   it("password change happy", async () => {
     await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("oldpassword"));
-    const res = await post("/settings/password", seed.cookie, {
+    const res = await post("/api/settings/password", seed.cookie, {
       csrf_token: seed.csrf, current_password: "oldpassword", new_password: "newpassword1", confirm_password: "newpassword1",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     const stored = await getSetting(prisma, passwordHashKey(ADMIN_TG));
     expect(verifyPassword("newpassword1", stored!)).toBe(true);
   });
 
   it("password change with wrong current rejected", async () => {
     await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("realpw12"));
-    const res = await post("/settings/password", seed.cookie, {
+    const res = await post("/api/settings/password", seed.cookie, {
       csrf_token: seed.csrf, current_password: "wrongpw12", new_password: "newpassword1", confirm_password: "newpassword1",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    expect(res.statusCode).toBe(403);
     expect(verifyPassword("realpw12", (await getSetting(prisma, passwordHashKey(ADMIN_TG)))!)).toBe(true);
   });
 
   it("edit requires auth", async () => {
-    const res = await post("/settings/edit", null, { csrf_token: "x", key: "support_contact", value: "pwned" });
+    const res = await post("/api/settings/edit", null, { csrf_token: "x", key: "support_contact", value: "pwned" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
   });
 
   it("edit rejects bad CSRF", async () => {
-    const res = await post("/settings/edit", seed.cookie, { csrf_token: "bad", key: "support_contact", value: "pwned" });
+    const res = await post("/api/settings/edit", seed.cookie, { csrf_token: "bad", key: "support_contact", value: "pwned" });
     expect(res.statusCode).toBe(403);
   });
 
@@ -2496,11 +2154,10 @@ describe("settings", () => {
   });
 
   it("accepts binance_receive_uid (not a secret — exposed via the API)", async () => {
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "binance_receive_uid", value: "123456789",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "binance_receive_uid")).toBe("123456789");
     const page = await get("/api/settings", seed.cookie);
     const apiData = JSON.parse(page.body) as { fields: Array<{ key: string; value: string }> };
@@ -2508,25 +2165,25 @@ describe("settings", () => {
   });
 
   it("binance_api_key / binance_api_secret are write-only (blank keeps value, never echoed)", async () => {
-    await post("/settings/edit", seed.cookie, {
+    await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "binance_api_key", value: "BINKEYSECRET",
     });
-    await post("/settings/edit", seed.cookie, {
+    await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "binance_api_secret", value: "BINSECRETVALUE",
     });
     expect(await getSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
     expect(await getSetting(prisma, "binance_api_secret")).toBe("BINSECRETVALUE");
 
-    // Blank submit keeps the existing value (the "'<key>' left unchanged." path).
-    const blank = await post("/settings/edit", seed.cookie, {
+    // Blank submit keeps the existing value ({ ok: true, unchanged: true }).
+    const blank = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "binance_api_key", value: "",
     });
-    expect(blank.statusCode).toBe(303);
-    expect(blank.headers.location).toContain("kind=info");
+    expect(blank.statusCode).toBe(200);
+    expect(JSON.parse(blank.body)).toEqual({ ok: true, unchanged: true });
     expect(await getSetting(prisma, "binance_api_key")).toBe("BINKEYSECRET");
 
-    // The stored secrets are never echoed into the form or the saved-data table.
-    const page = await get("/settings", seed.cookie);
+    // The stored secrets are never echoed into the settings API response.
+    const page = await get("/api/settings", seed.cookie);
     expect(page.statusCode).toBe(200);
     expect(page.body).not.toContain("BINKEYSECRET");
     expect(page.body).not.toContain("BINSECRETVALUE");
@@ -2539,11 +2196,10 @@ describe("settings", () => {
   });
 
   it("accepts paydisini_userkey (not a secret — exposed via the API)", async () => {
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "paydisini_userkey", value: "userkey123",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "paydisini_userkey")).toBe("userkey123");
     const page = await get("/api/settings", seed.cookie);
     const apiData = JSON.parse(page.body) as { fields: Array<{ key: string; value: string }> };
@@ -2551,21 +2207,21 @@ describe("settings", () => {
   });
 
   it("paydisini_apikey is write-only (blank keeps value, never echoed)", async () => {
-    await post("/settings/edit", seed.cookie, {
+    await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "paydisini_apikey", value: "PDAPIKEYSECRET",
     });
     expect(await getSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
 
-    // Blank submit keeps the existing value (the "'<key>' left unchanged." path).
-    const blank = await post("/settings/edit", seed.cookie, {
+    // Blank submit keeps the existing value ({ ok: true, unchanged: true }).
+    const blank = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "paydisini_apikey", value: "",
     });
-    expect(blank.statusCode).toBe(303);
-    expect(blank.headers.location).toContain("kind=info");
+    expect(blank.statusCode).toBe(200);
+    expect(JSON.parse(blank.body)).toEqual({ ok: true, unchanged: true });
     expect(await getSetting(prisma, "paydisini_apikey")).toBe("PDAPIKEYSECRET");
 
-    // The stored secret is never echoed into the form or the saved-data table.
-    const page = await get("/settings", seed.cookie);
+    // The stored secret is never echoed into the settings API response.
+    const page = await get("/api/settings", seed.cookie);
     expect(page.statusCode).toBe(200);
     expect(page.body).not.toContain("PDAPIKEYSECRET");
 
@@ -2577,11 +2233,10 @@ describe("settings", () => {
   });
 
   it("accepts nowpayments_pay_currency (not a secret — exposed via the API)", async () => {
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "nowpayments_pay_currency", value: "usdttrc20",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "nowpayments_pay_currency")).toBe("usdttrc20");
     const page = await get("/api/settings", seed.cookie);
     const apiData = JSON.parse(page.body) as { fields: Array<{ key: string; value: string }> };
@@ -2589,25 +2244,25 @@ describe("settings", () => {
   });
 
   it("nowpayments_api_key / nowpayments_ipn_secret are write-only (blank keeps value, never echoed)", async () => {
-    await post("/settings/edit", seed.cookie, {
+    await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "nowpayments_api_key", value: "NOWAPIKEYSECRET",
     });
-    await post("/settings/edit", seed.cookie, {
+    await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "nowpayments_ipn_secret", value: "NOWIPNSECRETVALUE",
     });
     expect(await getSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
     expect(await getSetting(prisma, "nowpayments_ipn_secret")).toBe("NOWIPNSECRETVALUE");
 
-    // Blank submit keeps the existing value (the "'<key>' left unchanged." path).
-    const blank = await post("/settings/edit", seed.cookie, {
+    // Blank submit keeps the existing value ({ ok: true, unchanged: true }).
+    const blank = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "nowpayments_api_key", value: "",
     });
-    expect(blank.statusCode).toBe(303);
-    expect(blank.headers.location).toContain("kind=info");
+    expect(blank.statusCode).toBe(200);
+    expect(JSON.parse(blank.body)).toEqual({ ok: true, unchanged: true });
     expect(await getSetting(prisma, "nowpayments_api_key")).toBe("NOWAPIKEYSECRET");
 
-    // The stored secrets are never echoed into the form or the saved-data table.
-    const page = await get("/settings", seed.cookie);
+    // The stored secrets are never echoed into the settings API response.
+    const page = await get("/api/settings", seed.cookie);
     expect(page.statusCode).toBe(200);
     expect(page.body).not.toContain("NOWAPIKEYSECRET");
     expect(page.body).not.toContain("NOWIPNSECRETVALUE");
@@ -2620,11 +2275,10 @@ describe("settings", () => {
   });
 
   it("accepts bybit_bsc_deposit_address (not a secret — exposed via the API)", async () => {
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "bybit_bsc_deposit_address", value: "0xMERCHANTADDR",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "bybit_bsc_deposit_address")).toBe("0xMERCHANTADDR");
     const page = await get("/api/settings", seed.cookie);
     const apiData = JSON.parse(page.body) as { fields: Array<{ key: string; value: string }> };
@@ -2632,81 +2286,73 @@ describe("settings", () => {
   });
 
   it("a positive number is accepted for any *_min_amount key", async () => {
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "bybit_bsc_min_amount", value: "10",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "bybit_bsc_min_amount")).toBe("10");
   });
 
   it("a blank *_min_amount value is accepted (hides the note)", async () => {
     await setSetting(prisma, "tokopay_min_amount", "5000");
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "tokopay_min_amount", value: "",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "tokopay_min_amount")).toBe("");
   });
 
   it("rejects a non-numeric *_min_amount value, leaving the prior value untouched", async () => {
     await setSetting(prisma, "nowpayments_min_amount", "3.5");
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "nowpayments_min_amount", value: "not-a-number",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    expect(res.statusCode).toBe(400);
     expect(await getSetting(prisma, "nowpayments_min_amount")).toBe("3.5");
   });
 
   it("rejects a non-positive *_min_amount value (zero/negative)", async () => {
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "bybit_min_amount", value: "0",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    expect(res.statusCode).toBe(400);
     expect(await getSetting(prisma, "bybit_min_amount")).toBeNull();
   });
 
   it("accepts a positive whole number for bybit_bsc_required_confirmations", async () => {
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "bybit_bsc_required_confirmations", value: "20",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "bybit_bsc_required_confirmations")).toBe("20");
   });
 
   it("rejects a non-whole-number bybit_bsc_required_confirmations value, leaving the prior value untouched", async () => {
     await setSetting(prisma, "bybit_bsc_required_confirmations", "15");
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "bybit_bsc_required_confirmations", value: "12.5",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    expect(res.statusCode).toBe(400);
     expect(await getSetting(prisma, "bybit_bsc_required_confirmations")).toBe("15");
   });
 
   it("a blank bybit_bsc_required_confirmations value is accepted (falls back to the default)", async () => {
     await setSetting(prisma, "bybit_bsc_required_confirmations", "20");
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "bybit_bsc_required_confirmations", value: "",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "bybit_bsc_required_confirmations")).toBe("");
   });
 
   it("bscscan_api_key is treated as a write-only secret (never echoed back, audited without the value)", async () => {
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "bscscan_api_key", value: "SUPERSECRETBSCSCANKEY",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "bscscan_api_key")).toBe("SUPERSECRETBSCSCANKEY");
 
-    const page = await get("/settings", seed.cookie);
+    const page = await get("/api/settings", seed.cookie);
     expect(page.body).not.toContain("SUPERSECRETBSCSCANKEY");
 
     const logs = await listAuditLogs(prisma, { limit: 10 });
@@ -2721,9 +2367,8 @@ describe("settings", () => {
 describe("settings: USDT rate from the market", () => {
   it("refresh button pulls, rounds and saves the rate", async () => {
     setFxRateFetcher(async () => new Decimal("16243.7"));
-    const res = await post("/settings/fx/refresh", seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    const res = await post("/api/settings/fx/refresh", seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "usd_idr_rate")).toBe("16200");
   });
 
@@ -2732,14 +2377,13 @@ describe("settings: USDT rate from the market", () => {
     setFxRateFetcher(async () => {
       throw new Error("down");
     });
-    const res = await post("/settings/fx/refresh", seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    const res = await post("/api/settings/fx/refresh", seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(503);
     expect(await getSetting(prisma, "usd_idr_rate")).toBe("16000");
   });
 
   it("refresh rejects bad CSRF", async () => {
-    const res = await post("/settings/fx/refresh", seed.cookie, { csrf_token: "bad" });
+    const res = await post("/api/settings/fx/refresh", seed.cookie, { csrf_token: "bad" });
     expect(res.statusCode).toBe(403);
   });
 });
@@ -2749,29 +2393,27 @@ describe("settings: USDT rate from the market", () => {
 describe("settings: bot tokens (§16)", () => {
   it("saves a Telegram-accepted token and auto-fills bot_username", async () => {
     setTokenValidator(async () => ({ ok: true, username: "MyShopBot" }));
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "bot_token", value: "123456:goodtokenvalue",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "bot_token")).toBe("123456:goodtokenvalue");
     expect(await getSetting(prisma, "bot_username")).toBe("MyShopBot");
   });
 
   it("rejects a token Telegram refuses — nothing is stored", async () => {
     setTokenValidator(async () => ({ ok: false }));
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "bot_token", value: "123456:badtoken",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    expect(res.statusCode).toBe(400);
     expect(await getSetting(prisma, "bot_token")).toBeNull();
   });
 
   it("token edits are owner-only (support role refused)", async () => {
     setTokenValidator(async () => ({ ok: true, username: "MyShopBot" }));
     await setSetting(prisma, webRoleKey(ADMIN_TG), "support");
-    await post("/settings/edit", seed.cookie, {
+    await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "bot_token", value: "123456:goodtokenvalue",
     });
     // The generic RBAC gate (support can't mutate /settings) or the explicit
@@ -2782,17 +2424,16 @@ describe("settings: bot tokens (§16)", () => {
   it('a single "-" clears the saved token (recovery path back to env)', async () => {
     setTokenValidator(async () => ({ ok: true, username: "MyShopBot" }));
     await setSetting(prisma, "bot_token", "123456:oldtokenvalue");
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "bot_token", value: "-",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "bot_token")).toBeNull();
   });
 
   it("audit never records the token value", async () => {
     setTokenValidator(async () => ({ ok: true, username: "MyShopBot" }));
-    await post("/settings/edit", seed.cookie, {
+    await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "notif_bot_token", value: "999:notifsecrettoken",
     });
     const logs = await listAuditLogs(prisma, { limit: 5 });
@@ -2801,12 +2442,12 @@ describe("settings: bot tokens (§16)", () => {
     expect(entry!.details).not.toContain("notifsecrettoken");
   });
 
-  it("saved tokens stay hidden on the page", async () => {
+  it("saved tokens stay hidden via the settings API", async () => {
     setTokenValidator(async () => ({ ok: true, username: "MyShopBot" }));
-    await post("/settings/edit", seed.cookie, {
+    await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "bot_token", value: "123456:goodtokenvalue",
     });
-    const res = await get("/settings", seed.cookie);
+    const res = await get("/api/settings", seed.cookie);
     expect(res.statusCode).toBe(200);
     expect(res.body).not.toContain("123456:goodtokenvalue");
   });
@@ -2815,32 +2456,30 @@ describe("settings: bot tokens (§16)", () => {
     setTokenValidator(async () => ({ ok: true, username: "MyShopBot" }));
     await setSetting(prisma, "bot_token", "123456:goodtokenvalue"); // a token must exist to resolve with
     setChannelValidator(async () => ({ ok: true, id: -1003960444894, title: "TESTIMONI" }));
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "public_channel_id", value: "t.me/testiilha",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "public_channel_id")).toBe("-1003960444894");
   });
 
   it("rejects an unresolvable channel — nothing is stored", async () => {
     await setSetting(prisma, "bot_token", "123456:goodtokenvalue");
     setChannelValidator(async () => ({ ok: false }));
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "public_channel_id", value: "@nope",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    expect(res.statusCode).toBe(400);
     expect(await getSetting(prisma, "public_channel_id")).toBeNull();
   });
 
   it("rejects when no bot token is configured to resolve with", async () => {
     await deleteSetting(prisma, "bot_token");
     setChannelValidator(async () => ({ ok: true, id: -100123, title: "x" }));
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "public_channel_id", value: "@chan",
     });
-    expect(res.headers.location).toContain("kind=error");
+    expect(res.statusCode).toBe(400);
     expect(await getSetting(prisma, "public_channel_id")).toBeNull();
   });
 
@@ -2848,7 +2487,7 @@ describe("settings: bot tokens (§16)", () => {
     await setSetting(prisma, "bot_token", "123456:goodtokenvalue");
     setChannelValidator(async () => ({ ok: true, id: -100123, title: "x" }));
     await setSetting(prisma, webRoleKey(ADMIN_TG), "support");
-    await post("/settings/edit", seed.cookie, {
+    await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "public_channel_id", value: "@chan",
     });
     expect(await getSetting(prisma, "public_channel_id")).toBeNull();
@@ -2856,11 +2495,10 @@ describe("settings: bot tokens (§16)", () => {
 
   it('a single "-" clears the saved channel id', async () => {
     await setSetting(prisma, "public_channel_id", "-1003960444894");
-    const res = await post("/settings/edit", seed.cookie, {
+    const res = await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "public_channel_id", value: "-",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, "public_channel_id")).toBeNull();
   });
 });
@@ -2877,9 +2515,8 @@ describe("payments", () => {
 
   it("deliver underpaid → DELIVERED + audit", async () => {
     const id = await makeUnderpaidOrder();
-    const res = await post(`/payments/order/${id}/deliver`, seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    const res = await post(`/api/payments/order/${id}/deliver`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
     expect((await getOrder(prisma, id))!.status).toBe("DELIVERED");
     const audit = await prisma.auditLog.findMany({ where: { action: "underpaid_deliver", targetId: id } });
     expect(audit.length).toBe(1);
@@ -2888,8 +2525,8 @@ describe("payments", () => {
   it("refund underpaid → REFUNDED + wallet credit", async () => {
     const before = Number((await getUser(prisma, seed.customerId))!.walletBalance);
     const id = await makeUnderpaidOrder("3.00");
-    const res = await post(`/payments/order/${id}/refund`, seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(303);
+    const res = await post(`/api/payments/order/${id}/refund`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
     expect((await getOrder(prisma, id))!.status).toBe("REFUNDED");
     const after = Number((await getUser(prisma, seed.customerId))!.walletBalance);
     expect(after - before).toBeCloseTo(3);
@@ -2897,8 +2534,8 @@ describe("payments", () => {
 
   it("cancel underpaid → CANCELLED", async () => {
     const id = await makeUnderpaidOrder();
-    const res = await post(`/payments/order/${id}/cancel`, seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(303);
+    const res = await post(`/api/payments/order/${id}/cancel`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
     expect((await getOrder(prisma, id))!.status).toBe("CANCELLED");
   });
 
@@ -2909,13 +2546,12 @@ describe("payments", () => {
     const user = (await getUser(prisma, seed.customerId))!;
     const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
     await recordUnmatchedTx(prisma, { binanceTxId: "MTX1", amount: "5.00" });
-    const res = await post("/payments/match", seed.cookie, {
+    const res = await post("/api/payments/match", seed.cookie, {
       csrf_token: seed.csrf,
       binance_tx_id: "MTX1",
       order_code: order.orderCode,
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
     expect((await getOrder(prisma, order.id))!.status).toBe("DELIVERED");
     const tx = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "MTX1" } });
     expect(tx!.outcome).toBe("matched");
@@ -2930,13 +2566,12 @@ describe("payments", () => {
     const before = Number((await getUser(prisma, seed.customerId))!.walletBalance);
     await recordUnmatchedTx(prisma, { binanceTxId: "CRTX1", amount: "5.00" });
 
-    const res = await post("/payments/credit", seed.cookie, {
+    const res = await post("/api/payments/credit", seed.cookie, {
       csrf_token: seed.csrf,
       binance_tx_id: "CRTX1",
       order_code: order.orderCode,
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    expect(res.statusCode).toBe(200);
 
     expect((await getOrder(prisma, order.id))!.status).toBe("CANCELLED");
     const after = Number((await getUser(prisma, seed.customerId))!.walletBalance);
@@ -2954,7 +2589,7 @@ describe("payments", () => {
     const user = (await getUser(prisma, seed.customerId))!;
     const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
     await recordUnmatchedTx(prisma, { binanceTxId: "CRTX2", amount: "5.00" });
-    const res = await post("/payments/credit", null, {
+    const res = await post("/api/payments/credit", null, {
       csrf_token: "x",
       binance_tx_id: "CRTX2",
       order_code: order.orderCode,
@@ -2968,7 +2603,7 @@ describe("payments", () => {
     const user = (await getUser(prisma, seed.customerId))!;
     const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
     await recordUnmatchedTx(prisma, { binanceTxId: "CRTX3", amount: "5.00" });
-    const res = await post("/payments/credit", seed.cookie, {
+    const res = await post("/api/payments/credit", seed.cookie, {
       csrf_token: "bad",
       binance_tx_id: "CRTX3",
       order_code: order.orderCode,
@@ -2987,28 +2622,26 @@ describe("payments", () => {
 
   it("dismiss unmatched tx → outcome dismissed + audit", async () => {
     await recordUnmatchedTx(prisma, { binanceTxId: "DTX1", amount: "1.00" });
-    const res = await post("/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "DTX1" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    const res = await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "DTX1" });
+    expect(res.statusCode).toBe(200);
     const tx = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "DTX1" } });
     expect(tx!.outcome).toBe("dismissed");
     const logs = await listAuditLogs(prisma, { limit: 5 });
     expect(logs.some((l) => l.action === "tx_dismiss")).toBe(true);
   });
 
-  it("dismiss an already-dismissed (non-unmatched) tx → error flash, row unchanged", async () => {
+  it("dismiss an already-dismissed (non-unmatched) tx → error, row unchanged", async () => {
     await recordUnmatchedTx(prisma, { binanceTxId: "DTX3", amount: "1.00" });
-    await post("/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "DTX3" });
+    await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "DTX3" });
     // second dismiss: the row is no longer "unmatched" → rejected
-    const res = await post("/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "DTX3" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    const res = await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "DTX3" });
+    expect(res.statusCode).toBe(422);
     expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "DTX3" } }))!.outcome).toBe("dismissed");
   });
 
   it("dismiss requires auth (anon → /login)", async () => {
     await recordUnmatchedTx(prisma, { binanceTxId: "DTX4", amount: "1.00" });
-    const res = await post("/payments/dismiss", null, { csrf_token: "x", binance_tx_id: "DTX4" });
+    const res = await post("/api/payments/dismiss", null, { csrf_token: "x", binance_tx_id: "DTX4" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
     expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "DTX4" } }))!.outcome).toBe("unmatched");
@@ -3016,14 +2649,14 @@ describe("payments", () => {
 
   it("dismiss rejects bad CSRF", async () => {
     await recordUnmatchedTx(prisma, { binanceTxId: "DTX5", amount: "1.00" });
-    const res = await post("/payments/dismiss", seed.cookie, { csrf_token: "bad", binance_tx_id: "DTX5" });
+    const res = await post("/api/payments/dismiss", seed.cookie, { csrf_token: "bad", binance_tx_id: "DTX5" });
     expect(res.statusCode).toBe(403);
     expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "DTX5" } }))!.outcome).toBe("unmatched");
   });
 
   it("deliver requires auth", async () => {
     const id = await makeUnderpaidOrder();
-    const res = await post(`/payments/order/${id}/deliver`, null, { csrf_token: "x" });
+    const res = await post(`/api/payments/order/${id}/deliver`, null, { csrf_token: "x" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
     expect((await getOrder(prisma, id))!.status).toBe("UNDERPAID");
@@ -3031,7 +2664,7 @@ describe("payments", () => {
 
   it("deliver rejects bad CSRF", async () => {
     const id = await makeUnderpaidOrder();
-    const res = await post(`/payments/order/${id}/deliver`, seed.cookie, { csrf_token: "bad" });
+    const res = await post(`/api/payments/order/${id}/deliver`, seed.cookie, { csrf_token: "bad" });
     expect(res.statusCode).toBe(403);
     expect((await getOrder(prisma, id))!.status).toBe("UNDERPAID");
   });
@@ -3047,9 +2680,9 @@ describe("payments", () => {
     await recordUnmatchedTx(prisma, { binanceTxId: "ATOMTX1", amount: "1.00" });
     await prisma.user.delete({ where: { id: seed.adminId } });
 
-    const res = await post("/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "ATOMTX1" });
+    const res = await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "ATOMTX1" });
     // Not a ValidationError, so the route's catch rethrows → Fastify 500,
-    // not the usual redirect-with-flash.
+    // not the usual JSON error response.
     expect(res.statusCode).toBe(500);
 
     // The ledger row must still be "unmatched" — the dismiss write must have
@@ -3075,9 +2708,8 @@ describe("outbox", () => {
 
   it("retry requeues a failed notification + audit", async () => {
     const id = await makeFailedNotif();
-    const res = await post(`/outbox/${id}/retry`, seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    const res = await post(`/api/outbox/${id}/retry`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
     const row = await prisma.notificationOutbox.findUnique({ where: { id } });
     expect(row!.status).toBe("PENDING");
     expect(row!.attempts).toBe(0);
@@ -3088,7 +2720,7 @@ describe("outbox", () => {
 
   it("retry requires auth", async () => {
     const id = await makeFailedNotif();
-    const res = await post(`/outbox/${id}/retry`, null, { csrf_token: "x" });
+    const res = await post(`/api/outbox/${id}/retry`, null, { csrf_token: "x" });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
     expect((await prisma.notificationOutbox.findUnique({ where: { id } }))!.status).toBe("FAILED");
@@ -3096,7 +2728,7 @@ describe("outbox", () => {
 
   it("retry rejects bad CSRF", async () => {
     const id = await makeFailedNotif();
-    const res = await post(`/outbox/${id}/retry`, seed.cookie, { csrf_token: "bad" });
+    const res = await post(`/api/outbox/${id}/retry`, seed.cookie, { csrf_token: "bad" });
     expect(res.statusCode).toBe(403);
     expect((await prisma.notificationOutbox.findUnique({ where: { id } }))!.status).toBe("FAILED");
   });
@@ -3107,14 +2739,13 @@ describe("outbox", () => {
 describe("wallet ledger", () => {
   it("adjustment requires a reason", async () => {
     const before = Number((await getUser(prisma, seed.customerId))!.walletBalance);
-    const res = await post(`/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "5.00" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    const res = await post(`/api/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "5.00" });
+    expect(res.statusCode).toBe(400);
     expect(Number((await getUser(prisma, seed.customerId))!.walletBalance)).toBe(before);
   });
 
   it("ledger lists a prior adjustment with its reason", async () => {
-    await post(`/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "7.50", note: "promo credit" });
+    await post(`/api/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: seed.csrf, delta: "7.50", note: "promo credit" });
     const res = await get(`/api/users/${seed.customerId}`, seed.cookie);
     expect(res.statusCode).toBe(200);
     const data = JSON.parse(res.body) as { ledger: Array<{ note: string }> };
@@ -3125,6 +2756,16 @@ describe("wallet ledger", () => {
 // ---- reviews moderation (Tier 2 §5) ---------------------------------------
 
 describe("reviews moderation", () => {
+  function postJson(url: string, cookie: string | null, csrf: string | null, body: Record<string, unknown>) {
+    return app.inject({
+      method: "POST",
+      url,
+      headers: { "content-type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+
   async function makeReview(hidden = false): Promise<number> {
     const user = (await getUser(prisma, seed.customerId))!;
     const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
@@ -3136,9 +2777,8 @@ describe("reviews moderation", () => {
 
   it("hide → hidden + audit", async () => {
     const id = await makeReview();
-    const res = await post(`/reviews/${id}/hide`, seed.cookie, { csrf_token: seed.csrf, hidden: "true" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    const res = await postJson(`/api/reviews/${id}/hide`, seed.cookie, seed.csrf, { hidden: true });
+    expect(res.statusCode).toBe(200);
     expect((await prisma.review.findUnique({ where: { id } }))!.hidden).toBe(true);
     const audit = await prisma.auditLog.findMany({ where: { action: "review_hide", targetId: id } });
     expect(audit.length).toBe(1);
@@ -3146,14 +2786,14 @@ describe("reviews moderation", () => {
 
   it("unhide restores the review", async () => {
     const id = await makeReview(true);
-    const res = await post(`/reviews/${id}/hide`, seed.cookie, { csrf_token: seed.csrf, hidden: "false" });
-    expect(res.statusCode).toBe(303);
+    const res = await postJson(`/api/reviews/${id}/hide`, seed.cookie, seed.csrf, { hidden: false });
+    expect(res.statusCode).toBe(200);
     expect((await prisma.review.findUnique({ where: { id } }))!.hidden).toBe(false);
   });
 
   it("hide requires auth", async () => {
     const id = await makeReview();
-    const res = await post(`/reviews/${id}/hide`, null, { csrf_token: "x", hidden: "true" });
+    const res = await postJson(`/api/reviews/${id}/hide`, null, "x", { hidden: true });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
     expect((await prisma.review.findUnique({ where: { id } }))!.hidden).toBe(false);
@@ -3161,7 +2801,7 @@ describe("reviews moderation", () => {
 
   it("hide rejects bad CSRF", async () => {
     const id = await makeReview();
-    const res = await post(`/reviews/${id}/hide`, seed.cookie, { csrf_token: "bad", hidden: "true" });
+    const res = await postJson(`/api/reviews/${id}/hide`, seed.cookie, "bad", { hidden: true });
     expect(res.statusCode).toBe(403);
     expect((await prisma.review.findUnique({ where: { id } }))!.hidden).toBe(false);
   });
@@ -3212,35 +2852,11 @@ describe("global search", () => {
 // ---- bulk operations (Tier 2 §8) ------------------------------------------
 
 describe("bulk operations", () => {
-  it("bulk deactivate then activate PRODUCTS (mid-tier) + audit", async () => {
-    const res = await post("/catalog/products/bulk", seed.cookie, { csrf_token: seed.csrf, ids: String(seed.catalogProductId), action: "deactivate" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    expect((await getCatalogProduct(prisma, seed.catalogProductId))!.isActive).toBe(false);
-    const audit = await prisma.auditLog.findMany({ where: { action: "product_bulk_active" } });
-    expect(audit.length).toBeGreaterThanOrEqual(1);
-
-    await post("/catalog/products/bulk", seed.cookie, { csrf_token: seed.csrf, ids: String(seed.catalogProductId), action: "activate" });
-    expect((await getCatalogProduct(prisma, seed.catalogProductId))!.isActive).toBe(true);
-  });
-
-  it("bulk mark stock dead (available only) + audit never logs credentials", async () => {
-    const items = await prisma.stockItem.findMany({ where: { productId: seed.productId, status: "AVAILABLE" } });
-    const ids = items.slice(0, 2).map((i) => i.id);
-    const res = await post(`/stock/${seed.productId}/bulk-dead`, seed.cookie, { csrf_token: seed.csrf, ids: ids.join(","), note: "leaked batch" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
-    for (const id of ids) expect((await prisma.stockItem.findUnique({ where: { id } }))!.status).toBe("DEAD");
-    const audit = await prisma.auditLog.findMany({ where: { action: "stock_bulk_dead", targetId: seed.productId } });
-    expect(audit.length).toBe(1);
-    expect(audit.every((a) => !(a.details ?? "").includes("@"))).toBe(true);
-  });
-
-  it("empty selection is rejected", async () => {
-    const res = await post("/catalog/products/bulk", seed.cookie, { csrf_token: seed.csrf, ids: "", action: "deactivate" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
-  });
+  // bulk product active-toggle (happy path + empty-selection 400 + auth/CSRF):
+  // covered by "catalog JSON API — category update/toggle, product
+  // delete/bulk-active, bulk pricing" > "POST /api/catalog/products/bulk-active".
+  // Bulk mark-stock-dead happy path: covered by "stock JSON API — bulk-dead,
+  // bulk-delete, item note/dead, download" > "POST /api/stock/:productId/bulk-dead".
 
   it("CSV import: preview is read-only, apply creates the valid rows (category|product|denomination|type|duration|price|cost|reseller|warranty)", async () => {
     const cat = (await prisma.category.findUnique({ where: { id: seed.categoryId } }))!;
@@ -3273,9 +2889,8 @@ describe("bulk operations", () => {
     expect(await prisma.denomination.count()).toBe(beforeDenoms);
 
     // Step 2 — apply: only the 2 valid rows are created (2 new products, 2 new denominations).
-    const apply = await post("/catalog/products/import/apply", seed.cookie, { csrf_token: seed.csrf, csv });
-    expect(apply.statusCode).toBe(303);
-    expect(apply.headers.location).toContain("kind=success");
+    const apply = await post("/api/catalog/products/import/apply", seed.cookie, { csrf_token: seed.csrf, csv });
+    expect(apply.statusCode).toBe(200);
     expect(await prisma.product.count()).toBe(beforeProducts + 2);
     expect(await prisma.denomination.count()).toBe(beforeDenoms + 2);
     const b = await prisma.denomination.findFirst({ where: { name: "12 Months" } });
@@ -3284,7 +2899,7 @@ describe("bulk operations", () => {
     expect(Number(b!.resellerPrice)).toBeCloseTo(60);
     expect(b!.warrantyDays).toBe(30);
     expect(b!.description).toBe("nice");
-    const audit = await prisma.auditLog.findMany({ where: { action: "product_csv_import" } });
+    const audit = await prisma.auditLog.findMany({ where: { action: "catalog_import" } });
     expect(audit.length).toBe(1);
   });
 
@@ -3294,9 +2909,8 @@ describe("bulk operations", () => {
     const csv = `${cat.name} | ${existing!.name} | 1 Year | shared | 1 Year | 50`;
     const beforeProducts = await prisma.product.count();
 
-    const apply = await post("/catalog/products/import/apply", seed.cookie, { csrf_token: seed.csrf, csv });
-    expect(apply.statusCode).toBe(303);
-    expect(apply.headers.location).toContain("kind=success");
+    const apply = await post("/api/catalog/products/import/apply", seed.cookie, { csrf_token: seed.csrf, csv });
+    expect(apply.statusCode).toBe(200);
     expect(await prisma.product.count()).toBe(beforeProducts); // no new product
     const newDenom = await prisma.denomination.findFirst({ where: { name: "1 Year" } });
     expect(newDenom!.productId).toBe(seed.catalogProductId);
@@ -3304,29 +2918,19 @@ describe("bulk operations", () => {
 
   it("CSV import: all-invalid is rejected on apply", async () => {
     const before = await prisma.denomination.count();
-    const res = await post("/catalog/products/import/apply", seed.cookie, {
+    const res = await post("/api/catalog/products/import/apply", seed.cookie, {
       csrf_token: seed.csrf, csv: "NoSuchCat | X | 1 Month | shared | 1 Month | 5",
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    expect(res.statusCode).toBe(400);
     expect(await prisma.denomination.count()).toBe(before);
   });
 
   it("CSV import apply requires auth and rejects bad CSRF", async () => {
-    const anon = await post("/catalog/products/import/apply", null, { csrf_token: "x", csv: "a|b|c|shared|1 Month|5" });
+    const anon = await post("/api/catalog/products/import/apply", null, { csrf_token: "x", csv: "a|b|c|shared|1 Month|5" });
     expect(anon.statusCode).toBe(303);
     expect(anon.headers.location).toBe("/login");
-    const bad = await post("/catalog/products/import/apply", seed.cookie, { csrf_token: "bad", csv: "a|b|c|shared|1 Month|5" });
+    const bad = await post("/api/catalog/products/import/apply", seed.cookie, { csrf_token: "bad", csv: "a|b|c|shared|1 Month|5" });
     expect(bad.statusCode).toBe(403);
-  });
-
-  it("bulk requires auth and rejects bad CSRF", async () => {
-    const anon = await post("/catalog/products/bulk", null, { csrf_token: "x", ids: String(seed.catalogProductId), action: "deactivate" });
-    expect(anon.statusCode).toBe(303);
-    expect(anon.headers.location).toBe("/login");
-    const bad = await post("/catalog/products/bulk", seed.cookie, { csrf_token: "bad", ids: String(seed.catalogProductId), action: "deactivate" });
-    expect(bad.statusCode).toBe(403);
-    expect((await getCatalogProduct(prisma, seed.catalogProductId))!.isActive).toBe(true);
   });
 });
 
@@ -3336,58 +2940,57 @@ describe("rbac", () => {
   const setRole = (tg: number, role: string) => setSetting(prisma, webRoleKey(tg), role);
 
   it("canMutate role/area matrix", () => {
-    expect(canMutate("super", "/settings/edit")).toBe(true);
-    expect(canMutate("readonly", "/orders/1/approve")).toBe(false);
-    expect(canMutate("readonly", "/settings/password")).toBe(true); // self-service
-    expect(canMutate("support", "/orders/1/approve")).toBe(true);
-    expect(canMutate("support", "/reviews/1/hide")).toBe(true);
-    expect(canMutate("support", "/catalog/category")).toBe(false);
-    expect(canMutate("support", "/settings/edit")).toBe(false);
+    expect(canMutate("super", "/api/settings/edit")).toBe(true);
+    expect(canMutate("readonly", "/api/orders/1/approve")).toBe(false);
+    expect(canMutate("readonly", "/api/settings/password")).toBe(true); // self-service
+    expect(canMutate("support", "/api/orders/1/approve")).toBe(true);
+    expect(canMutate("support", "/api/reviews/1/hide")).toBe(true);
+    expect(canMutate("support", "/api/catalog/category")).toBe(false);
+    expect(canMutate("support", "/api/settings/edit")).toBe(false);
   });
 
   // Admin-4 (security audit, 2026-06-23): canMutate now strips the query
   // string itself, so callers that pass raw `req.url` (upload.ts, branding.ts,
   // catalog.ts) can't get an exact-match path check wrong.
   it("canMutate strips a query string itself, matching exact-path checks correctly", () => {
-    expect(canMutate("readonly", "/settings/password?foo=bar")).toBe(true); // self-service, still matches
-    expect(canMutate("support", "/orders/1/approve?ref=abc")).toBe(true);
-    expect(canMutate("support", "/catalog/category?x=1")).toBe(false);
-    expect(canMutate("readonly", "/orders/1/approve?x=1")).toBe(false);
+    expect(canMutate("readonly", "/api/settings/password?foo=bar")).toBe(true); // self-service, still matches
+    expect(canMutate("support", "/api/orders/1/approve?ref=abc")).toBe(true);
+    expect(canMutate("support", "/api/catalog/category?x=1")).toBe(false);
+    expect(canMutate("readonly", "/api/orders/1/approve?x=1")).toBe(false);
   });
 
   it("readonly is blocked from mutations (403) but can still view", async () => {
     await setRole(ADMIN_TG, "readonly");
-    const cat = await post("/catalog/category", seed.cookie, { csrf_token: seed.csrf, name: "Nope" });
+    const cat = await post("/api/catalog/categories", seed.cookie, { csrf_token: seed.csrf, name: "Nope" });
     expect(cat.statusCode).toBe(403);
-    const approveAttempt = await post(`/payments/match`, seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "x", order_code: "y" });
+    const approveAttempt = await post(`/api/payments/match`, seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "x", order_code: "y" });
     expect(approveAttempt.statusCode).toBe(403);
-    expect((await get("/catalog", seed.cookie)).statusCode).toBe(200); // reads OK
+    expect((await get("/api/catalog", seed.cookie)).statusCode).toBe(200); // reads OK
   });
 
   it("support can mutate ops but not config", async () => {
     await setRole(ADMIN_TG, "support");
     const orderId = await makePendingOrder();
-    const approve = await post(`/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
-    expect(approve.statusCode).toBe(303); // ops allowed
+    const approve = await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    expect(approve.statusCode).toBe(200); // ops allowed
     expect((await getOrder(prisma, orderId))!.status).toBe("DELIVERED");
-    const cat = await post("/catalog/category", seed.cookie, { csrf_token: seed.csrf, name: "Denied" });
+    const cat = await post("/api/catalog/categories", seed.cookie, { csrf_token: seed.csrf, name: "Denied" });
     expect(cat.statusCode).toBe(403); // config denied
   });
 
   it("/api/admins is super-only, assigns roles, and blocks self-demotion", async () => {
     expect((await get("/api/admins", seed.cookie)).statusCode).toBe(200); // super sees it
 
-    const set = await post("/admins/1000/role", seed.cookie, { csrf_token: seed.csrf, role: "support" });
-    expect(set.statusCode).toBe(303);
-    expect(set.headers.location).toContain("kind=success");
+    const set = await post("/api/admins/1000/role", seed.cookie, { csrf_token: seed.csrf, role: "support" });
+    expect(set.statusCode).toBe(200);
     expect(await getSetting(prisma, webRoleKey(1000))).toBe("support");
 
-    const self = await post(`/admins/${ADMIN_TG}/role`, seed.cookie, { csrf_token: seed.csrf, role: "readonly" });
-    expect(self.headers.location).toContain("kind=error"); // can't demote yourself
+    const self = await post(`/api/admins/${ADMIN_TG}/role`, seed.cookie, { csrf_token: seed.csrf, role: "readonly" });
+    expect(self.statusCode).toBe(403); // can't demote yourself
     expect(await getSetting(prisma, webRoleKey(ADMIN_TG))).not.toBe("readonly");
 
-    const notAdmin = await post("/admins/424242/role", seed.cookie, { csrf_token: seed.csrf, role: "support" });
-    expect(notAdmin.headers.location).toContain("kind=error"); // not in ADMIN_IDS
+    const notAdmin = await post("/api/admins/424242/role", seed.cookie, { csrf_token: seed.csrf, role: "support" });
+    expect(notAdmin.statusCode).toBe(404); // not in ADMIN_IDS
 
     await setRole(ADMIN_TG, "support");
     expect((await get("/api/admins", seed.cookie)).statusCode).toBe(403); // non-super blocked
@@ -3405,17 +3008,17 @@ describe("2fa", () => {
   });
 
   it("enroll flow: begin → enable with a valid code (wrong code rejected)", async () => {
-    const begin = await post("/settings/2fa/begin", seed.cookie, { csrf_token: seed.csrf });
-    expect(begin.statusCode).toBe(303);
+    const begin = await post("/api/settings/2fa/begin", seed.cookie, { csrf_token: seed.csrf });
+    expect(begin.statusCode).toBe(200);
     const pending = await getSetting(prisma, twoFaPendingKey(ADMIN_TG));
     expect(pending).not.toBeNull();
 
-    const wrong = await post("/settings/2fa/enable", seed.cookie, { csrf_token: seed.csrf, totp_code: "000000" });
-    expect(wrong.headers.location).toContain("kind=error");
+    const wrong = await post("/api/settings/2fa/enable", seed.cookie, { csrf_token: seed.csrf, totp_code: "000000" });
+    expect(wrong.statusCode).toBe(400);
     expect(await getSetting(prisma, twoFaSecretKey(ADMIN_TG))).toBeNull();
 
-    const ok = await post("/settings/2fa/enable", seed.cookie, { csrf_token: seed.csrf, totp_code: currentTotp(pending!) });
-    expect(ok.headers.location).toContain("kind=success");
+    const ok = await post("/api/settings/2fa/enable", seed.cookie, { csrf_token: seed.csrf, totp_code: currentTotp(pending!) });
+    expect(ok.statusCode).toBe(200);
     expect(await getSetting(prisma, twoFaSecretKey(ADMIN_TG))).toBe(pending);
     expect(await getSetting(prisma, twoFaPendingKey(ADMIN_TG))).toBeNull(); // pending consumed
   });
@@ -3441,33 +3044,31 @@ describe("2fa", () => {
     const secret = generateTotpSecret();
     await setSetting(prisma, twoFaSecretKey(ADMIN_TG), secret);
 
-    const badPw = await post("/settings/2fa/disable", seed.cookie, { csrf_token: seed.csrf, current_password: "wrong", totp_code: currentTotp(secret) });
-    expect(badPw.headers.location).toContain("kind=error");
+    const badPw = await post("/api/settings/2fa/disable", seed.cookie, { csrf_token: seed.csrf, current_password: "wrong", totp_code: currentTotp(secret) });
+    expect(badPw.statusCode).toBe(403);
     expect(await getSetting(prisma, twoFaSecretKey(ADMIN_TG))).toBe(secret);
 
-    const ok = await post("/settings/2fa/disable", seed.cookie, { csrf_token: seed.csrf, current_password: "pw12345678", totp_code: currentTotp(secret) });
-    expect(ok.headers.location).toContain("kind=success");
+    const ok = await post("/api/settings/2fa/disable", seed.cookie, { csrf_token: seed.csrf, current_password: "pw12345678", totp_code: currentTotp(secret) });
+    expect(ok.statusCode).toBe(200);
     expect(await getSetting(prisma, twoFaSecretKey(ADMIN_TG))).toBeNull();
   });
 
   it("a readonly admin can still manage their own 2FA", async () => {
     await setSetting(prisma, webRoleKey(ADMIN_TG), "readonly");
-    const begin = await post("/settings/2fa/begin", seed.cookie, { csrf_token: seed.csrf });
-    expect(begin.statusCode).toBe(303);
-    expect(begin.headers.location).not.toContain("kind=error"); // self-service allowed
+    const begin = await post("/api/settings/2fa/begin", seed.cookie, { csrf_token: seed.csrf });
+    expect(begin.statusCode).toBe(200); // self-service allowed
   });
 });
 
 describe("session management", () => {
   it("super can force-logout another admin (rotates their jti); not self", async () => {
     await setSetting(prisma, sessionJtiKey(1000), "jti-1000");
-    const res = await post("/admins/1000/logout", seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    const res = await post("/api/admins/1000/logout", seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, sessionJtiKey(1000))).not.toBe("jti-1000"); // rotated
 
-    const self = await post(`/admins/${ADMIN_TG}/logout`, seed.cookie, { csrf_token: seed.csrf });
-    expect(self.headers.location).toContain("kind=error");
+    const self = await post(`/api/admins/${ADMIN_TG}/logout`, seed.cookie, { csrf_token: seed.csrf });
+    expect(self.statusCode).toBe(403);
   });
 });
 
@@ -3482,9 +3083,8 @@ describe("manage DB admins", () => {
   });
 
   it("add: happy path — id appears in adminIds() and GET /api/admins lists it", async () => {
-    const res = await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    const res = await post("/api/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+    expect(res.statusCode).toBe(201);
     // Live runtime updated without restart.
     expect(isAdmin(NEW_ADMIN_TG)).toBe(true);
     // API lists the new id.
@@ -3495,69 +3095,63 @@ describe("manage DB admins", () => {
   });
 
   it("add: rejects a non-integer telegram_id", async () => {
-    const res = await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: "notanumber" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    const res = await post("/api/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: "notanumber" });
+    expect(res.statusCode).toBe(400);
     expect(isAdmin(NaN)).toBe(false);
   });
 
   it("add: requires auth (anon → 303 /login)", async () => {
-    const res = await post("/admins/add", null, { csrf_token: "x", telegram_id: String(NEW_ADMIN_TG) });
+    const res = await post("/api/admins/add", null, { csrf_token: "x", telegram_id: String(NEW_ADMIN_TG) });
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
     expect(isAdmin(NEW_ADMIN_TG)).toBe(false);
   });
 
   it("add: rejects bad CSRF (403)", async () => {
-    const res = await post("/admins/add", seed.cookie, { csrf_token: "wrong", telegram_id: String(NEW_ADMIN_TG) });
+    const res = await post("/api/admins/add", seed.cookie, { csrf_token: "wrong", telegram_id: String(NEW_ADMIN_TG) });
     expect(res.statusCode).toBe(403);
     expect(isAdmin(NEW_ADMIN_TG)).toBe(false);
   });
 
   it("remove: removes a DB admin from runtime and DB", async () => {
     // First add it.
-    await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+    await post("/api/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
     expect(isAdmin(NEW_ADMIN_TG)).toBe(true);
 
-    const res = await post("/admins/remove", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    const res = await post("/api/admins/remove", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+    expect(res.statusCode).toBe(200);
     expect(isAdmin(NEW_ADMIN_TG)).toBe(false);
   });
 
   it("remove: cannot remove an env-based admin", async () => {
     const envAdmin = config.ADMIN_IDS[0]!;
-    const res = await post("/admins/remove", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(envAdmin) });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    const res = await post("/api/admins/remove", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(envAdmin) });
+    expect(res.statusCode).toBe(403);
     expect(isAdmin(envAdmin)).toBe(true);
   });
 
   it("remove: cannot remove self", async () => {
-    const res = await post("/admins/remove", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(ADMIN_TG) });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    const res = await post("/api/admins/remove", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(ADMIN_TG) });
+    expect(res.statusCode).toBe(403);
   });
 
   it("add: defaults a new DB admin to readonly, NOT super (no privilege escalation by default)", async () => {
-    await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+    await post("/api/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
     expect(await getSetting(prisma, webRoleKey(NEW_ADMIN_TG))).toBe("readonly");
   });
 
-  it("a DB-added admin's role CAN be set/demoted/promoted via /admins/:tgId/role", async () => {
-    await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
-    const res = await post(`/admins/${NEW_ADMIN_TG}/role`, seed.cookie, { csrf_token: seed.csrf, role: "support" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+  it("a DB-added admin's role CAN be set/demoted/promoted via /api/admins/:tgId/role", async () => {
+    await post("/api/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+    const res = await post(`/api/admins/${NEW_ADMIN_TG}/role`, seed.cookie, { csrf_token: seed.csrf, role: "support" });
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, webRoleKey(NEW_ADMIN_TG))).toBe("support");
   });
 
-  it("a DB-added admin CAN be force-logged-out via /admins/:tgId/logout", async () => {
-    await post("/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
+  it("a DB-added admin CAN be force-logged-out via /api/admins/:tgId/logout", async () => {
+    await post("/api/admins/add", seed.cookie, { csrf_token: seed.csrf, telegram_id: String(NEW_ADMIN_TG) });
     await setSetting(prisma, sessionJtiKey(NEW_ADMIN_TG), "jti-db-admin");
-    const res = await post(`/admins/${NEW_ADMIN_TG}/logout`, seed.cookie, { csrf_token: seed.csrf });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    const res = await post(`/api/admins/${NEW_ADMIN_TG}/logout`, seed.cookie, { csrf_token: seed.csrf });
+    expect(res.statusCode).toBe(200);
     expect(await getSetting(prisma, sessionJtiKey(NEW_ADMIN_TG))).not.toBe("jti-db-admin");
   });
 });
@@ -3573,9 +3167,8 @@ describe("broadcast", () => {
   });
 
   it("enqueues a PENDING broadcast + audit, and sends nothing itself", async () => {
-    const res = await post("/broadcast", seed.cookie, { csrf_token: seed.csrf, message: "New stock!", segment: "ALL" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=success");
+    const res = await post("/api/broadcast", seed.cookie, { csrf_token: seed.csrf, message: "New stock!", segment: "ALL" });
+    expect(res.statusCode).toBe(201);
     const rows = await prisma.broadcast.findMany();
     expect(rows.length).toBe(1);
     expect(rows[0]!.status).toBe("PENDING");
@@ -3587,25 +3180,25 @@ describe("broadcast", () => {
   });
 
   it("rejects empty message and bad segment", async () => {
-    expect((await post("/broadcast", seed.cookie, { csrf_token: seed.csrf, message: "   ", segment: "ALL" })).headers.location).toContain("kind=error");
-    expect((await post("/broadcast", seed.cookie, { csrf_token: seed.csrf, message: "hi", segment: "NOPE" })).headers.location).toContain("kind=error");
+    expect((await post("/api/broadcast", seed.cookie, { csrf_token: seed.csrf, message: "   ", segment: "ALL" })).statusCode).toBe(400);
+    expect((await post("/api/broadcast", seed.cookie, { csrf_token: seed.csrf, message: "hi", segment: "NOPE" })).statusCode).toBe(400);
     expect(await prisma.broadcast.count()).toBe(0);
   });
 
   it("cancels a PENDING broadcast but not one already sent", async () => {
-    await post("/broadcast", seed.cookie, { csrf_token: seed.csrf, message: "x", segment: "RESELLERS" });
+    await post("/api/broadcast", seed.cookie, { csrf_token: seed.csrf, message: "x", segment: "RESELLERS" });
     const bc = (await prisma.broadcast.findFirst())!;
-    const ok = await post(`/broadcast/${bc.id}/cancel`, seed.cookie, { csrf_token: seed.csrf });
-    expect(ok.headers.location).toContain("kind=success");
+    const ok = await post(`/api/broadcast/${bc.id}/cancel`, seed.cookie, { csrf_token: seed.csrf });
+    expect(ok.statusCode).toBe(200);
     expect((await prisma.broadcast.findUnique({ where: { id: bc.id } }))!.status).toBe("CANCELLED");
-    expect((await post(`/broadcast/${bc.id}/cancel`, seed.cookie, { csrf_token: seed.csrf })).headers.location).toContain("kind=error");
+    expect((await post(`/api/broadcast/${bc.id}/cancel`, seed.cookie, { csrf_token: seed.csrf })).statusCode).toBe(409);
   });
 
   it("requires auth and rejects bad CSRF", async () => {
-    const anon = await post("/broadcast", null, { csrf_token: "x", message: "hi", segment: "ALL" });
+    const anon = await post("/api/broadcast", null, { csrf_token: "x", message: "hi", segment: "ALL" });
     expect(anon.statusCode).toBe(303);
     expect(anon.headers.location).toBe("/login");
-    const bad = await post("/broadcast", seed.cookie, { csrf_token: "bad", message: "hi", segment: "ALL" });
+    const bad = await post("/api/broadcast", seed.cookie, { csrf_token: "bad", message: "hi", segment: "ALL" });
     expect(bad.statusCode).toBe(403);
     expect(await prisma.broadcast.count()).toBe(0);
   });

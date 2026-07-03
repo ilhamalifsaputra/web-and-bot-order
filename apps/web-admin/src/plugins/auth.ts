@@ -51,10 +51,15 @@ export async function optionalAdmin(req: FastifyRequest): Promise<AdminSession |
 // ---- RBAC: which roles may MUTATE which areas ------------------------------
 // Reads (GET) are open to every authenticated admin; only mutations are gated.
 
-// Structural / money / account / high-impact routes — super only.
-const CONFIG_PREFIXES = ["/catalog", "/vouchers", "/users", "/settings", "/stock", "/admins", "/broadcast"];
+// Structural / money / account / high-impact routes — super only. All
+// mutations now arrive at the JSON /api/* surface (the legacy form routes
+// these prefixes originally matched were deleted once the React SPA became
+// the only caller — see docs/audit-fitur-md-2026-07-04.md); these prefixes
+// must track the live paths or every non-super role silently loses its RBAC
+// grants (a real regression caught by the /api/* test-trio work).
+const CONFIG_PREFIXES = ["/api/catalog", "/api/vouchers", "/api/users", "/api/settings", "/api/stock", "/api/admins", "/api/broadcast"];
 // Operational routes — super + support.
-const OPS_PREFIXES = ["/orders", "/support", "/outbox", "/payments", "/reviews"];
+const OPS_PREFIXES = ["/api/orders", "/api/support", "/api/outbox", "/api/payments", "/api/reviews"];
 
 const underAny = (path: string, prefixes: string[]) =>
   prefixes.some((p) => path === p || path.startsWith(p + "/"));
@@ -72,7 +77,7 @@ export function canMutate(role: WebRole, rawPath: string): boolean {
   const path = (rawPath.split("?")[0] || rawPath) ?? "/";
   if (role === "super") return true;
   // Self-service for every authenticated admin: own password + own 2FA.
-  if (path === "/settings/password" || path.startsWith("/settings/2fa/")) return true;
+  if (path === "/api/settings/password" || path.startsWith("/api/settings/2fa/")) return true;
   if (role === "readonly") return false;
   // support: operational areas only (default-deny on anything unrecognized).
   return underAny(path, OPS_PREFIXES) && !underAny(path, CONFIG_PREFIXES);

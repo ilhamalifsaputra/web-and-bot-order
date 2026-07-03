@@ -39,6 +39,7 @@ const PRODUCT_DETAIL = {
         resellerPrice: null,
         warrantyDays: 30,
         description: "Shared profile",
+        sortOrder: 5,
       },
     ],
   },
@@ -86,6 +87,7 @@ describe("DenominationEditPage", () => {
         costPrice: "10000",
         warrantyDays: 30,
         description: "Shared profile",
+        sortOrder: 5,
       }),
     );
     await waitFor(() => expect(screen.getByText("product-detail-page")).toBeInTheDocument());

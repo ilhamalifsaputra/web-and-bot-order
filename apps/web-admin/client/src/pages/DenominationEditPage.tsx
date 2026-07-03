@@ -13,7 +13,7 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import { apiGet, apiPatch } from "../api/client";
+import { apiGet, apiPatch, apiPost, apiDelete } from "../api/client";
 
 const DENOMINATION_TYPES = [
   { value: "SHARED", label: "Shared" },
@@ -30,10 +30,31 @@ interface EditableDenomination {
   resellerPrice: string | null;
   warrantyDays: number;
   description: string | null;
+  sortOrder: number;
+}
+
+interface BulkPricingRule {
+  minQuantity: number;
+  discountPercent: string;
 }
 
 interface ProductDetailForEdit {
-  product: { id: number; denominations: EditableDenomination[] };
+  product: {
+    id: number;
+    category: { id: number; name: string } | null;
+    denominations: EditableDenomination[];
+  };
+  statsByDenom: Record<number, { rule: BulkPricingRule | null }>;
+}
+
+interface SiblingProduct {
+  id: number;
+  name: string;
+  category: { id: number; name: string } | null;
+}
+
+interface CatalogListData {
+  products: SiblingProduct[];
 }
 
 function isValidPrice(value: string): boolean {
@@ -53,6 +74,14 @@ export function DenominationEditPage() {
   });
   const denomination = data?.product.denominations.find((d) => d.id === Number(denomId));
 
+  const { data: catalogList } = useQuery<CatalogListData>({
+    queryKey: ["catalog"],
+    queryFn: async () => apiGet<CatalogListData>("/api/catalog"),
+  });
+  const siblingProducts = (catalogList?.products ?? []).filter(
+    (p) => p.category?.id === data?.product.category?.id,
+  );
+
   const [loaded, setLoaded] = useState(false);
   const [name, setName] = useState("");
   const [type, setType] = useState<string | null>(null);
@@ -62,7 +91,14 @@ export function DenominationEditPage() {
   const [resellerPrice, setResellerPrice] = useState("");
   const [warrantyDays, setWarrantyDays] = useState("");
   const [description, setDescription] = useState("");
+  const [sortOrder, setSortOrder] = useState("");
+  const [moveToProductId, setMoveToProductId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const [bulkMinQuantity, setBulkMinQuantity] = useState("");
+  const [bulkDiscountPercent, setBulkDiscountPercent] = useState("");
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const existingRule = data?.statsByDenom?.[Number(denomId)]?.rule ?? null;
 
   useEffect(() => {
     if (loaded || !denomination) return;
@@ -74,8 +110,14 @@ export function DenominationEditPage() {
     setResellerPrice(denomination.resellerPrice ?? "");
     setWarrantyDays(denomination.warrantyDays ? String(denomination.warrantyDays) : "");
     setDescription(denomination.description ?? "");
+    setSortOrder(String(denomination.sortOrder ?? 0));
+    setMoveToProductId(productId ?? null);
+    if (existingRule) {
+      setBulkMinQuantity(String(existingRule.minQuantity));
+      setBulkDiscountPercent(existingRule.discountPercent);
+    }
     setLoaded(true);
-  }, [denomination, loaded]);
+  }, [denomination, loaded, existingRule]);
 
   const save = useMutation({
     mutationFn: () =>
@@ -88,14 +130,45 @@ export function DenominationEditPage() {
         ...(resellerPrice.trim() ? { resellerPrice: resellerPrice.trim() } : {}),
         ...(warrantyDays.trim() ? { warrantyDays: Number(warrantyDays.trim()) } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
+        ...(sortOrder.trim() ? { sortOrder: Number(sortOrder.trim()) } : {}),
+        ...(moveToProductId && moveToProductId !== productId ? { productId: Number(moveToProductId) } : {}),
       }),
     onMutate: () => setError(null),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["catalog", productId] });
-      navigate(`/catalog/${productId}`);
+      const destinationProductId = moveToProductId && moveToProductId !== productId ? moveToProductId : productId;
+      navigate(`/catalog/${destinationProductId}`);
     },
     onError: (e: Error) => setError(e.message),
   });
+
+  const saveBulkPricing = useMutation({
+    mutationFn: () =>
+      apiPost(`/api/catalog/denominations/${denomId}/bulk-pricing`, {
+        minQuantity: Number(bulkMinQuantity.trim()),
+        discountPercent: bulkDiscountPercent.trim(),
+      }),
+    onMutate: () => setBulkError(null),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["catalog", productId] }),
+    onError: (e: Error) => setBulkError(e.message),
+  });
+
+  const removeBulkPricing = useMutation({
+    mutationFn: () => apiDelete(`/api/catalog/denominations/${denomId}/bulk-pricing`),
+    onMutate: () => setBulkError(null),
+    onSuccess: () => {
+      setBulkMinQuantity("");
+      setBulkDiscountPercent("");
+      void qc.invalidateQueries({ queryKey: ["catalog", productId] });
+    },
+    onError: (e: Error) => setBulkError(e.message),
+  });
+
+  const canSaveBulkPricing =
+    Number.isInteger(Number(bulkMinQuantity.trim())) &&
+    Number(bulkMinQuantity.trim()) >= 1 &&
+    bulkDiscountPercent.trim() !== "" &&
+    !Number.isNaN(Number(bulkDiscountPercent.trim()));
 
   const canSubmit =
     name.trim().length > 0 &&
@@ -175,6 +248,34 @@ export function DenominationEditPage() {
         </div>
 
         <div>
+          <label className="text-sm font-medium text-ink">Sort Order</label>
+          <Input
+            className="mt-1 w-32"
+            placeholder="0"
+            value={sortOrder}
+            onChange={(e) => setSortOrder(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-ink-soft">Lower numbers show first in the product detail list.</p>
+        </div>
+
+        <div>
+          <label className="text-sm font-medium text-ink">Move to Product</label>
+          <Select value={moveToProductId ?? ""} onValueChange={(v) => setMoveToProductId(v)}>
+            <SelectTrigger className="mt-1">
+              <SelectValue placeholder="Select product" />
+            </SelectTrigger>
+            <SelectContent>
+              {siblingProducts.map((p) => (
+                <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="mt-1 text-xs text-ink-soft">
+            Only products in the same category can be selected.
+          </p>
+        </div>
+
+        <div>
           <label className="text-sm font-medium text-ink">Description</label>
           <Textarea className="mt-1" rows={3} placeholder="Optional" value={description} onChange={(e) => setDescription(e.target.value)} />
         </div>
@@ -184,6 +285,51 @@ export function DenominationEditPage() {
         <Button disabled={!canSubmit || save.isPending} onClick={() => save.mutate()}>
           {save.isPending ? "Saving…" : "Save Changes"}
         </Button>
+
+        <div className="mt-4 border-t border-line pt-4">
+          <h2 className="text-sm font-medium text-ink">Bulk Pricing</h2>
+          <p className="mt-1 text-xs text-ink-soft">
+            Give a quantity discount when a customer buys this denomination in bulk.
+          </p>
+
+          <div className="mt-3 flex items-end gap-3">
+            <div>
+              <label className="text-sm font-medium text-ink">Min Quantity</label>
+              <Input
+                className="mt-1 w-28"
+                placeholder="e.g. 5"
+                value={bulkMinQuantity}
+                onChange={(e) => setBulkMinQuantity(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-ink">Discount %</label>
+              <Input
+                className="mt-1 w-28"
+                placeholder="e.g. 10"
+                value={bulkDiscountPercent}
+                onChange={(e) => setBulkDiscountPercent(e.target.value)}
+              />
+            </div>
+            <Button
+              variant="outline"
+              disabled={!canSaveBulkPricing || saveBulkPricing.isPending}
+              onClick={() => saveBulkPricing.mutate()}
+            >
+              {saveBulkPricing.isPending ? "Saving…" : existingRule ? "Update" : "Save"}
+            </Button>
+            {existingRule && (
+              <Button
+                variant="ghost"
+                disabled={removeBulkPricing.isPending}
+                onClick={() => removeBulkPricing.mutate()}
+              >
+                Remove
+              </Button>
+            )}
+          </div>
+          {bulkError && <p className="mt-2 text-sm text-rust">{bulkError}</p>}
+        </div>
       </div>
     </PageLayout>
   );

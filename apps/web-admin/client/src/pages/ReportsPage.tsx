@@ -4,9 +4,10 @@ import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { EmptyState } from "../components/shared/EmptyState";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
+import { Button } from "@/components/ui/button";
 
 interface DayRevenue {
-  date: string;
+  day: string;
   revenue_idr: string;
   revenue_usdt: string;
   orders: number;
@@ -35,7 +36,14 @@ export function ReportsPage() {
 
   return (
     <PageLayout title="Reports">
-      <PageHeader title="Reports" />
+      <PageHeader
+        title="Reports"
+        actions={
+          <a href="/api/reports/export">
+            <Button variant="outline" size="sm">Export CSV</Button>
+          </a>
+        }
+      />
 
       <div className="flex flex-col gap-6">
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
@@ -68,7 +76,7 @@ export function ReportsPage() {
                 <ResponsiveContainer width="100%" height={180}>
                   <AreaChart data={data.daily}>
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--color-line, #e5e7eb)" />
-                    <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                    <XAxis dataKey="day" tick={{ fontSize: 11 }} />
                     <YAxis tick={{ fontSize: 11 }} />
                     <Tooltip />
                     <Area type="monotone" dataKey="revenue_idr" stroke="#16a34a" fill="#dcfce7" />

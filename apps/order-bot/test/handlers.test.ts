@@ -14,7 +14,7 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
-import { prisma, createOrderDirect, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder } from "@app/db";
+import { prisma, createOrderDirect, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet } from "@app/db";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
@@ -953,6 +953,88 @@ describe("checkout handlers", () => {
     const editedText = JSON.stringify(lastEdit.args);
     expect(editedText).toContain(sample.parentProduct.name);
     expect(editedText).toContain("✕"); // checkout.cancelled_prefix stamp
+  });
+});
+
+// ===========================================================================
+// Wallet-credit checkout (walletm:*/walletpay:* — routed through routeCallback,
+// not just the checkout.ts functions directly, to prove the v1:walletm:*/
+// v1:walletpay:* callback-data wiring in callbacks.ts actually reaches them)
+// ===========================================================================
+
+describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
+  it("v1:walletm:idr toggles useWalletIdr on and re-renders the wallet-credit menu", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: `v1:walletm:idr:${sample.product.id}:1` });
+    await routeCallback(ctx);
+
+    expect(ctx.session.scratch.useWalletIdr).toBe(true);
+    expect(ctx.session.scratch.useWalletUsdt).toBe(false);
+    expect(sentIncludes(sink, "Confirm Order")).toBe(true);
+  });
+
+  it("v1:walletm:usdt is mutually exclusive with useWalletIdr", async () => {
+    const { ctx } = customerCtx({
+      callbackData: `v1:walletm:usdt:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletIdr: true } },
+    });
+    await routeCallback(ctx);
+
+    expect(ctx.session.scratch.useWalletUsdt).toBe(true);
+    expect(ctx.session.scratch.useWalletIdr).toBe(false);
+  });
+
+  it("v1:walletm:back returns to the plain order confirmation screen", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: `v1:walletm:back:${sample.product.id}:1` });
+    await routeCallback(ctx);
+
+    expect(sentIncludes(sink, "Confirm Order")).toBe(true);
+  });
+
+  it("v1:walletpay with useWalletIdr set and enough IDR credit: delivers the order via WALLET, clears the scratch flags", async () => {
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const { ctx, sink } = customerCtx({
+      callbackData: `v1:walletpay:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletIdr: true } },
+    });
+
+    await routeCallback(ctx);
+
+    const orders = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
+    expect(orders[0]!.status).toBe(OrderStatus.DELIVERED);
+    expect(orders[0]!.paymentMethod).toBe(PaymentMethod.WALLET);
+    expect(orders[0]!.currency).toBe(OrderCurrency.IDR);
+    expect(sentIncludes(sink, "Payment received")).toBe(true);
+    expect(ctx.session.scratch.useWalletIdr).toBeUndefined();
+    expect(ctx.session.scratch.useWalletUsdt).toBeUndefined();
+  });
+
+  it("v1:walletpay with useWalletUsdt set and enough USDT credit: delivers the order, IDR balance untouched", async () => {
+    await adjustWallet(prisma, sample.user.id, "5", { currency: "USDT", reason: "admin_adjust" });
+    await setSetting(prisma, "usd_idr_rate", "1"); // rate 1 keeps the USDT total numerically equal to the 5.00 price
+    const { ctx, sink } = customerCtx({
+      callbackData: `v1:walletpay:${sample.product.id}:1`,
+      session: { ...userSession(), scratch: { useWalletUsdt: true } },
+    });
+
+    await routeCallback(ctx);
+
+    const orders = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
+    expect(orders[0]!.status).toBe(OrderStatus.DELIVERED);
+    expect(orders[0]!.currency).toBe(OrderCurrency.USDT);
+    expect(sentIncludes(sink, "Payment received")).toBe(true);
+
+    const after = await getUser(prisma, sample.user.id);
+    expect(Number(after!.walletBalanceUsdt)).toBeCloseTo(0);
+  });
+
+  it("v1:walletpay with neither wallet flag set: stale-screen toast + re-render, no order created", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: `v1:walletpay:${sample.product.id}:1` });
+
+    await routeCallback(ctx);
+
+    expect(await prisma.order.count({ where: { userId: sample.user.id } })).toBe(0);
+    expect(calls(sink, "answerCallbackQuery").length).toBeGreaterThan(0);
+    expect(sentIncludes(sink, "Confirm Order")).toBe(true);
   });
 });
 

@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ImageUploadField } from "../components/shared/ImageUploadField";
+import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { apiPost } from "../api/client";
 
 interface BrandingData {
@@ -177,6 +178,20 @@ export function BrandingPage() {
                 <p className="pt-2 text-xs text-amberx">
                   Banner is stored as a Telegram file_id. Upload an image file to replace it.
                 </p>
+              )}
+              {(data.bannerUrl || data.bannerIsLegacy) && (
+                <div className="pt-2">
+                  <ConfirmDialog
+                    trigger={<Button variant="ghost" size="sm">Remove banner</Button>}
+                    title="Remove banner?"
+                    description="This clears the bot's promo banner. It won't be shown above the menu until a new one is uploaded."
+                    confirmLabel="Remove"
+                    onConfirm={async () => {
+                      await apiPost("/branding/banner/clear", {});
+                      invalidate();
+                    }}
+                  />
+                </div>
               )}
             </CardContent>
           </Card>

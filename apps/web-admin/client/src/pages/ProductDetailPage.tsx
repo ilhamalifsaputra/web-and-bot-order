@@ -10,8 +10,10 @@ import { ImageUploadField } from "../components/shared/ImageUploadField";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { AlertCircle } from "lucide-react";
-import { apiGet, apiPost, apiDelete } from "../api/client";
+import { apiGet, apiPost, apiPatch, apiDelete } from "../api/client";
 
 interface DenominationRow {
   id: number;
@@ -26,6 +28,7 @@ interface DenominationRow {
 interface ProductDetail {
   id: number;
   name: string;
+  description: string | null;
   isActive: boolean;
   webImageUrl: string | null;
   category: { id: number; name: string } | null;
@@ -59,6 +62,28 @@ export function ProductDetailPage() {
   const queryClient = useQueryClient();
   const [togglingProduct, setTogglingProduct] = useState<Set<number>>(new Set());
   const [togglingDenom, setTogglingDenom] = useState<Set<number>>(new Set());
+  const [editingProduct, setEditingProduct] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const [descriptionDraft, setDescriptionDraft] = useState("");
+  const [savingProduct, setSavingProduct] = useState(false);
+  const [productError, setProductError] = useState<string | null>(null);
+
+  async function saveProduct() {
+    setSavingProduct(true);
+    setProductError(null);
+    try {
+      await apiPatch(`/api/catalog/products/${productId}`, {
+        name: nameDraft.trim(),
+        description: descriptionDraft.trim(),
+      });
+      setEditingProduct(false);
+      await queryClient.invalidateQueries({ queryKey: ["catalog", productId] });
+    } catch (e) {
+      setProductError(e instanceof Error ? e.message : "Failed to save product.");
+    } finally {
+      setSavingProduct(false);
+    }
+  }
 
   async function toggleProductActive(id: number, active: boolean) {
     setTogglingProduct((s) => new Set([...s, id]));
@@ -140,7 +165,42 @@ export function ProductDetailPage() {
           />
           <span className="text-ink-soft">{product.isActive ? "Active" : "Inactive"}</span>
         </div>
+        {!editingProduct && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              setNameDraft(product.name);
+              setDescriptionDraft(product.description ?? "");
+              setEditingProduct(true);
+            }}
+          >
+            Edit name/description
+          </Button>
+        )}
       </div>
+
+      {editingProduct && (
+        <div className="mb-4 max-w-lg flex flex-col gap-3 rounded-lg border border-line bg-card p-4">
+          <div>
+            <label className="text-sm font-medium text-ink">Name</label>
+            <Input className="mt-1" value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} />
+          </div>
+          <div>
+            <label className="text-sm font-medium text-ink">Description</label>
+            <Textarea className="mt-1" rows={3} value={descriptionDraft} onChange={(e) => setDescriptionDraft(e.target.value)} />
+          </div>
+          {productError && <p className="text-sm text-rust">{productError}</p>}
+          <div className="flex gap-2">
+            <Button size="sm" disabled={!nameDraft.trim() || savingProduct} onClick={() => void saveProduct()}>
+              {savingProduct ? "Saving…" : "Save"}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => { setEditingProduct(false); setProductError(null); }}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
 
       <div className="mb-4 max-w-sm">
         <ImageUploadField

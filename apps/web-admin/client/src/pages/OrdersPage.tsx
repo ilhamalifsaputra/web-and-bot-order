@@ -91,9 +91,22 @@ export function OrdersPage() {
     setFilters({ status: "", q: "", since: "", until: "", page: 1 });
   }
 
+  const exportParams = new URLSearchParams();
+  if (filters.status) exportParams.set("status", filters.status);
+  if (filters.q) exportParams.set("q", filters.q);
+  if (filters.since) exportParams.set("since", filters.since);
+  if (filters.until) exportParams.set("until", filters.until);
+
   return (
     <PageLayout title="Orders">
-      <PageHeader title="Orders" />
+      <PageHeader
+        title="Orders"
+        actions={
+          <a href={`/api/orders/export?${exportParams.toString()}`}>
+            <Button variant="outline" size="sm">Export CSV</Button>
+          </a>
+        }
+      />
 
       <FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4">
         <div className="flex flex-col gap-1">

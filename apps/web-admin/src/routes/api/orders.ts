@@ -15,7 +15,7 @@ import {
   logAdminAction,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
-import { orderMoneyView } from "../orders";
+import { orderMoneyView } from "../orderMoneyView";
 
 const PAGE_SIZE = 50;
 const STATUS_VALUES = Object.values(OrderStatus) as string[];

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { Decimal } from "@app/core/money";
-import { orderMoneyView } from "./orders";
+import { orderMoneyView } from "./orderMoneyView";
 
 const base = {
   currency: "IDR",

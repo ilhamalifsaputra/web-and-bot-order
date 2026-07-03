@@ -197,28 +197,16 @@ export function StockPage() {
             key: "actions",
             header: "",
             render: (row) => (
-              <div className="flex items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    navigate(`/stock/${row.id}`);
-                  }}
-                >
-                  View
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    navigate(`/stock/${row.id}/add`);
-                  }}
-                >
-                  + Stock
-                </Button>
-              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate(`/stock/${row.id}`);
+                }}
+              >
+                View
+              </Button>
             ),
           },
         ]}

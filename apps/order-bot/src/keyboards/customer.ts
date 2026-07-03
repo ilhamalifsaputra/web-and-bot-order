@@ -410,9 +410,9 @@ export function orderConfirmKb(
   nowpaymentsEnabled = false,
   bybitBscEnabled = false,
   idrBalance: Decimal | null = null,
-  useWalletIdr = false,
   usdtBalance: Decimal | null = null,
-  useWalletUsdt = false,
+  walletDeduction: { currency: "IDR" | "USDT"; amount: string } | null = null,
+  fullyCovered = false,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   if (voucherCode) {
@@ -424,31 +424,33 @@ export function orderConfirmKb(
       { text: coreT("checkout.use_voucher", lang), data: cb("voucher", "start", productId, qty) },
     ]);
   }
-  if (idrBalance && idrBalance.greaterThan(0)) {
-    const amt = formatIdr(idrBalance);
+  // Single entry point for both wallet-credit currencies — opens walletCreditKb
+  // instead of toggling directly, so this screen doesn't grow a new row per
+  // credit type (or per future payment method).
+  const hasWalletBalance = (idrBalance != null && idrBalance.greaterThan(0)) || (usdtBalance != null && usdtBalance.greaterThan(0));
+  if (hasWalletBalance) {
     rows.push([
-      useWalletIdr
-        ? { text: coreT("checkout.wallet_idr_active_btn", lang, { amount: amt }), data: cb("wallet", "idr", productId, qty) }
-        : { text: coreT("checkout.use_wallet_idr_btn", lang, { amount: amt }), data: cb("wallet", "idr", productId, qty) },
+      walletDeduction
+        ? {
+            text: coreT("checkout.wallet_active_btn", lang, { currency: walletDeduction.currency, amount: walletDeduction.amount }),
+            data: cb("walletm", "open", productId, qty),
+          }
+        : { text: coreT("checkout.use_wallet_btn", lang), data: cb("walletm", "open", productId, qty) },
     ]);
   }
-  if (usdtBalance && usdtBalance.greaterThan(0)) {
-    const amt = formatPrice(usdtBalance, "USDT", 4);
+  if (fullyCovered) {
+    // The active wallet credit already brings the total to zero — a gateway
+    // button here would mean charging Rp0/​$0 through TokoPay/PayDisini/USDT,
+    // which is meaningless. Offer the one action that actually applies.
     rows.push([
-      useWalletUsdt
-        ? { text: coreT("checkout.wallet_usdt_active_btn", lang, { amount: amt }), data: cb("wallet", "usdt", productId, qty) }
-        : { text: coreT("checkout.use_wallet_usdt_btn", lang, { amount: amt }), data: cb("wallet", "usdt", productId, qty) },
+      { text: coreT("checkout.complete_order_btn", lang), data: cb("walletpay", productId, qty) },
     ]);
+  } else {
+    const hasUsdt = internalEnabled || bybitEnabled || bybitBscEnabled || nowpaymentsEnabled;
+    if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: cb("payq", productId, qty) }]);
+    if (paydisiniEnabled) rows.push([{ text: coreT("checkout.pay_paydisini_btn", lang), data: cb("payd", productId, qty) }]);
+    if (hasUsdt) rows.push([{ text: coreT("checkout.pay_usdt_btn", lang), data: cb("usdt", productId, qty) }]);
   }
-  const hasUsdt = internalEnabled || bybitEnabled || bybitBscEnabled || nowpaymentsEnabled;
-  // Top-level methods: QRIS first, then PayDisini (second IDR rail), then a
-  // single USDT entry that opens a submenu (Binance / Bybit / NOWPayments). The
-  // legacy manual Binance Pay method is retired, so an unconfigured shop offers
-  // no payable action here (voucher + cancel only) until an admin enables a
-  // gateway in Settings.
-  if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: cb("payq", productId, qty) }]);
-  if (paydisiniEnabled) rows.push([{ text: coreT("checkout.pay_paydisini_btn", lang), data: cb("payd", productId, qty) }]);
-  if (hasUsdt) rows.push([{ text: coreT("checkout.pay_usdt_btn", lang), data: cb("usdt", productId, qty) }]);
   rows.push([
     { text: coreT("checkout.cancel_btn", lang), data: cb("browse", "denom", productId) },
   ]);
@@ -476,6 +478,49 @@ export function usdtMethodsKb(
   if (bybitBscEnabled) rows.push([{ text: coreT("checkout.pay_bybit_bsc_btn", lang), data: cb("paybc", productId, qty) }]);
   if (nowpaymentsEnabled) rows.push([{ text: coreT("checkout.pay_nowpayments_btn", lang), data: cb("payn", productId, qty) }]);
   rows.push([{ text: coreT("menu.back", lang), data: cb("buy", productId, qty) }]);
+  return ik(rows);
+}
+
+/**
+ * Wallet-credit submenu — reached from the "Use Wallet Credit" entry on the
+ * order confirmation. Mirrors usdtMethodsKb's shape (one row per option, a
+ * Back row returns to the confirmation). IDR and USDT credit are mutually
+ * exclusive on a single order (packages/db/src/crud/orders.ts's
+ * releaseOrderHolds refunds by order.currency) — the walletm callback
+ * dispatcher clears the other flag whenever one is turned on, so at most one
+ * row here is ever "active" at a time.
+ */
+export function walletCreditKb(
+  productId: number,
+  qty: number,
+  lang: string,
+  idrBalance: Decimal,
+  useWalletIdr: boolean,
+  usdtBalance: Decimal,
+  useWalletUsdt: boolean,
+): InlineKeyboard {
+  const rows: Btn[][] = [];
+  if (idrBalance.greaterThan(0)) {
+    rows.push([
+      useWalletIdr
+        ? { text: coreT("checkout.wallet_menu_idr_active_btn", lang), data: cb("walletm", "idr", productId, qty) }
+        : {
+            text: coreT("checkout.wallet_menu_idr_btn", lang, { amount: formatIdr(idrBalance) }),
+            data: cb("walletm", "idr", productId, qty),
+          },
+    ]);
+  }
+  if (usdtBalance.greaterThan(0)) {
+    rows.push([
+      useWalletUsdt
+        ? { text: coreT("checkout.wallet_menu_usdt_active_btn", lang), data: cb("walletm", "usdt", productId, qty) }
+        : {
+            text: coreT("checkout.wallet_menu_usdt_btn", lang, { amount: formatPrice(usdtBalance, "USDT", 4) }),
+            data: cb("walletm", "usdt", productId, qty),
+          },
+    ]);
+  }
+  rows.push([{ text: coreT("menu.back", lang), data: cb("walletm", "back", productId, qty) }]);
   return ik(rows);
 }
 

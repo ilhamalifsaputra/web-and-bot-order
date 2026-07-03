@@ -140,13 +140,35 @@ const dispatchRef: DomainDispatcher = async (ctx, parts) => {
 
 const dispatchWallet: DomainDispatcher = async (ctx, parts) => {
   if (parts[2] === "view") await customer.viewWallet(ctx);
-  else if (parts[2] === "idr") {
+};
+
+const dispatchWalletMenu: DomainDispatcher = async (ctx, parts) => {
+  // v1:walletm:open|idr|usdt|back:<pid>:<qty>
+  const action = parts[2];
+  const productId = parseInt(parts[3]!, 10);
+  const qty = parseInt(parts[4]!, 10);
+  if (action === "open") {
+    await checkout.showWalletCreditMenu(ctx, productId, qty);
+  } else if (action === "idr") {
     ctx.session.scratch.useWalletIdr = !ctx.session.scratch.useWalletIdr;
-    await checkout.showOrderConfirmation(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
-  } else if (parts[2] === "usdt") {
+    // Mutually exclusive with USDT credit — a single order can only spend one
+    // currency's wallet balance (packages/db/src/crud/orders.ts's refund
+    // logic keys off the order's single `currency` column).
+    if (ctx.session.scratch.useWalletIdr) ctx.session.scratch.useWalletUsdt = false;
+    await checkout.showWalletCreditMenu(ctx, productId, qty);
+  } else if (action === "usdt") {
     ctx.session.scratch.useWalletUsdt = !ctx.session.scratch.useWalletUsdt;
-    await checkout.showOrderConfirmation(ctx, parseInt(parts[3]!, 10), parseInt(parts[4]!, 10));
+    if (ctx.session.scratch.useWalletUsdt) ctx.session.scratch.useWalletIdr = false;
+    await checkout.showWalletCreditMenu(ctx, productId, qty);
+  } else if (action === "back") {
+    await checkout.showOrderConfirmation(ctx, productId, qty);
   }
+};
+
+const dispatchWalletPay: DomainDispatcher = async (ctx, parts) => {
+  // v1:walletpay:<pid>:<qty> — the order's active wallet credit already
+  // covers the total; complete it with no gateway.
+  await checkout.completeOrderWithWallet(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
 };
 
 const dispatchLang: DomainDispatcher = async (ctx, parts) => {
@@ -201,6 +223,8 @@ const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
   ticket: dispatchTicket,
   voucher: dispatchVoucher,
   wallet: dispatchWallet,
+  walletm: dispatchWalletMenu,
+  walletpay: dispatchWalletPay,
 };
 
 // ---------------------------------------------------------------------------

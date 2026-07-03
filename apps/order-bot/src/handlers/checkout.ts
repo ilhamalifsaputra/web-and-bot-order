@@ -39,6 +39,7 @@ import {
   getTokopayCreds,
   getPaydisiniCreds,
   getNowpaymentsCreds,
+  completeOrderWithWalletCredit,
 } from "@app/db";
 import { createTransaction } from "@app/core/payments/tokopay";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
@@ -54,8 +55,9 @@ import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
-import { esc, formatPrice, formatIdr, priceIdr } from "../util/format";
+import { esc, formatPrice, formatIdr, priceIdr, usdtFromIdr } from "../util/format";
 import { currentUsdtRate } from "../util/rate";
+import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import * as ckb from "../keyboards/customer";
 import * as customer from "./customer";
 import {
@@ -143,6 +145,12 @@ interface ConfirmRender {
   usdtBalance: Decimal;
   useWalletIdr: boolean;
   useWalletUsdt: boolean;
+  /** Which currency's credit is active and how much it deducted — drives the
+   *  entry button's "Applied" label. Null when no credit is toggled on. */
+  walletDeduction: { currency: "IDR" | "USDT"; amount: string } | null;
+  /** True once the active credit brings subtotal to exactly (or below) zero —
+   *  the signal to swap the gateway buttons for "Complete Order". */
+  fullyCovered: boolean;
 }
 
 /** Compute the confirmation totals (shared by the inline path + voucher conv). */
@@ -150,6 +158,7 @@ async function computeConfirmation(
   ctx: MyContext,
   productId: number,
   quantity: number,
+  rate: Decimal | null,
 ): Promise<ConfirmRender | null> {
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
@@ -214,17 +223,51 @@ async function computeConfirmation(
 
   const idrBalance = new Decimal(user.walletBalance);
   const usdtBalance = new Decimal(user.walletBalanceUsdt);
+  // Mutually exclusive — enforced by the walletm callback dispatcher
+  // (callbacks.ts), which clears the other flag whenever one is turned on.
   const useWalletIdr = Boolean(ctx.session.scratch.useWalletIdr);
   const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
 
   let walletLine = "";
+  let walletDeduction: ConfirmRender["walletDeduction"] = null;
   if (useWalletIdr && idrBalance.greaterThan(0)) {
     const deduction = Decimal.min(idrBalance, subtotal);
     walletLine = coreT("checkout.confirm_wallet_line", lang, { amount: formatIdr(deduction) });
     subtotal = subtotal.minus(deduction);
+    walletDeduction = { currency: "IDR", amount: formatIdr(deduction) };
+  } else if (useWalletUsdt && usdtBalance.greaterThan(0) && rate) {
+    // Convert at the live rate so this preview matches what
+    // completeOrderWithWalletCredit will actually compute — the two can
+    // differ by at most the same +/-0.1 USDT rounding the whole app already
+    // accepts for every USDT order (usdtFromIdr's doc-comment). That's only a
+    // preview-display nuance; the crud layer re-derives its own zero-total
+    // check authoritatively, so a rounding-sized mismatch here never causes
+    // an incorrect charge.
+    const usdtTotal = usdtFromIdr(subtotal, rate);
+    const usdtDeduction = Decimal.min(usdtBalance, usdtTotal);
+    const idrEquivalent = usdtDeduction.times(rate);
+    walletLine = coreT("checkout.confirm_wallet_usdt_line", lang, {
+      usdt_amount: formatPrice(usdtDeduction, "USDT", 4),
+      idr_amount: formatIdr(idrEquivalent),
+    });
+    subtotal = subtotal.minus(idrEquivalent);
+    walletDeduction = { currency: "USDT", amount: formatPrice(usdtDeduction, "USDT", 4) };
   }
 
-  return { productName: product.name, unitPrice, subtotal, voucherLine, voucherCode, walletLine, idrBalance, usdtBalance, useWalletIdr, useWalletUsdt };
+  return {
+    productName: product.name,
+    unitPrice,
+    subtotal,
+    voucherLine,
+    voucherCode,
+    walletLine,
+    idrBalance,
+    usdtBalance,
+    useWalletIdr,
+    useWalletUsdt,
+    walletDeduction,
+    fullyCovered: subtotal.lessThanOrEqualTo(0),
+  };
 }
 
 export async function showOrderConfirmation(
@@ -258,10 +301,10 @@ export async function showOrderConfirmation(
     return;
   }
 
-  const r = await computeConfirmation(ctx, productId, quantity);
+  const rate = await currentUsdtRate();
+  const r = await computeConfirmation(ctx, productId, quantity, rate);
   if (!r) return;
 
-  const rate = await currentUsdtRate();
   const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
   const bybitBscEnabled = (await resolveBybitBscConfig(prisma)).enabled;
@@ -290,9 +333,9 @@ export async function showOrderConfirmation(
       nowpaymentsEnabled && rate !== null,
       bybitBscEnabled && rate !== null,
       r.idrBalance,
-      r.useWalletIdr,
       r.usdtBalance,
-      r.useWalletUsdt,
+      r.walletDeduction,
+      r.fullyCovered,
     ),
   );
 }
@@ -304,9 +347,9 @@ export async function renderOrderConfirmation(
   quantity: number,
 ): Promise<void> {
   const lang = ctx.session.lang;
-  const r = await computeConfirmation(ctx, productId, quantity);
-  if (!r) return;
   const rate = await currentUsdtRate();
+  const r = await computeConfirmation(ctx, productId, quantity, rate);
+  if (!r) return;
   const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
   const bybitBscEnabled = (await resolveBybitBscConfig(prisma)).enabled;
@@ -337,9 +380,9 @@ export async function renderOrderConfirmation(
         nowpaymentsEnabled && rate !== null,
         bybitBscEnabled && rate !== null,
         r.idrBalance,
-        r.useWalletIdr,
         r.usdtBalance,
-        r.useWalletUsdt,
+        r.walletDeduction,
+        r.fullyCovered,
       ),
     },
   );
@@ -361,10 +404,10 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
     await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
     return;
   }
-  const r = await computeConfirmation(ctx, productId, quantity);
+  const rate = await currentUsdtRate();
+  const r = await computeConfirmation(ctx, productId, quantity, rate);
   if (!r) return;
 
-  const rate = await currentUsdtRate();
   const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
   const bybitEnabled = (await resolveBybitConfig(prisma)).enabled;
   const bybitBscEnabled = (await resolveBybitBscConfig(prisma)).enabled;
@@ -388,6 +431,39 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
       nowpaymentsEnabled && rate !== null,
       bybitBscEnabled && rate !== null,
     ),
+  );
+}
+
+/**
+ * Wallet-credit submenu — keeps the order-summary bubble but swaps the
+ * keyboard for walletCreditKb (IDR / USDT credit options). Reached from the
+ * "Use Wallet Credit" entry on the confirmation screen; Back returns to
+ * showOrderConfirmation.
+ */
+export async function showWalletCreditMenu(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+  const lang = ctx.session.lang;
+
+  const product = await getDenomination(prisma, productId);
+  if (product === null) {
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.try_again"), show_alert: true });
+    await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
+    return;
+  }
+  const rate = await currentUsdtRate();
+  const r = await computeConfirmation(ctx, productId, quantity, rate);
+  if (!r) return;
+
+  await smartEdit(
+    ctx,
+    t(ctx, "checkout.confirm_order", {
+      product: esc(r.productName),
+      qty: quantity,
+      unit_price: priceIdr(r.unitPrice, rate),
+      voucher_line: r.voucherLine,
+      wallet_line: r.walletLine,
+      total: priceIdr(r.subtotal, rate),
+    }),
+    ckb.walletCreditKb(productId, quantity, lang, r.idrBalance, r.useWalletIdr, r.usdtBalance, r.useWalletUsdt),
   );
 }
 
@@ -1006,6 +1082,82 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   // the reconcile poller's success-flip sweep can edit it once delivered.
   if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, chatId, ctx.session.menuMsgId);
   setActivePayment(chatId, order.id);
+}
+
+/**
+ * "Complete Order" — the order's active wallet credit (IDR or USDT) already
+ * brings the total to zero. No gateway involved: creates the order, applies
+ * the credit, and delivers it in the same request via
+ * completeOrderWithWalletCredit (packages/db/src/crud/wallet_checkout.ts).
+ */
+export async function completeOrderWithWallet(ctx: MyContext, productId: number, quantity: number): Promise<void> {
+  const info = requireUser(ctx);
+  const lang = ctx.session.lang;
+
+  const user = await getUser(prisma, info.id);
+  if (user === null) {
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
+  const pendingCount = await countUserPendingOrders(prisma, info.id);
+  if (pendingCount >= MAX_PENDING_ORDERS) {
+    await smartEdit(ctx, t(ctx, "error.too_many_pending", { limit: MAX_PENDING_ORDERS }), ckb.backToMain(lang));
+    return;
+  }
+  if (await refuseDuplicateCheckout(ctx, user.id, productId, PaymentMethod.WALLET)) return;
+
+  const useWalletIdr = Boolean(ctx.session.scratch.useWalletIdr);
+  const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
+  if (!useWalletIdr && !useWalletUsdt) {
+    // Stale tap on an old bubble whose credit toggle no longer applies —
+    // re-render a fresh, correct confirmation instead of stranding the user.
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+    await showOrderConfirmation(ctx, productId, quantity);
+    return;
+  }
+  const rate = useWalletUsdt ? await currentUsdtRate() : null;
+  const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+
+  let result: Awaited<ReturnType<typeof completeOrderWithWalletCredit>>;
+  try {
+    result = await prisma.$transaction((tx) =>
+      completeOrderWithWalletCredit(tx, {
+        user: {
+          id: user.id,
+          role: user.role,
+          walletBalance: user.walletBalance,
+          walletBalanceUsdt: user.walletBalanceUsdt,
+        },
+        productId,
+        quantity,
+        voucherCode,
+        currency: useWalletIdr ? OrderCurrency.IDR : OrderCurrency.USDT,
+        rate: rate ?? undefined,
+      }),
+    );
+  } catch (e) {
+    if (e instanceof ValidationError) {
+      await smartEdit(ctx, t(ctx, e.key, e.formatArgs), ckb.backToMain(lang));
+      return;
+    }
+    throw e;
+  }
+
+  // Consume the voucher and wallet toggle now that an order actually exists —
+  // same convention as every other buyNow* rail.
+  delete ctx.session.scratch.appliedVoucherCode;
+  delete ctx.session.scratch.useWalletIdr;
+  delete ctx.session.scratch.useWalletUsdt;
+
+  await smartEdit(
+    ctx,
+    t(ctx, "checkout.wallet_paid", { code: result.order.orderCode }),
+    ckb.paymentSuccessKb(lang),
+  );
+  // No waiting/polling screen (the order is already DELIVERED) — just nudge
+  // the outbox so the credential DM goes out immediately, same call
+  // reconcileOrder makes after a TokoPay auto-deliver.
+  nudgeOutboxDispatcher();
 }
 
 // ---------------------------------------------------------------------------

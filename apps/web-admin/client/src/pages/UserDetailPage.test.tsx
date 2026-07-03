@@ -25,7 +25,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 }
 
 const USER_DETAIL = {
-  user: { id: 7, username: "andi", fullName: "Andi Santoso", telegramId: "111", role: "CUSTOMER", banned: false, banReason: null, walletBalance: "0", walletCurrency: "IDR" },
+  user: { id: 7, username: "andi", fullName: "Andi Santoso", telegramId: "111", role: "CUSTOMER", banned: false, banReason: null, walletBalance: "500000", walletBalanceUsdt: "12.5" },
   totalSpent: { idr: "150000", usdt: "0" },
   orders: [],
   tickets: [],
@@ -96,5 +96,17 @@ describe("UserDetailPage — role change", () => {
     await user.click(screen.getByRole("option", { name: "RESELLER" }));
 
     await waitFor(() => expect(alertSpy).toHaveBeenCalledWith("Invalid role."));
+  });
+});
+
+describe("UserDetailPage — wallet display", () => {
+  it("renders both IDR and USDT wallet balances on the Profile card", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(USER_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+    expect(screen.getByText("Rp500.000")).toBeInTheDocument();
+    expect(screen.getByText("12.50 USDT")).toBeInTheDocument();
   });
 });

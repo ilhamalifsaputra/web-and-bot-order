@@ -186,6 +186,7 @@ export function UserDetailPage() {
       <DataTable
         columns={[
           { key: "delta", header: "Delta", render: l => <span className={`font-mono text-sm ${l.delta.startsWith("-") ? "text-rust" : "text-grass"}`}>{l.delta}</span> },
+          { key: "currency", header: "Currency", render: l => <Badge variant="outline">{l.currency}</Badge> },
           { key: "balance", header: "Balance", render: l => <span className="font-mono text-sm">{l.balanceAfter}</span> },
           { key: "reason", header: "Reason", render: l => <span className="text-sm">{l.reason}</span> },
           { key: "note", header: "Note", render: l => <span className="text-xs text-ink-soft">{l.note ?? "—"}</span> },

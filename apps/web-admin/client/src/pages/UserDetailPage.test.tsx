@@ -167,6 +167,7 @@ describe("UserDetailPage — wallet ledger currency column", () => {
     render(<UserDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
 
+    expect(screen.getByRole("columnheader", { name: "Currency" })).toBeInTheDocument();
     expect(screen.getByText("505000.0000")).toBeInTheDocument();
     expect(screen.getByText("15.0000")).toBeInTheDocument();
     expect(screen.getByText("usdt credit")).toBeInTheDocument();

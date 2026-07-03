@@ -93,8 +93,9 @@ export type PaymentChoice =
   | {
       currency: typeof OrderCurrency.IDR;
       /** TOKOPAY (default jika tidak diisi — caller existing TIDAK pass ini,
-       *  jadi perilaku TokoPay byte-identik) atau PAYDISINI. */
-      method?: typeof PaymentMethod.TOKOPAY | typeof PaymentMethod.PAYDISINI;
+       *  jadi perilaku TokoPay byte-identik), PAYDISINI, atau WALLET (dibayar
+       *  penuh dari saldo kredit, tanpa gateway). */
+      method?: typeof PaymentMethod.TOKOPAY | typeof PaymentMethod.PAYDISINI | typeof PaymentMethod.WALLET;
     }
   /** Pay in USDT via Binance — charged the derived, rounded USDT total. */
   | {
@@ -104,15 +105,17 @@ export type PaymentChoice =
        * BINANCE_INTERNAL (auto-confirm via note, default), BYBIT (auto-confirm
        * via Bybit Internal Transfer UID, matched by unique amount), BYBIT_BSC
        * (auto-confirm via on-chain BSC deposit, also matched by unique
-       * amount), BINANCE_PAY (manual proof, bot only), or NOWPAYMENTS
-       * (auto-confirm via hosted invoice IPN webhook).
+       * amount), BINANCE_PAY (manual proof, bot only), NOWPAYMENTS
+       * (auto-confirm via hosted invoice IPN webhook), or WALLET (dibayar
+       * penuh dari saldo kredit USDT, tanpa gateway).
        */
       method?:
         | typeof PaymentMethod.BINANCE_INTERNAL
         | typeof PaymentMethod.BYBIT
         | typeof PaymentMethod.BYBIT_BSC
         | typeof PaymentMethod.BINANCE_PAY
-        | typeof PaymentMethod.NOWPAYMENTS;
+        | typeof PaymentMethod.NOWPAYMENTS
+        | typeof PaymentMethod.WALLET;
     };
 
 /**
@@ -157,7 +160,14 @@ export async function finalizeOrderPayment(db: Db, orderId: number, choice: Paym
   }
   const method = choice.method ?? PaymentMethod.BINANCE_INTERNAL;
   const usdt = usdtFromIdr(baseIdr, rate);
-  let cents = config.USE_UNIQUE_CENTS ? computeUniqueCents(order.id) : new Decimal(0);
+  // WALLET orders are pure ledger entries — there is no on-chain/gateway
+  // transfer to disambiguate, so unique cents (which would otherwise leave a
+  // nonzero remainder even when wallet credit fully covers the order) never
+  // apply here.
+  let cents =
+    config.USE_UNIQUE_CENTS && method !== PaymentMethod.WALLET
+      ? computeUniqueCents(order.id)
+      : new Decimal(0);
   let totalAmount = usdt.plus(cents);
 
   // Auto-confirm paths get a bounded payment window. Binance Internal also gets

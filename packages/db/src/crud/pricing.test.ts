@@ -114,6 +114,45 @@ describe("finalizeOrderPayment — PaymentChoice widening (PAYDISINI/NOWPAYMENTS
   });
 });
 
+describe("finalizeOrderPayment — WALLET method never attaches unique cents", () => {
+  let sample: SampleData;
+  let orderId: number;
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+    await addToCart(prisma, sample.user.id, sample.product.id, 1);
+    const created = await createOrderFromCart(prisma, { user: sample.user });
+    orderId = created!.id;
+  });
+
+  it("IDR + method: WALLET strips unique cents (same as the no-method default)", async () => {
+    const order = await finalizeOrderPayment(prisma, orderId, {
+      currency: "IDR",
+      method: PaymentMethod.WALLET,
+    });
+    expect(order!.paymentMethod).toBe(PaymentMethod.WALLET);
+    expect(new Decimal(order!.uniqueCents).equals(0)).toBe(true);
+  });
+
+  it("USDT + method: WALLET stays at exactly the converted total even with USE_UNIQUE_CENTS on", async () => {
+    const original = config.USE_UNIQUE_CENTS;
+    config.USE_UNIQUE_CENTS = true;
+    try {
+      const order = await finalizeOrderPayment(prisma, orderId, {
+        currency: "USDT",
+        rate: "16000",
+        method: PaymentMethod.WALLET,
+      });
+      expect(order!.paymentMethod).toBe(PaymentMethod.WALLET);
+      expect(new Decimal(order!.uniqueCents).equals(0)).toBe(true);
+      expect(new Decimal(order!.totalAmount).equals(usdtFromIdr(new Decimal("5.00"), "16000"))).toBe(true);
+    } finally {
+      config.USE_UNIQUE_CENTS = original;
+    }
+  });
+});
+
 // Checkout-4's collision-avoidance generalized from a BYBIT-only literal to
 // `paymentMethod: method` so it covers BYBIT_BSC too. These prove the pool
 // scoping is genuinely per-method: a same-amount pending order under the

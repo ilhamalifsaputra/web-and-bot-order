@@ -151,6 +151,11 @@ export const PaymentMethod = {
    *  e.g. USDT-TRC20) — confirmed by IPN webhook + reconcile poller, same shape
    *  as the other auto-confirm methods. */
   NOWPAYMENTS: "NOWPAYMENTS",
+  /** Order fully paid by the buyer's wallet credit (IDR or USDT) — no
+   *  external gateway involved. Created and delivered synchronously in one
+   *  request (see packages/db/src/crud/wallet_checkout.ts); never sits in
+   *  PENDING_PAYMENT long enough for a poller to see it. */
+  WALLET: "WALLET",
 } as const;
 export type PaymentMethod = (typeof PaymentMethod)[keyof typeof PaymentMethod];
 export const zPaymentMethod = z.nativeEnum(PaymentMethod);

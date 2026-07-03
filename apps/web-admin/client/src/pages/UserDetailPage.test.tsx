@@ -110,3 +110,42 @@ describe("UserDetailPage — wallet display", () => {
     expect(screen.getByText("12.50 USDT")).toBeInTheDocument();
   });
 });
+
+describe("UserDetailPage — wallet adjustment currency", () => {
+  it("defaults to IDR when no currency toggle is clicked", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(USER_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+
+    await user.type(screen.getByPlaceholderText("Amount (+ or −)"), "5");
+    await user.type(screen.getByPlaceholderText("Reason (required)"), "goodwill");
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/users/7/wallet", { delta: "5", note: "goodwill", currency: "IDR" }),
+    );
+  });
+
+  it("adjusts the USDT balance when the USDT toggle is selected", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(USER_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "USDT" }));
+    await user.type(screen.getByPlaceholderText("Amount (+ or −)"), "5");
+    await user.type(screen.getByPlaceholderText("Reason (required)"), "top up");
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/users/7/wallet", { delta: "5", note: "top up", currency: "USDT" }),
+    );
+  });
+});

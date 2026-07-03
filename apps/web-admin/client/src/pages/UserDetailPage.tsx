@@ -47,14 +47,16 @@ export function UserDetailPage() {
   const qc = useQueryClient();
   const { data, isError } = useUserDetail(userId ?? "");
   const [walletForm, setWalletForm] = useState({ delta: "", note: "" });
+  const [walletCurrency, setWalletCurrency] = useState<"IDR" | "USDT">("IDR");
   const [walletError, setWalletError] = useState<string | null>(null);
   const [banReason, setBanReason] = useState("");
 
   const wallet = useMutation({
-    mutationFn: () => apiPost(`/api/users/${userId}/wallet`, walletForm),
+    mutationFn: () => apiPost(`/api/users/${userId}/wallet`, { ...walletForm, currency: walletCurrency }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["user", userId] });
       setWalletForm({ delta: "", note: "" });
+      setWalletCurrency("IDR");
       setWalletError(null);
     },
     onError: (e: Error) => setWalletError(e.message),
@@ -122,6 +124,10 @@ export function UserDetailPage() {
             <CardHeader><CardTitle>Wallet Adjustment</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-3">
               {walletError && <p className="text-xs text-rust">{walletError}</p>}
+              <div className="flex gap-2">
+                <Button type="button" size="sm" variant={walletCurrency === "IDR" ? "default" : "outline"} onClick={() => setWalletCurrency("IDR")}>IDR</Button>
+                <Button type="button" size="sm" variant={walletCurrency === "USDT" ? "default" : "outline"} onClick={() => setWalletCurrency("USDT")}>USDT</Button>
+              </div>
               <div className="flex gap-2">
                 <Input placeholder="Amount (+ or −)" value={walletForm.delta} onChange={e => setWalletForm(f => ({ ...f, delta: e.target.value }))} className="w-32" />
                 <Input placeholder="Reason (required)" value={walletForm.note} onChange={e => setWalletForm(f => ({ ...f, note: e.target.value }))} className="flex-1" />

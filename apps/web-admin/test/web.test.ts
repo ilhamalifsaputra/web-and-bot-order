@@ -2181,6 +2181,54 @@ describe("users", () => {
   });
 });
 
+// ---- users API — wallet currency (dual IDR/USDT wallet, admin panel) ------
+
+describe("users API — wallet currency", () => {
+  function postJson(url: string, cookie: string | null, csrf: string | null, body: Record<string, unknown>) {
+    return app.inject({
+      method: "POST",
+      url,
+      headers: { "content-type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
+
+  it("defaults to IDR when currency is omitted", async () => {
+    const before = await getUser(prisma, seed.customerId);
+    const res = await postJson(`/api/users/${seed.customerId}/wallet`, seed.cookie, seed.csrf, { delta: "5.00", note: "goodwill" });
+    expect(res.statusCode).toBe(200);
+    const after = await getUser(prisma, seed.customerId);
+    expect(Number(after!.walletBalance) - Number(before!.walletBalance)).toBeCloseTo(5);
+    expect(Number(after!.walletBalanceUsdt)).toBe(Number(before!.walletBalanceUsdt));
+  });
+
+  it("adjusts the USDT balance when currency is USDT, leaving IDR untouched", async () => {
+    const before = await getUser(prisma, seed.customerId);
+    const res = await postJson(`/api/users/${seed.customerId}/wallet`, seed.cookie, seed.csrf, { delta: "2.50", note: "usdt credit", currency: "USDT" });
+    expect(res.statusCode).toBe(200);
+    const after = await getUser(prisma, seed.customerId);
+    expect(Number(after!.walletBalanceUsdt) - Number(before!.walletBalanceUsdt)).toBeCloseTo(2.5);
+    expect(Number(after!.walletBalance)).toBe(Number(before!.walletBalance));
+
+    const ledgerRow = await prisma.walletTransaction.findFirst({
+      where: { userId: seed.customerId, currency: "USDT" },
+      orderBy: { id: "desc" },
+    });
+    expect(ledgerRow).not.toBeNull();
+    expect(ledgerRow!.note).toBe("usdt credit");
+  });
+
+  it("rejects an invalid currency value with 400 and makes no balance change", async () => {
+    const before = await getUser(prisma, seed.customerId);
+    const res = await postJson(`/api/users/${seed.customerId}/wallet`, seed.cookie, seed.csrf, { delta: "1.00", note: "x", currency: "EUR" });
+    expect(res.statusCode).toBe(400);
+    const after = await getUser(prisma, seed.customerId);
+    expect(Number(after!.walletBalance)).toBe(Number(before!.walletBalance));
+    expect(Number(after!.walletBalanceUsdt)).toBe(Number(before!.walletBalanceUsdt));
+  });
+});
+
 // ---- vouchers (acceptance #5) ---------------------------------------------
 
 describe("vouchers", () => {

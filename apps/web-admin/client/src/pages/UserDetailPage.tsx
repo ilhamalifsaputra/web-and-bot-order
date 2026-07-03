@@ -22,11 +22,11 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiPost } from "../api/client";
 
 interface UserDetail {
-  user: { id: number; username: string | null; fullName: string | null; telegramId: string; role: string; banned: boolean; banReason: string | null; walletBalance: string; walletCurrency: string };
+  user: { id: number; username: string | null; fullName: string | null; telegramId: string; role: string; banned: boolean; banReason: string | null; walletBalance: string; walletBalanceUsdt: string };
   totalSpent: { idr: string; usdt: string };
   orders: { id: number; orderCode: string; status: string; totalIdr: string; createdAt: string }[];
   tickets: { id: number; subject: string; status: string; createdAt: string }[];
-  ledger: { id: number; delta: string; balance: string; reason: string; note: string | null; createdAt: string }[];
+  ledger: { delta: string; balanceAfter: string; currency: string; reason: string; note: string | null; createdAt: string }[];
   roles: string[];
 }
 
@@ -47,14 +47,16 @@ export function UserDetailPage() {
   const qc = useQueryClient();
   const { data, isError } = useUserDetail(userId ?? "");
   const [walletForm, setWalletForm] = useState({ delta: "", note: "" });
+  const [walletCurrency, setWalletCurrency] = useState<"IDR" | "USDT">("IDR");
   const [walletError, setWalletError] = useState<string | null>(null);
   const [banReason, setBanReason] = useState("");
 
   const wallet = useMutation({
-    mutationFn: () => apiPost(`/api/users/${userId}/wallet`, walletForm),
+    mutationFn: () => apiPost(`/api/users/${userId}/wallet`, { ...walletForm, currency: walletCurrency }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["user", userId] });
       setWalletForm({ delta: "", note: "" });
+      setWalletCurrency("IDR");
       setWalletError(null);
     },
     onError: (e: Error) => setWalletError(e.message),
@@ -111,7 +113,7 @@ export function UserDetailPage() {
                 </Select>
               )}
             </div>
-            <div className="flex justify-between"><span className="text-ink-soft">Wallet</span><span className="font-mono">{user.walletBalance} {user.walletCurrency}</span></div>
+            <div className="flex justify-between"><span className="text-ink-soft">Wallet</span><CurrencyStack amounts={[{ currency: "IDR", value: user.walletBalance }, { currency: "USDT", value: user.walletBalanceUsdt }]} /></div>
             <div className="flex justify-between"><span className="text-ink-soft">Total spent</span><CurrencyStack amounts={[{ currency: "IDR", value: data.totalSpent.idr }, { currency: "USDT", value: data.totalSpent.usdt }]} /></div>
           </CardContent>
         </Card>
@@ -122,6 +124,10 @@ export function UserDetailPage() {
             <CardHeader><CardTitle>Wallet Adjustment</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-3">
               {walletError && <p className="text-xs text-rust">{walletError}</p>}
+              <div className="flex gap-2">
+                <Button type="button" size="sm" variant={walletCurrency === "IDR" ? "default" : "outline"} onClick={() => setWalletCurrency("IDR")}>IDR</Button>
+                <Button type="button" size="sm" variant={walletCurrency === "USDT" ? "default" : "outline"} onClick={() => setWalletCurrency("USDT")}>USDT</Button>
+              </div>
               <div className="flex gap-2">
                 <Input placeholder="Amount (+ or −)" value={walletForm.delta} onChange={e => setWalletForm(f => ({ ...f, delta: e.target.value }))} className="w-32" />
                 <Input placeholder="Reason (required)" value={walletForm.note} onChange={e => setWalletForm(f => ({ ...f, note: e.target.value }))} className="flex-1" />
@@ -180,13 +186,14 @@ export function UserDetailPage() {
       <DataTable
         columns={[
           { key: "delta", header: "Delta", render: l => <span className={`font-mono text-sm ${l.delta.startsWith("-") ? "text-rust" : "text-grass"}`}>{l.delta}</span> },
-          { key: "balance", header: "Balance", render: l => <span className="font-mono text-sm">{l.balance}</span> },
+          { key: "currency", header: "Currency", render: l => <Badge variant="outline">{l.currency}</Badge> },
+          { key: "balance", header: "Balance", render: l => <span className="font-mono text-sm">{l.balanceAfter}</span> },
           { key: "reason", header: "Reason", render: l => <span className="text-sm">{l.reason}</span> },
           { key: "note", header: "Note", render: l => <span className="text-xs text-ink-soft">{l.note ?? "—"}</span> },
           { key: "date", header: "Date", render: l => <span className="text-xs text-ink-soft">{new Date(l.createdAt).toLocaleDateString()}</span> },
         ]}
-        data={data.ledger}
-        keyExtractor={l => l.id}
+        data={data.ledger.map((l, i) => ({ ...l, _key: i }))}
+        keyExtractor={l => l._key}
         empty={<EmptyState title="No ledger entries" />}
       />
     </PageLayout>

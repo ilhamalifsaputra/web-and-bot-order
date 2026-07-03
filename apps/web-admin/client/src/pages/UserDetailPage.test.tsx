@@ -25,7 +25,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 }
 
 const USER_DETAIL = {
-  user: { id: 7, username: "andi", fullName: "Andi Santoso", telegramId: "111", role: "CUSTOMER", banned: false, banReason: null, walletBalance: "0", walletCurrency: "IDR" },
+  user: { id: 7, username: "andi", fullName: "Andi Santoso", telegramId: "111", role: "CUSTOMER", banned: false, banReason: null, walletBalance: "500000", walletBalanceUsdt: "12.5" },
   totalSpent: { idr: "150000", usdt: "0" },
   orders: [],
   tickets: [],
@@ -96,5 +96,80 @@ describe("UserDetailPage — role change", () => {
     await user.click(screen.getByRole("option", { name: "RESELLER" }));
 
     await waitFor(() => expect(alertSpy).toHaveBeenCalledWith("Invalid role."));
+  });
+});
+
+describe("UserDetailPage — wallet display", () => {
+  it("renders both IDR and USDT wallet balances on the Profile card", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(USER_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+    expect(screen.getByText("Rp500.000")).toBeInTheDocument();
+    expect(screen.getByText("12.50 USDT")).toBeInTheDocument();
+  });
+});
+
+describe("UserDetailPage — wallet adjustment currency", () => {
+  it("defaults to IDR when no currency toggle is clicked", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(USER_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+
+    await user.type(screen.getByPlaceholderText("Amount (+ or −)"), "5");
+    await user.type(screen.getByPlaceholderText("Reason (required)"), "goodwill");
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/users/7/wallet", { delta: "5", note: "goodwill", currency: "IDR" }),
+    );
+  });
+
+  it("adjusts the USDT balance when the USDT toggle is selected", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(USER_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "USDT" }));
+    await user.type(screen.getByPlaceholderText("Amount (+ or −)"), "5");
+    await user.type(screen.getByPlaceholderText("Reason (required)"), "top up");
+    await user.click(screen.getByRole("button", { name: "Adjust" }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/users/7/wallet", { delta: "5", note: "top up", currency: "USDT" }),
+    );
+  });
+});
+
+describe("UserDetailPage — wallet ledger currency column", () => {
+  it("shows each ledger row's currency and its post-adjustment balance", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...USER_DETAIL,
+          ledger: [
+            { delta: "5.0000", balanceAfter: "505000.0000", currency: "IDR", reason: "admin_adjust", note: "goodwill", createdAt: "2026-07-01T00:00:00.000Z" },
+            { delta: "2.5000", balanceAfter: "15.0000", currency: "USDT", reason: "admin_adjust", note: "usdt credit", createdAt: "2026-07-02T00:00:00.000Z" },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+
+    expect(screen.getByRole("columnheader", { name: "Currency" })).toBeInTheDocument();
+    expect(screen.getByText("505000.0000")).toBeInTheDocument();
+    expect(screen.getByText("15.0000")).toBeInTheDocument();
+    expect(screen.getByText("usdt credit")).toBeInTheDocument();
   });
 });

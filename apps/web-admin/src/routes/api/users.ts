@@ -94,6 +94,11 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
       return reply.code(400).send({ error: "Amount must be a number." });
     }
     if (deltaDec.isZero()) return reply.code(400).send({ error: "Amount cannot be zero." });
+    const currencyRaw = (body.currency ?? "IDR").toUpperCase();
+    if (currencyRaw !== "IDR" && currencyRaw !== "USDT") {
+      return reply.code(400).send({ error: "Currency must be IDR or USDT." });
+    }
+    const currency = currencyRaw as "IDR" | "USDT";
     if (!(await getUser(prisma, userId))) return reply.code(404).send({ error: "User not found." });
     let newBalance: Decimal;
     try {
@@ -101,6 +106,7 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
         reason: "admin_adjust",
         note: note || null,
         adminId: req.admin!.userId,
+        currency,
       });
     } catch (e) {
       if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
@@ -111,7 +117,7 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
       action: "wallet_adjust",
       targetType: "user",
       targetId: userId,
-      details: `Adjusted wallet by ${deltaDec.toString()}. Note: "${note.slice(0, 160)}".`,
+      details: `Adjusted ${currency} wallet by ${deltaDec.toString()}. Note: "${note.slice(0, 160)}".`,
     });
     return reply.send({ ok: true, newBalance: newBalance.toString() });
   });

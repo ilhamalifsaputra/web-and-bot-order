@@ -498,6 +498,7 @@ export function walletCreditKb(
   useWalletIdr: boolean,
   usdtBalance: Decimal,
   useWalletUsdt: boolean,
+  fullyCovered = false,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   if (idrBalance.greaterThan(0)) {
@@ -518,6 +519,15 @@ export function walletCreditKb(
             text: coreT("checkout.wallet_menu_usdt_btn", lang, { amount: formatPrice(usdtBalance, "USDT", 4) }),
             data: cb("walletm", "usdt", productId, qty),
           },
+    ]);
+  }
+  if (fullyCovered) {
+    // Mirrors orderConfirmKb's fullyCovered branch — surface the forward
+    // action right here instead of forcing a Back tap to reach it on the
+    // confirmation screen underneath (the original bug: toggling credit to
+    // 100% coverage silently updated the label with no next step).
+    rows.push([
+      { text: coreT("checkout.complete_order_btn", lang), data: cb("walletpay", productId, qty) },
     ]);
   }
   rows.push([{ text: coreT("menu.back", lang), data: cb("walletm", "back", productId, qty) }]);

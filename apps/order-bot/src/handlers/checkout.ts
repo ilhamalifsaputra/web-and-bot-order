@@ -463,7 +463,7 @@ export async function showWalletCreditMenu(ctx: MyContext, productId: number, qu
       wallet_line: r.walletLine,
       total: priceIdr(r.subtotal, rate),
     }),
-    ckb.walletCreditKb(productId, quantity, lang, r.idrBalance, r.useWalletIdr, r.usdtBalance, r.useWalletUsdt),
+    ckb.walletCreditKb(productId, quantity, lang, r.idrBalance, r.useWalletIdr, r.usdtBalance, r.useWalletUsdt, r.fullyCovered),
   );
 }
 

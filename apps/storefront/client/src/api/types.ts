@@ -79,6 +79,66 @@ export interface SearchPageData {
   low_threshold: number;
 }
 
+/** A single denomination (plan/variant) on the product detail page — JSON twin
+ * of the `denominations` entries productPageData() builds (apps/storefront/src/pageData.ts). */
+export interface ProductDenomination {
+  id: number;
+  name: string;
+  duration_label: string | null;
+  price: string;
+  warranty_days: number;
+  available: number;
+  in_stock: boolean;
+  bulk: { min_quantity: number; discount_percent: string } | null;
+}
+
+/** A masked-author review on the product detail page — `created_at_display`
+ * arrives pre-formatted in the shop timezone (apps/storefront/src/routes/apiPages.ts). */
+export interface ProductReview {
+  rating: number;
+  comment: string | null;
+  author: string;
+  created_at_display: string;
+}
+
+/** GET /api/v1/pages/product/:slug — everything product.njk spread on top of
+ * shopContext(); 404 (null server-side) surfaces as an apiGet error with
+ * `.status === 404` instead. */
+export interface ProductPageData {
+  product: {
+    slug: string;
+    name: string;
+    description: string | null;
+    category_name: string;
+    category_slug: string;
+    image: string;
+  };
+  denominations: ProductDenomination[];
+  default_restock_denomination_id: number;
+  reviews: ProductReview[];
+  low_threshold: number;
+}
+
+/** One cart line — JSON twin of CartLineView (apps/storefront/src/routes/cart.ts). */
+export interface CartLineView {
+  key: number;
+  denomination_id: number;
+  product_slug: string;
+  name: string;
+  image: string;
+  unit_price: string;
+  qty: number;
+  line_total: string;
+  available: number;
+}
+
+/** GET /api/v1/cart, and the fresh payload every cart mutation (add/update/remove)
+ * responds with — the SPA re-renders from this instead of a full page reload. */
+export interface CartPageData {
+  items: CartLineView[];
+  subtotal: string;
+}
+
 /** Base context for the shop chrome — JSON twin of shopContext()
  * (apps/storefront/src/shop.ts) minus csrf/active_nav/path, which the SPA
  * derives client-side. */

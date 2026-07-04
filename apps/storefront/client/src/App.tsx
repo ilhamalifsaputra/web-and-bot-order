@@ -5,6 +5,8 @@ import ErrorPage from "./pages/ErrorPage";
 import HomePage from "./pages/HomePage";
 import CategoryPage from "./pages/CategoryPage";
 import SearchPage from "./pages/SearchPage";
+import ProductPage from "./pages/ProductPage";
+import CartPage from "./pages/CartPage";
 
 /**
  * Full route table for every storefront URL. Pages start as <Placeholder /> and
@@ -24,9 +26,9 @@ export default function App() {
       <Route element={<Layout />}>
         <Route path="/" element={<HomePage />} />
         <Route path="/c/:slug" element={<CategoryPage />} />
-        <Route path="/p/:slug" element={<Placeholder />} />
+        <Route path="/p/:slug" element={<ProductPage />} />
         <Route path="/search" element={<SearchPage />} />
-        <Route path="/cart" element={<Placeholder />} />
+        <Route path="/cart" element={<CartPage />} />
         <Route path="/checkout" element={<Placeholder />} />
         <Route path="/checkout/:code/pay" element={<Placeholder />} />
         <Route path="/account" element={<Placeholder />} />

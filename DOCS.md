@@ -29,12 +29,12 @@ database SQLite** (`data/bot.db`, mode WAL).
 |---|---|
 | `apps/order-bot` | Bot Telegram grammY (alur pelanggan + admin) |
 | `apps/web-admin` | Panel admin Fastify + Nunjucks + HTMX |
-| `apps/storefront` | Toko web pelanggan — Fastify + JSON API (`/api/v1`) di belakang React SPA (`apps/storefront/client`); Nunjucks tersisa hanya untuk halaman error/setup-gate |
+| `apps/storefront` | Toko web pelanggan — Fastify + JSON API (`/api/v1`) di belakang React SPA (`apps/storefront/client`); Nunjucks + `_theme.njk` tersisa hanya untuk `error.njk` (500 fallback); `setup_pending.njk` adalah halaman HTML standalone (tanpa theme, tanpa htmx) |
 | `apps/server` | **Composition root satu-proses**: gabung admin + storefront + bot + worker dengan **satu PrismaClient** (`apps/server/src/index.ts`) |
 | `packages/core` | Config (zod), money (Decimal), datetime (luxon), i18n, password, mailer, fx |
 | `packages/db` | Prisma client + semua CRUD (`packages/db/src/crud/*`) |
 | `packages/outbox-dispatcher` | Drain `notification_outbox` → channel/DM (`runDispatcher`, jalan in-process di `apps/server`) |
-| `packages/web-ui` | Tema bersama (`_theme.njk`, `_macros.njk`) yang di-`include` web-admin (dan storefront's Nunjucks sisa — error/setup-gate) |
+| `packages/web-ui` | Tema bersama (`_theme.njk`, `_macros.njk`) yang di-`include` web-admin dan storefront's `error.njk` (setup-gate + 500 fallback) |
 
 **Prinsip inti:**
 
@@ -286,8 +286,9 @@ shadow **identik** dengan `packages/web-ui/views/_theme.njk` — storefront kini
 React SPA (`apps/storefront/client`, Vite + Tailwind v4), dan tokennya
 ditranskripsi byte-for-byte ke sebuah `@theme` block di `client/src/index.css`
 (lihat komentar di kepala file itu) alih-alih `include` Nunjucks. Mobile-first,
-dwibahasa (EN+ID). Nunjucks + `_theme.njk` bertahan hanya untuk halaman
-error/setup-gate (§1) yang harus render tanpa build SPA.
+dwibahasa (EN+ID). Nunjucks + `_theme.njk` bertahan hanya untuk `error.njk`
+(§1) yang harus render tanpa build SPA; `setup_pending.njk` adalah halaman
+HTML standalone (tanpa theme).
 
 **Token warna:** `pine` `#2563eb` (aksen/tombol/harga), `grass` `#16a34a`
 (tersedia), `amberx` `#b45c0a` (menunggu/stok menipis), `rust` `#dc2626`

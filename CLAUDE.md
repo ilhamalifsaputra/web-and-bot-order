@@ -93,9 +93,10 @@ schema at `prisma/schema.prisma` (datasource `DATABASE_URL_PRISMA`). See `DOCS.m
   `pnpm --filter @app/storefront-client build` once after a fresh clone (and
   again after editing anything under `apps/storefront/client/`) before
   `pnpm test` or `pnpm dev:store` will serve it correctly; the build output
-  (`apps/storefront/static/shop-app/`) is gitignored. Nunjucks + htmx survive
-  only for `error.njk`/`setup_pending.njk` (must render before/without the SPA
-  build, e.g. a DB-down 500 or the pre-setup gate) — migration history in
+  (`apps/storefront/static/shop-app/`) is gitignored. Nunjucks + `_theme.njk`
+  survive only for `error.njk` (must render before/without the SPA build,
+  e.g. a DB-down 500) — `setup_pending.njk` is a standalone HTML page (no theme,
+  no htmx), served before the SPA is built. Migration history in
   `docs/REACT_STOREFRONT_MIGRATION.md`.
 - **Settings edits are whitelist-only** (admin) — the main "don't brick the bot"
   guardrail; never widen the whitelist without review.

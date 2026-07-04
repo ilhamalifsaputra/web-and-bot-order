@@ -11,8 +11,7 @@
      (packages/web-ui/views/_theme.njk) — identical to web-admin. #}
   {% include "_theme.njk" %}
 </head>
-<body class="min-h-screen flex flex-col"
-      {% if customer %}hx-headers='{"x-csrf-token": "{{ customer.csrf }}"}'{% endif %}>
+<body class="min-h-screen flex flex-col">
 
 {% block nav %}
 {# Shop header: brand · search · account · cart. Sticky like the admin nav. #}
@@ -86,35 +85,11 @@
 {% endblock %}
 
 <script>
-  // Render Lucide icons on load, and again after HTMX swaps content.
+  // Render Lucide icons on load. error.njk is the only page still served
+  // through this template, and it never swaps content client-side, so a
+  // single render on load is enough.
   function renderIcons() { if (window.lucide) window.lucide.createIcons(); }
   renderIcons();
-  document.addEventListener('htmx:afterSettle', renderIcons);
-</script>
-
-<script>
-  // M-1 (execution/04): guard checkout/pay forms against double-submit. Pure
-  // progressive enhancement — with JS off the form posts normally. The first
-  // submit goes through; we then disable the clicked button and show a spinner,
-  // and block any further submit of the same form until the page navigates.
-  document.addEventListener('submit', function (e) {
-    var form = e.target;
-    if (!form || !form.matches || !form.matches('form[data-submit-once]')) return;
-    if (form.dataset.submitting === '1') { e.preventDefault(); return; }
-    form.dataset.submitting = '1';
-    var btn = e.submitter;
-    if (!btn) return;
-    // Defer so the submitter's name/value is still included in the POST body.
-    setTimeout(function () {
-      btn.disabled = true;
-      btn.setAttribute('aria-busy', 'true');
-      btn.classList.add('opacity-70', 'cursor-wait');
-      var spin = document.createElement('span');
-      spin.setAttribute('aria-hidden', 'true');
-      spin.className = 'inline-block w-3.5 h-3.5 mr-1.5 align-[-2px] rounded-full border-2 border-current border-r-transparent animate-spin';
-      btn.prepend(spin);
-    }, 0);
-  });
 </script>
 
 </body>

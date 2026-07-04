@@ -113,12 +113,23 @@ Every mutating endpoint gets the happy / 401-anon / 403-bad-CSRF test trio
 
 ### Phase 7 — Cluster D: account + settings — DONE 2026-07-05
 - [x] 8 account-area pages
+- [x] Sign-off via reviewer markup-parity verification (no browser tooling); visual QA in a real browser pending as manual follow-up
 - [x] Cutover: delete `account.ts`/`settings.ts` HTML handlers + 8 templates; migrate tests
 
-### Phase 8 — cleanup
-- [ ] Delete `_shop.njk`; strip `base.njk` to skeleton for `error.njk`/`setup_pending.njk` (drop htmx)
-- [ ] Keep `views.ts`/nunjucks/error/setup_pending (setup gate + 500 fallback)
-- [ ] Deploy story ships `static/shop-app/`; CLAUDE.md + DOCS.md updated
+### Phase 8 — cleanup — DONE 2026-07-05
+- [x] Delete `_shop.njk`; strip `base.njk` to skeleton for `error.njk`/`setup_pending.njk` (drop htmx)
+- [x] Keep `views.ts`/nunjucks/error/setup_pending (setup gate + 500 fallback)
+- [x] Deploy story ships `static/shop-app/`; CLAUDE.md + DOCS.md updated
+
+## Migration complete 2026-07-05
+
+All four page clusters (catalog+cart, auth, checkout+pay, account) are React,
+every HTML/HTMX page route is deleted, and Phase 8 retired the remaining htmx
+remnants from the two Nunjucks pages that still have to render before/without
+the SPA build (`error.njk`, `setup_pending.njk`). Sign-off throughout this
+migration was reviewer markup-parity verification (no browser tooling) —
+**manual visual QA in a real browser across breakpoints remains an outstanding
+follow-up**, not yet performed for any cluster.
 
 ## Verification (per cluster)
 

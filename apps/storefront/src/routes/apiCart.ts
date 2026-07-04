@@ -1,11 +1,11 @@
 /**
- * JSON cart endpoints for the React SPA — twins of the HTML POST /cart/update
- * and /cart/remove plus a GET for the cart page. The "add" operation already
- * exists as POST /api/v1/cart (routes/api.ts) and stays there untouched.
+ * JSON cart endpoints for the React SPA — update a line's quantity, remove a
+ * line, and a GET for the cart page. The "add" operation already exists as
+ * POST /api/v1/cart (routes/api.ts) and stays there untouched.
  *
- * CSRF story matches the HTML routes exactly (shared csrfOk() from ./cart):
- * guests are exempt (SameSite=Lax cookie is the guard for the money-free
- * guest cart), signed-in mutations need the x-csrf-token header.
+ * CSRF story (shared csrfOk() from ./cart): guests are exempt (SameSite=Lax
+ * cookie is the guard for the money-free guest cart), signed-in mutations
+ * need the x-csrf-token header.
  */
 import type { FastifyPluginAsync } from "fastify";
 import { Decimal } from "@app/core/money";
@@ -37,7 +37,7 @@ const apiCartRoutes: FastifyPluginAsync = async (app) => {
     return reply.send(await cartPayload(req, customer));
   });
 
-  // ---- Update a line's quantity (qty 0 removes — same rule as the HTML route) ----
+  // ---- Update a line's quantity (qty 0 removes) ----
   app.post<{ Body: { key?: number; qty?: number } }>("/cart/update", async (req, reply) => {
     const customer = await optionalCustomer(req);
     if (!csrfOk(req, customer)) {

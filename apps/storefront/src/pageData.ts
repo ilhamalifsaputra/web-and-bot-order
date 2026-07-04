@@ -1,9 +1,9 @@
 /**
  * Page view-models for the public catalog pages (home / category / product /
- * search) — lifted verbatim out of routes/home.ts and routes/catalog.ts so the
- * Nunjucks pages and the JSON API (routes/apiPages.ts) share one shaping
- * implementation during the React migration. Each helper returns exactly the
- * keys its page template spreads on top of shopContext().
+ * search) — lifted verbatim out of the former routes/home.ts and
+ * routes/catalog.ts (deleted once those pages cut over to React) so the JSON
+ * API (routes/apiPages.ts) has one shaping implementation to call. Each
+ * helper returns exactly the keys its page needs.
  */
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
@@ -44,7 +44,7 @@ function reviewerName(user: { fullName: string | null; loginUsername: string | n
   return last ? `${first} ${last.charAt(0).toUpperCase()}.` : first;
 }
 
-/** Everything home.njk spreads on top of shopContext(). */
+/** Home page data — shaped for the JSON API (GET /api/v1/pages/home). */
 export async function homePageData() {
   const [categories, products, stock, ratings, bulk, reviews, rating, fulfil, waNumber, heroUrl] =
     await Promise.all([
@@ -101,7 +101,7 @@ export async function homePageData() {
   };
 }
 
-/** Everything catalog.njk needs, or null for the 404 branch. */
+/** Category page data, or null for the 404 branch (GET /api/v1/pages/category/:slug). */
 export async function categoryPageData(rawSlug: string) {
   const slug = (rawSlug ?? "").trim();
   const category = slug ? await getCategoryBySlug(prisma, slug) : null;
@@ -124,9 +124,11 @@ export async function categoryPageData(rawSlug: string) {
   };
 }
 
-/** Everything product.njk needs, or null for the 404 branch. Reviews keep
- * their Date so the HTML route can run them through the localdt filter; the
- * JSON route pre-formats. */
+/** Product detail page data, or null for the 404 branch (GET
+ * /api/v1/pages/product/:slug). Reviews keep their Date here — the JSON
+ * route (routes/apiPages.ts) pre-formats it with the same localize() the
+ * Nunjucks localdt filter used to, so callers get a display string, not a
+ * raw Date to serialize themselves. */
 export async function productPageData(rawSlug: string) {
   const slug = (rawSlug ?? "").trim();
   const product = slug ? await getCatalogProductBySlugWithDenominations(prisma, slug) : null;
@@ -157,12 +159,11 @@ export async function productPageData(rawSlug: string) {
       bulk: rule ? { min_quantity: rule.minQuantity, discount_percent: rule.discountPercent } : null,
     };
   });
-  // Default restock-form target (Task 10 fix): mirrors product.njk's inline
-  // JS selection order ("first in-stock denomination, else the first
-  // denomination" — see product.njk's `firstEnabled || radios[0]`) so the
-  // form already has a valid /restock/:id action at page-load time, before
-  // that JS runs (or with JS disabled) — `denominations` is never empty
-  // here (guarded by the null return above).
+  // Default restock-form target (Task 10 fix): "first in-stock denomination,
+  // else the first denomination" — the same selection order the React
+  // ProductPage applies client-side, precomputed here so the initial
+  // server-shaped payload already names a valid denomination id.
+  // `denominations` is never empty here (guarded by the null return above).
   const defaultRestockDenominationId = (denominations.find((d) => d.in_stock) ?? denominations[0])!.id;
 
   return {
@@ -187,7 +188,7 @@ export async function productPageData(rawSlug: string) {
   };
 }
 
-/** Everything search.njk spreads on top of shopContext(). */
+/** Search page data — shaped for the JSON API (GET /api/v1/pages/search). */
 export async function searchPageData(rawQ: string) {
   const q = (rawQ ?? "").trim();
   const [products, stock, ratings, bulk] = await Promise.all([

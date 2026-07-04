@@ -261,10 +261,10 @@ export function payState(order: OrderRow) {
 /**
  * Validate the chosen payment method, then run the order-creation transaction
  * (countUserPendingOrders → createOrderFromCart → finalizeOrderPayment) — the
- * SAME logic the HTML POST /checkout route and the JSON API's POST /checkout
- * both need, so there is exactly one implementation of checkout's business
- * rules. Throws ValidationError (unavailable method, too many pending orders,
- * generic failure) exactly as the inline code used to.
+ * one implementation of checkout's business rules the JSON API's POST
+ * /checkout (routes/apiCheckout.ts) calls. Throws ValidationError
+ * (unavailable method, too many pending orders, generic failure) exactly as
+ * the former inline HTML-route code used to.
  */
 export async function performCheckout(
   customer: Customer,
@@ -345,11 +345,11 @@ export async function performCheckout(
 }
 
 /**
- * Everything the pay page needs for one order, EXCLUDING the base shop context —
- * extracted verbatim from the GET /checkout/:code/pay handler so the HTML page
- * and the JSON API (routes/apiCheckout.ts) share one implementation, including
- * the lazy gateway-transaction creation cached in order.paymentRef. The caller
- * has already verified ownership.
+ * Everything the React PayPage needs for one order, EXCLUDING the base shop
+ * context — extracted verbatim from the former GET /checkout/:code/pay
+ * handler so the JSON API (routes/apiCheckout.ts) has one implementation to
+ * call, including the lazy gateway-transaction creation cached in
+ * order.paymentRef. The caller has already verified ownership.
  */
 export async function payView(order: OrderRow) {
   const state = payState(order);
@@ -488,9 +488,9 @@ export async function payView(order: OrderRow) {
     ? ((await getSetting(prisma, "support_whatsapp")) ?? "").replace(/[^0-9]/g, "")
     : "";
 
-  // Pre-formatted here (not in the template) since IDR vs USDT formatting
-  // differs per method — null when unset, so pay.njk just renders the
-  // note iff this is non-empty.
+  // Pre-formatted here (not on the client) since IDR vs USDT formatting
+  // differs per method — null when unset, so the React PayPage just renders
+  // the note iff this is non-empty.
   const minAmountDisplay = minAmount
     ? isQris || isPaydisini
       ? formatIdr(minAmount)

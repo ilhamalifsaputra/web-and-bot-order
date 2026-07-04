@@ -132,9 +132,10 @@ export default async function spaShellRoutes(app: FastifyInstance): Promise<void
       return reply.code(404).send({ error: "not_found" });
     }
     const lang = requestLang(req);
-    const [customer, shopName] = await Promise.all([
+    const [customer, shopName, favicon] = await Promise.all([
       optionalCustomer(req),
       getSetting(prisma, "shop_name").then((v) => v ?? "Toko Digital"),
+      getSetting(prisma, "web_favicon_url").then((v) => v || "/static/favicon.svg"),
     ]);
     const head = await headInfo(path, lang, shopName);
 
@@ -142,11 +143,12 @@ export default async function spaShellRoutes(app: FastifyInstance): Promise<void
       void reply.header("Referrer-Policy", "no-referrer");
     }
 
+    const faviconLink = `<link rel="icon" href="${esc(favicon)}">`;
     const html = readFileSync(SPA_INDEX_PATH, "utf-8")
       .replace("__CSRF_TOKEN__", customer?.csrf ?? "")
       .replace("__LANG__", lang)
       .replace("__TITLE__", esc(head.title))
-      .replace("<!--__HEAD_META__-->", head.meta);
+      .replace("<!--__HEAD_META__-->", faviconLink + head.meta);
     return reply.code(head.status).type("text/html").send(html);
   });
 }

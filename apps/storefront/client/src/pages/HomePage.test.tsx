@@ -115,4 +115,38 @@ describe("HomePage", () => {
     // Telegram card still renders (bot_username is set) — contact section itself isn't hidden.
     expect(screen.getByText("Telegram")).toBeInTheDocument();
   });
+
+  // Pins the "dead Telegram link" fix (fe9869a) now ported to React: never
+  // render a https://t.me/ link with no username, and don't leave the
+  // contact grid at a multi-column width sized for a card that isn't there.
+  it("never renders a dead Telegram link when bot_username is empty, and collapses the contact grid to 1 column with no WA card either", async () => {
+    const { container } = renderHome(homeFixture({ bot_username: "", wa_number: "" }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByText("Telegram")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /t\.me/ })).not.toBeInTheDocument();
+    const grid = container.querySelector("#kontak .grid.grid-cols-1");
+    expect(grid).not.toBeNull();
+    expect(grid?.className).not.toMatch(/sm:grid-cols-[23]/);
+  });
+
+  it("renders the https://t.me/<username> Telegram link when bot_username is configured", async () => {
+    renderHome(homeFixture({ bot_username: "realtoko_bot" }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.getByRole("link", { name: /Telegram/ })).toHaveAttribute(
+      "href",
+      "https://t.me/realtoko_bot",
+    );
+  });
+
+  it("renders the hero image with the configured src when hero_image is set", async () => {
+    renderHome(homeFixture({ hero_image: "https://x/img.jpg" }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.getByAltText("")).toHaveAttribute("src", "https://x/img.jpg");
+  });
+
+  it("falls back to the plain gradient (no <img>) when hero_image is null", async () => {
+    renderHome(homeFixture({ hero_image: null }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByAltText("")).not.toBeInTheDocument();
+  });
 });

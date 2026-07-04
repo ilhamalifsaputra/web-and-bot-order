@@ -14,6 +14,7 @@ import {
   prisma,
   initDb,
   setSetting,
+  deleteSetting,
   createCatalogProduct,
   createDenomination,
   addToCart,
@@ -112,6 +113,46 @@ describe("SPA shell wildcard", () => {
     const res = await app.inject({ method: "GET", url: "/api/v1/no-such-endpoint" });
     expect(res.statusCode).toBe(404);
     expect(res.json()).toEqual({ error: "not_found" });
+  });
+
+  it("returns a real 404 (with SPA error visuals) for an unknown category slug", async () => {
+    const res = await app.inject({ method: "GET", url: "/c/no-such-category" });
+    expect(res.statusCode).toBe(404);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.body).toContain("<title>404 — SPA Test Shop</title>");
+  });
+
+  it("returns a real 404 (with SPA error visuals) for an unknown product slug", async () => {
+    const res = await app.inject({ method: "GET", url: "/p/no-such-product" });
+    expect(res.statusCode).toBe(404);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.body).toContain("<title>404 — SPA Test Shop</title>");
+  });
+
+  it("200s a known product slug with the product name in <title> and an og:title meta", async () => {
+    const res = await app.inject({ method: "GET", url: `/p/${productSlug}` });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.body).toContain("<title>Netflix Premium — SPA Test Shop</title>");
+    expect(res.body).toContain('<meta property="og:title" content="Netflix Premium">');
+  });
+
+  // Parity with the deleted base.njk, which rendered a <link rel="icon"> on
+  // every page (web_favicon_url setting, default /static/favicon.svg —
+  // shopContext() in ../src/shop.ts).
+  it("injects the default favicon link when web_favicon_url is unset", async () => {
+    const res = await app.inject({ method: "GET", url: "/spa-shell-probe" });
+    expect(res.body).toContain('<link rel="icon" href="/static/favicon.svg">');
+  });
+
+  it("injects the configured favicon link when web_favicon_url is set", async () => {
+    try {
+      await setSetting(prisma, "web_favicon_url", "/uploads/branding/favicon-x.svg");
+      const res = await app.inject({ method: "GET", url: "/spa-shell-probe" });
+      expect(res.body).toContain('<link rel="icon" href="/uploads/branding/favicon-x.svg">');
+    } finally {
+      await deleteSetting(prisma, "web_favicon_url");
+    }
   });
 });
 

@@ -57,4 +57,15 @@ describe("ProductCard", () => {
     const badge = screen.getByText("Out of stock");
     expect(badge).toHaveClass("bg-rust-tint", "text-rust-dark");
   });
+
+  it("renders whole-number ratings without trailing .0", () => {
+    const wholeRating: ProductCardData = { ...base, rating: 5, rating_count: 1 };
+    render(
+      <MemoryRouter>
+        <ProductCard p={wholeRating} fx="16000" lowThreshold={5} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("5")).toBeInTheDocument();
+    expect(screen.queryByText("5.0")).not.toBeInTheDocument();
+  });
 });

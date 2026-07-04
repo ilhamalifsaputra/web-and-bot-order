@@ -81,7 +81,7 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
 
         {p.rating_count > 0 && (
           <div className="flex items-center gap-1.5 text-xs text-ink-soft mt-1">
-            <Stars rating={p.rating ?? 0} /> <span>{(p.rating ?? 0).toFixed(1)}</span>
+            <Stars rating={p.rating ?? 0} /> <span>{String(Math.round((p.rating ?? 0) * 10) / 10)}</span>
             <span className="text-ink-faint">· {t("web.review_count", { count: p.rating_count })}</span>
           </div>
         )}

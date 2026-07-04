@@ -9,8 +9,10 @@
  * establishes the session and redirects like before; on failure it now
  * redirects to `/login?next=...&err=tg_failed|tg_unlinked` (303) instead of
  * re-rendering a Nunjucks page, so the React LoginPage can show the right
- * flash message. `POST /logout` is unchanged (account.njk's logout form still
- * posts to it; it moves to the JSON twin with Cluster D).
+ * flash message. `POST /logout` was deleted on the account-area cutover
+ * (docs/REACT_STOREFRONT_MIGRATION.md Phase 7) — the deleted account.njk's
+ * logout form was its last consumer; AccountPage now posts to the JSON
+ * twin, POST /api/v1/auth/logout (routes/apiAuth.ts).
  */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
@@ -90,16 +92,6 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     }
     await establishSession(req, reply, user);
     return reply.code(303).redirect(safeNext(next));
-  });
-
-  app.post("/logout", async (req, reply) => {
-    const { optionalCustomer } = await import("../plugins/auth");
-    const customer = await optionalCustomer(req);
-    if (customer) {
-      await setSetting(prisma, shopSessionJtiKey(customer.userId), newJti());
-    }
-    void reply.clearCookie(SHOP_COOKIE_NAME, { path: "/" });
-    return reply.code(303).redirect("/");
   });
 };
 

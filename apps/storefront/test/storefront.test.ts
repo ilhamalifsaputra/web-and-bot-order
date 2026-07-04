@@ -124,10 +124,6 @@ async function loginAs(identifier: string, password: string): Promise<string> {
   return Array.isArray(c) ? c.join("; ") : String(c);
 }
 
-function csrfFrom(html: string): string {
-  return /name="csrf_token" value="([^"]+)"/.exec(html)![1]!;
-}
-
 // ---------------------------------------------------------------------------
 // Cluster A cutover (docs/REACT_STOREFRONT_MIGRATION.md): GET /, /c/:slug,
 // /p/:slug, /search and /cart now fall through to the React SPA shell
@@ -394,37 +390,16 @@ describe("/api/v1/cart — guest line label + cookie versioning", () => {
 // the same <link rel="icon"> on every path, so those tests hit
 // /spa-shell-probe instead of a specific page.
 
-// logo_url renders in the shared header (base.njk's `nav` block) — /login
-// overrides that block to a chromeless auth screen, so this needs a
-// still-Nunjucks page that keeps the default header: /account/settings.
-describe("shop logo", () => {
-  let cookie: string;
-  beforeAll(async () => {
-    const { hashPassword } = await import("@app/core/password");
-    await prisma.user.create({
-      data: {
-        loginUsername: "logochromeuser",
-        email: "logochrome@u.test",
-        passwordHash: hashPassword("logochrome-pw1"),
-        referralCode: "LOGOCHR",
-      },
-    });
-    cookie = await loginAs("logochromeuser", "logochrome-pw1");
-  });
-
-  it("renders the logo image in the header when web_logo_url is set", async () => {
-    await setSetting(prisma, "web_logo_url", "/uploads/branding/logo-abc123.png");
-    const res = await app.inject({ method: "GET", url: "/account/settings", headers: { cookie } });
-    expect(res.body).toContain("/uploads/branding/logo-abc123.png");
-    await deleteSetting(prisma, "web_logo_url");
-  });
-
-  it("falls back to the store icon when no logo is set", async () => {
-    const res = await app.inject({ method: "GET", url: "/account/settings", headers: { cookie } });
-    expect(res.body).not.toContain("/uploads/branding/logo-");
-    expect(res.body).toContain('data-lucide="store"');
-  });
-});
+// logo_url used to render in the shared Nunjucks header (base.njk's `nav`
+// block); /account/settings was the last still-Nunjucks page that kept the
+// default header, and it fell to the SPA shell on the account-area cutover
+// (docs/REACT_STOREFRONT_MIGRATION.md Phase 7). The React Layout component
+// now reads logo_url from GET /api/v1/pages/context instead of the server
+// rendering it into HTML — see that describe block in spa-api.test.ts for
+// the migrated setting-flows-through / fallback-to-empty-string coverage.
+// (The <img>-vs-store-icon rendering choice itself is a client concern with
+// no dedicated Layout jsdom test yet — same kind of gap already called out
+// for HomePage's hero image, see the "hero image" describe below.)
 
 describe("password login", () => {
   let pwUserId: number;
@@ -446,8 +421,11 @@ describe("password login", () => {
   // SAME generic 403) are proven once against the JSON endpoint in
   // spa-api.test.ts ("login: wrong credentials get the generic 403 key");
   // this keeps only what that test doesn't cover: case-insensitive identifier
-  // matching, and that the resulting session cookie actually works against a
-  // still-Nunjucks page.
+  // matching, and that the resulting session cookie actually authenticates.
+  // Used to follow up with GET /account (still-Nunjucks at the time) and
+  // scrape the rendered referral code; /account fell to the SPA shell on the
+  // account-area cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 7), so
+  // this now proves the cookie works against its JSON twin instead.
   it("signs in with a mixed-case identifier and reaches /account", async () => {
     const res = await app.inject({
       method: "POST",
@@ -459,11 +437,11 @@ describe("password login", () => {
     const cookie = res.headers["set-cookie"];
     const acc = await app.inject({
       method: "GET",
-      url: "/account",
+      url: "/api/v1/account",
       headers: { cookie: Array.isArray(cookie) ? cookie.join("; ") : String(cookie) },
     });
     expect(acc.statusCode).toBe(200);
-    expect(acc.body).toContain("WEBB01");
+    expect(acc.json().referral_code).toBe("WEBB01");
   });
 
   // Not covered by spa-api.test.ts's login tests (which only exercise
@@ -738,9 +716,23 @@ describe("forgot + reset password", () => {
   });
 });
 
-describe("account settings", () => {
+// Account-area cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 7): every
+// account.ts/settings.ts HTML handler except GET /account/settings/
+// link-telegram is gone (that one survives — the Telegram widget redirects
+// the whole page, so it can't be an XHR). The dropped tests below are all
+// redundant with existing coverage:
+//   - "redirects anonymous visitors to /login" → spa-api.test.ts's
+//     "/api/v1/account twins" > "reads 401 anonymously" already loops over
+//     /api/v1/account/settings.
+//   - "rejects a credentials change without CSRF" / the wrong-current-
+//     password / correct-password-changes-and-rotates-session tests →
+//     spa-api.test.ts's "settings credentials: ..." test (extended below
+//     with the missing-CSRF case and the stale-old-cookie-401 assertion
+//     this file used to make).
+//   - the email-change-requires-reauth pair (Storefront-3 fix) → migrated
+//     verbatim (as JSON assertions) into the same spa-api.test.ts test.
+describe("account settings — link-telegram (survives the cutover)", () => {
   let cookie: string;
-  let csrf: string;
   beforeAll(async () => {
     const { hashPassword } = await import("@app/core/password");
     await prisma.user.create({
@@ -752,113 +744,6 @@ describe("account settings", () => {
       },
     });
     cookie = await loginAs("settingsuser", "original-pw");
-    const page = await app.inject({ method: "GET", url: "/account/settings", headers: { cookie } });
-    expect(page.statusCode).toBe(200);
-    csrf = csrfFrom(page.body);
-  });
-
-  it("redirects anonymous visitors to /login", async () => {
-    const res = await app.inject({ method: "GET", url: "/account/settings" });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("/login");
-  });
-
-  it("rejects a credentials change without CSRF", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: "/account/settings/credentials",
-      headers: { cookie },
-      payload: { email: "evil@u.test" },
-    });
-    expect(res.statusCode).toBe(403);
-  });
-
-  it("changes the password when the current password is right, and rotates the session (Storefront-2 fix)", async () => {
-    const { verifyPassword } = await import("@app/core/password");
-    const res = await app.inject({
-      method: "POST",
-      url: "/account/settings/credentials",
-      headers: { cookie },
-      payload: {
-        csrf_token: csrf,
-        username: "settingsuser",
-        email: "settings@u.test",
-        current_password: "original-pw",
-        new_password: "second-pw-99",
-      },
-    });
-    expect(res.statusCode).toBe(303);
-    const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
-    expect(verifyPassword("second-pw-99", row.passwordHash!)).toBe(true);
-
-    // The OLD cookie's jti was just rotated server-side — it must no longer
-    // authenticate (any session active before this password change is dead).
-    const staleCheck = await app.inject({ method: "GET", url: "/account/settings", headers: { cookie } });
-    expect(staleCheck.statusCode).toBe(303);
-    expect(staleCheck.headers.location).toContain("/login");
-
-    // The response set a FRESH cookie for this same request/device, so the
-    // user who just changed their own password isn't logged out by it.
-    const setCookie = res.headers["set-cookie"];
-    cookie = Array.isArray(setCookie) ? setCookie.join("; ") : String(setCookie);
-    const freshPage = await app.inject({ method: "GET", url: "/account/settings", headers: { cookie } });
-    expect(freshPage.statusCode).toBe(200);
-    csrf = csrfFrom(freshPage.body);
-  });
-
-  it("refuses a password change with the wrong current password", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: "/account/settings/credentials",
-      headers: { cookie },
-      payload: {
-        csrf_token: csrf,
-        username: "settingsuser",
-        email: "settings@u.test",
-        current_password: "WRONG",
-        new_password: "hacked-pw-99",
-      },
-    });
-    expect(res.statusCode).toBe(400);
-    expect(res.body).toContain("Current password is wrong");
-  });
-
-  // Storefront-3 (security audit, 2026-06-23): email/username are the
-  // account-recovery anchor — changing them must require re-auth too, not
-  // just password changes.
-  it("refuses an email change without the correct current_password", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: "/account/settings/credentials",
-      headers: { cookie },
-      payload: {
-        csrf_token: csrf,
-        username: "settingsuser",
-        email: "attacker-controlled@evil.test",
-        current_password: "WRONG",
-      },
-    });
-    expect(res.statusCode).toBe(400);
-    expect(res.body).toContain("Current password is wrong");
-    const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
-    expect(row.email).not.toBe("attacker-controlled@evil.test");
-  });
-
-  it("allows an email change with the correct current_password", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: "/account/settings/credentials",
-      headers: { cookie },
-      payload: {
-        csrf_token: csrf,
-        username: "settingsuser",
-        email: "settings-new@u.test",
-        current_password: "second-pw-99",
-      },
-    });
-    expect(res.statusCode).toBe(303);
-    const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
-    expect(row.email).toBe("settings-new@u.test");
   });
 
   it("links a Telegram account via signed widget params", async () => {
@@ -880,6 +765,7 @@ describe("account settings", () => {
       headers: { cookie },
     });
     expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/account/settings?linked=1");
     const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
     expect(row.telegramId).toBe(636363n);
   });
@@ -901,8 +787,11 @@ describe("account settings", () => {
       headers: { cookie },
     });
     expect(res.statusCode).toBe(303);
-    const follow = await app.inject({ method: "GET", url: res.headers.location as string, headers: { cookie } });
-    expect(follow.body).toContain("already linked to another member");
+    // Used to follow the redirect and scrape settings.njk's rendered English
+    // copy; that page is now the SPA shell, and the client-side flash from
+    // ?err=tg_taken is proven in SettingsPage.test.tsx ("shows the tg_taken
+    // error for ?err=tg_taken") — assert the redirect contract itself here.
+    expect(res.headers.location).toBe("/account/settings?err=tg_taken");
     const row = (await prisma.user.findFirst({ where: { loginUsername: "settingsuser" } }))!;
     expect(row.telegramId).toBe(636363n); // unchanged
   });

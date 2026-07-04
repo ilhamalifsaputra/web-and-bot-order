@@ -222,6 +222,27 @@ describe("SPA shell wildcard", () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain("<title>Payment — SPA Test Shop</title>");
   });
+
+  // Account-area cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 7):
+  // /account, its sub-pages, and /account/settings now fall to this same
+  // wildcard — titles from spaShell.ts's TITLE_KEYS table. Auth/ownership
+  // live in the JSON twins (tested above), so the shell serves 200 even for
+  // anonymous visitors — the client-side AccountPage etc. redirect to
+  // /login on the 401 JSON.
+  it.each([
+    ["/account", "My account"],
+    ["/account/orders", "My orders"],
+    ["/account/orders/SOMECODE", "My orders"], // order codes are private — generic title, no lookup
+    ["/account/referral", "Referral"],
+    ["/account/reviews", "My reviews"],
+    ["/account/support", "Help &amp; support"], // esc()'d — the raw title has an ampersand
+    ["/account/support/123", "Help &amp; support"],
+    ["/account/settings", "Account settings"],
+  ])("200s GET %s with the %s title", async (path, title) => {
+    const res = await app.inject({ method: "GET", url: path });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(`<title>${title} — SPA Test Shop</title>`);
+  });
 });
 
 // ------------------------------------------------------------- /pages reads
@@ -244,6 +265,21 @@ describe("GET /api/v1/pages/context", () => {
     const body = res.json();
     expect(body.customer).toMatchObject({ username: "ctxuser", telegram_linked: false });
     expect(JSON.stringify(body)).not.toContain("csrf");
+  });
+
+  // Migrated from storefront.test.ts's "shop logo" describe (dropped on the
+  // account-area cutover, docs/REACT_STOREFRONT_MIGRATION.md Phase 7): the
+  // header's logo image was last provable against the still-Nunjucks
+  // /account/settings page — the React Layout component now reads logo_url
+  // straight from this endpoint instead.
+  it("returns the header logo URL from web_logo_url, falling back to empty string", async () => {
+    await setSetting(prisma, "web_logo_url", "/uploads/branding/logo-abc123.png");
+    const withLogo = await app.inject({ method: "GET", url: "/api/v1/pages/context" });
+    expect(withLogo.json().logo_url).toBe("/uploads/branding/logo-abc123.png");
+    await deleteSetting(prisma, "web_logo_url");
+
+    const withoutLogo = await app.inject({ method: "GET", url: "/api/v1/pages/context" });
+    expect(withoutLogo.json().logo_url).toBe("");
   });
 });
 
@@ -819,9 +855,10 @@ describe("/api/v1/account twins", () => {
   describe("signed in", () => {
     let cookie: string;
     let csrf: string;
+    let buyerId: number;
 
     beforeAll(async () => {
-      await makeUser("accspauser", "accspa-pw-123", "ACCSPA");
+      buyerId = await makeUser("accspauser", "accspa-pw-123", "ACCSPA");
       const session = await loginAs("accspauser", "accspa-pw-123");
       cookie = session.cookie;
       csrf = session.csrf;
@@ -894,7 +931,165 @@ describe("/api/v1/account twins", () => {
       expect(ok.json().redirect).toBe(`/p/${productSlug}`);
     });
 
-    it("settings credentials: wrong current_password 400s; correct one saves and reports password_changed", async () => {
+    // Migrated from the deleted account.ts (docs/REACT_STOREFRONT_MIGRATION.md
+    // Phase 7) — never had a Nunjucks-era HTTP test of its own (checked the
+    // full git history), so this is new server-level coverage for logic that
+    // otherwise only ran through mocked-fetch client jsdom tests
+    // (OrderDetailPage.test.tsx).
+    it("GET /account/orders/:code shows credentials only when DELIVERED; a non-owner gets 404 (never 403)", async () => {
+      const stock = await prisma.stockItem.create({
+        data: { productId: denomId, credentials: "acc-orderdetail@mail.com:pw", status: "SOLD" },
+      });
+      const order = await prisma.order.create({
+        data: {
+          orderCode: `ORD-ACCSPA-${Math.random()}`,
+          userId: buyerId,
+          subtotalAmount: "40000",
+          totalAmount: "40000",
+          status: OrderStatus.PENDING_PAYMENT,
+        },
+      });
+      await prisma.orderItem.create({
+        data: { orderId: order.id, productId: denomId, stockItemId: stock.id, unitPrice: "40000", warrantyDaysSnapshot: 30 },
+      });
+
+      const pending = await app.inject({ method: "GET", url: `/api/v1/account/orders/${order.orderCode}`, headers: { cookie } });
+      expect(pending.statusCode).toBe(200);
+      expect(pending.json().delivered).toBe(false);
+      expect(pending.json().pending_payment).toBe(true);
+      expect(pending.json().order.items[0].credentials).toBeNull();
+
+      await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.DELIVERED } });
+      const delivered = await app.inject({ method: "GET", url: `/api/v1/account/orders/${order.orderCode}`, headers: { cookie } });
+      expect(delivered.json().delivered).toBe(true);
+      expect(delivered.json().order.items[0].credentials).toBe("acc-orderdetail@mail.com:pw");
+
+      await makeUser("orderpeeker", "orderpeeker-pw1", "OPEEK1");
+      const peeker = await loginAs("orderpeeker", "orderpeeker-pw1");
+      const probe = await app.inject({
+        method: "GET",
+        url: `/api/v1/account/orders/${order.orderCode}`,
+        headers: { cookie: peeker.cookie },
+      });
+      expect(probe.statusCode).toBe(404);
+    });
+
+    // Migrated from the deleted account.ts — same "never had a Nunjucks-era
+    // HTTP test" gap as the order-detail test above.
+    it("reviews: create, then a dupe or a bad order_id swallow silently (matches the deleted HTML handler 1:1)", async () => {
+      const stock = await prisma.stockItem.create({ data: { productId: denomId, credentials: "x", status: "SOLD" } });
+      const order = await prisma.order.create({
+        data: {
+          orderCode: `ORD-REV-${Math.random()}`,
+          userId: buyerId,
+          subtotalAmount: "40000",
+          totalAmount: "40000",
+          status: OrderStatus.DELIVERED,
+        },
+      });
+      await prisma.orderItem.create({
+        data: { orderId: order.id, productId: denomId, stockItemId: stock.id, unitPrice: "40000", warrantyDaysSnapshot: 30 },
+      });
+
+      const anon = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/reviews",
+        payload: { order_id: order.id, product_id: denomId, rating: 5 },
+      });
+      expect(anon.statusCode).toBe(401);
+
+      const ok = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/reviews",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { order_id: order.id, product_id: denomId, rating: 4, comment: "great" },
+      });
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json()).toEqual({ ok: true });
+      const stored = await prisma.review.findFirst({ where: { orderId: order.id } });
+      expect(stored).toMatchObject({ rating: 4, comment: "great" });
+
+      // Dupe (unique userId+orderId) and a bad order_id both throw
+      // ValidationError inside createReview — the route just swallows it and
+      // reports ok:true either way (bounce-back UX, not a real error).
+      const dupe = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/reviews",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { order_id: order.id, product_id: denomId, rating: 2 },
+      });
+      expect(dupe.statusCode).toBe(200);
+      expect(await prisma.review.count({ where: { orderId: order.id } })).toBe(1); // no 2nd row
+
+      const badOrder = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/reviews",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { order_id: 999999, product_id: denomId, rating: 3 },
+      });
+      expect(badOrder.statusCode).toBe(200);
+      expect(badOrder.json()).toEqual({ ok: true });
+    });
+
+    // Migrated from the deleted account.ts — same "never had a Nunjucks-era
+    // HTTP test" gap as above. BOT_USERNAME="TestBot" (setup-env.ts); the
+    // .env.example placeholder ("YourBot") is filtered to "" by
+    // resolveBotUsername (see the "bot_username resolution" describe in
+    // storefront.test.ts for the same fixture on the home payload).
+    it("GET /account/referral returns the code + bot-linked URL, and null with no usable bot username", async () => {
+      const withBot = await app.inject({ method: "GET", url: "/api/v1/account/referral", headers: { cookie } });
+      expect(withBot.statusCode).toBe(200);
+      expect(withBot.json()).toEqual({
+        referral_code: "ACCSPA",
+        referral_link: "https://t.me/TestBot?start=ref_ACCSPA",
+      });
+
+      await setSetting(prisma, "bot_username", "YourBot");
+      try {
+        const noBot = await app.inject({ method: "GET", url: "/api/v1/account/referral", headers: { cookie } });
+        expect(noBot.json().referral_link).toBeNull();
+      } finally {
+        await deleteSetting(prisma, "bot_username");
+      }
+    });
+
+    // Storefront-3 (security audit, 2026-06-23): email/username are the
+    // account-recovery anchor — changing them must require re-auth too, not
+    // just password changes. Migrated from storefront.test.ts's deleted
+    // "account settings" describe.
+    it("settings credentials: rejects missing CSRF; requires current_password to change email too", async () => {
+      const noCsrf = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie },
+        payload: { email: "evil@u.test" },
+      });
+      expect(noCsrf.statusCode).toBe(403);
+      expect(noCsrf.json()).toEqual({ error: "csrf_failed" });
+
+      const badEmail = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { email: "attacker-controlled@evil.test", current_password: "WRONG" },
+      });
+      expect(badEmail.statusCode).toBe(400);
+      expect(badEmail.json()).toEqual({ error: "web.settings_wrong_password" });
+      const rowAfterBadEmail = await prisma.user.findUnique({ where: { id: buyerId } });
+      expect(rowAfterBadEmail!.email).not.toBe("attacker-controlled@evil.test");
+
+      const okEmail = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { email: "accspa-new@u.test", current_password: "accspa-pw-123" },
+      });
+      expect(okEmail.statusCode).toBe(200);
+      const rowAfterEmail = await prisma.user.findUnique({ where: { id: buyerId } });
+      expect(rowAfterEmail!.email).toBe("accspa-new@u.test");
+    });
+
+    it("settings credentials: wrong current_password 400s; correct one saves, reports password_changed, and rotates the session (Storefront-2 fix)", async () => {
       const wrong = await app.inject({
         method: "POST",
         url: "/api/v1/account/settings/credentials",
@@ -915,6 +1110,14 @@ describe("/api/v1/account twins", () => {
       // The response refreshed OUR cookie (rotated jti) — the old cookie string
       // is stale now; other sessions are invalidated.
       expect(ok.headers["set-cookie"]).toBeDefined();
+
+      // The OLD cookie's jti was just rotated server-side — it must no
+      // longer authenticate (any session active before this password change
+      // is dead). Migrated from storefront.test.ts's deleted
+      // "account settings" describe, which proved this against the HTML
+      // /account/settings route.
+      const staleCheck = await app.inject({ method: "GET", url: "/api/v1/account", headers: { cookie } });
+      expect(staleCheck.statusCode).toBe(401);
     });
   });
 });

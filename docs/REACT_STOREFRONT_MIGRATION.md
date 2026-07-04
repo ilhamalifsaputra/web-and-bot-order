@@ -111,9 +111,9 @@ Every mutating endpoint gets the happy / 401-anon / 403-bad-CSRF test trio
 - [x] Sign-off via reviewer markup-parity verification (no browser tooling); visual QA in a real browser pending as manual follow-up
 - [x] Cutover: delete HTML/HTMX checkout handlers + 4 templates; **webhooks + their tests untouched & green**
 
-### Phase 7 — Cluster D: account + settings
-- [ ] 8 account-area pages
-- [ ] Cutover: delete `account.ts`/`settings.ts` HTML handlers + 8 templates; migrate tests
+### Phase 7 — Cluster D: account + settings — DONE 2026-07-05
+- [x] 8 account-area pages
+- [x] Cutover: delete `account.ts`/`settings.ts` HTML handlers + 8 templates; migrate tests
 
 ### Phase 8 — cleanup
 - [ ] Delete `_shop.njk`; strip `base.njk` to skeleton for `error.njk`/`setup_pending.njk` (drop htmx)

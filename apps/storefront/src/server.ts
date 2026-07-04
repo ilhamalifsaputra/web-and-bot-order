@@ -18,7 +18,6 @@ import authPlugin from "./plugins/auth";
 import setupGatePlugin from "./plugins/setupGate";
 import homeRoutes from "./routes/home";
 import authRoutes from "./routes/auth";
-import accountRoutes from "./routes/account";
 import settingsRoutes from "./routes/settings";
 import checkoutRoutes from "./routes/checkout";
 import apiRoutes from "./routes/api";
@@ -123,7 +122,6 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   await app.register(homeRoutes);
   await app.register(authRoutes);
-  await app.register(accountRoutes);
   await app.register(settingsRoutes);
   await app.register(checkoutRoutes);
   await app.register(apiRoutes, { prefix: "/api/v1" });

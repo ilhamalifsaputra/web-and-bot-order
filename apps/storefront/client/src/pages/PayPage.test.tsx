@@ -170,4 +170,16 @@ describe("PayPage", () => {
     });
     expect(await screen.findByText("404")).toBeInTheDocument();
   });
+
+  it("renders stepper outside the max-w-2xl container (njk parity)", async () => {
+    const pay: PayData = { ...basePay, state: "waiting", is_qris: true };
+    const { container } = renderPay(respondFor(pay));
+    await screen.findByRole("heading", { name: "Payment" });
+    const maxWidthContainer = container.querySelector(".max-w-2xl");
+    const stepperOl = container.querySelector("ol");
+    expect(maxWidthContainer).toBeInTheDocument();
+    expect(stepperOl).toBeInTheDocument();
+    // Stepper (the <ol>) must NOT be a descendant of max-w-2xl container
+    expect(maxWidthContainer!.contains(stepperOl!)).toBe(false);
+  });
 });

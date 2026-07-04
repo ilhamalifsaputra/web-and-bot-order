@@ -204,9 +204,10 @@ export default function PayPage() {
   const stripState = poll?.state ?? state;
 
   return (
-    <div className="max-w-2xl mx-auto">
+    <>
       <Stepper step={state === "delivered" ? 3 : 2} />
-      <h1 className="page-title text-2xl! mb-1">{t("web.pay_title")}</h1>
+      <div className="max-w-2xl mx-auto">
+        <h1 className="page-title text-2xl! mb-1">{t("web.pay_title")}</h1>
       <p className="text-sm text-ink-soft mb-5">
         {t("web.order_code")}: <span className="codeish">{order.code}</span>
       </p>
@@ -452,6 +453,7 @@ export default function PayPage() {
           </Link>
         </div>
       )}
-    </div>
+      </div>
+    </>
   );
 }

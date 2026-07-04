@@ -1,5 +1,10 @@
-// Storefront catalog smoke tests — drives the Fastify app with app.inject()
-// against an isolated temp DB (pattern: apps/web-admin/test/web.test.ts).
+// Storefront smoke tests — drives the Fastify app with app.inject() against
+// an isolated temp DB (pattern: apps/web-admin/test/web.test.ts). Cluster A
+// (home/category/product/search/cart) cut over to the React SPA
+// (docs/REACT_STOREFRONT_MIGRATION.md); this file now hits their JSON data
+// twins (/api/v1/pages/*, /api/v1/cart/*) for that surface and still drives
+// the Nunjucks pages directly (login/register/forgot/account/settings/
+// checkout) for everything that hasn't cut over yet.
 import "./setup-env"; // FIRST import — sets env before @app/* load
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@app/core/mailer", () => ({
@@ -148,96 +153,143 @@ function csrfFrom(html: string): string {
   return /name="csrf_token" value="([^"]+)"/.exec(html)![1]!;
 }
 
-describe("home", () => {
-  it("renders the catalog with IDR prices", async () => {
-    const res = await app.inject({ method: "GET", url: "/" });
+// ---------------------------------------------------------------------------
+// Cluster A cutover (docs/REACT_STOREFRONT_MIGRATION.md): GET /, /c/:slug,
+// /p/:slug, /search and /cart now fall through to the React SPA shell
+// (routes/spaShell.ts — its HTTP surface, incl. unknown-slug 404s, is tested
+// in spa-api.test.ts and NOT duplicated here). The business logic that used
+// to be proven by scraping the deleted Nunjucks pages (3-tier product/denom
+// shaping, cross-denomination review/rating aggregation, stock/restock
+// defaults, the guest-cart cookie contract) still lives server-side in
+// pageData.ts / cart.ts, so it's re-asserted here against their JSON twins
+// instead. Pure HTML/CSS rendering (price formatting, button/badge text,
+// "not a denomination row" link-shape checks) is a client concern now, and is
+// covered by the client jsdom tests under apps/storefront/client/src.
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/pages/home", () => {
+  it("returns the product card with its price, and its category", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/home" });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("Netflix Premium 1 Bulan");
-    expect(res.body).toContain("Rp40.000");
-    expect(res.body).toContain("Streaming");
+    const body = res.json();
+    expect(body.products.find((p: { slug: string }) => p.slug === productSlug)).toMatchObject({
+      from_price: "40000",
+    });
+    expect(body.categories.some((c: { slug: string }) => c.slug === categorySlug)).toBe(true);
   });
 
-  it("hides the USDT info when usd_idr_rate is unset", async () => {
-    const res = await app.inject({ method: "GET", url: "/" });
-    expect(res.body).not.toContain("≈ $");
-  });
-
-  it("shows the derived USDT beside the IDR price once a rate is set", async () => {
-    await setSetting(prisma, "usd_idr_rate", "16000");
-    const res = await app.inject({ method: "GET", url: "/" });
-    expect(res.body).toContain("Rp40.000");
-    expect(res.body).toContain("≈ $2.5"); // 40000/16000 = 2.5 (nearest 0.1)
+  it("shows a multi-plan product as the product card, never its denominations flat", async () => {
+    const { product, members } = await seedProduct(categoryId, "HomeBrand", [
+      { name: "HomeBrand 7 day", price: "9000", duration: "7 day" },
+      { name: "HomeBrand 1 Month", price: "29000", duration: "1 Month" },
+    ]);
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/home" });
+    const slugs = res.json().products.map((p: { slug: string }) => p.slug);
+    expect(slugs).toContain(product.slug);
+    for (const d of members) expect(slugs).not.toContain(String(d.id));
   });
 });
 
-describe("category page — product cards only", () => {
-  it("lists category products on slug URLs", async () => {
-    const res = await app.inject({ method: "GET", url: `/c/${categorySlug}` });
+describe("GET /api/v1/pages/category/:slug — product cards only", () => {
+  it("lists a category's products", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/v1/pages/category/${categorySlug}` });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("Netflix Premium 1 Bulan");
-    expect(res.body).toContain(`/p/${productSlug}`); // product card link
+    expect(res.json().products.some((p: { slug: string }) => p.slug === productSlug)).toBe(true);
   });
 
-  it("404s an unknown category slug", async () => {
-    const res = await app.inject({ method: "GET", url: "/c/no-such-category" });
-    expect(res.statusCode).toBe(404);
-  });
-
-  // Core 3-tier rule: the category grid shows PRODUCT cards (link /p/:slug,
-  // starting price) and NEVER denomination rows. A multi-plan product appears
-  // as ONE card; its denominations are not linked from the grid.
-  it("shows product cards (not denomination rows) for a multi-plan product", async () => {
+  // Core 3-tier rule: a multi-plan product is ONE card, priced at its
+  // cheapest denomination — the denominations are never their own cards.
+  it("shows ONE card for a multi-plan product, priced at its cheapest denomination", async () => {
     const cat = await prisma.category.create({ data: { name: "Editing", slug: "editing-cat", sortOrder: 9 } });
-    const { product, members } = await seedProduct(cat.id, "CapCut Pro", [
+    const { product } = await seedProduct(cat.id, "CapCut Pro", [
       { name: "1 Week", price: "10000", duration: "1 Week" },
       { name: "1 Month", price: "30000", duration: "1 Month" },
     ]);
-    const [m1, m2] = members;
 
-    const res = await app.inject({ method: "GET", url: `/c/${cat.slug}` });
+    const res = await app.inject({ method: "GET", url: `/api/v1/pages/category/${cat.slug}` });
     expect(res.statusCode).toBe(200);
-    // One product card linking to product detail, showing the starting price.
-    expect(res.body).toContain(`/p/${product.slug}`);
-    expect(res.body).toContain("CapCut Pro");
-    expect(res.body).toContain("Rp10.000"); // starting price = cheapest denomination
-    // Denominations must NOT be rendered as their own grid cards/rows. There is
-    // no denomination URL surface on a grid; the leaf is reached via /p/:slug.
-    expect(res.body).not.toContain(`>1 Week<`);
-    expect(res.body).not.toContain(`>1 Month<`);
-    // Sanity: the denomination ids never appear as product-detail links.
-    expect(res.body).not.toContain(`/p/${m1!.id}"`);
-    expect(res.body).not.toContain(`/p/${m2!.id}"`);
+    const body = res.json();
+    expect(body.products).toHaveLength(1);
+    expect(body.products[0]).toMatchObject({ slug: product.slug, from_price: "10000" });
   });
 
-  it("renders product detail with denomination cards + Buy Now / Add To Cart", async () => {
+  it("aggregates the grid-card rating across every denomination, not just the cheapest", async () => {
+    const cat = await prisma.category.create({ data: { name: "RatingCat", slug: "rating-cat", sortOrder: 6 } });
+    const { members } = await seedProduct(cat.id, "Rated Product", [
+      { name: "1 Week", price: "11000", duration: "1 Week" }, // cheapest — zero reviews
+      { name: "1 Month", price: "31000", duration: "1 Month" }, // both reviews live here
+    ]);
+    const [, monthPlan] = members;
+    // Two reviews (4★ + 5★ → avg 4.5) on the non-cheapest plan only. A
+    // fractional average makes this unambiguous — an exact 5 could also come
+    // from the old cheapest-plan-only bug.
+    for (const rating of [4, 5]) {
+      const user = await prisma.user.create({
+        data: { telegramId: BigInt(Math.floor(Math.random() * 1e15)), referralCode: `r${Math.random()}` },
+      });
+      const order = await prisma.order.create({
+        data: { orderCode: `ORD-${Math.random()}`, userId: user.id, subtotalAmount: "31000", totalAmount: "31000", status: "DELIVERED" },
+      });
+      await prisma.review.create({
+        data: { userId: user.id, orderId: order.id, productId: monthPlan!.id, rating, hidden: false, comment: null },
+      });
+    }
+
+    const res = await app.inject({ method: "GET", url: `/api/v1/pages/category/${cat.slug}` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().products[0]).toMatchObject({ rating: 4.5, rating_count: 2 });
+  });
+});
+
+describe("GET /api/v1/pages/product/:slug", () => {
+  it("returns the parent category name and real stock counts; 404s an unknown slug", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/v1/pages/product/${productSlug}` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.product.category_name).toBe("Streaming");
+    expect(body.denominations[0]).toMatchObject({ available: 100, in_stock: true });
+
+    const miss = await app.inject({ method: "GET", url: "/api/v1/pages/product/no-such-product" });
+    expect(miss.statusCode).toBe(404);
+  });
+
+  // Distinct 404 path from "unknown slug" — an existing-but-deactivated product.
+  it("404s an inactive product", async () => {
+    await prisma.product.update({ where: { slug: emptyProductSlug }, data: { isActive: false } });
+    const res = await app.inject({ method: "GET", url: `/api/v1/pages/product/${emptyProductSlug}` });
+    expect(res.statusCode).toBe(404);
+    await prisma.product.update({ where: { slug: emptyProductSlug }, data: { isActive: true } });
+  });
+
+  it("reports zero stock and the default restock denomination id for an empty product (Task 10 fix)", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/v1/pages/product/${emptyProductSlug}` });
+    const body = res.json();
+    expect(body.denominations[0]).toMatchObject({ available: 0, in_stock: false });
+    expect(body.default_restock_denomination_id).toBe(emptyProductId);
+  });
+
+  it("shows one denomination entry per plan for a multi-plan product", async () => {
     const cat = await prisma.category.create({ data: { name: "DetailCat", slug: "detail-cat", sortOrder: 8 } });
     const { product, members } = await seedProduct(cat.id, "Detail Product", [
       { name: "1 Week", price: "12000", duration: "1 Week" },
       { name: "1 Month", price: "32000", duration: "1 Month" },
     ]);
     const [wk, mo] = members;
-    // Give the cheaper plan stock so it's selectable.
     await prisma.stockItem.create({ data: { productId: wk!.id, credentials: "a@b:c", status: "AVAILABLE" } });
 
-    const res = await app.inject({ method: "GET", url: `/p/${product.slug}` });
-    expect(res.statusCode).toBe(200);
-    // Breadcrumb Home > Category > Product.
-    expect(res.body).toContain("DetailCat");
-    expect(res.body).toContain("Detail Product");
-    // Denomination cards (radios), one per plan — NOT a dropdown.
-    expect(res.body).toContain(`name="denomination_id" value="${wk!.id}"`);
-    expect(res.body).toContain(`name="denomination_id" value="${mo!.id}"`);
-    expect(res.body).toContain("1 Week");
-    expect(res.body).toContain("1 Month");
-    // Buy Now + Add To Cart buttons.
-    expect(res.body).toContain("Add to cart");
-    expect(res.body).toContain("Buy now");
+    const res = await app.inject({ method: "GET", url: `/api/v1/pages/product/${product.slug}` });
+    const body = res.json();
+    expect(body.product.category_name).toBe("DetailCat");
+    expect(body.denominations).toMatchObject([
+      { id: wk!.id, name: "1 Week", price: "12000" },
+      { id: mo!.id, name: "1 Month", price: "32000" },
+    ]);
   });
 
-  it("renders reviews left on ANY denomination, not just the cheapest", async () => {
-    // Regression: reviews are keyed by denomination, but the product detail
-    // page must aggregate across every plan — a review left on a non-lead
-    // (non-cheapest) denomination must still surface here.
+  // Regression: reviews are keyed by denomination, but the product page must
+  // aggregate across every plan — a review left on a non-cheapest denomination
+  // must still surface here.
+  it("returns reviews left on ANY denomination, not just the cheapest", async () => {
     const cat = await prisma.category.create({ data: { name: "ReviewCat", slug: "review-cat", sortOrder: 7 } });
     const { product, members } = await seedProduct(cat.id, "Reviewed Product", [
       { name: "1 Week", price: "11000", duration: "1 Week" }, // cheapest — zero reviews
@@ -254,123 +306,50 @@ describe("category page — product cards only", () => {
       data: { userId: user.id, orderId: order.id, productId: monthPlan!.id, rating: 5, hidden: false, comment: "great-1-month-plan" },
     });
 
-    const res = await app.inject({ method: "GET", url: `/p/${product.slug}` });
+    const res = await app.inject({ method: "GET", url: `/api/v1/pages/product/${product.slug}` });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("great-1-month-plan");
-  });
-
-  it("aggregates the grid-card rating across every denomination, not just the cheapest", async () => {
-    const cat = await prisma.category.create({ data: { name: "RatingCat", slug: "rating-cat", sortOrder: 6 } });
-    const { product, members } = await seedProduct(cat.id, "Rated Product", [
-      { name: "1 Week", price: "11000", duration: "1 Week" }, // cheapest — zero reviews
-      { name: "1 Month", price: "31000", duration: "1 Month" }, // both reviews live here
-    ]);
-    const [, monthPlan] = members;
-    // Two reviews (4★ + 5★ → avg 4.5) on the non-cheapest plan only. A
-    // fractional average makes the rendered text unambiguous (an exact 5
-    // would round-trip through the `round(1)` template filter as plain "5",
-    // not "5.0", which would make this assertion pass even on the old bug —
-    // ANY single review on the lead/cheapest plan would also show "5").
-    for (const rating of [4, 5]) {
-      const user = await prisma.user.create({
-        data: { telegramId: BigInt(Math.floor(Math.random() * 1e15)), referralCode: `r${Math.random()}` },
-      });
-      const order = await prisma.order.create({
-        data: { orderCode: `ORD-${Math.random()}`, userId: user.id, subtotalAmount: "31000", totalAmount: "31000", status: "DELIVERED" },
-      });
-      await prisma.review.create({
-        data: { userId: user.id, orderId: order.id, productId: monthPlan!.id, rating, hidden: false, comment: null },
-      });
-    }
-
-    const res = await app.inject({ method: "GET", url: `/c/${cat.slug}` });
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain(product.name);
-    // The card must show the aggregated rating (4.5, 2 reviews) rather than
-    // the cheapest plan's empty (rating_count = 0) summary.
-    expect(res.body).toContain("4.5");
-  });
-
-  it("renders product detail stock badge for the Netflix product", async () => {
-    const res = await app.inject({ method: "GET", url: `/p/${productSlug}` });
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("Netflix Premium 1 Bulan");
-    expect(res.body).toContain("Available"); // 5 > LOW_STOCK_THRESHOLD(3)
-  });
-
-  it("shows out-of-stock + restock CTA when no stock", async () => {
-    const res = await app.inject({ method: "GET", url: `/p/${emptyProductSlug}` });
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("Out of stock");
-    expect(res.body).toContain("Notify me when ready");
-  });
-
-  it("renders a valid denomination id in the restock form's default action (Task 10 fix)", async () => {
-    const res = await app.inject({ method: "GET", url: `/p/${emptyProductSlug}` });
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain(`action="/restock/${emptyProductId}"`);
-    expect(res.body).not.toContain('action="/restock/"');
-  });
-
-  it("404s an inactive product", async () => {
-    await prisma.product.update({ where: { slug: emptyProductSlug }, data: { isActive: false } });
-    const res = await app.inject({ method: "GET", url: `/p/${emptyProductSlug}` });
-    expect(res.statusCode).toBe(404);
-    await prisma.product.update({ where: { slug: emptyProductSlug }, data: { isActive: true } });
-  });
-
-  it("404s an unknown product slug", async () => {
-    const res = await app.inject({ method: "GET", url: "/p/no-such-product" });
-    expect(res.statusCode).toBe(404);
-  });
-
-  it("home 'latest' shows the product card, never denominations flat", async () => {
-    const { product, members } = await seedProduct(categoryId, "HomeBrand", [
-      { name: "HomeBrand 7 day", price: "9000", duration: "7 day" },
-      { name: "HomeBrand 1 Month", price: "29000", duration: "1 Month" },
-    ]);
-    const [d1, d2] = members;
-
-    const res = await app.inject({ method: "GET", url: "/" });
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain(`/p/${product.slug}`); // product card present
-    expect(res.body).toContain("HomeBrand");
-    expect(res.body).not.toContain(`/p/${d1!.id}"`);  // denominations not flat on home
-    expect(res.body).not.toContain(`/p/${d2!.id}"`);
+    expect(res.json().reviews.some((r: { comment: string | null }) => r.comment === "great-1-month-plan")).toBe(true);
   });
 });
 
-describe("search + language", () => {
-  it("finds products by name", async () => {
-    const res = await app.inject({ method: "GET", url: "/search?q=netflix" });
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("Netflix Premium 1 Bulan");
+describe("GET /api/v1/pages/search", () => {
+  it("finds products by name, including a partial substring match", async () => {
+    const full = await app.inject({ method: "GET", url: "/api/v1/pages/search?q=netflix" });
+    expect(full.statusCode).toBe(200);
+    expect(full.json().products.some((p: { slug: string }) => p.slug === productSlug)).toBe(true);
+
+    // F-01 (execution/10): searchCatalog uses a `contains` LIKE.
+    const partial = await app.inject({ method: "GET", url: "/api/v1/pages/search?q=remium 1 Bul" });
+    expect(partial.json().products.some((p: { slug: string }) => p.slug === productSlug)).toBe(true);
   });
 
-  it("shows the empty state for no hits", async () => {
-    const res = await app.inject({ method: "GET", url: "/search?q=zzz-nope" });
+  it("returns an empty product list for no hits", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/search?q=zzz-nope" });
     expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("Nothing found");
+    expect(res.json().products).toHaveLength(0);
   });
 
-  // F-01 (execution/10): a partial substring (not the whole product name) still
-  // matches — searchCatalog uses a `contains` LIKE.
-  it("matches a partial substring of the product name", async () => {
-    const res = await app.inject({ method: "GET", url: "/search?q=remium 1 Bul" });
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("Netflix Premium 1 Bulan");
+  // 3-tier rule: search returns PRODUCTS, never their plans.
+  it("returns products (not denominations/plans) in search results", async () => {
+    const { product, members } = await seedProduct(categoryId, "CapCut Search", [
+      { name: "1 Week Plan", price: "9000", duration: "1 Week" },
+      { name: "1 Month Plan", price: "29000", duration: "1 Month" },
+    ]);
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/search?q=CapCut Search" });
+    const slugs = res.json().products.map((p: { slug: string }) => p.slug);
+    expect(slugs).toContain(product.slug);
+    for (const d of members) expect(slugs).not.toContain(String(d.id));
   });
+});
 
-  it("switches to Indonesian via the lang cookie", async () => {
+describe("language", () => {
+  it("/lang sets the shop_lang cookie, reflected in the JSON chrome context", async () => {
     const sw = await app.inject({ method: "GET", url: "/lang?to=id&back=/" });
     expect(sw.statusCode).toBe(303);
     const cookie = sw.headers["set-cookie"];
-    const res = await app.inject({
-      method: "GET",
-      url: "/",
-      headers: { cookie: Array.isArray(cookie) ? cookie.join("; ") : String(cookie) },
-    });
-    expect(res.body).toContain("Produk terbaru"); // web.new_arrivals (id)
+    const cookieStr = Array.isArray(cookie) ? cookie.join("; ") : String(cookie);
+    const ctx = await app.inject({ method: "GET", url: "/api/v1/pages/context", headers: { cookie: cookieStr } });
+    expect(ctx.json().lang).toBe("id");
   });
 
   it("rejects an absolute redirect target on /lang", async () => {
@@ -378,113 +357,104 @@ describe("search + language", () => {
     expect(sw.statusCode).toBe(303);
     expect(sw.headers.location).toBe("/");
   });
-
-  // 3-tier rule: search returns PRODUCTS, never their plans. Searching the
-  // product name yields the product card; the denominations are not surfaced.
-  it("returns products (not denominations/plans) in search results", async () => {
-    const { product, members } = await seedProduct(categoryId, "CapCut Search", [
-      { name: "1 Week Plan", price: "9000", duration: "1 Week" },
-      { name: "1 Month Plan", price: "29000", duration: "1 Month" },
-    ]);
-    const [d1, d2] = members;
-
-    // Searching the product name returns the product card…
-    const res = await app.inject({ method: "GET", url: "/search?q=CapCut Search" });
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain(`/p/${product.slug}`);
-    expect(res.body).toContain("CapCut Search");
-    // …but the denomination ids are never linked as their own results.
-    expect(res.body).not.toContain(`/p/${d1!.id}"`);
-    expect(res.body).not.toContain(`/p/${d2!.id}"`);
-  });
 });
 
-describe("guest cart — line label + cookie versioning", () => {
-  // Add a denomination to the guest cart; the cart line must read
-  // `Product - Denomination ×qty` and the cookie must be the versioned v2.
+describe("/api/v1/cart — guest line label + cookie versioning", () => {
+  // spa-api.test.ts already covers the guest add/update/remove happy path and
+  // the signed-in CSRF trio; the scenarios below (the `Product - Denomination`
+  // line label, legacy-cookie invalidation, version-envelope handling) are
+  // unique to this file and not duplicated there.
   it("renders the cart line as `Product - Denomination` and sets shop_cart_v2", async () => {
     const cat = await prisma.category.create({ data: { name: "CartCat", slug: "cart-cat", sortOrder: 7 } });
     const { members } = await seedProduct(cat.id, "CapCut Pro", [{ name: "1 Month", price: "30000", duration: "1 Month" }]);
     const denomId = members[0]!.id;
 
-    const add = await app.inject({
-      method: "POST",
-      url: "/cart/add",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      payload: new URLSearchParams({ denomination_id: String(denomId), qty: "1" }).toString(),
-    });
-    expect(add.statusCode).toBe(303);
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: denomId, qty: 1 } });
+    expect(add.statusCode).toBe(200);
     const setCookie = add.headers["set-cookie"];
     const cookieStr = Array.isArray(setCookie) ? setCookie.join("; ") : String(setCookie);
     // New versioned cookie name; old name not (re)written.
     expect(cookieStr).toContain("shop_cart_v2=");
 
-    const cart = await app.inject({ method: "GET", url: "/cart", headers: { cookie: cookieStr } });
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: cookieStr } });
     expect(cart.statusCode).toBe(200);
-    expect(cart.body).toContain("CapCut Pro - 1 Month"); // Product - Denomination label
+    expect(cart.json().items[0]).toMatchObject({ name: "CapCut Pro - 1 Month" }); // Product - Denomination label
   });
 
   // Cutover hazard: a stale pre-rename `shop_cart` cookie (bare array, no
   // version) MUST be ignored — it can never resolve to a denomination row.
   it("ignores a legacy shop_cart cookie (no version envelope)", async () => {
     const legacy = "shop_cart=" + encodeURIComponent(JSON.stringify([{ p: productId, q: 3 }]));
-    const cart = await app.inject({ method: "GET", url: "/cart", headers: { cookie: legacy } });
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: legacy } });
     expect(cart.statusCode).toBe(200);
-    // The stale cookie resolved to nothing → empty cart.
-    expect(cart.body).toContain("Your cart is empty");
-    expect(cart.body).not.toContain("Netflix Premium 1 Bulan");
+    expect(cart.json().items).toHaveLength(0);
   });
 
   // A wrong-version envelope (e.g. a future {v:99,...}) is also ignored.
   it("ignores a cart cookie whose version != current", async () => {
     const badVer = "shop_cart_v2=" + encodeURIComponent(JSON.stringify({ v: 99, items: [{ p: productId, q: 2 }] }));
-    const cart = await app.inject({ method: "GET", url: "/cart", headers: { cookie: badVer } });
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: badVer } });
     expect(cart.statusCode).toBe(200);
-    expect(cart.body).toContain("Your cart is empty");
+    expect(cart.json().items).toHaveLength(0);
   });
 
   // The current v2 envelope resolves correctly.
   it("reads a current v2 cart cookie", async () => {
     const ok = "shop_cart_v2=" + encodeURIComponent(JSON.stringify({ v: 2, items: [{ p: productId, q: 2 }] }));
-    const cart = await app.inject({ method: "GET", url: "/cart", headers: { cookie: ok } });
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: ok } });
     expect(cart.statusCode).toBe(200);
-    expect(cart.body).toContain("Netflix Premium 1 Bulan");
+    expect(cart.json().items[0]).toMatchObject({ denomination_id: productId, qty: 2 });
   });
 });
 
-describe("errors", () => {
-  it("renders a friendly 404 page", async () => {
-    const res = await app.inject({ method: "GET", url: "/definitely-not-a-page" });
-    expect(res.statusCode).toBe(404);
-    expect(res.body).toContain("404");
-  });
-});
-
+// favicon_url is shared shopContext() chrome (views/base.njk <head>), still
+// rendered by every Nunjucks page that hasn't cut over — /login (chromeless
+// body, but the <head> is shared) is a convenient one to prove the setting
+// still flows through correctly now that GET / serves the React SPA shell
+// instead (which doesn't yet apply favicon_url dynamically — see the
+// migration report's Concerns).
 describe("favicon", () => {
   it("renders the default favicon link when none is configured", async () => {
-    const res = await app.inject({ method: "GET", url: "/" });
+    const res = await app.inject({ method: "GET", url: "/login" });
     expect(res.body).toContain('rel="icon"');
     expect(res.body).toContain("/static/favicon.svg");
   });
 
   it("renders the configured favicon when web_favicon_url is set", async () => {
     await setSetting(prisma, "web_favicon_url", "/uploads/branding/favicon-deadbeef.png");
-    const res = await app.inject({ method: "GET", url: "/" });
+    const res = await app.inject({ method: "GET", url: "/login" });
     expect(res.body).toContain("/uploads/branding/favicon-deadbeef.png");
     await deleteSetting(prisma, "web_favicon_url");
   });
 });
 
+// logo_url renders in the shared header (base.njk's `nav` block) — /login
+// overrides that block to a chromeless auth screen, so this needs a
+// still-Nunjucks page that keeps the default header: /account/settings.
 describe("shop logo", () => {
+  let cookie: string;
+  beforeAll(async () => {
+    const { hashPassword } = await import("@app/core/password");
+    await prisma.user.create({
+      data: {
+        loginUsername: "logochromeuser",
+        email: "logochrome@u.test",
+        passwordHash: hashPassword("logochrome-pw1"),
+        referralCode: "LOGOCHR",
+      },
+    });
+    cookie = await loginAs("logochromeuser", "logochrome-pw1");
+  });
+
   it("renders the logo image in the header when web_logo_url is set", async () => {
     await setSetting(prisma, "web_logo_url", "/uploads/branding/logo-abc123.png");
-    const res = await app.inject({ method: "GET", url: "/" });
+    const res = await app.inject({ method: "GET", url: "/account/settings", headers: { cookie } });
     expect(res.body).toContain("/uploads/branding/logo-abc123.png");
     await deleteSetting(prisma, "web_logo_url");
   });
 
   it("falls back to the store icon when no logo is set", async () => {
-    const res = await app.inject({ method: "GET", url: "/" });
+    const res = await app.inject({ method: "GET", url: "/account/settings", headers: { cookie } });
     expect(res.body).not.toContain("/uploads/branding/logo-");
     expect(res.body).toContain('data-lucide="store"');
   });
@@ -666,34 +636,24 @@ describe("login widget — live bot username, placeholder filtered", () => {
   });
 });
 
-describe("home page — Telegram contact link hidden when bot isn't configured (Task 9 fix)", () => {
-  it("never renders a dead https://t.me/ link when bot_username resolves empty", async () => {
-    await setSetting(prisma, "bot_username", "YourBot"); // .env.example placeholder → resolves to ""
-    const res = await app.inject({ method: "GET", url: "/" });
-    expect(res.statusCode).toBe(200);
-    expect(res.body).not.toContain('href="https://t.me/"');
+// Task 9 fix: HomePage.tsx only renders the Telegram contact card/link when
+// `bot_username` is truthy (`{bot_username && (...)}`) — this asserts the data
+// side (the .env.example placeholder resolves to "") that fix depends on. The
+// rendering itself (dead-link hiding, the 1-column contact grid when both WA
+// and Telegram are absent) has no dedicated client jsdom test yet — see the
+// migration report's Concerns section.
+describe("GET /api/v1/pages/home — bot_username resolution (Task 9 fix)", () => {
+  it("resolves to an empty string when the DB setting is the .env.example placeholder", async () => {
+    await setSetting(prisma, "bot_username", "YourBot");
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/home" });
+    expect(res.json().bot_username).toBe("");
     await deleteSetting(prisma, "bot_username");
   });
 
-  it("shows the Telegram contact link when a real bot_username is configured", async () => {
+  it("resolves to the real value when a bot username is configured", async () => {
     await setSetting(prisma, "bot_username", "realtoko_bot");
-    const res = await app.inject({ method: "GET", url: "/" });
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain('href="https://t.me/realtoko_bot"');
-    await deleteSetting(prisma, "bot_username");
-  });
-
-  it("uses a 1-column contact grid when only the support-ticket card remains (no WA, no bot)", async () => {
-    await deleteSetting(prisma, "support_whatsapp");
-    await setSetting(prisma, "bot_username", "YourBot"); // → ""
-    const res = await app.inject({ method: "GET", url: "/" });
-    expect(res.statusCode).toBe(200);
-    // Scope to the #kontak section — the page has other unrelated
-    // sm:grid-cols-2/3 grids (stats, categories, products, testimonials),
-    // so a page-wide match would false-fail regardless of this fix.
-    const kontakSection = res.body.match(/<section[^>]*id="kontak"[\s\S]*?<\/section>/)?.[0] ?? "";
-    expect(kontakSection).not.toBe("");
-    expect(kontakSection).not.toMatch(/sm:grid-cols-[23]/);
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/home" });
+    expect(res.json().bot_username).toBe("realtoko_bot");
     await deleteSetting(prisma, "bot_username");
   });
 });
@@ -1561,21 +1521,19 @@ describe("checkout — NOWPayments option (USDT hosted invoice, redirect-UX)", (
   });
 });
 
-describe("hero image", () => {
-  it("uses the configured hero when web_hero_url is set", async () => {
+// Rendering (a custom <img> vs. the brand-gradient fallback) is a client
+// concern in HomePage.tsx — its jsdom test only covers hero_image: null, so
+// the truthy branch isn't independently rendering-tested (see the migration
+// report's Concerns section). Only the data pass-through is asserted here.
+describe("GET /api/v1/pages/home — hero image", () => {
+  it("returns the configured hero image url, or null when unset", async () => {
     await setSetting(prisma, "web_hero_url", "/uploads/branding/hero-cafe01.jpg");
-    const res = await app.inject({ method: "GET", url: "/" });
-    expect(res.body).toContain("/uploads/branding/hero-cafe01.jpg");
+    const withHero = await app.inject({ method: "GET", url: "/api/v1/pages/home" });
+    expect(withHero.json().hero_image).toBe("/uploads/branding/hero-cafe01.jpg");
     await deleteSetting(prisma, "web_hero_url");
-  });
 
-  it("falls back to a brand gradient (no photo) when unset", async () => {
-    const res = await app.inject({ method: "GET", url: "/" });
-    // photo-1607082348824-... was the removed HERO_IMAGE hotlink id; other
-    // Unsplash images legitimately appear elsewhere on the page (categories,
-    // products), so assert against the specific id, not the whole domain.
-    expect(res.body).not.toContain("photo-1607082348824");
-    expect(res.body).toContain("from-ink via-pine-dark to-pine");
+    const withoutHero = await app.inject({ method: "GET", url: "/api/v1/pages/home" });
+    expect(withoutHero.json().hero_image).toBeNull();
   });
 });
 

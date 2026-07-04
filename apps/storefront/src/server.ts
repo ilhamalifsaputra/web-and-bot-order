@@ -17,12 +17,10 @@ import viewsPlugin from "./plugins/views";
 import authPlugin from "./plugins/auth";
 import setupGatePlugin from "./plugins/setupGate";
 import homeRoutes from "./routes/home";
-import catalogRoutes from "./routes/catalog";
 import authRoutes from "./routes/auth";
 import forgotRoutes from "./routes/forgot";
 import accountRoutes from "./routes/account";
 import settingsRoutes from "./routes/settings";
-import cartRoutes from "./routes/cart";
 import checkoutRoutes from "./routes/checkout";
 import apiRoutes from "./routes/api";
 import apiPagesRoutes from "./routes/apiPages";
@@ -125,12 +123,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   });
 
   await app.register(homeRoutes);
-  await app.register(catalogRoutes);
   await app.register(authRoutes);
   await app.register(forgotRoutes);
   await app.register(accountRoutes);
   await app.register(settingsRoutes);
-  await app.register(cartRoutes);
   await app.register(checkoutRoutes);
   await app.register(apiRoutes, { prefix: "/api/v1" });
   // React-SPA JSON layer (docs/REACT_STOREFRONT_MIGRATION.md) — same /api/v1

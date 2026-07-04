@@ -91,14 +91,14 @@ Every mutating endpoint gets the happy / 401-anon / 403-bad-CSRF test trio
 - [x] `spaShell.ts` wildcard last (`__CSRF_TOKEN__`/`__LANG__`/`__TITLE__`/HEAD_META, real 404 for unknown slugs/paths, no-referrer on /reset/*); JSON 404/500 for `/api/*`
 - [x] `spa-api.test.ts` (32 tests: shell substitution, trios, guest-cart merge, jti rotation, ownership 404s); full suite 1589 green
 
-### Phase 3 — pixel harness
-- [ ] Seed data (category, product w/ 2+ denominations incl. OOS, reviews, voucher, orders per pay state)
-- [ ] Screenshot workflow at 375/768/1440 documented & working
+### Phase 3 — pixel harness — N/A, superseded 2026-07-04
+- [x] N/A — the pixel-diff harness was never built for cluster A; superseded by reviewer markup-parity verification (no browser tooling) instead
+- [x] N/A — same as above
 
-### Phase 4 — Cluster A: catalog + cart (React pages → verify → delete NJK)
-- [ ] Home / Category / Product / Search / Cart / Error pages + `_shop.njk` macro components
-- [ ] Pixel sign-off ×3 breakpoints per page
-- [ ] Cutover: delete `GET /` (keep `/lang`), `catalog.ts`, HTML cart handlers, 5 templates; migrate tests
+### Phase 4 — Cluster A: catalog + cart (React pages → verify → delete NJK) — DONE 2026-07-04
+- [x] Home / Category / Product / Search / Cart / Error pages + `_shop.njk` macro components
+- [x] Sign-off via reviewer markup-parity verification (no browser tooling); visual QA in a real browser pending as manual follow-up
+- [x] Cutover: delete `GET /` (keep `/lang`), `catalog.ts`, HTML cart handlers, 5 templates; migrate tests
 
 ### Phase 5 — Cluster B: auth
 - [ ] Login (+ Telegram widget) / Register / Forgot / Reset pages

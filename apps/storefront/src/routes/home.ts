@@ -1,19 +1,14 @@
 /**
- * Home + language switch. The home page is the shop window: hero, category
- * pills, newest products (design.md §5). Read-only — all data via crud, shaped
- * by pageData.ts (shared with the JSON API during the React migration).
+ * Language switch. The home page itself (GET /) cut over to the React SPA
+ * (routes/spaShell.ts) at the Cluster A cutover — its data now comes from
+ * GET /api/v1/pages/home (routes/apiPages.ts, shaped by pageData.ts). This
+ * file only keeps the still-live `GET /lang` endpoint.
  */
 import type { FastifyPluginAsync } from "fastify";
 import { config } from "@app/core/config";
-import { shopContext, LANG_COOKIE } from "../shop";
-import { homePageData } from "../pageData";
+import { LANG_COOKIE } from "../shop";
 
 const homeRoutes: FastifyPluginAsync = async (app) => {
-  app.get("/", async (req, reply) => {
-    const ctx = await shopContext(req, "/");
-    return reply.view("home.njk", { ...ctx, ...(await homePageData()) });
-  });
-
   // Language switch (?to=id|en) — sets the cookie and bounces back.
   app.get("/lang", async (req, reply) => {
     const q = req.query as { to?: string; back?: string };

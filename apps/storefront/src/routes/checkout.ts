@@ -114,8 +114,9 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
   return { empty: lines.length === 0, subtotal, bulkDiscount, voucherDiscount, voucherError, total };
 }
 
-/** View context shared by GET /checkout and the failed-POST re-render. */
-async function checkoutView(
+/** View context shared by GET /checkout, the failed-POST re-render, and the
+ * JSON API (routes/apiCheckout.ts) — one totals implementation. */
+export async function checkoutView(
   customer: Customer,
   voucherCode: string | null,
   errorKey: string | null,
@@ -230,7 +231,7 @@ function parseCachedNowpaymentsGateway(paymentRef: string | null): NowpaymentsIn
 }
 
 /** Status → step + i18n key for the pay page / polling partial. */
-function payState(order: OrderRow) {
+export function payState(order: OrderRow) {
   const expired =
     order.status === OrderStatus.PENDING_PAYMENT &&
     order.expiresAt != null &&
@@ -338,6 +339,190 @@ export async function performCheckout(
   return { orderCode: order!.orderCode };
 }
 
+/**
+ * Everything the pay page needs for one order, EXCLUDING the base shop context —
+ * extracted verbatim from the GET /checkout/:code/pay handler so the HTML page
+ * and the JSON API (routes/apiCheckout.ts) share one implementation, including
+ * the lazy gateway-transaction creation cached in order.paymentRef. The caller
+ * has already verified ownership.
+ */
+export async function payView(order: OrderRow) {
+  const state = payState(order);
+  const method = order.paymentMethod; // "BINANCE_INTERNAL" | "BYBIT" | "BYBIT_BSC" | "TOKOPAY" | "PAYDISINI" | "NOWPAYMENTS" | ...
+  const isBinance = method === PaymentMethod.BINANCE_INTERNAL;
+  const isBybit = method === PaymentMethod.BYBIT;
+  const isBybitBsc = method === PaymentMethod.BYBIT_BSC;
+  const isQris = method === PaymentMethod.TOKOPAY;
+  const isPaydisini = method === PaymentMethod.PAYDISINI;
+  const isNowpayments = method === PaymentMethod.NOWPAYMENTS;
+
+  // Bybit UID / BSC deposit address (no API call — just the configured values).
+  const bybitCfg = isBybit ? await resolveBybitConfig(prisma) : null;
+  const bybitBscCfg = isBybitBsc ? await resolveBybitBscConfig(prisma) : null;
+  const binanceCfg = isBinance ? await resolveBinanceInternalConfig(prisma) : null;
+  const bybitUid = bybitCfg?.uid ?? "";
+  const bybitBscAddress = bybitBscCfg?.depositAddress ?? "";
+  const binanceUid = binanceCfg?.receiveUid ?? "";
+
+  // Per-method minimum-payment note (web-admin Settings, blank = none) —
+  // pre-formatted here (currency differs by method) rather than pushed
+  // into the template. Only resolved while the payment card is actually
+  // shown ("waiting"); IDR methods' creds are fetched below alongside
+  // their gateway transaction, reused here instead of a second lookup.
+  let minAmount: Decimal | null = bybitCfg?.minAmount ?? bybitBscCfg?.minAmount ?? binanceCfg?.minAmount ?? null;
+
+  // TokoPay transaction (QR / pay link) only while actually payable.
+  // The result is cached in order.paymentRef (JSON) after the first fetch so
+  // that page refreshes don't create extra transactions in TokoPay. Tagged
+  // with `gateway: "tokopay"` since PayDisini below caches into the SAME
+  // column — see the CachedGateway doc comment above parseCachedGateway.
+  let gateway: TokopayOrderInfo | null = null;
+  let gatewayError = false;
+  if (isQris && state === "waiting") {
+    gateway = parseCachedGateway(order.paymentRef);
+    const creds = await getTokopayCreds(prisma);
+    minAmount = creds?.minAmount ?? null;
+    if (!gateway) {
+      if (creds) {
+        try {
+          gateway = await createTransaction(creds, {
+            refId: order.orderCode,
+            amountIdr: order.totalAmount,
+          });
+          await prisma.order.update({
+            where: { id: order.id },
+            data: { paymentRef: JSON.stringify({ gateway: "tokopay", ...gateway }) },
+          });
+        } catch (err) {
+          logger.error({ err }, `Failed to create a TokoPay transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
+          gatewayError = true;
+        }
+      } else {
+        gatewayError = true;
+      }
+    }
+  }
+
+  // PayDisini transaction (QR / checkout link) — second IDR option,
+  // alongside (not replacing) TokoPay above. Same lazy-create + cache
+  // pattern, tagged `gateway: "paydisini"` so a page refresh reads back
+  // the right branch even though both share order.paymentRef.
+  let paydisiniGateway: PaydisiniOrderInfo | null = null;
+  let paydisiniGatewayError = false;
+  if (isPaydisini && state === "waiting") {
+    paydisiniGateway = parseCachedPaydisiniGateway(order.paymentRef);
+    const creds = await getPaydisiniCreds(prisma);
+    minAmount = creds?.minAmount ?? null;
+    if (!paydisiniGateway) {
+      if (creds) {
+        try {
+          paydisiniGateway = await createPaydisiniTransaction(creds, {
+            refId: order.orderCode,
+            amountIdr: order.totalAmount,
+          });
+          await prisma.order.update({
+            where: { id: order.id },
+            data: { paymentRef: JSON.stringify({ gateway: "paydisini", ...paydisiniGateway }) },
+          });
+        } catch (err) {
+          logger.error({ err }, `Failed to create a PayDisini transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
+          paydisiniGatewayError = true;
+        }
+      } else {
+        paydisiniGatewayError = true;
+      }
+    }
+  }
+
+  // NOWPayments hosted invoice (redirect-UX, not inline QR) — third payment
+  // option, USDT branch (not IDR). Same lazy-create + cache pattern as
+  // TokoPay/PayDisini above, tagged `gateway: "nowpayments"` so a page
+  // refresh reads back the right branch even though all three share
+  // order.paymentRef — and so the bot's NOWPayments reconcile poller
+  // (apps/order-bot/src/payments/nowpaymentsReconcile.ts) can find the
+  // invoice id. order.totalAmount for a NOWPAYMENTS order is ALREADY in
+  // USDT (finalizeOrderPayment's USDT branch) — pass it straight through
+  // as amountUsd, no second conversion.
+  let nowpaymentsGateway: NowpaymentsInvoice | null = null;
+  let nowpaymentsGatewayError = false;
+  if (isNowpayments && state === "waiting") {
+    nowpaymentsGateway = parseCachedNowpaymentsGateway(order.paymentRef);
+    const creds = await getNowpaymentsCreds(prisma);
+    minAmount = creds?.minAmount ?? null;
+    if (!nowpaymentsGateway) {
+      const publicUrl = shopPublicUrl();
+      if (creds && publicUrl) {
+        try {
+          nowpaymentsGateway = await createNowpaymentsInvoice(creds, {
+            orderId: order.orderCode,
+            amountUsd: order.totalAmount,
+            ipnCallbackUrl: `${publicUrl.replace(/\/+$/, "")}/pay/nowpayments/callback`,
+          });
+          await prisma.order.update({
+            where: { id: order.id },
+            data: { paymentRef: JSON.stringify({ gateway: "nowpayments", ...nowpaymentsGateway }) },
+          });
+        } catch (err) {
+          logger.error({ err }, `Failed to create a NOWPayments invoice for order ${order.orderCode} — showing the contact fallback instead of a payment link`);
+          nowpaymentsGatewayError = true;
+        }
+      } else {
+        logger.warn(
+          `Cannot create a NOWPayments invoice for order ${order.orderCode} — ${
+            !creds ? "no NOWPayments credentials configured" : "no public URL configured (SHOP_PUBLIC_URL/PUBLIC_URL)"
+          }, showing the contact fallback instead`,
+        );
+        nowpaymentsGatewayError = true;
+      }
+    }
+  }
+
+  // Contact fallbacks shown when a Rupiah gateway is temporarily down, so
+  // a stuck buyer always has a way to reach us instead of a dead red box.
+  const waNumber = (gatewayError && isQris) || (paydisiniGatewayError && isPaydisini) || (nowpaymentsGatewayError && isNowpayments)
+    ? ((await getSetting(prisma, "support_whatsapp")) ?? "").replace(/[^0-9]/g, "")
+    : "";
+
+  // Pre-formatted here (not in the template) since IDR vs USDT formatting
+  // differs per method — null when unset, so pay.njk just renders the
+  // note iff this is non-empty.
+  const minAmountDisplay = minAmount
+    ? isQris || isPaydisini
+      ? formatIdr(minAmount)
+      : formatPrice(minAmount, "USDT", 4)
+    : null;
+
+  return {
+    order: {
+      code: order.orderCode,
+      status: order.status,
+      currency: order.currency,
+      total: order.totalAmount.toString(),
+      payment_ref: order.paymentRef,
+      expires_at_iso: order.expiresAt ? ensureUtc(order.expiresAt).toISO() : null,
+    },
+    state,
+    is_binance: isBinance,
+    is_bybit: isBybit,
+    is_bybit_bsc: isBybitBsc,
+    is_qris: isQris,
+    is_paydisini: isPaydisini,
+    is_nowpayments: isNowpayments,
+    bybit_uid: bybitUid,
+    bybit_bsc_address: bybitBscAddress,
+    binance_uid: binanceUid,
+    gateway,
+    gateway_error: gatewayError,
+    paydisini_gateway: paydisiniGateway,
+    paydisini_gateway_error: paydisiniGatewayError,
+    nowpayments_gateway: nowpaymentsGateway,
+    nowpayments_gateway_error: nowpaymentsGatewayError,
+    min_amount: minAmountDisplay,
+    wa_number: waNumber,
+    bot_username: await resolveBotUsername(),
+  };
+}
+
 const checkoutRoutes: FastifyPluginAsync = async (app) => {
   // ---- Checkout summary + method choice ----
   app.get("/checkout", { preHandler: currentCustomer }, async (req, reply) => {
@@ -423,181 +608,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         });
       }
 
-      const state = payState(order);
-      const method = order.paymentMethod; // "BINANCE_INTERNAL" | "BYBIT" | "BYBIT_BSC" | "TOKOPAY" | "PAYDISINI" | "NOWPAYMENTS" | ...
-      const isBinance = method === PaymentMethod.BINANCE_INTERNAL;
-      const isBybit = method === PaymentMethod.BYBIT;
-      const isBybitBsc = method === PaymentMethod.BYBIT_BSC;
-      const isQris = method === PaymentMethod.TOKOPAY;
-      const isPaydisini = method === PaymentMethod.PAYDISINI;
-      const isNowpayments = method === PaymentMethod.NOWPAYMENTS;
-
-      // Bybit UID / BSC deposit address (no API call — just the configured values).
-      const bybitCfg = isBybit ? await resolveBybitConfig(prisma) : null;
-      const bybitBscCfg = isBybitBsc ? await resolveBybitBscConfig(prisma) : null;
-      const binanceCfg = isBinance ? await resolveBinanceInternalConfig(prisma) : null;
-      const bybitUid = bybitCfg?.uid ?? "";
-      const bybitBscAddress = bybitBscCfg?.depositAddress ?? "";
-      const binanceUid = binanceCfg?.receiveUid ?? "";
-
-      // Per-method minimum-payment note (web-admin Settings, blank = none) —
-      // pre-formatted here (currency differs by method) rather than pushed
-      // into the template. Only resolved while the payment card is actually
-      // shown ("waiting"); IDR methods' creds are fetched below alongside
-      // their gateway transaction, reused here instead of a second lookup.
-      let minAmount: Decimal | null = bybitCfg?.minAmount ?? bybitBscCfg?.minAmount ?? binanceCfg?.minAmount ?? null;
-
-      // TokoPay transaction (QR / pay link) only while actually payable.
-      // The result is cached in order.paymentRef (JSON) after the first fetch so
-      // that page refreshes don't create extra transactions in TokoPay. Tagged
-      // with `gateway: "tokopay"` since PayDisini below caches into the SAME
-      // column — see the CachedGateway doc comment above parseCachedGateway.
-      let gateway: TokopayOrderInfo | null = null;
-      let gatewayError = false;
-      if (isQris && state === "waiting") {
-        gateway = parseCachedGateway(order.paymentRef);
-        const creds = await getTokopayCreds(prisma);
-        minAmount = creds?.minAmount ?? null;
-        if (!gateway) {
-          if (creds) {
-            try {
-              gateway = await createTransaction(creds, {
-                refId: order.orderCode,
-                amountIdr: order.totalAmount,
-              });
-              await prisma.order.update({
-                where: { id: order.id },
-                data: { paymentRef: JSON.stringify({ gateway: "tokopay", ...gateway }) },
-              });
-            } catch (err) {
-              logger.error({ err }, `Failed to create a TokoPay transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
-              gatewayError = true;
-            }
-          } else {
-            gatewayError = true;
-          }
-        }
-      }
-
-      // PayDisini transaction (QR / checkout link) — second IDR option,
-      // alongside (not replacing) TokoPay above. Same lazy-create + cache
-      // pattern, tagged `gateway: "paydisini"` so a page refresh reads back
-      // the right branch even though both share order.paymentRef.
-      let paydisiniGateway: PaydisiniOrderInfo | null = null;
-      let paydisiniGatewayError = false;
-      if (isPaydisini && state === "waiting") {
-        paydisiniGateway = parseCachedPaydisiniGateway(order.paymentRef);
-        const creds = await getPaydisiniCreds(prisma);
-        minAmount = creds?.minAmount ?? null;
-        if (!paydisiniGateway) {
-          if (creds) {
-            try {
-              paydisiniGateway = await createPaydisiniTransaction(creds, {
-                refId: order.orderCode,
-                amountIdr: order.totalAmount,
-              });
-              await prisma.order.update({
-                where: { id: order.id },
-                data: { paymentRef: JSON.stringify({ gateway: "paydisini", ...paydisiniGateway }) },
-              });
-            } catch (err) {
-              logger.error({ err }, `Failed to create a PayDisini transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
-              paydisiniGatewayError = true;
-            }
-          } else {
-            paydisiniGatewayError = true;
-          }
-        }
-      }
-
-      // NOWPayments hosted invoice (redirect-UX, not inline QR) — third payment
-      // option, USDT branch (not IDR). Same lazy-create + cache pattern as
-      // TokoPay/PayDisini above, tagged `gateway: "nowpayments"` so a page
-      // refresh reads back the right branch even though all three share
-      // order.paymentRef — and so the bot's NOWPayments reconcile poller
-      // (apps/order-bot/src/payments/nowpaymentsReconcile.ts) can find the
-      // invoice id. order.totalAmount for a NOWPAYMENTS order is ALREADY in
-      // USDT (finalizeOrderPayment's USDT branch) — pass it straight through
-      // as amountUsd, no second conversion.
-      let nowpaymentsGateway: NowpaymentsInvoice | null = null;
-      let nowpaymentsGatewayError = false;
-      if (isNowpayments && state === "waiting") {
-        nowpaymentsGateway = parseCachedNowpaymentsGateway(order.paymentRef);
-        const creds = await getNowpaymentsCreds(prisma);
-        minAmount = creds?.minAmount ?? null;
-        if (!nowpaymentsGateway) {
-          const publicUrl = shopPublicUrl();
-          if (creds && publicUrl) {
-            try {
-              nowpaymentsGateway = await createNowpaymentsInvoice(creds, {
-                orderId: order.orderCode,
-                amountUsd: order.totalAmount,
-                ipnCallbackUrl: `${publicUrl.replace(/\/+$/, "")}/pay/nowpayments/callback`,
-              });
-              await prisma.order.update({
-                where: { id: order.id },
-                data: { paymentRef: JSON.stringify({ gateway: "nowpayments", ...nowpaymentsGateway }) },
-              });
-            } catch (err) {
-              logger.error({ err }, `Failed to create a NOWPayments invoice for order ${order.orderCode} — showing the contact fallback instead of a payment link`);
-              nowpaymentsGatewayError = true;
-            }
-          } else {
-            logger.warn(
-              `Cannot create a NOWPayments invoice for order ${order.orderCode} — ${
-                !creds ? "no NOWPayments credentials configured" : "no public URL configured (SHOP_PUBLIC_URL/PUBLIC_URL)"
-              }, showing the contact fallback instead`,
-            );
-            nowpaymentsGatewayError = true;
-          }
-        }
-      }
-
-      // Contact fallbacks shown when a Rupiah gateway is temporarily down, so
-      // a stuck buyer always has a way to reach us instead of a dead red box.
-      const waNumber = (gatewayError && isQris) || (paydisiniGatewayError && isPaydisini) || (nowpaymentsGatewayError && isNowpayments)
-        ? ((await getSetting(prisma, "support_whatsapp")) ?? "").replace(/[^0-9]/g, "")
-        : "";
-
-      // Pre-formatted here (not in the template) since IDR vs USDT formatting
-      // differs per method — null when unset, so pay.njk just renders the
-      // note iff this is non-empty.
-      const minAmountDisplay = minAmount
-        ? isQris || isPaydisini
-          ? formatIdr(minAmount)
-          : formatPrice(minAmount, "USDT", 4)
-        : null;
-
-      return reply.view("pay.njk", {
-        ...ctx,
-        order: {
-          code: order.orderCode,
-          status: order.status,
-          currency: order.currency,
-          total: order.totalAmount.toString(),
-          payment_ref: order.paymentRef,
-          expires_at_iso: order.expiresAt ? ensureUtc(order.expiresAt).toISO() : null,
-        },
-        state,
-        is_binance: isBinance,
-        is_bybit: isBybit,
-        is_bybit_bsc: isBybitBsc,
-        is_qris: isQris,
-        is_paydisini: isPaydisini,
-        is_nowpayments: isNowpayments,
-        bybit_uid: bybitUid,
-        bybit_bsc_address: bybitBscAddress,
-        binance_uid: binanceUid,
-        gateway,
-        gateway_error: gatewayError,
-        paydisini_gateway: paydisiniGateway,
-        paydisini_gateway_error: paydisiniGatewayError,
-        nowpayments_gateway: nowpaymentsGateway,
-        nowpayments_gateway_error: nowpaymentsGatewayError,
-        min_amount: minAmountDisplay,
-        wa_number: waNumber,
-        bot_username: await resolveBotUsername(),
-      });
+      return reply.view("pay.njk", { ...ctx, ...(await payView(order)) });
     },
   );
 

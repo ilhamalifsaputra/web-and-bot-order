@@ -188,7 +188,9 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ---- 7. POST /checkout ----
-  app.post<{ Body: { method?: string; voucher_code?: string } }>("/checkout", async (req, reply) => {
+  app.post<{
+    Body: { method?: string; voucher_code?: string; use_wallet_idr?: boolean; use_wallet_usdt?: boolean };
+  }>("/checkout", async (req, reply) => {
     const customer = await optionalCustomer(req);
     if (!customer) {
       return reply.code(401).send({ error: "unauthorized" });
@@ -200,9 +202,14 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
 
     const method = (req.body?.method ?? "").toLowerCase();
     const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
+    // Wallet-credit flags (additive, default off — pre-existing callers are
+    // unaffected). Same semantics as the HTML form's use_wallet_idr/usdt
+    // checkboxes: performCheckout itself gates them by method currency.
+    const useWalletIdr = req.body?.use_wallet_idr === true;
+    const useWalletUsdt = req.body?.use_wallet_usdt === true;
 
     try {
-      const { orderCode } = await performCheckout(customer, method, voucherCode);
+      const { orderCode } = await performCheckout(customer, method, voucherCode, useWalletIdr, useWalletUsdt);
       return reply.code(201).send({ order_code: orderCode, pay_url: `/checkout/${orderCode}/pay` });
     } catch (e) {
       if (e instanceof ValidationError) {

@@ -29,13 +29,15 @@ function cartLineLabel(productName: string, denominationName: string): string {
   return productName === denominationName ? productName : `${productName} - ${denominationName}`;
 }
 
-const clampQty = (raw: unknown): number => {
+export const clampQty = (raw: unknown): number => {
   const n = Number(raw);
   return Number.isInteger(n) ? Math.max(0, Math.min(n, 99)) : 0;
 };
 
-/** CSRF gate for signed-in mutations (guests are covered by SameSite=Lax). */
-function csrfOk(req: FastifyRequest, customer: Customer | null): boolean {
+/** CSRF gate for signed-in mutations (guests are covered by SameSite=Lax).
+ * Shared with the JSON cart endpoints (routes/apiCart.ts) — one rule, two
+ * transports (form field or x-csrf-token header). */
+export function csrfOk(req: FastifyRequest, customer: Customer | null): boolean {
   if (!customer) return true;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const token = body.csrf_token ?? req.headers["x-csrf-token"];

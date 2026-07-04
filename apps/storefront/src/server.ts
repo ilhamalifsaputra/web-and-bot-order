@@ -25,6 +25,12 @@ import settingsRoutes from "./routes/settings";
 import cartRoutes from "./routes/cart";
 import checkoutRoutes from "./routes/checkout";
 import apiRoutes from "./routes/api";
+import apiPagesRoutes from "./routes/apiPages";
+import apiAuthRoutes from "./routes/apiAuth";
+import apiCartRoutes from "./routes/apiCart";
+import apiCheckoutRoutes from "./routes/apiCheckout";
+import apiAccountRoutes from "./routes/apiAccount";
+import spaShellRoutes from "./routes/spaShell";
 import { requestLang } from "./shop";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -78,9 +84,14 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(setupGatePlugin);
 
   // Friendly error + 404 pages; never log the request body (may carry secrets).
+  // API paths get JSON errors instead — the SPA's fetch layer reads
+  // `data.error`, and an HTML body would just make it throw a parse error.
   app.setErrorHandler((err, req, reply) => {
     logger.error({ err, method: req.method, path: req.url }, "Unhandled error in a storefront request — serving the generic error page to the visitor");
     if (!reply.sent) {
+      if (req.url.startsWith("/api/")) {
+        return reply.code(500).send({ error: "error.generic" });
+      }
       const lang = requestLang(req);
       void reply.code(500).view("error.njk", {
         lang,
@@ -94,7 +105,12 @@ export async function buildApp(): Promise<FastifyInstance> {
       });
     }
   });
+  // Unmatched GETs fall through to the SPA shell wildcard below, so this
+  // handler now only sees non-GET misses (and /api/* misses of any method).
   app.setNotFoundHandler((req, reply) => {
+    if (req.url.startsWith("/api/")) {
+      return reply.code(404).send({ error: "not_found" });
+    }
     const lang = requestLang(req);
     void reply.code(404).view("error.njk", {
       lang,
@@ -117,6 +133,13 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(cartRoutes);
   await app.register(checkoutRoutes);
   await app.register(apiRoutes, { prefix: "/api/v1" });
+  // React-SPA JSON layer (docs/REACT_STOREFRONT_MIGRATION.md) — same /api/v1
+  // prefix, additive alongside the Nunjucks routes until each cluster cuts over.
+  await app.register(apiPagesRoutes, { prefix: "/api/v1" });
+  await app.register(apiAuthRoutes, { prefix: "/api/v1" });
+  await app.register(apiCartRoutes, { prefix: "/api/v1" });
+  await app.register(apiCheckoutRoutes, { prefix: "/api/v1" });
+  await app.register(apiAccountRoutes, { prefix: "/api/v1" });
 
   // Liveness probe for the combined server / uptime pings (admin has its own).
   app.get("/healthz", async () => {
@@ -124,6 +147,10 @@ export async function buildApp(): Promise<FastifyInstance> {
     await prisma.$queryRaw`SELECT 1`;
     return { status: "ok" };
   });
+
+  // React SPA shell — wildcard GET, MUST be registered last so every specific
+  // route above wins; serves pages whose Nunjucks handler has been deleted.
+  await app.register(spaShellRoutes);
 
   return app;
 }

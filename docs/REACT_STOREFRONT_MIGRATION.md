@@ -82,14 +82,14 @@ Every mutating endpoint gets the happy / 401-anon / 403-bad-CSRF test trio
 - [x] `src/main.tsx` / `src/App.tsx` route table (all URLs → `Placeholder`), `src/components/Layout.tsx` (base.njk port, `useShopContext()` hook)
 - [x] Root: vitest `environmentMatchGlobs` + `.gitignore` `static/shop-app/` + CLAUDE.md build contract
 
-### Phase 2 — JSON API + SPA shell (additive; Nunjucks still serves all pages)
-- [ ] `apiPages.ts` (context/home/category/product/search)
-- [ ] `apiAuth.ts` (login/register/logout/forgot/reset + telegram widget params)
-- [ ] `apiCart.ts` (GET cart, update, remove; shared `csrfOk`; guest-cookie patch)
-- [ ] `apiCheckout.ts` (checkout view, voucher preview, wallet flags on POST checkout, pay view via extracted `payView()`, status, cancel)
-- [ ] `apiAccount.ts` (all account/settings reads + mutations)
-- [ ] `spaShell.ts` wildcard last; JSON 404/500 for `/api/*`
-- [ ] `spa-api*.test.ts` trios; all existing tests green
+### Phase 2 — JSON API + SPA shell (additive; Nunjucks still serves all pages) — DONE 2026-07-04
+- [x] `apiPages.ts` (context/home/category/product/search — shaped by the new shared `src/pageData.ts`, which the HTML routes now also consume)
+- [x] `apiAuth.ts` (login/register/logout/forgot/reset + `GET auth/telegram-widget` params)
+- [x] `apiCart.ts` (GET cart, update, remove; shared `csrfOk`/`clampQty` exported from `routes/cart.ts`; guest-cookie patch)
+- [x] `apiCheckout.ts` (GET checkout, voucher preview, GET/POST orders/:code pay|status|cancel; `payView()`/`payState()`/`checkoutView()` now exported from `routes/checkout.ts`; POST /api/v1/checkout extended with wallet flags)
+- [x] `apiAccount.ts` (all account/settings reads + mutations, `*_display` dates)
+- [x] `spaShell.ts` wildcard last (`__CSRF_TOKEN__`/`__LANG__`/`__TITLE__`/HEAD_META, real 404 for unknown slugs/paths, no-referrer on /reset/*); JSON 404/500 for `/api/*`
+- [x] `spa-api.test.ts` (32 tests: shell substitution, trios, guest-cart merge, jti rotation, ownership 404s); full suite 1589 green
 
 ### Phase 3 — pixel harness
 - [ ] Seed data (category, product w/ 2+ denominations incl. OOS, reviews, voucher, orders per pay state)

@@ -45,15 +45,20 @@
     <div class="mt-6 flex items-center gap-3 text-xs text-ink-faint">
       <span class="flex-1 border-t border-line"></span>{{ t('web.login_or', lang) }}<span class="flex-1 border-t border-line"></span>
     </div>
-    <div class="mt-4 flex justify-center">
-      <script async src="https://telegram.org/js/telegram-widget.js?22"
-              data-telegram-login="{{ bot_username }}"
-              data-size="large"
-              data-userpic="false"
-              data-radius="12"
-              data-auth-url="{{ auth_url }}"
-              data-request-access="write"></script>
-      <noscript class="text-xs text-ink-faint">{{ t('web.login_telegram', lang) }}</noscript>
+    <div class="mt-4 rounded-xl border border-line bg-paper px-4 py-4">
+      <p class="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-3 flex items-center justify-center gap-1.5">
+        {{ ui.ic('send', 'w-3.5 h-3.5') }} {{ t('web.login_telegram', lang) }}
+      </p>
+      <div class="flex justify-center">
+        <script async src="https://telegram.org/js/telegram-widget.js?22"
+                data-telegram-login="{{ bot_username }}"
+                data-size="large"
+                data-userpic="false"
+                data-radius="12"
+                data-auth-url="{{ auth_url }}"
+                data-request-access="write"></script>
+        <noscript class="text-xs text-ink-faint">{{ t('web.login_telegram', lang) }}</noscript>
+      </div>
     </div>
     {% endif %}
   </div>

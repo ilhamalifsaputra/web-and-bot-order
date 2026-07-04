@@ -250,3 +250,126 @@ export interface ShopContext {
   bot_username: string;
   tzname: string;
 }
+
+/** GET /api/v1/account — account.njk's overview stats + logout button
+ * (server: apps/storefront/src/routes/apiAccount.ts). `name` is already the
+ * fullName ?? username ?? telegramId fallback chain account.njk applied to
+ * `customer.user.*`. */
+export interface AccountData {
+  name: string;
+  order_count: number;
+  referral_code: string;
+  wallet_idr: string;
+  wallet_usdt: string;
+}
+
+/** One row of GET /api/v1/account/orders — orders.njk's table. */
+export interface AccountOrderSummary {
+  code: string;
+  status: string;
+  total: string;
+  created_at_display: string;
+  items: string;
+}
+
+export interface AccountOrdersData {
+  orders: AccountOrderSummary[];
+}
+
+/** One line item on order_detail.njk. */
+export interface OrderDetailItem {
+  name: string;
+  duration: string | null;
+  unit_price: string;
+  warranty_days: number;
+  /** Only populated when the order is DELIVERED and the owner is asking — null otherwise. */
+  credentials: string | null;
+}
+
+/** GET /api/v1/account/orders/:code — order_detail.njk. */
+export interface OrderDetailData {
+  order: {
+    code: string;
+    status: string;
+    subtotal: string;
+    discount: string;
+    bulk_discount: string;
+    total: string;
+    created_at_display: string;
+    items: OrderDetailItem[];
+  };
+  delivered: boolean;
+  pending_payment: boolean;
+}
+
+/** GET /api/v1/account/referral — referral.njk. `referral_link` is null when
+ * no bot username is configured yet (the template renders the input's value
+ * empty in that case). */
+export interface ReferralData {
+  referral_code: string;
+  referral_link: string | null;
+}
+
+/** An order still awaiting the buyer's review — reviews.njk's pending form. */
+export interface PendingReview {
+  order_id: number;
+  code: string;
+  product_id: number | null;
+  product_name: string;
+}
+
+/** An already-submitted review — reviews.njk's read-only grid. */
+export interface AccountReview {
+  product_name: string;
+  rating: number;
+  comment: string | null;
+  created_at_display: string;
+}
+
+/** GET /api/v1/account/reviews — reviews.njk. */
+export interface ReviewsData {
+  pending: PendingReview[];
+  reviews: AccountReview[];
+}
+
+/** One row of GET /api/v1/account/support — support.njk's ticket table. */
+export interface SupportTicketSummary {
+  id: number;
+  message: string;
+  status: string;
+  created_at_display: string;
+  admin_reply: string | null;
+}
+
+export interface SupportData {
+  tickets: SupportTicketSummary[];
+}
+
+/** A single message on ticket_detail.njk's thread (either side). */
+export interface TicketMessage {
+  from_user: boolean;
+  content: string;
+  created_at_display: string;
+}
+
+/** GET /api/v1/account/support/:id — ticket_detail.njk. */
+export interface TicketDetailData {
+  ticket: {
+    id: number;
+    message: string;
+    status: string;
+    created_at_display: string;
+    admin_reply: string | null;
+    closed: boolean;
+  };
+  messages: TicketMessage[];
+}
+
+/** GET /api/v1/account/settings — settings.njk. */
+export interface SettingsData {
+  bot_username: string;
+  values: { username: string; email: string };
+  has_password: boolean;
+  tg_linked: boolean;
+  tg_name: string;
+}

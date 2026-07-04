@@ -7,6 +7,10 @@ import CategoryPage from "./pages/CategoryPage";
 import SearchPage from "./pages/SearchPage";
 import ProductPage from "./pages/ProductPage";
 import CartPage from "./pages/CartPage";
+import LoginPage from "./pages/LoginPage";
+import RegisterPage from "./pages/RegisterPage";
+import ForgotPage from "./pages/ForgotPage";
+import ResetPage from "./pages/ResetPage";
 
 /**
  * Full route table for every storefront URL. Pages start as <Placeholder /> and
@@ -18,10 +22,10 @@ import CartPage from "./pages/CartPage";
 export default function App() {
   return (
     <Routes>
-      <Route path="/login" element={<Placeholder />} />
-      <Route path="/register" element={<Placeholder />} />
-      <Route path="/forgot" element={<Placeholder />} />
-      <Route path="/reset/:token" element={<Placeholder />} />
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/register" element={<RegisterPage />} />
+      <Route path="/forgot" element={<ForgotPage />} />
+      <Route path="/reset/:token" element={<ResetPage />} />
 
       <Route element={<Layout />}>
         <Route path="/" element={<HomePage />} />

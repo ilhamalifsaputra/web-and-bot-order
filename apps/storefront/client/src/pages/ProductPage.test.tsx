@@ -55,6 +55,16 @@ const productData: ProductPageData = {
       in_stock: true,
       bulk: null,
     },
+    {
+      id: 3,
+      name: "6 Months",
+      duration_label: "6 Months",
+      price: "399000",
+      warranty_days: 14,
+      available: 20,
+      in_stock: true,
+      bulk: null,
+    },
   ],
   default_restock_denomination_id: 2,
   reviews: [
@@ -99,9 +109,29 @@ describe("ProductPage", () => {
     // In-stock plan selected -> buy form shown, not the restock CTA.
     expect(screen.getByRole("button", { name: /Add to cart/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Notify me when ready/ })).not.toBeInTheDocument();
+    // Live-summary stock line is the njk inline script's `.chip` pill (not the
+    // stock_badge macro's markup) — 3 Months has available=3 <= low_threshold=5.
+    const chip = document.querySelector(".chip");
+    expect(chip).toHaveClass("bg-amberx-tint", "text-amberx");
+    expect(chip).toHaveTextContent("3 left");
   });
 
-  it("selecting another denomination updates the displayed price and qty max", async () => {
+  it("selecting another in-stock denomination updates the displayed price, qty max, and stock chip", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const radio6mo = screen.getByRole("radio", { name: /6 Months/ });
+    fireEvent.click(radio6mo);
+    const selectedPrice = document.querySelector(".font-display.font-semibold.text-pine.text-2xl");
+    await waitFor(() => expect(selectedPrice).toHaveTextContent("Rp399.000"));
+    const qtyInput = screen.getByLabelText("Quantity") as HTMLInputElement;
+    expect(qtyInput.max).toBe("20");
+    // 6 Months has available=20 > low_threshold=5 -> "Available" / grass chip.
+    const chip = document.querySelector(".chip");
+    expect(chip).toHaveClass("bg-grass-tint", "text-grass-dark");
+    expect(chip).toHaveTextContent("Available");
+  });
+
+  it("swaps to the restock CTA when selecting an out-of-stock denomination", async () => {
     renderProduct("netflix-premium", () => productData);
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const radio1mo = screen.getByRole("radio", { name: /1 Month/ });
@@ -109,6 +139,9 @@ describe("ProductPage", () => {
     // The 1-month plan is out of stock -> restock CTA replaces the buy form.
     expect(await screen.findByRole("button", { name: /Notify me when ready/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Add to cart/ })).not.toBeInTheDocument();
+    const chip = document.querySelector(".chip");
+    expect(chip).toHaveClass("bg-rust-tint", "text-rust-dark");
+    expect(chip).toHaveTextContent("Out of stock");
   });
 
   it("clamps typed qty to the selected denomination's available stock", async () => {

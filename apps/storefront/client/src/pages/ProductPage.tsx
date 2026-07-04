@@ -16,9 +16,18 @@ import { t } from "../lib/i18n";
 import { formatIdr } from "../lib/format";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import Stars from "../components/shop/Stars";
-import StockBadge from "../components/shop/StockBadge";
 import DenominationCard from "../components/shop/DenominationCard";
 import ErrorPage from "./ErrorPage";
+
+/** Mirrors product.njk's inline script `select()` cls/txt branches for the
+ * live summary's stock line — a `.chip` pill, NOT the shared `stock_badge`
+ * macro (StockBadge's rounded-full/px-2.5/py-1/font-medium markup), which is
+ * only used on the denomination cards themselves. */
+function stockChip(available: number, lowThreshold: number): { cls: string; text: string } {
+  if (available > lowThreshold) return { cls: "bg-grass-tint text-grass-dark", text: t("web.stock_available") };
+  if (available > 0) return { cls: "bg-amberx-tint text-amberx", text: t("web.stock_left", { count: available }) };
+  return { cls: "bg-rust-tint text-rust-dark", text: t("web.stock_out") };
+}
 
 /** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
  * submitting button while its mutation is pending (in addition to disabling
@@ -103,6 +112,7 @@ export default function ProductPage() {
   }
 
   const buying = addMutation.isPending || buyMutation.isPending;
+  const chip = stockChip(selected.available, low_threshold);
 
   return (
     <>
@@ -154,7 +164,7 @@ export default function ProductPage() {
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="font-display font-semibold text-pine text-2xl">{formatIdr(selected.price)}</div>
               <div>
-                <StockBadge available={selected.available} lowThreshold={low_threshold} />
+                <span className={`chip ${chip.cls}`}>{chip.text}</span>
               </div>
             </div>
             {fx && <div className="text-xs text-ink-faint mt-1.5">{t("web.usdt_note")}</div>}

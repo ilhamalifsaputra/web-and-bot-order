@@ -1,9 +1,11 @@
 // Brute-force / rate-limit protection for the storefront's public auth
 // endpoints (Task 4 / H-1) — mirrors apps/web-admin/test/web.test.ts's
 // account-lockout unit test plus adds route-level 429 coverage for
-// POST /login and POST /forgot. Own file (own app instance + own IPs via
-// x-forwarded-for) so these tests never share a rate-limit bucket with the
-// password-login tests in storefront.test.ts.
+// POST /api/v1/auth/login and POST /api/v1/auth/forgot (the React SPA's JSON
+// twins — the HTML /login and /forgot form endpoints were deleted on the
+// auth cutover, docs/REACT_STOREFRONT_MIGRATION.md Phase 5). Own file (own
+// app instance + own IPs via x-forwarded-for) so these tests never share a
+// rate-limit bucket with the password-login tests in storefront.test.ts.
 import "./setup-env"; // FIRST import — sets env before @app/* load
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@app/core/mailer", () => ({
@@ -100,15 +102,15 @@ describe("rateLimit module (unit)", () => {
   });
 });
 
-describe("POST /login rate limiting", () => {
-  it("returns 429 with the rate-limited message after WEB_LOGIN_RATE_LIMIT_MAX failed attempts from one IP", async () => {
+describe("POST /api/v1/auth/login rate limiting", () => {
+  it("returns 429 with the rate-limited error key after WEB_LOGIN_RATE_LIMIT_MAX failed attempts from one IP", async () => {
     const ip = freshIp();
     const max = config.WEB_LOGIN_RATE_LIMIT_MAX;
     let last;
     for (let i = 0; i < max; i++) {
       last = await app.inject({
         method: "POST",
-        url: "/login",
+        url: "/api/v1/auth/login",
         headers: { "x-forwarded-for": ip },
         payload: { identifier: "ghostuser", password: "nope" },
       });
@@ -116,12 +118,12 @@ describe("POST /login rate limiting", () => {
     }
     const limited = await app.inject({
       method: "POST",
-      url: "/login",
+      url: "/api/v1/auth/login",
       headers: { "x-forwarded-for": ip },
       payload: { identifier: "ghostuser", password: "nope" },
     });
     expect(limited.statusCode).toBe(429);
-    expect(limited.body).toContain("Too many requests");
+    expect(limited.json()).toEqual({ error: "error.rate_limited" });
   });
 
   it("a correct login still succeeds when under the limit, and resets the IP + account counters", async () => {
@@ -130,18 +132,18 @@ describe("POST /login rate limiting", () => {
     // correct login.
     await app.inject({
       method: "POST",
-      url: "/login",
+      url: "/api/v1/auth/login",
       headers: { "x-forwarded-for": ip },
       payload: { identifier: "ratebuyer", password: "wrong-once" },
     });
     const ok = await app.inject({
       method: "POST",
-      url: "/login",
+      url: "/api/v1/auth/login",
       headers: { "x-forwarded-for": ip },
       payload: { identifier: "ratebuyer", password: "hunter2-ok", next: "/account" },
     });
-    expect(ok.statusCode).toBe(303);
-    expect(ok.headers.location).toBe("/account");
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().redirect).toBe("/account");
 
     // After a successful login, the account-failure counter is cleared: the
     // identifier should not be locked out even though we just clocked one
@@ -164,7 +166,7 @@ describe("POST /login rate limiting", () => {
     for (let i = 0; i < max; i++) {
       const res = await app.inject({
         method: "POST",
-        url: "/login",
+        url: "/api/v1/auth/login",
         headers: { "x-forwarded-for": freshIp() }, // new IP every time
         payload: { identifier, password: "wrong" },
       });
@@ -173,23 +175,23 @@ describe("POST /login rate limiting", () => {
     // The account is now locked even from a brand-new IP with the CORRECT password.
     const lockedOut = await app.inject({
       method: "POST",
-      url: "/login",
+      url: "/api/v1/auth/login",
       headers: { "x-forwarded-for": freshIp() },
       payload: { identifier, password: "correct-pw-123" },
     });
     expect(lockedOut.statusCode).toBe(429);
-    expect(lockedOut.body).toContain("Too many requests");
+    expect(lockedOut.json()).toEqual({ error: "error.rate_limited" });
   });
 });
 
-describe("POST /forgot rate limiting", () => {
+describe("POST /api/v1/auth/forgot rate limiting", () => {
   it("rate-limits repeated /forgot submissions from one IP without leaking account existence", async () => {
     const ip = freshIp();
     const max = config.WEB_LOGIN_RATE_LIMIT_MAX;
     for (let i = 0; i < max; i++) {
       const res = await app.inject({
         method: "POST",
-        url: "/forgot",
+        url: "/api/v1/auth/forgot",
         headers: { "x-forwarded-for": ip },
         payload: { email: "nobody@nowhere.test" },
       });
@@ -197,12 +199,12 @@ describe("POST /forgot rate limiting", () => {
     }
     const limited = await app.inject({
       method: "POST",
-      url: "/forgot",
+      url: "/api/v1/auth/forgot",
       headers: { "x-forwarded-for": ip },
       payload: { email: "rate@buyer.test" }, // even a REAL account is still capped
     });
     expect(limited.statusCode).toBe(429);
-    expect(limited.body).toContain("Too many requests");
+    expect(limited.json()).toEqual({ error: "error.rate_limited" });
   });
 
   // Storefront-4 (security audit, 2026-06-23): an attacker rotating IPs must
@@ -214,7 +216,7 @@ describe("POST /forgot rate limiting", () => {
     for (let i = 0; i < max; i++) {
       const res = await app.inject({
         method: "POST",
-        url: "/forgot",
+        url: "/api/v1/auth/forgot",
         headers: { "x-forwarded-for": freshIp() }, // new IP every time
         payload: { email: victimEmail },
       });
@@ -222,7 +224,7 @@ describe("POST /forgot rate limiting", () => {
     }
     const limited = await app.inject({
       method: "POST",
-      url: "/forgot",
+      url: "/api/v1/auth/forgot",
       headers: { "x-forwarded-for": freshIp() },
       payload: { email: victimEmail },
     });
@@ -233,7 +235,7 @@ describe("POST /forgot rate limiting", () => {
     const otherEmail = "unrelated-bystander@buyer.test";
     const res = await app.inject({
       method: "POST",
-      url: "/forgot",
+      url: "/api/v1/auth/forgot",
       headers: { "x-forwarded-for": freshIp() },
       payload: { email: otherEmail },
     });
@@ -253,7 +255,7 @@ describe("trustProxy gates X-Forwarded-For", () => {
     for (let i = 0; i < max; i++) {
       last = await app.inject({
         method: "POST",
-        url: "/login",
+        url: "/api/v1/auth/login",
         remoteAddress: realAttackerIp,
         // A forged, ever-changing XFF must NOT let the attacker dodge the
         // per-IP cap, since the real connection isn't from a trusted proxy.
@@ -264,7 +266,7 @@ describe("trustProxy gates X-Forwarded-For", () => {
     }
     const limited = await app.inject({
       method: "POST",
-      url: "/login",
+      url: "/api/v1/auth/login",
       remoteAddress: realAttackerIp,
       headers: { "x-forwarded-for": freshIp() },
       payload: { identifier: "ghostuser", password: "nope" },

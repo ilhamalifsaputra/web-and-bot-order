@@ -154,6 +154,25 @@ describe("SPA shell wildcard", () => {
       await deleteSetting(prisma, "web_favicon_url");
     }
   });
+
+  // Auth cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 5): /login,
+  // /register, /forgot, /reset/:token now fall to this same wildcard —
+  // titles come from spaShell.ts's TITLE_KEYS table.
+  it("200s GET /login with the login title", async () => {
+    const res = await app.inject({ method: "GET", url: "/login" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("<title>Sign in — SPA Test Shop</title>");
+  });
+
+  // The single-use reset token rides in this page's own URL — the shell must
+  // stop browsers leaking it via the Referer header (Storefront-1 fix,
+  // security audit 2026-06-23), same guard as the deleted HTML route (and the
+  // JSON twin, already covered above by the reset-invalid-token test).
+  it("sets Referrer-Policy: no-referrer on GET /reset/:token", async () => {
+    const res = await app.inject({ method: "GET", url: "/reset/some-token-value" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["referrer-policy"]).toBe("no-referrer");
+  });
 });
 
 // ------------------------------------------------------------- /pages reads

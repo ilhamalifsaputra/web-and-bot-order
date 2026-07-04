@@ -143,8 +143,11 @@ beforeEach(() => {
   resetLoginAttempts("127.0.0.1");
 });
 
+// Auth cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 5): the HTML POST
+// /login form is gone — sign in via the JSON twin instead (same
+// establishSession() tail, so the Set-Cookie header is identical either way).
 async function loginAs(identifier: string, password: string): Promise<string> {
-  const res = await app.inject({ method: "POST", url: "/login", payload: { identifier, password } });
+  const res = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { identifier, password } });
   const c = res.headers["set-cookie"];
   return Array.isArray(c) ? c.join("; ") : String(c);
 }
@@ -413,20 +416,11 @@ describe("/api/v1/cart — guest line label + cookie versioning", () => {
 // still flows through correctly now that GET / serves the React SPA shell
 // instead (which doesn't yet apply favicon_url dynamically — see the
 // migration report's Concerns).
-describe("favicon", () => {
-  it("renders the default favicon link when none is configured", async () => {
-    const res = await app.inject({ method: "GET", url: "/login" });
-    expect(res.body).toContain('rel="icon"');
-    expect(res.body).toContain("/static/favicon.svg");
-  });
-
-  it("renders the configured favicon when web_favicon_url is set", async () => {
-    await setSetting(prisma, "web_favicon_url", "/uploads/branding/favicon-deadbeef.png");
-    const res = await app.inject({ method: "GET", url: "/login" });
-    expect(res.body).toContain("/uploads/branding/favicon-deadbeef.png");
-    await deleteSetting(prisma, "web_favicon_url");
-  });
-});
+// favicon coverage (default + web_favicon_url override) moved to
+// spa-api.test.ts's "SPA shell wildcard" describe when /login cut over to the
+// SPA shell (docs/REACT_STOREFRONT_MIGRATION.md Phase 5) — the shell injects
+// the same <link rel="icon"> on every path, so those tests hit
+// /spa-shell-probe instead of a specific page.
 
 // logo_url renders in the shared header (base.njk's `nav` block) — /login
 // overrides that block to a chromeless auth screen, so this needs a
@@ -476,14 +470,20 @@ describe("password login", () => {
     pwUserId = u.id;
   });
 
-  it("signs in with username + password and reaches /account", async () => {
+  // Login mechanics themselves (wrong password / unknown identifier → the
+  // SAME generic 403) are proven once against the JSON endpoint in
+  // spa-api.test.ts ("login: wrong credentials get the generic 403 key");
+  // this keeps only what that test doesn't cover: case-insensitive identifier
+  // matching, and that the resulting session cookie actually works against a
+  // still-Nunjucks page.
+  it("signs in with a mixed-case identifier and reaches /account", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/login",
+      url: "/api/v1/auth/login",
       payload: { identifier: "WebBuyer", password: "hunter2-ok", next: "/account" },
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/account");
+    expect(res.statusCode).toBe(200);
+    expect(res.json().redirect).toBe("/account");
     const cookie = res.headers["set-cookie"];
     const acc = await app.inject({
       method: "GET",
@@ -494,34 +494,18 @@ describe("password login", () => {
     expect(acc.body).toContain("WEBB01");
   });
 
-  it("rejects a wrong password with the generic message", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: "/login",
-      payload: { identifier: "webbuyer", password: "nope" },
-    });
-    expect(res.statusCode).toBe(403);
-    expect(res.body).toContain("Wrong username or password");
-  });
-
-  it("rejects an unknown identifier with the SAME generic message", async () => {
-    const res = await app.inject({
-      method: "POST",
-      url: "/login",
-      payload: { identifier: "ghost", password: "nope" },
-    });
-    expect(res.statusCode).toBe(403);
-    expect(res.body).toContain("Wrong username or password");
-  });
-
-  it("rejects a banned user", async () => {
+  // Not covered by spa-api.test.ts's login tests (which only exercise
+  // wrong-password / unknown-identifier) — banned accounts get the same
+  // generic failure so a ban can't be enumerated from the login response.
+  it("rejects a banned user with the same generic failure", async () => {
     await prisma.user.update({ where: { id: pwUserId }, data: { banned: true } });
     const res = await app.inject({
       method: "POST",
-      url: "/login",
+      url: "/api/v1/auth/login",
       payload: { identifier: "webbuyer", password: "hunter2-ok" },
     });
     expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "web.login_failed" });
     await prisma.user.update({ where: { id: pwUserId }, data: { banned: false } });
   });
 });
@@ -550,12 +534,12 @@ describe("telegram login is lookup-only", () => {
     expect(res.headers.location).toBe("/account");
   });
 
-  it("does NOT create an account for an unknown telegram id", async () => {
+  it("does NOT create an account for an unknown telegram id, and redirects to the React login page with err=tg_unlinked", async () => {
     const before = await prisma.user.count();
     const params = new URLSearchParams(signedTgParams(999999111));
     const res = await app.inject({ method: "GET", url: `/auth/telegram?${params}` });
-    expect(res.statusCode).toBe(403);
-    expect(res.body).toContain("isn&#39;t registered yet");
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login?next=%2F&err=tg_unlinked");
     expect(await prisma.user.count()).toBe(before);
   });
 
@@ -579,9 +563,11 @@ describe("telegram login is lookup-only", () => {
       const ok = await app.inject({ method: "GET", url: `/auth/telegram?${new URLSearchParams({ ...sign(LIVE_TOKEN), next: "/account" })}` });
       expect(ok.statusCode).toBe(303);
       expect(ok.headers.location).toBe("/account");
-      // Signed by a different bot (the env token) → bad hash → rejected.
+      // Signed by a different bot (the env token) → bad hash → redirected to
+      // the React login page with err=tg_failed.
       const bad = await app.inject({ method: "GET", url: `/auth/telegram?${new URLSearchParams(sign(process.env.BOT_TOKEN!))}` });
-      expect(bad.statusCode).toBe(403);
+      expect(bad.statusCode).toBe(303);
+      expect(bad.headers.location).toBe("/login?next=%2F&err=tg_failed");
     } finally {
       await deleteSetting(prisma, "bot_token"); // don't leak into later tests
     }
@@ -617,24 +603,16 @@ describe("telegram login is lookup-only", () => {
   });
 });
 
-describe("login widget — live bot username, placeholder filtered", () => {
-  // BOT_USERNAME=TestBot in the test env (setup-env.ts), but the DB
-  // `bot_username` setting WINS in resolveBotUsername — so setting it here
-  // controls the rendered widget deterministically regardless of env.
-  it("renders the widget with the DB-configured bot username", async () => {
-    await setSetting(prisma, "bot_username", "realtoko_bot");
-    const res = await app.inject({ method: "GET", url: "/login" });
-    expect(res.body).toContain('data-telegram-login="realtoko_bot"');
-    await deleteSetting(prisma, "bot_username");
-  });
-
-  it("hides the widget when the DB setting is the .env.example placeholder", async () => {
-    await setSetting(prisma, "bot_username", "YourBot");
-    const res = await app.inject({ method: "GET", url: "/login" });
-    expect(res.body).not.toContain("telegram-widget.js");
-    await deleteSetting(prisma, "bot_username");
-  });
-});
+// The old "login widget — live bot username, placeholder filtered" describe
+// block scraped GET /login's rendered <script data-telegram-login> — dropped
+// on the auth cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 5) as fully
+// redundant: resolveBotUsername()'s placeholder-filtering is the SAME
+// function asserted right below against /api/v1/pages/home's `bot_username`
+// field, and the widget-script-presence rendering itself (script only when
+// bot_username is non-empty) is covered by
+// client/src/pages/LoginPage.test.tsx ("renders the telegram widget script
+// only when bot_username is non-empty" / "omits the telegram widget script
+// when bot_username is empty").
 
 // Task 9 fix: HomePage.tsx only renders the Telegram contact card/link when
 // `bot_username` is truthy (`{bot_username && (...)}`) — this asserts the data
@@ -658,18 +636,19 @@ describe("GET /api/v1/pages/home — bot_username resolution (Task 9 fix)", () =
   });
 });
 
+// GET /register's form-render test was dropped on the auth cutover
+// (docs/REACT_STOREFRONT_MIGRATION.md Phase 5): /register now falls to the
+// SPA shell, and RegisterPage.test.tsx ("renders username/email/password/
+// password2 fields") already proves the client renders the form.
 describe("register", () => {
-  it("renders the form", async () => {
-    const res = await app.inject({ method: "GET", url: "/register" });
-    expect(res.statusCode).toBe(200);
-    expect(res.body).toContain("Create account");
-  });
-
+  // Not covered by spa-api.test.ts's own register test (which only checks
+  // that validation failures return SOME i18n key and success signs in) —
+  // referral attribution is genuine business logic, kept in full.
   it("creates an account, signs in, and attributes a referral", async () => {
     await prisma.user.create({ data: { telegramId: 515151n, referralCode: "REFREG" } });
     const res = await app.inject({
       method: "POST",
-      url: "/register",
+      url: "/api/v1/auth/register",
       payload: {
         username: "Newbie_1",
         email: "new@user.test",
@@ -679,7 +658,8 @@ describe("register", () => {
         next: "/account",
       },
     });
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().redirect).toBe("/account");
     const row = await prisma.user.findFirst({ where: { loginUsername: "newbie_1" } });
     expect(row).not.toBeNull();
     expect(row!.telegramId).toBeNull();
@@ -688,26 +668,46 @@ describe("register", () => {
     expect(row!.referredById).toBe(referrer!.id);
   });
 
+  // spa-api.test.ts's register test only exercises ONE validation branch
+  // (username too short) — the other three checks (email format, password
+  // length, password confirmation mismatch) have no JSON-layer equivalent
+  // elsewhere, so this stays as a full field-by-field trace, asserting the
+  // specific i18n error KEY each branch returns instead of scraping rendered
+  // English copy.
   it("rejects bad input field by field", async () => {
-    const bad = async (payload: Record<string, string>, msg: string) => {
-      const res = await app.inject({ method: "POST", url: "/register", payload });
+    const bad = async (payload: Record<string, string>, errorKey: string) => {
+      const res = await app.inject({ method: "POST", url: "/api/v1/auth/register", payload });
       expect(res.statusCode).toBe(400);
-      expect(res.body).toContain(msg);
+      expect(res.json()).toEqual({ error: errorKey });
     };
-    await bad({ username: "x", email: "a@b.c", password: "longenough", password2: "longenough" }, "3");
-    await bad({ username: "okname", email: "not-an-email", password: "longenough", password2: "longenough" }, "valid email");
-    await bad({ username: "okname", email: "a@b.c", password: "short", password2: "short" }, "at least 8");
-    await bad({ username: "okname", email: "a@b.c", password: "longenough", password2: "different1" }, "don");
+    await bad(
+      { username: "x", email: "a@b.c", password: "longenough", password2: "longenough" },
+      "web.register_username_invalid",
+    );
+    await bad(
+      { username: "okname", email: "not-an-email", password: "longenough", password2: "longenough" },
+      "web.register_email_invalid",
+    );
+    await bad(
+      { username: "okname", email: "a@b.c", password: "short", password2: "short" },
+      "web.register_password_short",
+    );
+    await bad(
+      { username: "okname", email: "a@b.c", password: "longenough", password2: "different1" },
+      "web.register_password_mismatch",
+    );
   });
 
+  // Unique: the ValidationError → field-error mapping (mapUniqueViolation in
+  // packages/db/src/crud/webauth.ts) isn't exercised anywhere else.
   it("rejects a duplicate username with a 409-style field error", async () => {
     const res = await app.inject({
       method: "POST",
-      url: "/register",
+      url: "/api/v1/auth/register",
       payload: { username: "newbie_1", email: "other@user.test", password: "longenough", password2: "longenough" },
     });
     expect(res.statusCode).toBe(400);
-    expect(res.body).toContain("taken");
+    expect(res.json()).toEqual({ error: "web.register_username_taken" });
   });
 });
 
@@ -725,58 +725,44 @@ describe("forgot + reset password", () => {
       },
     });
 
-    const real = await app.inject({ method: "POST", url: "/forgot", payload: { email: "forget@me.test" } });
+    const real = await app.inject({ method: "POST", url: "/api/v1/auth/forgot", payload: { email: "forget@me.test" } });
     expect(real.statusCode).toBe(200);
-    expect(real.body).toContain("on its way");
+    expect(real.json()).toEqual({ sent: true, unavailable: false });
 
-    const fake = await app.inject({ method: "POST", url: "/forgot", payload: { email: "ghost@no.test" } });
+    const fake = await app.inject({ method: "POST", url: "/api/v1/auth/forgot", payload: { email: "ghost@no.test" } });
     expect(fake.statusCode).toBe(200);
-    expect(fake.body).toContain("on its way");
+    expect(fake.json()).toEqual({ sent: true, unavailable: false });
 
     expect(sendMail).toHaveBeenCalledTimes(1);
     const text = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![0].text as string;
     expect(text).toMatch(/\/reset\/[A-Za-z0-9_-]{40,}/);
   });
 
-  it("resets the password with a valid token, once, and invalidates sessions", async () => {
+  // The route's own happy-path wiring (consumePasswordResetToken →
+  // setLoginCredentials → JSON redirect body) isn't exercised by
+  // spa-api.test.ts (which only covers the invalid-token 400 case). Reuse
+  // prevention and expired-token rejection are dropped here as redundant:
+  // both are already proven directly against consumePasswordResetToken in
+  // packages/db/src/crud/webauth.test.ts ("issues a token and consumes it
+  // exactly once" / "rejects expired and unknown tokens") — this route is a
+  // thin wrapper over that same function, and spa-api.test.ts's
+  // invalid-token test proves the route maps its `null` return to the same
+  // generic 400.
+  it("resets the password with a valid token", async () => {
     const { createPasswordResetToken } = await import("@app/db");
     const { verifyPassword } = await import("@app/core/password");
     const user = (await prisma.user.findFirst({ where: { email: "forget@me.test" } }))!;
     const { token } = await createPasswordResetToken(prisma, user.id);
 
-    const form = await app.inject({ method: "GET", url: `/reset/${token}` });
-    expect(form.statusCode).toBe(200);
-    expect(form.body).toContain("new password");
-
     const res = await app.inject({
       method: "POST",
-      url: `/reset/${token}`,
+      url: `/api/v1/auth/reset/${token}`,
       payload: { password: "brandnew-99", password2: "brandnew-99" },
     });
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toBe("/login?reset=1");
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ redirect: "/login?reset=1" });
     const updated = (await prisma.user.findUnique({ where: { id: user.id } }))!;
     expect(verifyPassword("brandnew-99", updated.passwordHash!)).toBe(true);
-
-    const again = await app.inject({
-      method: "POST",
-      url: `/reset/${token}`,
-      payload: { password: "another-99", password2: "another-99" },
-    });
-    expect(again.statusCode).toBe(400);
-    expect(again.body).toContain("invalid or has expired");
-  });
-
-  it("rejects an expired token", async () => {
-    const { createPasswordResetToken } = await import("@app/db");
-    const user = (await prisma.user.findFirst({ where: { email: "forget@me.test" } }))!;
-    const { token } = await createPasswordResetToken(prisma, user.id, -1);
-    const res = await app.inject({
-      method: "POST",
-      url: `/reset/${token}`,
-      payload: { password: "whatever-99", password2: "whatever-99" },
-    });
-    expect(res.statusCode).toBe(400);
   });
 });
 

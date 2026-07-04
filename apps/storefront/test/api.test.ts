@@ -79,8 +79,12 @@ afterAll(async () => {
   cleanupTestDb();
 });
 
+// Auth cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 5): the HTML POST
+// /login form is gone — sign in via the JSON twin (same Set-Cookie either
+// way) and still scrape the CSRF token off /account/settings, which is still
+// Nunjucks.
 async function loginAs(identifier: string, password: string): Promise<{ cookie: string; csrf: string }> {
-  const res = await app.inject({ method: "POST", url: "/login", payload: { identifier, password } });
+  const res = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { identifier, password } });
   const c = res.headers["set-cookie"];
   const cookie = Array.isArray(c) ? c.join("; ") : String(c);
   const page = await app.inject({ method: "GET", url: "/account/settings", headers: { cookie } });

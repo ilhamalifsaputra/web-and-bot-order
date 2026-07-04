@@ -1,9 +1,10 @@
 /**
- * JSON twins of the HTML auth routes (login / register / logout / forgot /
- * reset) for the React SPA. Same semantics as routes/auth.ts + routes/forgot.ts:
- * no CSRF on any of them (pre-session, exactly like the HTML forms they mirror;
- * logout matches the HTML POST /logout which carried no csrfProtect), the same
- * rate limiters in the same order, the same generic non-enumerating errors.
+ * JSON twins of the (now-deleted) HTML auth routes — login / register /
+ * logout / forgot / reset — for the React SPA. Same semantics the HTML forms
+ * used to have (routes/auth.ts + the deleted routes/forgot.ts): no CSRF on
+ * any of them (pre-session, exactly like those HTML forms; logout matches
+ * the HTML POST /logout which carried no csrfProtect), the same rate
+ * limiters in the same order, the same generic non-enumerating errors.
  * Errors return i18n KEYS — the client renders them through its own t().
  *
  * The Telegram Login Widget callback stays a server-side GET (routes/auth.ts

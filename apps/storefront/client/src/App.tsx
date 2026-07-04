@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import Placeholder from "./pages/Placeholder";
+import ErrorPage from "./pages/ErrorPage";
 
 /**
  * Full route table for every storefront URL. Pages start as <Placeholder /> and
@@ -34,8 +35,8 @@ export default function App() {
         <Route path="/account/support/:id" element={<Placeholder />} />
         <Route path="/account/settings" element={<Placeholder />} />
         {/* Unknown paths: the SPA shell already sent a real 404 status; this
-            renders the error.njk visuals once ErrorPage lands with Cluster A. */}
-        <Route path="*" element={<Placeholder />} />
+            renders the error.njk visuals. */}
+        <Route path="*" element={<ErrorPage />} />
       </Route>
     </Routes>
   );

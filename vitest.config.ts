@@ -19,7 +19,10 @@ export default defineConfig({
       "tests/**/*.test.ts",
     ],
     environment: "node",
-    environmentMatchGlobs: [["apps/web-admin/client/**", "jsdom"]],
+    environmentMatchGlobs: [
+      ["apps/web-admin/client/**", "jsdom"],
+      ["apps/storefront/client/**", "jsdom"],
+    ],
     // @testing-library/react's automatic afterEach(cleanup) only registers
     // when it detects a global test-framework `afterEach` — without this,
     // each jsdom test's rendered DOM leaks into the next test in the same

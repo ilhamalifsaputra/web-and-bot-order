@@ -7,6 +7,8 @@ import CategoryPage from "./pages/CategoryPage";
 import SearchPage from "./pages/SearchPage";
 import ProductPage from "./pages/ProductPage";
 import CartPage from "./pages/CartPage";
+import CheckoutPage from "./pages/CheckoutPage";
+import PayPage from "./pages/PayPage";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
 import ForgotPage from "./pages/ForgotPage";
@@ -33,8 +35,8 @@ export default function App() {
         <Route path="/p/:slug" element={<ProductPage />} />
         <Route path="/search" element={<SearchPage />} />
         <Route path="/cart" element={<CartPage />} />
-        <Route path="/checkout" element={<Placeholder />} />
-        <Route path="/checkout/:code/pay" element={<Placeholder />} />
+        <Route path="/checkout" element={<CheckoutPage />} />
+        <Route path="/checkout/:code/pay" element={<PayPage />} />
         <Route path="/account" element={<Placeholder />} />
         <Route path="/account/orders" element={<Placeholder />} />
         <Route path="/account/orders/:code" element={<Placeholder />} />

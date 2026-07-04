@@ -8,12 +8,19 @@
  * touches the wallet (§17.1 #5). Orders are created through the SAME crud as
  * the bot inside one $transaction, so stock checks, vouchers, bulk pricing and
  * unique cents stay consistent across both fronts.
+ *
+ * Cluster C cutover (docs/REACT_STOREFRONT_MIGRATION.md): the HTML/HTMX
+ * checkout + pay pages are gone — GET /checkout and GET /checkout/:code/pay
+ * now fall to the React SPA shell (routes/spaShell.ts), which talks to the
+ * JSON twins in routes/apiCheckout.ts + routes/api.ts. This file now exports
+ * ONLY the shared business-logic helpers those JSON routes call
+ * (checkoutView / performCheckout / payView / payState) and registers the
+ * three payment webhooks below — no HTTP routes of its own for the buyer UI.
  */
 import type { FastifyPluginAsync } from "fastify";
 import { config } from "@app/core/config";
 import { OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
-import { t } from "@app/core/i18n";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
@@ -30,7 +37,6 @@ import {
   finalizeOrderPayment,
   getUsdIdrRate,
   getOrderByCode,
-  cancelOrder,
   countUserPendingOrders,
   deliverPaidTokopayOrder,
   recordUnmatchedTokopayTx,
@@ -46,7 +52,7 @@ import {
   deliverPaidNowpaymentsOrder,
   recordUnmatchedNowpaymentsTx,
 } from "@app/db";
-import { currentCustomer, csrfProtect, type Customer } from "../plugins/auth";
+import { type Customer } from "../plugins/auth";
 import { clientIp, webhookRateLimited } from "../rateLimit";
 import { createTransaction, verifyCallback, checkTransaction, type TokopayOrderInfo } from "@app/core/payments/tokopay";
 import {
@@ -61,8 +67,7 @@ import {
 } from "@app/core/payments/nowpayments";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
-import { shopContext, requestLang, resolveBotUsername } from "../shop";
-import { loadCartLines } from "./cart";
+import { resolveBotUsername } from "../shop";
 
 const MAX_PENDING_ORDERS = 10;
 
@@ -524,130 +529,6 @@ export async function payView(order: OrderRow) {
 }
 
 const checkoutRoutes: FastifyPluginAsync = async (app) => {
-  // ---- Checkout summary + method choice ----
-  app.get("/checkout", { preHandler: currentCustomer }, async (req, reply) => {
-    const ctx = await shopContext(req, "/cart");
-    const view = await checkoutView(req.customer!, null, null);
-    if (view.items_empty) return reply.code(303).redirect("/cart");
-    return reply.view("checkout.njk", { ...ctx, ...view });
-  });
-
-  // ---- Create the order (re-validates everything via the shared crud) ----
-  app.post<{ Body: { method?: string; voucher_code?: string; use_wallet_idr?: string; use_wallet_usdt?: string } }>(
-    "/checkout",
-    { preHandler: csrfProtect },
-    async (req, reply) => {
-      const customer = req.customer!;
-      const method = (req.body.method ?? "").toLowerCase();
-      const voucherCode = (req.body.voucher_code ?? "").trim().toUpperCase() || null;
-      const useWalletIdr = req.body.use_wallet_idr === "1";
-      const useWalletUsdt = req.body.use_wallet_usdt === "1";
-
-      const rerender = async (errorKey: string) => {
-        const ctx = await shopContext(req, "/cart");
-        const view = await checkoutView(customer, voucherCode, errorKey);
-        return reply.code(400).view("checkout.njk", { ...ctx, ...view });
-      };
-
-      try {
-        const { orderCode } = await performCheckout(customer, method, voucherCode, useWalletIdr, useWalletUsdt);
-        return reply.code(303).redirect(`/checkout/${orderCode}/pay`);
-      } catch (e) {
-        if (e instanceof ValidationError) return rerender(e.key);
-        throw e;
-      }
-    },
-  );
-
-  // ---- Voucher preview (Task 8 fix): recompute totals with the voucher
-  // code WITHOUT creating an order — reuses the SAME checkoutView() that
-  // powers GET /checkout, so this can never drift from the real totals.
-  // The Apply button on checkout.njk calls this via HTMX instead of
-  // submitting the main form, so a valid voucher code can no longer be
-  // indistinguishable from clicking "Place Order".
-  app.post<{ Body: { voucher_code?: string } }>(
-    "/checkout/voucher/preview",
-    { preHandler: csrfProtect },
-    async (req, reply) => {
-      const customer = req.customer!;
-      const voucherCode = (req.body.voucher_code ?? "").trim().toUpperCase() || null;
-      const [view, fxRate] = await Promise.all([
-        checkoutView(customer, voucherCode, null),
-        getUsdIdrRate(prisma),
-      ]);
-      return reply.view("_checkout_totals.njk", {
-        lang: requestLang(req),
-        fx: fxRate ? fxRate.toString() : null,
-        subtotal: view.subtotal,
-        bulk_discount: view.bulk_discount,
-        voucher_discount: view.voucher_discount,
-        total: view.total,
-        voucher_error_key: view.error_key,
-        idr_enabled: view.idr_enabled,
-        paydisini_enabled: view.paydisini_enabled,
-        binance_enabled: view.binance_enabled,
-        bybit_enabled: view.bybit_enabled,
-        bybit_bsc_enabled: view.bybit_bsc_enabled,
-        nowpayments_enabled: view.nowpayments_enabled,
-      });
-    },
-  );
-
-  // ---- Payment instructions (status-aware) ----
-  app.get<{ Params: { code: string } }>(
-    "/checkout/:code/pay",
-    { preHandler: currentCustomer },
-    async (req, reply) => {
-      const ctx = await shopContext(req, "/cart");
-      const order = await getOrderByCode(prisma, req.params.code);
-      if (!order || order.userId !== req.customer!.userId) {
-        return reply.code(404).view("error.njk", {
-          ...ctx,
-          status_code: 404,
-          message: t("web.not_found", ctx.lang),
-        });
-      }
-
-      return reply.view("pay.njk", { ...ctx, ...(await payView(order)) });
-    },
-  );
-
-  // ---- HTMX status polling partial (every ~5s on the pay page) ----
-  app.get<{ Params: { code: string } }>(
-    "/checkout/:code/status",
-    { preHandler: currentCustomer },
-    async (req, reply) => {
-      const order = await getOrderByCode(prisma, req.params.code);
-      if (!order || order.userId !== req.customer!.userId) {
-        return reply.code(404).type("text/plain").send("not found");
-      }
-      const state = payState(order);
-      const lang = requestLang(req);
-      // Once delivered, htmx follows HX-Redirect to the credentials page.
-      if (state === "delivered") {
-        void reply.header("HX-Redirect", `/account/orders/${order.orderCode}`);
-      }
-      return reply.view("_pay_status.njk", { lang, state, code: order.orderCode });
-    },
-  );
-
-  // ---- Buyer cancels a still-pending order ----
-  app.post<{ Params: { code: string } }>(
-    "/checkout/:code/cancel",
-    { preHandler: csrfProtect },
-    async (req, reply) => {
-      const order = await getOrderByCode(prisma, req.params.code);
-      if (order && order.userId === req.customer!.userId) {
-        try {
-          await prisma.$transaction((tx) => cancelOrder(tx, order.id, "user_cancelled"));
-        } catch (e) {
-          if (!(e instanceof ValidationError)) throw e; // already paid/delivered → just bounce
-        }
-      }
-      return reply.code(303).redirect("/cart");
-    },
-  );
-
   // ---- TokoPay webhook (public; signature is the auth — plan.md §15.5) ----
   //
   // The TokoPay signature is md5(merchantId:secret:refId) — it does NOT cover

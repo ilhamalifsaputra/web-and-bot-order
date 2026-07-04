@@ -106,9 +106,10 @@ Every mutating endpoint gets the happy / 401-anon / 403-bad-CSRF test trio
 - [x] `GET /auth/telegram` failure → `303 /login?err=…`
 - [x] Cutover: delete HTML auth+forgot handlers, 4 templates; migrate rate-limit tests
 
-### Phase 6 — Cluster C: checkout + pay
-- [ ] Checkout page (methods/wallet/voucher preview) + Pay page (all state×method branches, countdown, 5s poll)
-- [ ] Cutover: delete HTML/HTMX checkout handlers + 4 templates; **webhooks + their tests untouched & green**
+### Phase 6 — Cluster C: checkout + pay — DONE 2026-07-04
+- [x] Checkout page (methods/wallet/voucher preview) + Pay page (all state×method branches, countdown, 5s poll)
+- [x] Sign-off via reviewer markup-parity verification (no browser tooling); visual QA in a real browser pending as manual follow-up
+- [x] Cutover: delete HTML/HTMX checkout handlers + 4 templates; **webhooks + their tests untouched & green**
 
 ### Phase 7 — Cluster D: account + settings
 - [ ] 8 account-area pages

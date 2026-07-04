@@ -7,7 +7,32 @@
 // `pnpm --filter @app/storefront-client build` first (same contract as the
 // web-admin dashboard SPA).
 import "./setup-env"; // FIRST import — sets env before @app/* load
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+// PayDisini's createTransaction hits a real gateway HTTP endpoint — mock it
+// for the PAYDISINI pay-view test below (mirrors the mock that lived in
+// storefront.test.ts before the cluster-C cutover moved the checkout tests
+// here). verifyCallback is left real/untouched — the webhook route is
+// exercised separately in paydisini-webhook.test.ts.
+vi.mock("@app/core/payments/paydisini", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/paydisini")>()),
+  createTransaction: vi.fn().mockResolvedValue({
+    trxId: "PD-TEST",
+    qrString: "000",
+    qrUrl: "https://x/paydisini-qr.png",
+    checkoutUrl: "https://x/paydisini-checkout",
+    totalBayar: "100",
+  }),
+}));
+// NOWPayments' createInvoice hits a real gateway HTTP endpoint too — mock it
+// for the tagged-paymentRef caching test below. verifyIpn is left
+// real/untouched (exercised separately in nowpayments-webhook.test.ts).
+vi.mock("@app/core/payments/nowpayments", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/nowpayments")>()),
+  createInvoice: vi.fn().mockResolvedValue({
+    invoiceId: "NP-TEST-INV-1",
+    invoiceUrl: "https://x/nowpayments-invoice",
+  }),
+}));
 import type { FastifyInstance } from "fastify";
 import { cleanupTestDb } from "./setup-env";
 import {
@@ -17,8 +42,11 @@ import {
   deleteSetting,
   createCatalogProduct,
   createDenomination,
+  createVoucher,
   addToCart,
+  getOrderByCode,
 } from "@app/db";
+import { OrderStatus, VoucherType } from "@app/core/enums";
 import { hashPassword } from "@app/core/password";
 import { buildApp } from "../src/server";
 
@@ -70,8 +98,13 @@ beforeAll(async () => {
     price: "40000",
   });
   denomId = denom.id;
+  // Generous pool: checkout reserves stock atomically at order creation
+  // (Checkout-2/Stock-1 fix), so every test in this file that completes a
+  // real checkout against this shared product permanently consumes one row
+  // (no per-test reset). The cluster-C cutover moved several real-checkout
+  // tests here from storefront.test.ts, so 5 rows is no longer enough.
   await prisma.stockItem.createMany({
-    data: Array.from({ length: 5 }, () => ({
+    data: Array.from({ length: 40 }, () => ({
       productId: denomId,
       credentials: "user@mail.com:pass",
       status: "AVAILABLE",
@@ -172,6 +205,22 @@ describe("SPA shell wildcard", () => {
     const res = await app.inject({ method: "GET", url: "/reset/some-token-value" });
     expect(res.statusCode).toBe(200);
     expect(res.headers["referrer-policy"]).toBe("no-referrer");
+  });
+
+  // Checkout cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 6): /checkout
+  // and /checkout/:code/pay now fall to this same wildcard — titles from
+  // spaShell.ts's TITLE_KEYS table. Auth/ownership live in the JSON twins
+  // (tested below), so the shell serves 200 even for anonymous visitors.
+  it("200s GET /checkout with the checkout title", async () => {
+    const res = await app.inject({ method: "GET", url: "/checkout" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("<title>Checkout — SPA Test Shop</title>");
+  });
+
+  it("200s GET /checkout/:code/pay with the payment title", async () => {
+    const res = await app.inject({ method: "GET", url: "/checkout/SOMECODE/pay" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("<title>Payment — SPA Test Shop</title>");
   });
 });
 
@@ -504,6 +553,255 @@ describe("/api/v1/checkout + orders", () => {
       expect(ok.statusCode).toBe(200);
       const status = await app.inject({ method: "GET", url: `/api/v1/orders/${orderCode}/status`, headers: { cookie } });
       expect(status.json().state).toBe("closed");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cluster C cutover: business-logic tests migrated from storefront.test.ts's
+// deleted "checkout — …" describe blocks (they used to drive the Nunjucks
+// checkout/pay pages; the logic they pinned lives on in checkoutView /
+// performCheckout / payView / payState, reached through the JSON twins here).
+// Pure HTML/DOM rendering assertions from those blocks (default-checked radio
+// cascade, hidden-method radios, the Enter-key voucher interceptor, translated
+// error strings, QR <img> markup) moved to the client jsdom tests
+// (CheckoutPage.test.tsx / PayPage.test.tsx).
+// ---------------------------------------------------------------------------
+describe("checkout business rules (migrated from the Nunjucks checkout tests)", () => {
+  let buyerId: number;
+  let cookie: string;
+  let csrf: string;
+
+  beforeAll(async () => {
+    buyerId = await makeUser("cutoverbuyer", "cutover-pw-99", "CUTOVR");
+    const session = await loginAs("cutoverbuyer", "cutover-pw-99");
+    cookie = session.cookie;
+    csrf = session.csrf;
+  });
+
+  /** Seed one cart line (each successful checkout consumes the cart). */
+  async function seedCart() {
+    await addToCart(prisma, buyerId, denomId, 1);
+  }
+
+  async function placeOrder(method: string, extra: Record<string, unknown> = {}) {
+    return app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { method, ...extra },
+    });
+  }
+
+  it("voucher preview applies a percent voucher to the totals but NEVER creates an order (Task 8 regression)", async () => {
+    await createVoucher(prisma, { code: "SAVE10", type: VoucherType.PERCENT, value: "10" });
+    await seedCart();
+    const before = await prisma.order.count({ where: { userId: buyerId } });
+
+    const ok = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout/voucher/preview",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { voucher_code: "SAVE10" },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().voucher_discount).toBe("4000"); // 10% of the 40000 cart
+    expect(ok.json().error_key).toBeNull();
+
+    const bad = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout/voucher/preview",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { voucher_code: "NOPE-DOES-NOT-EXIST" },
+    });
+    expect(bad.statusCode).toBe(200); // inline error key, not an HTTP failure
+    expect(bad.json().error_key).toBe("error.voucher_not_found");
+
+    const after = await prisma.order.count({ where: { userId: buyerId } });
+    expect(after).toBe(before); // <-- the actual Task 8 bug: this used to grow
+  });
+
+  it("rejects a disabled or unknown payment method with 400 web.pay_method_unavailable", async () => {
+    await seedCart();
+    // PayDisini creds are not configured at this point in the file.
+    const disabled = await placeOrder("paydisini");
+    expect(disabled.statusCode).toBe(400);
+    expect(disabled.json()).toEqual({ error: "web.pay_method_unavailable" });
+    const unknown = await placeOrder("visa");
+    expect(unknown.statusCode).toBe(400);
+    expect(unknown.json()).toEqual({ error: "web.pay_method_unavailable" });
+  });
+
+  it("rejects method=nowpayments when the USD/IDR rate is unset (USDT conversion needs it)", async () => {
+    await setSetting(prisma, "nowpayments_api_key", "ak-test");
+    await setSetting(prisma, "nowpayments_ipn_secret", "ipn-secret-test");
+    await deleteSetting(prisma, "usd_idr_rate"); // creds present, but no rate
+    try {
+      await seedCart();
+      const res = await placeOrder("nowpayments");
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: "web.pay_method_unavailable" });
+    } finally {
+      await deleteSetting(prisma, "nowpayments_api_key");
+      await deleteSetting(prisma, "nowpayments_ipn_secret");
+      await setSetting(prisma, "usd_idr_rate", "16000"); // restore (set by the bybit fixture above)
+    }
+  });
+
+  it("creates a PAYDISINI/IDR order (alongside TokoPay — additive flags) and returns the gateway payload on the pay view", async () => {
+    await setSetting(prisma, "paydisini_userkey", "uk-test");
+    await setSetting(prisma, "paydisini_apikey", "ak-test");
+    await setSetting(prisma, "paydisini_default_channel", "QRIS");
+    await setSetting(prisma, "tokopay_merchant_id", "m-test");
+    await setSetting(prisma, "tokopay_secret", "s-test");
+    try {
+      await seedCart();
+      // Both IDR rails are enabled at once — additive, not exclusive.
+      const flags = await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie } });
+      expect(flags.json().idr_enabled).toBe(true);
+      expect(flags.json().paydisini_enabled).toBe(true);
+
+      const created = await placeOrder("paydisini");
+      expect(created.statusCode).toBe(201);
+      const code = created.json().order_code as string;
+      const order = await getOrderByCode(prisma, code);
+      expect(order!.paymentMethod).toBe("PAYDISINI");
+      expect(order!.currency).toBe("IDR");
+
+      // payView lazily creates the gateway transaction (mocked above).
+      const pay = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/pay`, headers: { cookie } });
+      expect(pay.statusCode).toBe(200);
+      const body = pay.json();
+      expect(body.is_paydisini).toBe(true);
+      expect(body.paydisini_gateway).toMatchObject({
+        qrUrl: "https://x/paydisini-qr.png",
+        checkoutUrl: "https://x/paydisini-checkout",
+      });
+      expect(body.paydisini_gateway_error).toBe(false);
+    } finally {
+      await deleteSetting(prisma, "paydisini_userkey");
+      await deleteSetting(prisma, "paydisini_apikey");
+      await deleteSetting(prisma, "paydisini_default_channel");
+      await deleteSetting(prisma, "tokopay_merchant_id");
+      await deleteSetting(prisma, "tokopay_secret");
+    }
+  });
+
+  it("creates a NOWPAYMENTS/USDT order and caches the tagged paymentRef the bot's reconcile poller reads", async () => {
+    await setSetting(prisma, "nowpayments_api_key", "ak-test");
+    await setSetting(prisma, "nowpayments_ipn_secret", "ipn-secret-test");
+    await setSetting(prisma, "nowpayments_pay_currency", "usdttrc20");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    try {
+      await seedCart();
+      const created = await placeOrder("nowpayments");
+      expect(created.statusCode).toBe(201);
+      const code = created.json().order_code as string;
+      let order = await getOrderByCode(prisma, code);
+      expect(order!.paymentMethod).toBe("NOWPAYMENTS");
+      expect(order!.currency).toBe("USDT");
+
+      const { createInvoice } = await import("@app/core/payments/nowpayments");
+      const callsBefore = vi.mocked(createInvoice).mock.calls.length;
+      const pay = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/pay`, headers: { cookie } });
+      expect(pay.statusCode).toBe(200);
+      expect(pay.json().is_nowpayments).toBe(true);
+      expect(pay.json().nowpayments_gateway).toEqual({
+        invoiceId: "NP-TEST-INV-1",
+        invoiceUrl: "https://x/nowpayments-invoice",
+      });
+
+      // The cached paymentRef MUST carry the gateway: "nowpayments"
+      // discriminator tag — the bot's reconcile poller
+      // (nowpaymentsReconcile.ts extractInvoiceId) reads this exact tagged
+      // JSON to find the invoice id.
+      order = await getOrderByCode(prisma, code);
+      const cached = JSON.parse(order!.paymentRef!) as Record<string, unknown>;
+      expect(cached.gateway).toBe("nowpayments");
+      expect(cached.invoiceId).toBe("NP-TEST-INV-1");
+      expect(cached.invoiceUrl).toBe("https://x/nowpayments-invoice");
+
+      // A refresh reads the cache back instead of creating a second invoice.
+      const again = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/pay`, headers: { cookie } });
+      expect(again.json().nowpayments_gateway).toEqual(pay.json().nowpayments_gateway);
+      expect(vi.mocked(createInvoice).mock.calls.length).toBe(callsBefore + 1);
+    } finally {
+      await deleteSetting(prisma, "nowpayments_api_key");
+      await deleteSetting(prisma, "nowpayments_ipn_secret");
+      await deleteSetting(prisma, "nowpayments_pay_currency");
+    }
+  });
+
+  it("applies the IDR wallet credit when use_wallet_idr is set on an IDR method", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "m-test");
+    await setSetting(prisma, "tokopay_secret", "s-test");
+    await prisma.user.update({ where: { id: buyerId }, data: { walletBalance: "5000" } });
+    try {
+      await seedCart();
+      const created = await placeOrder("qris", { use_wallet_idr: true });
+      expect(created.statusCode).toBe(201);
+      const order = await getOrderByCode(prisma, created.json().order_code as string);
+      expect(order!.walletUsed.toString()).toBe("5000");
+      expect(order!.totalAmount.toString()).toBe("35000"); // 40000 cart - 5000 credit
+    } finally {
+      await deleteSetting(prisma, "tokopay_merchant_id");
+      await deleteSetting(prisma, "tokopay_secret");
+      await prisma.user.update({ where: { id: buyerId }, data: { walletBalance: "0" } });
+    }
+  });
+
+  describe("payState mapping on a BYBIT_BSC order (status poll)", () => {
+    let code: string;
+
+    beforeAll(async () => {
+      await setSetting(prisma, "bybit_bsc_deposit_address", "0xMERCHANTADDR");
+      await setSetting(prisma, "bybit_api_key", "k");
+      await setSetting(prisma, "bybit_api_secret", "s");
+      await setSetting(prisma, "usd_idr_rate", "16000");
+      await seedCart();
+      const created = await placeOrder("bybit_bsc");
+      expect(created.statusCode).toBe(201);
+      code = created.json().order_code as string;
+    });
+
+    afterAll(async () => {
+      await deleteSetting(prisma, "bybit_bsc_deposit_address");
+      await deleteSetting(prisma, "bybit_bsc_min_amount");
+    });
+
+    it("creates a BYBIT_BSC/USDT order whose pay view carries the deposit address + a min-amount note only when configured", async () => {
+      const order = await getOrderByCode(prisma, code);
+      expect(order!.paymentMethod).toBe("BYBIT_BSC");
+      expect(order!.currency).toBe("USDT");
+
+      await setSetting(prisma, "bybit_bsc_min_amount", "5");
+      const withNote = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/pay`, headers: { cookie } });
+      expect(withNote.json().is_bybit_bsc).toBe(true);
+      expect(withNote.json().bybit_bsc_address).toBe("0xMERCHANTADDR");
+      expect(withNote.json().min_amount).toBeTruthy(); // pre-formatted server-side
+
+      await deleteSetting(prisma, "bybit_bsc_min_amount");
+      const withoutNote = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/pay`, headers: { cookie } });
+      expect(withoutNote.json().min_amount).toBeNull();
+    });
+
+    // Without the in-flight branches in payState, a live Bybit BSC order
+    // would fall into the "closed" catch-all and render as dead the moment a
+    // deposit is first detected.
+    it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
+      "status poll reports 'confirming', not 'closed', once the order is %s",
+      async (status) => {
+        await prisma.order.update({ where: { orderCode: code }, data: { status } });
+        const res = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/status`, headers: { cookie } });
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toEqual({ state: "confirming", redirect: null });
+      },
+    );
+
+    it("status poll returns the credentials-page redirect once DELIVERED (JSON twin of the old HX-Redirect)", async () => {
+      await prisma.order.update({ where: { orderCode: code }, data: { status: OrderStatus.DELIVERED } });
+      const res = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/status`, headers: { cookie } });
+      expect(res.json()).toEqual({ state: "delivered", redirect: `/account/orders/${code}` });
     });
   });
 });

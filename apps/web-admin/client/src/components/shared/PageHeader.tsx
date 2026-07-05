@@ -30,12 +30,12 @@ export function PageHeader({ title, breadcrumb, actions }: PageHeaderProps): JSX
           ))}
         </nav>
       )}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="font-display text-2xl font-semibold text-ink">
           {title}
         </h1>
         {actions && (
-          <div className="flex items-center gap-2">{actions}</div>
+          <div className="flex flex-wrap items-center gap-2">{actions}</div>
         )}
       </div>
     </div>

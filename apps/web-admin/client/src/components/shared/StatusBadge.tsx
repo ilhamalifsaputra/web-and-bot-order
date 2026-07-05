@@ -3,15 +3,23 @@ type Tone = "success" | "warning" | "danger" | "neutral";
 const TONE: Record<string, Tone> = {
   DELIVERED: "success",
   PAID: "success",
+  MATCHED: "success",
+  SENT: "success",
   PENDING_PAYMENT: "warning",
   PAYMENT_DETECTED: "warning",
   CONFIRMING: "warning",
   CONFIRMED: "warning",
   PENDING_VERIFICATION: "warning",
   UNDERPAID: "warning",
+  LOW_STOCK: "warning",
+  EXPIRING_SOON: "warning",
+  UNMATCHED: "warning",
   CANCELLED: "danger",
   REJECTED: "danger",
   FAILED: "danger",
+  BANNED: "danger",
+  OUT_OF_STOCK: "danger",
+  DELIVERY_FAILED: "danger",
   REFUNDED: "neutral",
 };
 

@@ -7,9 +7,10 @@ import { FilterBar } from "../components/shared/FilterBar";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Boxes } from "lucide-react";
+import { SearchBar } from "../components/shared/SearchBar";
+import { ProgressBar } from "../components/shared/ProgressBar";
+import { StatusBadge } from "../components/shared/StatusBadge";
 
 interface DenominationRow {
   id: number;
@@ -68,11 +69,10 @@ export function StockPage() {
         onClear={filter ? () => setFilter("") : undefined}
         className="mb-4"
       >
-        <Input
+        <SearchBar
           value={filter}
-          onChange={(e) => setFilter(e.target.value)}
+          onChange={setFilter}
           placeholder="Filter by denomination, product, or category…"
-          className="w-80"
         />
       </FilterBar>
 
@@ -160,20 +160,14 @@ export function StockPage() {
               const sold = cnt?.sold ?? 0;
               const total = available + reserved + sold;
               const pct = total > 0 ? Math.round((available / total) * 100) : 0;
+              const tone = pct < 20 ? "rust" : pct < 50 ? "amberx" : "grass";
               return (
                 <div className="min-w-[120px]">
                   <div className="flex justify-between text-xs mb-1">
                     <span className="text-ink-soft">{available} ready</span>
                     <span className="text-ink-soft">{pct}%</span>
                   </div>
-                  <div className="h-1.5 w-full rounded-full bg-sand overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all ${
-                        pct < 20 ? "bg-rust" : pct < 50 ? "bg-amberx" : "bg-grass"
-                      }`}
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
+                  <ProgressBar value={pct} tone={tone} />
                 </div>
               );
             },
@@ -185,10 +179,10 @@ export function StockPage() {
               const cnt = data?.counts[String(row.id)];
               const available = cnt?.available ?? 0;
               if (available === 0) {
-                return <Badge variant="destructive">Out of Stock</Badge>;
+                return <StatusBadge status="OUT_OF_STOCK" />;
               }
               if (available < 5) {
-                return <Badge variant="destructive">Low Stock</Badge>;
+                return <StatusBadge status="LOW_STOCK" />;
               }
               return null;
             },

@@ -1,9 +1,11 @@
 /**
  * TSX port of apps/storefront/views/pay.njk + its polled fragment
  * views/_pay_status.njk. Two independent data sources, exactly like the NJK:
- *  - GET /api/v1/orders/:code/pay (`data`) is fetched ONCE and drives the big
- *    payment-instructions card below — the NJK only ever re-renders this on a
- *    fresh page load, never via the poll.
+ *  - GET /api/v1/orders/:code/pay (`data`) is fetched on mount and on
+ *    TanStack's default refetch-on-window-focus — harmless, since the gateway
+ *    payload is cached server-side on order.paymentRef, the same as an NJK
+ *    page refresh would re-read it. It drives the big payment-instructions
+ *    card below and is never refreshed by the poll itself.
  *  - GET /api/v1/orders/:code/status (`poll`) refetches every 5s and drives
  *    ONLY the small #pay-status strip (_pay_status.njk) — until the first
  *    poll response lands, the strip shows `data.state` (the same value the

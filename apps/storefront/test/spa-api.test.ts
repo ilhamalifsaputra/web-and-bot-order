@@ -188,6 +188,23 @@ describe("SPA shell wildcard", () => {
     }
   });
 
+  // A shop_name containing a $-pattern (`$&`, `` $` ``, `$'`, ...) is
+  // interpreted specially by String.replace's string-replacement form —
+  // spaShell.ts must use the function form so the substitution is inserted
+  // literally instead of corrupting the HTML (e.g. `$&` re-inserting the
+  // matched placeholder, or `$'` duplicating everything after it).
+  it("treats an admin-controlled shop_name containing $-pattern characters as a literal string", async () => {
+    try {
+      await setSetting(prisma, "shop_name", "Shop $& Corp");
+      const res = await app.inject({ method: "GET", url: "/account" });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain("Shop $&amp; Corp"); // literal $&, & itself esc()'d
+      expect((res.body.match(/<div id="root">/g) ?? []).length).toBe(1);
+    } finally {
+      await setSetting(prisma, "shop_name", "SPA Test Shop");
+    }
+  });
+
   // Auth cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 5): /login,
   // /register, /forgot, /reset/:token now fall to this same wildcard —
   // titles come from spaShell.ts's TITLE_KEYS table.
@@ -481,6 +498,23 @@ describe("/api/v1/cart twins", () => {
     });
     expect(ok.statusCode).toBe(200);
     expect(ok.json().items[0]).toMatchObject({ qty: 3 });
+  });
+
+  it("signed-in: remove needs the x-csrf-token header (bad-CSRF case)", async () => {
+    const uid = await makeUser("cartremoveuser", "cartrm-pw-123", "CRMREF");
+    const { cookie } = await loginAs("cartremoveuser", "cartrm-pw-123");
+    await addToCart(prisma, uid, denomId, 1);
+    const rows = await prisma.cartItem.findMany({ where: { userId: uid } });
+    const key = rows[0]!.id;
+
+    const badToken = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/remove",
+      headers: { cookie, "x-csrf-token": "bad" },
+      payload: { key },
+    });
+    expect(badToken.statusCode).toBe(403);
+    expect(badToken.json()).toEqual({ error: "csrf_failed" });
   });
 });
 
@@ -899,6 +933,15 @@ describe("/api/v1/account twins", () => {
       expect(detail.statusCode).toBe(200);
       expect(detail.json().ticket.id).toBe(ticket.id);
 
+      const badReply = await app.inject({
+        method: "POST",
+        url: `/api/v1/account/support/${ticket.id}/reply`,
+        headers: { cookie, "x-csrf-token": "bad" },
+        payload: { message: "more details" },
+      });
+      expect(badReply.statusCode).toBe(403);
+      expect(badReply.json()).toEqual({ error: "csrf_failed" });
+
       const reply = await app.inject({
         method: "POST",
         url: `/api/v1/account/support/${ticket.id}/reply`,
@@ -922,6 +965,13 @@ describe("/api/v1/account twins", () => {
     it("restock subscribe returns the product redirect (trio-lite)", async () => {
       const anon = await app.inject({ method: "POST", url: `/api/v1/restock/${denomId}` });
       expect(anon.statusCode).toBe(401);
+      const badToken = await app.inject({
+        method: "POST",
+        url: `/api/v1/restock/${denomId}`,
+        headers: { cookie, "x-csrf-token": "bad" },
+      });
+      expect(badToken.statusCode).toBe(403);
+      expect(badToken.json()).toEqual({ error: "csrf_failed" });
       const ok = await app.inject({
         method: "POST",
         url: `/api/v1/restock/${denomId}`,
@@ -997,6 +1047,15 @@ describe("/api/v1/account twins", () => {
         payload: { order_id: order.id, product_id: denomId, rating: 5 },
       });
       expect(anon.statusCode).toBe(401);
+
+      const badToken = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/reviews",
+        headers: { cookie, "x-csrf-token": "bad" },
+        payload: { order_id: order.id, product_id: denomId, rating: 5 },
+      });
+      expect(badToken.statusCode).toBe(403);
+      expect(badToken.json()).toEqual({ error: "csrf_failed" });
 
       const ok = await app.inject({
         method: "POST",

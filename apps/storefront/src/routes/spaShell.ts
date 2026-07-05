@@ -144,11 +144,15 @@ export default async function spaShellRoutes(app: FastifyInstance): Promise<void
     }
 
     const faviconLink = `<link rel="icon" href="${esc(favicon)}">`;
+    // Function-form replacements: a literal second-arg string is interpreted
+    // by String.replace as a $-pattern (`$&`, `$'`, `` $` ``, `$1`, ...) — any
+    // of shop_name/product/category name containing one would corrupt the
+    // HTML. The function form treats the return value as a literal string.
     const html = readFileSync(SPA_INDEX_PATH, "utf-8")
-      .replace("__CSRF_TOKEN__", customer?.csrf ?? "")
-      .replace("__LANG__", lang)
-      .replace("__TITLE__", esc(head.title))
-      .replace("<!--__HEAD_META__-->", faviconLink + head.meta);
+      .replace("__CSRF_TOKEN__", () => customer?.csrf ?? "")
+      .replace("__LANG__", () => lang)
+      .replace("__TITLE__", () => esc(head.title))
+      .replace("<!--__HEAD_META__-->", () => faviconLink + head.meta);
     return reply.code(head.status).type("text/html").send(html);
   });
 }

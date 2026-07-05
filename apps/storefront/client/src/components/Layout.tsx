@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Shop chrome — 1:1 TSX port of apps/storefront/views/base.njk (header with
  * brand / search / language / account / cart, main column, footer). Markup and
  * classes are copied verbatim apart from the mechanical Tailwind v3→v4 renames
@@ -13,8 +13,10 @@ import { apiGet } from "../api/client";
 import type { ShopContext } from "../api/types";
 import { currentLang, t } from "../lib/i18n";
 
-/** Header context, shared by every page under the shop chrome. 30s refetch
- * keeps the cart badge honest across tabs without hammering the API. */
+/** Header context, shared by every page under the shop chrome. staleTime
+ * doesn't poll — it just permits TanStack to refetch on refocus/remount once
+ * 30s have passed, so the cart badge catches up across tabs without
+ * hammering the API on every render. */
 export function useShopContext() {
   return useQuery({
     queryKey: ["context"],

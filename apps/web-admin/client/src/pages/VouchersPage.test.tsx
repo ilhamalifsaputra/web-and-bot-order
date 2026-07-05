@@ -51,7 +51,7 @@ describe("VouchersPage", () => {
     );
     render(<VouchersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("SAVE10")).toBeInTheDocument());
-    expect(screen.getByText("PERCENT")).toBeInTheDocument();
+    expect(screen.getByText("Percent")).toBeInTheDocument();
   });
 
   it("shows empty state when no vouchers", async () => {

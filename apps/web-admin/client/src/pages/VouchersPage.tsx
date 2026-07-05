@@ -17,8 +17,9 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { StatusBadge } from "../components/shared/StatusBadge";
 import { apiPost } from "../api/client";
 
 interface Voucher {
@@ -226,7 +227,7 @@ export function VouchersPage() {
           {
             key: "type",
             header: "Type",
-            render: v => <Badge variant="outline">{v.type}</Badge>,
+            render: v => <StatusBadge status={v.type} />,
           },
           {
             key: "value",
@@ -244,11 +245,7 @@ export function VouchersPage() {
             render: v => (
               <div className="flex flex-col items-start gap-1">
                 <span>{v.expiresAt ? v.expiresAt.slice(0, 10) : "—"}</span>
-                {isExpiringSoon(v, now) && (
-                  <span className="inline-flex w-fit items-center rounded-full bg-amberx-tint px-1.5 py-0.5 text-[10px] font-semibold text-amberx">
-                    Expiring soon
-                  </span>
-                )}
+                {isExpiringSoon(v, now) && <StatusBadge status="EXPIRING_SOON" />}
               </div>
             ),
           },
@@ -256,11 +253,9 @@ export function VouchersPage() {
             key: "active",
             header: "Active",
             render: v => (
-              <input
-                type="checkbox"
+              <Switch
                 checked={v.isActive}
-                onChange={e => toggle.mutate({ id: v.id, active: e.target.checked })}
-                className="h-4 w-4"
+                onCheckedChange={(checked) => toggle.mutate({ id: v.id, active: checked })}
               />
             ),
           },

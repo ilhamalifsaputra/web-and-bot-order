@@ -4,6 +4,7 @@ export type { Db } from "./crud/_types";
 
 // CRUD repositories (ported per-domain from Python crud.py).
 export * from "./crud/users";
+export * from "./crud/warmUserCache";
 export * from "./crud/catalog";
 export * from "./crud/stock";
 export * from "./crud/cart";

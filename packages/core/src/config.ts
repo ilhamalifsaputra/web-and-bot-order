@@ -185,6 +185,9 @@ export const Env = z.object({
     .pipe(z.enum(["en", "id"])),
   RATE_LIMIT_MAX: z.coerce.number().default(5),
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().default(3),
+  // Max distinct chats kept in the in-memory session Map (LRU-evicted beyond
+  // this) — bounds bot RAM growth on long-lived processes. Tune per VPS size.
+  SESSION_CACHE_MAX_ENTRIES: z.coerce.number().default(5000),
   REFERRAL_COMMISSION_PERCENT: z.coerce.number().default(10),
   DEFAULT_WARRANTY_DAYS: z.coerce.number().default(30),
   LOW_STOCK_THRESHOLD: z.coerce.number().default(3),

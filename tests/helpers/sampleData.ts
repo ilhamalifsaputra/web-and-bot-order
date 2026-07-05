@@ -14,6 +14,7 @@ import {
   createDenomination,
   bulkAddStock,
   createVoucher,
+  __clearSettingsCacheForTests,
 } from "@app/db";
 import { ProductType, VoucherType } from "@app/core/enums";
 
@@ -61,6 +62,10 @@ export type SampleData = Awaited<ReturnType<typeof buildSampleData>>;
 
 /** Delete every row, children before parents, so each test starts clean. */
 export async function resetDb(prisma: PrismaClient) {
+  // The Setting table is wiped below via a raw deleteMany (not deleteSetting),
+  // which would otherwise leave getSetting's in-memory cache serving stale
+  // values against a now-empty table.
+  __clearSettingsCacheForTests(prisma);
   await prisma.notificationOutbox.deleteMany();
   await prisma.ticketMessage.deleteMany();
   await prisma.supportTicket.deleteMany();

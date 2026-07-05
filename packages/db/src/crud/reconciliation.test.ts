@@ -7,8 +7,9 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { reconcileFinances, createOrderDirect } from "@app/db";
+import { reconcileFinances, createOrderDirect, createVoucher, upsertUser } from "@app/db";
 import { Decimal } from "@app/core/money";
+import { VoucherType } from "@app/core/enums";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -65,6 +66,34 @@ describe("reconcileFinances", () => {
     expect(findings.voucher_drift[0]!.voucher_id).toBe(voucher.id);
     expect(findings.voucher_drift[0]!.recorded_used).toBe(5);
     expect(findings.voucher_drift[0]!.actual_orders).toBe(0);
+  });
+
+  it("counts real orders per voucher independently (groupBy refactor, not conflated across vouchers)", async () => {
+    const { user, product, voucher } = sample;
+    const other = await createVoucher(prisma, {
+      code: "SAVE20",
+      type: VoucherType.PERCENT,
+      value: "20",
+      usageLimit: 100,
+      minPurchase: "3",
+    });
+    // A voucher can only be redeemed once per user, so use a second user for
+    // the second SAVE10 order.
+    const user2 = await upsertUser(prisma, { telegramId: 9301, username: "voucher_user2", fullName: null });
+
+    // `voucher` (SAVE10) gets 2 real non-cancelled orders; `other` (SAVE20) gets 1.
+    await createOrderDirect(prisma, { user, productId: product.id, quantity: 1, voucherCode: voucher.code });
+    await createOrderDirect(prisma, { user: user2, productId: product.id, quantity: 1, voucherCode: voucher.code });
+    await createOrderDirect(prisma, { user, productId: product.id, quantity: 1, voucherCode: other.code });
+
+    // Fake recorded usedCount drift on both so both show up in findings.
+    await prisma.voucher.update({ where: { id: voucher.id }, data: { usedCount: 99 } });
+    await prisma.voucher.update({ where: { id: other.id }, data: { usedCount: 99 } });
+
+    const findings = await reconcileFinances(prisma);
+    const byId = new Map(findings.voucher_drift.map((d) => [d.voucher_id, d]));
+    expect(byId.get(voucher.id)?.actual_orders).toBe(2);
+    expect(byId.get(other.id)?.actual_orders).toBe(1);
   });
 
   it("catches negative wallet balance", async () => {

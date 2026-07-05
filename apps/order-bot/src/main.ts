@@ -26,6 +26,7 @@ import { logger } from "@app/core/logger";
 import type { MyContext } from "./context";
 import { initialSession } from "./context";
 import { bindUpdateId, registeredUser, rateLimit, adminOnly } from "./middleware";
+import { boundedSessionStorage } from "./util/boundedSessionStorage";
 import { CONVERSATIONS } from "./conversations";
 import { coreT } from "./util/i18n";
 import { newErrorRef } from "./util/errors";
@@ -69,7 +70,12 @@ export function buildBot(token?: string): Bot<MyContext> {
   // --- Middleware chain ----------------------------------------------------
   bot.use(bindUpdateId); // group -2: bind update_id into the logging context
   bot.use(sequentialize((ctx) => String(ctx.chat?.id ?? ctx.from?.id ?? "")));
-  bot.use(session({ initial: initialSession }));
+  bot.use(
+    session({
+      initial: initialSession,
+      storage: boundedSessionStorage(config.SESSION_CACHE_MAX_ENTRIES),
+    }),
+  );
   bot.use(conversations());
   bot.use(registeredUser); // upsert user, sync session.lang, block bans
   bot.use(rateLimit);

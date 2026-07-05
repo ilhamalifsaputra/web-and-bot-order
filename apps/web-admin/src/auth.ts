@@ -306,7 +306,8 @@ export function loginRateLimited(ip: string): boolean {
     return true;
   }
   dq.push(now);
-  attempts.set(ip, dq);
+  if (dq.length) attempts.set(ip, dq);
+  else attempts.delete(ip);
   return false;
 }
 
@@ -320,6 +321,11 @@ export function resetLoginAttempts(ip: string): void {
 // failures (recorded by the caller), so legitimate logins never trip it.
 const accountFailures = new Map<number, number[]>();
 
+// `recordAccountFailure` pushes into the array `pruneFailures` returns, by
+// reference, so this must always register the (possibly empty) array in the
+// map before returning — otherwise that push lands on an orphaned array the
+// map never sees. Eviction of empty entries happens only in the read-only
+// `accountLockedOut` path below, which never pushes afterward.
 function pruneFailures(tg: number, now: number): number[] {
   const window = config.WEB_LOGIN_RATE_LIMIT_WINDOW_SECONDS;
   const dq = accountFailures.get(tg) ?? [];
@@ -331,7 +337,9 @@ function pruneFailures(tg: number, now: number): number[] {
 /** True if `telegramId` has hit the failed-login cap within the window. */
 export function accountLockedOut(telegramId: number): boolean {
   if (!Number.isInteger(telegramId)) return false;
-  return pruneFailures(telegramId, Date.now() / 1000).length >= config.WEB_LOGIN_RATE_LIMIT_MAX;
+  const dq = pruneFailures(telegramId, Date.now() / 1000);
+  if (dq.length === 0) accountFailures.delete(telegramId);
+  return dq.length >= config.WEB_LOGIN_RATE_LIMIT_MAX;
 }
 
 /** Record one failed login against `telegramId`. */

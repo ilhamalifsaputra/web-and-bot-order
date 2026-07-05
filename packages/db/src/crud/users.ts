@@ -11,6 +11,7 @@ import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
+import { invalidateWarmUser } from "./warmUserCache";
 
 const likeContains = (q: string) => ({ contains: q });
 
@@ -96,6 +97,7 @@ export async function setUserLanguage(db: Db, userId: number, lang: string) {
     where: { id: userId },
     data: { language: lang.toUpperCase() as Language },
   });
+  invalidateWarmUser(userId);
 }
 
 export interface WalletAdjustOpts {
@@ -152,11 +154,13 @@ export async function adjustWallet(
       orderId: opts.orderId ?? null,
     },
   });
+  invalidateWarmUser(userId);
   return newBalance;
 }
 
 export async function setUserRole(db: Db, userId: number, role: UserRole) {
   await db.user.update({ where: { id: userId }, data: { role } });
+  invalidateWarmUser(userId);
 }
 
 export async function setUserBanned(
@@ -169,6 +173,7 @@ export async function setUserBanned(
     where: { id: userId },
     data: { banned, bannedReason: reason },
   });
+  invalidateWarmUser(userId);
 }
 
 /** Search by telegram_id (if numeric), username, or full_name (contains). */

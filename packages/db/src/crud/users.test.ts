@@ -2,7 +2,9 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
-import { upsertUser, searchUsers, listRecentUsers, totalSpentByUserIds } from "./users";
+import { upsertUser, searchUsers, listRecentUsers, totalSpentByUserIds, setUserRole, setUserBanned, setUserLanguage, adjustWallet } from "./users";
+import { primeWarmUser, peekWarmUser } from "./warmUserCache";
+import { UserRole } from "@app/core/enums";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -109,5 +111,49 @@ describe("searchUsers (website customers, no telegram link)", () => {
 
     const byEmail = await searchUsers(prisma, "webby@test.com");
     expect(byEmail.some((u) => u.id === webUser.id)).toBe(true);
+  });
+});
+
+describe("warm-cache invalidation (bot's registeredUser middleware relies on this)", () => {
+  function prime(telegramId: string, userId: number) {
+    primeWarmUser(telegramId, {
+      id: userId,
+      username: "stale",
+      fullName: "Stale Name",
+      role: "CUSTOMER",
+      language: "EN",
+      referralCode: "STALE01",
+      walletBalance: "0",
+      banned: false,
+      bannedReason: null,
+    });
+  }
+
+  it("setUserRole evicts the warm entry", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9201, username: "r", fullName: null });
+    prime("9201", user.id);
+    await setUserRole(prisma, user.id, UserRole.ADMIN);
+    expect(peekWarmUser("9201")).toBeUndefined();
+  });
+
+  it("setUserBanned evicts the warm entry", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9202, username: "b", fullName: null });
+    prime("9202", user.id);
+    await setUserBanned(prisma, user.id, true, "test");
+    expect(peekWarmUser("9202")).toBeUndefined();
+  });
+
+  it("setUserLanguage evicts the warm entry (self-service /language must not get reset by a stale hit)", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9203, username: "l", fullName: null });
+    prime("9203", user.id);
+    await setUserLanguage(prisma, user.id, "id");
+    expect(peekWarmUser("9203")).toBeUndefined();
+  });
+
+  it("adjustWallet evicts the warm entry", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9204, username: "w", fullName: null });
+    prime("9204", user.id);
+    await adjustWallet(prisma, user.id, 10, { allowNegative: true });
+    expect(peekWarmUser("9204")).toBeUndefined();
   });
 });

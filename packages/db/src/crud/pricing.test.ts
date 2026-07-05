@@ -7,7 +7,7 @@ import { usdtFromIdr, computeUniqueCents } from "@app/core/formatters";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { addToCart, createOrderFromCart } from "@app/db";
-import { getSetting, setSetting } from "./settings";
+import { getSetting, setSetting, __clearSettingsCacheForTests } from "./settings";
 import {
   refreshUsdIdrRate,
   setFxRateFetcher,
@@ -28,6 +28,7 @@ afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
+  __clearSettingsCacheForTests(prisma);
   await prisma.setting.deleteMany();
   setFxRateFetcher(async () => new Decimal("16243.7"));
 });

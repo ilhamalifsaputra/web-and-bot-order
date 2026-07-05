@@ -57,10 +57,14 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
 
   // 2. Voucher usage drift.
   const vouchers = await db.voucher.findMany();
+  const voucherOrderCounts = await db.order.groupBy({
+    by: ["voucherId"],
+    where: { voucherId: { in: vouchers.map((v) => v.id) }, status: { not: OrderStatus.CANCELLED } },
+    _count: { _all: true },
+  });
+  const actualByVoucherId = new Map(voucherOrderCounts.map((g) => [g.voucherId, g._count._all]));
   for (const v of vouchers) {
-    const actual = await db.order.count({
-      where: { voucherId: v.id, status: { not: OrderStatus.CANCELLED } },
-    });
+    const actual = actualByVoucherId.get(v.id) ?? 0;
     if (actual !== v.usedCount) {
       findings.voucher_drift.push({
         voucher_id: v.id,

@@ -179,9 +179,14 @@ pnpm start
 
 ```bash
 npm install -g pm2
-pm2 start "pnpm start" --name bot-order
+pm2 start "pnpm start" --name bot-order --max-memory-restart 400M
 pm2 save && pm2 startup          # ikuti perintah yang ditampilkan
 ```
+
+`pnpm start` sudah menyertakan `NODE_ENV=production` (dibutuhkan agar cache
+template storefront aktif). `--max-memory-restart 400M` adalah jaring pengaman
+RAM — sesuaikan ke ukuran VPS-mu; proses akan direstart rapi oleh PM2 alih-alih
+di-OOM-kill oleh OS kalau suatu saat RAM membengkak.
 
 Berguna: `pm2 logs bot-order` · `pm2 restart bot-order` · `pm2 stop bot-order`.
 

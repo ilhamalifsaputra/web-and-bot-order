@@ -15,7 +15,7 @@ import { config } from "@app/core/config";
 import { isAdmin } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger, withUpdateId } from "@app/core/logger";
-import { prisma, upsertUser } from "@app/db";
+import { prisma, upsertUser, peekWarmUser, primeWarmUser, type WarmUserSnap } from "@app/db";
 import type { MyContext } from "./context";
 import { t } from "./util/i18n";
 
@@ -23,34 +23,63 @@ import { t } from "./util/i18n";
 export const bindUpdateId: MiddlewareFn<MyContext> = (ctx, next) =>
   withUpdateId(ctx.update.update_id, next);
 
-/** Auto-register the user, cache a snapshot, sync language, block bans. */
+/**
+ * Auto-register the user, cache a snapshot, sync language, block bans.
+ *
+ * Skips the per-update `upsertUser` DB write when a warm cache entry exists
+ * and the Telegram-supplied username/full name haven't changed — the common
+ * case for an active chat. Every mutation that can make the cache stale
+ * (role/ban/language/wallet changes) invalidates it via `invalidateWarmUser`
+ * in packages/db/src/crud/users.ts, so a miss always falls back to a fresh
+ * `upsertUser` read.
+ */
 export const registeredUser: MiddlewareFn<MyContext> = async (ctx, next) => {
   const from = ctx.from;
   if (!from) return next();
 
-  const user = await upsertUser(prisma, {
-    telegramId: from.id,
-    username: from.username ?? null,
-    fullName: [from.first_name, from.last_name].filter(Boolean).join(" ") || null,
-  });
+  const telegramIdKey = String(from.id);
+  const fullName = [from.first_name, from.last_name].filter(Boolean).join(" ") || null;
+  const username = from.username ?? null;
 
-  ctx.session.lang = langCode(user.language);
+  const warm = peekWarmUser(telegramIdKey);
+  let snap: WarmUserSnap;
+  if (warm && warm.username === username && warm.fullName === fullName) {
+    snap = warm;
+  } else {
+    const user = await upsertUser(prisma, { telegramId: from.id, username, fullName });
+    snap = {
+      id: user.id,
+      telegramId: telegramIdKey,
+      username: user.username,
+      fullName: user.fullName,
+      role: user.role,
+      language: user.language,
+      referralCode: user.referralCode,
+      walletBalance: String(user.walletBalance),
+      banned: user.banned,
+      bannedReason: user.bannedReason,
+      syncedAt: Date.now(),
+    };
+    primeWarmUser(telegramIdKey, snap);
+  }
 
-  if (user.banned) {
+  ctx.session.lang = langCode(snap.language);
+
+  if (snap.banned) {
     logger.info(`Banned user ${from.id} tried to use the bot — blocked and shown the ban-reason message`);
-    const msg = t(ctx, "error.banned", { reason: user.bannedReason ?? "-" });
+    const msg = t(ctx, "error.banned", { reason: snap.bannedReason ?? "-" });
     if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: msg, show_alert: true });
     else await ctx.reply(msg);
     return; // short-circuit
   }
 
   ctx.session.dbUser = {
-    id: user.id,
-    telegramId: String(user.telegramId),
-    role: user.role,
-    language: user.language,
-    referralCode: user.referralCode,
-    walletBalance: String(user.walletBalance),
+    id: snap.id,
+    telegramId: snap.telegramId,
+    role: snap.role,
+    language: snap.language,
+    referralCode: snap.referralCode,
+    walletBalance: snap.walletBalance,
   };
   return next();
 };
@@ -74,7 +103,8 @@ export const rateLimit: MiddlewareFn<MyContext> = async (ctx, next) => {
     return; // drop silently
   }
   dq.push(now);
-  buckets.set(from.id, dq);
+  if (dq.length) buckets.set(from.id, dq);
+  else buckets.delete(from.id);
   return next();
 };
 

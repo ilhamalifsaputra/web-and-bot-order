@@ -57,8 +57,8 @@ describe("ProductDetailPage", () => {
       }),
     );
     render(<ProductDetailPage />, { wrapper: Wrapper });
-    // Wait for data to load — "PRIVATE" is in the denomination type td (unique leaf cell)
-    await waitFor(() => expect(screen.getByText("PRIVATE")).toBeInTheDocument());
+    // Wait for data to load — "Private" (StatusBadge title-cases "PRIVATE") is in the denomination type td (unique leaf cell)
+    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
     // Denomination name appears once (durationLabel is "Monthly", not "1 Month")
     expect(screen.getByText("1 Month")).toBeInTheDocument();
   });
@@ -93,7 +93,7 @@ describe("ProductDetailPage", () => {
       }),
     );
     render(<ProductDetailPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText("PRIVATE")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
 
     await user.click(screen.getByRole("button", { name: /add denomination/i }));
 
@@ -113,7 +113,7 @@ describe("ProductDetailPage", () => {
       new Response(JSON.stringify(PRODUCT_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
     render(<ProductDetailPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText("PRIVATE")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
 
     await user.click(screen.getByRole("button", { name: "Edit" }));
 
@@ -133,7 +133,7 @@ describe("ProductDetailPage", () => {
       new Response(JSON.stringify({ ...PRODUCT_DETAIL, product: { ...PRODUCT_DETAIL.product, denominations: [] } }), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
     render(<ProductDetailPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText("PRIVATE")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
 
     await user.click(screen.getByRole("button", { name: "Delete" }));
     const dialog = await screen.findByRole("dialog");
@@ -142,6 +142,6 @@ describe("ProductDetailPage", () => {
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith("/api/catalog/denominations/10", expect.objectContaining({ method: "DELETE" })),
     );
-    await waitFor(() => expect(screen.queryByText("PRIVATE")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("Private")).not.toBeInTheDocument());
   });
 });

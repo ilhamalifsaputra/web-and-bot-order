@@ -7,8 +7,8 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { ImageUploadField } from "../components/shared/ImageUploadField";
+import { StatusBadge } from "../components/shared/StatusBadge";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -228,7 +228,7 @@ export function ProductDetailPage() {
       <DataTable
         columns={[
           { key: "name", header: "Name", render: d => <span className={`text-sm ${!d.isActive ? "text-ink-faint" : "text-ink"}`}>{d.name}</span> },
-          { key: "type", header: "Type", render: d => <Badge variant="outline">{d.type}</Badge> },
+          { key: "type", header: "Type", render: d => <StatusBadge status={d.type} /> },
           { key: "duration", header: "Duration", render: d => <span className="text-sm text-ink-soft">{d.durationLabel}</span> },
           { key: "price", header: "Price", render: d => <span className="font-mono text-sm">{d.price}</span> },
           { key: "stock", header: "Stock", render: d => { const stat = statsByDenom[String(d.id)]; return <span className="text-sm">{stat?.available ?? 0}</span>; } },

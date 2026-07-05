@@ -77,7 +77,7 @@ export function AdminsPage() {
     <PageLayout title="Admins">
       <PageHeader title="Admins" />
 
-      <FilterBar className="mb-6">
+      <FilterBar className="mb-4">
         <Input
           placeholder="Telegram ID"
           value={addId}

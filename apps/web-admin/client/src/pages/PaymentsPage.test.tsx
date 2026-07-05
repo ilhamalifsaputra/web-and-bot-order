@@ -45,7 +45,7 @@ describe("PaymentsPage", () => {
     mockPaymentsFetch({ enabled: true, ledger: [TX], total: 1, page: 1, hasNext: false, outcomes: ["MATCHED", "UNMATCHED"], counts: { MATCHED: 1 } });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("TX123")).toBeInTheDocument());
-    expect(screen.getByText("MATCHED")).toBeInTheDocument();
+    expect(screen.getByText("Matched")).toBeInTheDocument();
   });
 
   it("shows empty state", async () => {

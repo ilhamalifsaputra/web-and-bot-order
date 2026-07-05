@@ -6,6 +6,7 @@ import { FilterBar } from "../components/shared/FilterBar";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { StatusBadge } from "../components/shared/StatusBadge";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -280,8 +281,9 @@ export function PaymentsPage() {
       </Card>
 
       {underpaid.length > 0 && (
-        <div className="mb-6">
-          <h2 className="text-sm font-semibold text-ink mb-3">Underpaid Orders ({underpaid.length})</h2>
+        <Card className="mb-6">
+          <CardHeader><CardTitle>Underpaid Orders ({underpaid.length})</CardTitle></CardHeader>
+          <CardContent>
           <DataTable
             columns={[
               {
@@ -340,12 +342,14 @@ export function PaymentsPage() {
             keyExtractor={o => o.id}
             empty={<EmptyState title="No underpaid orders" />}
           />
-        </div>
+          </CardContent>
+        </Card>
       )}
 
       {pendingInternal.length > 0 && (
-        <div className="mb-6">
-          <h2 className="text-sm font-semibold text-ink mb-3">Pending Internal Transfers ({pendingInternal.length})</h2>
+        <Card className="mb-6">
+          <CardHeader><CardTitle>Pending Internal Transfers ({pendingInternal.length})</CardTitle></CardHeader>
+          <CardContent>
           <DataTable
             columns={[
               { key: "order", header: "Order", render: o => <span className="font-mono text-xs">{o.orderCode}</span> },
@@ -358,7 +362,8 @@ export function PaymentsPage() {
             keyExtractor={o => o.id}
             empty={<EmptyState title="No pending internal transfers" />}
           />
-        </div>
+          </CardContent>
+        </Card>
       )}
 
       {/* Outcome filter */}
@@ -402,7 +407,7 @@ export function PaymentsPage() {
           {
             key: "outcome",
             header: "Outcome",
-            render: tx => <Badge variant="outline">{tx.outcome}</Badge>,
+            render: tx => <StatusBadge status={tx.outcome.toUpperCase()} />,
           },
           {
             key: "memo",

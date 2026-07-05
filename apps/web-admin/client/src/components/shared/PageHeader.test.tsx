@@ -40,7 +40,7 @@ describe("PageHeader", () => {
   });
 
   it("title+actions wrapper has flex-col and sm:flex-row classes for mobile responsiveness", () => {
-    const { container } = render(
+    render(
       <MemoryRouter>
         <PageHeader title="Products" actions={<button>Add</button>} />
       </MemoryRouter>,
@@ -53,7 +53,7 @@ describe("PageHeader", () => {
   });
 
   it("actions wrapper has flex-wrap class to allow wrapping on narrow viewports", () => {
-    const { container } = render(
+    render(
       <MemoryRouter>
         <PageHeader
           title="Products"

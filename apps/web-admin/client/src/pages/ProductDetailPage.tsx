@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Card, CardContent } from "@/components/ui/card";
 import { AlertCircle } from "lucide-react";
 import { apiGet, apiPost, apiPatch, apiDelete } from "../api/client";
 
@@ -155,51 +156,55 @@ export function ProductDetailPage() {
         actions={<Button variant="outline" size="sm" onClick={() => navigate("/catalog")}>← Back</Button>}
       />
 
-      <div className="mb-4 flex items-center gap-4 text-sm">
-        <span className="text-ink-soft">Category: <span className="text-ink">{product.category?.name ?? "—"}</span></span>
-        <div className="flex items-center gap-2">
-          <Switch
-            checked={product.isActive}
-            onCheckedChange={(checked) => void toggleProductActive(product.id, checked)}
-            disabled={togglingProduct.has(product.id)}
-          />
-          <span className="text-ink-soft">{product.isActive ? "Active" : "Inactive"}</span>
-        </div>
-        {!editingProduct && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setNameDraft(product.name);
-              setDescriptionDraft(product.description ?? "");
-              setEditingProduct(true);
-            }}
-          >
-            Edit name/description
-          </Button>
-        )}
-      </div>
+      <Card className="mb-4">
+        <CardContent className="flex items-center gap-4 text-sm">
+          <span className="text-ink-soft">Category: <span className="text-ink">{product.category?.name ?? "—"}</span></span>
+          <div className="flex items-center gap-2">
+            <Switch
+              checked={product.isActive}
+              onCheckedChange={(checked) => void toggleProductActive(product.id, checked)}
+              disabled={togglingProduct.has(product.id)}
+            />
+            <span className="text-ink-soft">{product.isActive ? "Active" : "Inactive"}</span>
+          </div>
+          {!editingProduct && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setNameDraft(product.name);
+                setDescriptionDraft(product.description ?? "");
+                setEditingProduct(true);
+              }}
+            >
+              Edit name/description
+            </Button>
+          )}
+        </CardContent>
+      </Card>
 
       {editingProduct && (
-        <div className="mb-4 max-w-lg flex flex-col gap-3 rounded-lg border border-line bg-card p-4">
-          <div>
-            <label className="text-sm font-medium text-ink">Name</label>
-            <Input className="mt-1" value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} />
-          </div>
-          <div>
-            <label className="text-sm font-medium text-ink">Description</label>
-            <Textarea className="mt-1" rows={3} value={descriptionDraft} onChange={(e) => setDescriptionDraft(e.target.value)} />
-          </div>
-          {productError && <p className="text-sm text-rust">{productError}</p>}
-          <div className="flex gap-2">
-            <Button size="sm" disabled={!nameDraft.trim() || savingProduct} onClick={() => void saveProduct()}>
-              {savingProduct ? "Saving…" : "Save"}
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => { setEditingProduct(false); setProductError(null); }}>
-              Cancel
-            </Button>
-          </div>
-        </div>
+        <Card className="mb-4 max-w-lg">
+          <CardContent className="flex flex-col gap-3">
+            <div>
+              <label className="text-sm font-medium text-ink">Name</label>
+              <Input className="mt-1" value={nameDraft} onChange={(e) => setNameDraft(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-ink">Description</label>
+              <Textarea className="mt-1" rows={3} value={descriptionDraft} onChange={(e) => setDescriptionDraft(e.target.value)} />
+            </div>
+            {productError && <p className="text-sm text-rust">{productError}</p>}
+            <div className="flex gap-2">
+              <Button size="sm" disabled={!nameDraft.trim() || savingProduct} onClick={() => void saveProduct()}>
+                {savingProduct ? "Saving…" : "Save"}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => { setEditingProduct(false); setProductError(null); }}>
+                Cancel
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       <div className="mb-4 max-w-sm">

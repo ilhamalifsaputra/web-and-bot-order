@@ -7,6 +7,7 @@ import { FilterBar } from "../components/shared/FilterBar";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { SearchBar } from "../components/shared/SearchBar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -346,11 +347,10 @@ export function CatalogPage() {
         onClear={filter ? () => setFilter("") : undefined}
         className="mb-4"
       >
-        <Input
+        <SearchBar
           value={filter}
-          onChange={(e) => setFilter(e.target.value)}
+          onChange={setFilter}
           placeholder="Filter by product or category…"
-          className="w-64"
         />
       </FilterBar>
 

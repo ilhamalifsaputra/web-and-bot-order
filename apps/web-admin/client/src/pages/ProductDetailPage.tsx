@@ -209,6 +209,7 @@ export function ProductDetailPage() {
           uploadPath={`/catalog/product/${productId}/photo`}
           fieldName="photo"
           accept=".jpg,.jpeg,.png,.webp"
+          dimensions="800x600px"
           onUploaded={() => void queryClient.invalidateQueries({ queryKey: ["catalog", productId] })}
         />
       </div>

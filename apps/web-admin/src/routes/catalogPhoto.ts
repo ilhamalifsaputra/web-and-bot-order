@@ -11,7 +11,6 @@ import { UPLOADS_DIR } from "../paths";
 import { handleUpload } from "../lib/upload";
 import { prisma, getCatalogProduct, updateCatalogProduct } from "@app/db";
 import { currentAdmin } from "../plugins/auth";
-import { redirectWithFlash } from "../flash";
 
 const PRODUCT_PHOTO_MIME: Record<string, string> = {
   "image/jpeg": "jpg",
@@ -28,11 +27,11 @@ export default async function catalogPhotoRoutes(app: FastifyInstance): Promise<
     async (req, reply) => {
       const productId = Number(req.params.productId);
       if (!Number.isInteger(productId) || productId <= 0) {
-        return redirectWithFlash(reply, "/catalog", "Invalid product.", "error");
+        return reply.code(400).type("text/plain").send("Invalid product.");
       }
       const product = await getCatalogProduct(prisma, productId);
       if (!product) {
-        return redirectWithFlash(reply, "/catalog", "Product not found.", "error");
+        return reply.code(400).type("text/plain").send("Product not found.");
       }
       return handleUpload(req, reply, {
         kind: "product",
@@ -44,7 +43,6 @@ export default async function catalogPhotoRoutes(app: FastifyInstance): Promise<
         getOldUrl: async () => product.webImageUrl,
         auditAction: "product_photo_upload",
         auditTarget: { type: "product", id: productId },
-        redirectPath: `/catalog/${productId}`,
         details: (filename) => `Uploaded a new photo for product "${product.name}" (${filename}).`,
         afterSave: (url) => updateCatalogProduct(prisma, productId, { webImageUrl: url }),
       });

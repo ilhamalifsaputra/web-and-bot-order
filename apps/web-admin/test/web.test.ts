@@ -767,7 +767,7 @@ describe("catalog", () => {
       { field: "photo", filename: "p.png", contentType: "image/png", content: PNG_1x1 },
     );
     const res = await postMultipart(`/catalog/product/${seed.catalogProductId}/photo`, seed.cookie, mp);
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(200);
     const product = await getCatalogProduct(prisma, seed.catalogProductId);
     expect(product!.webImageUrl).toMatch(/^\/uploads\/products\/product-[0-9a-f]+\.png$/);
     const audit = await prisma.auditLog.findFirst({ where: { action: "product_photo_upload" } });
@@ -802,7 +802,7 @@ describe("catalog", () => {
       { field: "photo", filename: "evil.png", contentType: "image/png", content: Buffer.from("GIF89a not really a png <?php ?>") },
     );
     const res = await postMultipart(`/catalog/product/${seed.catalogProductId}/photo`, seed.cookie, mp);
-    expect(res.statusCode).toBe(303);
+    expect(res.statusCode).toBe(400);
     expect((await getCatalogProduct(prisma, seed.catalogProductId))!.webImageUrl).toBeNull();
   });
 
@@ -812,8 +812,8 @@ describe("catalog", () => {
       { field: "photo", filename: "p.png", contentType: "image/png", content: PNG_1x1 },
     );
     const res = await postMultipart("/catalog/product/999999/photo", seed.cookie, mp);
-    expect(res.statusCode).toBe(303);
-    expect(res.headers.location).toContain("kind=error");
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toBe("Product not found.");
   });
 
   it("product photo upload rejects bad CSRF", async () => {

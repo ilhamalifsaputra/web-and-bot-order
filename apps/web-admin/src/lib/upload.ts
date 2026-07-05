@@ -10,7 +10,6 @@ import { randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { prisma, getSetting, setSetting, logAdminAction } from "@app/db";
 import { canMutate } from "../plugins/auth";
-import { redirectWithFlash } from "../flash";
 
 export interface HandleUploadOpts {
   /** Filename prefix, e.g. "banner" → banner-<hex>.png. */
@@ -31,8 +30,6 @@ export interface HandleUploadOpts {
   /** Audit log target; defaults to `{ type: "setting" }` (today's behavior) when omitted. */
   auditTarget?: { type: string; id?: number };
   auditAction: string;
-  /** Where to redirect on both success and failure. */
-  redirectPath: string;
   /** Natural-language audit `details` sentence for the saved filename. */
   details: (filename: string) => string;
   afterSave?: (url: string) => Promise<void>;
@@ -83,11 +80,11 @@ export async function handleUpload(
     return reply.code(403).type("text/plain").send("CSRF check failed");
   }
   if (!fileBuffer || fileBuffer.length === 0) {
-    return redirectWithFlash(reply, opts.redirectPath, "No file selected.", "error");
+    return reply.code(400).type("text/plain").send("No file selected.");
   }
   const ext = opts.allowed[mimetype];
   if (!ext) {
-    return redirectWithFlash(reply, opts.redirectPath, "That file type is not allowed.", "error");
+    return reply.code(400).type("text/plain").send("That file type is not allowed.");
   }
   // M-6: the MIME above is the client-supplied header (spoofable). Sniff the real
   // type from the file's magic bytes and require it to match the claimed type, so
@@ -95,7 +92,7 @@ export async function handleUpload(
   // defence in depth alongside the random filename + nosniff/CSP on /uploads.
   const sniffed = sniffImageMime(fileBuffer);
   if (!sniffed || canonicalImageMime(sniffed) !== canonicalImageMime(mimetype)) {
-    return redirectWithFlash(reply, opts.redirectPath, "That file type is not allowed.", "error");
+    return reply.code(400).type("text/plain").send("That file type is not allowed.");
   }
   const filename = `${opts.kind}-${randomBytes(8).toString("hex")}.${ext}`;
   const url = `${opts.urlPrefix}/${filename}`;
@@ -116,7 +113,7 @@ export async function handleUpload(
     targetId: opts.auditTarget?.id,
     details: opts.details(filename),
   });
-  return redirectWithFlash(reply, opts.redirectPath, "Saved.", "success");
+  return reply.code(200).send({ url });
 }
 
 /** Delete a previous upload under `urlPrefix` (ignore legacy file_ids / missing files). */

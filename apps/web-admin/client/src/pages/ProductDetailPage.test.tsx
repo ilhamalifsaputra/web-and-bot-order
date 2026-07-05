@@ -70,6 +70,7 @@ describe("ProductDetailPage", () => {
     render(<ProductDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Product photo")).toBeInTheDocument());
     expect(screen.getByText(/no image set/i)).toBeInTheDocument();
+    expect(screen.getByText(/Recommended: 800x600px/)).toBeInTheDocument();
   });
 
   it("shows the product photo image when webImageUrl is set", async () => {

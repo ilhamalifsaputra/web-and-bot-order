@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 
 function csrfToken(): string {
   return (
@@ -8,9 +9,11 @@ function csrfToken(): string {
 
 /**
  * Multipart image upload row: shows the current image (if any), a file picker,
- * and posts directly to a non-`/api` multipart route (CSRF is checked from the
- * `X-CSRF-Token` header inside the route's `handleUpload()` call, since Fastify's
- * formbody plugin doesn't parse multipart bodies). Shared by Branding and Catalog.
+ * and posts directly to a non-`/api` multipart route (CSRF is sent as a
+ * `csrf_token` form field, since it's the only way `handleUpload()` on the
+ * server reads it out of a multipart body). Picking a file stages a local
+ * preview; the request only fires once the user clicks Save (Cancel discards
+ * the pick and reverts to the current image). Shared by Branding and Catalog.
  */
 export function ImageUploadField({
   label,
@@ -29,32 +32,63 @@ export function ImageUploadField({
   onUploaded: () => void;
   dimensions?: string;
 }) {
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
-  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
+  function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
+    e.target.value = "";
     if (!file) return;
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setUploadError(null);
+    setPendingFile(file);
+    setPreviewUrl(URL.createObjectURL(file));
+  }
+
+  function cancelPending() {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPendingFile(null);
+    setPreviewUrl(null);
+    setUploadError(null);
+  }
+
+  async function confirmUpload() {
+    if (!pendingFile) return;
     setUploading(true);
     setUploadError(null);
     const form = new FormData();
-    form.append(fieldName, file);
+    form.append(fieldName, pendingFile);
+    form.append("csrf_token", csrfToken());
     try {
       const res = await fetch(uploadPath, {
         method: "POST",
         credentials: "include",
-        headers: { "X-CSRF-Token": csrfToken() },
         body: form,
       });
-      if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+      if (!res.ok) {
+        const message = await res.text().catch(() => "");
+        throw new Error(message || `Upload failed (${res.status})`);
+      }
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      setPendingFile(null);
+      setPreviewUrl(null);
       onUploaded();
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed");
     } finally {
       setUploading(false);
-      e.target.value = "";
     }
   }
+
+  const displayUrl = previewUrl ?? imageUrl;
 
   return (
     <div className="py-3 border-b border-line last:border-b-0">
@@ -62,9 +96,9 @@ export function ImageUploadField({
       {dimensions && (
         <p className="text-xs text-ink-soft mb-2">Recommended: {dimensions}</p>
       )}
-      {imageUrl ? (
+      {displayUrl ? (
         <img
-          src={imageUrl}
+          src={displayUrl}
           alt={label}
           className="max-h-20 max-w-[200px] block mb-2 border border-line rounded"
         />
@@ -76,12 +110,23 @@ export function ImageUploadField({
           type="file"
           accept={accept}
           onChange={handleFile}
+          disabled={uploading}
           className="hidden"
         />
         <span className="inline-flex items-center rounded border border-line bg-card px-3 py-1 text-sm text-ink hover:bg-sand">
-          {uploading ? "Uploading…" : "Choose file…"}
+          Choose file…
         </span>
       </label>
+      {pendingFile && (
+        <div className="flex gap-2 mt-2">
+          <Button size="sm" disabled={uploading} onClick={() => void confirmUpload()}>
+            {uploading ? "Saving…" : "Save"}
+          </Button>
+          <Button size="sm" variant="ghost" disabled={uploading} onClick={cancelPending}>
+            Cancel
+          </Button>
+        </div>
+      )}
       {uploadError && (
         <p className="mt-1 text-xs text-rust">{uploadError}</p>
       )}

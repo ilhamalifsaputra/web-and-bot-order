@@ -57,25 +57,40 @@ adding a parallel token system.
 | Section → section | 24px | `gap-6` / `mb-6` |
 | Card internal padding | 16px | existing `--card-spacing` |
 
-## 2. Root fix: PageLayout becomes the real content wrapper
+## 2. Root fix: Dashboard's double-gap bug
 
-`PageLayout` (`src/components/shared/PageLayout.tsx`) currently only sets
-`document.title` — it provides no layout. Each page independently wraps its
-own content in `gap-6`, `gap-4`, `mb-6`, or nothing, which is the direct
-cause of the spacing drift found in the audit (e.g. Dashboard wraps
-`PageHeader` inside its own `gap-6` flex container, doubling the title→
-content gap versus every other page).
+Reading the actual component code (not just the audit summary) changed this
+section from the original design. `PageHeader` (`src/components/shared/
+PageHeader.tsx`) already applies its own `mb-6` (24px) universally and
+correctly — every page except Dashboard keeps `PageHeader` as a sibling
+*before* any body-level `gap-*`/`mb-*` wrapper, so there's no double-up.
+`PageLayout` itself only sets `document.title` and isn't the cause of the
+drift; making it own a blanket spacing wrapper (the original plan) would
+have *introduced* the Dashboard bug on every other page instead of fixing
+it, since their `PageHeader` margin would then stack with a new wrapper
+margin.
 
-**Fix:**
-- `PageLayout` renders `<div className="flex flex-col gap-6">{children}</div>`
-  as the real vertical rhythm container for a page's content.
-- `PageHeader` drops its own `mb-6` (redundant/conflicting once it's a
-  `gap-6` flex child of `PageLayout`).
-- Every page's route component adopts `PageLayout` as its root content
-  wrapper instead of a hand-rolled div, removing the page-specific wrapper.
+**Fix (page-local, not a shared-component change):** `DashboardPage.tsx`
+currently nests `<PageHeader title="Dashboard" />` as the *first child*
+inside its own `<div className="flex flex-col gap-6">`, so flexbox `gap`
+adds 24px between the header and `KpiRow` on top of `PageHeader`'s own
+`mb-6` — 48px total, double every other page. Fix: make `PageHeader` a
+sibling before that wrapper, matching the pattern already used correctly by
+Settings/Reports/Outbox:
 
-This fixes the Dashboard double-gap bug at its source rather than patching
-that one page in isolation.
+```tsx
+return (
+  <>
+    <PageHeader title="Dashboard" />
+    <div className="flex flex-col gap-6">
+      <KpiRow />
+      {/* ...rest unchanged... */}
+    </div>
+  </>
+);
+```
+
+No changes to `PageLayout.tsx` or `PageHeader.tsx` are needed.
 
 ## 3. Component changes
 
@@ -87,11 +102,16 @@ that one page in isolation.
 - **`ProgressBar.tsx`** — height/radius from existing radius tokens, color by
   threshold using the existing `grass`/`amberx`/`rust` tone palette. Replaces
   Stock's inline-`style` hand-rolled bar (`StockPage.tsx:174`).
-- **`CardRow.tsx`** / **`CardDivider.tsx`** — extracted from Settings'
-  existing internal `FieldRow` pattern (label-left, value-right,
-  `divide-y divide-line`, `py-3` row height). Reused wherever a page
-  currently hand-rolls a label/value row (UserDetail profile fields,
-  ProductDetail's category/active info row).
+- **`CardRow.tsx`** — a `{ label, value }` row (`flex items-center
+  justify-between py-2`, label in `text-ink-soft`, value right-aligned).
+  Reused wherever a page currently hand-rolls a label/value row (e.g.
+  UserDetail's Profile card, which repeats
+  `<div className="flex justify-between">...</div>` five times).
+  `CardDivider` is **not** a new component — it's the existing
+  `divide-y divide-line` convention already applied to `CardContent` in
+  Settings/Catalog, now used consistently wherever `CardRow`s are stacked.
+  `CardFooter` already exists in `components/ui/card.tsx` — reused as-is,
+  not rebuilt.
 
 **Extended components:**
 

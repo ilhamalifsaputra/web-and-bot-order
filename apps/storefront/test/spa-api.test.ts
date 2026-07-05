@@ -1,0 +1,1182 @@
+// React-SPA JSON layer tests (/api/v1/pages, /api/v1/auth, cart/checkout/
+// account twins) + the SPA shell wildcard. Pattern: api.test.ts — app.inject()
+// against an isolated temp DB; the happy/auth-fail/bad-csrf trio per mutating
+// endpoint (CLAUDE.md).
+//
+// NOTE: the shell tests read apps/storefront/static/shop-app/index.html — run
+// `pnpm --filter @app/storefront-client build` first (same contract as the
+// web-admin dashboard SPA).
+import "./setup-env"; // FIRST import — sets env before @app/* load
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+// PayDisini's createTransaction hits a real gateway HTTP endpoint — mock it
+// for the PAYDISINI pay-view test below (mirrors the mock that lived in
+// storefront.test.ts before the cluster-C cutover moved the checkout tests
+// here). verifyCallback is left real/untouched — the webhook route is
+// exercised separately in paydisini-webhook.test.ts.
+vi.mock("@app/core/payments/paydisini", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/paydisini")>()),
+  createTransaction: vi.fn().mockResolvedValue({
+    trxId: "PD-TEST",
+    qrString: "000",
+    qrUrl: "https://x/paydisini-qr.png",
+    checkoutUrl: "https://x/paydisini-checkout",
+    totalBayar: "100",
+  }),
+}));
+// NOWPayments' createInvoice hits a real gateway HTTP endpoint too — mock it
+// for the tagged-paymentRef caching test below. verifyIpn is left
+// real/untouched (exercised separately in nowpayments-webhook.test.ts).
+vi.mock("@app/core/payments/nowpayments", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/nowpayments")>()),
+  createInvoice: vi.fn().mockResolvedValue({
+    invoiceId: "NP-TEST-INV-1",
+    invoiceUrl: "https://x/nowpayments-invoice",
+  }),
+}));
+import type { FastifyInstance } from "fastify";
+import { cleanupTestDb } from "./setup-env";
+import {
+  prisma,
+  initDb,
+  setSetting,
+  deleteSetting,
+  createCatalogProduct,
+  createDenomination,
+  createVoucher,
+  addToCart,
+  getOrderByCode,
+} from "@app/db";
+import { OrderStatus, VoucherType } from "@app/core/enums";
+import { hashPassword } from "@app/core/password";
+import { buildApp } from "../src/server";
+
+let app: FastifyInstance;
+let categorySlug: string;
+let productSlug: string;
+let denomId: number;
+
+/** Sign in via the JSON endpoint, then scrape the CSRF token from the SPA
+ * shell's <meta name="csrf-token"> — the exact wiring the React client uses. */
+async function loginAs(identifier: string, password: string): Promise<{ cookie: string; csrf: string }> {
+  const res = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { identifier, password } });
+  expect(res.statusCode).toBe(200);
+  const c = res.headers["set-cookie"];
+  const cookie = Array.isArray(c) ? c.join("; ") : String(c);
+  const shell = await app.inject({ method: "GET", url: "/spa-shell-probe", headers: { cookie } });
+  const csrf = /name="csrf-token" content="([^"]*)"/.exec(shell.body)![1]!;
+  expect(csrf).not.toBe("");
+  return { cookie, csrf };
+}
+
+async function makeUser(username: string, password: string, refCode: string): Promise<number> {
+  const u = await prisma.user.create({
+    data: {
+      loginUsername: username,
+      email: `${username}@u.test`,
+      passwordHash: hashPassword(password),
+      referralCode: refCode,
+    },
+  });
+  return u.id;
+}
+
+beforeAll(async () => {
+  await initDb();
+  app = await buildApp();
+
+  const cat = await prisma.category.create({
+    data: { name: "Streaming", slug: "streaming", emoji: "🎬", sortOrder: 1 },
+  });
+  categorySlug = cat.slug;
+  const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: "Netflix Premium" });
+  productSlug = product.slug;
+  const denom = await createDenomination(prisma, {
+    productId: product.id,
+    name: "1 Month",
+    type: "SHARED",
+    durationLabel: "1 Month",
+    price: "40000",
+  });
+  denomId = denom.id;
+  // Generous pool: checkout reserves stock atomically at order creation
+  // (Checkout-2/Stock-1 fix), so every test in this file that completes a
+  // real checkout against this shared product permanently consumes one row
+  // (no per-test reset). The cluster-C cutover moved several real-checkout
+  // tests here from storefront.test.ts, so 5 rows is no longer enough.
+  await prisma.stockItem.createMany({
+    data: Array.from({ length: 40 }, () => ({
+      productId: denomId,
+      credentials: "user@mail.com:pass",
+      status: "AVAILABLE",
+    })),
+  });
+  await setSetting(prisma, "setup_completed", "true");
+  await setSetting(prisma, "shop_name", "SPA Test Shop");
+});
+
+afterAll(async () => {
+  await app.close();
+  await prisma.$disconnect();
+  cleanupTestDb();
+});
+
+// ---------------------------------------------------------------- SPA shell
+describe("SPA shell wildcard", () => {
+  it("serves the shell with an empty CSRF meta and the request language for anonymous visitors", async () => {
+    const res = await app.inject({ method: "GET", url: "/spa-shell-probe" });
+    expect(res.statusCode).toBe(404); // unknown path → real 404 status, SPA error visuals
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.body).toContain('name="csrf-token" content=""');
+    expect(res.body).toContain('<html lang="en">');
+    expect(res.body).toContain("<title>404 — SPA Test Shop</title>");
+  });
+
+  it("respects the shop_lang cookie in the <html lang> substitution", async () => {
+    const res = await app.inject({ method: "GET", url: "/spa-shell-probe", headers: { cookie: "shop_lang=id" } });
+    expect(res.body).toContain('<html lang="id">');
+  });
+
+  it("injects the session CSRF token for signed-in visitors", async () => {
+    await makeUser("shelluser", "shell-pw-123", "SHELLREF");
+    const { csrf } = await loginAs("shelluser", "shell-pw-123");
+    expect(csrf.length).toBeGreaterThan(10);
+  });
+
+  it("404s /api/* misses as JSON, not the HTML shell", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/v1/no-such-endpoint" });
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({ error: "not_found" });
+  });
+
+  it("returns a real 404 (with SPA error visuals) for an unknown category slug", async () => {
+    const res = await app.inject({ method: "GET", url: "/c/no-such-category" });
+    expect(res.statusCode).toBe(404);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.body).toContain("<title>404 — SPA Test Shop</title>");
+  });
+
+  it("returns a real 404 (with SPA error visuals) for an unknown product slug", async () => {
+    const res = await app.inject({ method: "GET", url: "/p/no-such-product" });
+    expect(res.statusCode).toBe(404);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.body).toContain("<title>404 — SPA Test Shop</title>");
+  });
+
+  it("200s a known product slug with the product name in <title> and an og:title meta", async () => {
+    const res = await app.inject({ method: "GET", url: `/p/${productSlug}` });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.body).toContain("<title>Netflix Premium — SPA Test Shop</title>");
+    expect(res.body).toContain('<meta property="og:title" content="Netflix Premium">');
+  });
+
+  // Parity with the deleted base.njk, which rendered a <link rel="icon"> on
+  // every page (web_favicon_url setting, default /static/favicon.svg —
+  // shopContext() in ../src/shop.ts).
+  it("injects the default favicon link when web_favicon_url is unset", async () => {
+    const res = await app.inject({ method: "GET", url: "/spa-shell-probe" });
+    expect(res.body).toContain('<link rel="icon" href="/static/favicon.svg">');
+  });
+
+  it("injects the configured favicon link when web_favicon_url is set", async () => {
+    try {
+      await setSetting(prisma, "web_favicon_url", "/uploads/branding/favicon-x.svg");
+      const res = await app.inject({ method: "GET", url: "/spa-shell-probe" });
+      expect(res.body).toContain('<link rel="icon" href="/uploads/branding/favicon-x.svg">');
+    } finally {
+      await deleteSetting(prisma, "web_favicon_url");
+    }
+  });
+
+  // A shop_name containing a $-pattern (`$&`, `` $` ``, `$'`, ...) is
+  // interpreted specially by String.replace's string-replacement form —
+  // spaShell.ts must use the function form so the substitution is inserted
+  // literally instead of corrupting the HTML (e.g. `$&` re-inserting the
+  // matched placeholder, or `$'` duplicating everything after it).
+  it("treats an admin-controlled shop_name containing $-pattern characters as a literal string", async () => {
+    try {
+      await setSetting(prisma, "shop_name", "Shop $& Corp");
+      const res = await app.inject({ method: "GET", url: "/account" });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain("Shop $&amp; Corp"); // literal $&, & itself esc()'d
+      expect((res.body.match(/<div id="root">/g) ?? []).length).toBe(1);
+    } finally {
+      await setSetting(prisma, "shop_name", "SPA Test Shop");
+    }
+  });
+
+  // Auth cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 5): /login,
+  // /register, /forgot, /reset/:token now fall to this same wildcard —
+  // titles come from spaShell.ts's TITLE_KEYS table.
+  it("200s GET /login with the login title", async () => {
+    const res = await app.inject({ method: "GET", url: "/login" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("<title>Sign in — SPA Test Shop</title>");
+  });
+
+  // The single-use reset token rides in this page's own URL — the shell must
+  // stop browsers leaking it via the Referer header (Storefront-1 fix,
+  // security audit 2026-06-23), same guard as the deleted HTML route (and the
+  // JSON twin, already covered above by the reset-invalid-token test).
+  it("sets Referrer-Policy: no-referrer on GET /reset/:token", async () => {
+    const res = await app.inject({ method: "GET", url: "/reset/some-token-value" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["referrer-policy"]).toBe("no-referrer");
+  });
+
+  // Checkout cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 6): /checkout
+  // and /checkout/:code/pay now fall to this same wildcard — titles from
+  // spaShell.ts's TITLE_KEYS table. Auth/ownership live in the JSON twins
+  // (tested below), so the shell serves 200 even for anonymous visitors.
+  it("200s GET /checkout with the checkout title", async () => {
+    const res = await app.inject({ method: "GET", url: "/checkout" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("<title>Checkout — SPA Test Shop</title>");
+  });
+
+  it("200s GET /checkout/:code/pay with the payment title", async () => {
+    const res = await app.inject({ method: "GET", url: "/checkout/SOMECODE/pay" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("<title>Payment — SPA Test Shop</title>");
+  });
+
+  // Account-area cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 7):
+  // /account, its sub-pages, and /account/settings now fall to this same
+  // wildcard — titles from spaShell.ts's TITLE_KEYS table. Auth/ownership
+  // live in the JSON twins (tested above), so the shell serves 200 even for
+  // anonymous visitors — the client-side AccountPage etc. redirect to
+  // /login on the 401 JSON.
+  it.each([
+    ["/account", "My account"],
+    ["/account/orders", "My orders"],
+    ["/account/orders/SOMECODE", "My orders"], // order codes are private — generic title, no lookup
+    ["/account/referral", "Referral"],
+    ["/account/reviews", "My reviews"],
+    ["/account/support", "Help &amp; support"], // esc()'d — the raw title has an ampersand
+    ["/account/support/123", "Help &amp; support"],
+    ["/account/settings", "Account settings"],
+  ])("200s GET %s with the %s title", async (path, title) => {
+    const res = await app.inject({ method: "GET", url: path });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(`<title>${title} — SPA Test Shop</title>`);
+  });
+});
+
+// ------------------------------------------------------------- /pages reads
+describe("GET /api/v1/pages/context", () => {
+  it("returns the anonymous chrome context with the guest cart count", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/context" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.shop_name).toBe("SPA Test Shop");
+    expect(body.customer).toBeNull();
+    expect(body.cart_count).toBe(0);
+    expect(body.lang).toBe("en");
+    expect(typeof body.tzname).toBe("string");
+  });
+
+  it("returns customer display fields when signed in — and never the CSRF token", async () => {
+    await makeUser("ctxuser", "ctx-pw-12345", "CTXREF");
+    const { cookie } = await loginAs("ctxuser", "ctx-pw-12345");
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/context", headers: { cookie } });
+    const body = res.json();
+    expect(body.customer).toMatchObject({ username: "ctxuser", telegram_linked: false });
+    expect(JSON.stringify(body)).not.toContain("csrf");
+  });
+
+  // Migrated from storefront.test.ts's "shop logo" describe (dropped on the
+  // account-area cutover, docs/REACT_STOREFRONT_MIGRATION.md Phase 7): the
+  // header's logo image was last provable against the still-Nunjucks
+  // /account/settings page — the React Layout component now reads logo_url
+  // straight from this endpoint instead.
+  it("returns the header logo URL from web_logo_url, falling back to empty string", async () => {
+    await setSetting(prisma, "web_logo_url", "/uploads/branding/logo-abc123.png");
+    const withLogo = await app.inject({ method: "GET", url: "/api/v1/pages/context" });
+    expect(withLogo.json().logo_url).toBe("/uploads/branding/logo-abc123.png");
+    await deleteSetting(prisma, "web_logo_url");
+
+    const withoutLogo = await app.inject({ method: "GET", url: "/api/v1/pages/context" });
+    expect(withoutLogo.json().logo_url).toBe("");
+  });
+});
+
+describe("GET /api/v1/pages/*", () => {
+  it("home returns cards + stats + categories", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/home" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.products.some((p: { slug: string }) => p.slug === productSlug)).toBe(true);
+    expect(body.categories.some((c: { slug: string }) => c.slug === categorySlug)).toBe(true);
+    expect(body.stats).toHaveProperty("has_data");
+    expect(typeof body.low_threshold).toBe("number");
+  });
+
+  it("category returns cards; unknown slug 404s", async () => {
+    const ok = await app.inject({ method: "GET", url: `/api/v1/pages/category/${categorySlug}` });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().category.slug).toBe(categorySlug);
+    const miss = await app.inject({ method: "GET", url: "/api/v1/pages/category/nope" });
+    expect(miss.statusCode).toBe(404);
+  });
+
+  it("product returns denominations + restock default; unknown slug 404s", async () => {
+    const ok = await app.inject({ method: "GET", url: `/api/v1/pages/product/${productSlug}` });
+    expect(ok.statusCode).toBe(200);
+    const body = ok.json();
+    expect(body.product.slug).toBe(productSlug);
+    expect(body.denominations[0]).toMatchObject({ id: denomId, price: "40000", in_stock: true });
+    expect(body.default_restock_denomination_id).toBe(denomId);
+    const miss = await app.inject({ method: "GET", url: "/api/v1/pages/product/nope" });
+    expect(miss.statusCode).toBe(404);
+  });
+
+  it("search returns matches for q", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/search?q=netflix" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.q).toBe("netflix");
+    expect(body.products.some((p: { slug: string }) => p.slug === productSlug)).toBe(true);
+  });
+});
+
+// ------------------------------------------------------------------- /auth
+describe("/api/v1/auth", () => {
+  it("login: wrong credentials get the generic 403 key", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { identifier: "nobody", password: "wrong-password" },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: "web.login_failed" });
+  });
+
+  it("login: success sets the session cookie and returns a safe redirect", async () => {
+    await makeUser("loginuser", "login-pw-1234", "LOGREF");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      payload: { identifier: "loginuser", password: "login-pw-1234", next: "https://evil.example/x" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().redirect).toBe("/"); // open-redirect guard
+    expect(res.headers["set-cookie"]).toBeDefined();
+  });
+
+  it("login merges the guest cart into the account", async () => {
+    await makeUser("mergeuser", "merge-pw-1234", "MRGREF");
+    const add = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      payload: { denomination_id: denomId, qty: 2 },
+    });
+    const guestCookie = (Array.isArray(add.headers["set-cookie"]) ? add.headers["set-cookie"] : [String(add.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const login = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/login",
+      headers: { cookie: guestCookie },
+      payload: { identifier: "mergeuser", password: "merge-pw-1234" },
+    });
+    expect(login.statusCode).toBe(200);
+    const sessionCookie = (Array.isArray(login.headers["set-cookie"]) ? login.headers["set-cookie"] : [String(login.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const cart = await app.inject({ method: "GET", url: "/api/v1/cart", headers: { cookie: sessionCookie } });
+    expect(cart.json().items[0]).toMatchObject({ denomination_id: denomId, qty: 2 });
+  });
+
+  it("register: validation errors return i18n keys; success signs in", async () => {
+    const bad = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      payload: { username: "x", email: "not-an-email", password: "12345678", password2: "12345678" },
+    });
+    expect(bad.statusCode).toBe(400);
+    expect(String(bad.json().error)).toMatch(/^web\./);
+
+    const ok = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      payload: { username: "reguser1", email: "reguser1@u.test", password: "register-pw-1", password2: "register-pw-1" },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.headers["set-cookie"]).toBeDefined();
+  });
+
+  it("logout rotates the jti so the old cookie stops working", async () => {
+    await makeUser("logoutuser", "logout-pw-123", "OUTREF");
+    const { cookie } = await loginAs("logoutuser", "logout-pw-123");
+    const out = await app.inject({ method: "POST", url: "/api/v1/auth/logout", headers: { cookie } });
+    expect(out.statusCode).toBe(200);
+    expect(out.json()).toEqual({ redirect: "/" });
+    // The OLD cookie is dead server-side (jti rotated), not just cleared client-side.
+    const after = await app.inject({ method: "GET", url: "/api/v1/account", headers: { cookie } });
+    expect(after.statusCode).toBe(401);
+  });
+
+  it("reset: an invalid token gets web.reset_invalid", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/reset/not-a-real-token",
+      payload: { password: "new-password-1", password2: "new-password-1" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "web.reset_invalid" });
+    expect(res.headers["referrer-policy"]).toBe("no-referrer");
+  });
+
+  it("telegram-widget returns bot_username + a safe auth_url", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/v1/auth/telegram-widget?next=//evil&ref=ABC" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.auth_url).toContain("next=%2F"); // safeNext collapsed //evil → /
+    expect(body.auth_url).toContain("ref=ABC");
+  });
+});
+
+// -------------------------------------------------------------------- /cart
+describe("/api/v1/cart twins", () => {
+  it("guest: GET/update/remove work with no CSRF (SameSite=Lax is the guard)", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: denomId, qty: 2 } });
+    const cookie = (Array.isArray(add.headers["set-cookie"]) ? add.headers["set-cookie"] : [String(add.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+
+    const upd = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie },
+      payload: { key: denomId, qty: 5 },
+    });
+    expect(upd.statusCode).toBe(200);
+    expect(upd.json().items[0]).toMatchObject({ qty: 5 });
+    expect(upd.json().subtotal).toBe("200000");
+
+    const updCookie = (Array.isArray(upd.headers["set-cookie"]) ? upd.headers["set-cookie"] : [String(upd.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const rm = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/remove",
+      headers: { cookie: updCookie },
+      payload: { key: denomId },
+    });
+    expect(rm.statusCode).toBe(200);
+    expect(rm.json().items).toHaveLength(0);
+  });
+
+  it("signed-in: update needs the x-csrf-token header (trio)", async () => {
+    const uid = await makeUser("cartspauser", "cartspa-pw-12", "CSPREF");
+    const { cookie, csrf } = await loginAs("cartspauser", "cartspa-pw-12");
+    await addToCart(prisma, uid, denomId, 1);
+    const rows = await prisma.cartItem.findMany({ where: { userId: uid } });
+    const key = rows[0]!.id;
+
+    const noToken = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie },
+      payload: { key, qty: 3 },
+    });
+    expect(noToken.statusCode).toBe(403);
+
+    const badToken = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie, "x-csrf-token": "bad" },
+      payload: { key, qty: 3 },
+    });
+    expect(badToken.statusCode).toBe(403);
+
+    const ok = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/update",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { key, qty: 3 },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().items[0]).toMatchObject({ qty: 3 });
+  });
+
+  it("signed-in: remove needs the x-csrf-token header (bad-CSRF case)", async () => {
+    const uid = await makeUser("cartremoveuser", "cartrm-pw-123", "CRMREF");
+    const { cookie } = await loginAs("cartremoveuser", "cartrm-pw-123");
+    await addToCart(prisma, uid, denomId, 1);
+    const rows = await prisma.cartItem.findMany({ where: { userId: uid } });
+    const key = rows[0]!.id;
+
+    const badToken = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart/remove",
+      headers: { cookie, "x-csrf-token": "bad" },
+      payload: { key },
+    });
+    expect(badToken.statusCode).toBe(403);
+    expect(badToken.json()).toEqual({ error: "csrf_failed" });
+  });
+});
+
+// ---------------------------------------------------------------- /checkout
+describe("/api/v1/checkout + orders", () => {
+  it("GET /checkout 401s anonymously (JSON, not a redirect)", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/v1/checkout" });
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toEqual({ error: "unauthorized" });
+  });
+
+  describe("signed-in buyer", () => {
+    let cookie: string;
+    let csrf: string;
+    let orderCode: string;
+
+    beforeAll(async () => {
+      const uid = await makeUser("spabuyer", "spabuyer-pw-1", "SPABUY");
+      const session = await loginAs("spabuyer", "spabuyer-pw-1");
+      cookie = session.cookie;
+      csrf = session.csrf;
+      await addToCart(prisma, uid, denomId, 1);
+      await setSetting(prisma, "bybit_uid", "123456789");
+      await setSetting(prisma, "bybit_api_key", "k");
+      await setSetting(prisma, "bybit_api_secret", "s");
+      await setSetting(prisma, "usd_idr_rate", "16000");
+    });
+
+    it("GET /checkout returns totals + method flags + wallet balances", async () => {
+      const res = await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.items_empty).toBe(false);
+      expect(body.subtotal).toBe("40000");
+      expect(body.bybit_enabled).toBe(true);
+      expect(body).toHaveProperty("wallet_idr");
+      expect(body).toHaveProperty("wallet_usdt");
+    });
+
+    it("voucher preview: trio + unknown voucher key in error_key", async () => {
+      const anon = await app.inject({ method: "POST", url: "/api/v1/checkout/voucher/preview", payload: { voucher_code: "X" } });
+      expect(anon.statusCode).toBe(401);
+      const bad = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout/voucher/preview",
+        headers: { cookie, "x-csrf-token": "bad" },
+        payload: { voucher_code: "X" },
+      });
+      expect(bad.statusCode).toBe(403);
+      const ok = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout/voucher/preview",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { voucher_code: "NOPE" },
+      });
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json().error_key).toBe("error.voucher_not_found");
+    });
+
+    it("POST /api/v1/checkout (existing endpoint) creates the order", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { method: "bybit" },
+      });
+      expect(res.statusCode).toBe(201);
+      orderCode = res.json().order_code;
+    });
+
+    it("GET /orders/:code/pay returns pay data for the owner; 404 for others", async () => {
+      const res = await app.inject({ method: "GET", url: `/api/v1/orders/${orderCode}/pay`, headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.order.code).toBe(orderCode);
+      expect(body.state).toBe("waiting");
+      expect(body.is_bybit).toBe(true);
+      expect(body.bybit_uid).toBe("123456789");
+
+      await makeUser("otherbuyer", "otherbuyer-pw", "OTHBUY");
+      const other = await loginAs("otherbuyer", "otherbuyer-pw");
+      const probe = await app.inject({ method: "GET", url: `/api/v1/orders/${orderCode}/pay`, headers: { cookie: other.cookie } });
+      expect(probe.statusCode).toBe(404); // ownership → 404, never 403
+    });
+
+    it("GET /orders/:code/status returns {state, redirect}", async () => {
+      const res = await app.inject({ method: "GET", url: `/api/v1/orders/${orderCode}/status`, headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ state: "waiting", redirect: null });
+    });
+
+    it("POST /orders/:code/cancel: trio, then the order is closed", async () => {
+      const anon = await app.inject({ method: "POST", url: `/api/v1/orders/${orderCode}/cancel` });
+      expect(anon.statusCode).toBe(401);
+      const bad = await app.inject({
+        method: "POST",
+        url: `/api/v1/orders/${orderCode}/cancel`,
+        headers: { cookie, "x-csrf-token": "bad" },
+      });
+      expect(bad.statusCode).toBe(403);
+      const ok = await app.inject({
+        method: "POST",
+        url: `/api/v1/orders/${orderCode}/cancel`,
+        headers: { cookie, "x-csrf-token": csrf },
+      });
+      expect(ok.statusCode).toBe(200);
+      const status = await app.inject({ method: "GET", url: `/api/v1/orders/${orderCode}/status`, headers: { cookie } });
+      expect(status.json().state).toBe("closed");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cluster C cutover: business-logic tests migrated from storefront.test.ts's
+// deleted "checkout — …" describe blocks (they used to drive the Nunjucks
+// checkout/pay pages; the logic they pinned lives on in checkoutView /
+// performCheckout / payView / payState, reached through the JSON twins here).
+// Pure HTML/DOM rendering assertions from those blocks (default-checked radio
+// cascade, hidden-method radios, the Enter-key voucher interceptor, translated
+// error strings, QR <img> markup) moved to the client jsdom tests
+// (CheckoutPage.test.tsx / PayPage.test.tsx).
+// ---------------------------------------------------------------------------
+describe("checkout business rules (migrated from the Nunjucks checkout tests)", () => {
+  let buyerId: number;
+  let cookie: string;
+  let csrf: string;
+
+  beforeAll(async () => {
+    buyerId = await makeUser("cutoverbuyer", "cutover-pw-99", "CUTOVR");
+    const session = await loginAs("cutoverbuyer", "cutover-pw-99");
+    cookie = session.cookie;
+    csrf = session.csrf;
+  });
+
+  /** Seed one cart line (each successful checkout consumes the cart). */
+  async function seedCart() {
+    await addToCart(prisma, buyerId, denomId, 1);
+  }
+
+  async function placeOrder(method: string, extra: Record<string, unknown> = {}) {
+    return app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { method, ...extra },
+    });
+  }
+
+  it("voucher preview applies a percent voucher to the totals but NEVER creates an order (Task 8 regression)", async () => {
+    await createVoucher(prisma, { code: "SAVE10", type: VoucherType.PERCENT, value: "10" });
+    await seedCart();
+    const before = await prisma.order.count({ where: { userId: buyerId } });
+
+    const ok = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout/voucher/preview",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { voucher_code: "SAVE10" },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json().voucher_discount).toBe("4000"); // 10% of the 40000 cart
+    expect(ok.json().error_key).toBeNull();
+
+    const bad = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout/voucher/preview",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { voucher_code: "NOPE-DOES-NOT-EXIST" },
+    });
+    expect(bad.statusCode).toBe(200); // inline error key, not an HTTP failure
+    expect(bad.json().error_key).toBe("error.voucher_not_found");
+
+    const after = await prisma.order.count({ where: { userId: buyerId } });
+    expect(after).toBe(before); // <-- the actual Task 8 bug: this used to grow
+  });
+
+  it("rejects a disabled or unknown payment method with 400 web.pay_method_unavailable", async () => {
+    await seedCart();
+    // PayDisini creds are not configured at this point in the file.
+    const disabled = await placeOrder("paydisini");
+    expect(disabled.statusCode).toBe(400);
+    expect(disabled.json()).toEqual({ error: "web.pay_method_unavailable" });
+    const unknown = await placeOrder("visa");
+    expect(unknown.statusCode).toBe(400);
+    expect(unknown.json()).toEqual({ error: "web.pay_method_unavailable" });
+  });
+
+  it("rejects method=nowpayments when the USD/IDR rate is unset (USDT conversion needs it)", async () => {
+    await setSetting(prisma, "nowpayments_api_key", "ak-test");
+    await setSetting(prisma, "nowpayments_ipn_secret", "ipn-secret-test");
+    await deleteSetting(prisma, "usd_idr_rate"); // creds present, but no rate
+    try {
+      await seedCart();
+      const res = await placeOrder("nowpayments");
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: "web.pay_method_unavailable" });
+    } finally {
+      await deleteSetting(prisma, "nowpayments_api_key");
+      await deleteSetting(prisma, "nowpayments_ipn_secret");
+      await setSetting(prisma, "usd_idr_rate", "16000"); // restore (set by the bybit fixture above)
+    }
+  });
+
+  it("creates a PAYDISINI/IDR order (alongside TokoPay — additive flags) and returns the gateway payload on the pay view", async () => {
+    await setSetting(prisma, "paydisini_userkey", "uk-test");
+    await setSetting(prisma, "paydisini_apikey", "ak-test");
+    await setSetting(prisma, "paydisini_default_channel", "QRIS");
+    await setSetting(prisma, "tokopay_merchant_id", "m-test");
+    await setSetting(prisma, "tokopay_secret", "s-test");
+    try {
+      await seedCart();
+      // Both IDR rails are enabled at once — additive, not exclusive.
+      const flags = await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie } });
+      expect(flags.json().idr_enabled).toBe(true);
+      expect(flags.json().paydisini_enabled).toBe(true);
+
+      const created = await placeOrder("paydisini");
+      expect(created.statusCode).toBe(201);
+      const code = created.json().order_code as string;
+      const order = await getOrderByCode(prisma, code);
+      expect(order!.paymentMethod).toBe("PAYDISINI");
+      expect(order!.currency).toBe("IDR");
+
+      // payView lazily creates the gateway transaction (mocked above).
+      const pay = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/pay`, headers: { cookie } });
+      expect(pay.statusCode).toBe(200);
+      const body = pay.json();
+      expect(body.is_paydisini).toBe(true);
+      expect(body.paydisini_gateway).toMatchObject({
+        qrUrl: "https://x/paydisini-qr.png",
+        checkoutUrl: "https://x/paydisini-checkout",
+      });
+      expect(body.paydisini_gateway_error).toBe(false);
+    } finally {
+      await deleteSetting(prisma, "paydisini_userkey");
+      await deleteSetting(prisma, "paydisini_apikey");
+      await deleteSetting(prisma, "paydisini_default_channel");
+      await deleteSetting(prisma, "tokopay_merchant_id");
+      await deleteSetting(prisma, "tokopay_secret");
+    }
+  });
+
+  it("creates a NOWPAYMENTS/USDT order and caches the tagged paymentRef the bot's reconcile poller reads", async () => {
+    await setSetting(prisma, "nowpayments_api_key", "ak-test");
+    await setSetting(prisma, "nowpayments_ipn_secret", "ipn-secret-test");
+    await setSetting(prisma, "nowpayments_pay_currency", "usdttrc20");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    try {
+      await seedCart();
+      const created = await placeOrder("nowpayments");
+      expect(created.statusCode).toBe(201);
+      const code = created.json().order_code as string;
+      let order = await getOrderByCode(prisma, code);
+      expect(order!.paymentMethod).toBe("NOWPAYMENTS");
+      expect(order!.currency).toBe("USDT");
+
+      const { createInvoice } = await import("@app/core/payments/nowpayments");
+      const callsBefore = vi.mocked(createInvoice).mock.calls.length;
+      const pay = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/pay`, headers: { cookie } });
+      expect(pay.statusCode).toBe(200);
+      expect(pay.json().is_nowpayments).toBe(true);
+      expect(pay.json().nowpayments_gateway).toEqual({
+        invoiceId: "NP-TEST-INV-1",
+        invoiceUrl: "https://x/nowpayments-invoice",
+      });
+
+      // The cached paymentRef MUST carry the gateway: "nowpayments"
+      // discriminator tag — the bot's reconcile poller
+      // (nowpaymentsReconcile.ts extractInvoiceId) reads this exact tagged
+      // JSON to find the invoice id.
+      order = await getOrderByCode(prisma, code);
+      const cached = JSON.parse(order!.paymentRef!) as Record<string, unknown>;
+      expect(cached.gateway).toBe("nowpayments");
+      expect(cached.invoiceId).toBe("NP-TEST-INV-1");
+      expect(cached.invoiceUrl).toBe("https://x/nowpayments-invoice");
+
+      // A refresh reads the cache back instead of creating a second invoice.
+      const again = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/pay`, headers: { cookie } });
+      expect(again.json().nowpayments_gateway).toEqual(pay.json().nowpayments_gateway);
+      expect(vi.mocked(createInvoice).mock.calls.length).toBe(callsBefore + 1);
+    } finally {
+      await deleteSetting(prisma, "nowpayments_api_key");
+      await deleteSetting(prisma, "nowpayments_ipn_secret");
+      await deleteSetting(prisma, "nowpayments_pay_currency");
+    }
+  });
+
+  it("applies the IDR wallet credit when use_wallet_idr is set on an IDR method", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "m-test");
+    await setSetting(prisma, "tokopay_secret", "s-test");
+    await prisma.user.update({ where: { id: buyerId }, data: { walletBalance: "5000" } });
+    try {
+      await seedCart();
+      const created = await placeOrder("qris", { use_wallet_idr: true });
+      expect(created.statusCode).toBe(201);
+      const order = await getOrderByCode(prisma, created.json().order_code as string);
+      expect(order!.walletUsed.toString()).toBe("5000");
+      expect(order!.totalAmount.toString()).toBe("35000"); // 40000 cart - 5000 credit
+    } finally {
+      await deleteSetting(prisma, "tokopay_merchant_id");
+      await deleteSetting(prisma, "tokopay_secret");
+      await prisma.user.update({ where: { id: buyerId }, data: { walletBalance: "0" } });
+    }
+  });
+
+  describe("payState mapping on a BYBIT_BSC order (status poll)", () => {
+    let code: string;
+
+    beforeAll(async () => {
+      await setSetting(prisma, "bybit_bsc_deposit_address", "0xMERCHANTADDR");
+      await setSetting(prisma, "bybit_api_key", "k");
+      await setSetting(prisma, "bybit_api_secret", "s");
+      await setSetting(prisma, "usd_idr_rate", "16000");
+      await seedCart();
+      const created = await placeOrder("bybit_bsc");
+      expect(created.statusCode).toBe(201);
+      code = created.json().order_code as string;
+    });
+
+    afterAll(async () => {
+      await deleteSetting(prisma, "bybit_bsc_deposit_address");
+      await deleteSetting(prisma, "bybit_bsc_min_amount");
+    });
+
+    it("creates a BYBIT_BSC/USDT order whose pay view carries the deposit address + a min-amount note only when configured", async () => {
+      const order = await getOrderByCode(prisma, code);
+      expect(order!.paymentMethod).toBe("BYBIT_BSC");
+      expect(order!.currency).toBe("USDT");
+
+      await setSetting(prisma, "bybit_bsc_min_amount", "5");
+      const withNote = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/pay`, headers: { cookie } });
+      expect(withNote.json().is_bybit_bsc).toBe(true);
+      expect(withNote.json().bybit_bsc_address).toBe("0xMERCHANTADDR");
+      expect(withNote.json().min_amount).toBeTruthy(); // pre-formatted server-side
+
+      await deleteSetting(prisma, "bybit_bsc_min_amount");
+      const withoutNote = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/pay`, headers: { cookie } });
+      expect(withoutNote.json().min_amount).toBeNull();
+    });
+
+    // Without the in-flight branches in payState, a live Bybit BSC order
+    // would fall into the "closed" catch-all and render as dead the moment a
+    // deposit is first detected.
+    it.each([OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING, OrderStatus.CONFIRMED])(
+      "status poll reports 'confirming', not 'closed', once the order is %s",
+      async (status) => {
+        await prisma.order.update({ where: { orderCode: code }, data: { status } });
+        const res = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/status`, headers: { cookie } });
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toEqual({ state: "confirming", redirect: null });
+      },
+    );
+
+    it("status poll returns the credentials-page redirect once DELIVERED (JSON twin of the old HX-Redirect)", async () => {
+      await prisma.order.update({ where: { orderCode: code }, data: { status: OrderStatus.DELIVERED } });
+      const res = await app.inject({ method: "GET", url: `/api/v1/orders/${code}/status`, headers: { cookie } });
+      expect(res.json()).toEqual({ state: "delivered", redirect: `/account/orders/${code}` });
+    });
+  });
+});
+
+// ----------------------------------------------------------------- /account
+describe("/api/v1/account twins", () => {
+  it("reads 401 anonymously", async () => {
+    for (const url of ["/api/v1/account", "/api/v1/account/orders", "/api/v1/account/settings"]) {
+      const res = await app.inject({ method: "GET", url });
+      expect(res.statusCode).toBe(401);
+      expect(res.json()).toEqual({ error: "unauthorized" });
+    }
+  });
+
+  describe("signed in", () => {
+    let cookie: string;
+    let csrf: string;
+    let buyerId: number;
+
+    beforeAll(async () => {
+      buyerId = await makeUser("accspauser", "accspa-pw-123", "ACCSPA");
+      const session = await loginAs("accspauser", "accspa-pw-123");
+      cookie = session.cookie;
+      csrf = session.csrf;
+    });
+
+    it("GET /account returns the overview", async () => {
+      const res = await app.inject({ method: "GET", url: "/api/v1/account", headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.referral_code).toBe("ACCSPA");
+      expect(body.order_count).toBe(0);
+    });
+
+    it("support ticket: create (trio) → list → detail → reply", async () => {
+      const anon = await app.inject({ method: "POST", url: "/api/v1/account/support", payload: { message: "help" } });
+      expect(anon.statusCode).toBe(401);
+      const bad = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": "bad" },
+        payload: { message: "help" },
+      });
+      expect(bad.statusCode).toBe(403);
+      const ok = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { message: "help me please" },
+      });
+      expect(ok.statusCode).toBe(200);
+
+      const list = await app.inject({ method: "GET", url: "/api/v1/account/support", headers: { cookie } });
+      const ticket = list.json().tickets[0];
+      expect(ticket.message).toBe("help me please");
+      expect(typeof ticket.created_at_display).toBe("string");
+
+      const detail = await app.inject({ method: "GET", url: `/api/v1/account/support/${ticket.id}`, headers: { cookie } });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.json().ticket.id).toBe(ticket.id);
+
+      const badReply = await app.inject({
+        method: "POST",
+        url: `/api/v1/account/support/${ticket.id}/reply`,
+        headers: { cookie, "x-csrf-token": "bad" },
+        payload: { message: "more details" },
+      });
+      expect(badReply.statusCode).toBe(403);
+      expect(badReply.json()).toEqual({ error: "csrf_failed" });
+
+      const reply = await app.inject({
+        method: "POST",
+        url: `/api/v1/account/support/${ticket.id}/reply`,
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { message: "more details" },
+      });
+      expect(reply.statusCode).toBe(200);
+      const detail2 = await app.inject({ method: "GET", url: `/api/v1/account/support/${ticket.id}`, headers: { cookie } });
+      expect(detail2.json().messages.some((m: { content: string }) => m.content === "more details")).toBe(true);
+    });
+
+    it("another user's ticket 404s (never 403)", async () => {
+      const list = await app.inject({ method: "GET", url: "/api/v1/account/support", headers: { cookie } });
+      const ticketId = list.json().tickets[0].id;
+      await makeUser("noseyuser", "nosey-pw-1234", "NOSEY1");
+      const other = await loginAs("noseyuser", "nosey-pw-1234");
+      const probe = await app.inject({ method: "GET", url: `/api/v1/account/support/${ticketId}`, headers: { cookie: other.cookie } });
+      expect(probe.statusCode).toBe(404);
+    });
+
+    it("restock subscribe returns the product redirect (trio-lite)", async () => {
+      const anon = await app.inject({ method: "POST", url: `/api/v1/restock/${denomId}` });
+      expect(anon.statusCode).toBe(401);
+      const badToken = await app.inject({
+        method: "POST",
+        url: `/api/v1/restock/${denomId}`,
+        headers: { cookie, "x-csrf-token": "bad" },
+      });
+      expect(badToken.statusCode).toBe(403);
+      expect(badToken.json()).toEqual({ error: "csrf_failed" });
+      const ok = await app.inject({
+        method: "POST",
+        url: `/api/v1/restock/${denomId}`,
+        headers: { cookie, "x-csrf-token": csrf },
+      });
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json().redirect).toBe(`/p/${productSlug}`);
+    });
+
+    // Migrated from the deleted account.ts (docs/REACT_STOREFRONT_MIGRATION.md
+    // Phase 7) — never had a Nunjucks-era HTTP test of its own (checked the
+    // full git history), so this is new server-level coverage for logic that
+    // otherwise only ran through mocked-fetch client jsdom tests
+    // (OrderDetailPage.test.tsx).
+    it("GET /account/orders/:code shows credentials only when DELIVERED; a non-owner gets 404 (never 403)", async () => {
+      const stock = await prisma.stockItem.create({
+        data: { productId: denomId, credentials: "acc-orderdetail@mail.com:pw", status: "SOLD" },
+      });
+      const order = await prisma.order.create({
+        data: {
+          orderCode: `ORD-ACCSPA-${Math.random()}`,
+          userId: buyerId,
+          subtotalAmount: "40000",
+          totalAmount: "40000",
+          status: OrderStatus.PENDING_PAYMENT,
+        },
+      });
+      await prisma.orderItem.create({
+        data: { orderId: order.id, productId: denomId, stockItemId: stock.id, unitPrice: "40000", warrantyDaysSnapshot: 30 },
+      });
+
+      const pending = await app.inject({ method: "GET", url: `/api/v1/account/orders/${order.orderCode}`, headers: { cookie } });
+      expect(pending.statusCode).toBe(200);
+      expect(pending.json().delivered).toBe(false);
+      expect(pending.json().pending_payment).toBe(true);
+      expect(pending.json().order.items[0].credentials).toBeNull();
+
+      await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.DELIVERED } });
+      const delivered = await app.inject({ method: "GET", url: `/api/v1/account/orders/${order.orderCode}`, headers: { cookie } });
+      expect(delivered.json().delivered).toBe(true);
+      expect(delivered.json().order.items[0].credentials).toBe("acc-orderdetail@mail.com:pw");
+
+      await makeUser("orderpeeker", "orderpeeker-pw1", "OPEEK1");
+      const peeker = await loginAs("orderpeeker", "orderpeeker-pw1");
+      const probe = await app.inject({
+        method: "GET",
+        url: `/api/v1/account/orders/${order.orderCode}`,
+        headers: { cookie: peeker.cookie },
+      });
+      expect(probe.statusCode).toBe(404);
+    });
+
+    // Migrated from the deleted account.ts — same "never had a Nunjucks-era
+    // HTTP test" gap as the order-detail test above.
+    it("reviews: create, then a dupe or a bad order_id swallow silently (matches the deleted HTML handler 1:1)", async () => {
+      const stock = await prisma.stockItem.create({ data: { productId: denomId, credentials: "x", status: "SOLD" } });
+      const order = await prisma.order.create({
+        data: {
+          orderCode: `ORD-REV-${Math.random()}`,
+          userId: buyerId,
+          subtotalAmount: "40000",
+          totalAmount: "40000",
+          status: OrderStatus.DELIVERED,
+        },
+      });
+      await prisma.orderItem.create({
+        data: { orderId: order.id, productId: denomId, stockItemId: stock.id, unitPrice: "40000", warrantyDaysSnapshot: 30 },
+      });
+
+      const anon = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/reviews",
+        payload: { order_id: order.id, product_id: denomId, rating: 5 },
+      });
+      expect(anon.statusCode).toBe(401);
+
+      const badToken = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/reviews",
+        headers: { cookie, "x-csrf-token": "bad" },
+        payload: { order_id: order.id, product_id: denomId, rating: 5 },
+      });
+      expect(badToken.statusCode).toBe(403);
+      expect(badToken.json()).toEqual({ error: "csrf_failed" });
+
+      const ok = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/reviews",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { order_id: order.id, product_id: denomId, rating: 4, comment: "great" },
+      });
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json()).toEqual({ ok: true });
+      const stored = await prisma.review.findFirst({ where: { orderId: order.id } });
+      expect(stored).toMatchObject({ rating: 4, comment: "great" });
+
+      // Dupe (unique userId+orderId) and a bad order_id both throw
+      // ValidationError inside createReview — the route just swallows it and
+      // reports ok:true either way (bounce-back UX, not a real error).
+      const dupe = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/reviews",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { order_id: order.id, product_id: denomId, rating: 2 },
+      });
+      expect(dupe.statusCode).toBe(200);
+      expect(await prisma.review.count({ where: { orderId: order.id } })).toBe(1); // no 2nd row
+
+      const badOrder = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/reviews",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { order_id: 999999, product_id: denomId, rating: 3 },
+      });
+      expect(badOrder.statusCode).toBe(200);
+      expect(badOrder.json()).toEqual({ ok: true });
+    });
+
+    // Migrated from the deleted account.ts — same "never had a Nunjucks-era
+    // HTTP test" gap as above. BOT_USERNAME="TestBot" (setup-env.ts); the
+    // .env.example placeholder ("YourBot") is filtered to "" by
+    // resolveBotUsername (see the "bot_username resolution" describe in
+    // storefront.test.ts for the same fixture on the home payload).
+    it("GET /account/referral returns the code + bot-linked URL, and null with no usable bot username", async () => {
+      const withBot = await app.inject({ method: "GET", url: "/api/v1/account/referral", headers: { cookie } });
+      expect(withBot.statusCode).toBe(200);
+      expect(withBot.json()).toEqual({
+        referral_code: "ACCSPA",
+        referral_link: "https://t.me/TestBot?start=ref_ACCSPA",
+      });
+
+      await setSetting(prisma, "bot_username", "YourBot");
+      try {
+        const noBot = await app.inject({ method: "GET", url: "/api/v1/account/referral", headers: { cookie } });
+        expect(noBot.json().referral_link).toBeNull();
+      } finally {
+        await deleteSetting(prisma, "bot_username");
+      }
+    });
+
+    // Storefront-3 (security audit, 2026-06-23): email/username are the
+    // account-recovery anchor — changing them must require re-auth too, not
+    // just password changes. Migrated from storefront.test.ts's deleted
+    // "account settings" describe.
+    it("settings credentials: rejects missing CSRF; requires current_password to change email too", async () => {
+      const noCsrf = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie },
+        payload: { email: "evil@u.test" },
+      });
+      expect(noCsrf.statusCode).toBe(403);
+      expect(noCsrf.json()).toEqual({ error: "csrf_failed" });
+
+      const badEmail = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { email: "attacker-controlled@evil.test", current_password: "WRONG" },
+      });
+      expect(badEmail.statusCode).toBe(400);
+      expect(badEmail.json()).toEqual({ error: "web.settings_wrong_password" });
+      const rowAfterBadEmail = await prisma.user.findUnique({ where: { id: buyerId } });
+      expect(rowAfterBadEmail!.email).not.toBe("attacker-controlled@evil.test");
+
+      const okEmail = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { email: "accspa-new@u.test", current_password: "accspa-pw-123" },
+      });
+      expect(okEmail.statusCode).toBe(200);
+      const rowAfterEmail = await prisma.user.findUnique({ where: { id: buyerId } });
+      expect(rowAfterEmail!.email).toBe("accspa-new@u.test");
+    });
+
+    it("settings credentials: wrong current_password 400s; correct one saves, reports password_changed, and rotates the session (Storefront-2 fix)", async () => {
+      const wrong = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { new_password: "brand-new-pw-1", current_password: "not-my-password" },
+      });
+      expect(wrong.statusCode).toBe(400);
+      expect(wrong.json()).toEqual({ error: "web.settings_wrong_password" });
+
+      const ok = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/settings/credentials",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { new_password: "brand-new-pw-1", current_password: "accspa-pw-123" },
+      });
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json()).toEqual({ ok: true, password_changed: true });
+      // The response refreshed OUR cookie (rotated jti) — the old cookie string
+      // is stale now; other sessions are invalidated.
+      expect(ok.headers["set-cookie"]).toBeDefined();
+
+      // The OLD cookie's jti was just rotated server-side — it must no
+      // longer authenticate (any session active before this password change
+      // is dead). Migrated from storefront.test.ts's deleted
+      // "account settings" describe, which proved this against the HTML
+      // /account/settings route.
+      const staleCheck = await app.inject({ method: "GET", url: "/api/v1/account", headers: { cookie } });
+      expect(staleCheck.statusCode).toBe(401);
+    });
+  });
+});

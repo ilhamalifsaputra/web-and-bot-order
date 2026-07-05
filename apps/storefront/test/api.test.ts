@@ -79,12 +79,20 @@ afterAll(async () => {
   cleanupTestDb();
 });
 
+// Auth cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 5): the HTML POST
+// /login form is gone — sign in via the JSON twin (same Set-Cookie either
+// way). /account/settings itself fell to the SPA shell on the Phase 7
+// (Cluster D) cutover, so the CSRF token is now scraped from the shell's
+// <meta name="csrf-token"> via an arbitrary unmapped path — same pattern as
+// spa-api.test.ts's loginAs().
 async function loginAs(identifier: string, password: string): Promise<{ cookie: string; csrf: string }> {
-  const res = await app.inject({ method: "POST", url: "/login", payload: { identifier, password } });
+  const res = await app.inject({ method: "POST", url: "/api/v1/auth/login", payload: { identifier, password } });
+  expect(res.statusCode).toBe(200);
   const c = res.headers["set-cookie"];
   const cookie = Array.isArray(c) ? c.join("; ") : String(c);
-  const page = await app.inject({ method: "GET", url: "/account/settings", headers: { cookie } });
-  const csrf = /name="csrf_token" value="([^"]+)"/.exec(page.body)![1]!;
+  const shell = await app.inject({ method: "GET", url: "/spa-shell-probe", headers: { cookie } });
+  const csrf = /name="csrf-token" content="([^"]*)"/.exec(shell.body)![1]!;
+  expect(csrf).not.toBe("");
   return { cookie, csrf };
 }
 

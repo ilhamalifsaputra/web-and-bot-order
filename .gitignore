@@ -33,6 +33,7 @@ build/
 *.tsbuildinfo
 coverage/
 apps/web-admin/static/dashboard-app/
+apps/storefront/static/shop-app/
 
 # --- Prisma generated client (regenerated via prisma generate) ---
 **/generated/

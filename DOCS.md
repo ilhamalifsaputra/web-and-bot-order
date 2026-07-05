@@ -29,12 +29,12 @@ database SQLite** (`data/bot.db`, mode WAL).
 |---|---|
 | `apps/order-bot` | Bot Telegram grammY (alur pelanggan + admin) |
 | `apps/web-admin` | Panel admin Fastify + Nunjucks + HTMX |
-| `apps/storefront` | Toko web pelanggan (Fastify + Nunjucks + HTMX) |
+| `apps/storefront` | Toko web pelanggan — Fastify + JSON API (`/api/v1`) di belakang React SPA (`apps/storefront/client`); Nunjucks + `_theme.njk` tersisa hanya untuk `error.njk` (500 fallback); `setup_pending.njk` adalah halaman HTML standalone (tanpa theme, tanpa htmx) |
 | `apps/server` | **Composition root satu-proses**: gabung admin + storefront + bot + worker dengan **satu PrismaClient** (`apps/server/src/index.ts`) |
 | `packages/core` | Config (zod), money (Decimal), datetime (luxon), i18n, password, mailer, fx |
 | `packages/db` | Prisma client + semua CRUD (`packages/db/src/crud/*`) |
 | `packages/outbox-dispatcher` | Drain `notification_outbox` → channel/DM (`runDispatcher`, jalan in-process di `apps/server`) |
-| `packages/web-ui` | Tema bersama (`_theme.njk`, `_macros.njk`) yang di-`include` admin & storefront |
+| `packages/web-ui` | Tema bersama (`_theme.njk`, `_macros.njk`) yang di-`include` web-admin dan storefront's `error.njk` (setup-gate + 500 fallback) |
 
 **Prinsip inti:**
 
@@ -53,9 +53,11 @@ database SQLite** (`data/bot.db`, mode WAL).
   bersama `shapeProducts` (`apps/storefront/src/cards.ts`) membentuk kartu grid
   dari denominasi aktif termurah ("starting price") + agregat stok/rating
   lintas denominasi.
-- **Server-rendered, TIDAK ada API publik.** Admin & storefront mengembalikan
-  HTML (Nunjucks + HTMX), bukan JSON. Tidak ada REST/GraphQL untuk konsumsi
-  pihak ketiga; satu-satunya endpoint non-HTML adalah webhook (`/pay/{tokopay,
+- **Tidak ada API publik untuk konsumsi pihak ketiga.** Storefront adalah React
+  SPA yang dilayani lewat JSON API internal (`/api/v1/*`, lihat §12) — bukan
+  kontrak stabil untuk klien luar, hanya untuk `apps/storefront/client`
+  sendiri. Admin masih server-rendered (Nunjucks + HTMX). Satu-satunya
+  endpoint non-HTML untuk pihak ketiga adalah webhook (`/pay/{tokopay,
   paydisini,nowpayments}/callback`, `/tg/<secret>` saat `BOT_MODE=webhook`) dan
   `/healthz` — daftar lengkap + kontrak request/respons di §12. Integrasi =
   lewat DB/CRUD, bukan HTTP.
@@ -95,8 +97,11 @@ bebas tanpa login; checkout wajib login.
 
 Kolom/tabel: `User.loginUsername`, `User.email`, `User.passwordHash`,
 `PasswordResetToken`. CRUD: `packages/db/src/crud/webauth.ts`. File:
-`apps/storefront/src/routes/{auth,forgot}.ts`, `src/auth.ts`,
-view `login/register/forgot/reset.njk`, `packages/core/src/{password,mailer}.ts`.
+JSON routes `apps/storefront/src/routes/apiAuth.ts` (login/register/logout/
+forgot/reset) + `src/routes/auth.ts` (the Telegram Login Widget's server-side
+`GET /auth/telegram` callback, which redirects the whole page instead of an
+XHR), consumed by the React pages under `apps/storefront/client/src/pages/`,
+`packages/core/src/{password,mailer}.ts`.
 
 ---
 
@@ -170,9 +175,10 @@ tautan hosted invoice (`buyNowNowpayments`) karena pembayarannya di luar
 Telegram.
 
 **Storefront:** pembeli pilih metode saat bayar
-(`apps/storefront/src/routes/checkout.ts`). Status di halaman bayar via **HTMX
-polling** `/checkout/:code/status` ~5 dtk; saat `DELIVERED` redirect ke kredensial.
-Web **tanpa upload bukti** dan **tanpa wallet**.
+(`apps/storefront/src/routes/checkout.ts`). Status di halaman bayar (React
+PayPage) via polling JSON `GET /api/v1/orders/:code/status` ~5 dtk; saat
+`DELIVERED` redirect ke kredensial. Web **tanpa upload bukti** dan **tanpa
+wallet**.
 
 **QRIS/e-wallet butuh Callback URL publik** di dashboard merchant —
 TokoPay (`https://<host>/pay/tokopay/callback`) dan PayDisini
@@ -276,9 +282,13 @@ CRUD: `packages/db/src/crud/{users,orders,binance_internal,bybit_deposit}.ts`.
 ## 9. Desain storefront
 
 Satu bahasa visual dengan web-admin ("Clean Modern"): token warna, font, radius,
-shadow, dan komponen (`.card`/`.btn`/`.chip`/`.field`/`.data-table`) **identik**
-karena di-`include` dari `_theme.njk` bersama. Mobile-first, dwibahasa (EN+ID),
-server-rendered (Tailwind CDN + HTMX, bukan SPA).
+shadow **identik** dengan `packages/web-ui/views/_theme.njk` — storefront kini
+React SPA (`apps/storefront/client`, Vite + Tailwind v4), dan tokennya
+ditranskripsi byte-for-byte ke sebuah `@theme` block di `client/src/index.css`
+(lihat komentar di kepala file itu) alih-alih `include` Nunjucks. Mobile-first,
+dwibahasa (EN+ID). Nunjucks + `_theme.njk` bertahan hanya untuk `error.njk`
+(§1) yang harus render tanpa build SPA; `setup_pending.njk` adalah halaman
+HTML standalone (tanpa theme).
 
 **Token warna:** `pine` `#2563eb` (aksen/tombol/harga), `grass` `#16a34a`
 (tersedia), `amberx` `#b45c0a` (menunggu/stok menipis), `rust` `#dc2626`
@@ -287,7 +297,7 @@ server-rendered (Tailwind CDN + HTMX, bukan SPA).
 
 **Peta halaman:** `/` beranda · `/c/:slug` & `/search` daftar/cari · `/p/:slug`
 detail · `/cart` · `/checkout` (pilih metode = pilih mata uang) ·
-`/checkout/:code/pay` (instruksi + status HTMX polling) · `/account` +
+`/checkout/:code/pay` (instruksi + status via polling JSON) · `/account` +
 `/orders`/`/orders/:code` (kredensial bila DELIVERED) / `/referral` / `/reviews` /
 `/support` · `/login` + `/register` + `/forgot` + `/reset`.
 
@@ -449,11 +459,15 @@ nginx -t && systemctl reload nginx
 
 ## 12. API & Webhook
 
-Proyek ini **server-rendered, tidak punya REST/GraphQL API publik** untuk
-konsumsi pihak ketiga (lihat §1) — admin & storefront selalu balas HTML
-(Nunjucks + HTMX). Daftar di bawah adalah **satu-satunya** endpoint non-HTML:
-health check, webhook Telegram, dan webhook gateway pembayaran. Integrasi
-eksternal lain harus lewat DB + `packages/db/src/crud/*`, bukan HTTP.
+Proyek ini **tidak punya REST/GraphQL API publik** untuk konsumsi pihak ketiga
+(lihat §1). Storefront memang punya JSON API (`/api/v1/*`,
+`apps/storefront/src/routes/api*.ts`) — tapi itu kontrak privat untuk React
+SPA-nya sendiri (`apps/storefront/client`), bukan sesuatu yang didaftarkan/
+didokumentasikan untuk klien luar. Admin tetap balas HTML (Nunjucks + HTMX).
+Daftar di bawah adalah endpoint yang **memang** dimaksudkan untuk dipanggil
+dari luar proses ini: health check, webhook Telegram, dan webhook gateway
+pembayaran. Integrasi eksternal lain harus lewat DB + `packages/db/src/crud/*`,
+bukan HTTP.
 
 ### 12.1 Health check
 
@@ -519,6 +533,6 @@ bayar, idempoten lewat ledger yang sama dengan webhook-nya.
 
 ### 12.4 Endpoint internal lain (bukan API publik)
 
-- `GET /checkout/:code/status` — partial HTMX yang di-poll halaman bayar
-  storefront tiap ~5 detik (§5); butuh sesi pembeli pemilik order, jadi bukan
-  endpoint yang bisa dipanggil pihak ketiga.
+- `GET /api/v1/orders/:code/status` — JSON yang di-poll halaman bayar
+  storefront (React PayPage) tiap ~5 detik (§5); butuh sesi pembeli pemilik
+  order, jadi bukan endpoint yang bisa dipanggil pihak ketiga.

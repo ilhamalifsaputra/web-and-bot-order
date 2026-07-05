@@ -1,0 +1,49 @@
+/* Verbatim port of home.njk's {% block meta %} <style> tag (design.md §4.8) —
+ * the FAQ open animation and the section scroll-reveal, byte-identical to the
+ * Nunjucks CSS text. See HomePage.tsx's useEffect for the IntersectionObserver
+ * that toggles `.visible`. */
+
+/* FAQ open animation */
+details[open] > .faq-body {
+  animation: faq-in 0.18s ease;
+}
+@keyframes faq-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Section reveal on scroll */
+.reveal {
+  opacity: 0;
+  transform: translateY(20px);
+  transition:
+    opacity 0.5s ease,
+    transform 0.5s ease;
+}
+.reveal.visible {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+.counter {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Dot-grid pattern for the stats band */
+.dot-grid {
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.18) 1px, transparent 1px);
+  background-size: 26px 26px;
+}

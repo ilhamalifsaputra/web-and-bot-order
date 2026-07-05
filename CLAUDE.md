@@ -88,6 +88,16 @@ schema at `prisma/schema.prisma` (datasource `DATABASE_URL_PRISMA`). See `DOCS.m
   or `pnpm dev:web` will serve it correctly; the build output
   (`apps/web-admin/static/dashboard-app/`) is gitignored, same as a generated
   Prisma client — a required one-time step, not optional.
+- **The storefront is a built React SPA** (`apps/storefront/client`) backed by
+  the JSON API under `/api/v1` — same pattern/build contract as web-admin: run
+  `pnpm --filter @app/storefront-client build` once after a fresh clone (and
+  again after editing anything under `apps/storefront/client/`) before
+  `pnpm test` or `pnpm dev:store` will serve it correctly; the build output
+  (`apps/storefront/static/shop-app/`) is gitignored. Nunjucks + `_theme.njk`
+  survive only for `error.njk` (must render before/without the SPA build,
+  e.g. a DB-down 500) — `setup_pending.njk` is a standalone HTML page (no theme,
+  no htmx), served before the SPA is built. Migration history in
+  `docs/REACT_STOREFRONT_MIGRATION.md`.
 - **Settings edits are whitelist-only** (admin) — the main "don't brick the bot"
   guardrail; never widen the whitelist without review.
 - Bind `127.0.0.1` by default; public exposure needs reverse proxy + TLS + a

@@ -158,6 +158,11 @@ cp .env.example .env            # isi sesuai bagian 2
 pnpm prisma:generate
 pnpm exec prisma db push
 
+# Build React SPA panel admin & toko web (wajib sekali di awal, dan tiap kali
+# kode di apps/*/client berubah — hasil build di-gitignore)
+pnpm --filter @app/web-admin-client build
+pnpm --filter @app/storefront-client build
+
 # Jalankan (bot + panel admin + toko web + pengiriman notifikasi dalam satu proses)
 pnpm start
 ```
@@ -241,6 +246,7 @@ docker compose up -d
 
 # Non-Docker:
 pnpm install && pnpm prisma:generate && pnpm exec prisma db push
+pnpm --filter @app/web-admin-client build && pnpm --filter @app/storefront-client build
 pm2 restart bot-order
 ```
 

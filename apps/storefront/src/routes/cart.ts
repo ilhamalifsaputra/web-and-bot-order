@@ -1,41 +1,44 @@
 /**
- * Cart — works for guests AND signed-in customers (plan.md §5 decision D):
- *   - guests: lines live in the httpOnly `shop_cart` cookie ({p, q}[]);
+ * Cart — shared view/guard logic for the JSON cart endpoints (routes/api.ts's
+ * POST /cart, routes/apiCart.ts's GET/update/remove). The cart PAGE itself
+ * cut over to the React SPA at the Cluster A cutover (routes/spaShell.ts);
+ * this file no longer registers any routes, but its exports are the single
+ * source of truth for both guest carts AND signed-in customers
+ * (plan.md §5 decision D):
+ *   - guests: lines live in the httpOnly `shop_cart_v2` cookie ({p, q}[]);
  *     SameSite=Lax means cross-site POSTs never carry the cookie, which is the
  *     CSRF story for the (money-free) guest cart.
  *   - signed in: lines are CartItem rows via the same crud the bot uses, and
  *     every mutation requires the session CSRF token.
  * The guest cookie is merged into CartItem at login (routes/auth.ts).
  */
-import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyRequest } from "fastify";
 import { Decimal } from "@app/core/money";
 import { UserRole } from "@app/core/enums";
 import {
   prisma,
   getCartWithDenominationProduct,
-  addToCart,
-  updateCartItemQty,
-  removeFromCart,
-  getDenomination,
   getDenominationWithProduct,
   countAvailableStock,
 } from "@app/db";
-import { optionalCustomer, type Customer } from "../plugins/auth";
+import type { Customer } from "../plugins/auth";
 import { productImage } from "../images";
-import { shopContext, readGuestCart, writeGuestCart, type GuestCartLine } from "../shop";
+import { readGuestCart } from "../shop";
 
 /** Cart-line label per the 3-tier spec: `Product - Denomination`. */
 function cartLineLabel(productName: string, denominationName: string): string {
   return productName === denominationName ? productName : `${productName} - ${denominationName}`;
 }
 
-const clampQty = (raw: unknown): number => {
+export const clampQty = (raw: unknown): number => {
   const n = Number(raw);
   return Number.isInteger(n) ? Math.max(0, Math.min(n, 99)) : 0;
 };
 
-/** CSRF gate for signed-in mutations (guests are covered by SameSite=Lax). */
-function csrfOk(req: FastifyRequest, customer: Customer | null): boolean {
+/** CSRF gate for signed-in mutations (guests are covered by SameSite=Lax).
+ * Shared with the JSON cart endpoints (routes/apiCart.ts) — one rule, two
+ * transports (form field or x-csrf-token header). */
+export function csrfOk(req: FastifyRequest, customer: Customer | null): boolean {
   if (!customer) return true;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const token = body.csrf_token ?? req.headers["x-csrf-token"];
@@ -114,91 +117,3 @@ export async function loadCartLines(
   );
   return resolved.filter((l): l is CartLineView => l !== null);
 }
-
-const cartRoutes: FastifyPluginAsync = async (app) => {
-  app.get("/cart", async (req, reply) => {
-    const customer = await optionalCustomer(req);
-    req.customer = customer;
-    const ctx = await shopContext(req, "/cart");
-    const items = await loadCartLines(req, customer);
-    const subtotal = items.reduce((s, l) => s.plus(l.line_total), new Decimal(0));
-    return reply.view("cart.njk", {
-      ...ctx,
-      items,
-      subtotal: subtotal.toString(),
-    });
-  });
-
-  app.post<{ Body: { denomination_id?: string; qty?: string; csrf_token?: string; buy_now?: string } }>(
-    "/cart/add",
-    async (req, reply) => {
-      const customer = await optionalCustomer(req);
-      if (!csrfOk(req, customer)) {
-        return reply.code(403).type("text/plain").send("CSRF check failed");
-      }
-      const denominationId = Number(req.body.denomination_id);
-      const qty = clampQty(req.body.qty ?? 1) || 1;
-      const denom = Number.isInteger(denominationId)
-        ? await getDenomination(prisma, denominationId)
-        : null;
-      if (denom?.isActive) {
-        if (customer) {
-          await addToCart(prisma, customer.userId, denom.id, qty);
-        } else {
-          const lines = readGuestCart(req);
-          const existing = lines.find((l) => l.p === denom.id);
-          const next: GuestCartLine[] = existing
-            ? lines.map((l) => (l.p === denom.id ? { p: l.p, q: Math.min(l.q + qty, 99) } : l))
-            : [...lines, { p: denom.id, q: qty }];
-          writeGuestCart(reply, next);
-        }
-      }
-      // "Buy Now" sends the buyer straight to checkout (login-gated there);
-      // "Add To Cart" lands on the cart page.
-      const dest = req.body.buy_now ? "/checkout" : "/cart";
-      return reply.code(303).redirect(dest);
-    },
-  );
-
-  app.post<{ Body: { key?: string; qty?: string; csrf_token?: string } }>(
-    "/cart/update",
-    async (req, reply) => {
-      const customer = await optionalCustomer(req);
-      if (!csrfOk(req, customer)) {
-        return reply.code(403).type("text/plain").send("CSRF check failed");
-      }
-      const key = Number(req.body.key);
-      const qty = clampQty(req.body.qty);
-      if (Number.isInteger(key)) {
-        if (customer) {
-          await updateCartItemQty(prisma, customer.userId, key, qty);
-        } else {
-          const lines = readGuestCart(req);
-          const next = qty <= 0
-            ? lines.filter((l) => l.p !== key)
-            : lines.map((l) => (l.p === key ? { p: l.p, q: qty } : l));
-          writeGuestCart(reply, next);
-        }
-      }
-      return reply.code(303).redirect("/cart");
-    },
-  );
-
-  app.post<{ Body: { key?: string; csrf_token?: string } }>("/cart/remove", async (req, reply) => {
-    const customer = await optionalCustomer(req);
-    if (!csrfOk(req, customer)) {
-      return reply.code(403).type("text/plain").send("CSRF check failed");
-    }
-    const key = Number(req.body.key);
-    if (Number.isInteger(key)) {
-      if (customer) {
-        await removeFromCart(prisma, customer.userId, key);
-      } else {
-        writeGuestCart(reply, readGuestCart(req).filter((l) => l.p !== key));
-      }
-    }
-    return reply.code(303).redirect("/cart");
-  });
-};
-
-export default cartRoutes;

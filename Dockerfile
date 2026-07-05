@@ -31,9 +31,11 @@ RUN pnpm install --frozen-lockfile
 # Generate the Prisma client into node_modules/.prisma (+ engine binaries).
 RUN pnpm exec prisma generate
 
-# Build the React SPA dashboard (output: apps/web-admin/static/dashboard-app/).
-# Gitignored, so it must be built here — not present in the build context.
+# Build the React SPAs (outputs: apps/web-admin/static/dashboard-app/ and
+# apps/storefront/static/shop-app/). Both are gitignored, so they must be
+# built here — not present in the build context.
 RUN pnpm --filter @app/web-admin-client build
+RUN pnpm --filter @app/storefront-client build
 
 
 # ---- Stage 2: runtime ----

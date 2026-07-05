@@ -1,0 +1,91 @@
+/* Storefront SPA styles — pixel parity with the Nunjucks pages.
+ *
+ * Three layers, in order:
+ *   1. Tailwind v4 + self-hosted fonts (replaces the Google Fonts + Tailwind
+ *      CDN pair loaded by packages/web-ui/views/_theme.njk).
+ *   2. ../../static/app.css imported VERBATIM — the `:root` design tokens and
+ *      the .card/.btn/.field/.chip component classes stay single-sourced.
+ *   3. An @theme block transcribing _theme.njk's inline tailwind.config
+ *      byte-for-byte, plus a v3-compat base layer (the templates were written
+ *      against the Tailwind v3 CDN; v4 changed a few preflight defaults).
+ *
+ * If a token changes in packages/web-ui/views/_theme.njk, mirror it in the
+ * @theme block below — and vice versa.
+ */
+@import "tailwindcss";
+
+@import "@fontsource/outfit/400.css";
+@import "@fontsource/outfit/500.css";
+@import "@fontsource/outfit/600.css";
+@import "@fontsource/outfit/700.css";
+@import "@fontsource/manrope/400.css";
+@import "@fontsource/manrope/500.css";
+@import "@fontsource/manrope/600.css";
+@import "@fontsource/manrope/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+
+@import "../../static/app.css";
+
+/* Tokens from packages/web-ui/views/_theme.njk (tailwind.config, byte-for-byte).
+   `static` so Tailwind v4 emits every token even when unreferenced. */
+@theme static {
+  --color-paper: #f6f8fb;
+  --color-card: #ffffff;
+  --color-sand: #eef1f6;
+  --color-line: #e3e8ef;
+  --color-ink: #1b2330;
+  --color-ink-soft: #5a6473;
+  --color-ink-faint: #97a1b1;
+  --color-pine: #2563eb;
+  --color-pine-dark: #1d4ed8;
+  --color-pine-tint: #e6effe;
+  --color-grass: #16a34a;
+  --color-grass-dark: #15803d;
+  --color-grass-tint: #e7f6ec;
+  --color-amberx: #b45c0a;
+  --color-amberx-tint: #fdedcf;
+  --color-rust: #dc2626;
+  --color-rust-dark: #b91c1c;
+  --color-rust-tint: #fde7e7;
+  --font-display: Outfit, system-ui, sans-serif;
+  --font-sans: Manrope, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --shadow-soft: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 24px -14px rgba(16, 24, 40, 0.12);
+  --shadow-lift: 0 2px 4px rgba(16, 24, 40, 0.06), 0 16px 36px -18px rgba(16, 24, 40, 0.18);
+  --radius-xl2: 1.25rem;
+}
+
+/* v3 CDN applied hover: styles unconditionally; v4 gates them behind
+   @media (hover: hover), which would drop hover styling on touch screens. */
+@custom-variant hover (&:hover);
+
+@layer base {
+  /* base.njk put these classes on <body>; the SPA's <body> only holds #root,
+     so the flex column moves here (header / main flex-1 / footer). */
+  #root {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Tailwind v4 preflight regressions vs the v3 CDN the templates assume:
+     buttons became cursor:default, placeholders became 50% currentColor. */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  input::placeholder,
+  textarea::placeholder {
+    color: #9ca3af; /* v3 preflight gray-400 */
+    opacity: 1;
+  }
+
+  /* _theme.njk's icon baseline rule, retargeted from [data-lucide] (CDN) to
+     the svg.lucide class lucide-react renders. */
+  svg.lucide {
+    display: inline-block;
+    vertical-align: -0.125em;
+    flex-shrink: 0;
+  }
+}

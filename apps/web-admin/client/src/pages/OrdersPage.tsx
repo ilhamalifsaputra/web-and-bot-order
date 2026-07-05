@@ -250,6 +250,7 @@ export function OrdersPage() {
           {data.page > 1 && (
             <Button
               variant="outline"
+              size="sm"
               onClick={() => setFilters((f) => ({ ...f, page: f.page - 1 }))}
             >
               ← Prev
@@ -258,6 +259,7 @@ export function OrdersPage() {
           {data.hasNext && (
             <Button
               variant="outline"
+              size="sm"
               onClick={() => setFilters((f) => ({ ...f, page: f.page + 1 }))}
             >
               Next →

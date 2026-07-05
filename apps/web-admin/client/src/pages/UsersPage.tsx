@@ -8,9 +8,9 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { CurrencyStack } from "../components/shared/CurrencyAmount";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Users } from "lucide-react";
+import { SearchBar } from "../components/shared/SearchBar";
+import { StatusBadge } from "../components/shared/StatusBadge";
 
 interface UserRow {
   id: number;
@@ -70,11 +70,10 @@ export function UsersPage() {
         className="mb-4"
       >
         <FilterBar>
-          <Input
+          <SearchBar
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={setInput}
             placeholder="Search by name, username, Telegram ID…"
-            className="w-80"
           />
           <Button type="submit">Search</Button>
           {q && (
@@ -99,7 +98,7 @@ export function UsersPage() {
             header: "Name",
             render: (row) => (
               <div className="flex items-center gap-3">
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-teal text-xs font-semibold text-white">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-pine text-xs font-semibold text-white">
                   {initialFor(row)}
                 </div>
                 <div>
@@ -125,15 +124,12 @@ export function UsersPage() {
           {
             key: "role",
             header: "Role",
-            render: (row) => <Badge variant="outline">{row.role}</Badge>,
+            render: (row) => <StatusBadge status={row.role} />,
           },
           {
             key: "status",
             header: "Status",
-            render: (row) =>
-              row.banned ? (
-                <Badge variant="destructive">Banned</Badge>
-              ) : null,
+            render: (row) => (row.banned ? <StatusBadge status="BANNED" /> : null),
           },
           {
             key: "joined",

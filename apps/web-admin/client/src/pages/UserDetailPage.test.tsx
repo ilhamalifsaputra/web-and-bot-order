@@ -78,7 +78,7 @@ describe("UserDetailPage — role change", () => {
     render(<UserDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
-    expect(screen.getByText("ADMIN")).toBeInTheDocument();
+    expect(screen.getByText("Admin")).toBeInTheDocument();
   });
 
   it("alerts on a failed role change", async () => {

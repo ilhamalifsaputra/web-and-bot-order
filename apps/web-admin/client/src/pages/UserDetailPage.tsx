@@ -8,6 +8,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { CurrencyStack } from "../components/shared/CurrencyAmount";
+import { CardRow } from "../components/shared/CardRow";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -17,7 +18,6 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiPost } from "../api/client";
 
@@ -90,31 +90,33 @@ export function UserDetailPage() {
       <div className="grid grid-cols-1 gap-4 mb-6 sm:grid-cols-2">
         <Card>
           <CardHeader><CardTitle>Profile</CardTitle></CardHeader>
-          <CardContent className="flex flex-col gap-1 text-sm">
+          <CardContent className="divide-y divide-line">
             {user.banned && (
-              <div className="mb-2 rounded bg-rust/10 px-3 py-2 text-xs font-medium text-rust">
+              <div className="mb-2 rounded bg-rust-tint px-3 py-2 text-xs font-medium text-rust-dark">
                 BANNED{user.banReason ? ` — ${user.banReason}` : ""}
               </div>
             )}
-            <div className="flex justify-between"><span className="text-ink-soft">Telegram ID</span><span className="font-mono text-xs">{user.telegramId}</span></div>
-            <div className="flex justify-between"><span className="text-ink-soft">Username</span><span>{user.username ? `@${user.username}` : "—"}</span></div>
-            <div className="flex justify-between items-center">
-              <span className="text-ink-soft">Role</span>
-              {user.role === "ADMIN" ? (
-                <Badge variant="outline">{user.role}</Badge>
-              ) : (
-                <Select value={user.role} onValueChange={(role) => setRole.mutate(role)} disabled={setRole.isPending}>
-                  <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    {data.roles.map((r) => (
-                      <SelectItem key={r} value={r}>{r}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            </div>
-            <div className="flex justify-between"><span className="text-ink-soft">Wallet</span><CurrencyStack amounts={[{ currency: "IDR", value: user.walletBalance }, { currency: "USDT", value: user.walletBalanceUsdt }]} /></div>
-            <div className="flex justify-between"><span className="text-ink-soft">Total spent</span><CurrencyStack amounts={[{ currency: "IDR", value: data.totalSpent.idr }, { currency: "USDT", value: data.totalSpent.usdt }]} /></div>
+            <CardRow label="Telegram ID" value={<span className="font-mono text-xs">{user.telegramId}</span>} />
+            <CardRow label="Username" value={user.username ? `@${user.username}` : "—"} />
+            <CardRow
+              label="Role"
+              value={
+                user.role === "ADMIN" ? (
+                  <StatusBadge status={user.role} />
+                ) : (
+                  <Select value={user.role} onValueChange={(role) => setRole.mutate(role)} disabled={setRole.isPending}>
+                    <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {data.roles.map((r) => (
+                        <SelectItem key={r} value={r}>{r}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )
+              }
+            />
+            <CardRow label="Wallet" value={<CurrencyStack amounts={[{ currency: "IDR", value: user.walletBalance }, { currency: "USDT", value: user.walletBalanceUsdt }]} />} />
+            <CardRow label="Total spent" value={<CurrencyStack amounts={[{ currency: "IDR", value: data.totalSpent.idr }, { currency: "USDT", value: data.totalSpent.usdt }]} />} />
           </CardContent>
         </Card>
 
@@ -167,35 +169,43 @@ export function UserDetailPage() {
       </div>
 
       {/* Orders */}
-      <h2 className="text-sm font-semibold text-ink mb-3">Recent Orders ({data.orders.length})</h2>
-      <DataTable
-        columns={[
-          { key: "code", header: "Code", render: o => <span className="font-mono text-xs">{o.orderCode}</span> },
-          { key: "status", header: "Status", render: o => <StatusBadge status={o.status} /> },
-          { key: "total", header: "Total", render: o => <span className="text-sm">{o.totalIdr}</span> },
-          { key: "date", header: "Date", render: o => <span className="text-xs text-ink-soft">{new Date(o.createdAt).toLocaleDateString()}</span> },
-        ]}
-        data={data.orders}
-        keyExtractor={o => o.id}
-        onRowClick={o => navigate(`/orders/${o.id}`)}
-        empty={<EmptyState title="No orders" />}
-      />
+      <Card className="mb-6">
+        <CardHeader><CardTitle>Recent Orders ({data.orders.length})</CardTitle></CardHeader>
+        <CardContent>
+          <DataTable
+            columns={[
+              { key: "code", header: "Code", render: o => <span className="font-mono text-xs">{o.orderCode}</span> },
+              { key: "status", header: "Status", render: o => <StatusBadge status={o.status} /> },
+              { key: "total", header: "Total", render: o => <span className="text-sm">{o.totalIdr}</span> },
+              { key: "date", header: "Date", render: o => <span className="text-xs text-ink-soft">{new Date(o.createdAt).toLocaleDateString()}</span> },
+            ]}
+            data={data.orders}
+            keyExtractor={o => o.id}
+            onRowClick={o => navigate(`/orders/${o.id}`)}
+            empty={<EmptyState title="No orders" />}
+          />
+        </CardContent>
+      </Card>
 
       {/* Wallet ledger */}
-      <h2 className="text-sm font-semibold text-ink mb-3 mt-6">Wallet Ledger ({data.ledger.length})</h2>
-      <DataTable
-        columns={[
-          { key: "delta", header: "Delta", render: l => <span className={`font-mono text-sm ${l.delta.startsWith("-") ? "text-rust" : "text-grass"}`}>{l.delta}</span> },
-          { key: "currency", header: "Currency", render: l => <Badge variant="outline">{l.currency}</Badge> },
-          { key: "balance", header: "Balance", render: l => <span className="font-mono text-sm">{l.balanceAfter}</span> },
-          { key: "reason", header: "Reason", render: l => <span className="text-sm">{l.reason}</span> },
-          { key: "note", header: "Note", render: l => <span className="text-xs text-ink-soft">{l.note ?? "—"}</span> },
-          { key: "date", header: "Date", render: l => <span className="text-xs text-ink-soft">{new Date(l.createdAt).toLocaleDateString()}</span> },
-        ]}
-        data={data.ledger.map((l, i) => ({ ...l, _key: i }))}
-        keyExtractor={l => l._key}
-        empty={<EmptyState title="No ledger entries" />}
-      />
+      <Card>
+        <CardHeader><CardTitle>Wallet Ledger ({data.ledger.length})</CardTitle></CardHeader>
+        <CardContent>
+          <DataTable
+            columns={[
+              { key: "delta", header: "Delta", render: l => <span className={`font-mono text-sm ${l.delta.startsWith("-") ? "text-rust" : "text-grass"}`}>{l.delta}</span> },
+              { key: "currency", header: "Currency", render: l => <StatusBadge status={l.currency} /> },
+              { key: "balance", header: "Balance", render: l => <span className="font-mono text-sm">{l.balanceAfter}</span> },
+              { key: "reason", header: "Reason", render: l => <span className="text-sm">{l.reason}</span> },
+              { key: "note", header: "Note", render: l => <span className="text-xs text-ink-soft">{l.note ?? "—"}</span> },
+              { key: "date", header: "Date", render: l => <span className="text-xs text-ink-soft">{new Date(l.createdAt).toLocaleDateString()}</span> },
+            ]}
+            data={data.ledger.map((l, i) => ({ ...l, _key: i }))}
+            keyExtractor={l => l._key}
+            empty={<EmptyState title="No ledger entries" />}
+          />
+        </CardContent>
+      </Card>
     </PageLayout>
   );
 }

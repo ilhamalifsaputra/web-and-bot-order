@@ -1,10 +1,12 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
 import { apiPost } from "../api/client";
 
 interface SettingsField {
@@ -244,15 +246,7 @@ export function SettingsPage() {
   // Password change
   const [pwCurrent, setPwCurrent] = useState("");
   const [pwNew, setPwNew] = useState("");
-  const [pwError, setPwError] = useState<string | null>(null);
-  const [pwSuccess, setPwSuccess] = useState(false);
   const [pwSaving, setPwSaving] = useState(false);
-
-  useEffect(() => {
-    if (!pwSuccess) return;
-    const timer = setTimeout(() => setPwSuccess(false), 2500);
-    return () => clearTimeout(timer);
-  }, [pwSuccess]);
 
   // 2FA
   const [totpCode, setTotpCode] = useState("");
@@ -262,37 +256,21 @@ export function SettingsPage() {
   const [disableTotp, setDisableTotp] = useState("");
 
   // FX refresh
-  const [fxSuccess, setFxSuccess] = useState<string | null>(null);
-  const [fxError, setFxError] = useState<string | null>(null);
   const [fxRefreshing, setFxRefreshing] = useState(false);
-
-  useEffect(() => {
-    if (!fxSuccess) return;
-    const timer = setTimeout(() => setFxSuccess(null), 2500);
-    return () => clearTimeout(timer);
-  }, [fxSuccess]);
-
-  useEffect(() => {
-    if (!fxError) return;
-    const timer = setTimeout(() => setFxError(null), 2500);
-    return () => clearTimeout(timer);
-  }, [fxError]);
 
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ["settings"] }); };
 
   async function refreshFx() {
     setFxRefreshing(true);
-    setFxSuccess(null);
-    setFxError(null);
     try {
       const result = await apiPost<{ ok: boolean; status: string; rate: string }>(
         "/api/settings/fx/refresh",
         {},
       );
-      setFxSuccess(`Rate updated to ${result.rate} (${result.status})`);
+      toast.success(`Rate updated to ${result.rate} (${result.status})`);
       invalidate();
     } catch (e) {
-      setFxError(e instanceof Error ? e.message : "Failed to refresh rate");
+      toast.error(e instanceof Error ? e.message : "Failed to refresh rate");
     } finally {
       setFxRefreshing(false);
     }
@@ -301,18 +279,16 @@ export function SettingsPage() {
   async function changePassword(e: React.FormEvent) {
     e.preventDefault();
     setPwSaving(true);
-    setPwError(null);
-    setPwSuccess(false);
     try {
       await apiPost("/api/settings/password", {
         current_password: pwCurrent,
         new_password: pwNew,
       });
-      setPwSuccess(true);
+      toast.success("Password changed successfully.");
       setPwCurrent("");
       setPwNew("");
     } catch (err) {
-      setPwError(err instanceof Error ? err.message : "Failed to change password");
+      toast.error(err instanceof Error ? err.message : "Failed to change password");
     } finally {
       setPwSaving(false);
     }
@@ -334,32 +310,15 @@ export function SettingsPage() {
     }
   }
 
-  const [paymentError, setPaymentError] = useState<string | null>(null);
-  const [paymentSuccess, setPaymentSuccess] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!paymentSuccess) return;
-    const timer = setTimeout(() => setPaymentSuccess(null), 2500);
-    return () => clearTimeout(timer);
-  }, [paymentSuccess]);
-
-  useEffect(() => {
-    if (!paymentError) return;
-    const timer = setTimeout(() => setPaymentError(null), 2500);
-    return () => clearTimeout(timer);
-  }, [paymentError]);
-
   const togglePayment = useMutation({
     mutationFn: ({ method, enabled }: { method: string; enabled: boolean }) =>
       apiPost("/api/settings/payments/toggle", { method, enabled: enabled ? "true" : "false" }),
     onSuccess: () => {
       invalidate();
-      setPaymentSuccess("Payment method updated");
-      setPaymentError(null);
+      toast.success("Payment method updated");
     },
     onError: (error: Error) => {
-      setPaymentError(error.message || "Failed to update payment method");
-      setPaymentSuccess(null);
+      toast.error(error.message || "Failed to update payment method");
     },
   });
 
@@ -401,16 +360,6 @@ export function SettingsPage() {
           )}
 
           {/* Payment Credentials — one card per method */}
-          {paymentError && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {paymentError}
-            </div>
-          )}
-          {paymentSuccess && (
-            <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-              {paymentSuccess}
-            </div>
-          )}
           {PAY_CRED_GROUPS.map(({ methodKey, label, fieldKeys }) => {
             const credFields = data.fields.filter((f) => (fieldKeys as readonly string[]).includes(f.key));
             const methodState = data.payMethodState[methodKey];
@@ -426,13 +375,11 @@ export function SettingsPage() {
                   </div>
                   {methodState && (
                     <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
+                      <Switch
                         checked={methodState.enabled}
-                        onChange={(e) =>
-                          togglePayment.mutate({ method: methodKey, enabled: e.target.checked })
+                        onCheckedChange={(checked) =>
+                          togglePayment.mutate({ method: methodKey, enabled: checked })
                         }
-                        className="h-4 w-4"
                       />
                       <span className="text-sm text-ink-soft">
                         {methodState.enabled ? "Enabled" : "Disabled"}
@@ -476,16 +423,6 @@ export function SettingsPage() {
                   <FieldRow key={field.key} field={field} onSaved={invalidate} />
                 ))}
               </div>
-              {fxError && (
-                <div className="mt-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                  {fxError}
-                </div>
-              )}
-              {fxSuccess && (
-                <div className="mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-                  {fxSuccess}
-                </div>
-              )}
               <div className="flex items-center gap-3 pt-3">
                 <Button
                   onClick={refreshFx}
@@ -510,16 +447,6 @@ export function SettingsPage() {
                 <div className="text-sm font-medium text-ink mb-3">
                   Change Password
                 </div>
-                {pwError && (
-                  <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                    {pwError}
-                  </div>
-                )}
-                {pwSuccess && (
-                  <div className="mb-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
-                    Password changed successfully.
-                  </div>
-                )}
                 <form
                   onSubmit={changePassword}
                   className="flex flex-col gap-2 max-w-xs"

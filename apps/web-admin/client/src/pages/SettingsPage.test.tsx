@@ -4,13 +4,17 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Toaster } from "@/components/ui/sonner";
 import { SettingsPage } from "./SettingsPage";
 
 function Wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
     <MemoryRouter>
-      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+      <QueryClientProvider client={qc}>
+        {children}
+        <Toaster />
+      </QueryClientProvider>
     </MemoryRouter>
   );
 }
@@ -83,9 +87,7 @@ describe("SettingsPage", () => {
     await user.type(screen.getByPlaceholderText("New password (min 8 chars)"), "new-password");
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
-    await waitFor(() =>
-      expect(screen.getByText("Password changed successfully.")).toBeInTheDocument(),
-    );
+    expect(await screen.findByText("Password changed successfully.")).toBeInTheDocument();
   });
 
   it("shows an error banner when changing the password fails", async () => {
@@ -110,9 +112,7 @@ describe("SettingsPage", () => {
     await user.type(screen.getByPlaceholderText("New password (min 8 chars)"), "new-password");
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
-    await waitFor(() =>
-      expect(screen.getByText("Incorrect current password")).toBeInTheDocument(),
-    );
+    expect(await screen.findByText("Incorrect current password")).toBeInTheDocument();
   });
 
   it("never renders a 'Store' card — min_order_amount/order_expiry_minutes/stock_low_threshold are not real settings (dead STORE_KEYS code removed)", async () => {

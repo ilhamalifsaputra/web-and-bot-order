@@ -4,6 +4,8 @@ import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { FilterBar } from "../components/shared/FilterBar";
 import { EmptyState } from "../components/shared/EmptyState";
+import { DataTable } from "../components/shared/DataTable";
+import { StatusBadge } from "../components/shared/StatusBadge";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -109,56 +111,35 @@ export function OutboxPage() {
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
         {isError && <p className="text-sm text-rust">Failed to load outbox.</p>}
 
-        {data && data.rows.length === 0 && <EmptyState title="No notifications found." />}
-
-        {data && data.rows.length > 0 && (
-          <div className="overflow-x-auto rounded-lg border border-line bg-card">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-line text-left text-ink-soft">
-                  <th className="px-4 py-3 font-medium">ID</th>
-                  <th className="px-4 py-3 font-medium">Event</th>
-                  <th className="px-4 py-3 font-medium">Status</th>
-                  <th className="px-4 py-3 font-medium">Attempts</th>
-                  <th className="px-4 py-3 font-medium">Created</th>
-                  <th className="px-4 py-3 font-medium">Sent</th>
-                  <th className="px-4 py-3 font-medium"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line">
-                {data.rows.map((row) => (
-                  <tr key={row.id} className="hover:bg-sand/40">
-                    <td className="px-4 py-2 font-mono text-xs text-ink-soft">{row.id}</td>
-                    <td className="px-4 py-2 text-ink">{row.event}</td>
-                    <td className="px-4 py-2">
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                        row.status === "SENT" ? "bg-pine-tint text-pine" :
-                        row.status === "FAILED" ? "bg-rust/10 text-rust" :
-                        "bg-sand text-ink"
-                      }`}>
-                        {row.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2 text-ink-soft">{row.attempts}</td>
-                    <td className="whitespace-nowrap px-4 py-2 text-ink-soft">{formatTs(row.createdAt)}</td>
-                    <td className="whitespace-nowrap px-4 py-2 text-ink-soft">{formatTs(row.sentAt)}</td>
-                    <td className="px-4 py-2">
-                      {row.status === "FAILED" && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={retrying.has(row.id)}
-                          onClick={() => retry(row.id)}
-                        >
-                          Retry
-                        </Button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        {data && (
+          <DataTable
+            columns={[
+              { key: "id", header: "ID", render: (row) => <span className="font-mono text-xs text-ink-soft">{row.id}</span> },
+              { key: "event", header: "Event", render: (row) => <span className="text-ink">{row.event}</span> },
+              { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status} /> },
+              { key: "attempts", header: "Attempts", render: (row) => <span className="text-ink-soft">{row.attempts}</span> },
+              { key: "created", header: "Created", render: (row) => <span className="whitespace-nowrap text-ink-soft">{formatTs(row.createdAt)}</span> },
+              { key: "sent", header: "Sent", render: (row) => <span className="whitespace-nowrap text-ink-soft">{formatTs(row.sentAt)}</span> },
+              {
+                key: "actions",
+                header: "",
+                render: (row) =>
+                  row.status === "FAILED" ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={retrying.has(row.id)}
+                      onClick={() => retry(row.id)}
+                    >
+                      Retry
+                    </Button>
+                  ) : null,
+              },
+            ]}
+            data={data.rows}
+            keyExtractor={(row) => row.id}
+            empty={<EmptyState title="No notifications found." />}
+          />
         )}
 
         {data && (data.hasNext || page > 1) && (

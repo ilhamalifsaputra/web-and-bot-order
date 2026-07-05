@@ -37,7 +37,7 @@ describe("OutboxPage", () => {
     );
     render(<OutboxPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("ORDER_DELIVERED")).toBeInTheDocument());
-    expect(screen.getAllByText("SENT").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Sent").length).toBeGreaterThan(0);
   });
 
   it("shows empty state when no rows", async () => {
@@ -83,7 +83,7 @@ describe("OutboxPage", () => {
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith("/api/outbox/9/retry", expect.objectContaining({ method: "POST" })),
     );
-    await waitFor(() => expect(screen.getAllByText("PENDING").length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText("Pending").length).toBeGreaterThan(0));
   });
 
   it("shows an alert when retrying a notification fails", async () => {

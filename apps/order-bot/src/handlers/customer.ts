@@ -45,6 +45,7 @@ import {
 import { BotState, type MyContext } from "../context";
 import { smartEdit, renderMenu } from "../util/chat";
 import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/banner";
+import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import { esc, formatPrice, formatIdr, statusBadge, groupOrderItems, formatCountdown, priceIdr, orderAmount, mixedAmount, renderBybitBscTrackingScreen } from "../util/format";
@@ -462,7 +463,18 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
     plans: planLines.join("\n"),
     updated: localize(new Date(), "HH:mm:ss"),
   });
-  await renderMenuBanner(ctx, text, ckb.denominationPickerKb(active, productId, lang));
+  const photoArg = productPhotoArg(product);
+  if (photoArg) {
+    await renderMenu(
+      ctx,
+      text,
+      ckb.denominationPickerKb(active, productId, lang),
+      photoArg.photo,
+      photoArg.needsCache ? cacheProductPhotoFileId(productId) : undefined,
+    );
+  } else {
+    await renderMenuBanner(ctx, text, ckb.denominationPickerKb(active, productId, lang));
+  }
 }
 
 /**
@@ -544,7 +556,18 @@ export async function browseDenomination(
   // product list per denominationDetailKb's contract — never to a product that
   // would immediately re-collapse to this same detail.
   const parentProductId = sc(ctx).productId ?? null;
-  await smartEdit(ctx, text, ckb.denominationDetailKb(d, stock, lang, qty, parentProductId));
+  const photoArg = productPhotoArg(d.product);
+  if (photoArg) {
+    await renderMenu(
+      ctx,
+      text,
+      ckb.denominationDetailKb(d, stock, lang, qty, parentProductId),
+      photoArg.photo,
+      photoArg.needsCache ? cacheProductPhotoFileId(d.product.id) : undefined,
+    );
+  } else {
+    await smartEdit(ctx, text, ckb.denominationDetailKb(d, stock, lang, qty, parentProductId));
+  }
   ctx.session.state = BotState.PRODUCT_DETAIL;
   sc(ctx).variantId = denominationId;
   sc(ctx).quantity = qty;

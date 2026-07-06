@@ -14,7 +14,8 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
-import { prisma, createOrderDirect, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet } from "@app/db";
+import { prisma, createOrderDirect, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct } from "@app/db";
+import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
@@ -254,6 +255,23 @@ describe("customer handlers", () => {
     await customer.browseDenomination(ctx, sample.product.id);
     expect((ctx.session.scratch as { variantId?: number }).variantId).toBe(sample.product.id);
     expect(JSON.stringify(sink)).toContain("Netflix");
+  });
+
+  it("browseDenomination renders the product's own photo as a photo+caption bubble when webImageUrl is set", async () => {
+    await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { webImageUrl: "/uploads/products/test.jpg" } });
+    const { ctx, sink } = customerCtx({ replyWithPhotoResult: { photo: [{ file_id: "CACHED123" }] } });
+    await customer.browseDenomination(ctx, sample.product.id);
+    const photoCalls = calls(sink, "replyWithPhoto");
+    expect(photoCalls.length).toBe(1);
+    expect((photoCalls[0]!.args[1] as { caption?: string }).caption).toContain(sample.parentProduct.name);
+  });
+
+  it("browseDenomination caches the resolved file_id onto Product.imageFileId after first photo send", async () => {
+    await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { webImageUrl: "/uploads/products/test.jpg" } });
+    const { ctx } = customerCtx({ replyWithPhotoResult: { photo: [{ file_id: "CACHED123" }] } });
+    await customer.browseDenomination(ctx, sample.product.id);
+    const updated = await getCatalogProduct(prisma, sample.parentProduct.id);
+    expect(updated?.imageFileId).toBe("CACHED123");
   });
 
   it("handleProductNumber resolves a digit to the page-local Product (collapses to detail)", async () => {
@@ -589,6 +607,35 @@ describe("denomination picker", () => {
     await customer.browseProductsFlat(ctx);
     const entries = (ctx.session.scratch as { browseEntries?: number[] }).browseEntries ?? [];
     expect(entries).toContain(product.id);
+  });
+
+  it("browseProduct sends the product's own photo as the picker bubble when webImageUrl is set", async () => {
+    const { product } = await makeProductWithTwo();
+    await prisma.product.update({ where: { id: product.id }, data: { webImageUrl: "/uploads/products/test.jpg" } });
+    const { ctx, sink } = customerCtx({ replyWithPhotoResult: { photo: [{ file_id: "CACHED123" }] } });
+    await customer.browseProduct(ctx, product.id);
+    const photoCalls = calls(sink, "replyWithPhoto");
+    expect(photoCalls.length).toBe(1);
+    expect((photoCalls[0]!.args[1] as { caption?: string }).caption).toContain("Capcut");
+  });
+
+  it("browseProduct falls back to the global site banner when the product has no photo", async () => {
+    const { product } = await makeProductWithTwo();
+    await setSetting(prisma, BANNER_IMAGE_KEY, "/uploads/branding/banner-test.png");
+    const { ctx, sink } = customerCtx({ replyWithPhotoResult: { photo: [{ file_id: "BANNERCACHE" }] } });
+    await customer.browseProduct(ctx, product.id);
+    expect(calls(sink, "replyWithPhoto").length).toBe(1);
+    const updated = await getCatalogProduct(prisma, product.id);
+    expect(updated?.imageFileId).toBeNull(); // banner path caches to the setting, never the product row
+  });
+
+  it("browseProduct caches the resolved file_id onto Product.imageFileId after first photo send", async () => {
+    const { product } = await makeProductWithTwo();
+    await prisma.product.update({ where: { id: product.id }, data: { webImageUrl: "/uploads/products/test.jpg" } });
+    const { ctx } = customerCtx({ replyWithPhotoResult: { photo: [{ file_id: "CACHED456" }] } });
+    await customer.browseProduct(ctx, product.id);
+    const updated = await getCatalogProduct(prisma, product.id);
+    expect(updated?.imageFileId).toBe("CACHED456");
   });
 });
 

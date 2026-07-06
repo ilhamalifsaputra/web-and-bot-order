@@ -2,11 +2,11 @@
 import "./setup-db";
 
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { prisma, createOrderDirect, finalizeOrderPayment, setOrderPaymentMessage } from "@app/db";
+import { prisma, createOrderDirect, finalizeOrderPayment, setOrderPaymentMessage, createBroadcast } from "@app/db";
 import type { Api } from "grammy";
 import { OrderStatus, OrderCurrency } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { autoCancelExpiredOrders, scheduleJobs } from "../src/jobs";
+import { autoCancelExpiredOrders, scheduleJobs, drainBroadcasts } from "../src/jobs";
 
 let sample: SampleData;
 
@@ -19,9 +19,10 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-const fakeApi = (overrides: Partial<{ editMessageCaption: unknown; editMessageText: unknown }> = {}) =>
+const fakeApi = (overrides: Partial<{ editMessageCaption: unknown; editMessageText: unknown; sendMessage: unknown; sendPhoto: unknown }> = {}) =>
   ({
-    sendMessage: vi.fn().mockResolvedValue(undefined),
+    sendMessage: overrides.sendMessage ?? vi.fn().mockResolvedValue(undefined),
+    sendPhoto: overrides.sendPhoto ?? vi.fn().mockResolvedValue({ photo: [{ file_id: "small_fid" }, { file_id: "large_fid" }] }),
     editMessageCaption: overrides.editMessageCaption ?? vi.fn().mockResolvedValue(undefined),
     editMessageText: overrides.editMessageText ?? vi.fn().mockResolvedValue(undefined),
   }) as unknown as Api;
@@ -96,6 +97,105 @@ describe("autoCancelExpiredOrders", () => {
     await autoCancelExpiredOrders(api);
 
     expect(api.sendMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("drainBroadcasts", () => {
+  // Exclude buildSampleData's own telegramId:42 user so each test's recipient
+  // count is exactly the users it creates itself.
+  beforeEach(async () => {
+    await prisma.user.update({ where: { id: sample.user.id }, data: { banned: true } });
+  });
+
+  async function addRecipient(telegramId: number) {
+    await prisma.user.create({
+      data: { telegramId: BigInt(telegramId), referralCode: `r${telegramId}`, role: "CUSTOMER" },
+    });
+  }
+
+  it("sends plain text via sendMessage when the broadcast has no image", async () => {
+    await addRecipient(1001);
+    await addRecipient(1002);
+    const bc = await createBroadcast(prisma, { message: "hi all", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+    const api = fakeApi();
+
+    await drainBroadcasts(api);
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    expect(api.sendPhoto).not.toHaveBeenCalled();
+    const done = await prisma.broadcast.findUnique({ where: { id: bc.id } });
+    expect(done!.status).toBe("SENT");
+    expect(done!.sentCount).toBe(2);
+  });
+
+  it("sends a photo via sendPhoto and caches the resolved file_id after the first send", async () => {
+    await addRecipient(2001);
+    await addRecipient(2002);
+    const bc = await createBroadcast(prisma, {
+      message: "look at this",
+      segment: "ALL",
+      scheduledAt: null,
+      createdById: null,
+      total: 0,
+      webImageUrl: "/uploads/broadcasts/broadcast-test.jpg",
+    });
+    const api = fakeApi();
+
+    await drainBroadcasts(api);
+
+    expect(api.sendPhoto).toHaveBeenCalledTimes(2);
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    const calls = (api.sendPhoto as ReturnType<typeof vi.fn>).mock.calls;
+    // First send resolves a fresh InputFile off disk (not a plain string)...
+    expect(typeof calls[0]![1]).not.toBe("string");
+    // ...subsequent recipients reuse the cached file_id string.
+    expect(calls[1]![1]).toBe("large_fid");
+    const done = await prisma.broadcast.findUnique({ where: { id: bc.id } });
+    expect(done!.imageFileId).toBe("large_fid");
+    expect(done!.status).toBe("SENT");
+  });
+
+  it("reuses an already-cached file_id from the very first recipient (resumed run)", async () => {
+    await addRecipient(3001);
+    const bc = await createBroadcast(prisma, {
+      message: "resumed",
+      segment: "ALL",
+      scheduledAt: null,
+      createdById: null,
+      total: 0,
+      webImageUrl: "/uploads/broadcasts/broadcast-test.jpg",
+    });
+    await prisma.broadcast.update({ where: { id: bc.id }, data: { imageFileId: "already_cached_fid" } });
+    const api = fakeApi();
+
+    await drainBroadcasts(api);
+
+    expect(api.sendPhoto).toHaveBeenCalledTimes(1);
+    expect(api.sendPhoto).toHaveBeenCalledWith(3001, "already_cached_fid", { caption: "resumed" });
+  });
+
+  it("counts a sendPhoto failure as failed without aborting remaining recipients", async () => {
+    await addRecipient(4001);
+    await addRecipient(4002);
+    const bc = await createBroadcast(prisma, {
+      message: "flaky",
+      segment: "ALL",
+      scheduledAt: null,
+      createdById: null,
+      total: 0,
+      webImageUrl: "/uploads/broadcasts/broadcast-test.jpg",
+    });
+    const sendPhoto = vi.fn()
+      .mockRejectedValueOnce(new Error("blocked"))
+      .mockResolvedValueOnce({ photo: [{ file_id: "fid" }] });
+    const api = fakeApi({ sendPhoto });
+
+    await drainBroadcasts(api);
+
+    expect(sendPhoto).toHaveBeenCalledTimes(2);
+    const done = await prisma.broadcast.findUnique({ where: { id: bc.id } });
+    expect(done!.sentCount).toBe(1);
+    expect(done!.failedCount).toBe(1);
   });
 });
 

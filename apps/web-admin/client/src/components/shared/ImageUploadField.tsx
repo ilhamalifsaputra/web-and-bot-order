@@ -13,7 +13,10 @@ function csrfToken(): string {
  * `csrf_token` form field, since it's the only way `handleUpload()` on the
  * server reads it out of a multipart body). Picking a file stages a local
  * preview; the request only fires once the user clicks Save (Cancel discards
- * the pick and reverts to the current image). Shared by Branding and Catalog.
+ * the pick and reverts to the current image). `onUploaded` receives the
+ * saved file's URL, so callers with no persisted record of their own (e.g. a
+ * broadcast draft) can stash it locally instead of refetching. Shared by
+ * Branding, Catalog, and Broadcast.
  */
 export function ImageUploadField({
   label,
@@ -29,7 +32,7 @@ export function ImageUploadField({
   uploadPath: string;
   fieldName: string;
   accept: string;
-  onUploaded: () => void;
+  onUploaded: (url: string) => void;
   dimensions?: string;
 }) {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
@@ -80,7 +83,8 @@ export function ImageUploadField({
       if (previewUrl) URL.revokeObjectURL(previewUrl);
       setPendingFile(null);
       setPreviewUrl(null);
-      onUploaded();
+      const { url } = (await res.json()) as { url: string };
+      onUploaded(url);
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed");
     } finally {

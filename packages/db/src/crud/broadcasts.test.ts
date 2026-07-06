@@ -8,6 +8,7 @@ import {
   claimNextDueBroadcast,
   finishBroadcast,
   cancelBroadcast,
+  setBroadcastImageFileId,
 } from "./broadcasts";
 
 let db: TestDb;
@@ -108,5 +109,33 @@ describe("broadcast queue lifecycle", () => {
     const bc2 = await make();
     await claimNextDueBroadcast(prisma, new Date()); // → SENDING
     expect(await cancelBroadcast(prisma, bc2.id)).toBe(false);
+  });
+
+  it("persists an optional webImageUrl, defaulting to null when omitted", async () => {
+    const withImage = await make({ webImageUrl: "/uploads/broadcasts/broadcast-abc123.jpg" });
+    expect(withImage.webImageUrl).toBe("/uploads/broadcasts/broadcast-abc123.jpg");
+    expect(withImage.imageFileId).toBeNull();
+
+    const withoutImage = await make();
+    expect(withoutImage.webImageUrl).toBeNull();
+  });
+
+  it("caches a broadcast's image file_id without touching other fields", async () => {
+    const bc = await make({ webImageUrl: "/uploads/broadcasts/broadcast-abc123.jpg" });
+    await setBroadcastImageFileId(prisma, bc.id, "AgAC123fileid");
+    const updated = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+    expect(updated.imageFileId).toBe("AgAC123fileid");
+    expect(updated.webImageUrl).toBe("/uploads/broadcasts/broadcast-abc123.jpg");
+    expect(updated.status).toBe("PENDING");
+  });
+
+  it("finishBroadcast is unaffected by a broadcast having an image", async () => {
+    const bc = await make({ webImageUrl: "/uploads/broadcasts/broadcast-abc123.jpg" });
+    await claimNextDueBroadcast(prisma, new Date());
+    await finishBroadcast(prisma, bc.id, { sent: 3, failed: 0, total: 3 });
+    const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+    expect(done.status).toBe("SENT");
+    expect(done.sentCount).toBe(3);
+    expect(done.webImageUrl).toBe("/uploads/broadcasts/broadcast-abc123.jpg");
   });
 });

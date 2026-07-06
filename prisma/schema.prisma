@@ -568,6 +568,8 @@ model Broadcast {
   totalCount  Int       @default(0) @map("total_count") // recipients at enqueue (display)
   sentCount   Int       @default(0) @map("sent_count")
   failedCount Int       @default(0) @map("failed_count")
+  webImageUrl String?   @map("web_image_url") // optional attached image, /uploads/broadcasts/... path
+  imageFileId String?   @map("image_file_id") // cached Telegram file_id, resolved on first sendPhoto
   createdAt   DateTime  @default(now()) @map("created_at")
   sentAt      DateTime? @map("sent_at")
 

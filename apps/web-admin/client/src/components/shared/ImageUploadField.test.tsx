@@ -57,13 +57,18 @@ describe("ImageUploadField", () => {
     );
   });
 
-  it("Save uploads the picked file and calls onUploaded on success", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response("", { status: 200 }));
+  it("Save uploads the picked file and calls onUploaded with the saved URL on success", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ url: "/uploads/products/product-abc123.png" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
     const { onUploaded } = renderField();
     const user = await pickFile();
     await user.click(screen.getByRole("button", { name: "Save" }));
 
-    await waitFor(() => expect(onUploaded).toHaveBeenCalledOnce());
+    await waitFor(() => expect(onUploaded).toHaveBeenCalledWith("/uploads/products/product-abc123.png"));
     expect(fetchSpy).toHaveBeenCalledOnce();
     const [url, init] = fetchSpy.mock.calls[0]!;
     expect(url).toBe("/catalog/product/1/photo");

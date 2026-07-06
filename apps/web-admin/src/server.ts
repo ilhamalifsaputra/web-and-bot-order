@@ -38,6 +38,7 @@ import stockApiRoutes from "./routes/api/stock";
 import ordersApiRoutes from "./routes/api/orders";
 import catalogPhotoRoutes from "./routes/catalogPhoto";
 import brandingRoutes from "./routes/branding";
+import broadcastPhotoRoutes from "./routes/broadcastPhoto";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // Overridable via env so the bundled deploy can point at the shipped static/
@@ -118,6 +119,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(ordersApiRoutes);
   await app.register(catalogPhotoRoutes);
   await app.register(brandingRoutes);
+  await app.register(broadcastPhotoRoutes);
   // Wildcard SPA catch-all — MUST be last so specific API/auth routes win.
   await app.register(spaShellRoutes);
 

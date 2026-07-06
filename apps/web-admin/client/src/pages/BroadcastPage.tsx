@@ -18,6 +18,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiPost } from "../api/client";
+import { ImageUploadField } from "../components/shared/ImageUploadField";
 
 interface BroadcastRow {
   id: number;
@@ -28,6 +29,7 @@ interface BroadcastRow {
   sent: number;
   scheduledAt: string | null;
   createdAt: string;
+  webImageUrl: string | null;
 }
 
 interface BroadcastData {
@@ -50,14 +52,21 @@ function useBroadcast() {
 export function BroadcastPage() {
   const qc = useQueryClient();
   const { data, isError } = useBroadcast();
-  const [form, setForm] = useState({ message: "", segment: "", scheduled_at: "" });
+  const [form, setForm] = useState({ message: "", segment: "", scheduled_at: "", webImageUrl: "" });
   const [formError, setFormError] = useState<string | null>(null);
+  const maxMessage = form.webImageUrl ? 1024 : 4000;
+  const overLimit = form.message.length > maxMessage;
 
   const send = useMutation({
-    mutationFn: () => apiPost("/api/broadcast", form),
+    mutationFn: () => apiPost("/api/broadcast", {
+      message: form.message,
+      segment: form.segment,
+      scheduled_at: form.scheduled_at,
+      image_url: form.webImageUrl,
+    }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["broadcast"] });
-      setForm({ message: "", segment: "", scheduled_at: "" });
+      setForm({ message: "", segment: "", scheduled_at: "", webImageUrl: "" });
       setFormError(null);
     },
     onError: (e: Error) => setFormError(e.message),
@@ -80,11 +89,35 @@ export function BroadcastPage() {
         <CardContent className="flex flex-col gap-3">
           {formError && <p className="text-sm text-rust">{formError}</p>}
           <Textarea
-            placeholder="Message (max 4000 chars)"
+            placeholder={form.webImageUrl ? "Caption (max 1024 chars with an image)" : "Message (max 4000 chars)"}
             value={form.message}
             onChange={e => setForm(f => ({ ...f, message: e.target.value }))}
             rows={5}
           />
+          <p className={`text-xs -mt-2 ${overLimit ? "text-rust" : "text-ink-soft"}`}>
+            {form.message.length} / {maxMessage}
+            {overLimit ? ` — too long for ${form.webImageUrl ? "a photo caption" : "a broadcast"}` : ""}
+          </p>
+          <ImageUploadField
+            label="Image (optional)"
+            imageUrl={form.webImageUrl}
+            uploadPath="/broadcast/photo"
+            fieldName="photo"
+            accept="image/jpeg,image/png,image/webp"
+            dimensions="JPG/PNG/WebP, under 5MB"
+            onUploaded={url => setForm(f => ({ ...f, webImageUrl: url }))}
+          />
+          {form.webImageUrl && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="self-start text-rust"
+              onClick={() => setForm(f => ({ ...f, webImageUrl: "" }))}
+            >
+              Remove image
+            </Button>
+          )}
           <div className="flex flex-wrap gap-2 items-end">
             <div className="flex flex-col gap-1">
               <label className="text-xs text-ink-soft">Segment</label>
@@ -112,7 +145,7 @@ export function BroadcastPage() {
             </div>
             <ConfirmDialog
               trigger={
-                <Button disabled={!form.message || !form.segment || send.isPending}>
+                <Button disabled={!form.message || !form.segment || overLimit || send.isPending}>
                   {form.scheduled_at ? "Schedule" : "Send now"}
                 </Button>
               }
@@ -138,6 +171,13 @@ export function BroadcastPage() {
                 {b.message.slice(0, 80)}{b.message.length > 80 ? "…" : ""}
               </span>
             ),
+          },
+          {
+            key: "image",
+            header: "Image",
+            render: b => b.webImageUrl
+              ? <img src={b.webImageUrl} alt="" className="h-8 w-8 object-cover rounded border border-line" />
+              : <span className="text-xs text-ink-soft">—</span>,
           },
           {
             key: "segment",

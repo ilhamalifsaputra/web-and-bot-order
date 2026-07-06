@@ -36,6 +36,7 @@ import {
 import { coreT } from "../util/i18n";
 import { notificationKb } from "../keyboards/customer";
 import { esc } from "../util/format";
+import { broadcastPhotoArg, cacheBroadcastPhotoFileId } from "../util/broadcastPhoto";
 
 /**
  * Flip the anchored payment-instructions bubble (if any) to the auto-cancelled
@@ -329,11 +330,25 @@ export async function drainBroadcasts(api: Api): Promise<void> {
   logger.info(`Broadcast #${bc.id} starting — sending to ${recipients.length} recipient(s) in segment "${bc.segment}"`);
   let sent = 0;
   let failed = 0;
+  const photoArg = broadcastPhotoArg(bc);
+  let cachedFileId = bc.imageFileId;
+  const cacheFileId = cacheBroadcastPhotoFileId(bc.id);
   for (const r of recipients) {
     try {
-      // Plain text — the operator types raw content; no parse_mode so '<' / '&'
-      // can't break the message.
-      await api.sendMessage(Number(r.telegramId), bc.message);
+      if (photoArg) {
+        // No parse_mode on the caption either — same reasoning as the plain-text
+        // branch below: the operator types raw content, unescaped.
+        const photo = cachedFileId ?? photoArg.photo;
+        const msg = await api.sendPhoto(Number(r.telegramId), photo, { caption: bc.message });
+        if (!cachedFileId && photoArg.needsCache && msg.photo?.length) {
+          cachedFileId = msg.photo[msg.photo.length - 1]!.file_id;
+          await cacheFileId(cachedFileId);
+        }
+      } else {
+        // Plain text — the operator types raw content; no parse_mode so '<' / '&'
+        // can't break the message.
+        await api.sendMessage(Number(r.telegramId), bc.message);
+      }
       sent++;
     } catch {
       failed++; // user blocked the bot / deactivated — counted, not fatal

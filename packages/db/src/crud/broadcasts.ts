@@ -43,7 +43,14 @@ export function resolveSegmentRecipients(db: Db, segment: BroadcastSegment) {
 
 export function createBroadcast(
   db: Db,
-  args: { message: string; segment: BroadcastSegment; scheduledAt: Date | null; createdById: number | null; total: number },
+  args: {
+    message: string;
+    segment: BroadcastSegment;
+    scheduledAt: Date | null;
+    createdById: number | null;
+    total: number;
+    webImageUrl?: string | null;
+  },
 ) {
   return db.broadcast.create({
     data: {
@@ -52,6 +59,7 @@ export function createBroadcast(
       scheduledAt: args.scheduledAt,
       createdById: args.createdById,
       totalCount: args.total,
+      webImageUrl: args.webImageUrl ?? null,
       status: "PENDING",
     },
   });
@@ -91,4 +99,9 @@ export async function finishBroadcast(
     where: { id },
     data: { status: "SENT", sentCount: r.sent, failedCount: r.failed, totalCount: r.total, sentAt: new Date() },
   });
+}
+
+/** Cache the Telegram file_id resolved for this broadcast's image after its first successful sendPhoto. */
+export async function setBroadcastImageFileId(db: Db, id: number, fileId: string): Promise<void> {
+  await db.broadcast.update({ where: { id }, data: { imageFileId: fileId } });
 }

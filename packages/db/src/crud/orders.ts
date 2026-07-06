@@ -19,6 +19,7 @@ import { NotificationEvent } from "@app/core/enums";
 import { publicChannelId } from "@app/core/runtime";
 import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
+import { isUniqueViolation } from "./_types";
 import { getBulkPricingForDenomination } from "./catalog";
 import { getVoucherByCode, applyVoucherToSubtotal, assertVoucherNotRedeemedByUser } from "./vouchers";
 import { countAvailableStock, allocateOneAvailableStock } from "./stock";
@@ -60,6 +61,67 @@ async function bumpVoucherUsage(db: Db, voucher: { id: number; usageLimit: numbe
     data: { usedCount: { increment: 1 } },
   });
   if (bumped.count === 0) throw new ValidationError("error.voucher_used_up");
+}
+
+/**
+ * Sentinel written to `Order.paymentRef` while a lazy gateway invoice
+ * creation call (TokoPay/PayDisini/NOWPayments, apps/storefront's
+ * checkout.ts `payView`) is in flight, so a second concurrent request for
+ * the SAME order (e.g. a pay-page double-load) can't create a second
+ * gateway invoice — `claimGatewaySlot`'s conditional `updateMany` is the
+ * atomic guard, mirroring `bumpVoucherUsage`'s pattern above (Data-2 fix,
+ * backend audit 2026-07-07).
+ *
+ * `paymentRef` also carries a UNIQUE index (it stores the real gateway JSON
+ * once committed), so a claim for a DIFFERENT order landing at this exact
+ * instant collides on this same literal string at the DB level rather than
+ * just matching zero rows — `claimGatewaySlot` treats that unique-constraint
+ * violation the same as a lost claim race (returns false) instead of letting
+ * it throw.
+ */
+export const GATEWAY_CLAIM_SENTINEL = "__pending_gateway_claim__";
+
+/**
+ * Atomically claim the right to create this order's gateway invoice. Returns
+ * true iff this call won the claim (paymentRef was null and is now the
+ * sentinel); false if another request already holds the claim for this
+ * order, or — rarely — another order holds it for this same instant (unique
+ * violation on paymentRef, caught below). Callers on false should fall back
+ * to the existing gateway-unavailable UI rather than poll/retry.
+ */
+export async function claimGatewaySlot(db: Db, orderId: number): Promise<boolean> {
+  try {
+    const claimed = await db.order.updateMany({
+      where: { id: orderId, paymentRef: null },
+      data: { paymentRef: GATEWAY_CLAIM_SENTINEL },
+    });
+    return claimed.count === 1;
+  } catch (e) {
+    if (isUniqueViolation(e)) return false;
+    throw e;
+  }
+}
+
+/** Persist the real gateway payload once the external call succeeds,
+ * replacing the claim sentinel `claimGatewaySlot` set. */
+export async function commitGatewayResult(db: Db, orderId: number, payload: unknown): Promise<void> {
+  await db.order.update({
+    where: { id: orderId },
+    data: { paymentRef: JSON.stringify(payload) },
+  });
+}
+
+/**
+ * Release a claim after the external gateway call fails, so a later request
+ * can claim again. Conditional on the sentinel still being present — a
+ * no-op if the slot was already committed (a concurrent success) or
+ * released by someone else.
+ */
+export async function releaseGatewaySlot(db: Db, orderId: number): Promise<void> {
+  await db.order.updateMany({
+    where: { id: orderId, paymentRef: GATEWAY_CLAIM_SENTINEL },
+    data: { paymentRef: null },
+  });
 }
 
 /** Eager-load shape matching the Python get_order selectinload set. */
@@ -166,10 +228,16 @@ export async function createOrderFromCart(
     voucher = await getVoucherByCode(db, args.voucherCode);
     if (!voucher) throw new ValidationError("error.voucher_not_found");
     await assertVoucherNotRedeemedByUser(db, voucher.id, args.user.id);
-    discount = applyVoucherToSubtotal(voucher, subtotal);
+    // Cap against the subtotal NET of the bulk discount (mirrors
+    // createOrderDirect's matching step below) — capping against the gross
+    // subtotal let a bulk discount + a voucher discount together exceed the
+    // subtotal, producing a negative afterDiscount (and thus a negative
+    // walletUsed persisted on the order) whenever both discounts were large
+    // (Money-2 fix, backend audit 2026-07-07).
+    discount = applyVoucherToSubtotal(voucher, subtotal.minus(bulkDiscount));
   }
 
-  const afterDiscount = subtotal.minus(bulkDiscount).minus(discount);
+  const afterDiscount = Decimal.max(ZERO, subtotal.minus(bulkDiscount).minus(discount));
 
   // 4. Wallet debit
   const walletAmount = q4(Decimal.max(ZERO, new Decimal(args.walletAmount ?? 0)));

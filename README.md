@@ -226,10 +226,12 @@ saat membeli, di bot maupun website. Ketiganya auto-confirm:
 | **Binance Internal** | USDT | Otomatis (transfer antar-UID) | UID + API key/secret read-only |
 | **Bybit Internal Transfer** | USDT | Otomatis (transfer antar-UID, instant off-chain) | UID + API key/secret |
 
-> **Binance Pay manual** (upload bukti, approve manual) hanya muncul sebagai
-> *fallback* bila belum ada metode otomatis. **Bybit:** API key harus **Wallet
-> READ-ONLY**; tes koneksi `pnpm bybit-probe`. Pencocokan pakai
-> **nominal unik**, jaga `USE_UNIQUE_CENTS=1` dan pembeli kirim **jumlah persis**.
+> **Binance Pay manual** (upload bukti, approve manual) sudah **dipensiunkan**
+> — tak ada lagi jalur bot untuk memilih/mengunggah bukti metode ini; label
+> ini hanya bertahan sebagai tampilan read-only untuk order lama yang sudah
+> dibuat sebelumnya. **Bybit:** API key harus **Wallet READ-ONLY**; tes koneksi
+> `pnpm bybit-probe`. Pencocokan pakai **nominal unik**, jaga
+> `USE_UNIQUE_CENTS=1` dan pembeli kirim **jumlah persis**.
 
 **Branding** (Settings → Branding): upload favicon, logo, hero toko, banner bot,
 plus ubah nama toko, tagline, sambutan — berlaku tanpa restart. Detail tiap metode
@@ -331,6 +333,19 @@ pnpm test           # seluruh tes (Vitest)
 ```
 
 `pnpm typecheck` dan `pnpm test` harus selalu hijau sebelum commit.
+
+**Skrip diagnostik & pemeliharaan:**
+
+| Skrip | Kegunaan |
+|---|---|
+| `pnpm binance-probe` | Tes koneksi API Binance read-only, cek transfer masuk terlihat |
+| `pnpm bybit-probe` | Tes koneksi API Bybit read-only |
+| `pnpm diag-reconcile-drift` | Tampilkan detail drift rekonsiliasi finansial (lihat `reconcileFinances`) |
+| `pnpm reset-admin-password <id> [--set <password>]` | Reset password admin darurat tanpa lewat bot/wizard (lihat [bagian 5](#5-buat-admin-pertama)) |
+
+Migrasi data sekali-jalan (`scripts/migrate-*.ts`, mis. `migrate-catalog-rename`)
+punya aturan pakai sendiri — lihat peringatan di [bagian 7](#7-update-backup-perawatan)
+sebelum menjalankannya di produksi.
 
 **Struktur:**
 

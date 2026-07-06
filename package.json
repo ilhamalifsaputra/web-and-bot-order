@@ -15,6 +15,7 @@
     "migrate-catalog-rename": "tsx scripts/migrate-catalog-rename.ts",
     "backfill-catalog-slugs": "tsx scripts/backfill-catalog-slugs.ts",
     "bybit-probe": "tsx scripts/bybit-internal-probe.ts",
+    "binance-probe": "tsx scripts/binance-probe.ts",
     "diag-reconcile-drift": "tsx scripts/diag-reconcile-drift.ts",
     "start": "NODE_ENV=production tsx apps/server/src/index.ts",
     "typecheck": "pnpm -r typecheck && tsc -p tsconfig.test.json",

@@ -13,10 +13,14 @@ Arsitektur, fitur, dan setup environment proyek. Konvensi koding ada di
 6. [Settings vs `.env`](#6-settings-vs-env)
 7. [Manajemen stok](#7-manajemen-stok)
 8. [Credit balance (IDR + USDT)](#8-credit-balance-idr--usdt)
-9. [Desain storefront](#9-desain-storefront)
-10. [Setup env & checklist fitur](#10-setup-env--checklist-fitur)
-11. [Banyak toko dalam satu VPS](#11-banyak-toko-dalam-satu-vps)
-12. [API & Webhook](#12-api--webhook)
+9. [Program referral](#9-program-referral)
+10. [Tiket dukungan (support)](#10-tiket-dukungan-support)
+11. [Ulasan & rating produk](#11-ulasan--rating-produk)
+12. [Langganan restock](#12-langganan-restock)
+13. [Desain storefront](#13-desain-storefront)
+14. [Setup env & checklist fitur](#14-setup-env--checklist-fitur)
+15. [Banyak toko dalam satu VPS](#15-banyak-toko-dalam-satu-vps)
+16. [API & Webhook](#16-api--webhook)
 
 ---
 
@@ -54,12 +58,12 @@ database SQLite** (`data/bot.db`, mode WAL).
   dari denominasi aktif termurah ("starting price") + agregat stok/rating
   lintas denominasi.
 - **Tidak ada API publik untuk konsumsi pihak ketiga.** Storefront adalah React
-  SPA yang dilayani lewat JSON API internal (`/api/v1/*`, lihat §12) — bukan
+  SPA yang dilayani lewat JSON API internal (`/api/v1/*`, lihat §16) — bukan
   kontrak stabil untuk klien luar, hanya untuk `apps/storefront/client`
   sendiri. Admin masih server-rendered (Nunjucks + HTMX). Satu-satunya
   endpoint non-HTML untuk pihak ketiga adalah webhook (`/pay/{tokopay,
   paydisini,nowpayments}/callback`, `/tg/<secret>` saat `BOT_MODE=webhook`) dan
-  `/healthz` — daftar lengkap + kontrak request/respons di §12. Integrasi =
+  `/healthz` — daftar lengkap + kontrak request/respons di §16. Integrasi =
   lewat DB/CRUD, bukan HTTP.
 
 **Topologi listen** (`apps/server/src/index.ts`):
@@ -130,6 +134,15 @@ langsung berlaku tanpa restart. Folder `/uploads/` di kedua app mengirim header
 Banner bot dikirim sebagai `InputFile` lalu file_id Telegram-nya di-cache
 (`banner_image_fileid`); cache di-invalidasi saat banner di-set/hapus.
 
+**Foto produk di bot (chat bubble).** Layar denomination picker (`browseProduct`)
+dan detail SKU (`browseDenomination`) kini merender foto produk itu sendiri
+(`Product.webImageUrl`) sebagai bubble foto+caption, bukan hanya banner generik
+toko — `productPhotoArg`/`cacheProductPhotoFileId`
+(`apps/order-bot/src/util/productPhoto.ts`) meng-cache file_id yang di-resolve
+ke kolom `Product.imageFileId` setelah pengiriman pertama, mengikuti pola cache
+banner di atas. Produk tanpa foto tetap jatuh ke perilaku lama (banner/teks
+biasa).
+
 ---
 
 ## 4. Harga: IDR pusat + USDT turunan
@@ -164,7 +177,7 @@ Tiap order menyimpan snapshot: `Order.currency` (`IDR`/`USDT`), `Order.fxRate`
 | **Bybit Internal Transfer** (UID-based, instant off-chain) | USDT | poller cocokkan **nominal unik**; tak cocok → "unmatched" untuk review; idempoten `processed_bybit_tx` | Settings |
 
 Kontrak webhook + reconcile poller ketiga gateway IDR/USDT di atas (TokoPay,
-PayDisini, NOWPayments) didokumentasikan lengkap di **§12**.
+PayDisini, NOWPayments) didokumentasikan lengkap di **§16**.
 
 Klien TokoPay & PayDisini ada di `@app/core/payments/{tokopay,paydisini}`,
 NOWPayments di `@app/core/payments/nowpayments` (resolver `getTokopayCreds` /
@@ -187,8 +200,13 @@ jendela bayar habis. NOWPayments **tidak perlu** didaftarkan manual: callback
 URL dikirim otomatis per-invoice (`ipn_callback_url`). Binance & Bybit (poller)
 tak terpengaruh sama sekali.
 
-**Binance Pay manual** (upload bukti, approve manual di bot) hanya muncul sebagai
-fallback zero-config bila tak ada metode otomatis. Perlu `BINANCE_PAY_ID`.
+**Binance Pay manual** (upload bukti, approve manual di bot) sudah
+**dipensiunkan** — `checkout.ts:9` eksplisit: *"the legacy manual Binance-Pay
+proof/verification path is retired"*, dan `orderConfirmKb` tidak lagi
+menampilkan tombol untuk memilihnya (dikonfirmasi test `payment-menu.test.ts:40`,
+*"manual fallback retired"*). `BINANCE_PAY` kini murni label read-only pada
+order lama yang dibuat sebelum dipensiunkan — tidak ada jalur aktif untuk
+order baru.
 
 Menu bayar: **QRIS / PayDisini / NOWPayments / Binance / Bybit**. Tes koneksi
 API: `pnpm binance-probe`, `pnpm bybit-probe`.
@@ -273,13 +291,85 @@ pembeli (store credit — **bukan** refund ke rekening).
   kredit ke saldo mata-uang order (`unfulfilled_credit`), lepas hold stok, tandai
   order **CANCELLED**, idempoten, retag tx `credited_to_balance`. Keduanya
   CSRF-protected + diaudit.
+- **Arah sebaliknya — bayar order dari credit balance:** pembeli dengan saldo
+  cukup bisa membayar order langsung dari `walletBalance`/`walletBalanceUsdt`
+  yang sudah ada, tanpa gateway pembayaran sama sekali. Callback bot
+  `walletm:*`/`walletpay:*` (`apps/order-bot/src/handlers/{checkout,
+  callbacks}.ts`) memanggil `completeOrderWithWalletCredit`
+  (`packages/db/src/crud/wallet_checkout.ts`), yang mendebit saldo mata-uang
+  order lalu menyelesaikan pengiriman seperti pembayaran gateway biasa. Ini
+  konsep berlawanan arah dari kredit admin di atas: uang keluar dari saldo,
+  bukan masuk.
 - **Tampil di:** web-admin user detail, storefront account, dan profil bot.
 
-CRUD: `packages/db/src/crud/{users,orders,binance_internal,bybit_deposit}.ts`.
+CRUD: `packages/db/src/crud/{users,orders,binance_internal,bybit_deposit,
+wallet_checkout}.ts`.
 
 ---
 
-## 9. Desain storefront
+## 9. Program referral
+
+Pembeli membagikan kode referral pribadi; saat orang yang direferensikan
+menyelesaikan pembelian pertama, pereferensi otomatis menerima komisi —
+tanpa approval manual admin.
+
+- **Bot:** layar `ref:view` (`apps/order-bot/src/handlers/customer.ts`,
+  keyboard di `keyboards/customer.ts`) menampilkan kode/link referral milik
+  pembeli beserta ringkasan komisi yang sudah didapat.
+- **Storefront:** halaman `/account/referral`
+  (`apps/storefront/src/routes/apiAccount.ts`) — tampilan setara untuk
+  pembeli yang login lewat web.
+- **Komisi otomatis:** `maybePayReferralCommission`
+  (`packages/db/src/crud/referrals.ts`) dipanggil dari `crud/orders.ts` saat
+  order pertama referee selesai; komisi dikreditkan ke saldo mata-uang order
+  (konversi kurs IDR→USDT dipakai bila perlu — lihat §4 untuk sumber kurs).
+
+CRUD: `packages/db/src/crud/referrals.ts`.
+
+---
+
+## 10. Tiket dukungan (support)
+
+Saluran dukungan terpusat, dua pintu masuk, satu thread per tiket:
+
+- **Bot:** percakapan `apps/order-bot/src/conversations/support.ts` — pembeli
+  mengetik pesan, tiket dibuat/ditambahkan ke thread yang sedang terbuka.
+- **Storefront:** `/account/support` (buat tiket baru + daftar tiket milik
+  akun) dan `/account/support/:id` (thread balasan) di
+  `apps/storefront/src/routes/apiAccount.ts`.
+- **Admin:** antrian tiket + balas/tutup di
+  `apps/web-admin/src/routes/api/support.ts`.
+
+CRUD: `packages/db/src/crud/support.ts` (dan `support.test.ts` colocated).
+
+---
+
+## 11. Ulasan & rating produk
+
+- **Bot bersifat read-only** — hanya menampilkan `productRating`
+  teragregasi per produk. Alur submit-review per-order dari bot **sudah
+  dihapus** (`apps/order-bot/src/handlers/customer.ts:770-771` punya komentar
+  eksplisit yang mencatat penghapusan ini) — jangan asumsikan ada jalur bot
+  untuk mengirim ulasan baru.
+- **Submit & moderasi ulasan** sepenuhnya di storefront (`/account/reviews`)
+  dan web-admin (moderasi/hapus ulasan tak pantas).
+
+CRUD: `packages/db/src/crud/reviews.ts`.
+
+---
+
+## 12. Langganan restock
+
+Pembeli bisa berlangganan notifikasi saat denominasi yang sedang habis stok
+kembali tersedia — callback bot `restock:sub`
+(`apps/order-bot/src/handlers/callbacks.ts`,
+`apps/order-bot/src/handlers/admin.ts`). Notifikasi dikirim lewat jalur
+`notification_outbox` yang sama dengan notifikasi lain (§1) saat stok
+denominasi itu bertambah kembali.
+
+---
+
+## 13. Desain storefront
 
 Satu bahasa visual dengan web-admin ("Clean Modern"): token warna, font, radius,
 shadow **identik** dengan `packages/web-ui/views/_theme.njk` — storefront kini
@@ -308,7 +398,7 @@ SQL mentah; jangan ubah nama kolom/skema (DB dipakai bersama).
 
 ---
 
-## 10. Setup env & checklist fitur
+## 14. Setup env & checklist fitur
 
 Semua konfigurasi lewat **`.env`** (salin dari [`.env.example`](.env.example)) +
 sebagian via **web-admin → Settings**. Acuan kebenaran:
@@ -367,14 +457,14 @@ DEFAULT_LANGUAGE=id
 | **Binance Internal (auto)** | `BINANCE_RECEIVE_UID` + `BINANCE_API_KEY` + `BINANCE_API_SECRET` | API **read-only**. Tes: `pnpm binance-probe`. |
 | **Bybit Internal Transfer (auto)** | `bybit_uid` + `bybit_api_key` + `bybit_api_secret` di **Settings** | Wallet **read-only**, jaga `USE_UNIQUE_CENTS=1`. Tes: `pnpm bybit-probe`. |
 | **QRIS Rupiah (TokoPay)** | `tokopay_merchant_id` + `tokopay_secret` + `tokopay_enabled` di **Settings** | Butuh Callback URL publik. |
-| **Binance Pay manual** | `BINANCE_PAY_ID` | Fallback; admin approve manual di bot. |
+| **Binance Pay manual** | — | **Dipensiunkan** — hanya label read-only pada order lama, tak ada jalur aktif untuk order baru (lihat §5). |
 | **Kurs USDT↔IDR** | `usd_idr_rate` di **Settings** | Auto-update pasar ON default. |
 | **Lupa password toko** | `SMTP_HOST` + `SMTP_FROM` (+ `SMTP_USER`/`SMTP_PASS`) | Aktif bila host & from terisi. |
 | **Produksi** | `WEB_COOKIE_SECURE=true` di balik HTTPS | Reverse proxy. |
 
 ---
 
-## 11. Banyak toko dalam satu VPS
+## 15. Banyak toko dalam satu VPS
 
 Aplikasi ini **single-tenant**: `satu deploy = satu bot = satu toko = satu DB`.
 Untuk menjalankan **beberapa bisnis yang benar-benar terpisah** (produk, stok,
@@ -457,7 +547,7 @@ nginx -t && systemctl reload nginx
 
 ---
 
-## 12. API & Webhook
+## 16. API & Webhook
 
 Proyek ini **tidak punya REST/GraphQL API publik** untuk konsumsi pihak ketiga
 (lihat §1). Storefront memang punya JSON API (`/api/v1/*`,

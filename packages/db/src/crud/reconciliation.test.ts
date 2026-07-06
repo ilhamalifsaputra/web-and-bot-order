@@ -7,9 +7,16 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { reconcileFinances, createOrderDirect, createVoucher, upsertUser } from "@app/db";
+import {
+  reconcileFinances,
+  createOrderDirect,
+  createVoucher,
+  upsertUser,
+  finalizeOrderPayment,
+  applyUsdtWalletToOrder,
+} from "@app/db";
 import { Decimal } from "@app/core/money";
-import { VoucherType } from "@app/core/enums";
+import { VoucherType, OrderCurrency, PaymentMethod } from "@app/core/enums";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -54,6 +61,39 @@ describe("reconcileFinances", () => {
     const findings = await reconcileFinances(prisma);
     expect(findings.order_drift.length).toBe(1);
     expect(findings.order_drift[0]!.order_id).toBe(order.id);
+  });
+
+  // Reproduces the real-world "orders: 3" false positive from prod (order
+  // #182, ORD-20260705-LUYV): a USDT order fully paid via applyUsdtWalletToOrder
+  // — walletUsed is USDT-denominated (subtracted from the ALREADY-converted
+  // totalAmount, orders.ts applyUsdtWalletToOrder), not IDR-denominated
+  // subtracted before conversion like the cart/direct-order wallet paths.
+  it("USDT order fully paid via USDT wallet credit → no false drift", async () => {
+    const { user, product } = sample;
+    const created = (await createOrderDirect(prisma, { user, productId: product.id, quantity: 1 }))!;
+    // Sample product price ("5.00") is too small to survive USDT rounding —
+    // bump the order to prod-realistic numbers (order #182 was 28000 IDR).
+    await prisma.order.update({
+      where: { id: created.id },
+      data: { subtotalAmount: "28000", totalAmount: "28000" },
+    });
+    const rate = new Decimal("18000");
+    await finalizeOrderPayment(prisma, created.id, {
+      currency: OrderCurrency.USDT,
+      rate,
+      method: PaymentMethod.NOWPAYMENTS,
+    });
+    const afterFinalize = await prisma.order.findUniqueOrThrow({ where: { id: created.id } });
+
+    // Give the user exactly enough USDT wallet credit to cover the converted total.
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { walletBalanceUsdt: afterFinalize.totalAmount },
+    });
+    await applyUsdtWalletToOrder(prisma, created.id, afterFinalize.totalAmount);
+
+    const findings = await reconcileFinances(prisma);
+    expect(findings.order_drift).toEqual([]);
   });
 
   it("catches voucher usage drift", async () => {

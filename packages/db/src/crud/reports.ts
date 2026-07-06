@@ -31,18 +31,27 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
     const afterDisc = new Decimal(o.subtotalAmount)
       .minus(o.bulkDiscountAmount)
       .minus(o.discountAmount);
-    let afterWallet = afterDisc.minus(o.walletUsed);
-    if (afterWallet.lessThan(0)) afterWallet = new Decimal(0);
     // Subtotals are stored in the central price unit (IDR post-cutover; the
     // pre-cutover snapshot unit before). The CHARGED total depends on the
     // pay-time choice (plan.md §15.1): a USDT order with an fxRate snapshot is
     // round(base/rate, 0.1) + cents; an IDR order is the whole-Rupiah base.
     let expected: Decimal;
     if (o.currency === "USDT" && o.fxRate != null) {
-      expected = q4(usdtFromIdr(afterWallet, o.fxRate).plus(o.uniqueCents));
+      // walletUsed on a USDT order is USDT-denominated: applyUsdtWalletToOrder
+      // (orders.ts) debits the USDT balance and subtracts it from the
+      // ALREADY-converted totalAmount, after the IDR->USDT conversion — unlike
+      // the IDR wallet paths below, which subtract IDR walletUsed before any
+      // conversion happens.
+      let afterWallet = usdtFromIdr(afterDisc, o.fxRate).minus(o.walletUsed);
+      if (afterWallet.lessThan(0)) afterWallet = new Decimal(0);
+      expected = q4(afterWallet.plus(o.uniqueCents));
     } else if (o.currency === "IDR") {
+      let afterWallet = afterDisc.minus(o.walletUsed);
+      if (afterWallet.lessThan(0)) afterWallet = new Decimal(0);
       expected = quantizeMoney(afterWallet, 0);
     } else {
+      let afterWallet = afterDisc.minus(o.walletUsed);
+      if (afterWallet.lessThan(0)) afterWallet = new Decimal(0);
       expected = q4(afterWallet.plus(o.uniqueCents));
     }
     if (expected.minus(o.totalAmount).abs().greaterThan("0.0001")) {

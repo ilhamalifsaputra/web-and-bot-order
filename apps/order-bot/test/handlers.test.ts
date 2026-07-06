@@ -135,6 +135,16 @@ describe("customer handlers", () => {
     expect(calls(sink, "replyWithPhoto").length).toBe(0);
   });
 
+  it("browseProductsFlat deletes a stale photo bubble instead of leaving it stuck when Back lands on it", async () => {
+    const { ctx, sink } = customerCtx({
+      callbackData: "v1:browse:prods",
+      cbMessage: { message_id: 555, chat: { id: 42 }, date: 0, photo: [{ file_id: "OLD" }] },
+    });
+    await customer.browseProductsFlat(ctx);
+    expect(calls(sink, "deleteMessage").length).toBe(1);
+    expect(calls(sink, "editMessageCaption").length).toBe(0);
+  });
+
   it("Product List has no inline keyboard on a single page (selection is by typed number)", async () => {
     const { ctx, sink } = customerCtx({ callbackData: "v1:browse:page:0" });
     await customer.browseProductsFlat(ctx, 0);

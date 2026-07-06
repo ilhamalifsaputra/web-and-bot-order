@@ -250,6 +250,22 @@ export async function cancelCommand(ctx: MyContext): Promise<void> {
 export async function browseProductsFlat(ctx: MyContext, page = 0): Promise<void> {
   const lang = ctx.session.lang;
 
+  // A product's own photo (browseProduct/browseDenomination) may still be
+  // showing when Back lands here — this screen is always plain text, and
+  // Telegram can't strip a photo via editMessageCaption (the stale photo
+  // would stay stuck behind the "Product List" caption forever). Delete that
+  // bubble and clear the anchor so the render below sends a fresh message.
+  const chatId = ctx.chat?.id;
+  const cqMsg = ctx.callbackQuery?.message;
+  if (chatId !== undefined && cqMsg && "photo" in cqMsg && cqMsg.photo) {
+    try {
+      await ctx.api.deleteMessage(chatId, cqMsg.message_id);
+    } catch {
+      /* gone/too old */
+    }
+    ctx.session.menuMsgId = undefined;
+  }
+
   // Flat list of mid-tier Products (each with ≥1 active denomination). No
   // category browsing and no group/product collapse — every row is a Product.
   const products = await listCatalogProducts(prisma);

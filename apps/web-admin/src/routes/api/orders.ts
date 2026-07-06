@@ -216,13 +216,13 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     }
     try {
       await prisma.$transaction(async (tx) => {
-        await rejectOrder(tx, orderId, { adminId: req.admin!.userId, reason });
+        const order = await rejectOrder(tx, orderId, { adminId: req.admin!.userId, reason });
         await logAdminAction(tx, {
           adminId: req.admin!.userId,
           action: "reject_order",
           targetType: "order",
           targetId: orderId,
-          details: `Rejected order ${orderId}: ${reason.slice(0, 200)}`,
+          details: `Rejected order ${order!.orderCode}: "${reason.slice(0, 200)}".`,
         });
       });
     } catch (e) {

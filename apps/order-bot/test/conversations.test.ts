@@ -173,7 +173,9 @@ describe("support + reject conversations", () => {
 
     const after = await getOrder(prisma, order.id);
     expect(after!.status).toBe(OrderStatus.REJECTED);
-    expect(await prisma.auditLog.count({ where: { action: "reject_order" } })).toBe(1);
+    const auditLog = await prisma.auditLog.findFirst({ where: { action: "reject_order" } });
+    expect(auditLog).toBeDefined();
+    expect(auditLog!.details).toBe(`Rejected order ${after!.orderCode}: "Proof does not match".`);
     expect(calls(sink, "sendMessage").some((c) => c.args[0] === 42)).toBe(true); // buyer DM
   });
 

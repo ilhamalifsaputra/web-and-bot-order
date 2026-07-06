@@ -72,7 +72,7 @@ export async function rejectConversation(conversation: MyConversation, ctx: MyCo
         action: "reject_order",
         targetType: "order",
         targetId: orderId,
-        details: `Rejected order: ${reason}`,
+        details: `Rejected order ${o!.orderCode}: "${reason}".`,
       });
       return o!;
     });

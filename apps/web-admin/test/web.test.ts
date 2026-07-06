@@ -579,6 +579,7 @@ describe("orders", () => {
     expect(order.status).toBe("REJECTED");
     const audit = await prisma.auditLog.findMany({ where: { action: "reject_order", targetId: orderId } });
     expect(audit.length).toBe(1);
+    expect(audit[0].details).toBe(`Rejected order ${order.orderCode}: "blurry proof".`);
   });
 
   it("reject requires a reason", async () => {

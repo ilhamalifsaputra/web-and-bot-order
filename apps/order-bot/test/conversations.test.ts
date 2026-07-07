@@ -341,13 +341,25 @@ describe("admin conversations", () => {
   it("userBan: the inline Cancel button aborts without changing the ban flag or writing an audit row", async () => {
     const sink: SentCall[] = [];
     const entry = entryAdmin(sink, `v1:adm:users:ban:${sample.user.id}`);
-    const conv = new FakeConversation([msg(sink, { callbackData: "v1:adm:cancel" })]);
+    // Sent by the same admin (999) who opened the flow — handledEscape's
+    // adminGate check requires a real admin id, or it just answers a "not
+    // admin" toast instead of actually rendering the panel.
+    const cancel = makeCtx({
+      sink,
+      from: { id: 999, username: "boss" },
+      session: { lang: "en", scratch: {}, dbUser: { id: adminDbId, telegramId: "999", role: UserRole.ADMIN, language: "EN", referralCode: "A", walletBalance: "0" } },
+      callbackData: "v1:adm:cancel",
+    }).ctx;
+    const conv = new FakeConversation([cancel]);
     await userBanConversation(conv.asMyConversation(), entry);
 
     const after = await getUser(prisma, sample.user.id);
     expect(after!.banned).toBe(false);
     expect(await prisma.auditLog.count({ where: { action: "user_ban" } })).toBe(0);
-    expect(offersForwardAction(sink)).toBe(true); // lands back on the admin panel, never stranded
+    // Lands back on the real admin panel (not just "some keyboard exists"),
+    // confirming the escape path actually re-rendered admin.menu.
+    expect(sentIncludes(sink, "Admin Panel")).toBe(true);
+    expect(offersForwardAction(sink)).toBe(true); // never stranded
   });
 
   it("userBan: a too-short reason shows a validation error, then a valid retry succeeds", async () => {

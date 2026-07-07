@@ -1,7 +1,9 @@
 {
   "admin.approve": "✅ Approve",
   "admin.approved": "Order {code} approved and delivered.",
+  "admin.ask_ban_reason": "Send the reason for banning this user (for the audit log only — the user never sees this):",
   "admin.ask_reject_reason": "Send the rejection reason (shown to the buyer):",
+  "admin.ask_unban_reason": "Send the reason for unbanning this user (for the audit log only — the user never sees this):",
   "admin.broadcast": "📢 Broadcast",
   "admin.broadcast_already_in_progress": "A broadcast is already in progress (started recently) — wait for it to finish before sending another.",
   "admin.broadcast_ask": "Send the message (text or photo with caption) to broadcast. /cancel to abort.",
@@ -38,8 +40,6 @@
   "admin.toast.stock_marked_dead": "💀 Marked as dead",
   "admin.toast.ticket_closed": "🔒 Ticket closed.",
   "admin.toast.unknown_period": "Unknown period",
-  "admin.toast.user_banned": "🚫 User banned",
-  "admin.toast.user_unbanned": "✅ User unbanned",
   "admin.bulk_none_set": "No bulk pricing rule set for this product.\n\nTap <b>➕ Add Rule</b> to set a minimum quantity and discount percentage.",
   "admin.empty_products": "No products yet. Seed via DB or extend the admin panel.",
   "admin.empty_stock_items": "No stock items.",

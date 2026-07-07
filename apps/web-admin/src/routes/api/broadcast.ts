@@ -11,8 +11,10 @@ import {
   cancelBroadcast,
   logAdminAction,
 } from "@app/db";
+import { localize } from "@app/core/datetime";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { UPLOADS_DIR } from "../../paths";
+import { displayDateTime } from "../../dateDisplay";
 
 const MAX_MESSAGE = 4000;
 const MAX_CAPTION = 1024; // Telegram's photo caption limit
@@ -23,7 +25,8 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
     const counts: Record<string, number> = {};
     for (const s of BROADCAST_SEGMENTS) counts[s] = await countSegment(prisma, s);
     const history = await listBroadcasts(prisma, 30);
-    return reply.send({ segments: BROADCAST_SEGMENTS, counts, history });
+    const historyWithDisplay = history.map((b) => ({ ...b, scheduledAtDisplay: displayDateTime(b.scheduledAt) }));
+    return reply.send({ segments: BROADCAST_SEGMENTS, counts, history: historyWithDisplay });
   });
 
   app.post("/api/broadcast", { preHandler: csrfProtect }, async (req, reply) => {
@@ -76,7 +79,7 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
       action: "broadcast_enqueue",
       targetType: "broadcast",
       targetId: bc.id,
-      details: `${scheduledAt ? "Scheduled" : "Queued"} a broadcast to ${total} recipient(s) in segment "${segment}"${webImageUrl ? " with an attached image" : ""}${scheduledAt ? ` for ${scheduledAt.toISOString()}` : ""}.`,
+      details: `${scheduledAt ? "Scheduled" : "Queued"} a broadcast to ${total} recipient(s) in segment "${segment}"${webImageUrl ? " with an attached image" : ""}${scheduledAt ? ` for ${localize(scheduledAt)}` : ""}.`,
     });
     return reply.code(201).send({ broadcast: bc, total });
   });

@@ -25,6 +25,7 @@ import {
   getUserByTelegramId,
   logAdminAction,
   searchUsers,
+  setUserBanned,
   getSetting,
   setSetting,
   deleteSetting,
@@ -44,13 +45,13 @@ import { BANNER_FILEID_KEY } from "../util/banner";
 import { coreT, t } from "../util/i18n";
 import { esc, formatPrice } from "../util/format";
 import { validateText, validateVoucherCode, parseStockUpload } from "../util/validators";
+import { requireAdminId } from "../util/adminAudit";
 import * as akb from "../keyboards/admin";
 import { ticketResolvedKb } from "../keyboards/customer";
-import { adminCommand, notifyRestockSubscribers } from "../handlers/admin";
+import { adminCommand, notifyRestockSubscribers, renderUserCard } from "../handlers/admin";
 import { startCommand } from "../handlers/customer";
 
 const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, config.CURRENCY, decimals);
-const adminIdOf = (a: { id: number } | null) => (a ? a.id : 0);
 
 function isCmd(ctx: MyContext, cmd: string): boolean {
   const text = ctx.message?.text ?? "";
@@ -149,7 +150,7 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
     const { added: n, skipped } = await bulkAddStock(tx, productId, credentials);
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
-      adminId: adminIdOf(admin),
+      adminId: requireAdminId(admin),
       action: "stock_upload",
       targetType: "product",
       targetId: productId,
@@ -260,7 +261,7 @@ export async function voucherCreateConversation(conversation: MyConversation, ct
     const v = await createVoucher(tx, { code, type: vtype, value, usageLimit: limit > 0 ? limit : null });
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
-      adminId: adminIdOf(admin),
+      adminId: requireAdminId(admin),
       action: "voucher_create",
       targetType: "voucher",
       targetId: v.id,
@@ -398,7 +399,7 @@ export async function broadcastConversation(conversation: MyConversation, ctx: M
     const adminTg = ctx.from!.id;
     await prisma.$transaction(async (tx) => {
       const admin = await getUserByTelegramId(tx, adminTg);
-      await logAdminAction(tx, { adminId: adminIdOf(admin), action: "broadcast", details: `Broadcast sent to ${sent} users${failed ? ` (${failed} failed to deliver)` : ""}.` });
+      await logAdminAction(tx, { adminId: requireAdminId(admin), action: "broadcast", details: `Broadcast sent to ${sent} users${failed ? ` (${failed} failed to deliver)` : ""}.` });
     });
     // Only released on a clean finish — if something throws between the
     // lock and here, the lock stays held (fails safe: a stuck lock needing
@@ -452,6 +453,57 @@ export async function userSearchConversation(conversation: MyConversation, ctx: 
     lines.push(`${roleTag} <b>${name}</b> — TG <code>${u.telegramId}</code>${banTag}`);
   }
   await adminEdit(ctx, lines.join("\n"), akb.usersSearchResultsKb(shown, lang));
+}
+
+// ===========================================================================
+// User ban / unban (reason capture)
+// ===========================================================================
+
+export async function userBanConversation(conversation: MyConversation, ctx: MyContext): Promise<void> {
+  if (!adminGate(ctx)) return denyAdmin(ctx);
+  const parts = (ctx.callbackQuery?.data ?? "").split(":");
+  const banned = parts[3] === "ban";
+  const userId = parseInt(parts[4]!, 10);
+
+  await ctx.answerCallbackQuery();
+  await adminEdit(ctx, t(ctx, banned ? "admin.ask_ban_reason" : "admin.ask_unban_reason"), akb.cancelInputKb());
+
+  let reason: string;
+  for (;;) {
+    const u = await conversation.wait();
+    if (await handledEscape(u)) return;
+    if (!u.message?.text) continue;
+    const text = u.message.text;
+    await consumeInput(u);
+    try {
+      reason = validateText(text, 512, 3);
+      break;
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        await adminAnchor(u, t(u, e.key, e.formatArgs), akb.cancelInputKb());
+        continue;
+      }
+      throw e;
+    }
+  }
+
+  const adminTg = ctx.from!.id;
+  await prisma.$transaction(async (tx) => {
+    // Unban always clears the stored ban reason regardless of what was
+    // typed here — mirrors apps/web-admin's ban/unban route. The typed
+    // reason is still recorded in the audit `details` below either way.
+    await setUserBanned(tx, userId, banned, banned ? reason : null);
+    const admin = await getUserByTelegramId(tx, adminTg);
+    await logAdminAction(tx, {
+      adminId: requireAdminId(admin),
+      action: banned ? "user_ban" : "user_unban",
+      targetType: "user",
+      targetId: userId,
+      details: `${banned ? "Banned" : "Unbanned"} the user. Reason: "${reason}".`,
+    });
+  });
+
+  await renderUserCard(ctx, userId);
 }
 
 // ===========================================================================
@@ -538,7 +590,7 @@ export async function settingConversation(conversation: MyConversation, ctx: MyC
     if (key === "banner_image") await deleteSetting(tx, BANNER_FILEID_KEY);
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
-      adminId: adminIdOf(admin),
+      adminId: requireAdminId(admin),
       action: "setting_set",
       targetType: "setting",
       details: `Changed setting "${key}" to "${displayValue}".`,
@@ -768,7 +820,7 @@ export async function productCreateConversation(conversation: MyConversation, ct
     });
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
-      adminId: adminIdOf(admin),
+      adminId: requireAdminId(admin),
       action: "product_create",
       targetType: "product",
       targetId: denom.id,
@@ -816,7 +868,7 @@ export async function productEditConversation(conversation: MyConversation, ctx:
         await updateDenomination(tx, denominationId, { name: raw });
         const admin = await getUserByTelegramId(tx, adminTg);
         await logAdminAction(tx, {
-          adminId: adminIdOf(admin),
+          adminId: requireAdminId(admin),
           action: "product_rename",
           targetType: "product",
           targetId: denominationId,
@@ -840,7 +892,7 @@ export async function productEditConversation(conversation: MyConversation, ctx:
         await updateDenomination(tx, denominationId, { price: p });
         const admin = await getUserByTelegramId(tx, adminTg);
         await logAdminAction(tx, {
-          adminId: adminIdOf(admin),
+          adminId: requireAdminId(admin),
           action: "product_price",
           targetType: "product",
           targetId: denominationId,
@@ -907,7 +959,7 @@ export async function bulkPricingConversation(conversation: MyConversation, ctx:
     await upsertBulkPricing(tx, { productId, minQuantity: minQty, discountPercent: pct });
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
-      adminId: adminIdOf(admin),
+      adminId: requireAdminId(admin),
       action: "bulk_pricing_set",
       targetType: "product",
       targetId: productId,
@@ -971,7 +1023,7 @@ export async function ticketReplyConversation(conversation: MyConversation, ctx:
   const adminTg = ctx.from!.id;
   const customerTgId = await prisma.$transaction(async (tx) => {
     const admin = await getUserByTelegramId(tx, adminTg);
-    const adminDbId = adminIdOf(admin);
+    const adminDbId = requireAdminId(admin);
     const tgId = await replyToTicket(tx, { ticketId, reply: replyText, adminDbId });
     await addTicketMessage(tx, { ticketId, senderType: SenderType.ADMIN, senderId: adminDbId, content: replyText });
     return tgId;

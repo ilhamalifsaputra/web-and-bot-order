@@ -51,6 +51,9 @@ import {
   getNowpaymentsCreds,
   deliverPaidNowpaymentsOrder,
   recordUnmatchedNowpaymentsTx,
+  claimGatewaySlot,
+  commitGatewayResult,
+  releaseGatewaySlot,
 } from "@app/db";
 import { type Customer } from "../plugins/auth";
 import { clientIp, webhookRateLimited } from "../rateLimit";
@@ -389,17 +392,29 @@ export async function payView(order: OrderRow) {
     minAmount = creds?.minAmount ?? null;
     if (!gateway) {
       if (creds) {
-        try {
-          gateway = await createTransaction(creds, {
-            refId: order.orderCode,
-            amountIdr: order.totalAmount,
-          });
-          await prisma.order.update({
-            where: { id: order.id },
-            data: { paymentRef: JSON.stringify({ gateway: "tokopay", ...gateway }) },
-          });
-        } catch (err) {
-          logger.error({ err }, `Failed to create a TokoPay transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
+        // Atomic claim before the external call — two concurrent requests
+        // for this order (e.g. a page double-load) must not both create a
+        // TokoPay transaction (Data-2 fix, backend audit 2026-07-07). A lost
+        // claim falls back to the same "contact us" UI as a gateway failure
+        // below — that fallback already has a manual retry link, so no
+        // polling loop is needed here.
+        const claimSentinel = await claimGatewaySlot(prisma, order.id);
+        if (claimSentinel) {
+          try {
+            gateway = await createTransaction(creds, {
+              refId: order.orderCode,
+              amountIdr: order.totalAmount,
+            });
+            const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "tokopay", ...gateway });
+            if (!committed) {
+              logger.warn(`Created a TokoPay transaction for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
+            }
+          } catch (err) {
+            await releaseGatewaySlot(prisma, order.id, claimSentinel);
+            logger.error({ err }, `Failed to create a TokoPay transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
+            gatewayError = true;
+          }
+        } else {
           gatewayError = true;
         }
       } else {
@@ -420,17 +435,25 @@ export async function payView(order: OrderRow) {
     minAmount = creds?.minAmount ?? null;
     if (!paydisiniGateway) {
       if (creds) {
-        try {
-          paydisiniGateway = await createPaydisiniTransaction(creds, {
-            refId: order.orderCode,
-            amountIdr: order.totalAmount,
-          });
-          await prisma.order.update({
-            where: { id: order.id },
-            data: { paymentRef: JSON.stringify({ gateway: "paydisini", ...paydisiniGateway }) },
-          });
-        } catch (err) {
-          logger.error({ err }, `Failed to create a PayDisini transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
+        // Atomic claim before the external call — see the matching TokoPay
+        // comment above (Data-2 fix, backend audit 2026-07-07).
+        const claimSentinel = await claimGatewaySlot(prisma, order.id);
+        if (claimSentinel) {
+          try {
+            paydisiniGateway = await createPaydisiniTransaction(creds, {
+              refId: order.orderCode,
+              amountIdr: order.totalAmount,
+            });
+            const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "paydisini", ...paydisiniGateway });
+            if (!committed) {
+              logger.warn(`Created a PayDisini transaction for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
+            }
+          } catch (err) {
+            await releaseGatewaySlot(prisma, order.id, claimSentinel);
+            logger.error({ err }, `Failed to create a PayDisini transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
+            paydisiniGatewayError = true;
+          }
+        } else {
           paydisiniGatewayError = true;
         }
       } else {
@@ -457,18 +480,26 @@ export async function payView(order: OrderRow) {
     if (!nowpaymentsGateway) {
       const publicUrl = shopPublicUrl();
       if (creds && publicUrl) {
-        try {
-          nowpaymentsGateway = await createNowpaymentsInvoice(creds, {
-            orderId: order.orderCode,
-            amountUsd: order.totalAmount,
-            ipnCallbackUrl: `${publicUrl.replace(/\/+$/, "")}/pay/nowpayments/callback`,
-          });
-          await prisma.order.update({
-            where: { id: order.id },
-            data: { paymentRef: JSON.stringify({ gateway: "nowpayments", ...nowpaymentsGateway }) },
-          });
-        } catch (err) {
-          logger.error({ err }, `Failed to create a NOWPayments invoice for order ${order.orderCode} — showing the contact fallback instead of a payment link`);
+        // Atomic claim before the external call — see the matching TokoPay
+        // comment above (Data-2 fix, backend audit 2026-07-07).
+        const claimSentinel = await claimGatewaySlot(prisma, order.id);
+        if (claimSentinel) {
+          try {
+            nowpaymentsGateway = await createNowpaymentsInvoice(creds, {
+              orderId: order.orderCode,
+              amountUsd: order.totalAmount,
+              ipnCallbackUrl: `${publicUrl.replace(/\/+$/, "")}/pay/nowpayments/callback`,
+            });
+            const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "nowpayments", ...nowpaymentsGateway });
+            if (!committed) {
+              logger.warn(`Created a NOWPayments invoice for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
+            }
+          } catch (err) {
+            await releaseGatewaySlot(prisma, order.id, claimSentinel);
+            logger.error({ err }, `Failed to create a NOWPayments invoice for order ${order.orderCode} — showing the contact fallback instead of a payment link`);
+            nowpaymentsGatewayError = true;
+          }
+        } else {
           nowpaymentsGatewayError = true;
         }
       } else {
@@ -572,7 +603,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       return reply.send({ status: "status check failed" });
     }
     if (!live.paid) {
-      logger.warn(`TokoPay callback claimed paid but live status check disagrees for ${order.orderCode}`);
+      logger.warn(
+        `TokoPay callback claimed paid but live status check disagrees for ${order.orderCode} — trusting the live check over the callback body, so this delivery is skipped for now; the reconcile poller will retry and deliver once TokoPay's own status catches up`,
+      );
       return reply.send({ status: "not confirmed live" });
     }
     // Amount sanity: never deliver on a short payment. Trust the LIVE amount

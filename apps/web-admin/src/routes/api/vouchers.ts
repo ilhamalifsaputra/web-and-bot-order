@@ -12,13 +12,15 @@ import {
   logAdminAction,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { displayDate } from "../../dateDisplay";
 
 const VOUCHER_TYPES = Object.values(VoucherType) as string[];
 
 export default async function vouchersApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/vouchers", { preHandler: currentAdmin }, async (req, reply) => {
     const vouchers = await listVouchers(prisma);
-    return reply.send({ vouchers, types: VOUCHER_TYPES });
+    const vouchersWithDisplay = vouchers.map((v) => ({ ...v, expiresAtDisplay: displayDate(v.expiresAt) }));
+    return reply.send({ vouchers: vouchersWithDisplay, types: VOUCHER_TYPES });
   });
 
   app.post("/api/vouchers", { preHandler: csrfProtect }, async (req, reply) => {

@@ -12,7 +12,7 @@ import { apiPost } from "../api/client";
 
 interface TicketDetail {
   ticket: { id: number; subject: string; status: string; createdAt: string };
-  messages: { id: number; content: string; senderType: string; createdAt: string }[];
+  messages: { id: number; content: string; senderType: string; createdAt: string; createdAtDisplay: string | null }[];
   user: { id: number; fullName: string | null; username: string | null } | null;
 }
 
@@ -82,7 +82,7 @@ export function TicketDetailPage() {
             }`}
           >
             <div className="mb-1 text-xs text-ink-soft">
-              {m.senderType === "ADMIN" ? "Admin" : "Customer"} — {new Date(m.createdAt).toLocaleString()}
+              {m.senderType === "ADMIN" ? "Admin" : "Customer"} — {m.createdAtDisplay ?? "—"}
             </div>
             <div className="text-sm text-ink whitespace-pre-wrap">{m.content}</div>
           </div>

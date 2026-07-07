@@ -28,6 +28,7 @@ interface TxRow {
   outcome: string;
   memo: string | null;
   processedAt: string;
+  processedAtDisplay: string | null;
 }
 interface OrderPartyRow {
   fullName: string | null;
@@ -39,6 +40,7 @@ interface UnderpaidOrderRow {
   totalAmount: string;
   currency: string;
   createdAt: string;
+  createdAtDisplay: string | null;
   user: OrderPartyRow | null;
 }
 interface PendingInternalOrderRow {
@@ -48,6 +50,7 @@ interface PendingInternalOrderRow {
   currency: string;
   paymentRef: string | null;
   expiresAt: string | null;
+  expiresAtDisplay: string | null;
   user: OrderPartyRow | null;
 }
 interface PaymentsData {
@@ -303,7 +306,7 @@ export function PaymentsPage() {
               {
                 key: "date",
                 header: "Date",
-                render: o => <span className="text-xs text-ink-soft whitespace-nowrap">{new Date(o.createdAt).toLocaleString()}</span>,
+                render: o => <span className="text-xs text-ink-soft whitespace-nowrap">{o.createdAtDisplay ?? "—"}</span>,
               },
               {
                 key: "actions",
@@ -355,7 +358,7 @@ export function PaymentsPage() {
               { key: "user", header: "Buyer", render: o => <span className="text-xs text-ink-soft">{o.user?.fullName ?? o.user?.username ?? "Unknown"}</span> },
               { key: "amount", header: "Amount", render: o => <span className="font-mono text-sm">{formatCurrencyDisplay(o.totalAmount, o.currency as "IDR" | "USDT" | "USD")}</span> },
               { key: "ref", header: "Transfer Ref", render: o => <span className="font-mono text-xs">{o.paymentRef ?? "—"}</span> },
-              { key: "expires", header: "Expires", render: o => <span className="text-xs text-ink-soft whitespace-nowrap">{o.expiresAt ? new Date(o.expiresAt).toLocaleString() : "—"}</span> },
+              { key: "expires", header: "Expires", render: o => <span className="text-xs text-ink-soft whitespace-nowrap">{o.expiresAtDisplay ?? "—"}</span> },
             ]}
             data={pendingInternal}
             keyExtractor={o => o.id}
@@ -420,7 +423,7 @@ export function PaymentsPage() {
             header: "Date",
             render: tx => (
               <span className="text-xs text-ink-soft whitespace-nowrap">
-                {new Date(tx.processedAt).toLocaleString()}
+                {tx.processedAtDisplay ?? "—"}
               </span>
             ),
           },

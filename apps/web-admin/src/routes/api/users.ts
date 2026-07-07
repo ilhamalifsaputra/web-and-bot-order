@@ -18,6 +18,7 @@ import {
   logAdminAction,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { displayDate, displayDateTime } from "../../dateDisplay";
 
 const ROLES = [UserRole.CUSTOMER, UserRole.RESELLER] as string[];
 const truthy = (v: string | undefined) => ["1", "true", "on", "yes"].includes((v ?? "").toLowerCase());
@@ -29,6 +30,8 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
     const spentByUser = await totalSpentByUserIds(prisma, results.map((u) => u.id));
     const users = results.map((u) => ({
       ...u,
+      createdAtDisplay: displayDate(u.createdAt),
+      lastSeenAtDisplay: displayDateTime(u.lastSeenAt),
       totalSpent: spentByUser.get(u.id) ?? { idr: new Decimal(0), usdt: new Decimal(0) },
     }));
     return reply.send({ users, q });
@@ -44,7 +47,18 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
       listUserTickets(prisma, userId, 20),
       listWalletLedger(prisma, userId, 50),
     ]);
-    return reply.send({ user, totalSpent, orders, tickets, ledger, roles: ROLES });
+    return reply.send({
+      user: {
+        ...user,
+        createdAtDisplay: displayDate(user.createdAt),
+        lastSeenAtDisplay: displayDateTime(user.lastSeenAt),
+      },
+      totalSpent,
+      orders: orders.map((o) => ({ ...o, createdAtDisplay: displayDate(o.createdAt) })),
+      tickets: tickets.map((t) => ({ ...t, createdAtDisplay: displayDateTime(t.createdAt) })),
+      ledger: ledger.map((l) => ({ ...l, createdAtDisplay: displayDate(l.createdAt) })),
+      roles: ROLES,
+    });
   });
 
   app.post("/api/users/:userId/role", { preHandler: csrfProtect }, async (req, reply) => {

@@ -22,6 +22,7 @@ const ORDER = {
   totalAmount: "50000",
   paymentMethod: "BINANCE_PAY",
   createdAt: "2026-01-01T00:00:00.000Z",
+  createdAtDisplay: "2026-01-01",
   user: { id: 10, fullName: "Andi Santoso", username: "andi" },
 };
 
@@ -50,6 +51,7 @@ describe("OrdersPage", () => {
     await waitFor(() => expect(screen.getByText("ORD-0001")).toBeInTheDocument());
     expect(screen.getByText("Andi Santoso")).toBeInTheDocument();
     expect(screen.getByText("BINANCE_PAY")).toBeInTheDocument();
+    expect(screen.getByText("2026-01-01")).toBeInTheDocument(); // createdAtDisplay
   });
 
   it("shows empty state when no orders", async () => {

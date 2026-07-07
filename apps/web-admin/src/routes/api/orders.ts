@@ -16,6 +16,7 @@ import {
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { orderMoneyView } from "../orderMoneyView";
+import { displayDate, displayDateTime } from "../../dateDisplay";
 
 const PAGE_SIZE = 50;
 const STATUS_VALUES = Object.values(OrderStatus) as string[];
@@ -68,8 +69,9 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       countOrders(prisma, filter),
     ]);
 
+    const ordersWithDisplay = orders.map((o) => ({ ...o, createdAtDisplay: displayDate(o.createdAt) }));
     return reply.send({
-      orders,
+      orders: ordersWithDisplay,
       total,
       page,
       pageSize: PAGE_SIZE,
@@ -125,7 +127,7 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     const order = await getOrder(prisma, orderId);
     if (!order) return reply.code(404).send({ error: "Order not found." });
     return reply.send({
-      order,
+      order: { ...order, createdAtDisplay: displayDateTime(order.createdAt) },
       money: serializeMoneyView(orderMoneyView(order)),
       isDelivered: order.status === OrderStatus.DELIVERED,
       canAct: order.status === OrderStatus.PENDING_VERIFICATION,
@@ -216,13 +218,13 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     }
     try {
       await prisma.$transaction(async (tx) => {
-        await rejectOrder(tx, orderId, { adminId: req.admin!.userId, reason });
+        const order = await rejectOrder(tx, orderId, { adminId: req.admin!.userId, reason });
         await logAdminAction(tx, {
           adminId: req.admin!.userId,
           action: "reject_order",
           targetType: "order",
           targetId: orderId,
-          details: `Rejected order ${orderId}: ${reason.slice(0, 200)}`,
+          details: `Rejected order ${order!.orderCode}: "${reason.slice(0, 200)}".`,
         });
       });
     } catch (e) {

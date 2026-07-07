@@ -19,6 +19,7 @@ import { NotificationEvent } from "@app/core/enums";
 import { publicChannelId } from "@app/core/runtime";
 import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
+import { isUniqueViolation } from "./_types";
 import { getBulkPricingForDenomination } from "./catalog";
 import { getVoucherByCode, applyVoucherToSubtotal, assertVoucherNotRedeemedByUser } from "./vouchers";
 import { countAvailableStock, allocateOneAvailableStock } from "./stock";
@@ -60,6 +61,142 @@ async function bumpVoucherUsage(db: Db, voucher: { id: number; usageLimit: numbe
     data: { usedCount: { increment: 1 } },
   });
   if (bumped.count === 0) throw new ValidationError("error.voucher_used_up");
+}
+
+/**
+ * Sentinel written to `Order.paymentRef` while a lazy gateway invoice
+ * creation call (TokoPay/PayDisini/NOWPayments, apps/storefront's
+ * checkout.ts `payView`) is in flight, so a second concurrent request for
+ * the SAME order (e.g. a pay-page double-load) can't create a second
+ * gateway invoice — `claimGatewaySlot`'s conditional `updateMany` is the
+ * atomic guard, mirroring `bumpVoucherUsage`'s pattern above (Data-2 fix,
+ * backend audit 2026-07-07).
+ *
+ * `paymentRef` also carries a UNIQUE index, so the sentinel is derived
+ * per-order (rather than a single shared literal) — two DIFFERENT orders'
+ * claims landing at the same instant then write distinct strings and never
+ * collide at the DB level. Only two concurrent claims for the SAME order id
+ * still collide, which is the actual race this guards against.
+ *
+ * The sentinel also embeds the wall-clock time it was written (`at`,
+ * defaulting to `Date.now()`), so a claim that gets stuck — the process
+ * crashes/restarts in the window between a successful claim and the matching
+ * `commitGatewayResult`/`releaseGatewaySlot` (a real window: it spans an
+ * external HTTP round-trip to the gateway) — doesn't wedge that order's
+ * `paymentRef` forever. `claimGatewaySlot` below treats a same-order sentinel
+ * older than `GATEWAY_CLAIM_TTL_MS` as abandoned and reclaimable (backend
+ * audit 2026-07-07 final-review fix).
+ */
+export function gatewayClaimSentinel(orderId: number, at: number = Date.now()): string {
+  return `__pending_gateway_claim__:${orderId}:${at}`;
+}
+
+const GATEWAY_CLAIM_SENTINEL_PREFIX = "__pending_gateway_claim__:";
+
+/** A legitimate in-flight gateway call (a single HTTP round-trip) finishes in
+ * well under this — anything older is presumed abandoned by a crashed/
+ * restarted process, not a slow-but-alive request. */
+const GATEWAY_CLAIM_TTL_MS = 30_000;
+
+/** Parse the timestamp embedded in `paymentRef` iff it's a sentinel for THIS
+ * order (never another order's, even though both share the same literal
+ * prefix) — returns null for a real payload, a foreign-order sentinel, or no
+ * value at all. */
+function ownOrderSentinelAge(orderId: number, paymentRef: string | null): number | null {
+  if (paymentRef == null) return null;
+  const prefix = `${GATEWAY_CLAIM_SENTINEL_PREFIX}${orderId}:`;
+  if (!paymentRef.startsWith(prefix)) return null;
+  const ts = Number(paymentRef.slice(prefix.length));
+  return Number.isFinite(ts) ? Date.now() - ts : null;
+}
+
+/**
+ * Atomically claim the right to create this order's gateway invoice. Returns
+ * the sentinel string this call wrote to `paymentRef` iff it won the claim
+ * (the caller must pass this exact value back to `commitGatewayResult`/
+ * `releaseGatewaySlot` so they guard on THIS instance's claim, not some other
+ * concurrent one for the same order); returns null if another request
+ * already holds a fresh claim for this same order.
+ *
+ * Two ways to win: (1) `paymentRef` was null (the common, no-prior-attempt
+ * case), or (2) `paymentRef` is already a sentinel for this SAME order whose
+ * embedded timestamp is older than `GATEWAY_CLAIM_TTL_MS` — a stuck claim
+ * left behind by a crash — reclaimed via compare-and-swap on the exact stale
+ * string just read, so two concurrent stale-reclaim attempts still can't
+ * both win. The unique-violation catches are a defensive backstop (e.g. a
+ * stale row already holding this exact sentinel string from a previous
+ * crash) rather than the cross-order race, since the sentinel is per-order
+ * (and now per-timestamp too).
+ */
+export async function claimGatewaySlot(db: Db, orderId: number): Promise<string | null> {
+  const sentinel = gatewayClaimSentinel(orderId);
+  try {
+    const claimed = await db.order.updateMany({
+      where: { id: orderId, paymentRef: null },
+      data: { paymentRef: sentinel },
+    });
+    if (claimed.count === 1) return sentinel;
+  } catch (e) {
+    if (!isUniqueViolation(e)) throw e;
+  }
+
+  // Lost the null-claim — check whether the current paymentRef is a stale
+  // sentinel THIS SAME order wrote before something interrupted the gateway
+  // call, and if so, reclaim it.
+  const current = await db.order.findUnique({ where: { id: orderId }, select: { paymentRef: true } });
+  const existingRef = current?.paymentRef ?? null;
+  const age = ownOrderSentinelAge(orderId, existingRef);
+  if (age === null || age < GATEWAY_CLAIM_TTL_MS) return null;
+
+  try {
+    const reclaimed = await db.order.updateMany({
+      where: { id: orderId, paymentRef: existingRef! },
+      data: { paymentRef: sentinel },
+    });
+    return reclaimed.count === 1 ? sentinel : null;
+  } catch (e) {
+    if (isUniqueViolation(e)) return null;
+    throw e;
+  }
+}
+
+/**
+ * Persist the real gateway payload once the external call succeeds,
+ * replacing the claim sentinel `claimGatewaySlot` set. Conditional on
+ * `paymentRef` still being the exact sentinel this claim instance wrote —
+ * closes a narrow hole where an order that expires/cancels (or gets reclaimed
+ * after a crash) mid-gateway-call could otherwise have its `paymentRef`
+ * clobbered by a late-arriving commit. Returns true iff the write landed;
+ * false means the sentinel was no longer in place (the order moved on, or a
+ * newer claim already took over) — the caller already has the fetched
+ * gateway payload in hand for this render, it just won't be cached for next
+ * time.
+ */
+export async function commitGatewayResult(
+  db: Db,
+  orderId: number,
+  sentinel: string,
+  payload: unknown,
+): Promise<boolean> {
+  const committed = await db.order.updateMany({
+    where: { id: orderId, paymentRef: sentinel },
+    data: { paymentRef: JSON.stringify(payload) },
+  });
+  return committed.count === 1;
+}
+
+/**
+ * Release a claim after the external gateway call fails, so a later request
+ * can claim again. Conditional on `paymentRef` still being the exact
+ * sentinel this claim instance wrote — a no-op if the slot was already
+ * committed, released, or reclaimed by someone else (so this can never
+ * release a DIFFERENT, still-valid claim for the same order).
+ */
+export async function releaseGatewaySlot(db: Db, orderId: number, sentinel: string): Promise<void> {
+  await db.order.updateMany({
+    where: { id: orderId, paymentRef: sentinel },
+    data: { paymentRef: null },
+  });
 }
 
 /** Eager-load shape matching the Python get_order selectinload set. */
@@ -166,10 +303,16 @@ export async function createOrderFromCart(
     voucher = await getVoucherByCode(db, args.voucherCode);
     if (!voucher) throw new ValidationError("error.voucher_not_found");
     await assertVoucherNotRedeemedByUser(db, voucher.id, args.user.id);
-    discount = applyVoucherToSubtotal(voucher, subtotal);
+    // Cap against the subtotal NET of the bulk discount (mirrors
+    // createOrderDirect's matching step below) — capping against the gross
+    // subtotal let a bulk discount + a voucher discount together exceed the
+    // subtotal, producing a negative afterDiscount (and thus a negative
+    // walletUsed persisted on the order) whenever both discounts were large
+    // (Money-2 fix, backend audit 2026-07-07).
+    discount = applyVoucherToSubtotal(voucher, subtotal.minus(bulkDiscount));
   }
 
-  const afterDiscount = subtotal.minus(bulkDiscount).minus(discount);
+  const afterDiscount = Decimal.max(ZERO, subtotal.minus(bulkDiscount).minus(discount));
 
   // 4. Wallet debit
   const walletAmount = q4(Decimal.max(ZERO, new Decimal(args.walletAmount ?? 0)));

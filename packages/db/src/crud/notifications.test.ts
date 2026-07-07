@@ -15,6 +15,7 @@ import {
   fetchPendingNotifications,
   claimNotification,
   releaseNotificationClaim,
+  releaseNotificationClaimWithBackoff,
   markNotificationSent,
   markNotificationFailed,
   retryNotification,
@@ -271,6 +272,60 @@ describe("claimNotification / releaseNotificationClaim (crash-window double-send
     const r = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
     expect(r!.status).toBe("SENT");
     expect(r!.claimedAt).toBeNull();
+  });
+
+  // Outbox-1 fix (backend audit): a channel-not-configured release must back
+  // off like markNotificationFailed, but never terminate in FAILED — an admin
+  // reconfiguring PUBLIC_CHANNEL_ID should always be able to un-stick it.
+  it("releaseNotificationClaimWithBackoff increments attempts and sets a future nextRetryAt, staying PENDING", async () => {
+    const orderId = await seedOrder();
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
+    const [row] = await fetchPendingNotifications(prisma, 1);
+    await claimNotification(prisma, row!.id);
+
+    const before = new Date();
+    await releaseNotificationClaimWithBackoff(prisma, row!.id, before);
+    const r = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+    expect(r!.status).toBe("PENDING");
+    expect(r!.claimedAt).toBeNull();
+    expect(r!.attempts).toBe(1);
+    expect(r!.nextRetryAt!.getTime()).toBe(before.getTime() + notificationBackoffMs(1));
+    // Not claimable again until nextRetryAt passes.
+    expect((await fetchPendingNotifications(prisma, 50, before)).some((x) => x.id === row!.id)).toBe(false);
+  });
+
+  it("releaseNotificationClaimWithBackoff never flips the row to FAILED, however many times it's called", async () => {
+    const orderId = await seedOrder();
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
+    const [row] = await fetchPendingNotifications(prisma, 1);
+
+    for (let i = 0; i < 8; i++) {
+      // Simulate each backoff window having already elapsed (an admin
+      // reconfiguring the channel doesn't wait out the real clock) so the
+      // row is claimable again on this iteration.
+      await prisma.notificationOutbox.update({
+        where: { id: row!.id },
+        data: { nextRetryAt: null },
+      });
+      await claimNotification(prisma, row!.id);
+      await releaseNotificationClaimWithBackoff(prisma, row!.id);
+    }
+    const r = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+    expect(r!.status).toBe("PENDING");
+    expect(r!.attempts).toBe(8);
+    expect(r!.nextRetryAt).not.toBeNull();
+  });
+
+  it("releaseNotificationClaimWithBackoff is a no-op once the row has moved on (e.g. SENT)", async () => {
+    const orderId = await seedOrder();
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
+    const [row] = await fetchPendingNotifications(prisma, 1);
+    await claimNotification(prisma, row!.id);
+    await markNotificationSent(prisma, row!.id);
+
+    await releaseNotificationClaimWithBackoff(prisma, row!.id);
+    const r = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+    expect(r!.status).toBe("SENT");
   });
 });
 

@@ -1391,16 +1391,9 @@ describe("admin handlers", () => {
     expect(offersForwardAction(sink)).toBe(true);
   });
 
-  it("user ban toggles the flag and writes an audit row", async () => {
-    const { ctx } = adminCtx({ callbackData: `v1:adm:users:ban:${sample.user.id}` });
-    await handleAdminCallback(ctx, `v1:adm:users:ban:${sample.user.id}`.split(":"));
-    expect((await getUser(prisma, sample.user.id))!.banned).toBe(true);
-    expect(await prisma.auditLog.count({ where: { action: "user_ban" } })).toBe(1);
-
-    const { ctx: ctx2 } = adminCtx({ callbackData: `v1:adm:users:unban:${sample.user.id}` });
-    await handleAdminCallback(ctx2, `v1:adm:users:unban:${sample.user.id}`.split(":"));
-    expect((await getUser(prisma, sample.user.id))!.banned).toBe(false);
-  });
+  // 'user ban toggles the flag and writes an audit row' moved to
+  // conversations.test.ts — ban/unban is now a reason-capturing conversation
+  // (userBanConversation), not a plain handleAdminCallback action (Log-5-1).
 
   it("set reseller flips the role", async () => {
     const { ctx } = adminCtx({ callbackData: `v1:adm:users:reseller:${sample.user.id}:1` });

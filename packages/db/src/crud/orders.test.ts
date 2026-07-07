@@ -1,13 +1,22 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
+import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import {
   countPendingPaymentLike,
   countProcessing,
   countPendingVerifications,
   countUnderpaid,
   countExpiredPending,
+  claimGatewaySlot,
+  commitGatewayResult,
+  releaseGatewaySlot,
+  gatewayClaimSentinel,
+  createOrderFromCart,
 } from "./orders";
+import { addToCart, upsertBulkPricing, createVoucher } from "@app/db";
+import { VoucherType } from "@app/core/enums";
+import { Decimal } from "@app/core/money";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -68,5 +77,170 @@ describe("order status counts", () => {
     await makeOrder("PENDING_PAYMENT", { expiresAt: new Date(now.getTime() + 60_000) });
     await makeOrder("PENDING_PAYMENT", { expiresAt: null });
     expect(await countExpiredPending(prisma, now)).toBe(1);
+  });
+});
+
+// Data-2 fix (backend audit 2026-07-07): the checkout gateway-invoice race —
+// see apps/storefront/test/checkout-gateway-race.test.ts for the route-level
+// concurrent-request test. These are the crud-level unit tests for the
+// atomic claim/commit/release primitives themselves.
+describe("claimGatewaySlot / commitGatewayResult / releaseGatewaySlot (Data-2)", () => {
+  it("claim succeeds once; a second claim on the same order fails", async () => {
+    const order = await makeOrder("PENDING_PAYMENT");
+
+    const sentinel = await claimGatewaySlot(prisma, order.id);
+    expect(sentinel).toEqual(expect.any(String));
+    const claimed = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(claimed!.paymentRef).toBe(sentinel);
+
+    // A second claim (a concurrent request, or a fresh — not stale — retry)
+    // must not re-win — it should observe the sentinel already in place and
+    // fail.
+    expect(await claimGatewaySlot(prisma, order.id)).toBeNull();
+  });
+
+  it("commitGatewayResult writes the real JSON payload over the claim sentinel", async () => {
+    const order = await makeOrder("PENDING_PAYMENT");
+    const sentinel = await claimGatewaySlot(prisma, order.id);
+
+    expect(await commitGatewayResult(prisma, order.id, sentinel!, { gateway: "tokopay", trxId: "T-1" })).toBe(true);
+
+    const fresh = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(JSON.parse(fresh!.paymentRef!)).toEqual({ gateway: "tokopay", trxId: "T-1" });
+  });
+
+  it("commitGatewayResult is a no-op (and returns false) if paymentRef is no longer this claim's sentinel", async () => {
+    const order = await makeOrder("PENDING_PAYMENT");
+    const sentinel = await claimGatewaySlot(prisma, order.id);
+    // Simulate the order moving on (e.g. cancelled) mid-gateway-call.
+    await prisma.order.update({ where: { id: order.id }, data: { paymentRef: null } });
+
+    expect(await commitGatewayResult(prisma, order.id, sentinel!, { gateway: "tokopay", trxId: "T-stale" })).toBe(false);
+    const fresh = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(fresh!.paymentRef).toBeNull();
+  });
+
+  it("releaseGatewaySlot resets paymentRef to null only while the sentinel is present, and never clobbers a committed result", async () => {
+    const order = await makeOrder("PENDING_PAYMENT");
+    const sentinel1 = await claimGatewaySlot(prisma, order.id);
+
+    await releaseGatewaySlot(prisma, order.id, sentinel1!);
+    let fresh = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(fresh!.paymentRef).toBeNull();
+
+    // A claim can be taken again once released (the gateway-failure retry path).
+    const sentinel2 = await claimGatewaySlot(prisma, order.id);
+    expect(sentinel2).toEqual(expect.any(String));
+
+    // Once a result is committed, the sentinel is gone — a stray/late release
+    // call (e.g. from a slow duplicate request) must be a no-op, not erase
+    // the real payload.
+    await commitGatewayResult(prisma, order.id, sentinel2!, { gateway: "tokopay", trxId: "T-2" });
+    await releaseGatewaySlot(prisma, order.id, sentinel2!);
+    fresh = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(fresh!.paymentRef).toBe(JSON.stringify({ gateway: "tokopay", trxId: "T-2" }));
+  });
+
+  it("two different orders can each claim concurrently without colliding, even though paymentRef carries a global UNIQUE index", async () => {
+    const orderA = await makeOrder("PENDING_PAYMENT");
+    const orderB = await makeOrder("PENDING_PAYMENT");
+
+    // The sentinel is derived per-order id, so orderA and orderB write
+    // distinct strings into the uniquely-indexed column and both claims
+    // succeed — a claim for one order must never false-negative because an
+    // unrelated order happened to claim at the same instant.
+    const [claimedA, claimedB] = await Promise.all([
+      claimGatewaySlot(prisma, orderA.id),
+      claimGatewaySlot(prisma, orderB.id),
+    ]);
+    expect(claimedA).toEqual(expect.any(String));
+    expect(claimedB).toEqual(expect.any(String));
+
+    const freshA = await prisma.order.findUnique({ where: { id: orderA.id } });
+    const freshB = await prisma.order.findUnique({ where: { id: orderB.id } });
+    expect(freshA!.paymentRef).toBe(claimedA);
+    expect(freshB!.paymentRef).toBe(claimedB);
+  });
+
+  // Backend audit 2026-07-07 final-review fix: a mid-claim crash (process
+  // dies between claimGatewaySlot succeeding and commit/release running)
+  // used to wedge paymentRef at the sentinel forever, since claimGatewaySlot
+  // only matched `paymentRef: null`. The sentinel now embeds a timestamp so a
+  // stuck claim older than the TTL can be reclaimed.
+  describe("stale-sentinel reclaim after a simulated crash", () => {
+    it("a sentinel older than the TTL is reclaimable by a later claimGatewaySlot call", async () => {
+      const order = await makeOrder("PENDING_PAYMENT");
+      // Simulate a crash: write a sentinel whose embedded timestamp is well
+      // past the reclaim TTL, as if claimGatewaySlot had won the claim long
+      // ago and the process died before commit/release ran.
+      const staleSentinel = gatewayClaimSentinel(order.id, Date.now() - 60_000);
+      await prisma.order.update({ where: { id: order.id }, data: { paymentRef: staleSentinel } });
+
+      const reclaimed = await claimGatewaySlot(prisma, order.id);
+      expect(reclaimed).toEqual(expect.any(String));
+      expect(reclaimed).not.toBe(staleSentinel);
+
+      const fresh = await prisma.order.findUnique({ where: { id: order.id } });
+      expect(fresh!.paymentRef).toBe(reclaimed);
+    });
+
+    it("a fresh sentinel (within the TTL) is NOT reclaimable — still returns null, matching an in-flight claim", async () => {
+      const order = await makeOrder("PENDING_PAYMENT");
+      const freshSentinel = gatewayClaimSentinel(order.id, Date.now() - 1_000);
+      await prisma.order.update({ where: { id: order.id }, data: { paymentRef: freshSentinel } });
+
+      expect(await claimGatewaySlot(prisma, order.id)).toBeNull();
+
+      const fresh = await prisma.order.findUnique({ where: { id: order.id } });
+      expect(fresh!.paymentRef).toBe(freshSentinel);
+    });
+
+    it("a stale sentinel belonging to a DIFFERENT order is never mistaken for this order's own stale claim", async () => {
+      const orderA = await makeOrder("PENDING_PAYMENT");
+      const orderB = await makeOrder("PENDING_PAYMENT");
+      // orderB somehow ended up holding a paymentRef shaped like orderA's
+      // sentinel prefix followed by orderB's own id — must not be treated as
+      // orderA's stale claim (it isn't — the embedded order id differs).
+      const staleForA = gatewayClaimSentinel(orderA.id, Date.now() - 60_000);
+      await prisma.order.update({ where: { id: orderB.id }, data: { paymentRef: staleForA } });
+
+      // orderB's own claim attempt must go through the null-claim path and
+      // fail, since its paymentRef isn't null and isn't ITS OWN sentinel.
+      expect(await claimGatewaySlot(prisma, orderB.id)).toBeNull();
+    });
+  });
+});
+
+// Money-2 fix (backend audit 2026-07-07): a bulk-pricing discount and a
+// voucher discount together could exceed the subtotal, producing a negative
+// afterDiscount (and thus a negative walletUsed persisted on the order)
+// because the voucher discount was capped against the GROSS subtotal instead
+// of subtotal-minus-bulk-discount (createOrderDirect already got this right).
+describe("createOrderFromCart bulk+voucher discount cap (Money-2)", () => {
+  let sample: SampleData;
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  it("never produces a negative afterDiscount/walletUsed when bulk + voucher discounts together would exceed the subtotal", async () => {
+    const { user, product } = sample;
+    // 4 units @ 5.00 = 20.00 subtotal.
+    await addToCart(prisma, user.id, product.id, 4);
+    // Bulk rule: 4+ units get 50% off -> bulkDiscount = 10.00, net = 10.00.
+    await upsertBulkPricing(prisma, { denominationId: product.id, minQuantity: 4, discountPercent: 50 });
+    // A 100%-off voucher (no minimum purchase) — capping it against the
+    // gross 20.00 subtotal (the bug) would discount another 20.00 on top of
+    // the 10.00 bulk discount; capping against the net 10.00 (the fix)
+    // discounts only what's left.
+    await createVoucher(prisma, { code: "FULL100", type: VoucherType.PERCENT, value: "100" });
+
+    const order = await createOrderFromCart(prisma, { user, voucherCode: "FULL100" });
+
+    expect(new Decimal(order!.bulkDiscountAmount).equals("10.0000")).toBe(true);
+    expect(new Decimal(order!.discountAmount).equals("10.0000")).toBe(true); // capped at the NET subtotal, not the gross
+    expect(new Decimal(order!.walletUsed).greaterThanOrEqualTo(0)).toBe(true);
+    expect(new Decimal(order!.totalAmount).greaterThanOrEqualTo(0)).toBe(true);
   });
 });

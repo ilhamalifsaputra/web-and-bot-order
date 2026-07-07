@@ -136,12 +136,37 @@ describe("reconcileFinances", () => {
     expect(byId.get(other.id)?.actual_orders).toBe(1);
   });
 
-  it("catches negative wallet balance", async () => {
+  it("catches negative IDR wallet balance", async () => {
     const { user } = sample;
     await prisma.user.update({ where: { id: user.id }, data: { walletBalance: "-1.0000" } });
 
     const findings = await reconcileFinances(prisma);
     expect(findings.negative_wallets.length).toBe(1);
     expect(findings.negative_wallets[0]!.user_id).toBe(user.id);
+    expect(findings.negative_wallets[0]!.currency).toBe("IDR");
+  });
+
+  it("catches negative USDT wallet balance", async () => {
+    const { user } = sample;
+    await prisma.user.update({ where: { id: user.id }, data: { walletBalanceUsdt: "-10.50" } });
+
+    const findings = await reconcileFinances(prisma);
+    expect(findings.negative_wallets.length).toBe(1);
+    expect(findings.negative_wallets[0]!.user_id).toBe(user.id);
+    expect(findings.negative_wallets[0]!.currency).toBe("USDT");
+  });
+
+  it("catches both negative IDR and USDT wallet balances simultaneously", async () => {
+    const { user } = sample;
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { walletBalance: "-5.0000", walletBalanceUsdt: "-10.50" },
+    });
+
+    const findings = await reconcileFinances(prisma);
+    expect(findings.negative_wallets.length).toBe(2);
+    const byCurrency = new Map(findings.negative_wallets.map((w) => [w.currency, w]));
+    expect(byCurrency.get("IDR")?.user_id).toBe(user.id);
+    expect(byCurrency.get("USDT")?.user_id).toBe(user.id);
   });
 });

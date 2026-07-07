@@ -38,7 +38,7 @@ async function main() {
 
   console.log(`\nnegative_wallets: ${findings.negative_wallets.length}`);
   for (const w of findings.negative_wallets) {
-    console.log(`  user #${w.user_id} (tg:${w.telegram_id}): balance=${w.balance}`);
+    console.log(`  user #${w.user_id} (tg:${w.telegram_id}): ${w.currency} balance=${w.balance}`);
   }
 
   process.exit(0);

@@ -28,6 +28,7 @@ interface OrderRow {
   totalAmount: string;
   paymentMethod: string;
   createdAt: string;
+  createdAtDisplay: string | null;
   user: { id: number; fullName: string | null; username: string | null } | null;
 }
 
@@ -210,7 +211,7 @@ export function OrdersPage() {
             header: "Date",
             render: (row) => (
               <span className="text-xs text-ink-soft">
-                {new Date(row.createdAt).toLocaleDateString()}
+                {row.createdAtDisplay ?? "—"}
               </span>
             ),
           },

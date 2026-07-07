@@ -24,7 +24,9 @@ interface OutboxRow {
   attempts: number;
   lastError: string | null;
   createdAt: string;
+  createdAtDisplay: string | null;
   sentAt: string | null;
+  sentAtDisplay: string | null;
 }
 
 interface OutboxResponse {
@@ -33,10 +35,6 @@ interface OutboxResponse {
   page: number;
   hasNext: boolean;
   counts: Record<string, number>;
-}
-
-function formatTs(iso: string | null) {
-  return iso ? new Date(iso).toLocaleString() : "—";
 }
 
 export function OutboxPage() {
@@ -118,8 +116,8 @@ export function OutboxPage() {
               { key: "event", header: "Event", render: (row) => <span className="text-ink">{row.event}</span> },
               { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status} /> },
               { key: "attempts", header: "Attempts", render: (row) => <span className="text-ink-soft">{row.attempts}</span> },
-              { key: "created", header: "Created", render: (row) => <span className="whitespace-nowrap text-ink-soft">{formatTs(row.createdAt)}</span> },
-              { key: "sent", header: "Sent", render: (row) => <span className="whitespace-nowrap text-ink-soft">{formatTs(row.sentAt)}</span> },
+              { key: "created", header: "Created", render: (row) => <span className="whitespace-nowrap text-ink-soft">{row.createdAtDisplay ?? "—"}</span> },
+              { key: "sent", header: "Sent", render: (row) => <span className="whitespace-nowrap text-ink-soft">{row.sentAtDisplay ?? "—"}</span> },
               {
                 key: "actions",
                 header: "",

@@ -15,7 +15,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
-const BROADCAST = { id: 1, message: "Hello customers!", segment: "ALL", status: "SENT", total: 100, sent: 100, scheduledAt: null, createdAt: "2026-06-26T10:00:00.000Z", webImageUrl: null };
+const BROADCAST = { id: 1, message: "Hello customers!", segment: "ALL", status: "SENT", total: 100, sent: 100, scheduledAt: null, scheduledAtDisplay: null, createdAt: "2026-06-26T10:00:00.000Z", webImageUrl: null };
 
 beforeEach(() => { vi.restoreAllMocks(); });
 
@@ -27,6 +27,16 @@ describe("BroadcastPage", () => {
     render(<BroadcastPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/Hello customers!/)).toBeInTheDocument());
     expect(screen.getAllByText("Sent").length).toBeGreaterThan(0);
+    expect(screen.getByText("immediate")).toBeInTheDocument(); // null scheduledAtDisplay fallback
+  });
+
+  it("shows the server-formatted schedule time for a scheduled broadcast", async () => {
+    const scheduled = { ...BROADCAST, id: 3, status: "PENDING", scheduledAt: "2026-07-01T03:00:00.000Z", scheduledAtDisplay: "2026-07-01 10:00" };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ segments: ["ALL"], counts: { ALL: 200 }, history: [scheduled] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<BroadcastPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("2026-07-01 10:00")).toBeInTheDocument());
   });
 
   it("shows empty state when no history", async () => {

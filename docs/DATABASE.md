@@ -2,7 +2,8 @@
 
 Satu skema Prisma (`prisma/schema.prisma`), satu file SQLite (`data/bot.db`,
 mode **WAL**), dipakai bersama oleh `apps/order-bot`, `apps/web-admin`,
-`apps/storefront`, dan `apps/server`. **26 model.** Tidak ada server database
+`apps/storefront`, dan `apps/server`. **28 model** (termasuk `OrderStatusHistory`,
+migrasi `20260624160712_add_order_status_history`). Tidak ada server database
 terpisah, tidak ada Postgres/MySQL/Redis di stack ini saat ini (trigger resmi
 untuk migrasi ke Postgres: ≥2 *concurrent writer* — lihat catatan di
 `docs/audit-security-2026-06-23.md` bagian "Ketergantungan implisit pada
@@ -107,7 +108,8 @@ erDiagram
 
 | Model | Tabel | Catatan kunci |
 |---|---|---|
-| `Order` | `orders` | `status` (lihat [ORDER_STATE_MACHINE.md](ORDER_STATE_MACHINE.md)), snapshot `currency`/`fxRate` saat bayar, `uniqueCents` (disambiguator Bybit/Binance amount-match). Index gabungan `(status, createdAt)` untuk query antrian. |
+| `Order` | `orders` | `status` (lihat [ORDER_STATE_MACHINE.md](ORDER_STATE_MACHINE.md)), snapshot `currency`/`fxRate` saat bayar, `uniqueCents` (disambiguator Bybit/Binance amount-match). Index gabungan `(status, createdAt)` untuk query antrian. Kolom `network`/`confirmations`/`requiredConfirmations`/`firstDetectedAt`/`confirmedAt` (migrasi `20260624160712_add_order_status_history`) diisi HANYA oleh Bybit BSC confirmation tracker — tetap `null` untuk metode bayar lain yang tidak punya konsep block-depth; `confirmedAt` adalah milestone display-grade, terpisah dari `paidAt`/`deliveredAt` yang tetap digerbang status Bybit sendiri. |
+| `OrderStatusHistory` | `order_status_history` | Audit trail append-only tiap transisi `Order.status` (migrasi `20260624160712_add_order_status_history`) — tabel terpisah, bukan kolom JSON di `Order`, karena SQLite tidak bisa index isi array JSON. Kolom: `orderId` FK, `status`, `occurredAt` (default `now()`), `meta` (nullable, JSON bebas). Index `(orderId, occurredAt)` untuk render timeline live-tracking. `onDelete: Restrict` ke `Order` (kebijakan sama dengan Review/Referral — audit tidak boleh hilang diam-diam). |
 | `OrderItem` | `order_items` | `onDelete: Restrict` ke `Order` (baris finansial tidak boleh hilang diam-diam). |
 | `StockItem` | `stock_items` | `status`: `AVAILABLE`/`RESERVED`/`SOLD`/`DEAD`. Index `(productId, status)` untuk alokasi cepat. Lihat [INVENTORY_SYSTEM.md](INVENTORY_SYSTEM.md). |
 | `BulkPricing` | `bulk_pricing` | Satu baris per Denomination (`@unique`), diskon tier kuantitas. |
@@ -134,7 +136,7 @@ erDiagram
 | Model | Tabel | Catatan kunci |
 |---|---|---|
 | `NotificationOutbox` | `notification_outbox` | Antrian — lihat [QUEUE_SYSTEM.md](QUEUE_SYSTEM.md) untuk `claimedAt`/`nextRetryAt`. |
-| `Broadcast` | `broadcasts` | Diisi web, dikonsumsi bot (`drainBroadcasts`) — web tidak pernah kirim Telegram langsung. |
+| `Broadcast` | `broadcasts` | Diisi web, dikonsumsi bot (`drainBroadcasts`) — web tidak pernah kirim Telegram langsung. Kolom `webImageUrl`/`imageFileId` (migrasi `20260706120000_broadcast_image`) — pasangan yang sama dengan produk/denominasi: `webImageUrl` path upload disk, `imageFileId` cache Telegram `file_id` yang di-resolve saat `sendPhoto` pertama. Kalau ada image, `drainBroadcasts` kirim via `sendPhoto` (caption maks 1024 char), bukan `sendMessage`. |
 | `AuditLog` | `audit_logs` | `adminId` nullable (`null` = aksi sistem/auto). Index `createdAt`. |
 | `Setting` | `settings` | Key-value generik — kredensial, flag, JTI sesi, semua bercampur di satu tabel (lihat catatan desain di [SECURITY.md](SECURITY.md)). |
 
@@ -182,7 +184,7 @@ membedakan** dua kelas relasi (Infra-5 fix, audit keamanan 2026-06-23):
 
 ## Generate ERD penuh
 
-Untuk diagram 26-model lengkap (semua FK, bukan ringkasan domain di atas):
+Untuk diagram 28-model lengkap (semua FK, bukan ringkasan domain di atas):
 
 ```bash
 pnpm exec prisma generate    # pastikan client up-to-date dulu

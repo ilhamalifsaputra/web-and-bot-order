@@ -8,10 +8,32 @@ tag git yang sungguhan sampai dokumen ini ditulis.
 
 ## [Unreleased]
 
+### Added
+- Live confirmation-count tracking untuk deposit Bybit BSC on-chain: kolom
+  `network`/`confirmations`/`requiredConfirmations`/`firstDetectedAt`/
+  `confirmedAt` di `Order`, plus tabel append-only baru `OrderStatusHistory`
+  (audit trail tiap transisi `Order.status`, dipakai render timeline
+  live-tracking) — migrasi `20260624160712_add_order_status_history`
+  (2026-06-24).
+- Dukungan gambar opsional pada broadcast web-admin: kolom `webImageUrl`/
+  `imageFileId` di `Broadcast`, endpoint upload `/broadcast/photo`, validasi
+  panjang caption (1024 char saat ada gambar), dan `drainBroadcasts` kirim
+  via `sendPhoto` (cache `file_id` yang di-resolve) alih-alih `sendMessage`
+  saat gambar terlampir — migrasi `20260706120000_broadcast_image`, commit
+  `ab1411a` (2026-07-06).
+
 ### Fixed
 - Gap schema-drift `notification_outbox.claimed_at`/`next_retry_at` ditutup
   via `prisma db push` — lihat [PATCH_GUIDE.md](PATCH_GUIDE.md) untuk detail
   insiden.
+- `reconcileFinances` salah menghitung drift finansial untuk order USDT yang
+  dilunasi via saldo wallet USDT: `walletUsed` diperlakukan sebagai IDR dan
+  dikurangkan dari `subtotalAmount` SEBELUM konversi IDR→USDT, padahal
+  `applyUsdtWalletToOrder` menyimpan `walletUsed` dalam USDT dan
+  mengurangkannya dari `totalAmount` yang SUDAH dikonversi — reproduksi order
+  produksi #182 (recompute salah 1.6 USDT vs. nilai tersimpan yang benar 0).
+  Sekarang jalur USDT dikonversi dulu, baru `walletUsed` (USDT) dikurangkan —
+  commit `5c0bba4` (2026-07-06).
 
 ## [v1.10.0] — 2026-06-23
 

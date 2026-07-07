@@ -19,7 +19,7 @@ function daysFromNow(n: number): string {
   return new Date(Date.now() + n * 24 * 60 * 60 * 1000).toISOString();
 }
 
-const VOUCHER = { id: 1, code: "SAVE10", type: "PERCENT", value: "10", isActive: true, usageLimit: 100, usedCount: 5, minPurchase: "0", expiresAt: null };
+const VOUCHER = { id: 1, code: "SAVE10", type: "PERCENT", value: "10", isActive: true, usageLimit: 100, usedCount: 5, minPurchase: "0", expiresAt: null, expiresAtDisplay: null };
 
 // Active, no expiry set within the next 7 days -> should NOT be flagged as expiring soon.
 const FAR_FUTURE_VOUCHER = { id: 2, code: "FARAWAY", type: "FIXED", value: "5", isActive: true, usageLimit: null, usedCount: 0, minPurchase: "0", expiresAt: daysFromNow(30) };
@@ -66,6 +66,31 @@ describe("VouchersPage", () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("network"));
     render(<VouchersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
+  });
+
+  it("renders the server-formatted expiry date, not a raw UTC-date substring", async () => {
+    const voucherWithExpiry = {
+      id: 6,
+      code: "MIDNIGHT",
+      type: "PERCENT",
+      value: "10",
+      isActive: true,
+      usageLimit: null,
+      usedCount: 0,
+      minPurchase: "0",
+      // Raw UTC midnight would slice(0, 10) to "2026-07-01" — the shop's
+      // TIMEZONE (Asia/Jakarta, +7) display should be the same calendar day
+      // here, but the point is the page must render the server's
+      // expiresAtDisplay string, not compute it from the raw ISO value.
+      expiresAt: "2026-07-01T00:00:00.000Z",
+      expiresAtDisplay: "2026-07-01",
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ vouchers: [voucherWithExpiry], types: ["PERCENT", "FIXED"] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("MIDNIGHT")).toBeInTheDocument());
+    expect(screen.getByText("2026-07-01")).toBeInTheDocument();
   });
 
   it("copies the voucher code to the clipboard", async () => {

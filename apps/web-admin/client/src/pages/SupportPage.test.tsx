@@ -15,8 +15,8 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
-const TICKET = { id: 1, subject: "Order tidak sampai", status: "OPEN", adminId: null, createdAt: "2026-06-26T10:00:00.000Z", user: { fullName: "Budi", username: null } };
-const REPLIED_TICKET = { id: 2, subject: "Refund request", status: "REPLIED", adminId: 7, createdAt: "2026-06-20T10:00:00.000Z", user: { fullName: "Sari", username: null } };
+const TICKET = { id: 1, subject: "Order tidak sampai", status: "OPEN", adminId: null, createdAt: "2026-06-26T10:00:00.000Z", createdAtDisplay: "2026-06-26", user: { fullName: "Budi", username: null } };
+const REPLIED_TICKET = { id: 2, subject: "Refund request", status: "REPLIED", adminId: 7, createdAt: "2026-06-20T10:00:00.000Z", createdAtDisplay: "2026-06-20", user: { fullName: "Sari", username: null } };
 const ADMIN_ROW = { id: 7, telegramId: 555, name: "Rina" };
 
 function mockFetch(...responses: Array<Record<string, unknown>>) {
@@ -45,6 +45,7 @@ describe("SupportPage", () => {
     render(<SupportPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Order tidak sampai")).toBeInTheDocument());
     expect(screen.getByText("Budi")).toBeInTheDocument();
+    expect(screen.getByText("2026-06-26")).toBeInTheDocument(); // createdAtDisplay, not a browser-locale computation
   });
 
   it("shows empty state when no tickets", async () => {

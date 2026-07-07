@@ -28,6 +28,7 @@ interface BroadcastRow {
   total: number;
   sent: number;
   scheduledAt: string | null;
+  scheduledAtDisplay: string | null;
   createdAt: string;
   webImageUrl: string | null;
 }
@@ -199,7 +200,7 @@ export function BroadcastPage() {
             header: "Scheduled",
             render: b => (
               <span className="text-xs text-ink-soft">
-                {b.scheduledAt ? new Date(b.scheduledAt).toLocaleString() : "immediate"}
+                {b.scheduledAtDisplay ?? "immediate"}
               </span>
             ),
           },

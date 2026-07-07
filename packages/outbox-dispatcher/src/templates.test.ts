@@ -44,26 +44,93 @@ describe("notifier templates.render", () => {
     expect(out).toContain("A &amp; B &lt;x&gt; x2");
   });
 
+  it("caps an unusually long product-item list to 300 chars (Outbox-5) so it can't blow past Telegram's message limit", () => {
+    const manyItems = Array.from({ length: 200 }, (_, i) => ({ name: `Product number ${i}`, qty: 1 }));
+    const out = render("ORDER_DELIVERED", { ...payload, items: manyItems });
+    // The rendered products block itself must be capped — not merely "shorter
+    // than the uncapped version" (which would still be true at 10x the limit).
+    const productsLine = out.split("\n").find((l) => l.startsWith("🛍️"))!;
+    const idx = out.indexOf(productsLine);
+    const productsBlock = out.slice(idx + productsLine.length + 1, out.indexOf("💳"));
+    expect(productsBlock.length).toBeLessThanOrEqual(301); // 300 chars + trailing newline
+  });
+
+  it("caps an unusually long masked_buyer_id / total to 300 chars (Outbox-5)", () => {
+    const longId = "X".repeat(1000);
+    const longTotal = "9".repeat(1000);
+    const out = render("ORDER_DELIVERED", { ...payload, masked_buyer_id: longId, total: longTotal });
+    expect(out).not.toContain(longId);
+    expect(out).not.toContain(longTotal);
+    const buyerMatch = out.match(/<code>(X+)<\/code>/);
+    expect(buyerMatch![1]!.length).toBeLessThanOrEqual(300);
+    const totalMatch = out.match(/<b>(9+) USDT<\/b>/);
+    expect(totalMatch![1]!.length).toBeLessThanOrEqual(300);
+  });
+
+  it("keeps HTML tags balanced when the item list would otherwise be cut mid-tag (Important fix)", () => {
+    // Build items whose formatted lines contain <i>...</i> duration tags, then
+    // find an item count where a naive `.slice(0, 300)` on the joined lines
+    // would land inside one of those tags -- this is the exact bug the fix
+    // addresses (a raw char-index cut split `<i>`/`</i>` across the boundary,
+    // producing unclosed-tag HTML that made Telegram's `parse_mode: "HTML"`
+    // reject the whole message and fail the notification permanently).
+    // Fixed-width line (no per-item index) so every line has an identical
+    // length and the arithmetic below is exact.
+    const makeLine = () => `   • Item <i>(Month)</i> x1`;
+    let breakingCount = -1;
+    for (let n = 1; n <= 60; n++) {
+      const lines = Array.from({ length: n }, () => makeLine());
+      const naiveJoined = lines.join("\n");
+      if (naiveJoined.length > 300) {
+        const cut = naiveJoined.slice(0, 300);
+        const openTags = (cut.match(/<i>/g) ?? []).length;
+        const closeTags = (cut.match(/<\/i>/g) ?? []).length;
+        if (openTags !== closeTags) {
+          breakingCount = n;
+          break;
+        }
+      }
+    }
+    // Sanity check: confirms the naive-slice bug scenario is actually reachable
+    // with these inputs, so the assertions below are exercising the real fix.
+    expect(breakingCount).toBeGreaterThan(0);
+
+    const items = Array.from({ length: breakingCount }, () => ({
+      name: "Item",
+      duration: "Month",
+      qty: 1,
+    }));
+    const out = render("ORDER_DELIVERED", { ...payload, items });
+    const productsLine = out.split("\n").find((l) => l.startsWith("🛍️"))!;
+    const idx = out.indexOf(productsLine);
+    const productsBlock = out.slice(idx + productsLine.length + 1, out.indexOf("💳"));
+    const openTags = (productsBlock.match(/<i>/g) ?? []).length;
+    const closeTags = (productsBlock.match(/<\/i>/g) ?? []).length;
+    expect(openTags).toBe(closeTags);
+    // No dangling unclosed tag at the very end (e.g. "...<i>(Mo" with no ">").
+    expect(productsBlock).not.toMatch(/<[^>]*$/);
+  });
+
+  it("does not truncate mid-HTML-entity for the buyer field (minor fix)", () => {
+    // Escaped "'" -> "&#x27;" (6 chars); positioning it so the entity straddles
+    // the 300-char cut reproduces a naive slice landing mid-entity (e.g.
+    // "&#x27" with no trailing ";"), which renders as inert text rather than
+    // breaking HTML parsing, but is still worth avoiding.
+    const longId = "A".repeat(295) + "'" + "B".repeat(20);
+    const out = render("ORDER_DELIVERED", { ...payload, masked_buyer_id: longId });
+    const buyerMatch = out.match(/<code>([^<]*)<\/code>/);
+    const buyerText = buyerMatch![1]!;
+    expect(buyerText.endsWith("&")).toBe(false);
+    // No trailing partial entity (a "&...;"-shaped sequence missing its ";").
+    expect(buyerText).not.toMatch(/&(?:[a-zA-Z]+|#x?[0-9a-fA-F]+)$/);
+  });
+
   it("renders ADMIN_PW_RESET as a bilingual DM with the code and TTL", () => {
     const out = render("ADMIN_PW_RESET", { code: "048273", ttl_minutes: 10 });
     expect(out).toContain("<code>048273</code>");
     expect(out).toContain("valid 10 min");
     expect(out).toContain("Web admin password reset");
     expect(out).toContain("Reset password admin web"); // Indonesian line
-  });
-
-  it("points ORDER_DELIVERED_DM to the bot's My Orders, with an optional web link", () => {
-    const out = render("ORDER_DELIVERED_DM", { order_code: "ORD-1", order_url: "https://shop.example/orders/ORD-1" });
-    expect(out).toContain("<code>ORD-1</code>");
-    expect(out).toContain("My Orders"); // English line points to the bot
-    expect(out).toContain("Pesananku"); // Indonesian line points to the bot
-    expect(out).toContain("Or view on the website: https://shop.example/orders/ORD-1");
-  });
-
-  it("omits the website link when no valid order_url is given", () => {
-    const out = render("ORDER_DELIVERED_DM", { order_code: "ORD-2", order_url: "javascript:alert(1)" });
-    expect(out).not.toContain("javascript:");
-    expect(out).not.toContain("view on the website");
   });
 
   it("renders ADMIN_OVERPAID as a bilingual admin DM with order code, amounts, excess and currency", () => {

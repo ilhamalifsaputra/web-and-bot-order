@@ -22,7 +22,9 @@ const USER = {
   role: "CUSTOMER",
   banned: false,
   createdAt: "2026-01-01T00:00:00.000Z",
+  createdAtDisplay: "2026-01-01",
   lastSeenAt: "2026-01-02T00:00:00.000Z",
+  lastSeenAtDisplay: "2026-01-02 07:00",
   totalSpent: { idr: "150000", usdt: "0" },
 };
 
@@ -38,6 +40,8 @@ describe("UsersPage", () => {
     expect(screen.getByText("@andi")).toBeInTheDocument();
     expect(screen.getByText("A")).toBeInTheDocument(); // avatar initial
     expect(screen.getByText("Rp150.000")).toBeInTheDocument(); // totalSpent.idr
+    expect(screen.getByText("2026-01-01")).toBeInTheDocument(); // createdAtDisplay
+    expect(screen.getByText("2026-01-02 07:00")).toBeInTheDocument(); // lastSeenAtDisplay
   });
 
   it("shows empty state when no users", async () => {

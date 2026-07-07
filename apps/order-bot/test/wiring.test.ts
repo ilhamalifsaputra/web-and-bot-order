@@ -27,8 +27,8 @@ describe("order-bot wiring", () => {
     }).not.toThrow();
   });
 
-  it("registers exactly the 13 expected conversations with unique names", () => {
-    expect(CONVERSATIONS).toHaveLength(13);
+  it("registers exactly the 14 expected conversations with unique names", () => {
+    expect(CONVERSATIONS).toHaveLength(14);
     const names = CONVERSATIONS.map((c) => c.name);
     expect(new Set(names).size).toBe(names.length);
     expect(names).toEqual(
@@ -41,6 +41,7 @@ describe("order-bot wiring", () => {
         "voucherCreate",
         "broadcast",
         "userSearch",
+        "userBan",
         "setting",
         "productCreate",
         "productEdit",

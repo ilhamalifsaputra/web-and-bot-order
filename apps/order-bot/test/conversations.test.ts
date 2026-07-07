@@ -8,6 +8,7 @@ import {
   createOrderDirect,
   attachPaymentProof,
   getOrder,
+  getUser,
   approveOrder,
   getSetting,
   setSetting,
@@ -26,6 +27,7 @@ import {
   voucherCreateConversation,
   broadcastConversation,
   userSearchConversation,
+  userBanConversation,
   settingConversation,
   productCreateConversation,
   productEditConversation,
@@ -173,7 +175,9 @@ describe("support + reject conversations", () => {
 
     const after = await getOrder(prisma, order.id);
     expect(after!.status).toBe(OrderStatus.REJECTED);
-    expect(await prisma.auditLog.count({ where: { action: "reject_order" } })).toBe(1);
+    const auditLog = await prisma.auditLog.findFirst({ where: { action: "reject_order" } });
+    expect(auditLog).toBeDefined();
+    expect(auditLog!.details).toBe(`Rejected order ${after!.orderCode}: "Proof does not match".`);
     expect(calls(sink, "sendMessage").some((c) => c.args[0] === 42)).toBe(true); // buyer DM
   });
 
@@ -301,6 +305,75 @@ describe("admin conversations", () => {
     const conv = new FakeConversation([msg(sink, { text: "tester" })]);
     await userSearchConversation(conv.asMyConversation(), entry);
     expect(sentIncludes(sink, "tester") || sentIncludes(sink, "42")).toBe(true);
+  });
+
+  it("userBan: a reason bans the user, records the reason in the audit details, and re-renders the user card", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:users:ban:${sample.user.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "Repeated chargebacks" })]);
+    await userBanConversation(conv.asMyConversation(), entry);
+
+    const after = await getUser(prisma, sample.user.id);
+    expect(after!.banned).toBe(true);
+    expect(after!.bannedReason).toBe("Repeated chargebacks");
+    const auditLog = await prisma.auditLog.findFirst({ where: { action: "user_ban" } });
+    expect(auditLog).toBeDefined();
+    expect(auditLog!.details).toBe('Banned the user. Reason: "Repeated chargebacks".');
+    // Re-renders the user card (never strands the admin).
+    expect(offersForwardAction(sink)).toBe(true);
+  });
+
+  it("userBan: unban clears the stored ban reason regardless of what was typed, but the audit details still record it", async () => {
+    await prisma.$transaction((tx) => tx.user.update({ where: { id: sample.user.id }, data: { banned: true, bannedReason: "Old reason" } }));
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:users:unban:${sample.user.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "Appeal accepted" })]);
+    await userBanConversation(conv.asMyConversation(), entry);
+
+    const after = await getUser(prisma, sample.user.id);
+    expect(after!.banned).toBe(false);
+    expect(after!.bannedReason).toBeNull();
+    const auditLog = await prisma.auditLog.findFirst({ where: { action: "user_unban" } });
+    expect(auditLog).toBeDefined();
+    expect(auditLog!.details).toBe('Unbanned the user. Reason: "Appeal accepted".');
+  });
+
+  it("userBan: the inline Cancel button aborts without changing the ban flag or writing an audit row", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:users:ban:${sample.user.id}`);
+    // Sent by the same admin (999) who opened the flow — handledEscape's
+    // adminGate check requires a real admin id, or it just answers a "not
+    // admin" toast instead of actually rendering the panel.
+    const cancel = makeCtx({
+      sink,
+      from: { id: 999, username: "boss" },
+      session: { lang: "en", scratch: {}, dbUser: { id: adminDbId, telegramId: "999", role: UserRole.ADMIN, language: "EN", referralCode: "A", walletBalance: "0" } },
+      callbackData: "v1:adm:cancel",
+    }).ctx;
+    const conv = new FakeConversation([cancel]);
+    await userBanConversation(conv.asMyConversation(), entry);
+
+    const after = await getUser(prisma, sample.user.id);
+    expect(after!.banned).toBe(false);
+    expect(await prisma.auditLog.count({ where: { action: "user_ban" } })).toBe(0);
+    // Lands back on the real admin panel (not just "some keyboard exists"),
+    // confirming the escape path actually re-rendered admin.menu.
+    expect(sentIncludes(sink, "Admin Panel")).toBe(true);
+    expect(offersForwardAction(sink)).toBe(true); // never stranded
+  });
+
+  it("userBan: a too-short reason shows a validation error, then a valid retry succeeds", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:users:ban:${sample.user.id}`);
+    const conv = new FakeConversation([
+      msg(sink, { text: "hi" }), // below the 3-char minimum
+      msg(sink, { text: "Fraudulent payment proof" }),
+    ]);
+    await userBanConversation(conv.asMyConversation(), entry);
+
+    expect((await getUser(prisma, sample.user.id))!.banned).toBe(true);
+    const auditLog = await prisma.auditLog.findFirst({ where: { action: "user_ban" } });
+    expect(auditLog!.details).toBe('Banned the user. Reason: "Fraudulent payment proof".');
   });
 
   it("setting: persists a setting + audits", async () => {

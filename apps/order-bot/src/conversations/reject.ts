@@ -13,6 +13,7 @@ import { adminEdit, adminAnchor, consumeInput } from "../util/chat";
 import { coreT, t } from "../util/i18n";
 import { esc } from "../util/format";
 import { validateText } from "../util/validators";
+import { requireAdminId } from "../util/adminAudit";
 import * as akb from "../keyboards/admin";
 import { notificationKb } from "../keyboards/customer";
 import { adminCommand } from "../handlers/admin";
@@ -66,13 +67,13 @@ export async function rejectConversation(conversation: MyConversation, ctx: MyCo
   try {
     const order = await prisma.$transaction(async (tx) => {
       const admin = await getUserByTelegramId(tx, adminTg);
-      const o = await rejectOrder(tx, orderId, { adminId: admin ? admin.id : 0, reason });
+      const o = await rejectOrder(tx, orderId, { adminId: requireAdminId(admin), reason });
       await logAdminAction(tx, {
-        adminId: admin ? admin.id : 0,
+        adminId: requireAdminId(admin),
         action: "reject_order",
         targetType: "order",
         targetId: orderId,
-        details: `Rejected order: ${reason}`,
+        details: `Rejected order ${o!.orderCode}: "${reason}".`,
       });
       return o!;
     });

@@ -20,6 +20,7 @@ const REVIEW = {
   comment: "Bagus banget!",
   hidden: false,
   createdAt: "2026-06-26T10:00:00.000Z",
+  createdAtDisplay: "2026-06-26",
   user: { username: "andi", fullName: "Andi Santoso" },
   denomination: { name: "Netflix 1 Month" },
 };
@@ -37,6 +38,7 @@ describe("ReviewsPage", () => {
     render(<ReviewsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Bagus banget!")).toBeInTheDocument());
     expect(screen.getByText(/andi santoso/i)).toBeInTheDocument();
+    expect(screen.getByText("2026-06-26")).toBeInTheDocument(); // createdAtDisplay, not a browser-locale computation
   });
 
   it("shows empty state when no reviews", async () => {

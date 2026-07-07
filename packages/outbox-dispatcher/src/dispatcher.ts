@@ -24,6 +24,7 @@ import {
   fetchPendingNotifications,
   claimNotification,
   releaseNotificationClaim,
+  releaseNotificationClaimWithBackoff,
   markNotificationSent,
   markNotificationFailed,
   getOrderByCodeFull,
@@ -132,11 +133,13 @@ export async function drainBatch(bot: Bot): Promise<void> {
     }
 
     const isDm = ADMIN_DM_EVENTS.has(row.event);
-    // Channel post with no channel configured → release back to PENDING so it
-    // posts as soon as a public channel is set (not failed permanently, and
-    // not stuck claimed for the full stale-claim window).
+    // Channel post with no channel configured → release back to PENDING with
+    // backoff so it posts once a public channel is (re)set (never failed
+    // permanently — an admin might reconfigure at any time), but without
+    // re-claiming a batch slot on every single tick forever (Outbox-1 fix,
+    // backend audit).
     if (!isDm && publicChannelId() === undefined) {
-      await releaseNotificationClaim(prisma, row.id);
+      await releaseNotificationClaimWithBackoff(prisma, row.id);
       continue;
     }
     const chatId = isDm ? Number(payload.chat_id) : Number(publicChannelId());

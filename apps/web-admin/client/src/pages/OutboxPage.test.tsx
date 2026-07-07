@@ -22,7 +22,9 @@ const ROW = {
   attempts: 1,
   lastError: null,
   createdAt: "2026-06-26T10:00:00.000Z",
+  createdAtDisplay: "2026-06-26 17:00",
   sentAt: "2026-06-26T10:00:05.000Z",
+  sentAtDisplay: "2026-06-26 17:00",
 };
 
 beforeEach(() => { vi.restoreAllMocks(); });
@@ -38,6 +40,7 @@ describe("OutboxPage", () => {
     render(<OutboxPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("ORDER_DELIVERED")).toBeInTheDocument());
     expect(screen.getAllByText("Sent").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("2026-06-26 17:00").length).toBeGreaterThan(0); // createdAtDisplay/sentAtDisplay
   });
 
   it("shows empty state when no rows", async () => {

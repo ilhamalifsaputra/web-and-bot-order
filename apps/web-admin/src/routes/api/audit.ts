@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { prisma, listAuditLogs, countAuditLogs } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
+import { displayDateTime } from "../../dateDisplay";
 
 const PAGE_SIZE = 100;
 
@@ -30,6 +31,7 @@ export default async function auditApiRoutes(app: FastifyInstance): Promise<void
       countAuditLogs(prisma, filter),
     ]);
 
-    return reply.send({ rows, total, page, hasNext: offset + rows.length < total });
+    const rowsWithDisplay = rows.map((r) => ({ ...r, createdAtDisplay: displayDateTime(r.createdAt) }));
+    return reply.send({ rows: rowsWithDisplay, total, page, hasNext: offset + rows.length < total });
   });
 }

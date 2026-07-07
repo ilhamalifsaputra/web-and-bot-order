@@ -3,6 +3,7 @@ import { NotificationStatus } from "@app/core/enums";
 import { prisma, listNotifications, countNotifications, outboxStatusCounts, retryNotification, logAdminAction } from "@app/db";
 import { logger } from "@app/core/logger";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { displayDateTime } from "../../dateDisplay";
 
 const PAGE_SIZE = 50;
 const STATUS_VALUES = Object.values(NotificationStatus) as string[];
@@ -20,7 +21,12 @@ export default async function outboxApiRoutes(app: FastifyInstance): Promise<voi
       outboxStatusCounts(prisma),
     ]);
 
-    return reply.send({ rows, total, page, hasNext: offset + rows.length < total, counts });
+    const rowsWithDisplay = rows.map((r) => ({
+      ...r,
+      createdAtDisplay: displayDateTime(r.createdAt),
+      sentAtDisplay: displayDateTime(r.sentAt),
+    }));
+    return reply.send({ rows: rowsWithDisplay, total, page, hasNext: offset + rows.length < total, counts });
   });
 
   // JSON counterpart of the legacy POST /outbox/:id/retry (routes/outbox.ts),

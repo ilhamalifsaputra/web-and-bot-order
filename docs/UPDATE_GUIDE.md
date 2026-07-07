@@ -76,6 +76,7 @@ skema**, sebelum `git pull` dieksekusi ulang ke produksi. Skrip seperti
 |---|---|---|
 | Kolom/tabel baru (additive) | `db push` sebelum restart | Ya |
 | Rename tabel/kolom | Migrasi data sekali-jalan + `db push` + `prisma generate` | Ya |
+| FK/constraint-only (mis. ubah `onDelete` CASCADE/SET NULL → RESTRICT) | Sama seperti "Rename tabel/kolom" — SQLite tidak punya `ALTER TABLE ... ALTER CONSTRAINT`, jadi Prisma me-rebuild tabel penuh: `CREATE new_<tabel>` → `INSERT INTO new_<tabel> SELECT ... FROM <tabel>` → `DROP <tabel>` → `RENAME new_<tabel>` (lihat contoh nyata `prisma/migrations/20260623174046_restrict_financial_cascades/migration.sql` — merebuild `order_items`, `referrals`, `reviews`, `wallet_transactions` sekaligus). Rebuild ini memindai & menyalin ulang SELURUH baris tabel yang terkena, bukan operasi O(1) — untuk tabel besar ini bisa makan waktu; hentikan service singkat saat deploy (`docker compose stop server` sebelum `db push`, baru `restart` setelahnya) alih-alih membiarkan trafik nulis di tengah rebuild. | Ya |
 | Variabel `.env` baru | Isi `.env` sebelum restart (proses tidak reload `.env` sendiri) | Ya |
 | Setting baru (DB) | Tidak perlu apa-apa — terbaca live | Tidak (untuk Setting yang "langsung berlaku" — lihat tabel di [`../DOCS.md` §6](../DOCS.md#6-settings-vs-env)) |
 | Ganti `bot_token`/`web_cookie_secret` via Settings | — | Ya (proses yang relevan, lihat §6) |

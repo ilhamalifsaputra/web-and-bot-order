@@ -38,6 +38,10 @@ const STRINGS: Record<string, Strings> = {
 };
 const DEFAULT_LANG = "en";
 
+/** Cap for ORDER_DELIVERED interpolated fields — mirrors
+ * enqueueOrderPipelineFailed's 300-char `reason` truncation precedent. */
+const MAX_INTERPOLATION_LEN = 300;
+
 function strings(lang: string | null | undefined): Strings {
   if (!lang) return STRINGS[DEFAULT_LANG]!;
   return STRINGS[lang.toLowerCase()] ?? STRINGS[DEFAULT_LANG]!;
@@ -53,13 +57,37 @@ function escape(s: string): string {
     .replace(/'/g, "&#x27;");
 }
 
+/** Slice an already-escaped string to at most `maxLen` chars without landing
+ * mid-entity (e.g. cutting "&amp;" down to "&am"), which would render as
+ * inert text instead of the intended character but is otherwise harmless
+ * (unlike splitting an HTML tag, this can't break `parse_mode: "HTML"`
+ * parsing). If the cut lands inside a trailing unclosed "&...", drop that
+ * partial entity entirely rather than emit it verbatim. */
+function truncateEscaped(s: string, maxLen: number): string {
+  if (s.length <= maxLen) return s;
+  const cut = s.slice(0, maxLen);
+  const lastAmp = cut.lastIndexOf("&");
+  if (lastAmp !== -1 && !cut.slice(lastAmp).includes(";")) {
+    return cut.slice(0, lastAmp);
+  }
+  return cut;
+}
+
 interface Item {
   name?: unknown;
   qty?: unknown;
   duration?: unknown;
 }
 
-function fmtItems(items: Item[]): string {
+/** Join formatted item lines, capping the result to roughly `maxLen` chars
+ * *without* ever cutting inside a line — each item's `<i>...</i>` duration
+ * tag is opened and closed within the same line, so keeping whole lines
+ * intact guarantees we never emit unbalanced HTML (unlike a raw
+ * `.slice(0, maxLen)` on the joined string, which can land mid-tag and make
+ * Telegram's `parse_mode: "HTML"` reject the whole message). If even the
+ * first line alone exceeds maxLen, keep it whole anyway (valid HTML over an
+ * exact 300-char cap). */
+function fmtItems(items: Item[], maxLen: number): string {
   const lines: string[] = [];
   for (const it of items) {
     const name = escape(String(it.name ?? "?"));
@@ -71,7 +99,18 @@ function fmtItems(items: Item[]): string {
       lines.push(`   • ${name} x${qty}`);
     }
   }
-  return lines.join("\n");
+  let result = "";
+  for (const line of lines) {
+    const candidate = result ? `${result}\n${line}` : line;
+    if (candidate.length > maxLen) break;
+    result = candidate;
+  }
+  if (!result && lines.length > 0) {
+    // First item alone already exceeds maxLen — keep it whole rather than
+    // truncate mid-tag.
+    result = lines[0]!;
+  }
+  return result;
 }
 
 interface DeliveredPayload {
@@ -97,11 +136,6 @@ interface AdminOverpaidPayload {
   currency?: unknown;
 }
 
-interface DeliveredDmPayload {
-  order_code?: unknown;
-  order_url?: unknown;
-}
-
 interface OrderPipelineFailedPayload {
   order_code?: unknown;
   reason?: unknown;
@@ -110,7 +144,7 @@ interface OrderPipelineFailedPayload {
 /** Return the message body for an outbox event, or "" to skip. */
 export function render(
   event: string,
-  payload: DeliveredPayload & AdminResetPayload & DeliveredDmPayload & AdminOverpaidPayload & OrderPipelineFailedPayload,
+  payload: DeliveredPayload & AdminResetPayload & AdminOverpaidPayload & OrderPipelineFailedPayload,
 ): string {
   if (event === NotificationEvent.ORDER_PIPELINE_FAILED) {
     // Admin DM: a Bybit BSC order's automated tracking pipeline failed
@@ -166,28 +200,16 @@ export function render(
       `Abaikan pesan ini jika kamu tidak memintanya.`
     );
   }
-  if (event === NotificationEvent.ORDER_DELIVERED_DM) {
-    // Buyer DM after an order auto-delivers (TokoPay/QRIS path). Only enqueued for
-    // buyers WITH a Telegram account, so we point them to the bot's My Orders.
-    // Credentials are NEVER carried in the outbox payload (the /outbox admin panel
-    // would show them). The web order link stays as an optional fallback.
-    const code = escape(String(payload.order_code ?? ""));
-    const rawUrl = typeof payload.order_url === "string" ? payload.order_url : "";
-    const url = /^https?:\/\//.test(rawUrl) ? rawUrl : "";
-    const linkEn = url ? `\nOr view on the website: ${escape(url)}` : "";
-    const linkId = url ? `\nAtau lihat di website: ${escape(url)}` : "";
-    return (
-      `✅ <b>Order <code>${code}</code> delivered!</b>\n` +
-      `Payment confirmed — open <b>My Orders</b> in the bot to see your account(s).${linkEn}\n\n` +
-      `✅ <b>Pesanan <code>${code}</code> terkirim!</b>\n` +
-      `Pembayaran dikonfirmasi — buka <b>Pesananku</b> di bot untuk melihat akunmu.${linkId}`
-    );
-  }
   if (event === NotificationEvent.ORDER_DELIVERED) {
     const s = strings(payload.buyer_language);
-    const itemsText = fmtItems(payload.items ?? []);
-    const buyer = escape(String(payload.masked_buyer_id ?? "????"));
-    const total = escape(String(payload.total ?? "0"));
+    // Cap interpolated fields to 300 chars, same precedent as
+    // enqueueOrderPipelineFailed's `reason.slice(0, 300)` — an unusually long
+    // product-name list (or a pathological masked_buyer_id/total) shouldn't be
+    // able to push this message past Telegram's message-length limit
+    // (Outbox-5 fix, backend audit).
+    const itemsText = fmtItems(payload.items ?? [], MAX_INTERPOLATION_LEN);
+    const buyer = truncateEscaped(escape(String(payload.masked_buyer_id ?? "????")), MAX_INTERPOLATION_LEN);
+    const total = truncateEscaped(escape(String(payload.total ?? "0")), MAX_INTERPOLATION_LEN);
     const currency = escape(String(payload.currency ?? "USDT"));
     const deliveredAt = escape(String(payload.delivered_at ?? ""));
     const viaWeb = payload.via_website ? `\n🌐 via Website` : "";

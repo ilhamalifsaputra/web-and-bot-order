@@ -60,7 +60,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     if (!Number.isInteger(categoryId) || categoryId <= 0)
       return reply.code(400).send({ error: "A valid category is required." });
 
-    const category = await prisma.category.findUnique({ where: { id: categoryId }, select: { id: true } });
+    const category = await getCategory(prisma, categoryId);
     if (!category) return reply.code(400).send({ error: "Category not found." });
 
     const product = await createCatalogProduct(prisma, {

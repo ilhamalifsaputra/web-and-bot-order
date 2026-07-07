@@ -398,15 +398,19 @@ export async function payView(order: OrderRow) {
         // claim falls back to the same "contact us" UI as a gateway failure
         // below — that fallback already has a manual retry link, so no
         // polling loop is needed here.
-        if (await claimGatewaySlot(prisma, order.id)) {
+        const claimSentinel = await claimGatewaySlot(prisma, order.id);
+        if (claimSentinel) {
           try {
             gateway = await createTransaction(creds, {
               refId: order.orderCode,
               amountIdr: order.totalAmount,
             });
-            await commitGatewayResult(prisma, order.id, { gateway: "tokopay", ...gateway });
+            const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "tokopay", ...gateway });
+            if (!committed) {
+              logger.warn(`Created a TokoPay transaction for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
+            }
           } catch (err) {
-            await releaseGatewaySlot(prisma, order.id);
+            await releaseGatewaySlot(prisma, order.id, claimSentinel);
             logger.error({ err }, `Failed to create a TokoPay transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
             gatewayError = true;
           }
@@ -433,15 +437,19 @@ export async function payView(order: OrderRow) {
       if (creds) {
         // Atomic claim before the external call — see the matching TokoPay
         // comment above (Data-2 fix, backend audit 2026-07-07).
-        if (await claimGatewaySlot(prisma, order.id)) {
+        const claimSentinel = await claimGatewaySlot(prisma, order.id);
+        if (claimSentinel) {
           try {
             paydisiniGateway = await createPaydisiniTransaction(creds, {
               refId: order.orderCode,
               amountIdr: order.totalAmount,
             });
-            await commitGatewayResult(prisma, order.id, { gateway: "paydisini", ...paydisiniGateway });
+            const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "paydisini", ...paydisiniGateway });
+            if (!committed) {
+              logger.warn(`Created a PayDisini transaction for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
+            }
           } catch (err) {
-            await releaseGatewaySlot(prisma, order.id);
+            await releaseGatewaySlot(prisma, order.id, claimSentinel);
             logger.error({ err }, `Failed to create a PayDisini transaction for order ${order.orderCode} — showing the contact fallback instead of a QR code`);
             paydisiniGatewayError = true;
           }
@@ -474,16 +482,20 @@ export async function payView(order: OrderRow) {
       if (creds && publicUrl) {
         // Atomic claim before the external call — see the matching TokoPay
         // comment above (Data-2 fix, backend audit 2026-07-07).
-        if (await claimGatewaySlot(prisma, order.id)) {
+        const claimSentinel = await claimGatewaySlot(prisma, order.id);
+        if (claimSentinel) {
           try {
             nowpaymentsGateway = await createNowpaymentsInvoice(creds, {
               orderId: order.orderCode,
               amountUsd: order.totalAmount,
               ipnCallbackUrl: `${publicUrl.replace(/\/+$/, "")}/pay/nowpayments/callback`,
             });
-            await commitGatewayResult(prisma, order.id, { gateway: "nowpayments", ...nowpaymentsGateway });
+            const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "nowpayments", ...nowpaymentsGateway });
+            if (!committed) {
+              logger.warn(`Created a NOWPayments invoice for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
+            }
           } catch (err) {
-            await releaseGatewaySlot(prisma, order.id);
+            await releaseGatewaySlot(prisma, order.id, claimSentinel);
             logger.error({ err }, `Failed to create a NOWPayments invoice for order ${order.orderCode} — showing the contact fallback instead of a payment link`);
             nowpaymentsGatewayError = true;
           }

@@ -40,8 +40,6 @@
   "admin.toast.stock_marked_dead": "💀 Marked as dead",
   "admin.toast.ticket_closed": "🔒 Ticket closed.",
   "admin.toast.unknown_period": "Unknown period",
-  "admin.toast.user_banned": "🚫 User banned",
-  "admin.toast.user_unbanned": "✅ User unbanned",
   "admin.bulk_none_set": "No bulk pricing rule set for this product.\n\nTap <b>➕ Add Rule</b> to set a minimum quantity and discount percentage.",
   "admin.empty_products": "No products yet. Seed via DB or extend the admin panel.",
   "admin.empty_stock_items": "No stock items.",

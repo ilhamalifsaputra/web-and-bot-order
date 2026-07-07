@@ -88,41 +88,55 @@ describe("claimGatewaySlot / commitGatewayResult / releaseGatewaySlot (Data-2)",
   it("claim succeeds once; a second claim on the same order fails", async () => {
     const order = await makeOrder("PENDING_PAYMENT");
 
-    expect(await claimGatewaySlot(prisma, order.id)).toBe(true);
+    const sentinel = await claimGatewaySlot(prisma, order.id);
+    expect(sentinel).toEqual(expect.any(String));
     const claimed = await prisma.order.findUnique({ where: { id: order.id } });
-    expect(claimed!.paymentRef).toBe(gatewayClaimSentinel(order.id));
+    expect(claimed!.paymentRef).toBe(sentinel);
 
-    // A second claim (a concurrent request, or a stale retry) must not
-    // re-win — it should observe the sentinel already in place and fail.
-    expect(await claimGatewaySlot(prisma, order.id)).toBe(false);
+    // A second claim (a concurrent request, or a fresh — not stale — retry)
+    // must not re-win — it should observe the sentinel already in place and
+    // fail.
+    expect(await claimGatewaySlot(prisma, order.id)).toBeNull();
   });
 
   it("commitGatewayResult writes the real JSON payload over the claim sentinel", async () => {
     const order = await makeOrder("PENDING_PAYMENT");
-    await claimGatewaySlot(prisma, order.id);
+    const sentinel = await claimGatewaySlot(prisma, order.id);
 
-    await commitGatewayResult(prisma, order.id, { gateway: "tokopay", trxId: "T-1" });
+    expect(await commitGatewayResult(prisma, order.id, sentinel!, { gateway: "tokopay", trxId: "T-1" })).toBe(true);
 
     const fresh = await prisma.order.findUnique({ where: { id: order.id } });
     expect(JSON.parse(fresh!.paymentRef!)).toEqual({ gateway: "tokopay", trxId: "T-1" });
   });
 
+  it("commitGatewayResult is a no-op (and returns false) if paymentRef is no longer this claim's sentinel", async () => {
+    const order = await makeOrder("PENDING_PAYMENT");
+    const sentinel = await claimGatewaySlot(prisma, order.id);
+    // Simulate the order moving on (e.g. cancelled) mid-gateway-call.
+    await prisma.order.update({ where: { id: order.id }, data: { paymentRef: null } });
+
+    expect(await commitGatewayResult(prisma, order.id, sentinel!, { gateway: "tokopay", trxId: "T-stale" })).toBe(false);
+    const fresh = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(fresh!.paymentRef).toBeNull();
+  });
+
   it("releaseGatewaySlot resets paymentRef to null only while the sentinel is present, and never clobbers a committed result", async () => {
     const order = await makeOrder("PENDING_PAYMENT");
-    await claimGatewaySlot(prisma, order.id);
+    const sentinel1 = await claimGatewaySlot(prisma, order.id);
 
-    await releaseGatewaySlot(prisma, order.id);
+    await releaseGatewaySlot(prisma, order.id, sentinel1!);
     let fresh = await prisma.order.findUnique({ where: { id: order.id } });
     expect(fresh!.paymentRef).toBeNull();
 
     // A claim can be taken again once released (the gateway-failure retry path).
-    expect(await claimGatewaySlot(prisma, order.id)).toBe(true);
+    const sentinel2 = await claimGatewaySlot(prisma, order.id);
+    expect(sentinel2).toEqual(expect.any(String));
 
     // Once a result is committed, the sentinel is gone — a stray/late release
     // call (e.g. from a slow duplicate request) must be a no-op, not erase
     // the real payload.
-    await commitGatewayResult(prisma, order.id, { gateway: "tokopay", trxId: "T-2" });
-    await releaseGatewaySlot(prisma, order.id);
+    await commitGatewayResult(prisma, order.id, sentinel2!, { gateway: "tokopay", trxId: "T-2" });
+    await releaseGatewaySlot(prisma, order.id, sentinel2!);
     fresh = await prisma.order.findUnique({ where: { id: order.id } });
     expect(fresh!.paymentRef).toBe(JSON.stringify({ gateway: "tokopay", trxId: "T-2" }));
   });
@@ -139,13 +153,61 @@ describe("claimGatewaySlot / commitGatewayResult / releaseGatewaySlot (Data-2)",
       claimGatewaySlot(prisma, orderA.id),
       claimGatewaySlot(prisma, orderB.id),
     ]);
-    expect(claimedA).toBe(true);
-    expect(claimedB).toBe(true);
+    expect(claimedA).toEqual(expect.any(String));
+    expect(claimedB).toEqual(expect.any(String));
 
     const freshA = await prisma.order.findUnique({ where: { id: orderA.id } });
     const freshB = await prisma.order.findUnique({ where: { id: orderB.id } });
-    expect(freshA!.paymentRef).toBe(gatewayClaimSentinel(orderA.id));
-    expect(freshB!.paymentRef).toBe(gatewayClaimSentinel(orderB.id));
+    expect(freshA!.paymentRef).toBe(claimedA);
+    expect(freshB!.paymentRef).toBe(claimedB);
+  });
+
+  // Backend audit 2026-07-07 final-review fix: a mid-claim crash (process
+  // dies between claimGatewaySlot succeeding and commit/release running)
+  // used to wedge paymentRef at the sentinel forever, since claimGatewaySlot
+  // only matched `paymentRef: null`. The sentinel now embeds a timestamp so a
+  // stuck claim older than the TTL can be reclaimed.
+  describe("stale-sentinel reclaim after a simulated crash", () => {
+    it("a sentinel older than the TTL is reclaimable by a later claimGatewaySlot call", async () => {
+      const order = await makeOrder("PENDING_PAYMENT");
+      // Simulate a crash: write a sentinel whose embedded timestamp is well
+      // past the reclaim TTL, as if claimGatewaySlot had won the claim long
+      // ago and the process died before commit/release ran.
+      const staleSentinel = gatewayClaimSentinel(order.id, Date.now() - 60_000);
+      await prisma.order.update({ where: { id: order.id }, data: { paymentRef: staleSentinel } });
+
+      const reclaimed = await claimGatewaySlot(prisma, order.id);
+      expect(reclaimed).toEqual(expect.any(String));
+      expect(reclaimed).not.toBe(staleSentinel);
+
+      const fresh = await prisma.order.findUnique({ where: { id: order.id } });
+      expect(fresh!.paymentRef).toBe(reclaimed);
+    });
+
+    it("a fresh sentinel (within the TTL) is NOT reclaimable — still returns null, matching an in-flight claim", async () => {
+      const order = await makeOrder("PENDING_PAYMENT");
+      const freshSentinel = gatewayClaimSentinel(order.id, Date.now() - 1_000);
+      await prisma.order.update({ where: { id: order.id }, data: { paymentRef: freshSentinel } });
+
+      expect(await claimGatewaySlot(prisma, order.id)).toBeNull();
+
+      const fresh = await prisma.order.findUnique({ where: { id: order.id } });
+      expect(fresh!.paymentRef).toBe(freshSentinel);
+    });
+
+    it("a stale sentinel belonging to a DIFFERENT order is never mistaken for this order's own stale claim", async () => {
+      const orderA = await makeOrder("PENDING_PAYMENT");
+      const orderB = await makeOrder("PENDING_PAYMENT");
+      // orderB somehow ended up holding a paymentRef shaped like orderA's
+      // sentinel prefix followed by orderB's own id — must not be treated as
+      // orderA's stale claim (it isn't — the embedded order id differs).
+      const staleForA = gatewayClaimSentinel(orderA.id, Date.now() - 60_000);
+      await prisma.order.update({ where: { id: orderB.id }, data: { paymentRef: staleForA } });
+
+      // orderB's own claim attempt must go through the null-claim path and
+      // fail, since its paymentRef isn't null and isn't ITS OWN sentinel.
+      expect(await claimGatewaySlot(prisma, orderB.id)).toBeNull();
+    });
   });
 });
 

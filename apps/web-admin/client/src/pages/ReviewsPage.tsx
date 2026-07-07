@@ -19,7 +19,6 @@ interface Review {
   rating: number;
   comment: string | null;
   hidden: boolean;
-  createdAt: string;
   createdAtDisplay: string | null;
   user: { username: string | null; fullName: string } | null;
   denomination: { name: string } | null;

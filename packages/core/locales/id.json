@@ -40,8 +40,6 @@
   "admin.toast.stock_marked_dead": "💀 Ditandai mati",
   "admin.toast.ticket_closed": "🔒 Tiket ditutup.",
   "admin.toast.unknown_period": "Periode tidak dikenal",
-  "admin.toast.user_banned": "🚫 Pengguna diblokir",
-  "admin.toast.user_unbanned": "✅ Blokir pengguna dibuka",
   "admin.bulk_none_set": "Belum ada aturan harga grosir untuk produk ini.\n\nKetuk <b>➕ Tambah Aturan</b> untuk menetapkan kuantitas minimum dan persentase diskon.",
   "admin.empty_products": "Belum ada produk. Tambahkan via DB atau panel admin.",
   "admin.empty_stock_items": "Tidak ada item stok.",

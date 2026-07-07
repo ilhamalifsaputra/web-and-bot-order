@@ -1,7 +1,9 @@
 {
   "admin.approve": "✅ Approve",
   "admin.approved": "Order {code} approved and delivered.",
+  "admin.ask_ban_reason": "Send the reason for banning this user (for the audit log only — the user never sees this):",
   "admin.ask_reject_reason": "Send the rejection reason (shown to the buyer):",
+  "admin.ask_unban_reason": "Send the reason for unbanning this user (for the audit log only — the user never sees this):",
   "admin.broadcast": "📢 Broadcast",
   "admin.broadcast_already_in_progress": "A broadcast is already in progress (started recently) — wait for it to finish before sending another.",
   "admin.broadcast_ask": "Send the message (text or photo with caption) to broadcast. /cancel to abort.",

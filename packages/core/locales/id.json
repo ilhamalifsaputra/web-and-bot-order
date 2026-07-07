@@ -1,7 +1,9 @@
 {
   "admin.approve": "✅ Approve",
   "admin.approved": "Order {code} di-approve dan dikirim.",
+  "admin.ask_ban_reason": "Kirim alasan pemblokiran pengguna ini (hanya untuk log audit — pengguna tidak akan melihatnya):",
   "admin.ask_reject_reason": "Kirim alasan penolakan (ditampilkan ke pembeli):",
+  "admin.ask_unban_reason": "Kirim alasan membuka blokir pengguna ini (hanya untuk log audit — pengguna tidak akan melihatnya):",
   "admin.broadcast": "📢 Broadcast",
   "admin.broadcast_already_in_progress": "Broadcast lain sedang berjalan (baru saja dimulai) — tunggu sampai selesai sebelum mengirim lagi.",
   "admin.broadcast_ask": "Kirim pesan (teks atau foto+caption) untuk broadcast. /cancel untuk batal.",

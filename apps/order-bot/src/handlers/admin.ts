@@ -23,7 +23,6 @@ import {
   listVouchers,
   getUser,
   getUserByTelegramId,
-  setUserBanned,
   setUserRole,
   adjustWallet,
   getSetting,
@@ -44,13 +43,13 @@ import { adminEdit } from "../util/chat";
 import { BANNER_FILEID_KEY } from "../util/banner";
 import { coreT, t } from "../util/i18n";
 import { esc, formatPrice, formatIdr, mixedAmount } from "../util/format";
+import { requireAdminId } from "../util/adminAudit";
 import * as akb from "../keyboards/admin";
 import * as verification from "./verification";
 
 // USDT figures only (wallet balances). Catalog prices and voucher FIXED values
 // are central Rupiah → formatIdr; mixed revenue totals → mixedAmount.
 const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimals);
-const adminId = (admin: { id: number } | null) => (admin ? admin.id : 0);
 
 // ===========================================================================
 // /admin command + main menu
@@ -161,7 +160,7 @@ async function showUsersMenu(ctx: MyContext): Promise<void> {
   await adminEdit(ctx, t(ctx, "admin.hdr_users"), akb.usersAdminKb(lang));
 }
 
-async function renderUserCard(ctx: MyContext, userId: number): Promise<void> {
+export async function renderUserCard(ctx: MyContext, userId: number): Promise<void> {
   const lang = ctx.session.lang;
   const u = await getUser(prisma, userId);
   if (u === null) return;
@@ -179,22 +178,6 @@ async function renderUserCard(ctx: MyContext, userId: number): Promise<void> {
   );
 }
 
-async function userBan(ctx: MyContext, userId: number, banned: boolean): Promise<void> {
-  const adminTg = ctx.from!.id;
-  await prisma.$transaction(async (tx) => {
-    await setUserBanned(tx, userId, banned, "set by admin");
-    const admin = await getUserByTelegramId(tx, adminTg);
-    await logAdminAction(tx, {
-      adminId: adminId(admin),
-      action: banned ? "user_ban" : "user_unban",
-      targetType: "user",
-      targetId: userId,
-    });
-  });
-  await ctx.answerCallbackQuery({ text: t(ctx, banned ? "admin.toast.user_banned" : "admin.toast.user_unbanned"), show_alert: true });
-  await renderUserCard(ctx, userId);
-}
-
 async function userSetReseller(ctx: MyContext, userId: number, on: boolean): Promise<void> {
   const adminTg = ctx.from!.id;
   const newRole = on ? UserRole.RESELLER : UserRole.CUSTOMER;
@@ -202,7 +185,7 @@ async function userSetReseller(ctx: MyContext, userId: number, on: boolean): Pro
     await setUserRole(tx, userId, newRole);
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
-      adminId: adminId(admin),
+      adminId: requireAdminId(admin),
       action: "user_set_reseller",
       targetType: "user",
       targetId: userId,
@@ -252,7 +235,7 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
   try {
     newBal = await prisma.$transaction(async (tx) => {
       const admin = await getUserByTelegramId(tx, adminTg);
-      const actingId = adminId(admin);
+      const actingId = requireAdminId(admin);
       const bal = await adjustWallet(tx, uid, amt, { allowNegative: true, reason: "admin_adjust", adminId: actingId });
       await logAdminAction(tx, {
         adminId: actingId,
@@ -387,7 +370,7 @@ async function toggleProduct(ctx: MyContext, denominationId: number): Promise<vo
     await updateDenomination(tx, denominationId, { isActive: newState });
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
-      adminId: adminId(admin),
+      adminId: requireAdminId(admin),
       action: "product_toggle",
       targetType: "product",
       targetId: denominationId,
@@ -438,7 +421,7 @@ async function adminMarkStockDead(ctx: MyContext, stockId: number, productId: nu
     await markStockDead(tx, stockId, "marked dead by admin");
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
-      adminId: adminId(admin),
+      adminId: requireAdminId(admin),
       action: "stock_mark_dead",
       targetType: "stock_item",
       targetId: stockId,
@@ -480,12 +463,14 @@ async function deleteBulkPricingHandler(ctx: MyContext, productId: number): Prom
   const deleted = await prisma.$transaction(async (tx) => {
     const ok = await deleteBulkPricing(tx, productId);
     if (ok) {
+      const denomination = await tx.denomination.findUnique({ where: { id: productId } });
       const admin = await getUserByTelegramId(tx, adminTg);
       await logAdminAction(tx, {
-        adminId: adminId(admin),
+        adminId: requireAdminId(admin),
         action: "bulk_pricing_delete",
         targetType: "product",
         targetId: productId,
+        details: `Removed bulk pricing for "${denomination?.name ?? productId}".`,
       });
     }
     return ok;
@@ -523,7 +508,7 @@ async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void>
     const tgId = await closeTicket(tx, ticketId);
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
-      adminId: adminId(admin),
+      adminId: requireAdminId(admin),
       action: "ticket_close",
       targetType: "support_ticket",
       targetId: ticketId,
@@ -596,7 +581,7 @@ async function undoBannerRemoval(ctx: MyContext): Promise<void> {
     await deleteSetting(tx, BANNER_FILEID_KEY);
     const admin = await getUserByTelegramId(tx, ctx.from!.id);
     await logAdminAction(tx, {
-      adminId: adminId(admin),
+      adminId: requireAdminId(admin),
       action: "setting_set",
       targetType: "setting",
       details: `Restored the banner image via undo.`,
@@ -656,8 +641,7 @@ export async function handleAdminCallback(ctx: MyContext, parts: string[]): Prom
     case "users":
       if (action === "menu") await showUsersMenu(ctx);
       else if (action === "view") await renderUserCard(ctx, n(4));
-      else if (action === "ban") await userBan(ctx, n(4), true);
-      else if (action === "unban") await userBan(ctx, n(4), false);
+      // 'ban' and 'unban' are conversation entry points — intercepted upstream.
       else if (action === "reseller") await userSetReseller(ctx, n(4), Boolean(n(5)));
       else if (action === "wallet") await userWalletPrompt(ctx, n(4));
       // 'search' handled by user_search conversation.

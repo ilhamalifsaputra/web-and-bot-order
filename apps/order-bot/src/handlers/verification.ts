@@ -24,6 +24,7 @@ import type { MyContext } from "../context";
 import { adminEdit } from "../util/chat";
 import { coreT, t } from "../util/i18n";
 import { esc, formatIdr, orderAmount, groupOrderItems, redactCredentials } from "../util/format";
+import { requireAdminId } from "../util/adminAudit";
 import * as akb from "../keyboards/admin";
 import { sendAccountFile } from "../util/delivery";
 
@@ -122,9 +123,9 @@ export async function approve(ctx: MyContext, orderId: number): Promise<void> {
   try {
     const result = await prisma.$transaction(async (tx) => {
       const admin = await getUserByTelegramId(tx, adminTg);
-      const { order } = await approveOrder(tx, orderId, { adminId: admin ? admin.id : 0 });
+      const { order } = await approveOrder(tx, orderId, { adminId: requireAdminId(admin) });
       await logAdminAction(tx, {
-        adminId: admin ? admin.id : 0,
+        adminId: requireAdminId(admin),
         action: "approve_order",
         targetType: "order",
         targetId: orderId,

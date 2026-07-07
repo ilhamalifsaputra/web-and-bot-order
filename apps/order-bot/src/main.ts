@@ -128,14 +128,18 @@ export function buildBot(token?: string): Bot<MyContext> {
     // Correlation id: shown to the user AND attached to the log line so a
     // customer report ("I got ref AB12CD") maps straight to the stack trace.
     const ref = newErrorRef();
-    const bits: string[] = [`ref=${ref}`];
-    if (ctx.from) bits.push(`user=${ctx.from.id}`);
-    if (ctx.callbackQuery?.data) bits.push(`callback_button=${ctx.callbackQuery.data}`);
     // L-8: never log the raw user text — it can carry TxIDs, support messages, or
     // other sensitive input. Record only that a text update was in flight + its
     // length, which is enough to correlate via `ref` without leaking content.
-    else if (ctx.message?.text) bits.push(`text_length=${ctx.message.text.length}`);
-    logger.error({ err: err.error, ref }, `Unhandled error while processing a Telegram update [${bits.join(" ")}] — user saw a generic error with this ref, check the stack trace below`);
+    const updateDescription = ctx.callbackQuery?.data
+      ? `, via callback button "${ctx.callbackQuery.data}"`
+      : ctx.message?.text
+        ? `, via a ${ctx.message.text.length}-character text message`
+        : "";
+    logger.error(
+      { err: err.error, ref },
+      `Unhandled error while processing a Telegram update from user ${ctx.from?.id ?? "unknown"} (ref ${ref}${updateDescription}) — user saw a generic error with this ref, check the stack trace below`,
+    );
 
     // Best-effort: tell the user something broke (with the ref), so an uncaught
     // exception doesn't leave them staring at a dead screen. Never rethrow here.

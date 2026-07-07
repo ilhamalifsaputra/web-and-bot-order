@@ -20,6 +20,7 @@ interface Review {
   comment: string | null;
   hidden: boolean;
   createdAt: string;
+  createdAtDisplay: string | null;
   user: { username: string | null; fullName: string } | null;
   denomination: { name: string } | null;
 }
@@ -111,7 +112,7 @@ export function ReviewsPage() {
                     </span>
                   </div>
                   {r.comment && <p className="text-sm text-ink">{r.comment}</p>}
-                  <p className="text-xs text-ink-soft">{new Date(r.createdAt).toLocaleDateString()}</p>
+                  <p className="text-xs text-ink-soft">{r.createdAtDisplay ?? "—"}</p>
                 </div>
                 <Button
                   variant="outline"

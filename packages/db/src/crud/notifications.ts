@@ -246,6 +246,38 @@ export async function markNotificationFailed(
 }
 
 /**
+ * Release a claimed row back to PENDING with the same exponential backoff
+ * `markNotificationFailed` uses (attempts increment + `notificationBackoffMs`),
+ * but WITHOUT ever transitioning it to FAILED — for conditions that are the
+ * shop's configuration, not the row's fault (e.g. a channel-post event like
+ * ORDER_DELIVERED enqueued while PUBLIC_CHANNEL_ID was set, then the channel
+ * is unset/changed before it's delivered). An admin can fix the configuration
+ * at any time, so no attempt count is ever terminal for this path — unlike
+ * `releaseNotificationClaim` (used for transient conditions like Telegram
+ * flood control), this backs off so the row stops re-claiming a batch slot
+ * every single tick. No-op if the row was already claimed by someone else or
+ * moved on (SENT/FAILED).
+ */
+export async function releaseNotificationClaimWithBackoff(
+  db: Db,
+  notifId: number,
+  now: Date = new Date(),
+): Promise<void> {
+  const row = await db.notificationOutbox.findUnique({ where: { id: notifId } });
+  if (!row) return;
+  const attempts = row.attempts + 1;
+  await db.notificationOutbox.updateMany({
+    where: { id: notifId, status: NotificationStatus.SENDING },
+    data: {
+      attempts,
+      claimedAt: null,
+      status: NotificationStatus.PENDING,
+      nextRetryAt: new Date(now.getTime() + notificationBackoffMs(attempts)),
+    },
+  });
+}
+
+/**
  * Enqueue the buyer's account-credentials DM for a DELIVERED order, for
  * callers that don't send it themselves — the web-admin panel's approve and
  * resend actions (CLAUDE.md: the web NEVER sends Telegram, only enqueues).

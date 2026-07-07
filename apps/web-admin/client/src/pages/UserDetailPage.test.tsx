@@ -157,8 +157,8 @@ describe("UserDetailPage — wallet ledger currency column", () => {
         JSON.stringify({
           ...USER_DETAIL,
           ledger: [
-            { delta: "5.0000", balanceAfter: "505000.0000", currency: "IDR", reason: "admin_adjust", note: "goodwill", createdAt: "2026-07-01T00:00:00.000Z" },
-            { delta: "2.5000", balanceAfter: "15.0000", currency: "USDT", reason: "admin_adjust", note: "usdt credit", createdAt: "2026-07-02T00:00:00.000Z" },
+            { delta: "5.0000", balanceAfter: "505000.0000", currency: "IDR", reason: "admin_adjust", note: "goodwill", createdAt: "2026-07-01T00:00:00.000Z", createdAtDisplay: "2026-07-01" },
+            { delta: "2.5000", balanceAfter: "15.0000", currency: "USDT", reason: "admin_adjust", note: "usdt credit", createdAt: "2026-07-02T00:00:00.000Z", createdAtDisplay: "2026-07-02" },
           ],
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
@@ -171,5 +171,7 @@ describe("UserDetailPage — wallet ledger currency column", () => {
     expect(screen.getByText("505000.0000")).toBeInTheDocument();
     expect(screen.getByText("15.0000")).toBeInTheDocument();
     expect(screen.getByText("usdt credit")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-01")).toBeInTheDocument(); // createdAtDisplay
+    expect(screen.getByText("2026-07-02")).toBeInTheDocument();
   });
 });

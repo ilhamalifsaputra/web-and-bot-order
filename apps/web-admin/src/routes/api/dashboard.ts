@@ -8,6 +8,7 @@ import type { FastifyInstance } from "fastify";
 import { startOfDayUtc, addDays } from "@app/core/datetime";
 import { Decimal } from "@app/core/money";
 import { config } from "@app/core/config";
+import { displayDateTime } from "../../dateDisplay";
 import {
   prisma,
   revenueSummary,
@@ -140,7 +141,8 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
   app.get("/api/dashboard/orders/recent", { preHandler: currentAdmin }, async (req) => {
     const q = req.query as Record<string, string | undefined>;
     const limit = q.limit ? Number(q.limit) : 10;
-    return recentOrders(prisma, limit);
+    const rows = await recentOrders(prisma, limit);
+    return rows.map((r) => ({ ...r, createdAtDisplay: displayDateTime(new Date(r.createdAt)) }));
   });
 
   app.get("/api/dashboard/health", { preHandler: currentAdmin }, async () => {

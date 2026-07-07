@@ -17,7 +17,7 @@ interface StockItem {
   id: number;
   status: string;
   note: string | null;
-  createdAt: string;
+  createdAtDisplay: string | null;
 }
 
 interface StockProductData {
@@ -245,7 +245,7 @@ export function StockProductPage() {
                 <span className="text-xs text-ink-soft">{item.note ?? "—"}</span>
               ),
           },
-          { key: "added", header: "Added", render: item => <span className="text-xs text-ink-soft">{new Date(item.createdAt).toLocaleDateString()}</span> },
+          { key: "added", header: "Added", render: item => <span className="text-xs text-ink-soft">{item.createdAtDisplay ?? "—"}</span> },
           {
             key: "actions",
             header: "",

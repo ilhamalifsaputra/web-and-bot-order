@@ -32,6 +32,7 @@ interface Voucher {
   usedCount: number;
   minPurchase: string;
   expiresAt: string | null;
+  expiresAtDisplay: string | null;
 }
 
 type VoucherStatus = "active" | "expired" | "usedUp";
@@ -244,7 +245,7 @@ export function VouchersPage() {
             header: "Expires",
             render: v => (
               <div className="flex flex-col items-start gap-1">
-                <span>{v.expiresAt ? v.expiresAt.slice(0, 10) : "—"}</span>
+                <span>{v.expiresAtDisplay ?? "—"}</span>
                 {isExpiringSoon(v, now) && <StatusBadge status="EXPIRING_SOON" />}
               </div>
             ),

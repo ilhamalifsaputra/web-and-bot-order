@@ -19,6 +19,7 @@ import {
   logAdminAction,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { displayDate } from "../../dateDisplay";
 
 export default async function stockApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/stock", { preHandler: currentAdmin }, async (req, reply) => {
@@ -39,7 +40,12 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       countAvailableStock(prisma, productId),
       countRestockSubscribers(prisma, productId),
     ]);
-    return reply.send({ product, items, available, waiting });
+    // Stock items are timestamped `addedAt` in the DB/crud layer (not
+    // `createdAt`) — the client's "Added" column had been reading a
+    // nonexistent `createdAt` field (always undefined → Invalid Date).
+    // Fixed here alongside adding the pre-formatted display string.
+    const itemsWithDisplay = items.map((i) => ({ ...i, createdAtDisplay: displayDate(i.addedAt) }));
+    return reply.send({ product, items: itemsWithDisplay, available, waiting });
   });
 
   app.post("/api/stock/:productId/bulk-add", { preHandler: csrfProtect }, async (req, reply) => {
@@ -56,7 +62,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const product = await getDenominationWithProduct(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
 
-    const { added, skipped } = await bulkAddStock(prisma, productId, creds);
+    const { added, skipped } = await prisma.$transaction((tx) => bulkAddStock(tx, productId, creds));
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "stock_upload",

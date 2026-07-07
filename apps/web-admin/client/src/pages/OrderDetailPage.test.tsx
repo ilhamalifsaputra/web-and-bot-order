@@ -26,6 +26,7 @@ const ORDER_DETAIL_DATA = {
     currency: "IDR",
     totalAmount: "50000",
     createdAt: "2026-01-01T00:00:00.000Z",
+    createdAtDisplay: "2026-01-01 07:00",
     user: { id: 10, fullName: "Andi Santoso", username: "andi", telegramId: "111" },
     items: [
       {
@@ -70,6 +71,7 @@ describe("OrderDetailPage", () => {
     await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
     // Unit price td has "99000" (different from itemsTotal "50000" to avoid any confusion)
     expect(screen.getByText("99000")).toBeInTheDocument();
+    expect(screen.getByText("2026-01-01 07:00")).toBeInTheDocument(); // createdAtDisplay
   });
 
   it("shows error on fetch failure", async () => {

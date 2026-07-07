@@ -27,6 +27,7 @@ interface OrderDetail {
   currency: string;
   totalAmount: string;
   createdAt: string;
+  createdAtDisplay: string | null;
   user: { id: number; fullName: string | null; username: string | null; telegramId: string | null } | null;
   items: OrderItem[];
   voucher: { code: string; type: string } | null;
@@ -144,7 +145,7 @@ export function OrderDetailPage() {
             </div>
             <div className="flex justify-between">
               <span className="text-ink-soft">Date</span>
-              <span className="text-ink">{new Date(order.createdAt).toLocaleString()}</span>
+              <span className="text-ink">{order.createdAtDisplay ?? "—"}</span>
             </div>
             {order.voucher && (
               <div className="flex justify-between">

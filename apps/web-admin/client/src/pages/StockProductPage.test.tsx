@@ -26,7 +26,7 @@ const STOCK_PRODUCT_DATA = {
     product: { id: 1, name: "CapCut Pro", category: { name: "Apps" } },
   },
   items: [
-    { id: 101, status: "AVAILABLE", note: null, createdAt: "2026-01-01T00:00:00.000Z" },
+    { id: 101, status: "AVAILABLE", note: null, createdAt: "2026-01-01T00:00:00.000Z", createdAtDisplay: "2026-01-01" },
   ],
   available: 1,
   waiting: 0,
@@ -49,6 +49,7 @@ describe("StockProductPage", () => {
     await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
     // Item id appears in its own td
     expect(screen.getByText("101")).toBeInTheDocument();
+    expect(screen.getByText("2026-01-01")).toBeInTheDocument(); // createdAtDisplay
   });
 
   it("shows error on fetch failure", async () => {

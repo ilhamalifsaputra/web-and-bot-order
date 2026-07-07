@@ -23,6 +23,7 @@ const ROWS = [
     targetId: "shop_name",
     details: "Changed shop name to Demo Shop",
     createdAt: "2026-06-26T10:00:00.000Z",
+    createdAtDisplay: "2026-06-26 17:00",
   },
 ];
 
@@ -41,6 +42,7 @@ describe("AuditPage", () => {
     render(<AuditPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("update_setting")).toBeInTheDocument());
     expect(screen.getByText("Changed shop name to Demo Shop")).toBeInTheDocument();
+    expect(screen.getByText("2026-06-26 17:00")).toBeInTheDocument();
   });
 
   it("shows empty state when no rows", async () => {

@@ -4,10 +4,6 @@ import { EmptyState } from "../shared/EmptyState";
 import { formatCurrencyDisplay } from "../shared/CurrencyAmount";
 import { useRecentOrders } from "../../hooks/useRecentOrders";
 
-function shortTime(iso: string): string {
-  return new Date(iso).toLocaleString();
-}
-
 export function RecentOrdersTable() {
   const { data, isLoading, isError } = useRecentOrders();
   return (
@@ -44,7 +40,7 @@ export function RecentOrdersTable() {
                     <td className="py-2 pr-3 text-ink-soft">{o.customerLabel}</td>
                     <td className="py-2 pr-3 font-mono text-ink">{formatCurrencyDisplay(o.amount, o.currency)}</td>
                     <td className="py-2 pr-3"><StatusBadge status={o.status} /></td>
-                    <td className="py-2 text-xs text-ink-soft">{shortTime(o.createdAt)}</td>
+                    <td className="py-2 text-xs text-ink-soft">{o.createdAtDisplay ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>

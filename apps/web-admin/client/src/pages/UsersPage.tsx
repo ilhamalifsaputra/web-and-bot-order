@@ -20,7 +20,9 @@ interface UserRow {
   role: string;
   banned: boolean;
   createdAt: string;
+  createdAtDisplay: string | null;
   lastSeenAt: string | null;
+  lastSeenAtDisplay: string | null;
   totalSpent: { idr: string; usdt: string };
 }
 
@@ -136,7 +138,7 @@ export function UsersPage() {
             header: "Joined",
             render: (row) => (
               <span className="text-xs text-ink-soft">
-                {new Date(row.createdAt).toLocaleDateString()}
+                {row.createdAtDisplay ?? "—"}
               </span>
             ),
           },
@@ -145,7 +147,7 @@ export function UsersPage() {
             header: "Last Seen",
             render: (row) => (
               <span className="text-xs text-ink-soft">
-                {row.lastSeenAt ? new Date(row.lastSeenAt).toLocaleString() : "—"}
+                {row.lastSeenAtDisplay ?? "—"}
               </span>
             ),
           },

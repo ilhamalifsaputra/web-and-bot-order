@@ -22,6 +22,7 @@ import {
   logAdminAction,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { displayDateTime } from "../../dateDisplay";
 
 const PAGE_SIZE = 50;
 
@@ -44,9 +45,22 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     ]);
     const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
 
+    // Ledger rows are named createdAt in the DB/crud layer, but the client
+    // reads `processedAt` (an existing "invalid date" bug — the field never
+    // actually existed before, so `new Date(tx.processedAt)` always produced
+    // Invalid Date client-side). Add it here alongside the pre-formatted
+    // display string, fixing that bug in the same pass.
+    const ledgerWithDisplay = ledger.map((r) => ({
+      ...r,
+      processedAt: r.createdAt.toISOString(),
+      processedAtDisplay: displayDateTime(r.createdAt),
+    }));
+    const underpaidWithDisplay = underpaid.map((o) => ({ ...o, createdAtDisplay: displayDateTime(o.createdAt) }));
+    const pendingInternalWithDisplay = pendingInternal.map((o) => ({ ...o, expiresAtDisplay: displayDateTime(o.expiresAt) }));
+
     return reply.send({
       enabled: binanceEnabled,
-      ledger,
+      ledger: ledgerWithDisplay,
       total,
       page,
       pageSize: PAGE_SIZE,
@@ -54,8 +68,8 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       outcomes: TX_OUTCOMES,
       counts,
       health,
-      underpaid,
-      pendingInternal,
+      underpaid: underpaidWithDisplay,
+      pendingInternal: pendingInternalWithDisplay,
     });
   });
 

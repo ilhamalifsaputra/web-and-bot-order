@@ -25,9 +25,9 @@ import { apiPost } from "../api/client";
 interface UserDetail {
   user: { id: number; username: string | null; fullName: string | null; telegramId: string; role: string; banned: boolean; banReason: string | null; walletBalance: string; walletBalanceUsdt: string };
   totalSpent: { idr: string; usdt: string };
-  orders: { id: number; orderCode: string; status: string; totalIdr: string; createdAt: string }[];
-  tickets: { id: number; subject: string; status: string; createdAt: string }[];
-  ledger: { delta: string; balanceAfter: string; currency: string; reason: string; note: string | null; createdAt: string }[];
+  orders: { id: number; orderCode: string; status: string; totalIdr: string; createdAt: string; createdAtDisplay: string | null }[];
+  tickets: { id: number; subject: string; status: string; createdAt: string; createdAtDisplay: string | null }[];
+  ledger: { delta: string; balanceAfter: string; currency: string; reason: string; note: string | null; createdAt: string; createdAtDisplay: string | null }[];
   roles: string[];
 }
 
@@ -178,7 +178,7 @@ export function UserDetailPage() {
               { key: "code", header: "Code", render: o => <span className="font-mono text-xs">{o.orderCode}</span> },
               { key: "status", header: "Status", render: o => <StatusBadge status={o.status} /> },
               { key: "total", header: "Total", render: o => <span className="text-sm">{o.totalIdr}</span> },
-              { key: "date", header: "Date", render: o => <span className="text-xs text-ink-soft">{new Date(o.createdAt).toLocaleDateString()}</span> },
+              { key: "date", header: "Date", render: o => <span className="text-xs text-ink-soft">{o.createdAtDisplay ?? "—"}</span> },
             ]}
             data={data.orders}
             keyExtractor={o => o.id}
@@ -199,7 +199,7 @@ export function UserDetailPage() {
               { key: "balance", header: "Balance", render: l => <span className="font-mono text-sm">{l.balanceAfter}</span> },
               { key: "reason", header: "Reason", render: l => <span className="text-sm">{l.reason}</span> },
               { key: "note", header: "Note", render: l => <span className="text-xs text-ink-soft">{l.note ?? "—"}</span> },
-              { key: "date", header: "Date", render: l => <span className="text-xs text-ink-soft">{new Date(l.createdAt).toLocaleDateString()}</span> },
+              { key: "date", header: "Date", render: l => <span className="text-xs text-ink-soft">{l.createdAtDisplay ?? "—"}</span> },
             ]}
             data={data.ledger.map((l, i) => ({ ...l, _key: i }))}
             keyExtractor={l => l._key}

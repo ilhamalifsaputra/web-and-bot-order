@@ -8,13 +8,10 @@ import { Input } from "@/components/ui/input";
 import { DateInput } from "../components/shared/DateInput";
 import { useAudit } from "../hooks/useAudit";
 
-function formatTs(iso: string) {
-  return new Date(iso).toLocaleString();
-}
-
 interface AuditRow {
   id: number;
   createdAt: string;
+  createdAtDisplay: string | null;
   adminId: string | number;
   action: string;
   targetType: string | null;
@@ -27,7 +24,7 @@ const AUDIT_COLUMNS = [
     key: "time",
     header: "Time",
     render: (r: AuditRow) => (
-      <span className="text-ink-soft whitespace-nowrap">{formatTs(r.createdAt)}</span>
+      <span className="text-ink-soft whitespace-nowrap">{r.createdAtDisplay ?? "—"}</span>
     ),
   },
   {

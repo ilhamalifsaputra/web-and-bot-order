@@ -1608,6 +1608,33 @@ describe("stock", () => {
     expect(res.statusCode).toBe(403);
   });
 
+  // Data-1: bulkAddStock is called inside prisma.$transaction (see
+  // routes/api/stock.ts) so two concurrent uploads of the SAME fresh
+  // credential can't both pass the "not already present" check and both
+  // insert — SQLite's single-writer transaction serializes them, so the
+  // second one sees the first one's row and skips it as a duplicate.
+  it("two concurrent bulk-adds of the same credential never create duplicate AVAILABLE rows", async () => {
+    const dupCred = `race${counter}@e.com:p`;
+    const before = await countAvailableStock(prisma, seed.productId);
+
+    const [res1, res2] = await Promise.all([
+      post(`/api/stock/${seed.productId}/bulk-add`, seed.cookie, { csrf_token: seed.csrf, credentials: dupCred }),
+      post(`/api/stock/${seed.productId}/bulk-add`, seed.cookie, { csrf_token: seed.csrf, credentials: dupCred }),
+    ]);
+    expect(res1.statusCode).toBe(200);
+    expect(res2.statusCode).toBe(200);
+
+    // Exactly one of the two requests actually added the credential; the
+    // other must have seen it as a duplicate and skipped it.
+    const bodies = [JSON.parse(res1.body), JSON.parse(res2.body)] as { added: number; skipped: number }[];
+    expect(bodies.reduce((sum, b) => sum + b.added, 0)).toBe(1);
+    expect(bodies.reduce((sum, b) => sum + b.skipped, 0)).toBe(1);
+
+    expect(await countAvailableStock(prisma, seed.productId)).toBe(before + 1);
+    const rows = await prisma.stockItem.findMany({ where: { productId: seed.productId, credentials: dupCred } });
+    expect(rows.length).toBe(1);
+  });
+
   // bulk delete / download happy paths: covered by "stock JSON API —
   // bulk-dead, bulk-delete, item note/dead, download" below.
 

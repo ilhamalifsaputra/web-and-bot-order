@@ -8,6 +8,7 @@ export interface AuditRow {
   targetId: string | null;
   details: string | null;
   createdAt: string;
+  createdAtDisplay: string | null;
 }
 
 export interface AuditResponse {

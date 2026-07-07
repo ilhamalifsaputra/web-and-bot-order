@@ -22,6 +22,7 @@ interface Ticket {
   status: string;
   adminId: number | null;
   createdAt: string;
+  createdAtDisplay: string | null;
   user?: { fullName: string | null; username: string | null };
 }
 
@@ -171,7 +172,7 @@ export function SupportPage() {
             header: "Date",
             render: t => (
               <span className="text-xs text-ink-soft">
-                {new Date(t.createdAt).toLocaleDateString()}
+                {t.createdAtDisplay ?? "—"}
               </span>
             ),
           },

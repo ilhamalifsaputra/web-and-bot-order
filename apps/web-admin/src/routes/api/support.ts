@@ -12,11 +12,12 @@ import {
   logAdminAction,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { displayDate, displayDateTime } from "../../dateDisplay";
 
 export default async function supportApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/support", { preHandler: currentAdmin }, async (req, reply) => {
     const tickets = await listOpenTickets(prisma, 100);
-    return reply.send({ tickets });
+    return reply.send({ tickets: tickets.map((t) => ({ ...t, createdAtDisplay: displayDate(t.createdAt) })) });
   });
 
   app.get("/api/support/:ticketId", { preHandler: currentAdmin }, async (req, reply) => {
@@ -27,7 +28,11 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       listTicketMessages(prisma, ticketId, 100),
       getUser(prisma, ticket.userId),
     ]);
-    return reply.send({ ticket, messages, user: ticketUser });
+    return reply.send({
+      ticket,
+      messages: messages.map((m) => ({ ...m, createdAtDisplay: displayDateTime(m.createdAt) })),
+      user: ticketUser,
+    });
   });
 
   app.post("/api/support/:ticketId/reply", { preHandler: csrfProtect }, async (req, reply) => {

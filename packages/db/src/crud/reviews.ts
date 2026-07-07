@@ -142,6 +142,12 @@ export function countReviews(db: Db, opts: ReviewFilter = {}) {
   return db.review.count({ where: reviewWhere(opts) });
 }
 
+/** A single review by id, or null — the existence check behind the
+ * moderation panel's show/hide toggle. */
+export function getReviewById(db: Db, reviewId: number) {
+  return db.review.findUnique({ where: { id: reviewId } });
+}
+
 /**
  * Public rating for a product: average + count over VISIBLE reviews only
  * (hidden reviews, suppressed by the web moderation panel, are excluded). This

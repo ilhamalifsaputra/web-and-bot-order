@@ -20,7 +20,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
-const TX = { id: 1, binanceTxId: "TX123", amount: "100000", currency: "IDR", outcome: "MATCHED", memo: "ORDER-001", processedAt: "2026-06-26T10:00:00.000Z" };
+const TX = { id: 1, binanceTxId: "TX123", amount: "100000", currency: "IDR", outcome: "MATCHED", memo: "ORDER-001", processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" };
 
 function mockPaymentsFetch(payload: Record<string, unknown>) {
   vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
@@ -46,6 +46,7 @@ describe("PaymentsPage", () => {
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("TX123")).toBeInTheDocument());
     expect(screen.getByText("Matched")).toBeInTheDocument();
+    expect(screen.getByText("2026-06-26 17:00")).toBeInTheDocument(); // processedAtDisplay
   });
 
   it("shows empty state", async () => {
@@ -159,6 +160,7 @@ const UNDERPAID = {
   totalAmount: "45000",
   currency: "IDR",
   createdAt: "2026-06-20T08:00:00.000Z",
+  createdAtDisplay: "2026-06-20 15:00",
   user: { fullName: "Sari Dewi", username: "saridewi" },
 };
 const PENDING_INTERNAL = {
@@ -168,6 +170,7 @@ const PENDING_INTERNAL = {
   currency: "USDT",
   paymentRef: "REF-abc123",
   expiresAt: "2026-07-01T12:00:00.000Z",
+  expiresAtDisplay: "2026-07-01 19:00",
   user: { fullName: "Budi", username: "budi99" },
 };
 
@@ -216,6 +219,7 @@ describe("PaymentsPage — underpaid order resolution", () => {
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("ORD-PI1")).toBeInTheDocument());
     expect(screen.getByText("REF-abc123")).toBeInTheDocument();
+    expect(screen.getByText("2026-07-01 19:00")).toBeInTheDocument(); // expiresAtDisplay
   });
 
   it("shows an alert when resolving an underpaid order fails", async () => {

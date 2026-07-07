@@ -53,6 +53,7 @@ export interface RecentOrderRow {
   currency: "IDR" | "USDT" | "USD";
   status: string;
   createdAt: string;
+  createdAtDisplay: string | null;
 }
 
 export type HealthLevel = "green" | "yellow" | "red" | "unmonitored";

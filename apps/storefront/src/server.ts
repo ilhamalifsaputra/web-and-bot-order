@@ -29,6 +29,18 @@ import apiAccountRoutes from "./routes/apiAccount";
 import spaShellRoutes from "./routes/spaShell";
 import { requestLang } from "./shop";
 
+// Scrubs a live, single-use password-reset token out of a request path
+// before it's logged (CLAUDE.md: "Never log secrets"). The token has
+// appeared as a path segment under two different route shapes over time —
+// the deleted Nunjucks route `GET /reset/:token`, and the current React SPA
+// JSON route `POST /api/v1/auth/reset/:token` — so this matches `/reset/...`
+// ANYWHERE in the path, not just at the start, to cover both without needing
+// another edit if the route moves again. Exported standalone (no Fastify
+// dependency) so it's unit-testable directly.
+export function redactPath(path: string): string {
+  return path.replace(/\/reset\/[^/]+/g, "/reset/[redacted]");
+}
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 // Overridable for the bundled deploy, same convention as web-admin.
 const STATIC_DIR = process.env.STOREFRONT_STATIC_DIR ?? join(HERE, "..", "static");
@@ -48,13 +60,13 @@ export async function buildApp(): Promise<FastifyInstance> {
   // L-01: lightweight access log for 502/4xx/5xx diagnosis. Method + path +
   // status + duration only — never the query string (may carry tokens), body,
   // or headers (never log secrets — CLAUDE.md). The password-reset token
-  // rides in the PATH (`GET /reset/:token`), not the query string, so it's
-  // redacted explicitly here too (Storefront-1 fix, security audit
-  // 2026-06-23) — otherwise every reset-page hit would log the live,
+  // rides in the PATH (`/reset/:token`), not the query string, so it's
+  // redacted explicitly here too via redactPath() (Storefront-1 fix, security
+  // audit 2026-06-23) — otherwise every reset-page hit would log the live,
   // single-use token in full.
   app.addHook("onResponse", (req, reply, done) => {
     const rawPath = req.url.split("?", 1)[0]!;
-    const path = rawPath.replace(/^\/reset\/[^/]+/, "/reset/[redacted]");
+    const path = redactPath(rawPath);
     logger.info(
       { method: req.method, path, status: reply.statusCode, ms: Math.round(reply.elapsedTime) },
       "Handled a storefront HTTP request",

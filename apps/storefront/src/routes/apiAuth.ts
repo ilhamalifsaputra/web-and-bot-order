@@ -151,7 +151,7 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
       return reply.send({ sent: false, unavailable: true });
     }
     if (email) {
-      const user = await prisma.user.findUnique({ where: { email } });
+      const user = await findUserByLoginIdentifier(prisma, email);
       if (user && !user.banned) {
         const { token } = await createPasswordResetToken(prisma, user.id);
         const link = `${publicBase(req)}/reset/${token}`;

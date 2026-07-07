@@ -20,6 +20,22 @@ via `prisma migrate diff` terhadap shadow DB saat fitur ditambahkan — lihat
 komentar di `docs/audit-security-2026-06-23.md` §Infra-5/§Pricing-1), bukan
 mekanisme penerapan yang dijalankan otomatis.
 
+## Catatan: sebagian folder migrasi dibuat manual, bukan via Prisma
+
+Beberapa folder di `prisma/migrations/*` punya timestamp bulat/hand-picked
+(mis. `20260531120000_drop_alembic_version`, `20260531140000_review_hidden`,
+`20260531180000_wallet_transactions`, `20260531200000_broadcasts`,
+`20260706120000_broadcast_image` — semua berakhiran `:00:00`), berbeda dengan
+folder lain yang timestamp-nya presisi-detik acak (mis.
+`20260623174046_restrict_financial_cascades`), ciri khas keluaran
+`prisma migrate dev --create-only` sungguhan. Timestamp bulat mengindikasikan
+folder itu ditulis tangan (SQL disalin/disesuaikan manual), bukan dihasilkan
+dan divalidasi terhadap shadow DB. Perlakukan migrasi hand-authored sebagai
+**best-effort/belum tervalidasi** — jangan asumsikan SQL-nya sudah dicek
+`prisma migrate diff` byte-identik terhadap `schema.prisma` seperti yang
+diklaim untuk batch Infra-5/Pricing-1 di atas; review manual SQL-nya sebelum
+mengandalkannya sebagai dokumentasi otoritatif.
+
 ## Cara membuat migrasi (sebagai dokumentasi SQL, opsional)
 
 Jika Anda menambah kolom/tabel di `schema.prisma` dan ingin menyimpan SQL-nya
@@ -139,6 +155,30 @@ Order yang gagal saat gap ini terbuka **tidak otomatis retry** — re-trigger
 manual lewat panel admin `/outbox` (tombol Retry) atau re-jalankan
 reconcile gateway terkait. Detail diagnosis di
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+### Boot-time drift check hanya menangkap TABEL hilang, bukan KOLOM hilang
+
+`apps/server/src/index.ts` (sekitar baris 199-214) menjalankan `missingTables`
+(`packages/db/src/crud/integrity.ts`) saat boot, membandingkan
+`PAYMENT_LEDGER_TABLES` terhadap `sqlite_master` dan **fail-loud** (log error +
+DM ke semua admin) kalau ada tabel ledger pembayaran yang hilang. Ini menutup
+skenario "tabel belum pernah dibuat" (mis. lupa `db push` setelah migrasi yang
+menambah tabel baru seperti `order_status_history`).
+
+**Yang TIDAK dicek:** kolom baru pada tabel yang SUDAH ada — `missingTables`
+hanya query `SELECT name FROM sqlite_master WHERE type='table'`, tidak pernah
+`PRAGMA table_info` per tabel. Jadi migrasi column-only (mis.
+`orders.network`/`confirmations`/`required_confirmations`/`first_detected_at`/
+`confirmed_at` dari `20260624160712_add_order_status_history`, atau
+`broadcasts.web_image_url`/`image_file_id` dari `20260706120000_broadcast_image`)
+tidak memicu peringatan apa pun saat boot kalau operator lupa `db push` —
+gejala baru muncul sebagai `P2022` pertama kali kode menulis ke kolom yang
+belum ada (lihat contoh nyata `claimed_at`/`next_retry_at` di bawah), bukan
+sebagai log error saat startup. Ini keterbatasan yang disengaja: menambah
+deteksi drift level-kolom (PRAGMA table_info per tabel, dibandingkan terhadap
+skema Prisma) adalah mesin schema-diffing kustom — dicatat sebagai
+keterbatasan yang diketahui/didokumentasikan di sini, bukan dibangun, karena
+lebih murah dan lebih rendah risiko daripada menambah mekanisme deteksi baru.
 
 ### `P2021: table does not exist`
 

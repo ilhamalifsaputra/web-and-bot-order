@@ -72,28 +72,30 @@ async function bumpVoucherUsage(db: Db, voucher: { id: number; usageLimit: numbe
  * atomic guard, mirroring `bumpVoucherUsage`'s pattern above (Data-2 fix,
  * backend audit 2026-07-07).
  *
- * `paymentRef` also carries a UNIQUE index (it stores the real gateway JSON
- * once committed), so a claim for a DIFFERENT order landing at this exact
- * instant collides on this same literal string at the DB level rather than
- * just matching zero rows — `claimGatewaySlot` treats that unique-constraint
- * violation the same as a lost claim race (returns false) instead of letting
- * it throw.
+ * `paymentRef` also carries a UNIQUE index, so the sentinel is derived
+ * per-order (rather than a single shared literal) — two DIFFERENT orders'
+ * claims landing at the same instant then write distinct strings and never
+ * collide at the DB level. Only two concurrent claims for the SAME order id
+ * still collide, which is the actual race this guards against.
  */
-export const GATEWAY_CLAIM_SENTINEL = "__pending_gateway_claim__";
+export function gatewayClaimSentinel(orderId: number): string {
+  return `__pending_gateway_claim__:${orderId}`;
+}
 
 /**
  * Atomically claim the right to create this order's gateway invoice. Returns
  * true iff this call won the claim (paymentRef was null and is now the
- * sentinel); false if another request already holds the claim for this
- * order, or — rarely — another order holds it for this same instant (unique
- * violation on paymentRef, caught below). Callers on false should fall back
- * to the existing gateway-unavailable UI rather than poll/retry.
+ * sentinel); false if another request already holds the claim for this same
+ * order. The unique-violation catch below is a defensive backstop (e.g. a
+ * stale row already holding this exact per-order sentinel from a previous
+ * crash) rather than the cross-order race, since the sentinel is now
+ * order-specific.
  */
 export async function claimGatewaySlot(db: Db, orderId: number): Promise<boolean> {
   try {
     const claimed = await db.order.updateMany({
       where: { id: orderId, paymentRef: null },
-      data: { paymentRef: GATEWAY_CLAIM_SENTINEL },
+      data: { paymentRef: gatewayClaimSentinel(orderId) },
     });
     return claimed.count === 1;
   } catch (e) {
@@ -119,7 +121,7 @@ export async function commitGatewayResult(db: Db, orderId: number, payload: unkn
  */
 export async function releaseGatewaySlot(db: Db, orderId: number): Promise<void> {
   await db.order.updateMany({
-    where: { id: orderId, paymentRef: GATEWAY_CLAIM_SENTINEL },
+    where: { id: orderId, paymentRef: gatewayClaimSentinel(orderId) },
     data: { paymentRef: null },
   });
 }

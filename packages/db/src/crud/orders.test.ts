@@ -11,7 +11,7 @@ import {
   claimGatewaySlot,
   commitGatewayResult,
   releaseGatewaySlot,
-  GATEWAY_CLAIM_SENTINEL,
+  gatewayClaimSentinel,
   createOrderFromCart,
 } from "./orders";
 import { addToCart, upsertBulkPricing, createVoucher } from "@app/db";
@@ -90,7 +90,7 @@ describe("claimGatewaySlot / commitGatewayResult / releaseGatewaySlot (Data-2)",
 
     expect(await claimGatewaySlot(prisma, order.id)).toBe(true);
     const claimed = await prisma.order.findUnique({ where: { id: order.id } });
-    expect(claimed!.paymentRef).toBe(GATEWAY_CLAIM_SENTINEL);
+    expect(claimed!.paymentRef).toBe(gatewayClaimSentinel(order.id));
 
     // A second claim (a concurrent request, or a stale retry) must not
     // re-win — it should observe the sentinel already in place and fail.
@@ -127,15 +127,25 @@ describe("claimGatewaySlot / commitGatewayResult / releaseGatewaySlot (Data-2)",
     expect(fresh!.paymentRef).toBe(JSON.stringify({ gateway: "tokopay", trxId: "T-2" }));
   });
 
-  it("a claim for a different order does not collide, even though paymentRef carries a global UNIQUE index", async () => {
+  it("two different orders can each claim concurrently without colliding, even though paymentRef carries a global UNIQUE index", async () => {
     const orderA = await makeOrder("PENDING_PAYMENT");
     const orderB = await makeOrder("PENDING_PAYMENT");
 
-    expect(await claimGatewaySlot(prisma, orderA.id)).toBe(true);
-    // orderB's claim writes the SAME sentinel literal into a uniquely-indexed
-    // column while orderA still holds it — must fail gracefully (false),
-    // never throw a raw DB unique-constraint error up to the route handler.
-    expect(await claimGatewaySlot(prisma, orderB.id)).toBe(false);
+    // The sentinel is derived per-order id, so orderA and orderB write
+    // distinct strings into the uniquely-indexed column and both claims
+    // succeed — a claim for one order must never false-negative because an
+    // unrelated order happened to claim at the same instant.
+    const [claimedA, claimedB] = await Promise.all([
+      claimGatewaySlot(prisma, orderA.id),
+      claimGatewaySlot(prisma, orderB.id),
+    ]);
+    expect(claimedA).toBe(true);
+    expect(claimedB).toBe(true);
+
+    const freshA = await prisma.order.findUnique({ where: { id: orderA.id } });
+    const freshB = await prisma.order.findUnique({ where: { id: orderB.id } });
+    expect(freshA!.paymentRef).toBe(gatewayClaimSentinel(orderA.id));
+    expect(freshB!.paymentRef).toBe(gatewayClaimSentinel(orderB.id));
   });
 });
 

@@ -138,6 +138,10 @@ interface ConfirmRender {
   productName: string;
   unitPrice: Decimal;
   subtotal: Decimal;
+  /** The IDR subtotal before any wallet credit is applied — the amount a credit
+   *  must fully cover (wallet credit is all-or-nothing). Used by
+   *  toggleWalletCredit to decide whether a currency's balance is enough. */
+  subtotalBeforeWallet: Decimal;
   voucherLine: string;
   voucherCode: string;
   walletLine: string;
@@ -151,6 +155,9 @@ interface ConfirmRender {
   /** True once the active credit brings subtotal to exactly (or below) zero —
    *  the signal to swap the gateway buttons for "Complete Order". */
   fullyCovered: boolean;
+  /** The trailing line of the confirmation bubble — "Proceed to payment?" or,
+   *  when wallet credit fully covers the order, the "tap Complete Order" prompt. */
+  closingLine: string;
 }
 
 /** Compute the confirmation totals (shared by the inline path + voucher conv). */
@@ -228,36 +235,49 @@ async function computeConfirmation(
   const useWalletIdr = Boolean(ctx.session.scratch.useWalletIdr);
   const useWalletUsdt = Boolean(ctx.session.scratch.useWalletUsdt);
 
+  // Wallet credit is all-or-nothing: a currency's balance is only applied when
+  // it covers the *entire* order (no partial deduction, no gateway remainder).
+  // When it covers, the order is paid in full from credit and the total drops
+  // to exactly zero, surfacing the "Complete Order" confirm button. When it
+  // doesn't, nothing is applied here — toggleWalletCredit refuses to turn the
+  // toggle on in that case (rejection popup), so this branch only ever fires
+  // for a genuinely-covering balance; the >= guards stay as a defensive net
+  // against a balance that moved after the toggle was set.
+  const subtotalBeforeWallet = subtotal;
   let walletLine = "";
   let walletDeduction: ConfirmRender["walletDeduction"] = null;
-  if (useWalletIdr && idrBalance.greaterThan(0)) {
-    const deduction = Decimal.min(idrBalance, subtotal);
-    walletLine = coreT("checkout.confirm_wallet_line", lang, { amount: formatIdr(deduction) });
-    subtotal = subtotal.minus(deduction);
-    walletDeduction = { currency: "IDR", amount: formatIdr(deduction) };
-  } else if (useWalletUsdt && usdtBalance.greaterThan(0) && rate) {
-    // Convert at the live rate so this preview matches what
-    // completeOrderWithWalletCredit will actually compute — the two can
-    // differ by at most the same +/-0.1 USDT rounding the whole app already
-    // accepts for every USDT order (usdtFromIdr's doc-comment). That's only a
-    // preview-display nuance; the crud layer re-derives its own zero-total
-    // check authoritatively, so a rounding-sized mismatch here never causes
-    // an incorrect charge.
+  if (useWalletIdr && idrBalance.greaterThanOrEqualTo(subtotal) && subtotal.greaterThan(0)) {
+    walletLine = coreT("checkout.confirm_wallet_line", lang, { amount: formatIdr(subtotal) });
+    walletDeduction = { currency: "IDR", amount: formatIdr(subtotal) };
+    subtotal = new Decimal(0);
+  } else if (useWalletUsdt && usdtBalance.greaterThan(0) && rate && subtotal.greaterThan(0)) {
+    // The USDT amount the crud layer (finalizeOrderPayment) will actually
+    // charge — usdtFromIdr rounds to 0.1 USDT, and the WALLET method carries
+    // no unique cents, so covering this exact figure zeroes the order. Compare
+    // the balance against it (not against the IDR subtotal converted back),
+    // which is what left a stray Rp-remainder before.
     const usdtTotal = usdtFromIdr(subtotal, rate);
-    const usdtDeduction = Decimal.min(usdtBalance, usdtTotal);
-    const idrEquivalent = usdtDeduction.times(rate);
-    walletLine = coreT("checkout.confirm_wallet_usdt_line", lang, {
-      usdt_amount: formatPrice(usdtDeduction, "USDT", 4),
-      idr_amount: formatIdr(idrEquivalent),
-    });
-    subtotal = subtotal.minus(idrEquivalent);
-    walletDeduction = { currency: "USDT", amount: formatPrice(usdtDeduction, "USDT", 4) };
+    if (usdtBalance.greaterThanOrEqualTo(usdtTotal)) {
+      walletLine = coreT("checkout.confirm_wallet_usdt_line", lang, {
+        usdt_amount: formatPrice(usdtTotal, "USDT", 4),
+        idr_amount: formatIdr(subtotal),
+      });
+      walletDeduction = { currency: "USDT", amount: formatPrice(usdtTotal, "USDT", 4) };
+      subtotal = new Decimal(0);
+    }
   }
+
+  const fullyCovered = subtotal.lessThanOrEqualTo(0);
+  const closingLine = coreT(
+    walletDeduction ? "checkout.confirm_closing_wallet" : "checkout.confirm_closing_default",
+    lang,
+  );
 
   return {
     productName: product.name,
     unitPrice,
     subtotal,
+    subtotalBeforeWallet,
     voucherLine,
     voucherCode,
     walletLine,
@@ -266,7 +286,8 @@ async function computeConfirmation(
     useWalletIdr,
     useWalletUsdt,
     walletDeduction,
-    fullyCovered: subtotal.lessThanOrEqualTo(0),
+    fullyCovered,
+    closingLine,
   };
 }
 
@@ -320,6 +341,7 @@ export async function showOrderConfirmation(
       voucher_line: r.voucherLine,
       wallet_line: r.walletLine,
       total: priceIdr(r.subtotal, rate),
+      closing_line: r.closingLine,
     }),
     ckb.orderConfirmKb(
       productId,
@@ -365,6 +387,7 @@ export async function renderOrderConfirmation(
       voucher_line: r.voucherLine,
       wallet_line: r.walletLine,
       total: priceIdr(r.subtotal, rate),
+      closing_line: r.closingLine,
     }),
     {
       parse_mode: "HTML",
@@ -421,6 +444,7 @@ export async function showUsdtMethods(ctx: MyContext, productId: number, quantit
       voucher_line: r.voucherLine,
       wallet_line: r.walletLine,
       total: priceIdr(r.subtotal, rate),
+      closing_line: r.closingLine,
     }),
     ckb.usdtMethodsKb(
       productId,
@@ -462,9 +486,61 @@ export async function showWalletCreditMenu(ctx: MyContext, productId: number, qu
       voucher_line: r.voucherLine,
       wallet_line: r.walletLine,
       total: priceIdr(r.subtotal, rate),
+      closing_line: r.closingLine,
     }),
     ckb.walletCreditKb(productId, quantity, lang, r.idrBalance, r.useWalletIdr, r.usdtBalance, r.useWalletUsdt, r.fullyCovered),
   );
+}
+
+/**
+ * Toggle one currency's wallet credit on/off from the wallet submenu. Wallet
+ * credit is all-or-nothing: it can only be turned on when the balance covers
+ * the *entire* order. If it doesn't, we refuse with a blocking popup and leave
+ * the toggle off (the customer can still pay via a gateway). Turning a credit
+ * on clears the other currency's flag — a single order spends only one
+ * currency's balance (packages/db/src/crud/orders.ts's releaseOrderHolds
+ * refunds by order.currency, so mixing the two would misdirect a refund).
+ */
+export async function toggleWalletCredit(
+  ctx: MyContext,
+  productId: number,
+  quantity: number,
+  currency: "IDR" | "USDT",
+): Promise<void> {
+  // Turning a currently-active credit back off never needs a coverage check —
+  // just clear it and re-render (gateway buttons return underneath).
+  const isActive = currency === "IDR" ? ctx.session.scratch.useWalletIdr : ctx.session.scratch.useWalletUsdt;
+  if (isActive) {
+    if (currency === "IDR") ctx.session.scratch.useWalletIdr = false;
+    else ctx.session.scratch.useWalletUsdt = false;
+    await showWalletCreditMenu(ctx, productId, quantity);
+    return;
+  }
+
+  // Turning on — check the balance covers the full order in the chosen
+  // currency. subtotalBeforeWallet is captured before any credit is applied,
+  // so this is correct even if the other currency's flag is currently on.
+  const rate = await currentUsdtRate();
+  const r = await computeConfirmation(ctx, productId, quantity, rate);
+  if (!r) return;
+  const covers =
+    currency === "IDR"
+      ? r.idrBalance.greaterThanOrEqualTo(r.subtotalBeforeWallet)
+      : rate !== null && r.usdtBalance.greaterThanOrEqualTo(usdtFromIdr(r.subtotalBeforeWallet, rate));
+  if (!covers) {
+    if (ctx.callbackQuery)
+      await ctx.answerCallbackQuery({ text: t(ctx, "checkout.wallet_insufficient_full"), show_alert: true });
+    return;
+  }
+
+  if (currency === "IDR") {
+    ctx.session.scratch.useWalletIdr = true;
+    ctx.session.scratch.useWalletUsdt = false;
+  } else {
+    ctx.session.scratch.useWalletUsdt = true;
+    ctx.session.scratch.useWalletIdr = false;
+  }
+  await showWalletCreditMenu(ctx, productId, quantity);
 }
 
 /**

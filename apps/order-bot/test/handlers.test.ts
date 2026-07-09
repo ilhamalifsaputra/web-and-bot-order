@@ -1020,7 +1020,8 @@ describe("checkout handlers", () => {
 // ===========================================================================
 
 describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
-  it("v1:walletm:idr toggles useWalletIdr on and re-renders the wallet-credit menu", async () => {
+  it("v1:walletm:idr toggles useWalletIdr on when the balance covers the order", async () => {
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" }); // ≥ 5.00 price
     const { ctx, sink } = customerCtx({ callbackData: `v1:walletm:idr:${sample.product.id}:1` });
     await routeCallback(ctx);
 
@@ -1029,7 +1030,9 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
     expect(sentIncludes(sink, "Confirm Order")).toBe(true);
   });
 
-  it("v1:walletm:usdt is mutually exclusive with useWalletIdr", async () => {
+  it("v1:walletm:usdt is mutually exclusive with useWalletIdr (when USDT covers the order)", async () => {
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "USDT", reason: "admin_adjust" });
+    await setSetting(prisma, "usd_idr_rate", "1"); // 5.00 IDR → 5.0 USDT, covered by 10
     const { ctx } = customerCtx({
       callbackData: `v1:walletm:usdt:${sample.product.id}:1`,
       session: { ...userSession(), scratch: { useWalletIdr: true } },
@@ -1038,6 +1041,54 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
 
     expect(ctx.session.scratch.useWalletUsdt).toBe(true);
     expect(ctx.session.scratch.useWalletIdr).toBe(false);
+  });
+
+  it("v1:walletm:idr with insufficient IDR balance: rejection alert, toggle stays off", async () => {
+    await adjustWallet(prisma, sample.user.id, "1", { currency: "IDR", reason: "admin_adjust" }); // < 5.00 price
+    const { ctx, sink } = customerCtx({ callbackData: `v1:walletm:idr:${sample.product.id}:1` });
+    await routeCallback(ctx);
+
+    expect(ctx.session.scratch.useWalletIdr).toBeFalsy();
+    const alerted = calls(sink, "answerCallbackQuery").some(
+      (c) => JSON.stringify(c.args).includes("show_alert") && JSON.stringify(c.args).includes("Insufficient balance"),
+    );
+    expect(alerted).toBe(true);
+  });
+
+  it("v1:walletm:usdt with insufficient USDT balance: rejection alert, toggle stays off", async () => {
+    await adjustWallet(prisma, sample.user.id, "1", { currency: "USDT", reason: "admin_adjust" }); // < 5.0 USDT total
+    await setSetting(prisma, "usd_idr_rate", "1");
+    const { ctx, sink } = customerCtx({ callbackData: `v1:walletm:usdt:${sample.product.id}:1` });
+    await routeCallback(ctx);
+
+    expect(ctx.session.scratch.useWalletUsdt).toBeFalsy();
+    const alerted = calls(sink, "answerCallbackQuery").some(
+      (c) => JSON.stringify(c.args).includes("show_alert") && JSON.stringify(c.args).includes("Insufficient balance"),
+    );
+    expect(alerted).toBe(true);
+  });
+
+  it("v1:walletm:usdt with ample balance fully covers the order despite USDT rounding (regression: no gateway remainder)", async () => {
+    // Rate 2.6 makes usdtFromIdr(5.00) round to 1.9 USDT; the old preview left
+    // a ~Rp0.06 remainder so the order never read as fully covered (dead-end).
+    await adjustWallet(prisma, sample.user.id, "19", { currency: "USDT", reason: "admin_adjust" });
+    await setSetting(prisma, "usd_idr_rate", "2.6");
+    const { ctx, sink } = customerCtx({ callbackData: `v1:walletm:usdt:${sample.product.id}:1` });
+    await routeCallback(ctx);
+
+    expect(ctx.session.scratch.useWalletUsdt).toBe(true);
+    // Fully covered → the Complete Order (walletpay) confirm button is surfaced.
+    const flat = (lastMarkup(sink)?.inline_keyboard ?? []).flat() as Array<{ callback_data?: string }>;
+    expect(flat.some((b) => b.callback_data === `v1:walletpay:${sample.product.id}:1`)).toBe(true);
+    // …and the bubble reads as fully paid from credit, not "proceed to payment".
+    expect(sentIncludes(sink, "Fully paid from your wallet credit")).toBe(true);
+  });
+
+  it("confirmation closing line is the default payment prompt when no credit is applied", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: `v1:walletm:back:${sample.product.id}:1` });
+    await routeCallback(ctx);
+
+    expect(sentIncludes(sink, "Proceed to payment?")).toBe(true);
   });
 
   it("v1:walletm:back returns to the plain order confirmation screen", async () => {

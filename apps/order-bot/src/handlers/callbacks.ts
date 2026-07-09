@@ -150,16 +150,11 @@ const dispatchWalletMenu: DomainDispatcher = async (ctx, parts) => {
   if (action === "open") {
     await checkout.showWalletCreditMenu(ctx, productId, qty);
   } else if (action === "idr") {
-    ctx.session.scratch.useWalletIdr = !ctx.session.scratch.useWalletIdr;
-    // Mutually exclusive with USDT credit — a single order can only spend one
-    // currency's wallet balance (packages/db/src/crud/orders.ts's refund
-    // logic keys off the order's single `currency` column).
-    if (ctx.session.scratch.useWalletIdr) ctx.session.scratch.useWalletUsdt = false;
-    await checkout.showWalletCreditMenu(ctx, productId, qty);
+    // All-or-nothing + mutual exclusivity + insufficient-balance rejection all
+    // live in toggleWalletCredit (checkout.ts).
+    await checkout.toggleWalletCredit(ctx, productId, qty, "IDR");
   } else if (action === "usdt") {
-    ctx.session.scratch.useWalletUsdt = !ctx.session.scratch.useWalletUsdt;
-    if (ctx.session.scratch.useWalletUsdt) ctx.session.scratch.useWalletIdr = false;
-    await checkout.showWalletCreditMenu(ctx, productId, qty);
+    await checkout.toggleWalletCredit(ctx, productId, qty, "USDT");
   } else if (action === "back") {
     await checkout.showOrderConfirmation(ctx, productId, qty);
   }

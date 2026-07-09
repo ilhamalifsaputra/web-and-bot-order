@@ -483,12 +483,16 @@ export function usdtMethodsKb(
 
 /**
  * Wallet-credit submenu — reached from the "Use Wallet Credit" entry on the
- * order confirmation. Mirrors usdtMethodsKb's shape (one row per option, a
- * Back row returns to the confirmation). IDR and USDT credit are mutually
- * exclusive on a single order (packages/db/src/crud/orders.ts's
- * releaseOrderHolds refunds by order.currency) — the walletm callback
- * dispatcher clears the other flag whenever one is turned on, so at most one
- * row here is ever "active" at a time.
+ * order confirmation. Purely a credit-*picker*: one row per available currency,
+ * plus a Back row. IDR and USDT credit are mutually exclusive on a single order
+ * (packages/db/src/crud/orders.ts's releaseOrderHolds refunds by
+ * order.currency) — the walletm callback dispatcher clears the other flag
+ * whenever one is turned on, so at most one row here is ever "active" at a time.
+ *
+ * Picking a credit navigates straight back to the confirmation screen (which
+ * carries the "Complete Order" confirm button when the credit fully covers the
+ * order), so this submenu never shows the forward action itself — that would
+ * double up the credit row and the confirm button on one screen.
  */
 export function walletCreditKb(
   productId: number,
@@ -498,7 +502,6 @@ export function walletCreditKb(
   useWalletIdr: boolean,
   usdtBalance: Decimal,
   useWalletUsdt: boolean,
-  fullyCovered = false,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
   if (idrBalance.greaterThan(0)) {
@@ -519,15 +522,6 @@ export function walletCreditKb(
             text: coreT("checkout.wallet_menu_usdt_btn", lang, { amount: formatPrice(usdtBalance, "USDT", 4) }),
             data: cb("walletm", "usdt", productId, qty),
           },
-    ]);
-  }
-  if (fullyCovered) {
-    // Mirrors orderConfirmKb's fullyCovered branch — surface the forward
-    // action right here instead of forcing a Back tap to reach it on the
-    // confirmation screen underneath (the original bug: toggling credit to
-    // 100% coverage silently updated the label with no next step).
-    rows.push([
-      { text: coreT("checkout.complete_order_btn", lang), data: cb("walletpay", productId, qty) },
     ]);
   }
   rows.push([{ text: coreT("menu.back", lang), data: cb("walletm", "back", productId, qty) }]);

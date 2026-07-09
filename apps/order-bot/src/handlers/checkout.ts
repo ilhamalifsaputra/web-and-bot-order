@@ -488,7 +488,7 @@ export async function showWalletCreditMenu(ctx: MyContext, productId: number, qu
       total: priceIdr(r.subtotal, rate),
       closing_line: r.closingLine,
     }),
-    ckb.walletCreditKb(productId, quantity, lang, r.idrBalance, r.useWalletIdr, r.usdtBalance, r.useWalletUsdt, r.fullyCovered),
+    ckb.walletCreditKb(productId, quantity, lang, r.idrBalance, r.useWalletIdr, r.usdtBalance, r.useWalletUsdt),
   );
 }
 
@@ -513,7 +513,9 @@ export async function toggleWalletCredit(
   if (isActive) {
     if (currency === "IDR") ctx.session.scratch.useWalletIdr = false;
     else ctx.session.scratch.useWalletUsdt = false;
-    await showWalletCreditMenu(ctx, productId, quantity);
+    // Land on the confirmation screen (gateway buttons return) rather than the
+    // picker — the customer just changed their mind about wallet credit.
+    await showOrderConfirmation(ctx, productId, quantity);
     return;
   }
 
@@ -540,7 +542,10 @@ export async function toggleWalletCredit(
     ctx.session.scratch.useWalletUsdt = true;
     ctx.session.scratch.useWalletIdr = false;
   }
-  await showWalletCreditMenu(ctx, productId, quantity);
+  // Credit picked → go straight to the confirmation screen with the "Complete
+  // Order" button, instead of re-rendering the picker (which would list the
+  // just-chosen credit row again alongside the confirm action).
+  await showOrderConfirmation(ctx, productId, quantity);
 }
 
 /**

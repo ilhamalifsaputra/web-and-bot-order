@@ -1077,9 +1077,14 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
     await routeCallback(ctx);
 
     expect(ctx.session.scratch.useWalletUsdt).toBe(true);
-    // Fully covered → the Complete Order (walletpay) confirm button is surfaced.
+    // Picking a credit lands on the confirmation screen (not the picker):
+    // the Complete Order (walletpay) confirm button is surfaced…
     const flat = (lastMarkup(sink)?.inline_keyboard ?? []).flat() as Array<{ callback_data?: string }>;
     expect(flat.some((b) => b.callback_data === `v1:walletpay:${sample.product.id}:1`)).toBe(true);
+    // …and the credit-type toggle rows are NOT shown again alongside it (no
+    // "double") — only the single "Wallet Credit Applied" entry (walletm:open).
+    expect(flat.some((b) => b.callback_data === `v1:walletm:usdt:${sample.product.id}:1`)).toBe(false);
+    expect(flat.some((b) => b.callback_data === `v1:walletm:idr:${sample.product.id}:1`)).toBe(false);
     // …and the bubble reads as fully paid from credit, not "proceed to payment".
     expect(sentIncludes(sink, "Fully paid from your wallet credit")).toBe(true);
   });

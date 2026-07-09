@@ -10,9 +10,10 @@ import { cleanupTestDb } from "./dispatcher.test-setup";
  */
 import { describe, it, expect, afterAll, afterEach, vi } from "vitest";
 import type { Bot } from "grammy";
-import { prisma, enqueueAdminPasswordReset } from "@app/db";
+import { prisma, enqueueAdminPasswordReset, completeOrderWithWalletCredit, enqueueOrderDeliveredDm, adjustWallet } from "@app/db";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
-import { NotificationEvent } from "@app/core/enums";
+import { NotificationEvent, OrderCurrency } from "@app/core/enums";
+import { buildSampleData } from "../../../tests/helpers/sampleData";
 import { drainBatch } from "./dispatcher";
 
 afterAll(async () => {
@@ -24,6 +25,14 @@ function fakeBot() {
   const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
   const bot = { api: { sendMessage } } as unknown as Bot;
   return { bot, sendMessage };
+}
+
+/** Fake Bot that also stubs sendDocument — the call ORDER_DELIVERED_DM makes. */
+function fakeDocBot() {
+  const sendDocument = vi.fn().mockResolvedValue({ message_id: 1 });
+  const sendMessage = vi.fn().mockResolvedValue({ message_id: 1 });
+  const bot = { api: { sendDocument, sendMessage } } as unknown as Bot;
+  return { bot, sendDocument, sendMessage };
 }
 
 describe("drainBatch claim/release (Infra-2)", () => {
@@ -158,5 +167,50 @@ describe("drainBatch channel-not-configured release (Outbox-1)", () => {
     expect(final!.status).toBe("PENDING");
     expect(final!.attempts).toBe(12);
     expect(sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * End-to-end guard for the outbox credential DM: an ORDER_DELIVERED_DM row for
+ * a delivered order must, once drained, put the account `.txt` document on the
+ * wire. This is the only test that exercises `deliverAccountDm` (sendDocument)
+ * through to the bot — the shared outbox delivery path used by TokoPay /
+ * PayDisini / NOWPayments and the wallet rail's direct-send fallback. Seeds a
+ * real delivered wallet order (SOLD stock + live credentials) and enqueues via
+ * the generic `enqueueOrderDeliveredDm` helper the web-admin resend uses.
+ */
+describe("drainBatch delivers a delivered order's credentials as a document", () => {
+  it("turns an ORDER_DELIVERED_DM row into a sendDocument and marks the row SENT", async () => {
+    const sample = await buildSampleData(prisma); // product price "5.00" IDR, user telegramId 42
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+
+    const { order } = await prisma.$transaction((tx) =>
+      completeOrderWithWalletCredit(tx, {
+        user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
+        productId: sample.product.id,
+        quantity: 1,
+        currency: OrderCurrency.IDR,
+      }),
+    );
+    await enqueueOrderDeliveredDm(prisma, {
+      orderId: order.id,
+      orderCode: order.orderCode,
+      telegramId: BigInt(42),
+      language: "en",
+    });
+
+    const { bot, sendDocument } = fakeDocBot();
+    await drainBatch(bot);
+
+    expect(sendDocument).toHaveBeenCalledTimes(1);
+    const [chatId, file] = sendDocument.mock.calls[0]!;
+    expect(chatId).toBe(42); // the buyer's Telegram id, not the public channel
+    expect((file as { filename?: string }).filename).toBe(`${order.orderCode}.txt`);
+
+    const dm = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order.id, event: NotificationEvent.ORDER_DELIVERED_DM },
+    });
+    expect(dm!.status).toBe("SENT");
   });
 });

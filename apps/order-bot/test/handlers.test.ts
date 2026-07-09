@@ -1081,10 +1081,13 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
     // the Complete Order (walletpay) confirm button is surfaced…
     const flat = (lastMarkup(sink)?.inline_keyboard ?? []).flat() as Array<{ callback_data?: string }>;
     expect(flat.some((b) => b.callback_data === `v1:walletpay:${sample.product.id}:1`)).toBe(true);
-    // …and the credit-type toggle rows are NOT shown again alongside it (no
-    // "double") — only the single "Wallet Credit Applied" entry (walletm:open).
+    // …and once fully covered the screen collapses to just Complete Order: the
+    // credit-type toggle rows, the "Wallet Credit Applied" open row and the
+    // voucher row are all dropped (nothing to decide at a zero total).
     expect(flat.some((b) => b.callback_data === `v1:walletm:usdt:${sample.product.id}:1`)).toBe(false);
     expect(flat.some((b) => b.callback_data === `v1:walletm:idr:${sample.product.id}:1`)).toBe(false);
+    expect(flat.some((b) => b.callback_data === `v1:walletm:open:${sample.product.id}:1`)).toBe(false);
+    expect(flat.some((b) => b.callback_data === `v1:voucher:start:${sample.product.id}:1`)).toBe(false);
     // …and the bubble reads as fully paid from credit, not "proceed to payment".
     expect(sentIncludes(sink, "Fully paid from your wallet credit")).toBe(true);
   });
@@ -1119,6 +1122,13 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
     expect(sentIncludes(sink, "Payment received")).toBe(true);
     expect(ctx.session.scratch.useWalletIdr).toBeUndefined();
     expect(ctx.session.scratch.useWalletUsdt).toBeUndefined();
+    // The account file is delivered DIRECTLY (not left to the outbox), so a
+    // wallet buyer gets their credentials even when the dispatcher isn't
+    // draining — the regression this guards.
+    const docs = calls(sink, "sendDocument");
+    expect(docs).toHaveLength(1);
+    expect(docs[0]!.args[0]).toBe(42); // buyer's Telegram chat, not the channel
+    expect((docs[0]!.args[1] as { filename?: string }).filename).toBe(`${orders[0]!.orderCode}.txt`);
   });
 
   it("v1:walletpay with useWalletUsdt set and enough USDT credit: delivers the order, IDR balance untouched", async () => {
@@ -1135,6 +1145,10 @@ describe("wallet-credit checkout (walletm:*/walletpay:*)", () => {
     expect(orders[0]!.status).toBe(OrderStatus.DELIVERED);
     expect(orders[0]!.currency).toBe(OrderCurrency.USDT);
     expect(sentIncludes(sink, "Payment received")).toBe(true);
+    // Credentials delivered directly (see the IDR case above).
+    const docs = calls(sink, "sendDocument");
+    expect(docs).toHaveLength(1);
+    expect((docs[0]!.args[1] as { filename?: string }).filename).toBe(`${orders[0]!.orderCode}.txt`);
 
     const after = await getUser(prisma, sample.user.id);
     expect(Number(after!.walletBalanceUsdt)).toBeCloseTo(0);

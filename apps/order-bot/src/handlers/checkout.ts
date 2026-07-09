@@ -12,7 +12,7 @@ import { InlineKeyboard } from "grammy";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { localize } from "@app/core/datetime";
-import { OrderCurrency, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
+import { NotificationEvent, OrderCurrency, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import {
@@ -40,6 +40,7 @@ import {
   getPaydisiniCreds,
   getNowpaymentsCreds,
   completeOrderWithWalletCredit,
+  enqueueNotification,
 } from "@app/db";
 import { createTransaction } from "@app/core/payments/tokopay";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
@@ -53,6 +54,7 @@ import { triggerImmediatePoll as bybitBscTrackerImmediatePoll } from "../payment
 import { pollOnce as nowpaymentsPoll } from "../payments/nowpaymentsReconcile";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
+import { sendAccountFile } from "../util/delivery";
 import { coreT, t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
 import { esc, formatPrice, formatIdr, priceIdr, usdtFromIdr } from "../util/format";
@@ -1230,15 +1232,42 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
 
+  // Deliver the account file directly (the order is already DELIVERED and the
+  // credit fully paid), exactly like the instant Binance Internal rail's
+  // onDelivered — so wallet delivery never hinges on the outbox dispatcher
+  // running. Re-read the order fresh so stock is SOLD with live credentials.
+  // Only if the direct send fails do we fall back to the outbox DM.
+  const deliveredOrder = await getOrder(prisma, result.order.id);
+  const tgId =
+    deliveredOrder?.user.telegramId != null ? Number(deliveredOrder.user.telegramId) : null;
+  if (deliveredOrder && tgId != null) {
+    try {
+      await sendAccountFile(ctx.api, tgId, deliveredOrder, lang);
+    } catch (err) {
+      logger.error(
+        { err },
+        `Failed to DM the wallet-paid account file for order ${result.order.orderCode} — enqueuing outbox retry so the buyer still receives their credentials`,
+      );
+      try {
+        await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, result.order.id, {
+          chat_id: tgId,
+          order_code: result.order.orderCode,
+        });
+        nudgeOutboxDispatcher();
+      } catch (eq) {
+        logger.error(
+          { err: eq },
+          `Failed to enqueue outbox fallback for wallet order ${result.order.orderCode} — buyer may need a manual admin resend`,
+        );
+      }
+    }
+  }
+
   await smartEdit(
     ctx,
     t(ctx, "checkout.wallet_paid", { code: result.order.orderCode }),
     ckb.paymentSuccessKb(lang),
   );
-  // No waiting/polling screen (the order is already DELIVERED) — just nudge
-  // the outbox so the credential DM goes out immediately, same call
-  // reconcileOrder makes after a TokoPay auto-deliver.
-  nudgeOutboxDispatcher();
 }
 
 // ---------------------------------------------------------------------------

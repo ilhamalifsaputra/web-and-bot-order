@@ -3,19 +3,20 @@
  * covered by either the IDR or USDT credit balance, with no external
  * gateway involved. Composes the same primitives createInternalOrder uses
  * (createOrderDirect -> finalizeOrderPayment -> applyUsdtWalletToOrder for
- * the USDT track — packages/db/src/crud/binance_internal.ts), then runs the
- * same claim -> deliver -> notify tail deliverPaidTokopayOrder uses for an
- * auto-confirmed payment (packages/db/src/crud/tokopay.ts): there is
- * nothing to wait for, the credit already fully paid for the order.
+ * the USDT track — packages/db/src/crud/binance_internal.ts), then claims +
+ * delivers the order. Delivery of the account file is the bot handler's job
+ * (completeOrderWithWallet in apps/order-bot sends it directly, like the
+ * instant Binance Internal rail), so this returns the delivered order +
+ * credentials and does NOT enqueue an outbox DM itself: there is nothing to
+ * wait for, the credit already fully paid for the order.
  */
 import { Decimal } from "@app/core/money";
-import { OrderCurrency, OrderStatus, PaymentMethod, NotificationEvent, langCode } from "@app/core/enums";
+import { OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import type { Db } from "./_types";
 import { createOrderDirect, getOrder, approveOrder, applyUsdtWalletToOrder } from "./orders";
 import { finalizeOrderPayment } from "./pricing";
 import { transitionOrderStatus } from "./orderStatus";
-import { enqueueNotification } from "./notifications";
 
 export type WalletCheckoutResult = {
   order: NonNullable<Awaited<ReturnType<typeof getOrder>>>;
@@ -86,14 +87,9 @@ export async function completeOrderWithWalletCredit(
   });
   const { order: delivered, credentials } = await approveOrder(db, finalized.id, { adminId: 0 });
 
-  if (delivered.user.telegramId != null) {
-    await enqueueNotification(db, NotificationEvent.ORDER_DELIVERED_DM, delivered.id, {
-      chat_id: Number(delivered.user.telegramId),
-      order_code: delivered.orderCode,
-      order_url: null,
-      buyer_language: langCode(delivered.user.language),
-    });
-  }
-
+  // No outbox DM here — the caller (completeOrderWithWallet) sends the account
+  // file directly, with an outbox fallback only if that direct send fails, so
+  // wallet delivery doesn't hinge on the outbox dispatcher running (same
+  // resilience as the instant Binance Internal / Bybit rails).
   return { order: delivered, credentials };
 }

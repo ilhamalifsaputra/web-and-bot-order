@@ -415,6 +415,17 @@ export function orderConfirmKb(
   fullyCovered = false,
 ): InlineKeyboard {
   const rows: Btn[][] = [];
+  if (fullyCovered) {
+    // The active wallet credit already brings the total to zero — a gateway
+    // button here would mean charging Rp0/​$0 through TokoPay/PayDisini/USDT,
+    // which is meaningless. Voucher and wallet-toggle rows are equally moot at a
+    // zero total, so the screen collapses to the one action that applies:
+    // Complete Order. The persistent menu keyboard stays the escape hatch.
+    rows.push([
+      { text: coreT("checkout.complete_order_btn", lang), data: cb("walletpay", productId, qty) },
+    ]);
+    return ik(rows);
+  }
   if (voucherCode) {
     rows.push([
       { text: coreT("checkout.voucher_remove_btn", lang), data: cb("voucher", "remove", productId, qty) },
@@ -438,19 +449,10 @@ export function orderConfirmKb(
         : { text: coreT("checkout.use_wallet_btn", lang), data: cb("walletm", "open", productId, qty) },
     ]);
   }
-  if (fullyCovered) {
-    // The active wallet credit already brings the total to zero — a gateway
-    // button here would mean charging Rp0/​$0 through TokoPay/PayDisini/USDT,
-    // which is meaningless. Offer the one action that actually applies.
-    rows.push([
-      { text: coreT("checkout.complete_order_btn", lang), data: cb("walletpay", productId, qty) },
-    ]);
-  } else {
-    const hasUsdt = internalEnabled || bybitEnabled || bybitBscEnabled || nowpaymentsEnabled;
-    if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: cb("payq", productId, qty) }]);
-    if (paydisiniEnabled) rows.push([{ text: coreT("checkout.pay_paydisini_btn", lang), data: cb("payd", productId, qty) }]);
-    if (hasUsdt) rows.push([{ text: coreT("checkout.pay_usdt_btn", lang), data: cb("usdt", productId, qty) }]);
-  }
+  const hasUsdt = internalEnabled || bybitEnabled || bybitBscEnabled || nowpaymentsEnabled;
+  if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: cb("payq", productId, qty) }]);
+  if (paydisiniEnabled) rows.push([{ text: coreT("checkout.pay_paydisini_btn", lang), data: cb("payd", productId, qty) }]);
+  if (hasUsdt) rows.push([{ text: coreT("checkout.pay_usdt_btn", lang), data: cb("usdt", productId, qty) }]);
   rows.push([
     { text: coreT("checkout.cancel_btn", lang), data: cb("browse", "denom", productId) },
   ]);

@@ -8,7 +8,7 @@
  * external), feeding scripted update contexts — this exercises the real
  * conversation flow + DB effects without the replay runtime.
  */
-import { GrammyError } from "grammy";
+import { GrammyError, InputFile } from "grammy";
 import type { MyContext, MyConversation, SessionData } from "../../src/context";
 
 /** Mirrors the real Telegram "Bad Request: message is not modified" error
@@ -72,10 +72,17 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
   // that no longer exists.
   const deletedIds = new Set<number>();
 
+  // A raw grammY InputFile can't be JSON.stringify'd (its toJSON throws
+  // "must be sent via grammY"), which would blow up sentIncludes the moment a
+  // sendDocument lands in the sink. Store a serialization-safe stand-in that
+  // still exposes .filename so assertions can check the delivered file.
+  const sanitize = (args: unknown[]): unknown[] =>
+    args.map((a) => (a instanceof InputFile ? { __inputFile: true, filename: a.filename } : a));
+
   const rec =
     (method: string) =>
     (...args: unknown[]) => {
-      sink.push({ method, args });
+      sink.push({ method, args: sanitize(args) });
       return Promise.resolve({ message_id: ++msgSeq, chat, date: 0 });
     };
 

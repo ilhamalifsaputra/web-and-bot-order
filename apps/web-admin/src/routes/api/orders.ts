@@ -1,17 +1,20 @@
 import type { FastifyInstance } from "fastify";
-import { OrderStatus } from "@app/core/enums";
+import { OrderStatus, DeliveryType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
+import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import {
   prisma,
   listOrders,
   countOrders,
   getOrder,
-  approveOrder,
+  settlePaidOrder,
   rejectOrder,
   creditOrderToBalance,
+  fulfillManualOrder,
   enqueueOrderDeliveredDm,
+  enqueueManualDeliveredDm,
   logAdminAction,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
@@ -126,6 +129,12 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     const orderId = Number((req.params as { orderId: string }).orderId);
     const order = await getOrder(prisma, orderId);
     if (!order) return reply.code(404).send({ error: "Order not found." });
+    // The buyer's manual_with_info answers, pre-labeled against the SKU's
+    // field spec so the client doesn't need its own JSON-parsing/label-lookup
+    // logic — empty arrays for auto orders and manual orders with no custom
+    // fields (customerDataFields.length === 0 ⇒ nothing to render).
+    const customerDataFields = parseAdditionalFields(order.items[0]?.product.additionalFields ?? null);
+    const customerData = parseCustomerData(order.customerData);
     return reply.send({
       order: { ...order, createdAtDisplay: displayDateTime(order.createdAt) },
       money: serializeMoneyView(orderMoneyView(order)),
@@ -134,26 +143,46 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       canCredit:
         order.status === OrderStatus.PENDING_VERIFICATION ||
         order.status === OrderStatus.UNDERPAID,
+      // Manual/manual_with_info orders paid and awaiting hand-fulfilment —
+      // distinct from canAct/canCredit's PENDING_VERIFICATION gates.
+      canFulfill: order.status === OrderStatus.PROCESSING,
+      // Reject is legal from PROCESSING too (rejectOrder/LEGAL_TRANSITIONS) —
+      // the only way to unstick a paid manual order an admin can't actually
+      // source (audit-per-sku-delivery-flows-2026-07-13.md finding #2).
+      // Distinct from canAct: PROCESSING has no "Approve & Deliver" action.
+      canReject:
+        order.status === OrderStatus.PENDING_VERIFICATION ||
+        order.status === OrderStatus.PROCESSING,
+      customerDataFields,
+      customerData,
     });
   });
 
   app.post("/api/orders/:orderId/approve", { preHandler: csrfProtect }, async (req, reply) => {
     const orderId = Number((req.params as { orderId: string }).orderId);
+    let settled: "delivered" | "processing" = "delivered";
     try {
       await prisma.$transaction(async (tx) => {
-        const { order } = await approveOrder(tx, orderId, { adminId: req.admin!.userId });
-        await enqueueOrderDeliveredDm(tx, {
-          orderId: order.id,
-          orderCode: order.orderCode,
-          telegramId: order.user.telegramId,
-          language: order.user.language,
-        });
+        const result = await settlePaidOrder(tx, orderId, { adminId: req.admin!.userId });
+        settled = result.kind;
+        const { order } = result;
+        if (result.kind === "delivered") {
+          await enqueueOrderDeliveredDm(tx, {
+            orderId: order.id,
+            orderCode: order.orderCode,
+            telegramId: order.user.telegramId,
+            language: order.user.language,
+          });
+        }
         await logAdminAction(tx, {
           adminId: req.admin!.userId,
           action: "approve_order",
           targetType: "order",
           targetId: orderId,
-          details: `Approved order ${order.orderCode}.`,
+          details:
+            result.kind === "delivered"
+              ? `Approved order ${order.orderCode}.`
+              : `Approved payment for order ${order.orderCode}; queued for manual fulfilment.`,
         });
       });
     } catch (e) {
@@ -164,7 +193,9 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
     }
     nudgeOutboxDispatcher();
     logger.info(
-      `Admin ${req.admin!.userId} approved and delivered order ${orderId} via the web panel`,
+      settled === "delivered"
+        ? `Admin ${req.admin!.userId} approved and delivered order ${orderId} via the web panel`
+        : `Admin ${req.admin!.userId} approved payment for order ${orderId} via the web panel; queued for manual fulfilment`,
     );
     return reply.send({ ok: true });
   });
@@ -188,13 +219,28 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
         error: "This buyer has no Telegram account to notify — they see their order on the storefront.",
       });
     }
+    // Manual/manual_with_info orders never reserve a stockItem (see
+    // fulfillManualOrder), so ORDER_DELIVERED_DM's stock-credentials file
+    // would come out empty — resend the hand-typed deliveredContent instead
+    // (Finding #1, audit-per-sku-delivery-flows-2026-07-13.md).
+    const deliveryType = order.items[0]?.product.deliveryType;
+    const isManual = deliveryType === DeliveryType.MANUAL || deliveryType === DeliveryType.MANUAL_WITH_INFO;
     await prisma.$transaction(async (tx) => {
-      await enqueueOrderDeliveredDm(tx, {
-        orderId: order.id,
-        orderCode: order.orderCode,
-        telegramId: order.user.telegramId,
-        language: order.user.language,
-      });
+      if (isManual) {
+        await enqueueManualDeliveredDm(tx, {
+          orderId: order.id,
+          orderCode: order.orderCode,
+          telegramId: order.user.telegramId,
+          language: order.user.language,
+        });
+      } else {
+        await enqueueOrderDeliveredDm(tx, {
+          orderId: order.id,
+          orderCode: order.orderCode,
+          telegramId: order.user.telegramId,
+          language: order.user.language,
+        });
+      }
       await logAdminAction(tx, {
         adminId: req.admin!.userId,
         action: "order_resend_credentials",
@@ -268,4 +314,32 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
       return reply.send({ ok: true });
     },
   );
+
+  // Manual hand-fulfilment: an admin types the account content for a
+  // PROCESSING (manual/manual_with_info) order and sends it to the buyer.
+  // fulfillManualOrder itself always writes its own logAdminAction row
+  // (order.manual_fulfill) — unlike approveOrder, it has no adminId===0
+  // auto-caller path, every caller here is a real admin — so this route does
+  // NOT write a second audit row (would double-log).
+  app.post("/api/orders/:orderId/fulfill", { preHandler: csrfProtect }, async (req, reply) => {
+    const orderId = Number((req.params as { orderId: string }).orderId);
+    const body = req.body as Record<string, unknown>;
+    const content = typeof body.content === "string" ? body.content.trim() : "";
+    if (!content) {
+      return reply.code(400).send({ error: "Delivery content is required." });
+    }
+    try {
+      await prisma.$transaction(async (tx) => {
+        await fulfillManualOrder(tx, orderId, { adminId: req.admin!.userId, content });
+      });
+    } catch (e) {
+      if (e instanceof ValidationError) {
+        return reply.code(422).send({ error: e.message });
+      }
+      throw e;
+    }
+    nudgeOutboxDispatcher();
+    logger.info(`Admin ${req.admin!.userId} manually fulfilled order ${orderId} via the web panel`);
+    return reply.send({ ok: true });
+  });
 }

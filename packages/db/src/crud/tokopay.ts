@@ -22,7 +22,7 @@ import { logger } from "@app/core/logger";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
-import { getOrder, approveOrder } from "./orders";
+import { getOrder, settlePaidOrder } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting } from "./settings";
@@ -64,6 +64,7 @@ export function listPendingTokopayOrders(db: Db, now: Date) {
 
 export type TokopayDeliverResult =
   | { status: "delivered"; order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }
+  | { status: "processing"; order: NonNullable<Awaited<ReturnType<typeof getOrder>>> }
   | { status: "already_processed" }
   | { status: "stale" };
 
@@ -116,40 +117,47 @@ export async function deliverPaidTokopayOrder(
         to: OrderStatus.PENDING_VERIFICATION,
         meta: `trxId=${args.trxId}`,
       });
-      const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: 0 });
+      const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
       // Buyer DM via the outbox — only if the buyer has a Telegram account.
       // Web-only buyers (telegramId=null) have no chat to DM; they see their
       // order on the storefront instead. Link only — the outbox payload is
       // visible in the admin /outbox panel, never put credentials in it.
-      if (delivered.user.telegramId != null) {
-        await enqueueNotification(tx, NotificationEvent.ORDER_DELIVERED_DM, delivered.id, {
-          chat_id: Number(delivered.user.telegramId),
-          order_code: delivered.orderCode,
-          order_url: args.shopUrl ? `${args.shopUrl.replace(/\/+$/, "")}/account/orders/${delivered.orderCode}` : null,
-          buyer_language: langCode(delivered.user.language),
+      // Skipped for a "processing" result — settlePaidOrder already enqueued
+      // the buyer's ORDER_PROCESSING_DM for manual-fulfilment SKUs.
+      if (result.kind === "delivered" && result.order.user.telegramId != null) {
+        await enqueueNotification(tx, NotificationEvent.ORDER_DELIVERED_DM, result.order.id, {
+          chat_id: Number(result.order.user.telegramId),
+          order_code: result.order.orderCode,
+          order_url: args.shopUrl ? `${args.shopUrl.replace(/\/+$/, "")}/account/orders/${result.order.orderCode}` : null,
+          buyer_language: langCode(result.order.user.language),
         });
       }
       // Overpayment: the buyer paid more than the order total. Still deliver
       // (handled above) but flag the ledger row and alert admins so the
-      // excess can be refunded/credited manually — never auto-refunded.
+      // excess can be refunded/credited manually — never auto-refunded. This
+      // stays unconditional — a buyer can overpay regardless of delivery type.
       const paidAmount = new Decimal(args.amount);
       const excess = paidAmount.minus(order.totalAmount);
       if (excess.greaterThan(0)) {
         await tx.processedTokopayTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } });
         await enqueueAdminOverpaid(tx, {
-          orderId: delivered.id,
-          orderCode: delivered.orderCode,
+          orderId: result.order.id,
+          orderCode: result.order.orderCode,
           paid: paidAmount,
           expected: order.totalAmount,
           excess,
           currency: order.currency,
         });
         logger.warn(
-          `TokoPay order ${delivered.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
+          `TokoPay order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
         );
       }
-      logger.info(`Auto-delivered TokoPay order ${delivered.orderCode} for transaction ${args.trxId}`);
-      return { status: "delivered" as const, order: delivered, credentials };
+      if (result.kind === "delivered") {
+        logger.info(`Auto-delivered TokoPay order ${result.order.orderCode} for transaction ${args.trxId}`);
+        return { status: "delivered" as const, order: result.order, credentials: result.credentials };
+      }
+      logger.info(`TokoPay order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.trxId})`);
+      return { status: "processing" as const, order: result.order };
     }, { timeout: 15000 });
   } catch (e) {
     await db.processedTokopayTx

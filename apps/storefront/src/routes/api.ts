@@ -16,6 +16,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { Decimal } from "@app/core/money";
 import { config } from "@app/core/config";
 import { ValidationError } from "@app/core/errors";
+import { DeliveryType } from "@app/core/enums";
 import {
   prisma,
   getCategoryBySlug,
@@ -167,6 +168,27 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     }
     const qty = clampJsonQty(req.body?.qty);
 
+    // Cart guard (Task 6 design decision): a cart containing any manual /
+    // manual_with_info line may contain EXACTLY that one line (any quantity)
+    // — no other lines, same-SKU or different-SKU, auto or otherwise. This is
+    // stricter than "auto vs manual" alone because Order.customerData assumes
+    // one denomination's field spec applies to the whole order (the bot only
+    // ever orders one denomination at a time) — the storefront's cart can
+    // hold multiple products, which would break that assumption if two
+    // different manual_with_info SKUs landed in the same order. Re-adding the
+    // SAME denomination that's already the cart's one line (qty increment,
+    // handled below by addToCart's upsert / the guest merge branch) is not a
+    // new line, so it's exempt.
+    const existingLines = await loadCartLines(req, customer);
+    if (existingLines.length > 0) {
+      const isSameSingleLine = existingLines.length === 1 && existingLines[0]!.denomination_id === denom.id;
+      const mixedDelivery =
+        denom.deliveryType !== DeliveryType.AUTO || existingLines.some((l) => l.delivery_type !== DeliveryType.AUTO);
+      if (mixedDelivery && !isSameSingleLine) {
+        return reply.code(400).send({ error: "error.cart_mixed_delivery" });
+      }
+    }
+
     if (customer) {
       await addToCart(prisma, customer.userId, denom.id, qty);
     } else {
@@ -189,7 +211,13 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
 
   // ---- 7. POST /checkout ----
   app.post<{
-    Body: { method?: string; voucher_code?: string; use_wallet_idr?: boolean; use_wallet_usdt?: boolean };
+    Body: {
+      method?: string;
+      voucher_code?: string;
+      use_wallet_idr?: boolean;
+      use_wallet_usdt?: boolean;
+      customer_data?: unknown;
+    };
   }>("/checkout", async (req, reply) => {
     const customer = await optionalCustomer(req);
     if (!customer) {
@@ -209,7 +237,14 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     const useWalletUsdt = req.body?.use_wallet_usdt === true;
 
     try {
-      const { orderCode } = await performCheckout(customer, method, voucherCode, useWalletIdr, useWalletUsdt);
+      const { orderCode } = await performCheckout(
+        customer,
+        method,
+        voucherCode,
+        useWalletIdr,
+        useWalletUsdt,
+        req.body?.customer_data,
+      );
       return reply.code(201).send({ order_code: orderCode, pay_url: `/checkout/${orderCode}/pay` });
     } catch (e) {
       if (e instanceof ValidationError) {

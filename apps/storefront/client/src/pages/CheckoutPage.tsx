@@ -27,12 +27,14 @@ import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ChevronRight, Wallet } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
-import type { CheckoutData, PlaceOrderResponse } from "../api/types";
+import type { AdditionalField, CheckoutData, PlaceOrderResponse } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { formatIdr, money4 } from "../lib/format";
+import { allFieldsValid } from "../lib/deliveryFields";
 import Price from "../components/shop/Price";
 import Stepper from "../components/shop/Stepper";
+import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
 
 /** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
  * submitting button while its mutation is pending (in addition to disabling
@@ -67,6 +69,58 @@ function anyMethodEnabled(data: CheckoutData): boolean {
   );
 }
 
+/**
+ * Info-collection step (Task 6, item 1): for the ONE manual_with_info line a
+ * cart may hold (single-SKU-per-non-auto-cart guard, routes/api.ts POST
+ * /cart), collects `additional_fields` answers once per unit (qty times) —
+ * inline form sections, not a multi-step wizard (this is a web page, unlike
+ * the bot's chat-turn "Unit N of M" wizard it conceptually mirrors). Renders
+ * ABOVE the payment card, gating "Place Order" until every unit validates.
+ * Client-side validation (lib/deliveryFields.ts) is a UX convenience only —
+ * the server re-validates from scratch before persisting (routes/checkout.ts
+ * performCheckout).
+ */
+function InfoStepCard({
+  fields,
+  qty,
+  answers,
+  onChange,
+}: {
+  fields: AdditionalField[];
+  qty: number;
+  answers: Array<Record<string, string>>;
+  onChange: (unitIdx: number, key: string, value: string) => void;
+}) {
+  return (
+    <div className="card card-pad">
+      <h2 className="section-title mb-1">{t("web.checkout_info_title")}</h2>
+      <p className="text-xs text-ink-soft mb-3">{t("web.checkout_info_intro")}</p>
+      <div className="space-y-5">
+        {Array.from({ length: qty }, (_, unitIdx) => (
+          <div key={unitIdx} className={qty > 1 ? "border border-line rounded-xl p-3" : ""}>
+            {qty > 1 && (
+              <div className="text-xs font-semibold text-ink-soft mb-2">
+                {t("web.checkout_info_unit", { unit: unitIdx + 1, total: qty })}
+              </div>
+            )}
+            <div className="grid gap-3 sm:grid-cols-2">
+              {fields.map((field) => (
+                <DeliveryFieldInput
+                  key={field.key}
+                  field={field}
+                  inputId={`info-${unitIdx}-${field.key}`}
+                  value={answers[unitIdx]?.[field.key] ?? ""}
+                  onChange={(value) => onChange(unitIdx, field.key, value)}
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function CheckoutPage() {
   const navigate = useNavigate();
   const { data: ctx } = useShopContext();
@@ -83,6 +137,9 @@ export default function CheckoutPage() {
   const [useWalletIdr, setUseWalletIdr] = useState(false);
   const [useWalletUsdt, setUseWalletUsdt] = useState(false);
   const [placeOrderErrorKey, setPlaceOrderErrorKey] = useState<string | null>(null);
+  // One answer-map per unit for the manual_with_info info step — [] when the
+  // cart has no such line (the section then renders nothing).
+  const [answers, setAnswers] = useState<Array<Record<string, string>>>([]);
 
   // currentCustomer's 401 → a full page load to /login, matching every other
   // ported page's redirect (not navigate(), so the shell re-serves fresh CSRF).
@@ -102,6 +159,8 @@ export default function CheckoutPage() {
       setTotals(data);
       setVoucherInput(data.voucher_code ?? "");
       setMethod(defaultMethod(data));
+      const infoItem = data.items.find((i) => i.delivery_type === "manual_with_info");
+      if (infoItem) setAnswers(Array.from({ length: infoItem.qty }, () => ({})));
     }
   }, [data, page]);
 
@@ -135,6 +194,7 @@ export default function CheckoutPage() {
         voucher_code: voucherInput,
         use_wallet_idr: useWalletIdr,
         use_wallet_usdt: useWalletUsdt,
+        customer_data: page?.items.some((i) => i.delivery_type === "manual_with_info") ? answers : undefined,
       }),
     onSuccess: (resp) => navigate(resp.pay_url),
     onError: (err) => setPlaceOrderErrorKey((err as Error).message),
@@ -145,6 +205,18 @@ export default function CheckoutPage() {
   const hasWalletIdr = Boolean(page.wallet_idr) && page.wallet_idr !== "0";
   const hasWalletUsdt = Boolean(page.wallet_usdt) && page.wallet_usdt !== "0";
   const anyMethod = anyMethodEnabled(totals);
+  // Info step (Task 6): the single-SKU-per-non-auto-cart guard means there's
+  // ever at most one manual_with_info line.
+  const infoItem = page.items.find((i) => i.delivery_type === "manual_with_info") ?? null;
+  const infoValid = !infoItem || allFieldsValid(infoItem.additional_fields, answers, infoItem.qty);
+
+  function setAnswer(unitIdx: number, key: string, value: string): void {
+    setAnswers((prev) => {
+      const next = prev.slice();
+      next[unitIdx] = { ...next[unitIdx], [key]: value };
+      return next;
+    });
+  }
 
   return (
     <>
@@ -159,6 +231,10 @@ export default function CheckoutPage() {
 
       <form onSubmit={(e) => e.preventDefault()} className="grid lg:grid-cols-3 gap-6 items-start">
         <div className="lg:col-span-2 space-y-6">
+          {infoItem && (
+            <InfoStepCard fields={infoItem.additional_fields} qty={infoItem.qty} answers={answers} onChange={setAnswer} />
+          )}
+
           <div className="card card-pad">
             <h2 className="section-title mb-3">{t("web.pay_method")}</h2>
             <div className="space-y-3">
@@ -388,8 +464,8 @@ export default function CheckoutPage() {
             <button
               type="button"
               className="btn btn-primary w-full mt-4"
-              disabled={!anyMethod || placeOrderMutation.isPending}
-              style={!anyMethod ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+              disabled={!anyMethod || placeOrderMutation.isPending || !infoValid}
+              style={!anyMethod || !infoValid ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
               onClick={() => placeOrderMutation.mutate()}
             >
               {placeOrderMutation.isPending && <Spinner />}

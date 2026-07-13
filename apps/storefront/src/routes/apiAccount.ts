@@ -20,12 +20,14 @@ import { SenderType, OrderStatus, TicketStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { Decimal } from "@app/core/money";
+import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import {
   prisma,
   setSetting,
   listUserOrders,
   countUserOrders,
   getOrderByCodeFull,
+  updateOrderCustomerData,
   listUserDeliveredOrders,
   listUserTickets,
   listTicketMessages,
@@ -110,6 +112,12 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(404).send({ error: "not_found" });
     }
     const delivered = order.status === OrderStatus.DELIVERED;
+    // Parsed manual_with_info field spec + the buyer's current answers — same
+    // single-denomination assumption updateOrderCustomerData and the admin
+    // order route already make (Tasks 2/8). [] for auto/manual orders (no
+    // manual_with_info fields), so the client renders nothing extra for them.
+    const customerDataFields = parseAdditionalFields(order.items[0]?.product.additionalFields ?? null);
+    const customerData = parseCustomerData(order.customerData);
     return reply.send({
       order: {
         code: order.orderCode,
@@ -119,6 +127,9 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         bulk_discount: order.bulkDiscountAmount.toString(),
         total: order.totalAmount.toString(),
         created_at_display: dt(order.createdAt),
+        customer_data_fields: customerDataFields,
+        customer_data: customerData,
+        delivered_content: order.deliveredContent,
         items: order.items.map((i) => ({
           name: i.product.name,
           duration: i.product.durationLabel,
@@ -130,8 +141,37 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       },
       delivered,
       pending_payment: order.status === OrderStatus.PENDING_PAYMENT,
+      processing: order.status === OrderStatus.PROCESSING,
     });
   });
+
+  // Edit buyer-submitted manual_with_info answers while the order is still
+  // PROCESSING (paid, awaiting hand fulfilment) — the storefront twin of the
+  // bot's editCustomerInfoConversation (Task 9). updateOrderCustomerData is
+  // the final authority: it re-validates against the SKU's field spec and
+  // throws error.order_not_processing if the order left PROCESSING between
+  // the buyer loading the page and submitting (e.g. an admin fulfilled it
+  // mid-edit) — the client re-syncs to the server's real state on that error
+  // rather than silently dropping the edit.
+  app.patch<{ Params: { code: string }; Body: { customer_data?: unknown } }>(
+    "/account/orders/:code/info",
+    async (req, reply) => {
+      const customer = await requireCustomer(req, reply);
+      if (!customer) return;
+      if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
+      const order = await getOrderByCodeFull(prisma, req.params.code);
+      if (!order || order.userId !== customer.userId) {
+        return reply.code(404).send({ error: "not_found" });
+      }
+      try {
+        await updateOrderCustomerData(prisma, order.id, req.body?.customer_data);
+      } catch (e) {
+        if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
+        throw e;
+      }
+      return reply.send({ ok: true });
+    },
+  );
 
   // ---- Referral ----
   app.get("/account/referral", async (req, reply) => {

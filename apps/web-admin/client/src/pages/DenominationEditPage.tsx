@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
+import { AdditionalFieldsEditor } from "../components/shared/AdditionalFieldsEditor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,10 +15,18 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { apiGet, apiPatch, apiPost, apiDelete } from "../api/client";
+import { draftsToFields, fieldToDraft, fieldsAreValid } from "../lib/additionalFields";
+import type { AdditionalField, AdditionalFieldDraft } from "../api/types";
 
 const DENOMINATION_TYPES = [
   { value: "SHARED", label: "Shared" },
   { value: "PRIVATE", label: "Private" },
+];
+
+const DELIVERY_TYPES = [
+  { value: "auto", label: "Auto (deliver from stock)" },
+  { value: "manual", label: "Manual (admin fulfills by hand)" },
+  { value: "manual_with_info", label: "Manual + Info (buyer fills fields first)" },
 ];
 
 interface EditableDenomination {
@@ -31,6 +40,24 @@ interface EditableDenomination {
   warrantyDays: number;
   description: string | null;
   sortOrder: number;
+  deliveryType: string;
+  additionalFields: string | null;
+}
+
+/** Parses a denomination's stored additionalFields JSON into editable
+ * drafts; returns [] on null/blank/invalid, same fallback shape as
+ * @app/core/deliveryFields's parseAdditionalFields (not reused directly —
+ * this client mirrors server-side shapes rather than depending on @app/core,
+ * see api/types.ts's AdditionalField doc comment). */
+function parseStoredAdditionalFields(json: string | null): AdditionalFieldDraft[] {
+  if (!json) return [];
+  try {
+    const parsed = JSON.parse(json) as AdditionalField[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map(fieldToDraft);
+  } catch {
+    return [];
+  }
 }
 
 interface BulkPricingRule {
@@ -93,6 +120,8 @@ export function DenominationEditPage() {
   const [description, setDescription] = useState("");
   const [sortOrder, setSortOrder] = useState("");
   const [moveToProductId, setMoveToProductId] = useState<string | null>(null);
+  const [deliveryType, setDeliveryType] = useState("auto");
+  const [additionalFields, setAdditionalFields] = useState<AdditionalFieldDraft[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const [bulkMinQuantity, setBulkMinQuantity] = useState("");
@@ -112,6 +141,8 @@ export function DenominationEditPage() {
     setDescription(denomination.description ?? "");
     setSortOrder(String(denomination.sortOrder ?? 0));
     setMoveToProductId(productId ?? null);
+    setDeliveryType(denomination.deliveryType || "auto");
+    setAdditionalFields(parseStoredAdditionalFields(denomination.additionalFields));
     if (existingRule) {
       setBulkMinQuantity(String(existingRule.minQuantity));
       setBulkDiscountPercent(existingRule.discountPercent);
@@ -132,6 +163,10 @@ export function DenominationEditPage() {
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(sortOrder.trim() ? { sortOrder: Number(sortOrder.trim()) } : {}),
         ...(moveToProductId && moveToProductId !== productId ? { productId: Number(moveToProductId) } : {}),
+        deliveryType,
+        ...(deliveryType === "manual_with_info"
+          ? { additionalFields: draftsToFields(additionalFields) }
+          : {}),
       }),
     onMutate: () => setError(null),
     onSuccess: () => {
@@ -174,7 +209,8 @@ export function DenominationEditPage() {
     name.trim().length > 0 &&
     type !== null &&
     durationLabel.trim().length > 0 &&
-    isValidPrice(price);
+    isValidPrice(price) &&
+    (deliveryType !== "manual_with_info" || fieldsAreValid(additionalFields));
 
   if (isError) return <PageLayout title="Edit Denomination"><p className="text-sm text-rust">Failed to load denomination.</p></PageLayout>;
   if (!loaded) return <PageLayout title="Edit Denomination"><p>Loading…</p></PageLayout>;
@@ -207,7 +243,7 @@ export function DenominationEditPage() {
             Type <span className="text-rust">*</span>
           </label>
           <Select value={type ?? ""} onValueChange={(v) => setType(v)}>
-            <SelectTrigger className="mt-1">
+            <SelectTrigger className="mt-1" aria-label="Type">
               <SelectValue placeholder="Select type" />
             </SelectTrigger>
             <SelectContent>
@@ -217,6 +253,32 @@ export function DenominationEditPage() {
             </SelectContent>
           </Select>
         </div>
+
+        <div>
+          <label className="text-sm font-medium text-ink">
+            Delivery Type <span className="text-rust">*</span>
+          </label>
+          <Select value={deliveryType} onValueChange={(v) => setDeliveryType(v)}>
+            <SelectTrigger className="mt-1" aria-label="Delivery Type">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {DELIVERY_TYPES.map((t) => (
+                <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {deliveryType === "manual_with_info" && (
+          <div>
+            <label className="text-sm font-medium text-ink">Custom Fields</label>
+            <p className="mt-1 mb-2 text-xs text-ink-soft">
+              The buyer fills these in before paying. At least one field is required.
+            </p>
+            <AdditionalFieldsEditor value={additionalFields} onChange={setAdditionalFields} />
+          </div>
+        )}
 
         <div>
           <label className="text-sm font-medium text-ink">

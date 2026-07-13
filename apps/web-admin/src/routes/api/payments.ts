@@ -139,7 +139,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     try {
       const target = await getOrderByCode(prisma, orderCode);
       if (!target) return reply.code(404).send({ error: `Order ${orderCode} not found.` });
-      const { order } = await manualMatchTx(prisma, {
+      const result = await manualMatchTx(prisma, {
         binanceTxId,
         orderId: target.id,
         adminId: req.admin!.userId,
@@ -148,8 +148,11 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
         adminId: req.admin!.userId,
         action: "tx_manual_match",
         targetType: "order",
-        targetId: order.id,
-        details: `Matched transfer ${binanceTxId} to order ${order.orderCode}.`,
+        targetId: result.order.id,
+        details:
+          result.kind === "delivered"
+            ? `Matched transfer ${binanceTxId} to order ${result.order.orderCode}.`
+            : `Matched transfer ${binanceTxId} to order ${result.order.orderCode}; queued for manual fulfilment.`,
       });
       logger.info(`Admin ${req.admin!.userId} manually matched Binance transfer ${binanceTxId} to order ${orderCode} via the web panel`);
       return reply.send({ ok: true });

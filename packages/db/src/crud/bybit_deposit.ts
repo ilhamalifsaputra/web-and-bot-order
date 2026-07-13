@@ -20,7 +20,7 @@ import { logger } from "@app/core/logger";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
-import { getOrder, createOrderDirect, approveOrder, applyUsdtWalletToOrder } from "./orders";
+import { getOrder, createOrderDirect, settlePaidOrder, applyUsdtWalletToOrder } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
@@ -105,6 +105,9 @@ export async function createBybitOrder(
     rate: Decimal.Value;
     /** Optional USDT credit balance to spend on this order (clamped to total). */
     walletAmount?: Decimal.Value;
+    /** Stringified JSON of the buyer's manual_with_info answers (validated by
+     * the caller). Forwarded verbatim to createOrderDirect; null otherwise. */
+    customerData?: string | null;
   },
 ) {
   const { walletAmount, rate, ...baseArgs } = args;
@@ -135,6 +138,7 @@ export function listPendingBybitOrders(db: Db, now: Date) {
 
 export type BybitDeliverResult =
   | { status: "delivered"; order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }
+  | { status: "processing"; order: NonNullable<Awaited<ReturnType<typeof getOrder>>> }
   | { status: "already_processed" }
   | { status: "stale" };
 
@@ -176,9 +180,13 @@ export async function deliverPaidBybitOrder(
         to: OrderStatus.PENDING_VERIFICATION,
         meta: `bybitTxId=${args.bybitTxId}`,
       });
-      const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: 0 });
-      logger.info(`Auto-delivered Bybit order ${delivered.orderCode} for transaction ${args.bybitTxId}`);
-      return { status: "delivered" as const, order: delivered, credentials };
+      const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
+      if (result.kind === "delivered") {
+        logger.info(`Auto-delivered Bybit order ${result.order.orderCode} for transaction ${args.bybitTxId}`);
+        return { status: "delivered" as const, order: result.order, credentials: result.credentials };
+      }
+      logger.info(`Bybit order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.bybitTxId})`);
+      return { status: "processing" as const, order: result.order };
     });
   } catch (e) {
     await db.processedBybitTx

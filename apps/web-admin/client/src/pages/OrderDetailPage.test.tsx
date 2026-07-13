@@ -1,9 +1,15 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { OrderDetailPage } from "./OrderDetailPage";
+import { apiPost } from "../api/client";
+
+vi.mock("../api/client", () => ({
+  apiPost: vi.fn(),
+}));
 
 function Wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -38,6 +44,7 @@ const ORDER_DETAIL_DATA = {
       },
     ],
     voucher: null,
+    deliveredContent: null,
   },
   money: {
     currency: "IDR",
@@ -52,10 +59,14 @@ const ORDER_DETAIL_DATA = {
   isDelivered: false,
   canAct: true,
   canCredit: true,
+  canFulfill: false,
+  customerDataFields: [] as Array<{ key: string; label: { id: string; en: string }; type: string; required: boolean; options: string[]; placeholder: string }>,
+  customerData: [] as Array<Record<string, string>>,
 };
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  vi.mocked(apiPost).mockReset();
 });
 
 describe("OrderDetailPage", () => {
@@ -128,5 +139,139 @@ describe("OrderDetailPage", () => {
     render(<OrderDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: /resend to telegram/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("OrderDetailPage — manual fulfilment", () => {
+  it("shows a Send to Buyer action for a PROCESSING order and posts the typed content", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...ORDER_DETAIL_DATA,
+          order: { ...ORDER_DETAIL_DATA.order, status: "PROCESSING" },
+          canAct: false,
+          canFulfill: true,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    const sendButton = screen.getByRole("button", { name: /send to buyer/i });
+    expect(sendButton).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText(/account\/content to send/i), "user:x pass:y");
+    await user.click(sendButton);
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith(`/api/orders/1/fulfill`, { content: "user:x pass:y" }),
+    );
+  });
+
+  it("hides the Send to Buyer action when the order isn't PROCESSING", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(ORDER_DETAIL_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /send to buyer/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the buyer's submitted custom-field answers, labeled, when customerData is present", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...ORDER_DETAIL_DATA,
+          order: { ...ORDER_DETAIL_DATA.order, status: "PROCESSING" },
+          canAct: false,
+          canFulfill: true,
+          customerDataFields: [
+            { key: "invite_email", label: { id: "Email Undangan", en: "Invite Email" }, type: "email", required: true, options: [], placeholder: "" },
+          ],
+          customerData: [{ invite_email: "budi@gmail.com" }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Buyer-Submitted Info")).toBeInTheDocument());
+    expect(screen.getByText("Invite Email")).toBeInTheDocument();
+    expect(screen.getByText("budi@gmail.com")).toBeInTheDocument();
+  });
+
+  it("labels each answer per unit when quantity > 1", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...ORDER_DETAIL_DATA,
+          order: { ...ORDER_DETAIL_DATA.order, status: "PROCESSING" },
+          canAct: false,
+          canFulfill: true,
+          customerDataFields: [
+            { key: "invite_email", label: { id: "Email Undangan", en: "Invite Email" }, type: "email", required: true, options: [], placeholder: "" },
+          ],
+          customerData: [{ invite_email: "budi@gmail.com" }, { invite_email: "siti@gmail.com" }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Buyer-Submitted Info")).toBeInTheDocument());
+    expect(screen.getByText("Unit 1 — Invite Email")).toBeInTheDocument();
+    expect(screen.getByText("Unit 2 — Invite Email")).toBeInTheDocument();
+  });
+
+  it("renders nothing for the Buyer-Submitted Info block when customerData is empty", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(ORDER_DETAIL_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    expect(screen.queryByText("Buyer-Submitted Info")).not.toBeInTheDocument();
+  });
+
+  it("shows the Delivered Content card for a manually delivered order", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...ORDER_DETAIL_DATA,
+          order: { ...ORDER_DETAIL_DATA.order, status: "DELIVERED", deliveredContent: "user:x pass:y" },
+          isDelivered: true,
+          canAct: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Delivered Content")).toBeInTheDocument());
+    expect(screen.getByText("user:x pass:y")).toBeInTheDocument();
+  });
+
+  it("hides the Delivered Content card for an auto-delivered order (deliveredContent null)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...ORDER_DETAIL_DATA,
+          order: { ...ORDER_DETAIL_DATA.order, status: "DELIVERED" },
+          isDelivered: true,
+          canAct: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+    expect(screen.queryByText("Delivered Content")).not.toBeInTheDocument();
   });
 });

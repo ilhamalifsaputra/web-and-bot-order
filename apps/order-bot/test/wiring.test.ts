@@ -27,14 +27,16 @@ describe("order-bot wiring", () => {
     }).not.toThrow();
   });
 
-  it("registers exactly the 14 expected conversations with unique names", () => {
-    expect(CONVERSATIONS).toHaveLength(14);
+  it("registers exactly the 16 expected conversations with unique names", () => {
+    expect(CONVERSATIONS).toHaveLength(16);
     const names = CONVERSATIONS.map((c) => c.name);
     expect(new Set(names).size).toBe(names.length);
     expect(names).toEqual(
       expect.arrayContaining([
         "ticketUserReply",
         "voucher",
+        "customerInfo",
+        "editCustomerInfo",
         "support",
         "reject",
         "stockUpload",
@@ -51,11 +53,23 @@ describe("order-bot wiring", () => {
     );
   });
 
-  it("every conversation spec has a handler fn and at least one entry trigger", () => {
+  // "customerInfo" and "editCustomerInfo" are the deliberate exceptions:
+  // both are entered programmatically (checkout.ts's showOrderConfirmation
+  // calls ctx.conversation.enter("customerInfo") for a manual_with_info SKU;
+  // callbacks.ts's dispatchOrder calls ctx.conversation.enter("editCustomerInfo")
+  // for a v1:order:editinfo:<id> tap), not from a callback/command/hears
+  // match, so neither has a trigger by design.
+  const NO_TRIGGER_BY_DESIGN = new Set(["customerInfo", "editCustomerInfo"]);
+
+  it("every conversation spec has a handler fn, and an entry trigger unless it's deliberately programmatic-entry-only", () => {
     for (const spec of CONVERSATIONS) {
       expect(typeof spec.fn, `${spec.name} fn`).toBe("function");
       const hasTrigger = Boolean(spec.callback || spec.command || spec.hears);
-      expect(hasTrigger, `${spec.name} has an entry trigger`).toBe(true);
+      if (NO_TRIGGER_BY_DESIGN.has(spec.name)) {
+        expect(hasTrigger, `${spec.name} was expected to stay trigger-less`).toBe(false);
+      } else {
+        expect(hasTrigger, `${spec.name} has an entry trigger`).toBe(true);
+      }
     }
   });
 });

@@ -47,8 +47,10 @@ function strings(lang: string | null | undefined): Strings {
   return STRINGS[lang.toLowerCase()] ?? STRINGS[DEFAULT_LANG]!;
 }
 
-/** Mirror Python html.escape(quote=True). */
-function escape(s: string): string {
+/** Mirror Python html.escape(quote=True). Exported so dispatcher.ts can reuse
+ * the same escaping for admin free-text (deliveredContent) it renders itself
+ * (ORDER_MANUAL_DELIVERED_DM), rather than duplicating this logic. */
+export function escape(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -141,11 +143,35 @@ interface OrderPipelineFailedPayload {
   reason?: unknown;
 }
 
+interface OrderProcessingPayload {
+  order_code?: unknown;
+  order_url?: unknown;
+}
+
 /** Return the message body for an outbox event, or "" to skip. */
 export function render(
   event: string,
-  payload: DeliveredPayload & AdminResetPayload & AdminOverpaidPayload & OrderPipelineFailedPayload,
+  payload: DeliveredPayload &
+    AdminResetPayload &
+    AdminOverpaidPayload &
+    OrderPipelineFailedPayload &
+    OrderProcessingPayload,
 ): string {
+  if (event === NotificationEvent.ORDER_PROCESSING_DM) {
+    // Buyer DM: a manual-delivery order's payment was confirmed and it's now
+    // queued for hand-fulfilment. Deliberately no ETA/SLA promise here — the
+    // richer order-detail screen (later task) owns that copy; this terse DM
+    // just reassures the buyer payment went through.
+    const code = escape(String(payload.order_code ?? ""));
+    const url = typeof payload.order_url === "string" && payload.order_url ? escape(payload.order_url) : "";
+    const linkLine = url ? `\n🔗 ${url}` : "";
+    return (
+      `✅ <b>Payment received for order <code>${code}</code></b>\n` +
+      `📦 Your order is being prepared by hand — we'll notify you as soon as possible.${linkLine}\n\n` +
+      `✅ <b>Pembayaran diterima untuk pesanan <code>${code}</code></b>\n` +
+      `📦 Pesananmu sedang disiapkan secara manual — kami akan segera memberi tahu kamu.${linkLine}`
+    );
+  }
   if (event === NotificationEvent.ORDER_PIPELINE_FAILED) {
     // Admin DM: a Bybit BSC order's automated tracking pipeline failed
     // post-detection and needs manual action. `reason` is a short

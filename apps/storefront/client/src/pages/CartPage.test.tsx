@@ -37,6 +37,7 @@ const cartData: CartPageData = {
       qty: 2,
       line_total: "158000",
       available: 5,
+      delivery_type: "auto",
     },
   ],
   subtotal: "158000",
@@ -111,5 +112,19 @@ describe("CartPage", () => {
   it("shows the login-to-checkout hint for a guest", async () => {
     renderCart(() => cartData);
     expect(await screen.findByText("You'll sign in with Telegram at checkout — your cart comes along.")).toBeInTheDocument();
+  });
+
+  // Bug B (Task 6): non-auto lines never have stock rows by design (available
+  // is always 0), so `qty > available` was ALWAYS true for a legitimate
+  // manual/manual_with_info cart line — the "N left" warning must be
+  // suppressed for those, not driven by the meaningless available count.
+  it("does not show the stock-shortage warning for a non-auto line even though qty > available", async () => {
+    const manualCart: CartPageData = {
+      items: [{ ...cartData.items[0]!, delivery_type: "manual", available: 0, qty: 3 }],
+      subtotal: "237000",
+    };
+    renderCart(() => manualCart);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    expect(screen.queryByText(/left$/)).not.toBeInTheDocument();
   });
 });

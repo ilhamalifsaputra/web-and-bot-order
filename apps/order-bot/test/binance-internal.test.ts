@@ -217,6 +217,28 @@ describe("createInternalOrder", () => {
     expect(minsToExpiry).toBeGreaterThan(13);
     expect(minsToExpiry).toBeLessThanOrEqual(15.1);
   });
+
+  // Per-SKU delivery flows (dlv-task-5): createInternalOrder destructures
+  // walletAmount/rate off args and spreads the rest into createOrderDirect, so
+  // a manual_with_info checkout's collected answers must ride along untouched.
+  it("forwards customerData verbatim onto the created order", async () => {
+    const customerData = JSON.stringify([{ game_id: "GID-123" }]);
+    const order = await prisma.$transaction((tx) =>
+      createInternalOrder(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: sample.product.id,
+        quantity: 1,
+        rate: 1,
+        customerData,
+      }),
+    );
+    expect(order!.customerData).toBe(customerData);
+  });
+
+  it("leaves customerData null when the caller doesn't pass one (auto/manual checkout, unaffected)", async () => {
+    const order = await makeInternalOrder();
+    expect(order!.customerData).toBeNull();
+  });
 });
 
 // ===========================================================================

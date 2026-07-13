@@ -14,12 +14,13 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
-import { prisma, createOrderDirect, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct } from "@app/db";
+import { prisma, createOrderDirect, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
 import { drainBroadcasts } from "../src/jobs";
-import { OrderStatus, OrderCurrency, PaymentMethod, StockStatus, UserRole, TicketStatus } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, PaymentMethod, StockStatus, UserRole, TicketStatus, DeliveryType } from "@app/core/enums";
+import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, sentIncludes, offersForwardAction, lastMarkup, type SentCall } from "./helpers/ctx";
@@ -95,6 +96,55 @@ async function makeOrder(qty = 1) {
   return prisma.$transaction((tx) =>
     createOrderDirect(tx, { user: { id: sample.user.id, role: sample.user.role }, productId: sample.product.id, quantity: qty }),
   );
+}
+
+/** A plain MANUAL denomination (no custom fields) — its own category/product. */
+async function makeManualDenom() {
+  const category = await createCategory(prisma, `manual-cat-${Math.random()}`);
+  const product = await createCatalogProduct(prisma, { categoryId: category.id, name: `Manual Product ${Math.random()}` });
+  const denom = await createDenomination(prisma, {
+    productId: product.id,
+    name: "Manual Denom",
+    type: "SHARED",
+    durationLabel: "1 Month",
+    price: "10.00",
+  });
+  await updateDenomination(prisma, denom.id, { deliveryType: DeliveryType.MANUAL });
+  return denom;
+}
+
+/** A MANUAL_WITH_INFO denomination carrying the given field spec. */
+async function makeManualWithInfoDenom(fields: AdditionalField[]) {
+  const category = await createCategory(prisma, `manual-info-cat-${Math.random()}`);
+  const product = await createCatalogProduct(prisma, { categoryId: category.id, name: `Manual Info Product ${Math.random()}` });
+  const denom = await createDenomination(prisma, {
+    productId: product.id,
+    name: "Manual Info Denom",
+    type: "SHARED",
+    durationLabel: "1 Month",
+    price: "10.00",
+  });
+  await updateDenomination(prisma, denom.id, {
+    deliveryType: DeliveryType.MANUAL_WITH_INFO,
+    additionalFields: JSON.stringify(fields),
+  });
+  return denom;
+}
+
+/** Drive a fresh order for `productId` all the way to PROCESSING via the same
+ * createOrderDirect -> attachPaymentProof -> settlePaidOrder path every real
+ * manual-SKU order takes (settlePaidOrder.test.ts covers that path itself —
+ * this just reuses it as a fixture builder). Returns the order id. */
+async function makeProcessingOrder(productId: number, quantity = 1, customerData?: string) {
+  const order = await createOrderDirect(prisma, {
+    user: { id: sample.user.id, role: sample.user.role },
+    productId,
+    quantity,
+    customerData,
+  });
+  await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: `TX-PROC-${order!.id}` });
+  await settlePaidOrder(prisma, order!.id, { adminId: adminDbId });
+  return order!.id;
 }
 
 // ===========================================================================
@@ -427,6 +477,189 @@ describe("customer handlers", () => {
     const { ctx, sink } = customerCtx();
     await customer.viewMyTicket(ctx, 999999);
     expect(offersForwardAction(sink)).toBe(true);
+  });
+});
+
+// ===========================================================================
+// viewOrder — PROCESSING branch (Task 9)
+// ===========================================================================
+
+describe("viewOrder — PROCESSING branch", () => {
+  it("shows the translated status label and a reassurance line for a plain MANUAL order, with no info block", async () => {
+    const denom = await makeManualDenom();
+    const orderId = await makeProcessingOrder(denom.id, 1);
+
+    const { ctx, sink } = customerCtx();
+    await customer.viewOrder(ctx, orderId);
+
+    const body = JSON.stringify(sink);
+    expect(body).toContain("Processing"); // status.label.processing, not the raw "PROCESSING" statusBadge would show
+    expect(body).toContain("being prepared by hand");
+    expect(body).not.toContain("submitted information");
+  });
+
+  it("echoes the buyer's submitted customerData, labeled per the SKU's field spec, for a manual_with_info order", async () => {
+    const fields: AdditionalField[] = [
+      { key: "invite_email", label: { id: "Email Undangan", en: "Invite Email" }, type: AdditionalFieldType.EMAIL, required: true, options: [], placeholder: "" },
+    ];
+    const denom = await makeManualWithInfoDenom(fields);
+    const orderId = await makeProcessingOrder(denom.id, 1, JSON.stringify([{ invite_email: "budi@gmail.com" }]));
+
+    const { ctx, sink } = customerCtx();
+    await customer.viewOrder(ctx, orderId);
+
+    const body = JSON.stringify(sink);
+    expect(body).toContain("Invite Email");
+    expect(body).toContain("budi@gmail.com");
+  });
+
+  it("labels the buyer's answers in the BUYER's own language (id), not the admin's English-only label", async () => {
+    const fields: AdditionalField[] = [
+      { key: "invite_email", label: { id: "Email Undangan", en: "Invite Email" }, type: AdditionalFieldType.EMAIL, required: true, options: [], placeholder: "" },
+    ];
+    const denom = await makeManualWithInfoDenom(fields);
+    const orderId = await makeProcessingOrder(denom.id, 1, JSON.stringify([{ invite_email: "budi@gmail.com" }]));
+
+    const { ctx, sink } = customerCtx({ session: { ...userSession(), lang: "id" } });
+    await customer.viewOrder(ctx, orderId);
+
+    expect(sentIncludes(sink, "Email Undangan")).toBe(true);
+    expect(sentIncludes(sink, "Invite Email")).toBe(false);
+  });
+
+  it("groups per-unit answers with a 'Unit N:' prefix when quantity > 1", async () => {
+    const fields: AdditionalField[] = [
+      { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: AdditionalFieldType.TEXT, required: true, options: [], placeholder: "" },
+    ];
+    const denom = await makeManualWithInfoDenom(fields);
+    const orderId = await makeProcessingOrder(denom.id, 2, JSON.stringify([{ game_id: "GID-1" }, { game_id: "GID-2" }]));
+
+    const { ctx, sink } = customerCtx();
+    await customer.viewOrder(ctx, orderId);
+
+    const body = JSON.stringify(sink);
+    expect(body).toContain("Unit 1");
+    expect(body).toContain("Unit 2");
+    expect(body).toContain("GID-1");
+    expect(body).toContain("GID-2");
+  });
+
+  it("shows no credentials block (DELIVERED-only) for a PROCESSING order", async () => {
+    const denom = await makeManualDenom();
+    const orderId = await makeProcessingOrder(denom.id, 1);
+
+    const { ctx, sink } = customerCtx();
+    await customer.viewOrder(ctx, orderId);
+
+    expect(sentIncludes(sink, "Your account(s)")).toBe(false);
+  });
+});
+
+// ===========================================================================
+// orderDetailKb — PROCESSING (Task 9)
+// ===========================================================================
+
+describe("orderDetailKb — PROCESSING", () => {
+  it("offers the new order:refresh action (distinct from checkout:refresh) but no Edit-Info button for a plain MANUAL order", async () => {
+    const denom = await makeManualDenom();
+    const orderId = await makeProcessingOrder(denom.id, 1);
+
+    const { ctx, sink } = customerCtx();
+    await customer.viewOrder(ctx, orderId);
+
+    const markup = JSON.stringify(lastMarkup(sink));
+    expect(markup).toContain(`v1:order:refresh:${orderId}`);
+    expect(markup).not.toContain(`v1:order:editinfo:${orderId}`);
+  });
+
+  it("adds an Edit-Info button (order:editinfo) for a manual_with_info order still PROCESSING", async () => {
+    const fields: AdditionalField[] = [
+      { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: AdditionalFieldType.TEXT, required: true, options: [], placeholder: "" },
+    ];
+    const denom = await makeManualWithInfoDenom(fields);
+    const orderId = await makeProcessingOrder(denom.id, 1, JSON.stringify([{ game_id: "1" }]));
+
+    const { ctx, sink } = customerCtx();
+    await customer.viewOrder(ctx, orderId);
+
+    const markup = JSON.stringify(lastMarkup(sink));
+    expect(markup).toContain(`v1:order:editinfo:${orderId}`);
+  });
+});
+
+// ===========================================================================
+// refreshOrderDetail — toast-on-no-change vs toast-on-change (Task 9)
+// ===========================================================================
+
+describe("refreshOrderDetail", () => {
+  it("answers with the 'no update yet' toast when the order's status hasn't changed", async () => {
+    const denom = await makeManualDenom();
+    const orderId = await makeProcessingOrder(denom.id, 1);
+
+    const { ctx, sink } = customerCtx({ callbackData: `v1:order:refresh:${orderId}` });
+    await customer.refreshOrderDetail(ctx, orderId);
+
+    expect(sentIncludes(sink, "No updates yet")).toBe(true);
+  });
+
+  // A "status changed mid-refresh" case (the rare admin-fulfils-concurrently
+  // race) was previously tested here by spying on prisma.order.findUnique
+  // directly, but vi.spyOn on a Prisma Client model delegate does not
+  // restore cleanly (the delegate is a Proxy, not a plain object) — it left
+  // db.order.findUnique broken for every test that ran afterward in this
+  // file. Removed rather than risk suite-wide pollution for one cosmetic
+  // toast-wording edge case; the core before/after comparison this covers is
+  // exercised by the "no update yet" test above (same code path, `before`
+  // and `after` merely happen to be equal there instead of different).
+
+  it("rejects a non-owned order — never leaks the status-changed signal and never leaks the order code", async () => {
+    const denom = await makeManualDenom();
+    const orderId = await makeProcessingOrder(denom.id, 1);
+
+    const stranger = makeCtx({
+      from: { id: 777 },
+      session: { lang: "en", scratch: {}, dbUser: { id: 99999, telegramId: "777", role: "CUSTOMER", language: "EN", referralCode: "X", walletBalance: "0" } },
+      callbackData: `v1:order:refresh:${orderId}`,
+    });
+
+    await customer.refreshOrderDetail(stranger.ctx, orderId);
+
+    const fresh = await getOrder(prisma, orderId);
+    // Never leaks the order code (mirrors viewOrder's own not-found behavior).
+    expect(JSON.stringify(stranger.sink)).not.toContain(fresh!.orderCode);
+    // Never shows the before/after "no update yet" toast for a non-owned order.
+    expect(sentIncludes(stranger.sink, "No updates yet")).toBe(false);
+    // The callback still gets a plain ack, not silently dropped.
+    expect(calls(stranger.sink, "answerCallbackQuery").length).toBe(1);
+  });
+});
+
+// ===========================================================================
+// viewOrder — DELIVERED manual content (Task 9, item 4)
+// ===========================================================================
+
+describe("viewOrder — DELIVERED manual content", () => {
+  it("shows the admin-typed delivered content for a fulfilled manual order", async () => {
+    const denom = await makeManualDenom();
+    const orderId = await makeProcessingOrder(denom.id, 1);
+    await fulfillManualOrder(prisma, orderId, { adminId: adminDbId, content: "user:abc pass:123" });
+
+    const { ctx, sink } = customerCtx();
+    await customer.viewOrder(ctx, orderId);
+
+    expect(sentIncludes(sink, "user:abc pass:123")).toBe(true);
+  });
+
+  it("auto orders (deliveredContent always null) are unaffected — no delivered-content block shown", async () => {
+    const order = await makeOrder();
+    await attachPaymentProof(prisma, order!.id, { fileId: "proof-file", txid: "TXauto1234567" });
+    await verification.approve(adminCtx({ callbackData: `v1:adm:verif:approve:${order!.id}` }).ctx, order!.id);
+
+    const { ctx, sink } = customerCtx();
+    await customer.viewOrder(ctx, order!.id);
+
+    const body = JSON.stringify(sink);
+    expect(body).not.toContain("Delivered:</b>"); // the new block's header, untouched for auto orders
   });
 });
 

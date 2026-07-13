@@ -79,6 +79,21 @@ export interface SearchPageData {
   low_threshold: number;
 }
 
+/** One admin-defined custom field on a manual_with_info denomination — JSON
+ * twin of AdditionalField (packages/core/src/deliveryFields.ts). Defined
+ * locally rather than cross-imported: the client mirrors server-side shapes
+ * elsewhere too (e.g. lib/format.ts mirrors packages/core/formatters), so
+ * this follows that established convention instead of taking @app/core as a
+ * runtime client dependency. */
+export interface AdditionalField {
+  key: string;
+  label: { id: string; en: string };
+  type: "text" | "email" | "number" | "url" | "select";
+  required: boolean;
+  options: string[];
+  placeholder: string;
+}
+
 /** A single denomination (plan/variant) on the product detail page — JSON twin
  * of the `denominations` entries productPageData() builds (apps/storefront/src/pageData.ts). */
 export interface ProductDenomination {
@@ -90,6 +105,12 @@ export interface ProductDenomination {
   available: number;
   in_stock: boolean;
   bulk: { min_quantity: number; discount_percent: string } | null;
+  /** "auto" | "manual" | "manual_with_info" (DeliveryType) — non-auto SKUs
+   * never have stock rows (available is always 0/in_stock always false by
+   * design), so purchasability is gated on this instead of on stock. */
+  delivery_type: string;
+  /** Parsed manual_with_info field spec — [] for auto/manual. */
+  additional_fields: AdditionalField[];
 }
 
 /** A masked-author review on the product detail page — `created_at_display`
@@ -130,6 +151,10 @@ export interface CartLineView {
   qty: number;
   line_total: string;
   available: number;
+  /** "auto" | "manual" | "manual_with_info" (DeliveryType) — non-auto lines
+   * have no stock concept, so `available` is always 0 for them (don't use it
+   * to render a stock warning on a non-auto line). */
+  delivery_type: string;
 }
 
 /** GET /api/v1/cart, and the fresh payload every cart mutation (add/update/remove)
@@ -144,8 +169,20 @@ export interface CartPageData {
  * The voucher-preview response only ever drives the totals card + method-enabled
  * flags — CheckoutPage keeps it in state separate from the payment-method radios,
  * mirroring the HTMX swap that only ever replaced #checkout-summary. */
+/** One cart line's delivery info for the checkout page — JSON twin of the
+ * `items` entries checkoutView() builds (apps/storefront/src/routes/checkout.ts).
+ * Given the single-SKU-per-non-auto-cart guard (routes/api.ts POST /cart), a
+ * non-auto cart's `items` always has exactly one entry. */
+export interface CheckoutItem {
+  denomination_id: number;
+  delivery_type: string;
+  additional_fields: AdditionalField[];
+  qty: number;
+}
+
 export interface CheckoutData {
   items_empty: boolean;
+  items: CheckoutItem[];
   subtotal: string;
   bulk_discount: string;
   voucher_discount: string;
@@ -286,7 +323,13 @@ export interface OrderDetailItem {
   credentials: string | null;
 }
 
-/** GET /api/v1/account/orders/:code — order_detail.njk. */
+/** GET /api/v1/account/orders/:code — order_detail.njk, extended (Task 10)
+ * with the manual_with_info field spec + the buyer's current answers, and
+ * `delivered_content` for a manually-fulfilled order's typed-in account.
+ * `customer_data_fields`/`delivered_content` follow the same
+ * single-denomination assumption the checkout info step and the admin order
+ * route already make — [] / null for auto/manual orders (no manual_with_info
+ * fields), so the client renders nothing extra for them. */
 export interface OrderDetailData {
   order: {
     code: string;
@@ -296,10 +339,22 @@ export interface OrderDetailData {
     bulk_discount: string;
     total: string;
     created_at_display: string;
+    /** Parsed manual_with_info field spec — [] for auto/manual orders. */
+    customer_data_fields: AdditionalField[];
+    /** One answer-map per unit, matching `items.length` — [] when
+     * customer_data_fields is []. */
+    customer_data: Array<Record<string, string>>;
+    /** The admin-typed account for a manually-fulfilled order — null until
+     * DELIVERED, and always null for auto orders (which use per-item
+     * `credentials` instead). */
+    delivered_content: string | null;
     items: OrderDetailItem[];
   };
   delivered: boolean;
   pending_payment: boolean;
+  /** True while the order awaits hand fulfilment — gates the reassurance
+   * card, the polling interval, and whether the info-edit form is enabled. */
+  processing: boolean;
 }
 
 /** GET /api/v1/account/referral — referral.njk. `referral_link` is null when

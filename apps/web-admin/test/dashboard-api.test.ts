@@ -84,6 +84,20 @@ describe("GET /api/dashboard/operations", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ pendingPayments: 1, ordersProcessing: 1 });
   });
+
+  // awaitingFulfillment (new manual-fulfilment queue, status PROCESSING) is
+  // deliberately distinct from ordersProcessing (the pre-existing
+  // CONFIRMED/PAID payment-gateway metric asserted above) — both must be
+  // reported side by side without colliding.
+  it("reports awaitingFulfillment (PROCESSING) separately from the unrelated ordersProcessing (CONFIRMED/PAID)", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 42, username: "buyer", fullName: "Buyer" });
+    await prisma.order.create({ data: { orderCode: "ORD-await", userId: buyer.id, subtotalAmount: "1", totalAmount: "1", status: "PROCESSING" } });
+    await prisma.order.create({ data: { orderCode: "ORD-proc", userId: buyer.id, subtotalAmount: "1", totalAmount: "1", status: "PAID" } });
+
+    const res = await get("/api/dashboard/operations", cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ awaitingFulfillment: 1, ordersProcessing: 1 });
+  });
 });
 
 describe("GET /api/dashboard/inventory", () => {

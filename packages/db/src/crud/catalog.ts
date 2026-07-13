@@ -14,7 +14,7 @@
  * migrated to the Category/Product/Denomination names directly.
  */
 import { config } from "@app/core/config";
-import { OrderStatus, ProductType, StockStatus } from "@app/core/enums";
+import { DeliveryType, OrderStatus, ProductType, StockStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
@@ -251,6 +251,8 @@ export async function createDenomination(
     webImageUrl?: string | null;
     sortOrder?: number;
     isActive?: boolean;
+    deliveryType?: string;
+    additionalFields?: string | null;
   },
 ) {
   const slug = await ensureUniqueSlug(db, "denomination", args.name);
@@ -271,6 +273,8 @@ export async function createDenomination(
       webImageUrl: args.webImageUrl ?? null,
       sortOrder: args.sortOrder ?? 0,
       isActive: args.isActive ?? true,
+      ...(args.deliveryType !== undefined ? { deliveryType: args.deliveryType } : {}),
+      ...(args.additionalFields !== undefined ? { additionalFields: args.additionalFields } : {}),
     },
   });
 }
@@ -356,7 +360,9 @@ export async function lowStockDenominations(
   db: Db,
   threshold: number,
 ): Promise<Array<{ denomination: Denomination; available: number }>> {
-  const denoms = await db.denomination.findMany({ where: { isActive: true } });
+  const denoms = await db.denomination.findMany({
+    where: { isActive: true, deliveryType: DeliveryType.AUTO },
+  });
   const counts = await db.stockItem.groupBy({
     by: ["productId"],
     where: { status: StockStatus.AVAILABLE },

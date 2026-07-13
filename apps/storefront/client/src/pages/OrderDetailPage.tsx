@@ -8,27 +8,92 @@
  * string). Markup/classes copied verbatim apart from the mechanical
  * Tailwind v3→v4 renames (docs/REACT_STOREFRONT_MIGRATION.md): `!text-2xl`
  * → `text-2xl!`, `!text-sm` → `text-sm!`.
+ *
+ * Task 10 additions (the storefront twin of the bot's
+ * editCustomerInfoConversation, Task 9):
+ *  - Polls every 5s ONLY while the order is PROCESSING (function-form
+ *    refetchInterval, PayPage's polling precedent) + a manual Refresh button
+ *    — belt-and-suspenders, matching the bot's automatic-and-on-demand UX.
+ *  - A PROCESSING reassurance card (payment received, being hand-prepared,
+ *    deliberately no SLA/ETA number — matches Task 4's DM and Task 9's bot
+ *    screen).
+ *  - For a manual_with_info order, the buyer's submitted answers are shown
+ *    read-only, with an Edit control enabled only while PROCESSING (locked
+ *    once DELIVERED). The edit form reuses DeliveryFieldInput (shared with
+ *    CheckoutPage's info-collection step) and lib/deliveryFields.ts's
+ *    client-side validation. The server (updateOrderCustomerData) is the
+ *    final authority — a ValidationError response (including the mid-edit
+ *    race, error.order_not_processing, if the order left PROCESSING while
+ *    the buyer was editing) shows the translated error and refetches so the
+ *    buyer sees the server's real current state; the race case additionally
+ *    exits edit mode since editing is now locked. The buyer's in-progress
+ *    typing is never silently discarded — `answers` is local state, seeded
+ *    only when Edit is first tapped, so a refetch never clobbers it.
+ *  - For a manually-fulfilled DELIVERED order, `delivered_content` renders in
+ *    its own titled, copyable block (same copy-to-clipboard shape as the
+ *    credentials block below it, but visually and textually distinct so it
+ *    doesn't read as stock credentials).
  */
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import { BadgeCheck, Copy, Wallet } from "lucide-react";
-import { apiGet } from "../api/client";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { AlertTriangle, BadgeCheck, Clock, Copy, Pencil, RefreshCw, Wallet } from "lucide-react";
+import { apiGet, apiPatch } from "../api/client";
 import type { OrderDetailData } from "../api/types";
 import { useShopContext } from "../components/Layout";
-import { t } from "../lib/i18n";
+import { t, currentLang } from "../lib/i18n";
 import { formatIdr } from "../lib/format";
+import { allFieldsValid } from "../lib/deliveryFields";
 import Price from "../components/shop/Price";
 import StatusBadge from "../components/shop/StatusBadge";
+import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
 import ErrorPage from "./ErrorPage";
+
+/** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
+ * submitting button while its mutation is pending (in addition to disabling
+ * the button itself). Same helper as CheckoutPage.tsx/PayPage.tsx. */
+function Spinner() {
+  return (
+    <span className="inline-block w-3.5 h-3.5 mr-1.5 align-[-2px] rounded-full border-2 border-current border-r-transparent animate-spin" />
+  );
+}
 
 export default function OrderDetailPage() {
   const { code = "" } = useParams<{ code: string }>();
   const { data: ctx } = useShopContext();
-  const { data, error } = useQuery({
+  const { data, error, refetch, isFetching } = useQuery({
     queryKey: ["account-order", code],
     queryFn: () => apiGet<OrderDetailData>(`/api/v1/account/orders/${code}`),
     retry: false,
+    // Poll only while awaiting hand fulfilment — off for every other status
+    // (PayPage's 5s-poll precedent, function-form so it re-evaluates the
+    // LATEST fetched status on every tick instead of freezing at mount time).
+    refetchInterval: (query) => (query.state.data?.order.status === "PROCESSING" ? 5000 : false),
+  });
+
+  const [editMode, setEditMode] = useState(false);
+  const [answers, setAnswers] = useState<Array<Record<string, string>>>([]);
+  const [infoErrorKey, setInfoErrorKey] = useState<string | null>(null);
+
+  const infoMutation = useMutation({
+    mutationFn: (customerData: Array<Record<string, string>>) =>
+      apiPatch<{ ok: boolean }>(`/api/v1/account/orders/${code}/info`, { customer_data: customerData }),
+    onSuccess: () => {
+      setEditMode(false);
+      setInfoErrorKey(null);
+      void refetch();
+    },
+    onError: (err) => {
+      const key = (err as Error).message;
+      setInfoErrorKey(key);
+      void refetch();
+      // The mid-edit race: the order left PROCESSING while the buyer was
+      // editing (e.g. an admin fulfilled it). Editing is now locked — exit
+      // the form instead of leaving a dead Save button behind. Any other
+      // (unlikely, since the client already validates) field error re-prompts
+      // in place so the buyer can fix it without losing their other answers.
+      if (key === "error.order_not_processing") setEditMode(false);
+    },
   });
 
   useEffect(() => {
@@ -43,9 +108,33 @@ export default function OrderDetailPage() {
   }
   if (!data) return null;
 
-  const { order, delivered, pending_payment: pendingPayment } = data;
+  const { order, delivered, pending_payment: pendingPayment, processing } = data;
   const showBulk = Boolean(order.bulk_discount) && order.bulk_discount !== "0";
   const showVoucher = Boolean(order.discount) && order.discount !== "0";
+  const qty = order.items.length;
+  const fields = order.customer_data_fields;
+
+  function startEdit(): void {
+    setAnswers(Array.from({ length: qty }, (_, unitIdx) => ({ ...(order.customer_data[unitIdx] ?? {}) })));
+    setInfoErrorKey(null);
+    setEditMode(true);
+  }
+
+  function cancelEdit(): void {
+    setEditMode(false);
+    setInfoErrorKey(null);
+  }
+
+  function setAnswer(unitIdx: number, key: string, value: string): void {
+    setAnswers((prev) => {
+      const next = prev.slice();
+      next[unitIdx] = { ...next[unitIdx], [key]: value };
+      return next;
+    });
+  }
+
+  const infoValid = allFieldsValid(fields, answers, qty);
+  const lang = currentLang();
 
   return (
     <>
@@ -72,6 +161,21 @@ export default function OrderDetailPage() {
           <Link to={`/checkout/${order.code}/pay`} className="btn btn-primary">
             <Wallet className="w-4 h-4" /> {t("web.pay_now")}
           </Link>
+        </div>
+      )}
+
+      {processing && (
+        <div className="card card-pad mb-5 flex items-center justify-between gap-3 flex-wrap bg-pine-tint/40">
+          <div className="flex items-start gap-3">
+            <Clock className="w-5 h-5 text-pine mt-0.5 shrink-0" />
+            <div>
+              <div className="text-sm font-semibold text-ink">{t("web.order_processing_title")}</div>
+              <div className="text-xs text-ink-soft mt-0.5">{t("web.order_processing_body")}</div>
+            </div>
+          </div>
+          <button type="button" className="btn btn-soft btn-sm" disabled={isFetching} onClick={() => void refetch()}>
+            <RefreshCw className={`w-3.5 h-3.5 ${isFetching ? "animate-spin" : ""}`} /> {t("web.order_refresh")}
+          </button>
         </div>
       )}
 
@@ -120,8 +224,93 @@ export default function OrderDetailPage() {
         </div>
       </div>
 
+      {fields.length > 0 && (
+        <section className="card card-pad mb-5">
+          <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
+            <h2 className="section-title">{t("web.order_info_title")}</h2>
+            {processing && !editMode && (
+              <button type="button" className="btn btn-soft btn-sm" onClick={startEdit}>
+                <Pencil className="w-3.5 h-3.5" /> {t("web.order_info_edit_btn")}
+              </button>
+            )}
+          </div>
+
+          {infoErrorKey && (
+            <div className="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mt-3">
+              <AlertTriangle className="w-4 h-4" /> {t(infoErrorKey)}
+            </div>
+          )}
+
+          {editMode ? (
+            <>
+              <div className="space-y-5 mt-3">
+                {Array.from({ length: qty }, (_, unitIdx) => (
+                  <div key={unitIdx} className={qty > 1 ? "border border-line rounded-xl p-3" : ""}>
+                    {qty > 1 && (
+                      <div className="text-xs font-semibold text-ink-soft mb-2">
+                        {t("web.checkout_info_unit", { unit: unitIdx + 1, total: qty })}
+                      </div>
+                    )}
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {fields.map((field) => (
+                        <DeliveryFieldInput
+                          key={field.key}
+                          field={field}
+                          inputId={`edit-info-${unitIdx}-${field.key}`}
+                          value={answers[unitIdx]?.[field.key] ?? ""}
+                          onChange={(value) => setAnswer(unitIdx, field.key, value)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="flex gap-2 mt-4">
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  disabled={!infoValid || infoMutation.isPending}
+                  onClick={() => infoMutation.mutate(answers)}
+                >
+                  {infoMutation.isPending && <Spinner />}
+                  {t("web.order_info_save_btn")}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  disabled={infoMutation.isPending}
+                  onClick={cancelEdit}
+                >
+                  {t("web.order_info_cancel_btn")}
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="mt-3 space-y-3 text-sm">
+              {order.customer_data.map((unitAnswers, unitIdx) => (
+                <div key={unitIdx}>
+                  {qty > 1 && (
+                    <div className="text-xs font-semibold text-ink-soft mb-1">
+                      {t("web.checkout_info_unit", { unit: unitIdx + 1, total: qty })}
+                    </div>
+                  )}
+                  <dl className="space-y-1">
+                    {fields.map((field) => (
+                      <div key={field.key} className="flex justify-between gap-3">
+                        <dt className="text-ink-soft">{lang === "id" ? field.label.id : field.label.en}</dt>
+                        <dd className="font-medium text-right">{unitAnswers[field.key] ?? ""}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       {delivered && (
-        <section className="card card-pad border-grass/40">
+        <section className="card card-pad border-grass/40 mb-5">
           <h2 className="section-title flex items-center gap-2">
             <BadgeCheck className="w-5 h-5 text-grass" /> {t("web.credentials")}
           </h2>
@@ -142,6 +331,27 @@ export default function OrderDetailPage() {
                   </div>
                 ),
             )}
+          </div>
+        </section>
+      )}
+
+      {delivered && order.delivered_content && (
+        <section className="card card-pad border-grass/40">
+          <h2 className="section-title flex items-center gap-2">
+            <BadgeCheck className="w-5 h-5 text-grass" /> {t("web.delivered_content_title")}
+          </h2>
+          <p className="text-xs text-ink-faint mt-1">{t("web.delivered_content_hint")}</p>
+          <div className="mt-3 flex items-center gap-2">
+            <code className="codeish flex-1 text-sm! break-all whitespace-pre-wrap select-all">
+              {order.delivered_content}
+            </code>
+            <button
+              type="button"
+              className="btn btn-soft btn-sm"
+              onClick={() => navigator.clipboard.writeText(order.delivered_content ?? "")}
+            >
+              <Copy className="w-3.5 h-3.5" /> {t("web.copy")}
+            </button>
           </div>
         </section>
       )}

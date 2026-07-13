@@ -16,6 +16,7 @@ const STATUS_LABELS: Record<string, string> = {
   matched: "Matched",
   pending_verification: "Awaiting check",
   reserved: "Reserved",
+  processing: "Being prepared",
   open: "Open",
   replied: "Replied",
   pending: "Waiting",
@@ -31,7 +32,7 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const GRASS = new Set(["delivered", "paid", "available", "active", "closed", "sent", "matched", "credited_to_balance"]);
-const AMBER = new Set(["pending_verification", "reserved", "open", "replied", "pending", "underpaid"]);
+const AMBER = new Set(["pending_verification", "reserved", "open", "replied", "pending", "underpaid", "processing"]);
 const PINE = new Set(["pending_payment"]);
 const RUST = new Set(["cancelled", "rejected", "refunded", "dead", "failed", "unmatched"]);
 

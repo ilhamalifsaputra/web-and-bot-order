@@ -19,6 +19,7 @@ import {
   countUnderpaid,
   countPendingPaymentLike,
   countProcessing,
+  countAwaitingManualFulfillment,
   countExpiredPending,
   lowStockDenominations,
   listOrderItemsExpiringWarranty,
@@ -93,19 +94,22 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
 
   app.get("/api/dashboard/operations", { preHandler: currentAdmin }, async () => {
     const now = new Date();
-    const [pendingPayments, manualReviews, manualQueue, ordersProcessing, expiredPayments] = await Promise.all([
-      countPendingPaymentLike(prisma),
-      countPendingVerifications(prisma),
-      manualMatchQueueCounts(prisma),
-      countProcessing(prisma),
-      countExpiredPending(prisma, now),
-    ]);
+    const [pendingPayments, manualReviews, manualQueue, ordersProcessing, expiredPayments, awaitingFulfillment] =
+      await Promise.all([
+        countPendingPaymentLike(prisma),
+        countPendingVerifications(prisma),
+        manualMatchQueueCounts(prisma),
+        countProcessing(prisma),
+        countExpiredPending(prisma, now),
+        countAwaitingManualFulfillment(prisma),
+      ]);
     return {
       pendingPayments,
       manualReviews,
       failedDeliveries: manualQueue.deliveryFailed,
       ordersProcessing,
       expiredPayments,
+      awaitingFulfillment,
     };
   });
 

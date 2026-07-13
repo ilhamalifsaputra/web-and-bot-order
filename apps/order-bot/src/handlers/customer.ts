@@ -12,7 +12,8 @@ import { config } from "@app/core/config";
 import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ensureUtc, localize } from "@app/core/datetime";
-import { UserRole, OrderStatus, PaymentMethod, TicketStatus, SenderType } from "@app/core/enums";
+import { UserRole, OrderStatus, PaymentMethod, TicketStatus, SenderType, DeliveryType, customerStatusLabel } from "@app/core/enums";
+import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
 import {
   prisma,
@@ -774,6 +775,42 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
   ) {
     await smartEdit(ctx, renderBybitBscTrackingScreen(order, lang), ckb.bybitBscTrackingKb(order, lang));
     return;
+  } else if (order.status === OrderStatus.PROCESSING) {
+    // Payment received for a manual/manual_with_info SKU — awaiting hand
+    // fulfilment. Deliberately no ETA/SLA promise (matches the outbox
+    // dispatcher's ORDER_PROCESSING_DM wording, Task 4). Uses the translated
+    // customerStatusLabel here (NOT statusBadge, which stays English-derived
+    // everywhere else in this file) as a deliberate upgrade for this one branch.
+    text = t(ctx, "order.detail", {
+      code: order.orderCode,
+      status: t(ctx, customerStatusLabel(order.status)),
+      total: orderAmount(order),
+      created: ensureUtc(order.createdAt).toFormat("yyyy-LL-dd HH:mm 'UTC'"),
+      lines: itemLines.join("\n"),
+    });
+    text += `\n\n${t(ctx, "order.processing_reassurance")}`;
+
+    if (order.items[0]?.product.deliveryType === DeliveryType.MANUAL_WITH_INFO) {
+      const fields = parseAdditionalFields(order.items[0]?.product.additionalFields ?? null);
+      const answers = parseCustomerData(order.customerData);
+      if (fields.length && answers.length) {
+        const qty = order.items.length;
+        const infoLines = answers
+          .map((unitAnswers, unitIdx) =>
+            fields
+              .map((f) => {
+                const label = esc((f.label as Record<string, string>)[lang] ?? f.label.en);
+                const value = esc(unitAnswers[f.key] ?? "");
+                return qty > 1
+                  ? t(ctx, "order.processing_info_unit_line", { unit: unitIdx + 1, label, value })
+                  : t(ctx, "order.processing_info_line", { label, value });
+              })
+              .join("\n"),
+          )
+          .join("\n");
+        text += `\n\n${t(ctx, "order.processing_info_header")}\n${infoLines}`;
+      }
+    }
   } else {
     let credentialsBlock = "";
     if (order.status === OrderStatus.DELIVERED) {
@@ -793,6 +830,14 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
           .join("\n\n");
         credentialsBlock = `\n\n${t(ctx, "order.detail_credentials", { credentials: blocks })}`;
       }
+      // Manual/manual_with_info delivery — stockItem.credentials is always
+      // empty (manual SKUs never reserve stock), so the block above never
+      // fires for them. deliveredContent carries the admin-typed account
+      // instead (fulfillManualOrder, Task 2). Auto orders never set this
+      // field, so this is a no-op for every non-manual order.
+      if (order.deliveredContent) {
+        credentialsBlock += `\n\n${t(ctx, "order.detail_delivered_content", { content: `<pre>${esc(order.deliveredContent)}</pre>` })}`;
+      }
     }
     text =
       t(ctx, "order.detail", {
@@ -804,6 +849,40 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
       }) + credentialsBlock;
   }
   await smartEdit(ctx, text, ckb.orderDetailKb(order, lang));
+}
+
+/**
+ * Refresh Status button on a PROCESSING order's detail screen (order:refresh —
+ * distinct from checkout:refresh's payment-status reconcile). Re-renders the
+ * bubble from a fresh DB read via viewOrder itself (already no-op-safe on an
+ * identical render, chat.ts's smartEdit), then compares status before/after to
+ * decide the toast: "no update yet" when nothing changed, a plain ack otherwise
+ * (viewOrder's own re-render already shows whatever DID change). Two extra
+ * reads on a user-initiated, low-frequency tap is an acceptable cost.
+ *
+ * The before/after probe checks ownership the same way viewOrder does — a
+ * crafted v1:order:refresh:<foreign-order-id> callback must not be able to
+ * infer whether a non-owned order's status just changed. When the order
+ * doesn't exist or isn't owned by the caller, skip the comparison entirely
+ * and let viewOrder render its own error.order_not_found screen; the callback
+ * still gets answered (a plain ack, not the no-update toast).
+ */
+export async function refreshOrderDetail(ctx: MyContext, orderId: number): Promise<void> {
+  const info = requireUser(ctx);
+  const beforeRaw = await getOrder(prisma, orderId);
+  const before = beforeRaw && beforeRaw.userId === info.id ? beforeRaw : null;
+  await viewOrder(ctx, orderId);
+  if (!before) {
+    await ctx.answerCallbackQuery();
+    return;
+  }
+  const afterRaw = await getOrder(prisma, orderId);
+  const after = afterRaw && afterRaw.userId === info.id ? afterRaw : null;
+  if (after && before.status === after.status) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "order.no_update_toast") });
+  } else {
+    await ctx.answerCallbackQuery();
+  }
 }
 
 // Removed: per-order review, replacement, and the old delivered-only history

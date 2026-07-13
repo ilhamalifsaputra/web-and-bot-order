@@ -11,8 +11,10 @@ import {
   deleteSetting,
   createCatalogProduct,
   createDenomination,
+  updateDenomination,
   getOrderByCode,
 } from "@app/db";
+import { DeliveryType } from "@app/core/enums";
 import { buildApp } from "../src/server";
 
 async function seedProduct(
@@ -299,6 +301,133 @@ describe("POST /api/v1/cart", () => {
       expect(body.items[0]).toMatchObject({ denomination_id: denomId, qty: 3 });
       expect(body.subtotal).toBe("120000");
     });
+  });
+});
+
+// Design decision (Task 6 brief): a non-auto cart is single-SKU-only — the
+// storefront enforces a stricter rule than "auto vs manual" alone, because
+// Order.customerData assumes one denomination's field spec applies to the
+// whole order (the bot only ever orders one denomination at a time). A cart
+// with any manual/manual_with_info line may hold ONLY that one line (any
+// qty); adding a second, different line — auto or not — is rejected.
+describe("POST /api/v1/cart — cart guard (single-SKU-per-non-auto-cart)", () => {
+  let manualDenomId: number;
+  let manualDenomId2: number;
+
+  beforeAll(async () => {
+    const { members } = await seedProduct(categoryId, "Manual Product", [{ name: "Manual Denom", price: "10000" }]);
+    manualDenomId = members[0]!.id;
+    await updateDenomination(prisma, manualDenomId, { deliveryType: DeliveryType.MANUAL });
+
+    const { members: members2 } = await seedProduct(categoryId, "Manual Product 2", [{ name: "Manual Denom 2", price: "20000" }]);
+    manualDenomId2 = members2[0]!.id;
+    await updateDenomination(prisma, manualDenomId2, { deliveryType: DeliveryType.MANUAL_WITH_INFO });
+  });
+
+  it("guest: adding a manual line to a cart that already has an auto line is rejected", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: denomId, qty: 1 } });
+    const cookie = (Array.isArray(add.headers["set-cookie"]) ? add.headers["set-cookie"] : [String(add.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie },
+      payload: { denomination_id: manualDenomId, qty: 1 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.cart_mixed_delivery" });
+  });
+
+  it("guest: adding an auto line to a cart that already has a manual line is rejected", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: manualDenomId, qty: 1 } });
+    const cookie = (Array.isArray(add.headers["set-cookie"]) ? add.headers["set-cookie"] : [String(add.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie },
+      payload: { denomination_id: denomId, qty: 1 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.cart_mixed_delivery" });
+  });
+
+  it("guest: adding a second, different manual/manual_with_info line is rejected", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: manualDenomId, qty: 1 } });
+    const cookie = (Array.isArray(add.headers["set-cookie"]) ? add.headers["set-cookie"] : [String(add.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie },
+      payload: { denomination_id: manualDenomId2, qty: 1 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.cart_mixed_delivery" });
+  });
+
+  it("guest: re-adding the SAME manual denomination increments qty normally (not rejected)", async () => {
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: manualDenomId, qty: 1 } });
+    const cookie = (Array.isArray(add.headers["set-cookie"]) ? add.headers["set-cookie"] : [String(add.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie },
+      payload: { denomination_id: manualDenomId, qty: 2 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items).toHaveLength(1);
+    expect(res.json().items[0]).toMatchObject({ denomination_id: manualDenomId, qty: 3 });
+  });
+
+  it("an auto-only cart stays unrestricted (multiple different auto lines allowed)", async () => {
+    const { members } = await seedProduct(categoryId, "Second Auto Product", [{ name: "Auto Denom 2", price: "15000" }]);
+    const secondAutoId = members[0]!.id;
+    const add = await app.inject({ method: "POST", url: "/api/v1/cart", payload: { denomination_id: denomId, qty: 1 } });
+    const cookie = (Array.isArray(add.headers["set-cookie"]) ? add.headers["set-cookie"] : [String(add.headers["set-cookie"])])
+      .map((c) => c.split(";")[0])
+      .join("; ");
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie },
+      payload: { denomination_id: secondAutoId, qty: 1 },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items).toHaveLength(2);
+  });
+
+  it("signed-in customer: same guard applies (mixed delivery rejected)", async () => {
+    const { hashPassword } = await import("@app/core/password");
+    await prisma.user.create({
+      data: {
+        loginUsername: "cartguarduser",
+        email: "cartguard@u.test",
+        passwordHash: hashPassword("cartguard-pw-99"),
+        referralCode: "CARTGRD",
+      },
+    });
+    const session = await loginAs("cartguarduser", "cartguard-pw-99");
+    const add = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie: session.cookie, "x-csrf-token": session.csrf },
+      payload: { denomination_id: manualDenomId, qty: 1 },
+    });
+    expect(add.statusCode).toBe(200);
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/cart",
+      headers: { cookie: session.cookie, "x-csrf-token": session.csrf },
+      payload: { denomination_id: denomId, qty: 1 },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.cart_mixed_delivery" });
   });
 });
 

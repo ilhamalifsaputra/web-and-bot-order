@@ -18,6 +18,10 @@ const CARDS: OpCardDef[] = [
   { key: "ordersProcessing", label: "Orders Processing", href: "/orders?status=PAID" },
   // No orders-page filter isolates expired payments, so this card is a non-clickable counter.
   { key: "expiredPayments", label: "Expired Payments", href: null },
+  // Manual/manual_with_info orders paid and waiting on an admin to hand-type
+  // and send the account — distinct from "Orders Processing" above (the
+  // unrelated legacy CONFIRMED/PAID payment-gateway metric).
+  { key: "awaitingFulfillment", label: "Awaiting Fulfillment", href: "/orders?status=PROCESSING" },
 ];
 
 function level(count: number, critical?: boolean): "ok" | "warn" | "critical" | "idle" {

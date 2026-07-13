@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/select";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiGet, apiPost } from "../api/client";
+import { describeError } from "../lib/errorMessages";
 
 interface TxRow {
   id: number;
@@ -163,31 +164,31 @@ export function PaymentsPage() {
       setMatchForm({ binance_tx_id: "", order_code: "" });
       setMatchError(null);
     },
-    onError: (e: Error) => setMatchError(e.message),
+    onError: (e: Error) => setMatchError(describeError(e.message)),
   });
 
   const dismiss = useMutation({
     mutationFn: (txId: string) => apiPost("/api/payments/dismiss", { binance_tx_id: txId }),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["payments"] }); },
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => alert(describeError(e.message)),
   });
 
   const deliverAnyway = useMutation({
     mutationFn: (orderId: number) => apiPost(`/api/payments/order/${orderId}/deliver`, {}),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["payments"] }); },
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => alert(describeError(e.message)),
   });
 
   const refundUnderpaid = useMutation({
     mutationFn: (orderId: number) => apiPost(`/api/payments/order/${orderId}/refund`, {}),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["payments"] }); },
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => alert(describeError(e.message)),
   });
 
   const cancelUnderpaid = useMutation({
     mutationFn: (orderId: number) => apiPost(`/api/payments/order/${orderId}/cancel`, {}),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ["payments"] }); },
-    onError: (e: Error) => alert(e.message),
+    onError: (e: Error) => alert(describeError(e.message)),
   });
 
   if (isError) return <PageLayout title="Payments"><p className="text-sm text-rust">Failed to load payments.</p></PageLayout>;

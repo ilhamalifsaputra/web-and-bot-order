@@ -15,7 +15,7 @@ import { ValidationError } from "@app/core/errors";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
-import { getOrder, createOrderDirect, approveOrder, applyUsdtWalletToOrder } from "./orders";
+import { getOrder, createOrderDirect, approveOrder, settlePaidOrder, applyUsdtWalletToOrder, type SettleResult } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { adjustWallet } from "./users";
 import { getSetting, setSetting } from "./settings";
@@ -110,6 +110,9 @@ export async function createInternalOrder(
     rate: Decimal.Value;
     /** Optional USDT credit balance to spend on this order (clamped to total). */
     walletAmount?: Decimal.Value;
+    /** Stringified JSON of the buyer's manual_with_info answers (validated by
+     * the caller). Forwarded verbatim to createOrderDirect; null otherwise. */
+    customerData?: string | null;
   },
 ) {
   const { walletAmount, rate, ...baseArgs } = args;
@@ -167,6 +170,7 @@ export function listPendingInternalOrders(db: Db, now: Date) {
 
 export type DeliverResult =
   | { status: "delivered"; order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }
+  | { status: "processing"; order: NonNullable<Awaited<ReturnType<typeof getOrder>>> }
   | { status: "already_processed" }
   | { status: "stale" };
 
@@ -208,9 +212,13 @@ export async function deliverPaidInternalOrder(
         to: OrderStatus.PENDING_VERIFICATION,
         meta: `binanceTxId=${args.binanceTxId}`,
       });
-      const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: 0 });
-      logger.info(`Auto-delivered internal-transfer order ${delivered.orderCode} for Binance transaction ${args.binanceTxId}`);
-      return { status: "delivered" as const, order: delivered, credentials };
+      const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
+      if (result.kind === "delivered") {
+        logger.info(`Auto-delivered internal-transfer order ${result.order.orderCode} for Binance transaction ${args.binanceTxId}`);
+        return { status: "delivered" as const, order: result.order, credentials: result.credentials };
+      }
+      logger.info(`Internal-transfer order ${result.order.orderCode} paid — queued for manual fulfilment (Binance transaction ${args.binanceTxId})`);
+      return { status: "processing" as const, order: result.order };
     }, { timeout: 15000 });
   } catch (e) {
     await db.processedBinanceTx
@@ -351,6 +359,14 @@ export async function deliverUnderpaidOrder(
       to: OrderStatus.PENDING_VERIFICATION,
       meta: `deliver_underpaid_anyway by admin_id=${args.adminId}`,
     });
+    // NOTE: a manual-delivery SKU CAN reach UNDERPAID (markUnderpaid triggers
+    // purely on received-amount vs order-total, independent of deliveryType)
+    // — but this path deliberately stays on approveOrder, not settlePaidOrder.
+    // For a manual SKU that means approveOrder's stock-allocation step throws
+    // error.cannot_deliver_out_of_stock (no stock was ever reserved for it),
+    // failing closed: the admin sees a clear error and can refund instead of
+    // "delivering anyway." Accepted scope exclusion — see the per-SKU
+    // delivery flows plan — not a silent gap.
     const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: args.adminId });
     logger.info(`Underpaid order ${delivered.orderCode} delivered anyway by admin ${args.adminId} — operator absorbed the shortfall`);
     return { order: delivered, credentials };
@@ -408,7 +424,7 @@ export async function refundUnderpaidOrder(
 export async function manualMatchTx(
   db: PrismaClient,
   args: { binanceTxId: string; orderId: number; adminId: number },
-): Promise<{ order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credentials: string[] }> {
+): Promise<SettleResult> {
   return db.$transaction(async (tx: Tx) => {
     const ledger = await tx.processedBinanceTx.findUnique({ where: { binanceTxId: args.binanceTxId } });
     if (!ledger) throw new ValidationError("error.tx_not_found");
@@ -437,9 +453,9 @@ export async function manualMatchTx(
       to: OrderStatus.PENDING_VERIFICATION,
       meta: `manual_match binanceTxId=${args.binanceTxId} by admin_id=${args.adminId}`,
     });
-    const { order: delivered, credentials } = await approveOrder(tx, args.orderId, { adminId: args.adminId });
-    logger.info(`Manually matched Binance transaction ${args.binanceTxId} to order ${delivered.orderCode} by admin ${args.adminId}`);
-    return { order: delivered, credentials };
+    const result = await settlePaidOrder(tx, args.orderId, { adminId: args.adminId });
+    logger.info(`Manually matched Binance transaction ${args.binanceTxId} to order ${result.order.orderCode} by admin ${args.adminId}`);
+    return result;
   });
 }
 

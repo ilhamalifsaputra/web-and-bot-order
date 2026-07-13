@@ -28,8 +28,9 @@ import {
   logAdminAction,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
-import { ProductType } from "@app/core/enums";
+import { ProductType, DeliveryType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { zAdditionalFields } from "@app/core/deliveryFields";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { parseDenominationCsv, categoryNameMap, resolveOrCreateProduct } from "../../lib/catalogImport";
 
@@ -179,6 +180,23 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       warrantyDays = n;
     }
 
+    const deliveryType = typeof body.deliveryType === "string" ? body.deliveryType : DeliveryType.AUTO;
+    if (!Object.values(DeliveryType).includes(deliveryType as DeliveryType)) {
+      return reply.code(400).send({ error: "A valid delivery type is required." });
+    }
+
+    let additionalFields: string | null = null;
+    if (deliveryType === DeliveryType.MANUAL_WITH_INFO) {
+      const parsed = zAdditionalFields.safeParse(body.additionalFields);
+      if (!parsed.success || parsed.data.length === 0) {
+        return reply.code(400).send({ error: "At least one custom field is required for Manual + Info delivery." });
+      }
+      additionalFields = JSON.stringify(parsed.data);
+    }
+    // deliveryType !== MANUAL_WITH_INFO: additionalFields stays null even if the
+    // client sent something (e.g. leftover state from switching away from
+    // Manual + Info in the form) — the delivery type is the source of truth.
+
     const denom = await createDenomination(prisma, {
       productId,
       name,
@@ -189,6 +207,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       resellerPrice,
       warrantyDays,
       description: typeof body.description === "string" ? body.description.trim() || null : null,
+      deliveryType,
+      additionalFields,
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
@@ -353,6 +373,34 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       sortOrder = n;
     }
 
+    // deliveryType/additionalFields are only touched when the request actually
+    // provided a deliveryType, otherwise leave the existing values in place
+    // (matching updateDenomination's partial-update semantics, same as
+    // warrantyDays/sortOrder above).
+    let deliveryType: DeliveryType | undefined;
+    let additionalFields: string | null | undefined;
+    if (body.deliveryType != null && body.deliveryType !== "") {
+      const dt = typeof body.deliveryType === "string" ? body.deliveryType : "";
+      if (!Object.values(DeliveryType).includes(dt as DeliveryType)) {
+        return reply.code(400).send({ error: "A valid delivery type is required." });
+      }
+      deliveryType = dt as DeliveryType;
+
+      if (deliveryType === DeliveryType.MANUAL_WITH_INFO) {
+        const parsed = zAdditionalFields.safeParse(body.additionalFields);
+        if (!parsed.success || parsed.data.length === 0) {
+          return reply.code(400).send({ error: "At least one custom field is required for Manual + Info delivery." });
+        }
+        additionalFields = JSON.stringify(parsed.data);
+      } else {
+        // deliveryType !== MANUAL_WITH_INFO: additionalFields is cleared even if
+        // the client sent something (e.g. leftover state from switching away
+        // from Manual + Info in the form) — the delivery type is the source of
+        // truth.
+        additionalFields = null;
+      }
+    }
+
     // Re-parenting (moving this denomination to a different mid-tier Product)
     // is validated and applied FIRST, before any other field, so a rejected
     // cross-category move leaves every other field untouched too.
@@ -381,6 +429,8 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       ...(warrantyDays !== undefined ? { warrantyDays } : {}),
       ...(sortOrder !== undefined ? { sortOrder } : {}),
       description: typeof body.description === "string" ? body.description.trim() || null : null,
+      ...(deliveryType !== undefined ? { deliveryType } : {}),
+      ...(additionalFields !== undefined ? { additionalFields } : {}),
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,

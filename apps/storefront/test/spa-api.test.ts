@@ -45,8 +45,10 @@ import {
   createVoucher,
   addToCart,
   getOrderByCode,
+  updateDenomination,
 } from "@app/db";
-import { OrderStatus, VoucherType } from "@app/core/enums";
+import { DeliveryType, OrderStatus, VoucherType } from "@app/core/enums";
+import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { hashPassword } from "@app/core/password";
 import { buildApp } from "../src/server";
 
@@ -324,10 +326,40 @@ describe("GET /api/v1/pages/*", () => {
     expect(ok.statusCode).toBe(200);
     const body = ok.json();
     expect(body.product.slug).toBe(productSlug);
-    expect(body.denominations[0]).toMatchObject({ id: denomId, price: "40000", in_stock: true });
+    expect(body.denominations[0]).toMatchObject({ id: denomId, price: "40000", in_stock: true, delivery_type: "auto", additional_fields: [] });
     expect(body.default_restock_denomination_id).toBe(denomId);
     const miss = await app.inject({ method: "GET", url: "/api/v1/pages/product/nope" });
     expect(miss.statusCode).toBe(404);
+  });
+
+  // Bug A (Task 6): a manual_with_info denomination has no stock rows by
+  // design (Task 2 skips stock reservation for non-auto lines), so
+  // `available` is always 0 — the page payload must still carry
+  // delivery_type + the parsed field spec so the client can gate
+  // purchasability on delivery_type instead of stock (see ProductPage.tsx).
+  it("product exposes delivery_type + parsed additional_fields for a manual_with_info denomination", async () => {
+    const fields: AdditionalField[] = [
+      { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: AdditionalFieldType.TEXT, required: true, options: [], placeholder: "" },
+    ];
+    const product = await createCatalogProduct(prisma, { categoryId: (await prisma.category.findFirstOrThrow()).id, name: `Info Product ${Math.random()}` });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Info Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "50000",
+    });
+    await updateDenomination(prisma, denom.id, {
+      deliveryType: DeliveryType.MANUAL_WITH_INFO,
+      additionalFields: JSON.stringify(fields),
+    });
+
+    const res = await app.inject({ method: "GET", url: `/api/v1/pages/product/${product.slug}` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    const found = body.denominations.find((d: { id: number }) => d.id === denom.id);
+    expect(found).toMatchObject({ available: 0, in_stock: false, delivery_type: "manual_with_info" });
+    expect(found.additional_fields).toEqual(fields);
   });
 
   it("search returns matches for q", async () => {
@@ -543,7 +575,7 @@ describe("/api/v1/checkout + orders", () => {
       await setSetting(prisma, "usd_idr_rate", "16000");
     });
 
-    it("GET /checkout returns totals + method flags + wallet balances", async () => {
+    it("GET /checkout returns totals + method flags + wallet balances + per-item data", async () => {
       const res = await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie } });
       expect(res.statusCode).toBe(200);
       const body = res.json();
@@ -552,6 +584,11 @@ describe("/api/v1/checkout + orders", () => {
       expect(body.bybit_enabled).toBe(true);
       expect(body).toHaveProperty("wallet_idr");
       expect(body).toHaveProperty("wallet_usdt");
+      // Per-item data (Task 6): the SPA's checkout info-collection step needs
+      // delivery_type + the parsed field spec per cart line.
+      expect(body.items).toEqual([
+        { denomination_id: denomId, delivery_type: "auto", additional_fields: [], qty: 1 },
+      ]);
     });
 
     it("voucher preview: trio + unknown voucher key in error_key", async () => {
@@ -876,6 +913,127 @@ describe("checkout business rules (migrated from the Nunjucks checkout tests)", 
   });
 });
 
+// ---------------------------------------------------------------------------
+// Task 6: server-side revalidation of manual_with_info customer_data. The
+// client is never trusted — performCheckout re-validates against the
+// denomination's real field spec before persisting, exactly mirroring
+// validateCustomerData's contract (packages/core/src/deliveryFields.ts).
+// ---------------------------------------------------------------------------
+describe("POST /api/v1/checkout — manual_with_info customer_data revalidation", () => {
+  let buyerId: number;
+  let cookie: string;
+  let csrf: string;
+  let infoDenomId: number;
+  const fields: AdditionalField[] = [
+    { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: AdditionalFieldType.TEXT, required: true, options: [], placeholder: "" },
+  ];
+
+  beforeAll(async () => {
+    buyerId = await makeUser("infobuyer", "infobuyer-pw-1", "INFOBUY");
+    const session = await loginAs("infobuyer", "infobuyer-pw-1");
+    cookie = session.cookie;
+    csrf = session.csrf;
+
+    const cat = await prisma.category.findFirstOrThrow();
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: `Info Checkout Product ${Math.random()}` });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Info Checkout Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "25000",
+    });
+    infoDenomId = denom.id;
+    await updateDenomination(prisma, infoDenomId, {
+      deliveryType: DeliveryType.MANUAL_WITH_INFO,
+      additionalFields: JSON.stringify(fields),
+    });
+
+    await setSetting(prisma, "bybit_uid", "123456789");
+    await setSetting(prisma, "bybit_api_key", "k");
+    await setSetting(prisma, "bybit_api_secret", "s");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+  });
+
+  it("GET /checkout reports the manual_with_info item + its field spec", async () => {
+    await addToCart(prisma, buyerId, infoDenomId, 2);
+    const res = await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie } });
+    expect(res.json().items).toEqual([
+      { denomination_id: infoDenomId, delivery_type: "manual_with_info", additional_fields: fields, qty: 2 },
+    ]);
+  });
+
+  it("400s error.customer_data_incomplete when customer_data is missing entirely", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { method: "bybit" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.customer_data_incomplete" });
+    // No order was created on the rejected attempt.
+    expect(await prisma.order.count({ where: { userId: buyerId } })).toBe(0);
+  });
+
+  it("400s error.field_required when a unit's required field is blank", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { method: "bybit", customer_data: [{ game_id: "player1" }, { game_id: "" }] },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.field_required" });
+  });
+
+  it("201s and persists the validated, normalized customer_data onto the order", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { method: "bybit", customer_data: [{ game_id: "  player1  " }, { game_id: "player2" }] },
+    });
+    expect(res.statusCode).toBe(201);
+    const order = await getOrderByCode(prisma, res.json().order_code);
+    expect(JSON.parse(order!.customerData!)).toEqual([{ game_id: "player1" }, { game_id: "player2" }]);
+  });
+
+  // Final whole-branch review: POST /cart's homogeneity guard only fires on
+  // the add-to-cart call itself — a cart can still end up mixed via a path
+  // that bypasses that route entirely (the documented guest-cart-merge-on-
+  // login gap in routes/auth.ts's establishSession, or a theoretical two-tab
+  // race). performCheckout re-asserts homogeneity right before creating the
+  // order, so a mixed cart is rejected here regardless of how it got mixed —
+  // seed one directly via addToCart (bypassing the route guard on purpose,
+  // simulating exactly that scenario) rather than going through POST /cart.
+  it("400s error.cart_mixed_delivery when the cart is mixed via a path that bypassed the add-to-cart guard", async () => {
+    const cat = await prisma.category.findFirstOrThrow();
+    const autoProduct = await createCatalogProduct(prisma, { categoryId: cat.id, name: `Auto Mix Product ${Math.random()}` });
+    const autoDenom = await createDenomination(prisma, {
+      productId: autoProduct.id,
+      name: "Auto Mix Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+    });
+    await addToCart(prisma, buyerId, autoDenom.id, 1);
+    await addToCart(prisma, buyerId, infoDenomId, 1);
+    const ordersBefore = await prisma.order.count({ where: { userId: buyerId } });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { method: "bybit", customer_data: [{ game_id: "player1" }] },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.cart_mixed_delivery" });
+    // No order was created on the rejected attempt.
+    expect(await prisma.order.count({ where: { userId: buyerId } })).toBe(ordersBefore);
+  });
+});
+
 // ----------------------------------------------------------------- /account
 describe("/api/v1/account twins", () => {
   it("reads 401 anonymously", async () => {
@@ -1007,11 +1165,18 @@ describe("/api/v1/account twins", () => {
       expect(pending.statusCode).toBe(200);
       expect(pending.json().delivered).toBe(false);
       expect(pending.json().pending_payment).toBe(true);
+      expect(pending.json().processing).toBe(false);
       expect(pending.json().order.items[0].credentials).toBeNull();
+      // Task 10: an ordinary (auto-delivery) order has no manual_with_info
+      // fields and no admin-typed delivered_content.
+      expect(pending.json().order.customer_data_fields).toEqual([]);
+      expect(pending.json().order.customer_data).toEqual([]);
+      expect(pending.json().order.delivered_content).toBeNull();
 
       await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.DELIVERED } });
       const delivered = await app.inject({ method: "GET", url: `/api/v1/account/orders/${order.orderCode}`, headers: { cookie } });
       expect(delivered.json().delivered).toBe(true);
+      expect(delivered.json().processing).toBe(false);
       expect(delivered.json().order.items[0].credentials).toBe("acc-orderdetail@mail.com:pw");
 
       await makeUser("orderpeeker", "orderpeeker-pw1", "OPEEK1");
@@ -1178,5 +1343,158 @@ describe("/api/v1/account twins", () => {
       const staleCheck = await app.inject({ method: "GET", url: "/api/v1/account", headers: { cookie } });
       expect(staleCheck.statusCode).toBe(401);
     });
+  });
+});
+
+// Task 10: PROCESSING-stage order-detail UX — the storefront twin of the
+// bot's editCustomerInfoConversation (Task 9). Mirrors the "POST
+// /api/v1/checkout — manual_with_info customer_data revalidation" describe
+// above (own buyer + manual_with_info denom) rather than reusing the shared
+// top-level `denomId` (an ordinary auto-delivery SKU).
+describe("GET/PATCH /api/v1/account/orders/:code (Task 10: PROCESSING info edit + delivered_content)", () => {
+  let buyerId: number;
+  let cookie: string;
+  let csrf: string;
+  let infoDenomId: number;
+  const fields: AdditionalField[] = [
+    { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: AdditionalFieldType.TEXT, required: true, options: [], placeholder: "" },
+  ];
+
+  beforeAll(async () => {
+    buyerId = await makeUser("editinfobuyer", "editinfo-pw-1", "EDITINFO");
+    const session = await loginAs("editinfobuyer", "editinfo-pw-1");
+    cookie = session.cookie;
+    csrf = session.csrf;
+
+    const cat = await prisma.category.findFirstOrThrow();
+    const product = await createCatalogProduct(prisma, { categoryId: cat.id, name: `Edit Info Product ${Math.random()}` });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Edit Info Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "25000",
+    });
+    infoDenomId = denom.id;
+    await updateDenomination(prisma, infoDenomId, {
+      deliveryType: DeliveryType.MANUAL_WITH_INFO,
+      additionalFields: JSON.stringify(fields),
+    });
+  });
+
+  async function makeProcessingOrder(answers: Array<Record<string, string>>): Promise<string> {
+    const orderCode = `ORD-EDITINFO-${Math.random()}`;
+    const order = await prisma.order.create({
+      data: {
+        orderCode,
+        userId: buyerId,
+        subtotalAmount: "25000",
+        totalAmount: "25000",
+        status: OrderStatus.PROCESSING,
+        customerData: JSON.stringify(answers),
+      },
+    });
+    await prisma.orderItem.create({
+      data: { orderId: order.id, productId: infoDenomId, unitPrice: "25000", warrantyDaysSnapshot: 30 },
+    });
+    return orderCode;
+  }
+
+  it("GET reports processing:true, the field spec, and the buyer's current answers", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    const res = await app.inject({ method: "GET", url: `/api/v1/account/orders/${orderCode}`, headers: { cookie } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.processing).toBe(true);
+    expect(body.delivered).toBe(false);
+    expect(body.order.customer_data_fields).toEqual(fields);
+    expect(body.order.customer_data).toEqual([{ game_id: "player1" }]);
+    expect(body.order.delivered_content).toBeNull();
+  });
+
+  it("GET returns delivered_content once DELIVERED (manual fulfilment)", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    await prisma.order.update({
+      where: { orderCode },
+      data: { status: OrderStatus.DELIVERED, deliveredContent: "user: netflix1\npass: hunter2" },
+    });
+    const res = await app.inject({ method: "GET", url: `/api/v1/account/orders/${orderCode}`, headers: { cookie } });
+    expect(res.json().delivered).toBe(true);
+    expect(res.json().processing).toBe(false);
+    expect(res.json().order.delivered_content).toBe("user: netflix1\npass: hunter2");
+  });
+
+  it("PATCH info: anonymous 401s, wrong CSRF 403s", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    const anon = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/account/orders/${orderCode}/info`,
+      payload: { customer_data: [{ game_id: "new" }] },
+    });
+    expect(anon.statusCode).toBe(401);
+
+    const badCsrf = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/account/orders/${orderCode}/info`,
+      headers: { cookie, "x-csrf-token": "bad" },
+      payload: { customer_data: [{ game_id: "new" }] },
+    });
+    expect(badCsrf.statusCode).toBe(403);
+    expect(badCsrf.json()).toEqual({ error: "csrf_failed" });
+  });
+
+  it("PATCH info: another user's order 404s (never 403), and their answers stay untouched", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    await makeUser("editinfopeeker", "editinfopeeker-pw1", "EDITPEEK1");
+    const peeker = await loginAs("editinfopeeker", "editinfopeeker-pw1");
+    const probe = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/account/orders/${orderCode}/info`,
+      headers: { cookie: peeker.cookie, "x-csrf-token": peeker.csrf },
+      payload: { customer_data: [{ game_id: "hijacked" }] },
+    });
+    expect(probe.statusCode).toBe(404);
+    const check = await app.inject({ method: "GET", url: `/api/v1/account/orders/${orderCode}`, headers: { cookie } });
+    expect(check.json().order.customer_data).toEqual([{ game_id: "player1" }]);
+  });
+
+  it("PATCH info: bad customer_data shape 400s error.customer_data_incomplete", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/account/orders/${orderCode}/info`,
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.customer_data_incomplete" });
+  });
+
+  it("PATCH info: happy path persists the normalized answers, then GET reflects them", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/account/orders/${orderCode}/info`,
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { customer_data: [{ game_id: "  corrected-id  " }] },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+
+    const check = await app.inject({ method: "GET", url: `/api/v1/account/orders/${orderCode}`, headers: { cookie } });
+    expect(check.json().order.customer_data).toEqual([{ game_id: "corrected-id" }]);
+  });
+
+  it("PATCH info: the mid-edit race — an order that left PROCESSING 400s error.order_not_processing", async () => {
+    const orderCode = await makeProcessingOrder([{ game_id: "player1" }]);
+    await prisma.order.update({ where: { orderCode }, data: { status: OrderStatus.DELIVERED } });
+    const res = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/account/orders/${orderCode}/info`,
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { customer_data: [{ game_id: "too-late" }] },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "error.order_not_processing" });
   });
 });

@@ -133,6 +133,23 @@ describe("createBybitBscOrder", () => {
     expect(order!.expiresAt!.getTime()).toBeGreaterThan(Date.now());
   });
 
+  // Per-SKU delivery flows (dlv-task-5): createBybitBscOrder destructures
+  // walletAmount/rate off args and spreads the rest into createOrderDirect, so
+  // a manual_with_info checkout's collected answers must ride along untouched.
+  it("forwards customerData verbatim onto the created order", async () => {
+    const customerData = JSON.stringify([{ game_id: "GID-789" }]);
+    const order = await prisma.$transaction((tx) =>
+      createBybitBscOrder(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: sample.product.id,
+        quantity: 1,
+        rate: 1,
+        customerData,
+      }),
+    );
+    expect(order!.customerData).toBe(customerData);
+  });
+
   // Same collision-avoidance contract as Internal Transfer (Checkout-4), now
   // generalized to scope by `paymentMethod: method` instead of a hardcoded
   // BYBIT literal — this proves the BSC pool is checked, not skipped.

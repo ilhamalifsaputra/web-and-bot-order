@@ -5,7 +5,8 @@
  * and outbox changes land atomically.
  */
 import { config } from "@app/core/config";
-import { OrderStatus, StockStatus, UserRole, langCode } from "@app/core/enums";
+import { OrderStatus, StockStatus, UserRole, DeliveryType, langCode } from "@app/core/enums";
+import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import {
   quantizeMoney,
   generateOrderCode,
@@ -26,7 +27,11 @@ import { countAvailableStock, allocateOneAvailableStock } from "./stock";
 import { adjustWallet, getUser } from "./users";
 import { clearCart, getCart } from "./cart";
 import { maybePayReferralCommission } from "./referrals";
-import { enqueueNotification } from "./notifications";
+import {
+  enqueueNotification,
+  enqueueOrderProcessingDm,
+  enqueueManualDeliveredDm,
+} from "./notifications";
 import { logAdminAction } from "./audit";
 import { transitionOrderStatus } from "./orderStatus";
 
@@ -209,7 +214,14 @@ const fullInclude = {
 type CartLine = {
   productId: number;
   quantity: number;
-  product: { price: Decimal.Value; resellerPrice: Decimal.Value | null; name: string };
+  product: {
+    price: Decimal.Value;
+    resellerPrice: Decimal.Value | null;
+    name: string;
+    deliveryType: string;
+    isActive: boolean;
+    additionalFields: string | null;
+  };
 };
 
 type BulkRule = { minQuantity: number; discountPercent: Decimal.Value };
@@ -268,11 +280,31 @@ export function getOrderByCodeFull(db: Db, orderCode: string) {
   return db.order.findUnique({ where: { orderCode }, include: fullInclude });
 }
 
+/** The eager-loaded Order shape returned by getOrder/getOrderByCodeFull. */
+type OrderWithIncludes = NonNullable<Awaited<ReturnType<typeof getOrder>>>;
+
 export async function createOrderFromCart(
   db: Db,
-  args: { user: { id: number; role: string; walletBalance: Decimal.Value }; voucherCode?: string | null; walletAmount?: Decimal.Value },
+  args: {
+    user: { id: number; role: string; walletBalance: Decimal.Value };
+    voucherCode?: string | null;
+    walletAmount?: Decimal.Value;
+    /** Stringified JSON of the buyer's manual_with_info answers (validated by
+     * the caller). Persisted verbatim onto Order.customerData; null otherwise. */
+    customerData?: string | null;
+  },
 ) {
-  const cart = (await getCart(db, args.user.id)) as unknown as CartLine[];
+  // Only lines whose product is still active are eligible to become an order
+  // line — mirrors the storefront's performCheckout `activeCartLines` guard.
+  // Filtering HERE (the actual order-creation read), not just at the caller,
+  // closes the gap where an admin deactivates a manual_with_info denomination
+  // between the buyer adding it to cart and completing checkout: without this,
+  // performCheckout's homogeneity/customerData guards (which already filter by
+  // isActive) would see an empty cart and skip both checks, while this
+  // function's own unfiltered read would still create the order from the
+  // now-inactive line (Finding #5, per-sku-delivery-flows audit 2026-07-13).
+  const rawCart = (await getCart(db, args.user.id)) as unknown as CartLine[];
+  const cart = rawCart.filter((ci) => ci.product.isActive);
   if (cart.length === 0) throw new ValidationError("error.cart_empty");
   // Cart rows are normally clamped to 1-99 by cart.ts, but the very first
   // insert path (addToCart's create branch) doesn't clamp — re-validate here
@@ -324,6 +356,32 @@ export async function createOrderFromCart(
   // 5. Order code
   const orderCode = await uniqueOrderCode(db);
 
+  // 5.5 Server-side re-validation of the buyer-submitted manual_with_info
+  // answers — the final boundary before persisting them, regardless of
+  // whether the caller (today, only performCheckout) already validated. A
+  // cart is either all-auto or all-manual (the add-to-cart guard) with at
+  // most one manual_with_info line, so this re-checks that single line's
+  // CURRENT field spec/quantity rather than trusting args.customerData
+  // verbatim — closes the gap where a stale/mismatched customerData (e.g. the
+  // field spec or quantity changed after collection) would otherwise be
+  // persisted as-is (Finding #4, per-sku-delivery-flows audit 2026-07-13).
+  // Re-validating data performCheckout already validated is a safe no-op —
+  // valid data stays valid.
+  let customerDataToStore = args.customerData ?? null;
+  const infoLine = cart.find((ci) => ci.product.deliveryType === DeliveryType.MANUAL_WITH_INFO);
+  if (infoLine) {
+    const fields = parseAdditionalFields(infoLine.product.additionalFields);
+    let parsedAnswers: unknown = null;
+    if (args.customerData) {
+      try {
+        parsedAnswers = JSON.parse(args.customerData);
+      } catch {
+        parsedAnswers = null;
+      }
+    }
+    customerDataToStore = JSON.stringify(validateCustomerData(fields, parsedAnswers, infoLine.quantity));
+  }
+
   // 6. Persist order shell (need id for unique cents)
   const order = await db.order.create({
     data: {
@@ -337,12 +395,13 @@ export async function createOrderFromCart(
       totalAmount: ZERO,
       voucherId: voucher ? voucher.id : null,
       status: OrderStatus.PENDING_PAYMENT,
+      customerData: customerDataToStore,
       expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES),
     },
   });
 
-  // 7. Pre-check every line's availability before reserving anything, so the
-  // common "you asked for more than we have" case fails before any row is
+  // 7. Pre-check every AUTO line's availability before reserving anything, so
+  // the common "you asked for more than we have" case fails before any row is
   // touched (rather than leaving earlier lines reserved). Then reserve stock
   // atomically (one row per unit, AVAILABLE -> RESERVED) and create one
   // OrderItem per unit. allocateOneAvailableStock is itself optimistic-locked,
@@ -352,7 +411,14 @@ export async function createOrderFromCart(
   // approval (Checkout-2/Stock-1 fix, security audit 2026-06-23).
   // releaseOrderHolds (cancel/reject/expire) already returns RESERVED rows to
   // AVAILABLE.
+  //
+  // MANUAL / MANUAL_WITH_INFO lines carry NO stock: skip the pre-check and the
+  // reservation, and create their OrderItem rows with stockItemId=null — they
+  // are fulfilled by hand later (settlePaidOrder → fulfillManualOrder). (In
+  // practice the storefront blocks mixing delivery types in one cart, so a cart
+  // is either all-auto or all-manual, but this handles either line-by-line.)
   for (const ci of cart) {
+    if (ci.product.deliveryType !== DeliveryType.AUTO) continue;
     const available = await countAvailableStock(db, ci.productId);
     if (available < ci.quantity) {
       throw new ValidationError("error.out_of_stock", { product: ci.product.name });
@@ -360,16 +426,21 @@ export async function createOrderFromCart(
   }
   for (const ci of cart) {
     const unit = q4(unitPrice(ci.product, isReseller));
+    const isManual = ci.product.deliveryType !== DeliveryType.AUTO;
     for (let k = 0; k < ci.quantity; k++) {
-      const reserved = await allocateOneAvailableStock(db, ci.productId, order.id);
-      if (!reserved) {
-        throw new ValidationError("error.out_of_stock", { product: ci.product.name });
+      let stockItemId: number | null = null;
+      if (!isManual) {
+        const reserved = await allocateOneAvailableStock(db, ci.productId, order.id);
+        if (!reserved) {
+          throw new ValidationError("error.out_of_stock", { product: ci.product.name });
+        }
+        stockItemId = reserved.id;
       }
       await db.orderItem.create({
         data: {
           orderId: order.id,
           productId: ci.productId,
-          stockItemId: reserved.id,
+          stockItemId,
           quantity: 1,
           unitPrice: unit,
           warrantyDaysSnapshot: (ci.product as unknown as { warrantyDays: number }).warrantyDays,
@@ -420,6 +491,9 @@ export async function createOrderDirect(
     voucherCode?: string | null;
     /** IDR credit balance to spend on this order (clamped to order total). */
     walletAmount?: Decimal.Value;
+    /** Stringified JSON of the buyer's manual_with_info answers (validated by
+     * the caller). Persisted verbatim onto Order.customerData; null otherwise. */
+    customerData?: string | null;
   },
 ) {
   // args.productId is a denomination id (the sellable SKU).
@@ -453,11 +527,45 @@ export async function createOrderDirect(
 
   const orderCode = await uniqueOrderCode(db);
 
+  // Manual (manual / manual_with_info) SKUs carry NO stock — skip the
+  // availability pre-check and the per-unit reservation below, and create the
+  // OrderItem rows with stockItemId=null (fulfilled by hand via
+  // settlePaidOrder → fulfillManualOrder). Auto SKUs behave exactly as before.
+  const isManual = product.deliveryType !== DeliveryType.AUTO;
+
   // Pre-check before reserving anything (fast-fail on the common "ordered too
   // much" case) — see createOrderFromCart's matching guard for the rationale.
-  const available = await countAvailableStock(db, args.productId);
-  if (available < args.quantity) {
-    throw new ValidationError("error.out_of_stock", { product: product.name });
+  if (!isManual) {
+    const available = await countAvailableStock(db, args.productId);
+    if (available < args.quantity) {
+      throw new ValidationError("error.out_of_stock", { product: product.name });
+    }
+  }
+
+  // Server-side re-validation of manual_with_info customerData — the final
+  // boundary before persisting it, regardless of which of this function's
+  // several callers (the bot's 7 buyNow* handlers + completeOrderWithWallet +
+  // wallet_checkout's completeOrderWithWalletCredit) supplied it. The bot's
+  // info-collection gate only checks scratch.customerData is PRESENT, not
+  // that it still matches the CURRENT product/quantity (e.g. after the buyer
+  // backs out and changes quantity, or switches products, without the wizard
+  // re-running) — this re-validates it against the denomination's actual
+  // field spec and the actual quantity being ordered, mirroring the
+  // storefront's performCheckout, which already does the equivalent check
+  // before calling createOrderFromCart (Finding #4, per-sku-delivery-flows
+  // audit 2026-07-13). Re-validating already-valid data is a safe no-op.
+  let customerDataToStore = args.customerData ?? null;
+  if (product.deliveryType === DeliveryType.MANUAL_WITH_INFO) {
+    const fields = parseAdditionalFields(product.additionalFields);
+    let parsedAnswers: unknown = null;
+    if (args.customerData) {
+      try {
+        parsedAnswers = JSON.parse(args.customerData);
+      } catch {
+        parsedAnswers = null;
+      }
+    }
+    customerDataToStore = JSON.stringify(validateCustomerData(fields, parsedAnswers, args.quantity));
   }
 
   const order = await db.order.create({
@@ -472,22 +580,28 @@ export async function createOrderDirect(
       uniqueCents: ZERO,
       totalAmount: ZERO,
       status: OrderStatus.PENDING_PAYMENT,
+      customerData: customerDataToStore,
       expiresAt: addMinutes(new Date(), config.PAYMENT_WINDOW_MINUTES),
     },
   });
 
-  // Reserve stock atomically per unit (Checkout-2/Stock-1 fix — see
-  // createOrderFromCart's matching loop for the full rationale).
+  // Reserve stock atomically per unit for AUTO (Checkout-2/Stock-1 fix — see
+  // createOrderFromCart's matching loop for the full rationale); MANUAL creates
+  // stockless OrderItems.
   for (let k = 0; k < args.quantity; k++) {
-    const reserved = await allocateOneAvailableStock(db, args.productId, order.id);
-    if (!reserved) {
-      throw new ValidationError("error.out_of_stock", { product: product.name });
+    let stockItemId: number | null = null;
+    if (!isManual) {
+      const reserved = await allocateOneAvailableStock(db, args.productId, order.id);
+      if (!reserved) {
+        throw new ValidationError("error.out_of_stock", { product: product.name });
+      }
+      stockItemId = reserved.id;
     }
     await db.orderItem.create({
       data: {
         orderId: order.id,
         productId: args.productId,
-        stockItemId: reserved.id,
+        stockItemId,
         quantity: 1,
         unitPrice: q4(unit),
         warrantyDaysSnapshot: product.warrantyDays,
@@ -694,6 +808,17 @@ export function countUnderpaid(db: Db): Promise<number> {
   return db.order.count({ where: { status: OrderStatus.UNDERPAID } });
 }
 
+/**
+ * Manual/manual_with_info orders paid and awaiting an admin to hand-type and
+ * send the account content ("Awaiting Fulfillment" on the dashboard).
+ * Deliberately NOT named countProcessing — that pre-existing function counts
+ * CONFIRMED/PAID orders (a different, payment-gateway-in-flight concept) and
+ * must not be touched or confused with this one.
+ */
+export function countAwaitingManualFulfillment(db: Db): Promise<number> {
+  return db.order.count({ where: { status: OrderStatus.PROCESSING } });
+}
+
 /** PENDING_PAYMENT orders whose window has already lapsed — the count form of `listExpiredPendingOrders`. */
 export function countExpiredPending(db: Db, now: Date): Promise<number> {
   return db.order.count({ where: { status: OrderStatus.PENDING_PAYMENT, expiresAt: { not: null, lt: now } } });
@@ -892,7 +1017,16 @@ export async function rejectOrder(
 ) {
   const order = await getOrder(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
-  if (order.status !== OrderStatus.PENDING_VERIFICATION) {
+  // PROCESSING = a paid manual/manual_with_info order awaiting hand-fulfilment
+  // (settlePaidOrder's manual branch) — legal per LEGAL_TRANSITIONS so an admin
+  // who can't actually source the item has a way to reject/refund it instead
+  // of being stuck with only "Send to Buyer" (audit-per-sku-delivery-flows-
+  // 2026-07-13.md finding #2). It never reserves stock (fulfillManualOrder:
+  // "No stock is touched"), so releaseOrderHolds's stock-release loop below
+  // naturally no-ops for it — same walletUsed/voucher rollback applies as for
+  // a PENDING_VERIFICATION reject.
+  const rejectable: string[] = [OrderStatus.PENDING_VERIFICATION, OrderStatus.PROCESSING];
+  if (!rejectable.includes(order.status)) {
     throw new ValidationError("error.order_not_pending_verification");
   }
 
@@ -1003,6 +1137,27 @@ export async function approveOrder(
     });
   }
 
+  // Referral + testimonial — shared with the manual-delivery path so both pay
+  // the referee's commission and post the same channel testimonial.
+  await finalizeDeliverySideEffects(db, order, now);
+
+  logger.info(`Approved and delivered order ${order.orderCode} by admin ${args.adminId}`);
+  const refreshed = await getOrder(db, order.id);
+  return { order: refreshed!, credentials };
+}
+
+/**
+ * Post-delivery side effects shared by the AUTO path (approveOrder) and the
+ * MANUAL path (fulfillManualOrder): pay the referee's referral commission and
+ * enqueue the public-channel testimonial. Runs AFTER the atomic DELIVERED claim
+ * in both callers, so a lost race can't reach it twice (referral is itself
+ * gated on "referee's first delivered order").
+ */
+async function finalizeDeliverySideEffects(
+  db: Db,
+  order: OrderWithIncludes,
+  now: Date,
+): Promise<void> {
   // Referral commission (referee's first delivered order only). Currency +
   // fxRate ride along so IDR orders convert to the USDT wallet basis.
   await maybePayReferralCommission(db, {
@@ -1045,10 +1200,149 @@ export async function approveOrder(
       via_website: viaWebsite,
     });
   }
+}
 
-  logger.info(`Approved and delivered order ${order.orderCode} by admin ${args.adminId}`);
-  const refreshed = await getOrder(db, order.id);
-  return { order: refreshed!, credentials };
+/**
+ * Payment-confirmation entry point — the single place the auto-vs-manual
+ * delivery branch lives. Every payment rail (and the human-admin approve
+ * actions) call this instead of approveOrder directly, and send credentials
+ * only when the result kind is "delivered".
+ *
+ * - AUTO SKU  → approveOrder (pull stock, fill template, DELIVERED) — unchanged.
+ * - MANUAL / MANUAL_WITH_INFO SKU → move PENDING_VERIFICATION → PROCESSING (no
+ *   stock), enqueue the buyer's "being prepared" DM, and leave the order in the
+ *   admin fulfilment queue (drained later by fulfillManualOrder).
+ *
+ * The order must already be at PENDING_VERIFICATION (callers do the
+ * PENDING_PAYMENT → PENDING_VERIFICATION transition first, exactly as before).
+ */
+export type SettleResult =
+  | { kind: "delivered"; order: OrderWithIncludes; credentials: string[] }
+  | { kind: "processing"; order: OrderWithIncludes; credentials: [] };
+
+export async function settlePaidOrder(
+  db: Db,
+  orderId: number,
+  args: { adminId: number },
+): Promise<SettleResult> {
+  const order = await getOrder(db, orderId);
+  if (!order) throw new ValidationError("error.order_not_found");
+
+  // Orders are homogeneous (the storefront cart blocks mixing delivery types,
+  // and the bot orders one SKU at a time), so any manual line makes the whole
+  // order manual.
+  const isManual = order.items.some(
+    (it) => (it.product as { deliveryType?: string }).deliveryType !== DeliveryType.AUTO,
+  );
+
+  // ── AUTO branch (unchanged behavior) ────────────────────────────────────
+  if (!isManual) {
+    const result = await approveOrder(db, orderId, args);
+    return { kind: "delivered", order: result.order, credentials: result.credentials };
+  }
+
+  // ── MANUAL branch (no stock; queue for hand-fulfilment) ─────────────────
+  const now = new Date();
+  await transitionOrderStatus(db, {
+    orderId,
+    from: OrderStatus.PENDING_VERIFICATION,
+    to: OrderStatus.PROCESSING,
+    meta: `awaiting manual fulfilment (admin_id=${args.adminId})`,
+  });
+  // Stamp paidAt for the "when did they pay" audit (deliveredAt stays null until
+  // the admin fulfils via fulfillManualOrder).
+  await db.order.update({ where: { id: orderId }, data: { paidAt: now } });
+  await enqueueOrderProcessingDm(db, {
+    orderId,
+    orderCode: order.orderCode,
+    telegramId: order.user.telegramId,
+    language: order.user.language,
+  });
+  logger.info(
+    `Order ${order.orderCode} payment confirmed; queued for manual fulfilment (admin ${args.adminId}).`,
+  );
+  const refreshed = await getOrder(db, orderId);
+  return { kind: "processing", order: refreshed!, credentials: [] };
+}
+
+/**
+ * Manual fulfilment: an admin delivers a queued PROCESSING order by hand. Saves
+ * the typed content, flips PROCESSING → DELIVERED atomically (same claim pattern
+ * and OrderStatusHistory-write bypass as approveOrder), runs the shared referral
+ * + testimonial side effects, and enqueues the buyer's content DM (read live at
+ * dispatch). No stock is touched — manual SKUs never reserved any.
+ */
+export async function fulfillManualOrder(
+  db: Db,
+  orderId: number,
+  args: { adminId: number; content: string },
+): Promise<{ order: OrderWithIncludes }> {
+  const content = args.content.trim();
+  if (!content) throw new ValidationError("error.manual_content_required");
+
+  const order = await getOrder(db, orderId);
+  if (!order) throw new ValidationError("error.order_not_found");
+
+  const now = new Date();
+  // Atomic claim PROCESSING → DELIVERED, writing the content + deliveredAt in the
+  // same UPDATE so a double-tap can't fulfil twice (count!==1 on a lost race).
+  const claim = await db.order.updateMany({
+    where: { id: orderId, status: OrderStatus.PROCESSING },
+    data: { status: OrderStatus.DELIVERED, deliveredContent: content, deliveredAt: now },
+  });
+  if (claim.count !== 1) throw new ValidationError("error.order_not_processing");
+  await db.orderStatusHistory.create({
+    data: { orderId, status: OrderStatus.DELIVERED, meta: `manual_fulfill by admin_id=${args.adminId}` },
+  });
+
+  await finalizeDeliverySideEffects(db, order, now);
+
+  await enqueueManualDeliveredDm(db, {
+    orderId,
+    orderCode: order.orderCode,
+    telegramId: order.user.telegramId,
+    language: order.user.language,
+  });
+
+  await logAdminAction(db, {
+    adminId: args.adminId,
+    action: "order.manual_fulfill",
+    targetType: "order",
+    targetId: order.id,
+    details: `Manually fulfilled order ${order.orderCode} and sent the account to the buyer.`,
+  });
+
+  logger.info(`Manually fulfilled order ${order.orderCode} by admin ${args.adminId}`);
+  const refreshed = await getOrder(db, orderId);
+  return { order: refreshed! };
+}
+
+/**
+ * Update a manual_with_info order's buyer answers while it is still PROCESSING
+ * (before the admin fulfils it). Re-validates the answers against the SKU's
+ * field spec, once per unit, and persists the normalized JSON. Locked once the
+ * order leaves PROCESSING (throws error.order_not_processing).
+ */
+export async function updateOrderCustomerData(
+  db: Db,
+  orderId: number,
+  answers: unknown,
+): Promise<OrderWithIncludes> {
+  const order = await getOrder(db, orderId);
+  if (!order) throw new ValidationError("error.order_not_found");
+  if (order.status !== OrderStatus.PROCESSING) {
+    throw new ValidationError("error.order_not_processing");
+  }
+  const denom = order.items[0]?.product as { additionalFields?: string | null } | undefined;
+  const fields = parseAdditionalFields(denom?.additionalFields ?? null);
+  // One answer-map per unit (item), matching how they were collected at checkout.
+  const normalized = validateCustomerData(fields, answers, order.items.length);
+  await db.order.update({
+    where: { id: orderId },
+    data: { customerData: JSON.stringify(normalized) },
+  });
+  const refreshed = await getOrder(db, orderId);
+  return refreshed!;
 }
 
 // ---- Filtered list/count for the admin web ----

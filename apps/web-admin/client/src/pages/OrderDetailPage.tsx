@@ -9,8 +9,10 @@ import { StatusBadge } from "../components/shared/StatusBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiPost } from "../api/client";
+import { describeError } from "../lib/errorMessages";
 
 interface OrderItem {
   id: number;
@@ -31,6 +33,10 @@ interface OrderDetail {
   user: { id: number; fullName: string | null; username: string | null; telegramId: string | null } | null;
   items: OrderItem[];
   voucher: { code: string; type: string } | null;
+  /** Set only by a manual/manual_with_info fulfilment (fulfillManualOrder) —
+   * always null for auto-delivered orders, which deliver via stockItem
+   * instead. The admin's own audit view of what was sent to the buyer. */
+  deliveredContent: string | null;
 }
 
 interface MoneyView {
@@ -44,12 +50,40 @@ interface MoneyView {
   equivalentIdr: string | null;
 }
 
+/** One admin-defined custom checkout field for a manual_with_info SKU — JSON
+ * twin of @app/core/deliveryFields's AdditionalField (mirrored, not
+ * cross-imported — same convention as api/types.ts's own copy). */
+interface CustomerDataField {
+  key: string;
+  label: { id: string; en: string };
+  type: string;
+  required: boolean;
+  options: string[];
+  placeholder: string;
+}
+
+/** Buyer answers, one { fieldKey: value } map per unit — order.customerData
+ * parsed and labeled server-side. */
+type CustomerDataUnit = Record<string, string>;
+
 interface OrderDetailData {
   order: OrderDetail;
   money: MoneyView;
   isDelivered: boolean;
   canAct: boolean;
   canCredit: boolean;
+  /** True once the order is PROCESSING (manual/manual_with_info SKU, paid,
+   * awaiting an admin to hand-type and send the account content). */
+  canFulfill: boolean;
+  /** PENDING_VERIFICATION or PROCESSING — reject is legal from both (the
+   * latter is how an admin unsticks a paid manual order they can't source).
+   * Distinct from canAct: PROCESSING has no "Approve & Deliver" action. */
+  canReject: boolean;
+  /** The SKU's custom-field spec (empty for auto orders and manual orders
+   * with no custom fields — nothing to render in that case). */
+  customerDataFields: CustomerDataField[];
+  /** The buyer's answers, one map per unit. */
+  customerData: CustomerDataUnit[];
 }
 
 function useOrderDetail(orderId: string) {
@@ -70,6 +104,7 @@ export function OrderDetailPage() {
   const qc = useQueryClient();
   const { data, isError } = useOrderDetail(orderId ?? "");
   const [rejectReason, setRejectReason] = useState("");
+  const [fulfillContent, setFulfillContent] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
 
   const refresh = () => void qc.invalidateQueries({ queryKey: ["order", orderId] });
@@ -77,25 +112,31 @@ export function OrderDetailPage() {
   const approve = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/approve`, {}),
     onSuccess: () => { refresh(); setActionError(null); },
-    onError: (e: Error) => setActionError(e.message),
+    onError: (e: Error) => setActionError(describeError(e.message)),
   });
 
   const reject = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/reject`, { reason: rejectReason }),
     onSuccess: () => { refresh(); setRejectReason(""); setActionError(null); },
-    onError: (e: Error) => setActionError(e.message),
+    onError: (e: Error) => setActionError(describeError(e.message)),
   });
 
   const creditBalance = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/credit-balance`, {}),
     onSuccess: () => { refresh(); setActionError(null); },
-    onError: (e: Error) => setActionError(e.message),
+    onError: (e: Error) => setActionError(describeError(e.message)),
   });
 
   const resend = useMutation({
     mutationFn: () => apiPost(`/api/orders/${orderId}/resend`, {}),
     onSuccess: () => { setActionError(null); },
-    onError: (e: Error) => setActionError(e.message),
+    onError: (e: Error) => setActionError(describeError(e.message)),
+  });
+
+  const fulfill = useMutation({
+    mutationFn: () => apiPost(`/api/orders/${orderId}/fulfill`, { content: fulfillContent }),
+    onSuccess: () => { refresh(); setFulfillContent(""); setActionError(null); },
+    onError: (e: Error) => setActionError(describeError(e.message)),
   });
 
   if (isError) {
@@ -113,8 +154,16 @@ export function OrderDetailPage() {
     );
   }
 
-  const { order, money, canAct, canCredit, isDelivered } = data;
+  const { order, money, canAct, canCredit, canFulfill, canReject, isDelivered, customerDataFields, customerData } = data;
   const canResend = isDelivered && order.user?.telegramId != null;
+  const hasCustomerData = customerDataFields.length > 0 && customerData.length > 0;
+  // Manual/manual_with_info orders never reserve stock (stockItemId stays
+  // null for every unit, from checkout through fulfilment) — unlike auto
+  // orders, which reserve a stockItem immediately at checkout, well before
+  // delivery. A row-of-dashes Credentials column on a manual order is just
+  // noise, so hide it there; a real auto order keeps the column exactly as
+  // before.
+  const isManualOrder = order.items.length > 0 && order.items.every(i => i.stockItem === null);
 
   return (
     <PageLayout title={`Order ${order.orderCode}`}>
@@ -183,15 +232,49 @@ export function OrderDetailPage() {
           { key: "product", header: "Product", render: item => <span className="text-sm">{item.product.name}</span> },
           { key: "qty", header: "Qty", render: item => <span className="text-sm text-center">{item.quantity}</span> },
           { key: "price", header: "Unit Price", render: item => <span className="text-sm font-mono">{item.unitPrice}</span> },
-          { key: "credentials", header: "Credentials", render: item => <span className="font-mono text-xs text-ink-soft">{item.stockItem?.credentials ?? "—"}</span> },
+          ...(isManualOrder
+            ? []
+            : [{ key: "credentials", header: "Credentials", render: (item: OrderItem) => <span className="font-mono text-xs text-ink-soft">{item.stockItem?.credentials ?? "—"}</span> }]),
         ]}
         data={order.items}
         keyExtractor={item => item.id}
         empty={<EmptyState title="No items" />}
       />
 
+      {/* Buyer-submitted custom checkout info (manual_with_info orders only) */}
+      {hasCustomerData && (
+        <Card className="mt-6">
+          <CardHeader><CardTitle>Buyer-Submitted Info</CardTitle></CardHeader>
+          <CardContent className="flex flex-col gap-2 text-sm">
+            {customerData.map((unit, i) => (
+              <div key={i} className="flex flex-col gap-1">
+                {customerDataFields.map(field => (
+                  <div key={field.key} className="flex justify-between gap-4">
+                    <span className="text-ink-soft">
+                      {customerData.length > 1 ? `Unit ${i + 1} — ${field.label.en}` : field.label.en}
+                    </span>
+                    <span className="text-ink text-right">{unit[field.key] || "—"}</span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Delivered content (manual fulfilment's own audit view — auto orders
+          never set this, they deliver via stockItem.credentials above) */}
+      {isDelivered && order.deliveredContent != null && (
+        <Card className="mt-6">
+          <CardHeader><CardTitle>Delivered Content</CardTitle></CardHeader>
+          <CardContent>
+            <pre className="whitespace-pre-wrap break-words font-mono text-xs text-ink">{order.deliveredContent}</pre>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Actions */}
-      {(canAct || canCredit || canResend) && (
+      {(canAct || canCredit || canResend || canFulfill || canReject) && (
         <Card className="mt-6">
           <CardHeader><CardTitle>Actions</CardTitle></CardHeader>
           <CardContent className="flex flex-wrap gap-3">
@@ -217,7 +300,7 @@ export function OrderDetailPage() {
               />
             )}
 
-            {canAct && (
+            {canReject && (
               <div className="flex gap-2 items-start">
                 <Input
                   value={rejectReason}
@@ -247,6 +330,29 @@ export function OrderDetailPage() {
                 variant="default"
                 onConfirm={() => creditBalance.mutate()}
               />
+            )}
+
+            {canFulfill && (
+              <div className="flex w-full flex-col items-start gap-2">
+                <Textarea
+                  value={fulfillContent}
+                  onChange={e => setFulfillContent(e.target.value)}
+                  placeholder="Account/content to send to the buyer (required)"
+                  className="w-full sm:w-96"
+                  rows={4}
+                />
+                <ConfirmDialog
+                  trigger={<Button disabled={fulfill.isPending}>{fulfill.isPending ? "Sending…" : "Send to Buyer"}</Button>}
+                  title="Send this delivery content to the buyer?"
+                  description="The buyer will be notified with the content below, and the order will be marked delivered."
+                  confirmLabel="Send"
+                  variant="default"
+                  onConfirm={() => {
+                    if (!fulfillContent.trim()) { setActionError("Delivery content is required."); return; }
+                    fulfill.mutate();
+                  }}
+                />
+              </div>
             )}
           </CardContent>
         </Card>

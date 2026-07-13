@@ -66,7 +66,11 @@ function CartLine({ item, fx, onMutated }: CartLineProps) {
         <div className="mt-1">
           <Price value={item.unit_price} fx={fx} size="text-sm" />
         </div>
-        {item.qty > item.available && (
+        {/* Non-auto lines never have stock rows by design (available is
+            always 0), so this comparison is only meaningful for auto lines —
+            gating on delivery_type avoids a permanent, misleading "0 left"
+            warning on a legitimate manual/manual_with_info line. */}
+        {item.delivery_type === "auto" && item.qty > item.available && (
           <div className="text-xs text-rust mt-1">{t("web.stock_left", { count: item.available })}</div>
         )}
       </div>

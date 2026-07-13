@@ -34,6 +34,7 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { langCode, OrderStatus, NotificationEvent } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
   prisma,
   listInFlightBybitBscOrders,
@@ -214,6 +215,30 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   }
 }
 
+/**
+ * Flip the payment-instructions bubble to a success message for a "processing"
+ * (manual-delivery) order. The buyer already gets a separate
+ * ORDER_PROCESSING_DM via the outbox (enqueued by settlePaidOrder) — this only
+ * keeps the anchored bubble from sitting at "waiting for payment"/tracking
+ * forever. Reuses the exact same success text/keyboard onDelivered's bubble
+ * edit uses; never throws.
+ */
+async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<void> {
+  if (order.user.telegramId == null) return;
+  if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
+  const lang = langCode(order.user.language);
+  try {
+    await api.editMessageText(
+      Number(order.paymentMsgChatId),
+      order.paymentMsgId,
+      coreT("checkout.bybit_bsc_paid", lang, { code: order.orderCode }),
+      { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
+    );
+  } catch {
+    /* bubble may be gone/uneditable — the ORDER_PROCESSING_DM already informed the buyer */
+  }
+}
+
 /** Push the live tracking screen onto the anchored payment bubble right when
  * a deposit is first detected (PENDING_PAYMENT -> PAYMENT_DETECTED). Same
  * direct-edit-on-stored-bubble pattern as `onDelivered()` above — bot-
@@ -360,6 +385,10 @@ export async function processDeposits(
       if (r.status === "delivered") {
         logger.info(`Delivered Bybit BSC order ${order.orderCode} (deposit ${dep.txId})`);
         await onDelivered(api, r.order);
+      } else if (r.status === "processing") {
+        logger.info(`Bybit BSC order ${order.orderCode} paid — queued for manual fulfilment (deposit ${dep.txId})`);
+        nudgeOutboxDispatcher();
+        await editBubbleToProcessing(api, r.order);
       } else if (r.status === "stale") {
         logger.warn(`Bybit BSC deposit ${dep.txId} matched order ${order.orderCode} but it was no longer in a deliverable state — skipped to avoid double delivery, admin alerted`);
         await alertAdmins(api, `⚠️ Bybit BSC deposit matched <code>${order.orderCode}</code> but it was no longer pending (tx ${esc(dep.txId)}).`);

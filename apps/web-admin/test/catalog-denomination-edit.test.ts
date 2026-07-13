@@ -102,6 +102,142 @@ describe("PATCH /api/catalog/denominations/:id", () => {
   });
 });
 
+describe("PATCH /api/catalog/denominations/:id — deliveryType/additionalFields", () => {
+  it("updates a SKU's delivery type to manual (no fields required)", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.deliveryType).toBe("manual");
+    expect(row!.additionalFields).toBeNull();
+  });
+
+  it("updates a SKU to manual_with_info with valid fields and round-trips additionalFields through GET /api/catalog/:productId", async () => {
+    const { denomId, productId } = await seedDenominationWithContext();
+    const fields = [
+      {
+        key: "email",
+        label: { id: "Email", en: "Email" },
+        type: "email",
+        required: true,
+        options: [],
+        placeholder: "you@example.com",
+      },
+    ];
+    const res = await patchJson(`/api/catalog/denominations/${denomId}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: fields,
+    });
+    expect(res.statusCode).toBe(200);
+
+    const detail = await app.inject({ method: "GET", url: `/api/catalog/${productId}`, cookies: { [COOKIE]: cookie } });
+    const body = detail.json() as {
+      product: { denominations: { id: number; deliveryType: string; additionalFields: string | null }[] };
+    };
+    const denom = body.product.denominations.find((d) => d.id === denomId)!;
+    expect(denom.deliveryType).toBe("manual_with_info");
+    expect(JSON.parse(denom.additionalFields!)).toEqual(fields);
+  });
+
+  it("rejects updating to manual_with_info with zero fields (400) and leaves the row unchanged", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: [],
+    });
+    expect(res.statusCode).toBe(400);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.deliveryType).toBe("auto");
+  });
+
+  it("rejects an invalid deliveryType with 400", async () => {
+    const id = await seedDenomination();
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "bogus",
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("rejects updating to manual_with_info when additionalFields is a pre-stringified JSON string instead of an array (400) and leaves the row unchanged", async () => {
+    // Pins the client/server contract from the server side, mirroring the
+    // equivalent POST test in web.test.ts: the route expects additionalFields
+    // to already be a decoded array (zAdditionalFields = z.array(...)). A
+    // caller that JSON.stringify()s the array before sending it — the bug
+    // that made the real admin edit form double-encode this field and fail
+    // every manual_with_info save with a 400 — must be rejected here too.
+    const id = await seedDenomination();
+    const fields = [
+      { key: "email", label: { id: "Email", en: "Email" }, type: "email", required: true, options: [], placeholder: "" },
+    ];
+    const res = await patchJson(`/api/catalog/denominations/${id}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: JSON.stringify(fields),
+    });
+    expect(res.statusCode).toBe(400);
+    const row = await prisma.denomination.findUnique({ where: { id } });
+    expect(row!.deliveryType).toBe("auto");
+  });
+
+  it("a partial PATCH that omits deliveryType leaves the existing delivery config in place instead of resetting it to auto", async () => {
+    // Regression test for the secondary review finding: deliveryType/
+    // additionalFields must follow the same partial-update convention as
+    // warrantyDays/sortOrder (only touched when the request actually
+    // provides a value) so a future partial-update caller (e.g. a bulk-edit
+    // tool) can't silently wipe a SKU's delivery configuration.
+    const { denomId } = await seedDenominationWithContext();
+    const fields = [
+      { key: "email", label: { id: "Email", en: "Email" }, type: "email", required: true, options: [], placeholder: "" },
+    ];
+    const setup = await patchJson(`/api/catalog/denominations/${denomId}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: fields,
+    });
+    expect(setup.statusCode).toBe(200);
+
+    // A partial update that touches only sortOrder — same shape a bulk-edit
+    // tool would send — omits deliveryType/additionalFields entirely.
+    const res = await patchJson(`/api/catalog/denominations/${denomId}`, cookie, csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      sortOrder: "3",
+    });
+    expect(res.statusCode).toBe(200);
+
+    const row = await prisma.denomination.findUnique({ where: { id: denomId } });
+    expect(row!.sortOrder).toBe(3);
+    expect(row!.deliveryType).toBe("manual_with_info");
+    expect(JSON.parse(row!.additionalFields!)).toEqual(fields);
+  });
+});
+
 describe("DELETE /api/catalog/denominations/:id", () => {
   it("happy path: deletes the denomination and audits", async () => {
     const id = await seedDenomination();

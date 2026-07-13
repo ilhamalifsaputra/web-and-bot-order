@@ -7,6 +7,7 @@
  */
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
+import { parseAdditionalFields } from "@app/core/deliveryFields";
 import {
   prisma,
   getSetting,
@@ -157,6 +158,13 @@ export async function productPageData(rawSlug: string) {
       available,
       in_stock: available > 0,
       bulk: rule ? { min_quantity: rule.minQuantity, discount_percent: rule.discountPercent } : null,
+      // Non-auto SKUs never have stock rows (Task 2 skips stock reservation
+      // for them), so `available`/`in_stock` above are always 0/false by
+      // design — the client gates purchasability on delivery_type instead
+      // (see ProductPage.tsx's `purchasable`). additional_fields is the
+      // parsed manual_with_info field spec ([] for auto/manual).
+      delivery_type: d.deliveryType,
+      additional_fields: parseAdditionalFields(d.additionalFields),
     };
   });
   // Default restock-form target (Task 10 fix): "first in-stock denomination,

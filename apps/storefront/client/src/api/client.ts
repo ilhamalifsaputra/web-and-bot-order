@@ -55,3 +55,22 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   }
   return res.json() as Promise<T>;
 }
+
+/** Same CSRF-header contract as apiPost — for account-scoped edits (e.g.
+ * the order-detail info-edit form, Task 10) where PATCH is the more accurate
+ * verb than POST. */
+export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    const err = new Error(data.error ?? `${path} responded ${res.status}`);
+    (err as Error & { status?: number }).status = res.status;
+    throw err;
+  }
+  return res.json() as Promise<T>;
+}

@@ -55,6 +55,27 @@ describe("completeOrderWithWalletCredit — IDR track", () => {
     expect(sold).toHaveLength(1);
   });
 
+  // Per-SKU delivery flows (dlv-task-5): completeOrderWithWallet (the bot
+  // handler) reads scratch.customerData and threads it through here — verify
+  // it lands on the created order verbatim, same as every other checkout rail.
+  it("forwards customerData verbatim onto the created order", async () => {
+    await adjustWallet(prisma, sample.user.id, "10", { currency: "IDR", reason: "admin_adjust" });
+    const user = await freshUser();
+    const customerData = JSON.stringify([{ game_id: "GID-WALLET" }]);
+
+    const result = await prisma.$transaction((tx) =>
+      completeOrderWithWalletCredit(tx, {
+        user: { id: user.id, role: user.role, walletBalance: user.walletBalance },
+        productId: sample.product.id,
+        quantity: 1,
+        currency: OrderCurrency.IDR,
+        customerData,
+      }),
+    );
+
+    expect(result.order.customerData).toBe(customerData);
+  });
+
   it("insufficient IDR balance: throws, makes no wallet or stock change", async () => {
     await adjustWallet(prisma, sample.user.id, "2", { currency: "IDR", reason: "admin_adjust" }); // less than the 5.00 price
     const user = await freshUser();
@@ -121,6 +142,29 @@ describe("completeOrderWithWalletCredit — USDT track", () => {
     const after = await freshUser();
     expect(Number(after.walletBalanceUsdt)).toBeCloseTo(0); // 5 - 5
     expect(Number(after.walletBalance)).toBeCloseTo(100); // IDR untouched
+  });
+
+  // Per-SKU delivery flows (dlv-task-5): customerData threading is
+  // currency-agnostic in completeOrderWithWalletCredit (no branching around
+  // it), but the IDR-track test above is the only one that had verified it —
+  // mirror it here for the USDT track so both currencies are covered.
+  it("forwards customerData verbatim onto the created order (USDT track)", async () => {
+    await adjustWallet(prisma, sample.user.id, "5", { currency: "USDT", reason: "admin_adjust" });
+    const user = await freshUser();
+    const customerData = JSON.stringify([{ game_id: "GID-WALLET-USDT" }]);
+
+    const result = await prisma.$transaction((tx) =>
+      completeOrderWithWalletCredit(tx, {
+        user: { id: user.id, role: user.role, walletBalanceUsdt: user.walletBalanceUsdt },
+        productId: sample.product.id,
+        quantity: 1,
+        currency: OrderCurrency.USDT,
+        rate: 1,
+        customerData,
+      }),
+    );
+
+    expect(result.order.customerData).toBe(customerData);
   });
 
   it("insufficient USDT balance: throws, IDR and USDT balances both untouched", async () => {

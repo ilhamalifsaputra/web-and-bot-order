@@ -11,12 +11,13 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { OrderStatus, StockStatus, langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
   prisma,
   listPendingVerifications,
   getOrder,
   getUserByTelegramId,
-  approveOrder,
+  settlePaidOrder,
   logAdminAction,
   lowStockDenominations,
 } from "@app/db";
@@ -113,38 +114,69 @@ export async function approve(ctx: MyContext, orderId: number): Promise<void> {
   const adminTg = ctx.from!.id;
   const adminLang = ctx.session.lang;
 
+  let settleKind: "delivered" | "processing";
   let buyerTgId: bigint | null;
   let buyerLang: string;
   let orderCode: string;
   let buyerId: number;
-  let credGroups: Array<[string, string[]]>;
-  let buyerItems: Parameters<typeof sendAccountFile>[2]["items"];
+  let credGroups: Array<[string, string[]]> = [];
+  let buyerItems: Parameters<typeof sendAccountFile>[2]["items"] = [];
 
   try {
-    const result = await prisma.$transaction(async (tx) => {
+    const settled = await prisma.$transaction(async (tx) => {
       const admin = await getUserByTelegramId(tx, adminTg);
-      const { order } = await approveOrder(tx, orderId, { adminId: requireAdminId(admin) });
+      const result = await settlePaidOrder(tx, orderId, { adminId: requireAdminId(admin) });
       await logAdminAction(tx, {
         adminId: requireAdminId(admin),
         action: "approve_order",
         targetType: "order",
         targetId: orderId,
-        details: `Approved order ${order.orderCode}.`,
+        details:
+          result.kind === "delivered"
+            ? `Approved order ${result.order.orderCode}.`
+            : `Approved payment for order ${result.order.orderCode}; queued for manual fulfilment.`,
       });
-      return order;
+      return result;
     });
-    buyerTgId = result.user.telegramId;
-    buyerLang = langCode(result.user.language);
-    orderCode = result.orderCode;
-    buyerId = result.userId;
-    buyerItems = result.items;
-    credGroups = buildCredSections(result.items, buyerLang).groups;
+    settleKind = settled.kind;
+    buyerTgId = settled.order.user.telegramId;
+    buyerLang = langCode(settled.order.user.language);
+    orderCode = settled.order.orderCode;
+    buyerId = settled.order.userId;
+    if (settled.kind === "delivered") {
+      buyerItems = settled.order.items;
+      credGroups = buildCredSections(settled.order.items, buyerLang).groups;
+    }
   } catch (e) {
     if (e instanceof Error && "key" in e) {
       await ctx.answerCallbackQuery({ text: coreT((e as { key: string }).key, adminLang), show_alert: true });
       return;
     }
     throw e;
+  }
+
+  if (settleKind === "processing") {
+    // MANUAL / MANUAL_WITH_INFO SKU: no credentials exist yet — settlePaidOrder
+    // already enqueued the buyer's ORDER_PROCESSING_DM ("being prepared") via
+    // the outbox, so there is nothing to build credGroups/sendAccountFile for.
+    // No stock was touched either, so skip Phase 4's low-stock alert. Nudge the
+    // dispatcher so that DM arrives near-instantly instead of waiting for its
+    // next poll (matches the web-admin /approve route's unconditional nudge).
+    nudgeOutboxDispatcher();
+    await ctx.answerCallbackQuery({
+      text: coreT("admin.approved_processing", adminLang, { code: orderCode }),
+      show_alert: true,
+    });
+    try {
+      await adminEdit(
+        ctx,
+        coreT("admin.approved_processing_bubble", adminLang, { code: orderCode }),
+        akb.backToAdminKb(adminLang),
+      );
+    } catch {
+      /* ignore edit failures */
+    }
+    return;
   }
 
   // Phase 2: notify buyer — first a "payment verified" status, then the creds.

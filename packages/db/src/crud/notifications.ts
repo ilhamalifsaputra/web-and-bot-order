@@ -305,6 +305,45 @@ export async function enqueueOrderDeliveredDm(
   });
 }
 
+/**
+ * Enqueue the buyer's "payment received — being prepared by hand" DM when a
+ * manual-delivery order moves PAID → PROCESSING (see settlePaidOrder). Carries
+ * chat_id + order_code + language only; the dispatcher renders the reassurance
+ * copy. No-op for web-only buyers (they see the status on the storefront).
+ */
+export async function enqueueOrderProcessingDm(
+  db: Db,
+  args: { orderId: number; orderCode: string; telegramId: bigint | null; language: string | null },
+): Promise<void> {
+  if (args.telegramId == null) return;
+  const shopUrl = config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null;
+  await enqueueNotification(db, NotificationEvent.ORDER_PROCESSING_DM, args.orderId, {
+    chat_id: Number(args.telegramId),
+    order_code: args.orderCode,
+    order_url: shopUrl ? `${shopUrl.replace(/\/+$/, "")}/account/orders/${args.orderCode}` : null,
+    buyer_language: langCode(args.language),
+  });
+}
+
+/**
+ * Enqueue the buyer's DM carrying the admin-typed fulfillment text for a manual
+ * order (PROCESSING → DELIVERED, see fulfillManualOrder). Like the credentials
+ * DM, the CONTENT itself is NOT placed in the payload — the dispatcher reads
+ * Order.deliveredContent live at send time (the outbox table is admin-visible).
+ * No-op for web-only buyers (they read deliveredContent on the storefront).
+ */
+export async function enqueueManualDeliveredDm(
+  db: Db,
+  args: { orderId: number; orderCode: string; telegramId: bigint | null; language: string | null },
+): Promise<void> {
+  if (args.telegramId == null) return;
+  await enqueueNotification(db, NotificationEvent.ORDER_MANUAL_DELIVERED_DM, args.orderId, {
+    chat_id: Number(args.telegramId),
+    order_code: args.orderCode,
+    buyer_language: langCode(args.language),
+  });
+}
+
 // ---- Outbox monitor (web-admin /outbox) -----------------------------------
 
 /** Newest-first outbox rows, optionally filtered by status, with linked order code. */

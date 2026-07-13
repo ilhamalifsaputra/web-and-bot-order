@@ -4,24 +4,25 @@
  * gateway involved. Composes the same primitives createInternalOrder uses
  * (createOrderDirect -> finalizeOrderPayment -> applyUsdtWalletToOrder for
  * the USDT track — packages/db/src/crud/binance_internal.ts), then claims +
- * delivers the order. Delivery of the account file is the bot handler's job
- * (completeOrderWithWallet in apps/order-bot sends it directly, like the
- * instant Binance Internal rail), so this returns the delivered order +
- * credentials and does NOT enqueue an outbox DM itself: there is nothing to
- * wait for, the credit already fully paid for the order.
+ * settles the order via settlePaidOrder. For an AUTO SKU this returns the
+ * delivered order + credentials, same as before; for a MANUAL /
+ * MANUAL_WITH_INFO SKU it instead returns a "processing" result (no
+ * credentials — settlePaidOrder already queued the order for hand-fulfilment
+ * and enqueued the buyer's "being prepared" DM). Delivery of the account file
+ * for a "delivered" result is the bot handler's job (completeOrderWithWallet
+ * in apps/order-bot sends it directly, like the instant Binance Internal
+ * rail), so this does NOT enqueue an outbox delivered-DM itself: there is
+ * nothing to wait for, the credit already fully paid for the order.
  */
 import { Decimal } from "@app/core/money";
 import { OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import type { Db } from "./_types";
-import { createOrderDirect, getOrder, approveOrder, applyUsdtWalletToOrder } from "./orders";
+import { createOrderDirect, getOrder, settlePaidOrder, applyUsdtWalletToOrder, type SettleResult } from "./orders";
 import { finalizeOrderPayment } from "./pricing";
 import { transitionOrderStatus } from "./orderStatus";
 
-export type WalletCheckoutResult = {
-  order: NonNullable<Awaited<ReturnType<typeof getOrder>>>;
-  credentials: string[];
-};
+export type WalletCheckoutResult = SettleResult;
 
 /**
  * Create + immediately deliver an order paid entirely by wallet credit.
@@ -43,6 +44,9 @@ export async function completeOrderWithWalletCredit(
     currency: typeof OrderCurrency.IDR | typeof OrderCurrency.USDT;
     /** Rupiah per 1 USDT — required when currency is USDT. */
     rate?: Decimal.Value;
+    /** Stringified JSON of the buyer's manual_with_info answers (validated by
+     * the caller). Persisted verbatim onto Order.customerData; null otherwise. */
+    customerData?: string | null;
   },
 ): Promise<WalletCheckoutResult> {
   const created = await createOrderDirect(db, {
@@ -54,6 +58,7 @@ export async function completeOrderWithWalletCredit(
     // leaves this order's walletAmount unset and applies USDT credit below,
     // exactly like createInternalOrder does for a partial USDT credit today.
     walletAmount: args.currency === OrderCurrency.IDR ? args.user.walletBalance : undefined,
+    customerData: args.customerData,
   });
   if (!created) throw new ValidationError("error.order_not_found");
 
@@ -85,11 +90,11 @@ export async function completeOrderWithWalletCredit(
     to: OrderStatus.PENDING_VERIFICATION,
     meta: "wallet_full_credit",
   });
-  const { order: delivered, credentials } = await approveOrder(db, finalized.id, { adminId: 0 });
-
-  // No outbox DM here — the caller (completeOrderWithWallet) sends the account
-  // file directly, with an outbox fallback only if that direct send fails, so
-  // wallet delivery doesn't hinge on the outbox dispatcher running (same
-  // resilience as the instant Binance Internal / Bybit rails).
-  return { order: delivered, credentials };
+  // No outbox delivered-DM here for the AUTO case — the caller
+  // (completeOrderWithWallet) sends the account file directly, with an
+  // outbox fallback only if that direct send fails, so wallet delivery
+  // doesn't hinge on the outbox dispatcher running (same resilience as the
+  // instant Binance Internal / Bybit rails). The MANUAL case's "being
+  // prepared" DM is already enqueued by settlePaidOrder itself.
+  return await settlePaidOrder(db, finalized.id, { adminId: 0 });
 }

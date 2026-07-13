@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
+import { AdditionalFieldsEditor } from "../components/shared/AdditionalFieldsEditor";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,10 +15,18 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { apiPost } from "../api/client";
+import { draftsToFields, fieldsAreValid } from "../lib/additionalFields";
+import type { AdditionalFieldDraft } from "../api/types";
 
 const DENOMINATION_TYPES = [
   { value: "SHARED", label: "Shared" },
   { value: "PRIVATE", label: "Private" },
+];
+
+const DELIVERY_TYPES = [
+  { value: "auto", label: "Auto (deliver from stock)" },
+  { value: "manual", label: "Manual (admin fulfills by hand)" },
+  { value: "manual_with_info", label: "Manual + Info (buyer fills fields first)" },
 ];
 
 function isValidPrice(value: string): boolean {
@@ -37,6 +46,8 @@ export function DenominationCreatePage() {
   const [resellerPrice, setResellerPrice] = useState("");
   const [warrantyDays, setWarrantyDays] = useState("");
   const [description, setDescription] = useState("");
+  const [deliveryType, setDeliveryType] = useState("auto");
+  const [additionalFields, setAdditionalFields] = useState<AdditionalFieldDraft[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const create = useMutation({
@@ -52,6 +63,10 @@ export function DenominationCreatePage() {
           ...(resellerPrice.trim() ? { resellerPrice: resellerPrice.trim() } : {}),
           ...(warrantyDays.trim() ? { warrantyDays: Number(warrantyDays.trim()) } : {}),
           ...(description.trim() ? { description: description.trim() } : {}),
+          deliveryType,
+          ...(deliveryType === "manual_with_info"
+            ? { additionalFields: draftsToFields(additionalFields) }
+            : {}),
         },
       ),
     onMutate: () => setError(null),
@@ -66,7 +81,8 @@ export function DenominationCreatePage() {
     name.trim().length > 0 &&
     type !== null &&
     durationLabel.trim().length > 0 &&
-    isValidPrice(price);
+    isValidPrice(price) &&
+    (deliveryType !== "manual_with_info" || fieldsAreValid(additionalFields));
 
   return (
     <PageLayout title="New Denomination">
@@ -101,7 +117,7 @@ export function DenominationCreatePage() {
             Type <span className="text-rust">*</span>
           </label>
           <Select value={type ?? ""} onValueChange={(v) => setType(v)}>
-            <SelectTrigger className="mt-1">
+            <SelectTrigger className="mt-1" aria-label="Type">
               <SelectValue placeholder="Select type" />
             </SelectTrigger>
             <SelectContent>
@@ -113,6 +129,34 @@ export function DenominationCreatePage() {
             </SelectContent>
           </Select>
         </div>
+
+        <div>
+          <label className="text-sm font-medium text-ink">
+            Delivery Type <span className="text-rust">*</span>
+          </label>
+          <Select value={deliveryType} onValueChange={(v) => setDeliveryType(v)}>
+            <SelectTrigger className="mt-1" aria-label="Delivery Type">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {DELIVERY_TYPES.map((t) => (
+                <SelectItem key={t.value} value={t.value}>
+                  {t.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {deliveryType === "manual_with_info" && (
+          <div>
+            <label className="text-sm font-medium text-ink">Custom Fields</label>
+            <p className="mt-1 mb-2 text-xs text-ink-soft">
+              The buyer fills these in before paying. At least one field is required.
+            </p>
+            <AdditionalFieldsEditor value={additionalFields} onChange={setAdditionalFields} />
+          </div>
+        )}
 
         <div>
           <label className="text-sm font-medium text-ink">

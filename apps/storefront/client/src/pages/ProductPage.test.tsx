@@ -44,6 +44,8 @@ const productData: ProductPageData = {
       available: 0,
       in_stock: false,
       bulk: null,
+      delivery_type: "auto",
+      additional_fields: [],
     },
     {
       id: 2,
@@ -54,6 +56,8 @@ const productData: ProductPageData = {
       available: 3,
       in_stock: true,
       bulk: null,
+      delivery_type: "auto",
+      additional_fields: [],
     },
     {
       id: 3,
@@ -64,6 +68,8 @@ const productData: ProductPageData = {
       available: 20,
       in_stock: true,
       bulk: null,
+      delivery_type: "auto",
+      additional_fields: [],
     },
   ],
   default_restock_denomination_id: 2,
@@ -194,5 +200,117 @@ describe("ProductPage", () => {
     fireEvent.click(screen.getByRole("button", { name: /Add to cart/ }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/cart", { denomination_id: 2, qty: 1 }));
     expect(await screen.findByText("cart-page-stub")).toBeInTheDocument();
+  });
+
+  // Bug A regression (Task 6): a manual/manual_with_info denomination has no
+  // stock rows by design (Task 2 skips stock reservation for non-auto
+  // lines), so available=0/in_stock=false ALWAYS for these — the purchase
+  // gate must key off delivery_type, not stock, or a manual-delivery product
+  // could never be bought on the storefront.
+  it("shows Buy Now / Add to cart (not the restock CTA) for a zero-stock manual denomination", async () => {
+    const manualOnly: ProductPageData = {
+      ...productData,
+      denominations: [
+        {
+          id: 9,
+          name: "Manual Plan",
+          duration_label: "Manual Plan",
+          price: "50000",
+          warranty_days: 7,
+          available: 0,
+          in_stock: false,
+          bulk: null,
+          delivery_type: "manual",
+          additional_fields: [],
+        },
+      ],
+    };
+    renderProduct("netflix-premium", () => manualOnly);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.getByRole("button", { name: /Add to cart/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Buy now/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Notify me when ready/ })).not.toBeInTheDocument();
+  });
+
+  // Bug B regression (Task 6): DenominationCard's radio used to be
+  // disabled={!d.in_stock} — for a non-auto denomination that permanently
+  // disabled selecting the plan at all, independent of the top-level
+  // purchase-gate fix above.
+  it("does not disable a zero-stock manual_with_info denomination's plan radio", async () => {
+    const mixed: ProductPageData = {
+      ...productData,
+      denominations: [
+        productData.denominations[1]!, // in-stock auto plan (preselected)
+        {
+          id: 9,
+          name: "Manual Info Plan",
+          duration_label: "Manual Info Plan",
+          price: "50000",
+          warranty_days: 7,
+          available: 0,
+          in_stock: false,
+          bulk: null,
+          delivery_type: "manual_with_info",
+          additional_fields: [],
+        },
+      ],
+    };
+    renderProduct("netflix-premium", () => mixed);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const manualRadio = screen.getByRole("radio", { name: /Manual Info Plan/ }) as HTMLInputElement;
+    expect(manualRadio).not.toBeDisabled();
+    fireEvent.click(manualRadio);
+    expect(manualRadio.checked).toBe(true);
+    // Selecting it shows the buy form, not the restock CTA.
+    expect(screen.getByRole("button", { name: /Add to cart/ })).toBeInTheDocument();
+  });
+
+  it("caps qty at 99 (not tied to stock) for a non-auto denomination", async () => {
+    const manualOnly: ProductPageData = {
+      ...productData,
+      denominations: [
+        {
+          id: 9,
+          name: "Manual Plan",
+          duration_label: "Manual Plan",
+          price: "50000",
+          warranty_days: 7,
+          available: 0,
+          in_stock: false,
+          bulk: null,
+          delivery_type: "manual",
+          additional_fields: [],
+        },
+      ],
+    };
+    renderProduct("netflix-premium", () => manualOnly);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const qtyInput = screen.getByLabelText("Quantity") as HTMLInputElement;
+    expect(qtyInput.max).toBe("99");
+    fireEvent.change(qtyInput, { target: { value: "150" } });
+    expect(qtyInput.value).toBe("99");
+  });
+
+  it("does not show a false out-of-stock indicator for a non-auto denomination", async () => {
+    const manualOnly: ProductPageData = {
+      ...productData,
+      denominations: [
+        {
+          id: 9,
+          name: "Manual Plan",
+          duration_label: "Manual Plan",
+          price: "50000",
+          warranty_days: 7,
+          available: 0,
+          in_stock: false,
+          bulk: null,
+          delivery_type: "manual",
+          additional_fields: [],
+        },
+      ],
+    };
+    renderProduct("netflix-premium", () => manualOnly);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByText("Out of stock")).not.toBeInTheDocument();
   });
 });

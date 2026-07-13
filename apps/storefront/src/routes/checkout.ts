@@ -19,8 +19,9 @@
  */
 import type { FastifyPluginAsync } from "fastify";
 import { config } from "@app/core/config";
-import { OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
+import { DeliveryType, OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
+import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
@@ -119,7 +120,10 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
     }
   }
   const total = Decimal.max(new Decimal(0), subtotal.minus(bulkDiscount).minus(voucherDiscount));
-  return { empty: lines.length === 0, subtotal, bulkDiscount, voucherDiscount, voucherError, total };
+  // `lines` (the already-joined CartItem rows, each with its Denomination via
+  // `ci.product`) rides along so checkoutView can build its per-item array
+  // without a second cart query.
+  return { empty: lines.length === 0, subtotal, bulkDiscount, voucherDiscount, voucherError, total, lines };
 }
 
 /** View context shared by GET /checkout, the failed-POST re-render, and the
@@ -142,6 +146,17 @@ export async function checkoutView(
   const haveRate = Boolean(fxRate);
   return {
     items_empty: totals.empty,
+    // Per-item data (Task 6): the SPA's checkout info-collection step needs
+    // delivery_type + the parsed manual_with_info field spec per cart line.
+    // Given the single-SKU-per-non-auto-cart guard (routes/api.ts POST
+    // /cart), a non-auto cart always has exactly one entry here; an auto cart
+    // can have many (irrelevant to the info step).
+    items: totals.lines.map((ci) => ({
+      denomination_id: ci.productId,
+      delivery_type: ci.product.deliveryType,
+      additional_fields: parseAdditionalFields(ci.product.additionalFields),
+      qty: ci.quantity,
+    })),
     subtotal: totals.subtotal.toString(),
     bulk_discount: totals.bulkDiscount.toString(),
     voucher_discount: totals.voucherDiscount.toString(),
@@ -275,6 +290,7 @@ export async function performCheckout(
   voucherCode: string | null,
   useWalletIdr = false,
   useWalletUsdt = false,
+  customerData?: unknown,
 ): Promise<{ orderCode: string }> {
   const [fxRate, tokopay, bybit, bybitBsc, binance, paydisini, nowpayments] = await Promise.all([
     getUsdIdrRate(prisma),
@@ -330,6 +346,39 @@ export async function performCheckout(
     if ((await countUserPendingOrders(tx, customer.userId)) >= MAX_PENDING_ORDERS) {
       throw new ValidationError("error.too_many_pending");
     }
+
+    // Re-assert cart homogeneity at the actual money-moving choke point, not
+    // just at add-to-cart (routes/api.ts POST /cart already guards this, but
+    // a cart can still end up mixed via the guest-cart-merge-on-login path
+    // (routes/auth.ts's establishSession, which upserts via addToCart with no
+    // delivery-type awareness) or a theoretical two-tab add race — see the
+    // per-SKU delivery flows plan's known-gaps note. Re-checking HERE closes
+    // it regardless of how the cart became mixed: updateOrderCustomerData and
+    // every order-detail reader (admin + storefront) assume `items[0]`'s
+    // denomination speaks for the whole order, which silently breaks (wrong
+    // field spec, wrong answer count, or a manual line quietly absorbed into
+    // an "auto" order) if that assumption is ever violated.
+    const cartLines = await getCart(tx, customer.userId);
+    const activeCartLines = cartLines.filter((ci) => ci.product.isActive);
+    if (activeCartLines.length > 1 && activeCartLines.some((ci) => ci.product.deliveryType !== DeliveryType.AUTO)) {
+      throw new ValidationError("error.cart_mixed_delivery");
+    }
+
+    // Server-side revalidation of the buyer-submitted manual_with_info
+    // answers — the client's own validation (CheckoutPage.tsx) is a UX
+    // convenience only, never trusted. Per the single-SKU-per-non-auto-cart
+    // guard (routes/api.ts POST /cart, re-asserted above), a manual_with_info
+    // cart always has exactly one active line; validateCustomerData throws
+    // ValidationError (propagated to the route's existing catch) on any
+    // missing/invalid answer. auto/manual carts pass customerData: null
+    // through unchanged.
+    let customerDataJson: string | null = null;
+    if (activeCartLines.length === 1 && activeCartLines[0]!.product.deliveryType === DeliveryType.MANUAL_WITH_INFO) {
+      const line = activeCartLines[0]!;
+      const fields = parseAdditionalFields(line.product.additionalFields);
+      customerDataJson = JSON.stringify(validateCustomerData(fields, customerData, line.quantity));
+    }
+
     const created = await createOrderFromCart(tx, {
       user: {
         id: customer.userId,
@@ -338,6 +387,7 @@ export async function performCheckout(
       },
       voucherCode,
       walletAmount: walletAmountIdr,
+      customerData: customerDataJson,
     });
     if (!created) throw new ValidationError("error.generic");
     const finalized = await finalizeOrderPayment(tx, created.id, choice);

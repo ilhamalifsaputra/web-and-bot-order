@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bell, ShoppingCart, Zap } from "lucide-react";
+import { AlertTriangle, Bell, ShoppingCart, Zap } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { CartPageData, ProductPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
@@ -22,8 +22,11 @@ import ErrorPage from "./ErrorPage";
 /** Mirrors product.njk's inline script `select()` cls/txt branches for the
  * live summary's stock line — a `.chip` pill, NOT the shared `stock_badge`
  * macro (StockBadge's rounded-full/px-2.5/py-1/font-medium markup), which is
- * only used on the denomination cards themselves. */
-function stockChip(available: number, lowThreshold: number): { cls: string; text: string } {
+ * only used on the denomination cards themselves. Returns null for a
+ * non-auto denomination — there's no stock concept for those, so showing a
+ * false "Out of stock" chip next to a purchasable product would be wrong. */
+function stockChip(available: number, lowThreshold: number, isAuto: boolean): { cls: string; text: string } | null {
+  if (!isAuto) return null;
   if (available > lowThreshold) return { cls: "bg-grass-tint text-grass-dark", text: t("web.stock_available") };
   if (available > 0) return { cls: "bg-amberx-tint text-amberx", text: t("web.stock_left", { count: available }) };
   return { cls: "bg-rust-tint text-rust-dark", text: t("web.stock_out") };
@@ -38,11 +41,23 @@ function Spinner() {
   );
 }
 
-/** Qty input contract: 1..min(99, available). */
-function clampQty(raw: number, available: number): number {
-  const max = Math.max(1, Math.min(99, available));
+/** Qty input contract: 1..min(99, available) for an auto denomination — a
+ * non-auto denomination has no stock concept (available is always 0 by
+ * design), so its cap is a flat 99 (matching the bot's MAX_QTY_PER_ORDER),
+ * never tied to stock. */
+function clampQty(raw: number, available: number, isAuto: boolean): number {
+  const max = isAuto ? Math.max(1, Math.min(99, available)) : 99;
   if (!Number.isFinite(raw)) return 1;
   return Math.max(1, Math.min(Math.trunc(raw), max));
+}
+
+/** A denomination is purchasable when it's in stock (auto) OR when it's a
+ * non-auto delivery type (manual/manual_with_info never have stock rows by
+ * design — Task 2 skips stock reservation for them). Bug A fix (Task 6):
+ * gating purely on `in_stock` made every manual-delivery product
+ * permanently unbuyable on the storefront. */
+function purchasable(d: { delivery_type: string; in_stock: boolean }): boolean {
+  return d.delivery_type !== "auto" || d.in_stock;
 }
 
 export default function ProductPage() {
@@ -58,6 +73,7 @@ export default function ProductPage() {
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [qty, setQty] = useState(1);
+  const [cartErrorKey, setCartErrorKey] = useState<string | null>(null);
 
   // A different product slug means a different denomination set — start over,
   // same as a fresh page load would.
@@ -70,17 +86,21 @@ export default function ProductPage() {
 
   const addMutation = useMutation({
     mutationFn: (vars: { denomination_id: number; qty: number }) => apiPost<CartPageData>("/api/v1/cart", vars),
+    onMutate: () => setCartErrorKey(null),
     onSuccess: () => {
       invalidateContext();
       navigate("/cart");
     },
+    onError: (err) => setCartErrorKey((err as Error).message),
   });
   const buyMutation = useMutation({
     mutationFn: (vars: { denomination_id: number; qty: number }) => apiPost<CartPageData>("/api/v1/cart", vars),
+    onMutate: () => setCartErrorKey(null),
     onSuccess: () => {
       invalidateContext();
       navigate("/checkout");
     },
+    onError: (err) => setCartErrorKey((err as Error).message),
   });
   const restockMutation = useMutation({
     mutationFn: (denominationId: number) => apiPost(`/api/v1/restock/${denominationId}`, {}),
@@ -106,13 +126,14 @@ export default function ProductPage() {
   const selected = denominations.find((d) => d.id === selectedId) ?? fallback;
   if (!selected) return null;
 
-  function selectDenomination(id: number, available: number): void {
+  function selectDenomination(id: number, available: number, isAuto: boolean): void {
     setSelectedId(id);
-    setQty((prev) => clampQty(prev, available));
+    setQty((prev) => clampQty(prev, available, isAuto));
   }
 
   const buying = addMutation.isPending || buyMutation.isPending;
-  const chip = stockChip(selected.available, low_threshold);
+  const selectedIsAuto = selected.delivery_type === "auto";
+  const chip = stockChip(selected.available, low_threshold, selectedIsAuto);
 
   return (
     <>
@@ -153,7 +174,7 @@ export default function ProductPage() {
                   fx={fx}
                   lowThreshold={low_threshold}
                   checked={d.id === selected.id}
-                  onChange={() => selectDenomination(d.id, d.available)}
+                  onChange={() => selectDenomination(d.id, d.available, d.delivery_type === "auto")}
                 />
               ))}
             </div>
@@ -163,13 +184,21 @@ export default function ProductPage() {
           <div className="card card-pad mt-5">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="font-display font-semibold text-pine text-2xl">{formatIdr(selected.price)}</div>
-              <div>
-                <span className={`chip ${chip.cls}`}>{chip.text}</span>
-              </div>
+              {chip && (
+                <div>
+                  <span className={`chip ${chip.cls}`}>{chip.text}</span>
+                </div>
+              )}
             </div>
             {fx && <div className="text-xs text-ink-faint mt-1.5">{t("web.usdt_note")}</div>}
 
-            {selected.in_stock ? (
+            {cartErrorKey && (
+              <div className="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mt-3 flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" /> {t(cartErrorKey)}
+              </div>
+            )}
+
+            {purchasable(selected) ? (
               // Buy Now / Add To Cart — both post the selected denomination_id.
               <form id="buy-form" className="mt-5 flex flex-wrap items-end gap-2" onSubmit={(e) => e.preventDefault()}>
                 <div className="flex flex-col gap-1">
@@ -182,9 +211,9 @@ export default function ProductPage() {
                     name="qty"
                     value={qty}
                     min={1}
-                    max={Math.max(1, Math.min(99, selected.available))}
+                    max={selectedIsAuto ? Math.max(1, Math.min(99, selected.available)) : 99}
                     className="field w-20! text-center"
-                    onChange={(e) => setQty(clampQty(Number(e.target.value), selected.available))}
+                    onChange={(e) => setQty(clampQty(Number(e.target.value), selected.available, selectedIsAuto))}
                   />
                 </div>
                 <button

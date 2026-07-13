@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DenominationEditPage } from "./DenominationEditPage";
@@ -40,6 +41,25 @@ const PRODUCT_DETAIL = {
         warrantyDays: 30,
         description: "Shared profile",
         sortOrder: 5,
+        deliveryType: "auto",
+        additionalFields: null,
+      },
+    ],
+  },
+};
+
+const MANUAL_WITH_INFO_FIELDS = [
+  { key: "ign", label: { id: "IGN", en: "IGN" }, type: "text", required: true, options: [], placeholder: "" },
+];
+
+const MANUAL_WITH_INFO_PRODUCT_DETAIL = {
+  product: {
+    id: 42,
+    denominations: [
+      {
+        ...PRODUCT_DETAIL.product.denominations[0],
+        deliveryType: "manual_with_info",
+        additionalFields: JSON.stringify(MANUAL_WITH_INFO_FIELDS),
       },
     ],
   },
@@ -66,6 +86,27 @@ describe("DenominationEditPage", () => {
     expect(screen.getByRole("button", { name: /save changes/i })).toBeInTheDocument();
   });
 
+  it("prefills the Delivery Type selector from the loaded denomination", async () => {
+    vi.mocked(apiGet).mockResolvedValue({
+      product: {
+        id: 42,
+        denominations: [{ ...PRODUCT_DETAIL.product.denominations[0], deliveryType: "manual" }],
+      },
+    });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    expect(screen.getByRole("combobox", { name: "Delivery Type" })).toHaveTextContent(/manual \(admin fulfills/i);
+  });
+
+  it("prefills the custom field editor from the loaded additionalFields JSON when deliveryType is manual_with_info", async () => {
+    vi.mocked(apiGet).mockResolvedValue(MANUAL_WITH_INFO_PRODUCT_DETAIL);
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    expect(screen.getByDisplayValue("ign")).toBeInTheDocument();
+  });
+
   it("submits the edited fields via PATCH and navigates back to the product detail page", async () => {
     vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
     vi.mocked(apiPatch).mockResolvedValueOnce({ id: 10, name: "Netflix 1 Month Plan" });
@@ -88,9 +129,55 @@ describe("DenominationEditPage", () => {
         warrantyDays: 30,
         description: "Shared profile",
         sortOrder: 5,
+        deliveryType: "auto",
       }),
     );
     await waitFor(() => expect(screen.getByText("product-detail-page")).toBeInTheDocument());
+  });
+
+  it("submits a manual_with_info edit with the prefilled additionalFields as a raw array (not a JSON string)", async () => {
+    // Regression test: DenominationEditPage previously JSON.stringify()d
+    // additionalFields before handing it to apiPatch, which itself
+    // JSON.stringify()s the whole outer body for the actual fetch call —
+    // double-encoding the field into a string. The server route expects a
+    // raw array (zAdditionalFields = z.array(...)) and rejects a string, so
+    // every real save of a manual_with_info denomination failed with a 400
+    // even though this half's mocked apiPatch never caught it.
+    vi.mocked(apiGet).mockResolvedValue(MANUAL_WITH_INFO_PRODUCT_DETAIL);
+    vi.mocked(apiPatch).mockResolvedValueOnce({ id: 10, name: "Netflix 1 Month" });
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    const btn = screen.getByRole("button", { name: /save changes/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+    fireEvent.click(btn);
+
+    await waitFor(() => expect(apiPatch).toHaveBeenCalledTimes(1));
+    const [, sentBody] = vi.mocked(apiPatch).mock.calls[0] as [string, Record<string, unknown>];
+    expect(Array.isArray(sentBody.additionalFields)).toBe(true);
+    expect(apiPatch).toHaveBeenCalledWith(
+      "/api/catalog/denominations/10",
+      expect.objectContaining({
+        deliveryType: "manual_with_info",
+        additionalFields: MANUAL_WITH_INFO_FIELDS,
+      }),
+    );
+  });
+
+  it("changing Delivery Type to Manual + Info requires at least one custom field before saving", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
+    const btn = screen.getByRole("button", { name: /save changes/i });
+    await waitFor(() => expect(btn).not.toBeDisabled());
+
+    await user.click(screen.getByRole("combobox", { name: "Delivery Type" }));
+    await waitFor(() => screen.getByRole("option", { name: /manual \+ info/i }));
+    await user.click(screen.getByRole("option", { name: /manual \+ info/i }));
+
+    expect(btn).toBeDisabled();
   });
 
   it("shows an error message when saving fails", async () => {

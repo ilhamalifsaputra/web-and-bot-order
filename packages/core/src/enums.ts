@@ -47,6 +47,21 @@ export const ProductType = {
 export type ProductType = (typeof ProductType)[keyof typeof ProductType];
 export const zProductType = z.nativeEnum(ProductType);
 
+/** How a Denomination (SKU) is fulfilled — stored on denominations.delivery_type.
+ * Unlike the legacy SQLAlchemy enums above (which store uppercase member names),
+ * these are lowercase values: this is a greenfield column we own, and the values
+ * match the schema default `"auto"` and the admin/API JSON payloads directly. */
+export const DeliveryType = {
+  /** Existing behavior: pull credentials from stock, deliver instantly. Default. */
+  AUTO: "auto",
+  /** Admin hand-types & sends the account; no stock. PAID → PROCESSING → DELIVERED. */
+  MANUAL: "manual",
+  /** Manual, but the buyer fills custom fields at checkout BEFORE payment. */
+  MANUAL_WITH_INFO: "manual_with_info",
+} as const;
+export type DeliveryType = (typeof DeliveryType)[keyof typeof DeliveryType];
+export const zDeliveryType = z.nativeEnum(DeliveryType);
+
 export const StockStatus = {
   AVAILABLE: "AVAILABLE",
   RESERVED: "RESERVED",
@@ -75,6 +90,12 @@ export const OrderStatus = {
   CONFIRMED: "CONFIRMED",
   PENDING_VERIFICATION: "PENDING_VERIFICATION",
   PAID: "PAID",
+  /** Payment confirmed for a MANUAL-delivery SKU (deliveryType manual /
+   * manual_with_info): the order is awaiting hand-fulfilment by an admin (no
+   * stock to pull). Reached only via settlePaidOrder's manual branch; the admin
+   * fulfillment queue drains it to DELIVERED via fulfillManualOrder. Auto SKUs
+   * never enter this state (they go PENDING_VERIFICATION → DELIVERED directly). */
+  PROCESSING: "PROCESSING",
   DELIVERED: "DELIVERED",
   CANCELLED: "CANCELLED",
   REJECTED: "REJECTED",
@@ -110,6 +131,7 @@ export function customerStatusLabel(status: string): string {
     case OrderStatus.PENDING_VERIFICATION:
     case OrderStatus.PAID:
     case OrderStatus.UNDERPAID:
+    case OrderStatus.PROCESSING:
       return "status.label.processing";
     case OrderStatus.DELIVERED:
       return "status.label.delivered";
@@ -207,6 +229,15 @@ export const NotificationEvent = {
   // order is ready — view it on the site". Carries chat_id + order_code only,
   // NEVER credentials (the outbox table is visible in the admin /outbox panel).
   ORDER_DELIVERED_DM: "ORDER_DELIVERED_DM",
+  // Buyer DM when a MANUAL-delivery order moves PAID → PROCESSING: "payment
+  // received, your order is being prepared by hand, ~1×24h, we'll notify you".
+  // Carries chat_id + order_code + buyer_language only.
+  ORDER_PROCESSING_DM: "ORDER_PROCESSING_DM",
+  // Buyer DM when an admin hand-fulfils a manual order (PROCESSING → DELIVERED):
+  // sends the delivered content as a NEW message. Carries chat_id + order_code +
+  // buyer_language only — the content is read LIVE from Order.deliveredContent at
+  // dispatch time, never placed in the payload (same rule as ORDER_DELIVERED_DM).
+  ORDER_MANUAL_DELIVERED_DM: "ORDER_MANUAL_DELIVERED_DM",
   // Admin DM (not a channel post): a Bybit BSC order's automated tracking
   // pipeline failed post-detection (tracker lookup-failure grace period
   // exhausted, or a delivery throw after Bybit reported the deposit

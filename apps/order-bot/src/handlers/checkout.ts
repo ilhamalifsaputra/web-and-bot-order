@@ -12,7 +12,7 @@ import { InlineKeyboard } from "grammy";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { localize } from "@app/core/datetime";
-import { NotificationEvent, OrderCurrency, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
+import { DeliveryType, NotificationEvent, OrderCurrency, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import {
@@ -309,18 +309,38 @@ export async function showOrderConfirmation(
     await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
     return;
   }
-  const stock = await countAvailableStock(prisma, productId);
-  if (stock < quantity) {
-    // Stock disappeared under the user. Toast, then replace the now-invalid
-    // confirmation bubble with an out-of-stock notice + a forward action so the
-    // dead "Confirm & Pay" button is gone (never strand the user).
-    if (ctx.callbackQuery)
-      await ctx.answerCallbackQuery({ text: t(ctx, "error.out_of_stock", { product: product.name }), show_alert: true });
-    await smartEdit(
-      ctx,
-      t(ctx, "error.out_of_stock", { product: esc(product.name) }),
-      ckb.backToMain(lang),
-    );
+  // Stock rows only ever exist for AUTO SKUs (Task 2 skips reservation
+  // entirely for manual/manual_with_info) — running this check for a
+  // non-auto product would always see 0 available and falsely reject every
+  // manual-delivery purchase at the very first screen.
+  if (product.deliveryType === DeliveryType.AUTO) {
+    const stock = await countAvailableStock(prisma, productId);
+    if (stock < quantity) {
+      // Stock disappeared under the user. Toast, then replace the now-invalid
+      // confirmation bubble with an out-of-stock notice + a forward action so the
+      // dead "Confirm & Pay" button is gone (never strand the user).
+      if (ctx.callbackQuery)
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.out_of_stock", { product: product.name }), show_alert: true });
+      await smartEdit(
+        ctx,
+        t(ctx, "error.out_of_stock", { product: esc(product.name) }),
+        ckb.backToMain(lang),
+      );
+      return;
+    }
+  }
+
+  // manual_with_info: the buyer must fill the SKU's custom fields BEFORE
+  // payment. Divert to the single-bubble info-collection wizard the first
+  // time through; once it completes it stashes the answers in
+  // scratch.customerData and re-enters here via renderOrderConfirmation, so
+  // this branch doesn't fire again for the same checkout attempt. A buyer who
+  // backs out of quantity/product and re-taps Buy re-triggers this gate,
+  // which is correct (customerData was never set for the abandoned attempt).
+  if (product.deliveryType === DeliveryType.MANUAL_WITH_INFO && !ctx.session.scratch.customerData) {
+    ctx.session.scratch.pendingInfoProductId = productId;
+    ctx.session.scratch.pendingInfoQuantity = quantity;
+    await ctx.conversation.enter("customerInfo");
     return;
   }
 
@@ -565,6 +585,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     return;
   }
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+  const customerData = (ctx.session.scratch.customerData as string | undefined) ?? null;
 
   const user = await getUser(prisma, info.id);
   if (user === null) {
@@ -589,6 +610,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
         voucherCode,
         rate,
         walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
+        customerData,
       }),
     );
   } catch (e) {
@@ -602,11 +624,13 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
-  // Consume the voucher and wallet toggle now that an order actually exists —
-  // a failed attempt above (out of stock, etc.) leaves them for a retry.
+  // Consume the voucher, wallet toggle, and collected info now that an order
+  // actually exists — a failed attempt above (out of stock, etc.) leaves them
+  // for a retry.
   delete ctx.session.scratch.appliedVoucherCode;
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
+  delete ctx.session.scratch.customerData;
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -648,6 +672,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
     return;
   }
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+  const customerData = (ctx.session.scratch.customerData as string | undefined) ?? null;
 
   const user = await getUser(prisma, info.id);
   if (user === null) {
@@ -672,6 +697,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
         voucherCode,
         rate,
         walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
+        customerData,
       }),
     );
   } catch (e) {
@@ -685,11 +711,13 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
-  // Consume the voucher and wallet toggle now that an order actually exists —
-  // a failed attempt above (out of stock, etc.) leaves them for a retry.
+  // Consume the voucher, wallet toggle, and collected info now that an order
+  // actually exists — a failed attempt above (out of stock, etc.) leaves them
+  // for a retry.
   delete ctx.session.scratch.appliedVoucherCode;
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
+  delete ctx.session.scratch.customerData;
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -732,6 +760,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
     return;
   }
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+  const customerData = (ctx.session.scratch.customerData as string | undefined) ?? null;
 
   const user = await getUser(prisma, info.id);
   if (user === null) {
@@ -756,6 +785,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
         voucherCode,
         rate,
         walletAmount: useWalletUsdt ? user.walletBalanceUsdt : undefined,
+        customerData,
       }),
     );
   } catch (e) {
@@ -769,11 +799,13 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
-  // Consume the voucher and wallet toggle now that an order actually exists —
-  // a failed attempt above (out of stock, etc.) leaves them for a retry.
+  // Consume the voucher, wallet toggle, and collected info now that an order
+  // actually exists — a failed attempt above (out of stock, etc.) leaves them
+  // for a retry.
   delete ctx.session.scratch.appliedVoucherCode;
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
+  delete ctx.session.scratch.customerData;
 
   // The charged amount is USDT; show the central-IDR equivalent beside it
   // (totalAmount × the fxRate snapshot, which includes the unique cents).
@@ -826,6 +858,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     return;
   }
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+  const customerData = (ctx.session.scratch.customerData as string | undefined) ?? null;
 
   const user = await getUser(prisma, info.id);
   if (user === null) {
@@ -843,7 +876,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   let order: Awaited<ReturnType<typeof createOrderDirect>>;
   try {
     order = await prisma.$transaction(async (tx) => {
-      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode });
+      const created = await createOrderDirect(tx, { user: { id: user.id, role: user.role }, productId, quantity, voucherCode, customerData });
       if (!created) return created;
       const finalized = await finalizeOrderPayment(tx, created.id, {
         currency: OrderCurrency.USDT,
@@ -864,11 +897,13 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
-  // Consume the voucher and wallet toggle now that an order actually exists —
-  // a failed attempt above (out of stock, etc.) leaves them for a retry.
+  // Consume the voucher, wallet toggle, and collected info now that an order
+  // actually exists — a failed attempt above (out of stock, etc.) leaves them
+  // for a retry.
   delete ctx.session.scratch.appliedVoucherCode;
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
+  delete ctx.session.scratch.customerData;
 
   // Create the hosted invoice + cache it. order.totalAmount is ALREADY in USDT
   // (finalizeOrderPayment's USDT branch) — pass it straight through as
@@ -940,6 +975,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     return;
   }
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+  const customerData = (ctx.session.scratch.customerData as string | undefined) ?? null;
 
   const user = await getUser(prisma, info.id);
   if (user === null) {
@@ -962,6 +998,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
         quantity,
         voucherCode,
         walletAmount: useWalletIdr ? user.walletBalance : undefined,
+        customerData,
       });
       if (!created) return created;
       return finalizeOrderPayment(tx, created.id, { currency: OrderCurrency.IDR });
@@ -977,11 +1014,13 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
-  // Consume the voucher and wallet toggle now that an order actually exists —
-  // a failed attempt above (out of stock, etc.) leaves them for a retry.
+  // Consume the voucher, wallet toggle, and collected info now that an order
+  // actually exists — a failed attempt above (out of stock, etc.) leaves them
+  // for a retry.
   delete ctx.session.scratch.appliedVoucherCode;
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
+  delete ctx.session.scratch.customerData;
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   let gateway;
@@ -1063,6 +1102,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
     return;
   }
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+  const customerData = (ctx.session.scratch.customerData as string | undefined) ?? null;
 
   const user = await getUser(prisma, info.id);
   if (user === null) {
@@ -1085,6 +1125,7 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
         quantity,
         voucherCode,
         walletAmount: useWalletIdr ? user.walletBalance : undefined,
+        customerData,
       });
       if (!created) return created;
       return finalizeOrderPayment(tx, created.id, { currency: OrderCurrency.IDR, method: PaymentMethod.PAYDISINI });
@@ -1100,11 +1141,13 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
     await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
     return;
   }
-  // Consume the voucher and wallet toggle now that an order actually exists —
-  // a failed attempt above (out of stock, etc.) leaves them for a retry.
+  // Consume the voucher, wallet toggle, and collected info now that an order
+  // actually exists — a failed attempt above (out of stock, etc.) leaves them
+  // for a retry.
   delete ctx.session.scratch.appliedVoucherCode;
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
+  delete ctx.session.scratch.customerData;
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   let gateway;
@@ -1200,6 +1243,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
   }
   const rate = useWalletUsdt ? await currentUsdtRate() : null;
   const voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? null;
+  const customerData = (ctx.session.scratch.customerData as string | undefined) ?? null;
 
   let result: Awaited<ReturnType<typeof completeOrderWithWalletCredit>>;
   try {
@@ -1216,6 +1260,7 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
         voucherCode,
         currency: useWalletIdr ? OrderCurrency.IDR : OrderCurrency.USDT,
         rate: rate ?? undefined,
+        customerData,
       }),
     );
   } catch (e) {
@@ -1226,46 +1271,64 @@ export async function completeOrderWithWallet(ctx: MyContext, productId: number,
     throw e;
   }
 
-  // Consume the voucher and wallet toggle now that an order actually exists —
-  // same convention as every other buyNow* rail.
+  // Consume the voucher, wallet toggle, and collected info now that an order
+  // actually exists — same convention as every other buyNow* rail.
   delete ctx.session.scratch.appliedVoucherCode;
   delete ctx.session.scratch.useWalletIdr;
   delete ctx.session.scratch.useWalletUsdt;
+  delete ctx.session.scratch.customerData;
 
-  // Deliver the account file directly (the order is already DELIVERED and the
-  // credit fully paid), exactly like the instant Binance Internal rail's
-  // onDelivered — so wallet delivery never hinges on the outbox dispatcher
-  // running. Re-read the order fresh so stock is SOLD with live credentials.
-  // Only if the direct send fails do we fall back to the outbox DM.
-  const deliveredOrder = await getOrder(prisma, result.order.id);
-  const tgId =
-    deliveredOrder?.user.telegramId != null ? Number(deliveredOrder.user.telegramId) : null;
-  if (deliveredOrder && tgId != null) {
-    try {
-      await sendAccountFile(ctx.api, tgId, deliveredOrder, lang);
-    } catch (err) {
-      logger.error(
-        { err },
-        `Failed to DM the wallet-paid account file for order ${result.order.orderCode} — enqueuing outbox retry so the buyer still receives their credentials`,
-      );
+  if (result.kind === "delivered") {
+    // Deliver the account file directly (the order is already DELIVERED and
+    // the credit fully paid), exactly like the instant Binance Internal
+    // rail's onDelivered — so wallet delivery never hinges on the outbox
+    // dispatcher running. Re-read the order fresh so stock is SOLD with live
+    // credentials. Only if the direct send fails do we fall back to the
+    // outbox DM.
+    const deliveredOrder = await getOrder(prisma, result.order.id);
+    const tgId =
+      deliveredOrder?.user.telegramId != null ? Number(deliveredOrder.user.telegramId) : null;
+    if (deliveredOrder && tgId != null) {
       try {
-        await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, result.order.id, {
-          chat_id: tgId,
-          order_code: result.order.orderCode,
-        });
-        nudgeOutboxDispatcher();
-      } catch (eq) {
+        await sendAccountFile(ctx.api, tgId, deliveredOrder, lang);
+      } catch (err) {
         logger.error(
-          { err: eq },
-          `Failed to enqueue outbox fallback for wallet order ${result.order.orderCode} — buyer may need a manual admin resend`,
+          { err },
+          `Failed to DM the wallet-paid account file for order ${result.order.orderCode} — enqueuing outbox retry so the buyer still receives their credentials`,
         );
+        try {
+          await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, result.order.id, {
+            chat_id: tgId,
+            order_code: result.order.orderCode,
+          });
+          nudgeOutboxDispatcher();
+        } catch (eq) {
+          logger.error(
+            { err: eq },
+            `Failed to enqueue outbox fallback for wallet order ${result.order.orderCode} — buyer may need a manual admin resend`,
+          );
+        }
       }
     }
+
+    await smartEdit(
+      ctx,
+      t(ctx, "checkout.wallet_paid", { code: result.order.orderCode }),
+      ckb.paymentSuccessKb(lang),
+    );
+    return;
   }
 
+  // MANUAL / MANUAL_WITH_INFO SKU: no credentials exist yet — settlePaidOrder
+  // already queued the order for hand-fulfilment and enqueued the buyer's
+  // ORDER_PROCESSING_DM via the outbox. This bubble edit is just the
+  // immediate in-chat confirmation, so it must not imply credentials were
+  // just sent. Nudge the dispatcher so that DM arrives near-instantly instead
+  // of waiting for its next poll (matches the web-admin /approve route).
+  nudgeOutboxDispatcher();
   await smartEdit(
     ctx,
-    t(ctx, "checkout.wallet_paid", { code: result.order.orderCode }),
+    t(ctx, "checkout.wallet_paid_processing", { code: result.order.orderCode }),
     ckb.paymentSuccessKb(lang),
   );
 }

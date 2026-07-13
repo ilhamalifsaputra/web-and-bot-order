@@ -58,6 +58,10 @@ export interface CartLineView {
   qty: number;
   line_total: string;
   available: number;
+  /** "auto" | "manual" | "manual_with_info" (DeliveryType) — drives the
+   * single-SKU-per-non-auto-cart guard (POST /cart) and the checkout
+   * info-collection step (checkoutView's items array). */
+  delivery_type: string;
 }
 
 /** Shared shape for the cart page + checkout summary. */
@@ -88,6 +92,7 @@ export async function loadCartLines(
             qty: r.quantity,
             line_total: unit.times(r.quantity).toString(),
             available: await countAvailableStock(prisma, r.productId),
+            delivery_type: denom.deliveryType,
           };
         }),
     );
@@ -112,6 +117,7 @@ export async function loadCartLines(
         qty: l.q,
         line_total: unit.times(l.q).toString(),
         available,
+        delivery_type: denom.deliveryType,
       } satisfies CartLineView;
     }),
   );

@@ -17,6 +17,16 @@ export interface DenominationCardData {
   price: string;
   available: number;
   in_stock: boolean;
+  /** "auto" | "manual" | "manual_with_info" (DeliveryType). */
+  delivery_type: string;
+}
+
+/** Bug B fix (Task 6): the radio used to be disabled={!d.in_stock}, which
+ * permanently disabled selecting ANY manual/manual_with_info plan (they
+ * never have stock rows by design — Task 2 skips stock reservation for
+ * them). Mirrors ProductPage.tsx's `purchasable`. */
+function purchasable(d: DenominationCardData): boolean {
+  return d.delivery_type !== "auto" || d.in_stock;
 }
 
 export interface DenominationCardProps {
@@ -28,9 +38,10 @@ export interface DenominationCardProps {
 }
 
 export default function DenominationCard({ d, fx, lowThreshold, checked, onChange }: DenominationCardProps) {
+  const buyable = purchasable(d);
   return (
     <label
-      className={`denom-card card card-pad cursor-pointer flex items-center justify-between gap-3 transition-all duration-150 hover:shadow-lift has-[:checked]:ring-2 has-[:checked]:ring-pine has-[:checked]:bg-pine-tint/40 ${!d.in_stock ? "opacity-60" : ""}`}
+      className={`denom-card card card-pad cursor-pointer flex items-center justify-between gap-3 transition-all duration-150 hover:shadow-lift has-[:checked]:ring-2 has-[:checked]:ring-pine has-[:checked]:bg-pine-tint/40 ${!buyable ? "opacity-60" : ""}`}
       data-denom-id={d.id}
       data-price={d.price}
       data-available={d.available}
@@ -43,7 +54,7 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
           value={d.id}
           form="buy-form"
           className="denom-radio accent-pine shrink-0"
-          disabled={!d.in_stock}
+          disabled={!buyable}
           checked={checked}
           onChange={onChange}
         />
@@ -51,9 +62,13 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
           <div className="font-display text-sm font-semibold text-ink leading-snug">
             {d.duration_label || d.name}
           </div>
-          <div className="mt-0.5">
-            <StockBadge available={d.available} lowThreshold={lowThreshold} />
-          </div>
+          {/* Non-auto plans have no stock concept — showing a stock badge
+              (even a false "in stock") would be misleading, so omit it. */}
+          {d.delivery_type === "auto" && (
+            <div className="mt-0.5">
+              <StockBadge available={d.available} lowThreshold={lowThreshold} />
+            </div>
+          )}
         </div>
       </div>
       <div className="text-right shrink-0">

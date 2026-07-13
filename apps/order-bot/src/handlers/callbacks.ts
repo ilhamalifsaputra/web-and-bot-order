@@ -132,6 +132,13 @@ const dispatchOrder: DomainDispatcher = async (ctx, parts) => {
   else if (action === "page") await customer.listMyOrders(ctx);
   else if (action === "view") await customer.viewOrder(ctx, parseInt(parts[3]!, 10));
   else if (action === "allhistory") await customer.allOrderHistory(ctx);
+  else if (action === "refresh") await customer.refreshOrderDetail(ctx, parseInt(parts[3]!, 10));
+  else if (action === "editinfo") {
+    // Conversations can't take entry args in this codebase — stash the target
+    // order id in scratch (mirrors customerInfo's pendingInfoProductId, Task 5).
+    ctx.session.scratch.editInfoOrderId = parseInt(parts[3]!, 10);
+    await ctx.conversation.enter("editCustomerInfo");
+  }
 };
 
 const dispatchRef: DomainDispatcher = async (ctx, parts) => {

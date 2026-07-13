@@ -29,6 +29,7 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { langCode, NotificationEvent } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
 import {
   prisma,
@@ -303,6 +304,30 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   }
 }
 
+/**
+ * Flip the payment-instructions bubble to a success message for a "processing"
+ * (manual-delivery) order. The buyer already gets a separate
+ * ORDER_PROCESSING_DM via the outbox (enqueued by settlePaidOrder) — this only
+ * keeps the anchored QR bubble from sitting at "waiting for payment" forever.
+ * Reuses the exact same success text/keyboard onDelivered's bubble edit uses;
+ * never throws.
+ */
+async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<void> {
+  if (order.user.telegramId == null) return;
+  if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
+  const lang = langCode(order.user.language);
+  try {
+    await api.editMessageText(
+      Number(order.paymentMsgChatId),
+      order.paymentMsgId,
+      coreT("checkout.internal_paid", lang, { code: order.orderCode }),
+      { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
+    );
+  } catch {
+    /* bubble may be gone/uneditable — the ORDER_PROCESSING_DM already informed the buyer */
+  }
+}
+
 async function alertAdmins(api: Api, text: string): Promise<void> {
   for (const adminId of adminIds()) {
     try {
@@ -404,6 +429,10 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
         if (r.status === "delivered") {
           logger.info(`Matched by ${matchedBy} — delivered order ${order.orderCode} (transfer ${tx.txId})`);
           await onDelivered(api, r.order);
+        } else if (r.status === "processing") {
+          logger.info(`Order ${order.orderCode} paid — queued for manual fulfilment (transfer ${tx.txId})`);
+          nudgeOutboxDispatcher();
+          await editBubbleToProcessing(api, r.order);
         } else if (r.status === "stale") {
           logger.warn(`Transfer ${tx.txId} matched order ${order.orderCode} but it was no longer PENDING — skipped to avoid double delivery, admin alerted`);
           await alertAdmins(api, `⚠️ Transfer matched <code>${order.orderCode}</code> but it was no longer pending (tx ${esc(tx.txId)}).`);

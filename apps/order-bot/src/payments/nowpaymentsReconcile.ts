@@ -122,6 +122,8 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
     if (r.status === "delivered") {
       logger.info(`NOWPayments reconcile delivered order ${order.orderCode} — nudging notifier to DM the account file immediately`);
       nudgeOutboxDispatcher();
+    } else if (r.status === "processing") {
+      logger.info(`NOWPayments reconcile order ${order.orderCode} paid — queued for manual fulfilment`);
     } else if (r.status === "stale") {
       logger.warn(`Order ${order.orderCode} was paid but is no longer PENDING — likely already delivered by the webhook, no action needed`);
     }

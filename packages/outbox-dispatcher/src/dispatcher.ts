@@ -3,15 +3,19 @@
  *
  * Two kinds of rows:
  *  - Direct messages to a buyer/admin (payload.chat_id): ORDER_DELIVERED_DM,
- *    ADMIN_PW_RESET. These deliver regardless of whether a public channel is
- *    configured — the loop runs whenever a bot token is available.
+ *    ORDER_MANUAL_DELIVERED_DM, ORDER_PROCESSING_DM, ADMIN_PW_RESET. These
+ *    deliver regardless of whether a public channel is configured — the loop
+ *    runs whenever a bot token is available.
  *  - Channel posts (ORDER_DELIVERED testimonial): need PUBLIC_CHANNEL_ID. When
  *    no channel is configured they are left PENDING (skipped) so they post once
  *    a channel is set, rather than being failed away.
  *
- * ORDER_DELIVERED_DM is special: the buyer receives their account(s) as a
- * `<order-code>.txt` document, with credentials read LIVE from the DB at send
- * time. Credentials NEVER ride in the outbox payload (CLAUDE.md).
+ * ORDER_DELIVERED_DM and ORDER_MANUAL_DELIVERED_DM are special: the buyer's
+ * account/credentials are read LIVE from the DB at send time — ORDER_DELIVERED_DM
+ * as a `<order-code>.txt` document, ORDER_MANUAL_DELIVERED_DM (per-SKU manual
+ * delivery flows) as the admin-typed `Order.deliveredContent` sent as one or
+ * more plain messages. Credentials/content NEVER ride in the outbox payload
+ * (CLAUDE.md).
  *
  * Each pending row is sent independently; status is updated in short writes to
  * keep the SQLite write lock held only briefly. Telegram flood control
@@ -40,7 +44,7 @@ import {
   warrantyDaysFor,
   accountFileName,
 } from "@app/core/delivery";
-import { render } from "./templates";
+import { render, escape } from "./templates";
 
 // Events delivered as a direct message (payload.chat_id), not as a post to
 // PUBLIC_CHANNEL_ID. DMs only work from a bot the recipient has started —
@@ -50,7 +54,11 @@ const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.ADMIN_OVERPAID, // admin DM (gateway webhook overpayment)
   NotificationEvent.ORDER_DELIVERED_DM, // buyer DM (web auto-delivery)
   NotificationEvent.ORDER_PIPELINE_FAILED, // admin DM (Bybit BSC tracking pipeline failure)
+  NotificationEvent.ORDER_PROCESSING_DM, // buyer DM (manual order queued for hand-fulfilment)
 ]);
+
+/** Telegram's hard cap on a single message's text length. */
+const TELEGRAM_MESSAGE_MAX_LEN = 4096;
 
 type PendingRow = Awaited<ReturnType<typeof fetchPendingNotifications>>[number];
 
@@ -125,6 +133,14 @@ export async function drainBatch(bot: Bot): Promise<void> {
       continue;
     }
 
+    // Buyer manual-fulfilment DM: send the admin-typed deliveredContent as a
+    // plain message, with the content read live from the DB (never from the
+    // outbox payload) — same credential-safety rule as ORDER_DELIVERED_DM.
+    if (row.event === NotificationEvent.ORDER_MANUAL_DELIVERED_DM) {
+      if ((await deliverManualContentDm(bot, row, payload)) === "ratelimited") return;
+      continue;
+    }
+
     const text = render(row.event, payload);
     if (!text) {
       // Unknown event type — drop so we don't loop forever.
@@ -190,6 +206,85 @@ async function deliverAccountDm(
       parse_mode: "HTML",
     }),
   );
+}
+
+/**
+ * Split `text` into chunks of at most `maxLen` characters, breaking only at
+ * line boundaries (never mid-word) where possible. If a single line alone
+ * exceeds `maxLen` it's kept whole in its own chunk rather than cut mid-word
+ * — the same "keep whole" tradeoff `templates.ts`'s `fmtItems` takes on an
+ * over-long single item.
+ */
+function chunkText(text: string, maxLen = TELEGRAM_MESSAGE_MAX_LEN): string[] {
+  if (text.length <= maxLen) return [text];
+  const lines = text.split("\n");
+  const chunks: string[] = [];
+  let current = "";
+  for (const line of lines) {
+    const candidate = current ? `${current}\n${line}` : line;
+    if (candidate.length > maxLen && current) {
+      chunks.push(current);
+      current = line;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+/**
+ * Deliver a buyer's manually-typed account content (an admin-fulfilled
+ * MANUAL/MANUAL_WITH_INFO order) as one or more plain messages. Reads
+ * `Order.deliveredContent` live from the DB — the outbox payload only
+ * carries the order code + chat id, never the content itself (same
+ * credential-safety rule as `deliverAccountDm`/ORDER_DELIVERED_DM).
+ */
+async function deliverManualContentDm(
+  bot: Bot,
+  row: PendingRow,
+  payload: Record<string, unknown>,
+): Promise<"ok" | "ratelimited"> {
+  const chatId = Number(payload.chat_id);
+  if (!Number.isFinite(chatId)) {
+    await markNotificationFailed(prisma, row.id, "missing chat_id", 1);
+    return "ok";
+  }
+  const code = typeof payload.order_code === "string" ? payload.order_code : "";
+  const order = code ? await getOrderByCodeFull(prisma, code) : null;
+  if (!order) {
+    await markNotificationFailed(prisma, row.id, `order not found for code ${code}`, 1);
+    return "ok";
+  }
+  if (!order.deliveredContent) {
+    // Shouldn't normally happen — fulfillManualOrder always sets deliveredContent
+    // before enqueueing this DM — but the dispatcher must not assume the DB
+    // can't have surprised it (e.g. a bug elsewhere, or the row processed out
+    // of order).
+    await markNotificationFailed(prisma, row.id, "order has no deliveredContent", 1);
+    return "ok";
+  }
+
+  const codeEsc = escape(order.orderCode);
+  const caption =
+    `✅ <b>Order <code>${codeEsc}</code></b> — here's your account:\n\n` +
+    `✅ <b>Pesanan <code>${codeEsc}</code></b> — berikut akun kamu:`;
+  const fullText = `${caption}\n\n${escape(order.deliveredContent)}`;
+  const chunks = chunkText(fullText);
+
+  return trySend(bot, row, async () => {
+    // All chunks are sent inside this one trySend callback so the SENT/
+    // FAILED/rate-limit bookkeeping happens exactly once for the whole
+    // sequence, and they go out sequentially in order (the buyer must
+    // receive them in the right order). Accepted tradeoff (mirrors
+    // approveOrder's own documented races): if a rate-limit hits mid-way
+    // through a multi-chunk send, earlier chunks already went out and can't
+    // be un-sent — trySend's retry resends from chunk 1, so a buyer could
+    // rarely see an early chunk duplicated.
+    for (const chunk of chunks) {
+      await bot.api.sendMessage(chatId, chunk, { parse_mode: "HTML" });
+    }
+  });
 }
 
 /**

@@ -20,6 +20,7 @@ import {
   listCatalogProducts,
   listNewestCatalogProducts,
   searchCatalog,
+  lowStockDenominations,
   CategoryMismatchError,
 } from "./catalog";
 
@@ -67,6 +68,35 @@ describe("ensureUniqueSlug", () => {
     const b = await makeProduct(cat.id, "Same Name");
     expect(a.slug).toBe("same-name");
     expect(b.slug).toBe("same-name-2");
+  });
+});
+
+describe("createDenomination — deliveryType/additionalFields", () => {
+  it("defaults deliveryType to \"auto\" and additionalFields to null when omitted", async () => {
+    const cat = await makeCategory();
+    const product = await makeProduct(cat.id, "Defaults");
+    const denom = await makeDenom(product.id, "1 Month", "10000");
+    expect(denom.deliveryType).toBe("auto");
+    expect(denom.additionalFields).toBeNull();
+  });
+
+  it("persists an explicit deliveryType and additionalFields JSON string", async () => {
+    const cat = await makeCategory();
+    const product = await makeProduct(cat.id, "Explicit");
+    const fieldsJson = JSON.stringify([
+      { key: "ign", label: { id: "IGN", en: "IGN" }, type: "text", required: true, options: [], placeholder: "" },
+    ]);
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual_with_info",
+      additionalFields: fieldsJson,
+    });
+    expect(denom.deliveryType).toBe("manual_with_info");
+    expect(denom.additionalFields).toBe(fieldsJson);
   });
 });
 
@@ -219,6 +249,39 @@ describe("searchCatalog", () => {
     // a query that only matches the denomination name should NOT surface the product
     expect((await searchCatalog(prisma, "Basic Plan", 24)).some((x) => x.id === p.id)).toBe(false);
     expect(await searchCatalog(prisma, "   ", 24)).toEqual([]);
+  });
+});
+
+describe("lowStockDenominations", () => {
+  it("excludes manual/manual_with_info SKUs even though they always read available: 0", async () => {
+    const cat = await makeCategory();
+    const product = await makeProduct(cat.id, "Low Stock Mix");
+
+    const autoDenom = await makeDenom(product.id, "Auto Low", "10000");
+    await bulkAddStock(prisma, autoDenom.id, ["cred-1", "cred-2"]); // 2 available, at/below threshold
+
+    const manualDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Manual No Stock",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual",
+    });
+    const manualWithInfoDenom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Manual With Info No Stock",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+      deliveryType: "manual_with_info",
+    });
+
+    const results = await lowStockDenominations(prisma, 5);
+    const ids = results.map((r) => r.denomination.id);
+    expect(ids).toContain(autoDenom.id);
+    expect(ids).not.toContain(manualDenom.id);
+    expect(ids).not.toContain(manualWithInfoDenom.id);
   });
 });
 

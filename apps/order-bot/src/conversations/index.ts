@@ -7,6 +7,8 @@
 import type { MyContext, MyConversation } from "../context";
 import { ticketUserReplyConversation } from "./customer";
 import { voucherConversation } from "./checkout";
+import { customerInfoConversation } from "./customerInfo";
+import { editCustomerInfoConversation } from "./editCustomerInfo";
 import { supportConversation } from "./support";
 import { rejectConversation } from "./reject";
 import {
@@ -40,6 +42,20 @@ export const CONVERSATIONS: ConvSpec[] = [
   { name: "ticketUserReply", fn: ticketUserReplyConversation, callback: /^v1:ticket:reply:\d+$/ },
   // checkout
   { name: "voucher", fn: voucherConversation, callback: /^v1:voucher:start:\d+:\d+$/ },
+  // Entered programmatically only (checkout.ts's showOrderConfirmation calls
+  // ctx.conversation.enter("customerInfo") for a manual_with_info SKU) — no
+  // callback/command/hears trigger needed. main.ts's registration loop
+  // (`for (const spec of CONVERSATIONS) bot.use(createConversation(...))`)
+  // registers every spec unconditionally regardless of whether it has a
+  // trigger, so this still becomes .enter()-able; the SEPARATE entry-trigger
+  // loop right after it just no-ops for a spec with none (each `if
+  // (spec.callback)`/`if (spec.command)`/`if (spec.hears)` simply skips).
+  { name: "customerInfo", fn: customerInfoConversation },
+  // Entered programmatically only (callbacks.ts's dispatchOrder calls
+  // ctx.conversation.enter("editCustomerInfo") for a v1:order:editinfo:<id>
+  // tap on a PROCESSING manual_with_info order) — same no-trigger shape as
+  // customerInfo above (Task 9).
+  { name: "editCustomerInfo", fn: editCustomerInfoConversation },
   // support (entry via the inline Help Center button + /support command)
   { name: "support", fn: supportConversation, callback: /^v1:support:open$/, command: "support" },
   // admin

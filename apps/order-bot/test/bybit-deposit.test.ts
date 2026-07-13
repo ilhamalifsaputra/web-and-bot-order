@@ -106,6 +106,23 @@ describe("createBybitOrder", () => {
     expect(order!.expiresAt!.getTime()).toBeGreaterThan(Date.now());
   });
 
+  // Per-SKU delivery flows (dlv-task-5): createBybitOrder destructures
+  // walletAmount/rate off args and spreads the rest into createOrderDirect, so
+  // a manual_with_info checkout's collected answers must ride along untouched.
+  it("forwards customerData verbatim onto the created order", async () => {
+    const customerData = JSON.stringify([{ game_id: "GID-456" }]);
+    const order = await prisma.$transaction((tx) =>
+      createBybitOrder(tx, {
+        user: { id: sample.user.id, role: sample.user.role },
+        productId: sample.product.id,
+        quantity: 1,
+        rate: 1,
+        customerData,
+      }),
+    );
+    expect(order!.customerData).toBe(customerData);
+  });
+
   // Checkout-4 (security audit, 2026-06-23): computeUniqueCents only has 49
   // buckets — two orders for the SAME base amount whose ids happen to land in
   // the same bucket used to get an IDENTICAL totalAmount, and Bybit has no

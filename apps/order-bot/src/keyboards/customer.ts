@@ -8,7 +8,7 @@
 import { InlineKeyboard, Keyboard } from "grammy";
 import type { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
-import { OrderStatus, PaymentMethod, StockStatus, TicketStatus } from "@app/core/enums";
+import { DeliveryType, OrderStatus, PaymentMethod, StockStatus, TicketStatus } from "@app/core/enums";
 import { t as coreT } from "@app/core/i18n";
 import { formatPrice, formatIdr, truncLabel } from "../util/format";
 
@@ -43,6 +43,9 @@ interface OrderLike {
   status: string;
   paymentMethod: string;
   totalAmount: Decimal.Value;
+  /** Only present on the full getOrder()/listUserOrders() include shape — used
+   * by orderDetailKb to gate the Edit-Info button to manual_with_info SKUs. */
+  items?: Array<{ product: { deliveryType: string } }>;
 }
 interface TicketLike {
   id: number;
@@ -386,12 +389,35 @@ export function orderDetailKb(order: OrderLike, lang: string): InlineKeyboard {
     rows.push([
       { text: coreT("checkout.cancel_order", lang), data: cb("checkout", "cancel", order.id) },
     ]);
+  } else if (order.status === OrderStatus.PROCESSING) {
+    // Awaiting hand-fulfilment — Refresh (this is a NEW order:refresh action,
+    // distinct from checkout:refresh's payment-status reconcile above) plus,
+    // for a manual_with_info SKU only, an Edit-Info button so the buyer can
+    // correct a submitted answer before the admin fulfils it.
+    rows.push([
+      { text: coreT("checkout.refresh_status_btn", lang), data: cb("order", "refresh", order.id) },
+    ]);
+    if (order.items?.[0]?.product.deliveryType === DeliveryType.MANUAL_WITH_INFO) {
+      rows.push([
+        { text: coreT("order.edit_info_btn", lang), data: cb("order", "editinfo", order.id) },
+      ]);
+    }
   }
   rows.push([
     { text: coreT("menu.back", lang), data: cb("order", "list") },
     { text: coreT("menu.main", lang), data: cb("menu", "main") },
   ]);
   return ik(rows);
+}
+
+/** Edit-info wizard's Cancel button — discards in-progress edits and returns
+ * to the order-detail screen (re-entering the SAME order:view action a
+ * "Back"/Menu tap would use, since nothing is persisted until the wizard's
+ * last step). */
+export function editInfoCancelKb(orderId: number, lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("checkout.cancel_btn", lang), data: cb("order", "view", orderId) }],
+  ]);
 }
 
 // ---------------------------------------------------------------------------

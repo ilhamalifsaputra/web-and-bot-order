@@ -13,6 +13,7 @@
     "./errors": "./src/errors.ts",
     "./logger": "./src/logger.ts",
     "./enums": "./src/enums.ts",
+    "./deliveryFields": "./src/deliveryFields.ts",
     "./runtime": "./src/runtime.ts",
     "./fx": "./src/fx.ts",
     "./password": "./src/password.ts",

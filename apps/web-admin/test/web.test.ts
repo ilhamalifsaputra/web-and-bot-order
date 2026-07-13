@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
-import { ProductType, UserRole } from "@app/core/enums";
+import { ProductType, UserRole, DeliveryType } from "@app/core/enums";
 import {
   prisma,
   initDb,
@@ -26,6 +26,7 @@ import {
   finalizeOrderPayment,
   createWebUser,
   attachPaymentProof,
+  settlePaidOrder,
   createTicket,
   listTicketMessages,
   setSetting,
@@ -220,6 +221,27 @@ async function makePendingOrder(): Promise<number> {
   const user = (await getUser(prisma, seed.customerId))!;
   const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
   await attachPaymentProof(prisma, order.id, { fileId: "proof123", txid: "TX1234567890" });
+  return order.id;
+}
+
+/** A manual-SKU order driven all the way to PROCESSING (paid, awaiting an
+ * admin to hand-type and send the account content) — mirrors makePendingOrder
+ * but for the manual-fulfilment queue's own status, exercising the same
+ * createOrderDirect -> attachPaymentProof -> settlePaidOrder path every real
+ * payment rail uses. */
+async function makeProcessingOrder(): Promise<number> {
+  const manualDenom = await createDenomination(prisma, {
+    productId: seed.catalogProductId,
+    name: `ManualDenom${Math.random()}`,
+    type: ProductType.SHARED,
+    durationLabel: "1 Month",
+    price: "5.00",
+  });
+  await updateDenomination(prisma, manualDenom.id, { deliveryType: DeliveryType.MANUAL });
+  const user = (await getUser(prisma, seed.customerId))!;
+  const order = (await createOrderDirect(prisma, { user, productId: manualDenom.id, quantity: 1 }))!;
+  await attachPaymentProof(prisma, order.id, { fileId: "proof123", txid: "TX1234567890" });
+  await settlePaidOrder(prisma, order.id, { adminId: seed.adminId });
   return order.id;
 }
 
@@ -589,6 +611,43 @@ describe("orders", () => {
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
   });
 
+  // Finding #2 (audit-per-sku-delivery-flows-2026-07-13.md): a PROCESSING
+  // order (paid manual SKU an admin can't source) previously had no
+  // reject/refund path at all — rejectOrder hard-guarded PENDING_VERIFICATION
+  // only, even though PROCESSING -> REJECTED is legal in LEGAL_TRANSITIONS.
+  it("reject also works on a PROCESSING order (paid manual SKU an admin can't source)", async () => {
+    const orderId = await makeProcessingOrder();
+    const res = await post(`/api/orders/${orderId}/reject`, seed.cookie, {
+      csrf_token: seed.csrf,
+      reason: "out of stock, can't source",
+    });
+    expect(res.statusCode).toBe(200);
+    const order = (await getOrder(prisma, orderId))!;
+    expect(order.status).toBe("REJECTED");
+    const audit = await prisma.auditLog.findMany({ where: { action: "reject_order", targetId: orderId } });
+    expect(audit.length).toBe(1);
+  });
+
+  it("GET order detail: canReject is true for both PENDING_VERIFICATION and PROCESSING, but canAct (Approve) stays PENDING_VERIFICATION-only", async () => {
+    const pendingId = await makePendingOrder();
+    const pendingRes = await app.inject({
+      method: "GET",
+      url: `/api/orders/${pendingId}`,
+      cookies: { [COOKIE]: seed.cookie },
+    });
+    expect(pendingRes.json().canReject).toBe(true);
+    expect(pendingRes.json().canAct).toBe(true);
+
+    const processingId = await makeProcessingOrder();
+    const processingRes = await app.inject({
+      method: "GET",
+      url: `/api/orders/${processingId}`,
+      cookies: { [COOKIE]: seed.cookie },
+    });
+    expect(processingRes.json().canReject).toBe(true);
+    expect(processingRes.json().canAct).toBe(false);
+  });
+
   it("approve requires auth (anon → 303 /login)", async () => {
     const orderId = await makePendingOrder();
     const res = await post(`/api/orders/${orderId}/approve`, null, { csrf_token: "anything" });
@@ -644,6 +703,82 @@ describe("orders", () => {
     const res = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: "bad" });
     expect(res.statusCode).toBe(403);
     expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
+  });
+});
+
+// ---- manual fulfilment (POST /api/orders/:orderId/fulfill) ----------------
+
+describe("orders API — manual fulfilment", () => {
+  it("fulfill delivers a PROCESSING order with the typed content, enqueues the buyer DM, and audits exactly once", async () => {
+    const orderId = await makeProcessingOrder();
+    const res = await post(`/api/orders/${orderId}/fulfill`, seed.cookie, {
+      csrf_token: seed.csrf,
+      content: "user:x pass:y",
+    });
+    expect(res.statusCode).toBe(200);
+
+    const order = (await getOrder(prisma, orderId))!;
+    expect(order.status).toBe("DELIVERED");
+    expect(order.deliveredContent).toBe("user:x pass:y");
+    expect(order.deliveredAt).not.toBeNull();
+
+    const outboxRow = await prisma.notificationOutbox.findFirst({
+      where: { orderId, event: "ORDER_MANUAL_DELIVERED_DM" },
+    });
+    expect(outboxRow).not.toBeNull();
+
+    // fulfillManualOrder itself always writes an order.manual_fulfill audit
+    // row — exactly one row proves the route did NOT add a second one on top
+    // (the double-logging check called out in the task brief).
+    const audit = await prisma.auditLog.findMany({ where: { action: "order.manual_fulfill", targetId: orderId } });
+    expect(audit.length).toBe(1);
+  });
+
+  it("fulfill requires non-empty content (400) and leaves the order PROCESSING", async () => {
+    const orderId = await makeProcessingOrder();
+    const res = await post(`/api/orders/${orderId}/fulfill`, seed.cookie, { csrf_token: seed.csrf, content: "   " });
+    expect(res.statusCode).toBe(400);
+    expect((await getOrder(prisma, orderId))!.status).toBe("PROCESSING");
+  });
+
+  it("fulfill rejects an order that isn't PROCESSING (422)", async () => {
+    const orderId = await makePendingOrder(); // PENDING_VERIFICATION, not PROCESSING
+    const res = await post(`/api/orders/${orderId}/fulfill`, seed.cookie, {
+      csrf_token: seed.csrf,
+      content: "user:x pass:y",
+    });
+    expect(res.statusCode).toBe(422);
+    expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
+  });
+
+  it("fulfill requires auth (anon → 303 /login)", async () => {
+    const orderId = await makeProcessingOrder();
+    const res = await post(`/api/orders/${orderId}/fulfill`, null, { csrf_token: "anything", content: "x" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect((await getOrder(prisma, orderId))!.status).toBe("PROCESSING");
+  });
+
+  it("fulfill rejects bad CSRF (403)", async () => {
+    const orderId = await makeProcessingOrder();
+    const res = await post(`/api/orders/${orderId}/fulfill`, seed.cookie, { csrf_token: "wrong-token", content: "x" });
+    expect(res.statusCode).toBe(403);
+    expect((await getOrder(prisma, orderId))!.status).toBe("PROCESSING");
+  });
+
+  it("GET order detail: canFulfill is true only while PROCESSING, and customerData/customerDataFields are labeled for the client", async () => {
+    const orderId = await makeProcessingOrder();
+    const res = await app.inject({ method: "GET", url: `/api/orders/${orderId}`, cookies: { [COOKIE]: seed.cookie } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.canFulfill).toBe(true);
+    expect(body.customerDataFields).toEqual([]); // plain MANUAL denom has no custom fields
+    expect(body.customerData).toEqual([]);
+
+    // Once delivered, canFulfill flips back off.
+    await post(`/api/orders/${orderId}/fulfill`, seed.cookie, { csrf_token: seed.csrf, content: "user:x" });
+    const after = await app.inject({ method: "GET", url: `/api/orders/${orderId}`, cookies: { [COOKIE]: seed.cookie } });
+    expect(after.json().canFulfill).toBe(false);
   });
 });
 
@@ -737,6 +872,33 @@ describe("orders API — approve/resend enqueue the buyer's account DM", () => {
     await postJson(`/api/orders/${orderId}/approve`, seed.cookie, seed.csrf);
     const res = await postJson(`/api/orders/${orderId}/resend`, seed.cookie, "wrong-token");
     expect(res.statusCode).toBe(403);
+  });
+
+  // Regression: a manually-fulfilled order (fulfillManualOrder) never reserves
+  // a stockItem, so re-sending via ORDER_DELIVERED_DM would produce an empty
+  // credentials file for the buyer (audit-per-sku-delivery-flows-2026-07-13.md
+  // finding #1). The resend route must branch to ORDER_MANUAL_DELIVERED_DM
+  // (enqueueManualDeliveredDm, which reads deliveredContent live) instead.
+  it("resend on a manually-fulfilled order enqueues ORDER_MANUAL_DELIVERED_DM, not ORDER_DELIVERED_DM", async () => {
+    const orderId = await makeProcessingOrder();
+    await postJson(`/api/orders/${orderId}/fulfill`, seed.cookie, seed.csrf, { content: "user:x pass:y" });
+    expect((await getOrder(prisma, orderId))!.status).toBe("DELIVERED");
+    // fulfillManualOrder itself already enqueued one ORDER_MANUAL_DELIVERED_DM
+    // row — the resend below must add a SECOND one of the same event, never
+    // an ORDER_DELIVERED_DM (which would carry no credentials for this order).
+    expect(
+      await prisma.notificationOutbox.count({ where: { orderId, event: "ORDER_MANUAL_DELIVERED_DM" } }),
+    ).toBe(1);
+
+    const res = await postJson(`/api/orders/${orderId}/resend`, seed.cookie, seed.csrf);
+    expect(res.statusCode).toBe(200);
+
+    expect(
+      await prisma.notificationOutbox.count({ where: { orderId, event: "ORDER_MANUAL_DELIVERED_DM" } }),
+    ).toBe(2);
+    expect(
+      await prisma.notificationOutbox.count({ where: { orderId, event: "ORDER_DELIVERED_DM" } }),
+    ).toBe(0);
   });
 });
 
@@ -1078,6 +1240,137 @@ describe("catalog JSON API — create denomination", () => {
       price: "15000",
     });
     expect(res.statusCode).toBe(403);
+  });
+
+  it("creates a manual-delivery SKU with no custom fields required", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.deliveryType).toBe("manual");
+    expect(row!.additionalFields).toBeNull();
+  });
+
+  it("creates a manual_with_info SKU with valid custom fields and stores them as JSON", async () => {
+    const fields = [
+      { key: "ign", label: { id: "IGN", en: "IGN" }, type: "text", required: true, options: [], placeholder: "" },
+    ];
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: fields,
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.deliveryType).toBe("manual_with_info");
+    expect(JSON.parse(row!.additionalFields!)).toEqual(fields);
+  });
+
+  it("rejects a manual_with_info SKU with zero custom fields (400) and writes nothing", async () => {
+    const before = await prisma.denomination.count();
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: [],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+    expect(await prisma.denomination.count()).toBe(before);
+  });
+
+  it("rejects a manual_with_info SKU with an invalid field shape (400) and writes nothing", async () => {
+    const before = await prisma.denomination.count();
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: [{ key: "Bad Key!", label: { id: "x", en: "x" }, type: "text" }],
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+    expect(await prisma.denomination.count()).toBe(before);
+  });
+
+  it("rejects an invalid deliveryType with 400", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "bogus",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+  });
+
+  it("rejects a manual_with_info SKU when additionalFields is a pre-stringified JSON string instead of an array (400) and writes nothing", async () => {
+    // Pins the client/server contract from the server side: the route expects
+    // additionalFields to already be a decoded array (zAdditionalFields =
+    // z.array(...)), same as `fields` in the "stores them as JSON" test above.
+    // A caller that JSON.stringify()s the array before sending it — the bug
+    // that made the real admin UI double-encode this field and fail every
+    // manual_with_info submission with a 400 — must be rejected here too.
+    const before = await prisma.denomination.count();
+    const fields = [
+      { key: "ign", label: { id: "IGN", en: "IGN" }, type: "text", required: true, options: [], placeholder: "" },
+    ];
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "manual_with_info",
+      additionalFields: JSON.stringify(fields),
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toBeTruthy();
+    expect(await prisma.denomination.count()).toBe(before);
+  });
+
+  it("defaults deliveryType to auto and additionalFields to null when omitted", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.deliveryType).toBe("auto");
+    expect(row!.additionalFields).toBeNull();
+  });
+
+  it("ignores a stray additionalFields payload when deliveryType is not manual_with_info", async () => {
+    const res = await postDenominationJson(seed.catalogProductId, seed.cookie, seed.csrf, {
+      name: "1 Month",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "15000",
+      deliveryType: "auto",
+      additionalFields: [
+        { key: "ign", label: { id: "IGN", en: "IGN" }, type: "text", required: true, options: [], placeholder: "" },
+      ],
+    });
+    expect(res.statusCode).toBe(201);
+    const body = JSON.parse(res.body) as { id: number };
+    const row = await getDenomination(prisma, body.id);
+    expect(row!.additionalFields).toBeNull();
   });
 });
 

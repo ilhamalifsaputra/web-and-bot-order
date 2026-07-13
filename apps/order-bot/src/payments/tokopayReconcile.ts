@@ -125,6 +125,11 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
       nudgeOutboxDispatcher();
       await editBubbleToSuccess(api, r.order);
       await clearOrderPaymentMessage(prisma, r.order.id);
+    } else if (r.status === "processing") {
+      logger.info(`TokoPay reconcile order ${order.orderCode} paid — queued for manual fulfilment`);
+      nudgeOutboxDispatcher();
+      await editBubbleToSuccess(api, r.order);
+      await clearOrderPaymentMessage(prisma, r.order.id);
     } else if (r.status === "stale") {
       logger.warn(`Order ${order.orderCode} was paid but is no longer PENDING — likely already delivered by the webhook, no action needed`);
     }

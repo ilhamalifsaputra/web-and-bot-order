@@ -190,6 +190,34 @@ describe("notifier templates.render", () => {
     expect(render("order.delivered", payload)).toBe("");
   });
 
+  it("renders ORDER_PROCESSING_DM as a bilingual reassurance DM with the order code and link", () => {
+    const out = render("ORDER_PROCESSING_DM", {
+      order_code: "ORD-PROC-1",
+      order_url: "https://shop.example.com/account/orders/ORD-PROC-1",
+    });
+    expect(out).toContain("<code>ORD-PROC-1</code>");
+    expect(out).toContain("https://shop.example.com/account/orders/ORD-PROC-1");
+    expect(out).toMatch(/prepared by hand|being prepared/i);
+    expect(out).toMatch(/segera mungkin|disiapkan/i); // Indonesian line
+    expect(out).not.toMatch(/1\s*[×x]\s*24/); // no hardcoded SLA in this terse DM
+  });
+
+  it("omits the link line when order_url is absent for ORDER_PROCESSING_DM", () => {
+    const out = render("ORDER_PROCESSING_DM", { order_code: "ORD-PROC-2" });
+    expect(out).toContain("<code>ORD-PROC-2</code>");
+    expect(out).not.toContain("http");
+  });
+
+  it("HTML-escapes ORDER_PROCESSING_DM interpolated values", () => {
+    const out = render("ORDER_PROCESSING_DM", {
+      order_code: "<b>ORD</b>",
+      order_url: "https://x.test/<script>",
+    });
+    expect(out).not.toContain("<b>ORD</b>");
+    expect(out).toContain("&lt;b&gt;ORD&lt;/b&gt;");
+    expect(out).not.toContain("<script>");
+  });
+
   it("appends a via-Website line when the payload flags it", () => {
     const text = render("ORDER_DELIVERED", {
       buyer_language: "en",

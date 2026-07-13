@@ -178,6 +178,12 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
     editMessageCaption: recCtxEdit("editMessageCaption"),
     editMessageReplyMarkup: rec("editMessageReplyMarkup"),
     answerCallbackQuery: rec("answerCallbackQuery"),
+    // Real grammY's ConversationFlavor — only .enter() is exercised outside
+    // the conversations() middleware today (checkout.ts's showOrderConfirmation
+    // calls it directly for the manual_with_info gate). Recorded into the sink
+    // like every other outgoing call so a test can assert which conversation a
+    // handler tried to enter without actually running its replay machinery.
+    conversation: { enter: rec("conversation.enter") },
   } as unknown as MyContext;
 
   return { ctx, sink };

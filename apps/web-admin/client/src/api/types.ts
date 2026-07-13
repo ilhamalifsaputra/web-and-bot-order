@@ -1,3 +1,36 @@
+/** One admin-defined custom checkout field for a manual_with_info SKU — JSON
+ * twin of AdditionalField (packages/core/src/deliveryFields.ts). Defined
+ * locally rather than cross-imported: this client mirrors server-side shapes
+ * elsewhere too (e.g. this file's other JSON-response twins), so this follows
+ * that established convention instead of taking @app/core as a runtime
+ * client dependency (@app/web-admin-client's package.json does not depend on
+ * @app/core — same "mirror don't cross-import" reasoning the storefront
+ * client's api/types.ts already documents for its own AdditionalField). */
+export interface AdditionalField {
+  key: string;
+  label: { id: string; en: string };
+  type: "text" | "email" | "number" | "url" | "select";
+  required: boolean;
+  options: string[];
+  placeholder: string;
+}
+
+/** In-progress draft of an AdditionalField as edited in the admin form —
+ * `key`/`label.id`/`label.en`/`options` are free-typed text the admin may
+ * still be mid-edit (e.g. an empty key, an options textarea not yet split
+ * into an array), so this is intentionally looser than AdditionalField
+ * itself. AdditionalFieldsEditor is the controlled component that owns this
+ * shape; the page components convert to real AdditionalField[] on submit. */
+export interface AdditionalFieldDraft {
+  key: string;
+  labelId: string;
+  labelEn: string;
+  type: "text" | "email" | "number" | "url" | "select";
+  required: boolean;
+  optionsText: string;
+  placeholder: string;
+}
+
 export interface CurrencyProfit {
   netProfit: string;
   marginPct: string | null;
@@ -27,6 +60,10 @@ export interface OperationsSummary {
   failedDeliveries: number;
   ordersProcessing: number;
   expiredPayments: number;
+  /** Manual/manual_with_info orders paid and awaiting an admin to hand-fulfill
+   * (status PROCESSING). Distinct from `ordersProcessing`, which counts the
+   * unrelated legacy CONFIRMED/PAID payment-gateway metric. */
+  awaitingFulfillment: number;
 }
 
 export interface InventoryRow {

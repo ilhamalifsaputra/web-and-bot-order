@@ -47,6 +47,17 @@ export const LEGAL_TRANSITIONS: Record<string, readonly string[]> = {
   ],
   [OrderStatus.PENDING_VERIFICATION]: [
     OrderStatus.DELIVERED,
+    // Manual-delivery SKUs branch here (settlePaidOrder): payment is confirmed
+    // but the order awaits hand-fulfilment instead of an instant stock deliver.
+    OrderStatus.PROCESSING,
+    OrderStatus.REJECTED,
+    OrderStatus.CANCELLED,
+    OrderStatus.FAILED,
+  ],
+  // Manual fulfilment queue: an admin either delivers the typed content
+  // (fulfillManualOrder → DELIVERED) or rejects/cancels the order.
+  [OrderStatus.PROCESSING]: [
+    OrderStatus.DELIVERED,
     OrderStatus.REJECTED,
     OrderStatus.CANCELLED,
     OrderStatus.FAILED,

@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import {
   countPendingPaymentLike,
   countProcessing,
+  countAwaitingManualFulfillment,
   countPendingVerifications,
   countUnderpaid,
   countExpiredPending,
@@ -13,10 +14,14 @@ import {
   releaseGatewaySlot,
   gatewayClaimSentinel,
   createOrderFromCart,
+  rejectOrder,
+  getOrder,
 } from "./orders";
 import { addToCart, upsertBulkPricing, createVoucher } from "@app/db";
 import { VoucherType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { ValidationError } from "@app/core/errors";
+import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -30,6 +35,15 @@ afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
+  // OrderItem/OrderStatusHistory.order and WalletTransaction.user are all
+  // onDelete:Restrict — clear them before Order/User, same dependency order
+  // as tests/helpers/sampleData.ts's resetDb, or a row left over from a prior
+  // describe block's own test (e.g. createOrderFromCart's real OrderItems, or
+  // rejectOrder's walletUsed refund writing a WalletTransaction) blocks these
+  // deleteManys.
+  await prisma.orderItem.deleteMany();
+  await prisma.orderStatusHistory.deleteMany();
+  await prisma.walletTransaction.deleteMany();
   await prisma.order.deleteMany();
   await prisma.user.deleteMany();
   const user = await prisma.user.create({
@@ -58,6 +72,21 @@ describe("order status counts", () => {
     await makeOrder("PAID");
     await makeOrder("DELIVERED");
     expect(await countProcessing(prisma)).toBe(2);
+  });
+
+  // Deliberately a DIFFERENT status set than countProcessing above — that
+  // function is the pre-existing, unrelated "payment-gateway in-flight"
+  // metric (CONFIRMED/PAID). countAwaitingManualFulfillment counts the new
+  // manual-fulfilment queue (status PROCESSING) and must never be confused
+  // with it.
+  it("countAwaitingManualFulfillment counts PROCESSING orders only, distinct from countProcessing's CONFIRMED/PAID", async () => {
+    await makeOrder("PROCESSING");
+    await makeOrder("PROCESSING");
+    await makeOrder("CONFIRMED");
+    await makeOrder("PAID");
+    await makeOrder("DELIVERED");
+    expect(await countAwaitingManualFulfillment(prisma)).toBe(2);
+    expect(await countProcessing(prisma)).toBe(2); // CONFIRMED + PAID, unaffected
   });
 
   it("countPendingVerifications counts every PENDING_VERIFICATION row, with no page-size cap", async () => {
@@ -242,5 +271,192 @@ describe("createOrderFromCart bulk+voucher discount cap (Money-2)", () => {
     expect(new Decimal(order!.discountAmount).equals("10.0000")).toBe(true); // capped at the NET subtotal, not the gross
     expect(new Decimal(order!.walletUsed).greaterThanOrEqualTo(0)).toBe(true);
     expect(new Decimal(order!.totalAmount).greaterThanOrEqualTo(0)).toBe(true);
+  });
+});
+
+// Finding #2 (audit-per-sku-delivery-flows-2026-07-13.md): rejectOrder's
+// status guard only accepted PENDING_VERIFICATION, even though
+// orderStatus.ts's LEGAL_TRANSITIONS already declares PROCESSING -> REJECTED
+// legal — leaving a paid-but-unfulfillable manual order (PROCESSING, no
+// stock ever reserved) with no way to refund/reject it short of direct DB
+// manipulation.
+describe("rejectOrder — PROCESSING support (Finding #2)", () => {
+  // One test below creates a real OrderItem (Restrict onDelete against Order)
+  // to exercise releaseOrderHolds's stock-release loop — clean it up so the
+  // outer beforeEach's prisma.order.deleteMany() doesn't hit a FK violation
+  // on the next test.
+  afterEach(async () => {
+    await prisma.orderItem.deleteMany();
+  });
+
+  it("still rejects a PENDING_VERIFICATION order (pre-existing behavior unchanged)", async () => {
+    const order = await makeOrder("PENDING_VERIFICATION");
+    const rejected = await rejectOrder(prisma, order.id, { adminId: 1, reason: "bad proof" });
+    expect(rejected!.status).toBe("REJECTED");
+    expect(rejected!.rejectionReason).toBe("bad proof");
+  });
+
+  it("now also rejects a PROCESSING order (paid manual SKU an admin can't source)", async () => {
+    const order = await makeOrder("PROCESSING");
+    const rejected = await rejectOrder(prisma, order.id, { adminId: 1, reason: "out of stock" });
+    expect(rejected!.status).toBe("REJECTED");
+    expect(rejected!.rejectionReason).toBe("out of stock");
+  });
+
+  it("a PROCESSING order with a real manual-SKU line item (stockItemId null) rejects without touching any stock row", async () => {
+    // A PROCESSING order never reserves a stockItem (fulfillManualOrder:
+    // "No stock is touched") — releaseOrderHolds's stock-release loop must
+    // naturally no-op (only acts on item.stockItem && status RESERVED) rather
+    // than error on a manual line item that never had one.
+    const category = await createCategory(prisma, `Cat${Math.random()}`);
+    const catalogProduct = await createCatalogProduct(prisma, { categoryId: category.id, name: "Manual Product" });
+    const denom = await createDenomination(prisma, {
+      productId: catalogProduct.id,
+      name: "Manual Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "5.00",
+      deliveryType: "manual",
+    });
+    const order = await makeOrder("PROCESSING");
+    await prisma.orderItem.create({
+      data: { orderId: order.id, productId: denom.id, quantity: 1, unitPrice: "5.00", warrantyDaysSnapshot: 30 },
+    });
+    await expect(
+      rejectOrder(prisma, order.id, { adminId: 1, reason: "no stock to send" }),
+    ).resolves.toMatchObject({ status: "REJECTED" });
+  });
+
+  it("refunds walletUsed back to the buyer's balance on a PROCESSING reject, same as PENDING_VERIFICATION", async () => {
+    const order = await makeOrder("PROCESSING", { walletUsed: "3.00", currency: "IDR" });
+    const before = (await prisma.user.findUnique({ where: { id: userId } }))!;
+    await rejectOrder(prisma, order.id, { adminId: 1, reason: "unfulfillable" });
+    const after = (await prisma.user.findUnique({ where: { id: userId } }))!;
+    expect(new Decimal(after.walletBalance).minus(new Decimal(before.walletBalance)).toString()).toBe("3");
+  });
+
+  it("still refuses a terminal/other status (e.g. DELIVERED) with the same error as before", async () => {
+    const order = await makeOrder("DELIVERED");
+    await expect(rejectOrder(prisma, order.id, { adminId: 1, reason: "x" })).rejects.toThrow(ValidationError);
+    await expect((await getOrder(prisma, order.id))!.status).toBe("DELIVERED");
+  });
+});
+
+// Finding #5 (audit-per-sku-delivery-flows-2026-07-13.md): performCheckout's
+// homogeneity/customerData guards already filter cart lines by
+// product.isActive, but createOrderFromCart itself read the cart via the
+// UNFILTERED getCart — an admin deactivating a denomination between
+// add-to-cart and checkout could slip an inactive line past both guards and
+// still have it turned into an order line. createOrderFromCart now filters
+// isActive itself, so this is closed regardless of what the caller does.
+describe("createOrderFromCart — isActive filtering (Finding #5)", () => {
+  let sample: SampleData;
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  it("throws error.cart_empty when the only cart line's product was deactivated after being added", async () => {
+    const { user, product } = sample;
+    await addToCart(prisma, user.id, product.id, 1);
+    await updateDenomination(prisma, product.id, { isActive: false });
+
+    await expect(createOrderFromCart(prisma, { user })).rejects.toMatchObject({ key: "error.cart_empty" });
+  });
+
+  it("drops a deactivated line but still creates the order from the remaining active line", async () => {
+    const { user, product } = sample;
+    const category = await createCategory(prisma, `cat-${Math.random()}`);
+    const catalogProduct = await createCatalogProduct(prisma, { categoryId: category.id, name: "Other Product" });
+    const otherDenom = await createDenomination(prisma, {
+      productId: catalogProduct.id,
+      name: "Other Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "3.00",
+    });
+    await addToCart(prisma, user.id, product.id, 1);
+    await addToCart(prisma, user.id, otherDenom.id, 1);
+    // Deactivated AFTER being added to cart — the mid-checkout-deactivation
+    // scenario Finding #5 describes.
+    await updateDenomination(prisma, otherDenom.id, { isActive: false });
+
+    const order = await createOrderFromCart(prisma, { user });
+    const items = await prisma.orderItem.findMany({ where: { orderId: order!.id } });
+    expect(items.map((i) => i.productId)).toEqual([product.id]);
+  });
+});
+
+// Finding #4 (audit-per-sku-delivery-flows-2026-07-13.md): the storefront's
+// performCheckout already re-validates manual_with_info customerData before
+// calling createOrderFromCart, but createOrderFromCart itself trusted
+// whatever string the caller passed. Re-validating INSIDE createOrderFromCart
+// too closes the gap for any caller that skips (or gets ahead of)
+// performCheckout's own check — defense in depth, not a behavior change for
+// already-valid data.
+describe("createOrderFromCart — manual_with_info customerData re-validation (Finding #4)", () => {
+  let sample: SampleData;
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  it("throws error.customer_data_incomplete when the cart's manual_with_info line's customerData doesn't match its quantity", async () => {
+    const { user } = sample;
+    const category = await createCategory(prisma, `cat-${Math.random()}`);
+    const catalogProduct = await createCatalogProduct(prisma, { categoryId: category.id, name: "Info Product" });
+    const fields = [
+      { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+    ];
+    const infoDenom = await createDenomination(prisma, {
+      productId: catalogProduct.id,
+      name: "Info Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "5.00",
+      deliveryType: "manual_with_info",
+      additionalFields: JSON.stringify(fields),
+    });
+    // 2 units in the cart, but only 1 unit's worth of answers — a stale/
+    // mismatched customerData a buggy or malicious caller might pass.
+    await addToCart(prisma, user.id, infoDenom.id, 2);
+    const staleCustomerData = JSON.stringify([{ game_id: "12345" }]);
+
+    let caught: unknown;
+    try {
+      await createOrderFromCart(prisma, { user, customerData: staleCustomerData });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ValidationError);
+    expect((caught as ValidationError).key).toBe("error.customer_data_incomplete");
+
+    const orders = await prisma.order.findMany({ where: { userId: user.id } });
+    expect(orders).toHaveLength(0);
+  });
+
+  it("persists customerData that matches the line's field spec/quantity, unchanged", async () => {
+    const { user } = sample;
+    const category = await createCategory(prisma, `cat-${Math.random()}`);
+    const catalogProduct = await createCatalogProduct(prisma, { categoryId: category.id, name: "Info Product 2" });
+    const fields = [
+      { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+    ];
+    const infoDenom = await createDenomination(prisma, {
+      productId: catalogProduct.id,
+      name: "Info Denom 2",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "5.00",
+      deliveryType: "manual_with_info",
+      additionalFields: JSON.stringify(fields),
+    });
+    await addToCart(prisma, user.id, infoDenom.id, 1);
+    const customerData = JSON.stringify([{ game_id: "12345" }]);
+
+    const order = await createOrderFromCart(prisma, { user, customerData });
+    expect(order!.customerData).toBe(customerData);
   });
 });

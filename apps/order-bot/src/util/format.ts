@@ -75,6 +75,8 @@ const STATUS_EMOJI: Record<string, string> = {
   confirmed: "🔗",
   pending_verification: "🔎",
   paid: "💰",
+  // Manual/manual_with_info order paid and awaiting hand-fulfilment (Task 9).
+  processing: "⏳",
   delivered: "✅",
   cancelled: "❌",
   rejected: "🚫",

@@ -10,9 +10,24 @@ import { cleanupTestDb } from "./dispatcher.test-setup";
  */
 import { describe, it, expect, afterAll, afterEach, vi } from "vitest";
 import type { Bot } from "grammy";
-import { prisma, enqueueAdminPasswordReset, completeOrderWithWalletCredit, enqueueOrderDeliveredDm, adjustWallet } from "@app/db";
+import {
+  prisma,
+  enqueueAdminPasswordReset,
+  completeOrderWithWalletCredit,
+  enqueueOrderDeliveredDm,
+  adjustWallet,
+  createOrderDirect,
+  attachPaymentProof,
+  settlePaidOrder,
+  fulfillManualOrder,
+  createCategory,
+  createCatalogProduct,
+  createDenomination,
+  updateDenomination,
+  upsertUser,
+} from "@app/db";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
-import { NotificationEvent, OrderCurrency } from "@app/core/enums";
+import { NotificationEvent, OrderCurrency, DeliveryType } from "@app/core/enums";
 import { buildSampleData } from "../../../tests/helpers/sampleData";
 import { drainBatch } from "./dispatcher";
 
@@ -212,5 +227,175 @@ describe("drainBatch delivers a delivered order's credentials as a document", ()
       where: { orderId: order.id, event: NotificationEvent.ORDER_DELIVERED_DM },
     });
     expect(dm!.status).toBe("SENT");
+  });
+});
+
+/** A manual (or manual_with_info) denomination with NO stock rows, using its
+ * own category/product — mirrors settlePaidOrder.test.ts's makeManualDenom. */
+async function makeManualDenom(deliveryType: string = DeliveryType.MANUAL) {
+  const category = await createCategory(prisma, `manual-cat-${Math.random()}`);
+  const product = await createCatalogProduct(prisma, {
+    categoryId: category.id,
+    name: `Manual Product ${Math.random()}`,
+  });
+  const denom = await createDenomination(prisma, {
+    productId: product.id,
+    name: "Manual Denom",
+    type: "SHARED",
+    durationLabel: "1 Month",
+    price: "10.00",
+  });
+  await updateDenomination(prisma, denom.id, { deliveryType });
+  return denom;
+}
+
+/**
+ * Per-SKU delivery flows (Task 4): the two new outbox-dispatcher DM paths for
+ * manual (hand-fulfilled) orders — ORDER_PROCESSING_DM (payment confirmed,
+ * queued for hand-fulfilment) and ORDER_MANUAL_DELIVERED_DM (admin typed and
+ * sent the account). Seeds real orders through settlePaidOrder/
+ * fulfillManualOrder (the actual enqueue call sites from Task 3), not
+ * hand-crafted outbox rows.
+ */
+describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
+  /** Each test creates its own buyer (unique telegramId — this file runs many
+   * tests against one shared temp DB with no per-test reset, so ids/names
+   * across tests/describe-blocks must never collide) and admin. */
+  async function makeBuyer(telegramId: number) {
+    return upsertUser(prisma, { telegramId, username: `buyer${telegramId}`, fullName: "Manual Buyer" });
+  }
+  async function makeAdmin(telegramId: number) {
+    return prisma.user.create({
+      data: { telegramId: BigInt(telegramId), referralCode: `admin-${Math.random()}`, role: "ADMIN" },
+    });
+  }
+
+  it("turns an ORDER_PROCESSING_DM row (payment confirmed, queued for hand-fulfilment) into a sendMessage and marks it SENT", async () => {
+    const buyer = await makeBuyer(500_001);
+    const admin = await makeAdmin(900_000_001);
+    const denom = await makeManualDenom();
+    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
+
+    const result = await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
+    expect(result.kind).toBe("processing");
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    const [chatId, text] = sendMessage.mock.calls[0]!;
+    expect(chatId).toBe(500_001);
+    expect(text).toContain(order!.orderCode);
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order!.id, event: NotificationEvent.ORDER_PROCESSING_DM },
+    });
+    expect(row!.status).toBe("SENT");
+  });
+
+  it("turns an ORDER_MANUAL_DELIVERED_DM row into a sendMessage carrying the admin-typed deliveredContent, read live from the DB, and marks it SENT", async () => {
+    const buyer = await makeBuyer(500_002);
+    const admin = await makeAdmin(900_000_002);
+    const denom = await makeManualDenom();
+    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
+    await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
+
+    const { order: delivered } = await fulfillManualOrder(prisma, order!.id, {
+      adminId: admin.id,
+      content: "user: shared42@example.com / pass: hunter2",
+    });
+    expect(delivered.deliveredContent).toBe("user: shared42@example.com / pass: hunter2");
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    // The ORDER_PROCESSING_DM sent earlier by settlePaidOrder is drained too —
+    // assert on the ORDER_MANUAL_DELIVERED_DM call specifically.
+    const manualCall = sendMessage.mock.calls.find((call) =>
+      (call[1] as string).includes("shared42@example.com"),
+    );
+    expect(manualCall).toBeDefined();
+    const [chatId, text] = manualCall! as [number, string];
+    expect(chatId).toBe(500_002);
+    expect(text).toContain(order!.orderCode);
+    expect(text).toContain("hunter2");
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order!.id, event: NotificationEvent.ORDER_MANUAL_DELIVERED_DM },
+    });
+    expect(row!.status).toBe("SENT");
+  });
+
+  it("HTML-escapes deliveredContent (admin free-text) before sending", async () => {
+    const buyer = await makeBuyer(500_003);
+    const admin = await makeAdmin(900_000_003);
+    const denom = await makeManualDenom();
+    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
+    await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
+    await fulfillManualOrder(prisma, order!.id, { adminId: admin.id, content: "<script>alert(1)</script>" });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    const manualCall = sendMessage.mock.calls.find((call) => (call[1] as string).includes("alert(1)"));
+    expect(manualCall).toBeDefined();
+    const [, text] = manualCall! as [number, string];
+    expect(text).not.toContain("<script>");
+    expect(text).toContain("&lt;script&gt;");
+  });
+
+  it("splits deliveredContent longer than Telegram's 4096-char cap into multiple sequential sendMessage calls, in order", async () => {
+    const buyer = await makeBuyer(500_004);
+    const admin = await makeAdmin(900_000_004);
+    const denom = await makeManualDenom();
+    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
+    await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
+    const longContent = Array.from({ length: 400 }, (_, i) => `line ${i}: some account credential text`).join("\n");
+    await fulfillManualOrder(prisma, order!.id, { adminId: admin.id, content: longContent });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    // At least the manual-delivered chunks were sent in addition to the
+    // earlier ORDER_PROCESSING_DM — find the ones carrying our marker lines.
+    const allChunkTexts = sendMessage.mock.calls
+      .map((call) => call[1] as string)
+      .filter((text: string) => text.includes("line "));
+    expect(allChunkTexts.length).toBeGreaterThan(1); // split into multiple messages
+    // Reassembled in order: "line 0" appears before "line 399" across the sequence.
+    const joined = allChunkTexts.join("\n---\n");
+    expect(joined.indexOf("line 0:")).toBeLessThan(joined.indexOf("line 399:"));
+    for (const [, text] of sendMessage.mock.calls) {
+      expect((text as string).length).toBeLessThanOrEqual(4096);
+    }
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order!.id, event: NotificationEvent.ORDER_MANUAL_DELIVERED_DM },
+    });
+    expect(row!.status).toBe("SENT");
+  });
+
+  it("fails the row without sending when the order has no deliveredContent (defensive — should not normally happen)", async () => {
+    await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ORDER_MANUAL_DELIVERED_DM,
+        orderId: null,
+        payloadJson: JSON.stringify({ chat_id: 500_005, order_code: "ORD-DOES-NOT-EXIST", buyer_language: "en" }),
+      },
+    });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.ORDER_MANUAL_DELIVERED_DM, orderId: null },
+    });
+    expect(row!.status).toBe("FAILED"); // markNotificationFailed(..., maxAttempts=1) fails immediately
+    expect(row!.lastError).toContain("order not found");
   });
 });

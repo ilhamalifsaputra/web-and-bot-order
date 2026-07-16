@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ProductPage from "./ProductPage";
 import { apiGet, apiPost } from "../api/client";
 import type { ProductPageData, ShopContext } from "../api/types";
+import type { ProductCardData } from "../components/shop/ProductCard";
 
 vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
@@ -73,10 +74,26 @@ const productData: ProductPageData = {
     },
   ],
   default_restock_denomination_id: 2,
+  related_products: [],
   reviews: [
     { rating: 4.5, comment: "Great service!", author: "A***", created_at_display: "2026-06-01" },
   ],
   low_threshold: 5,
+};
+
+const relatedProduct: ProductCardData = {
+  slug: "spotify-premium",
+  name: "Spotify Premium",
+  category_name: "Streaming",
+  from_price: "45000",
+  variant_count: 1,
+  image: "/img/spotify.jpg",
+  available: 10,
+  rating: 4.8,
+  rating_count: 5,
+  bulk_discount: null,
+  bulk_min_qty: null,
+  all_non_auto: false,
 };
 
 function renderProduct(slug: string, respond: (path: string) => unknown) {
@@ -181,6 +198,22 @@ describe("ProductPage", () => {
   it("renders the no-reviews copy when there are none", async () => {
     renderProduct("netflix-premium", () => ({ ...productData, reviews: [] }));
     expect(await screen.findByText("No reviews yet.")).toBeInTheDocument();
+  });
+
+  // STO-011: same-category "You might also like" shelf.
+  it("renders the related-products shelf when the API returns some", async () => {
+    renderProduct("netflix-premium", () => ({ ...productData, related_products: [relatedProduct] }));
+    expect(await screen.findByText("You might also like")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Spotify Premium/ })).toHaveAttribute(
+      "href",
+      "/p/spotify-premium",
+    );
+  });
+
+  it("omits the related-products shelf when the API returns none", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByText("You might also like")).not.toBeInTheDocument();
   });
 
   it("renders the ErrorPage copy on a 404", async () => {

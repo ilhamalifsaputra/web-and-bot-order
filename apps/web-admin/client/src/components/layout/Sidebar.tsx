@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useNavigate } from "react-router-dom";
 import { useShopInfo } from "../../hooks/useShopInfo";
 import {
   LayoutDashboard,
@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { useOperations } from "../../hooks/useOperations";
 import { useInventory } from "../../hooks/useInventory";
+import { logout } from "../../api/client";
 
 interface SidebarProps {
   open: boolean;
@@ -96,6 +97,15 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
   const { data: operations } = useOperations();
   const { data: inventory } = useInventory();
   const { shopName } = useShopInfo();
+  const navigate = useNavigate();
+
+  async function handleLogout() {
+    try {
+      await logout();
+    } finally {
+      navigate("/login", { replace: true });
+    }
+  }
 
   const ordersBadge = operations
     ? (operations.pendingPayments + operations.manualReviews) || 0
@@ -157,7 +167,7 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
                     }
                   >
                     <Icon className="mr-2 h-4 w-4 flex-shrink-0" />
-                    <span className="flex-1">{label}</span>
+                    <span className="min-w-0 flex-1 truncate" title={label}>{label}</span>
                     {badgeValue > 0 && (
                       <span
                         className={`ml-auto rounded-full px-1.5 py-0.5 text-xs font-semibold text-white ${
@@ -177,9 +187,13 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
 
       {/* Footer */}
       <div className="border-t border-line px-4 py-3">
-        <a href="/logout" className="text-xs text-ink-soft hover:text-rust">
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="text-xs text-ink-soft hover:text-rust"
+        >
           Logout
-        </a>
+        </button>
       </div>
     </div>
   );

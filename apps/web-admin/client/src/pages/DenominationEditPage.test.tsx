@@ -29,6 +29,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 const PRODUCT_DETAIL = {
   product: {
     id: 42,
+    name: "Netflix Premium",
     denominations: [
       {
         id: 10,
@@ -55,6 +56,7 @@ const MANUAL_WITH_INFO_FIELDS = [
 const MANUAL_WITH_INFO_PRODUCT_DETAIL = {
   product: {
     id: 42,
+    name: "Netflix Premium",
     denominations: [
       {
         ...PRODUCT_DETAIL.product.denominations[0],
@@ -76,6 +78,13 @@ beforeEach(() => {
 });
 
 describe("DenominationEditPage", () => {
+  it("shows the real product name in the breadcrumb, not the literal word 'Product' (F-007)", async () => {
+    vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
+    render(<DenominationEditPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByRole("link", { name: "Netflix Premium" })).toBeInTheDocument());
+    expect(screen.queryByRole("link", { name: "Product" })).not.toBeInTheDocument();
+  });
+
   it("prefills the form from the existing denomination", async () => {
     vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
     render(<DenominationEditPage />, { wrapper: Wrapper });
@@ -86,25 +95,33 @@ describe("DenominationEditPage", () => {
     expect(screen.getByRole("button", { name: /save changes/i })).toBeInTheDocument();
   });
 
-  it("prefills the Delivery Type selector from the loaded denomination", async () => {
+  it("prefills the Delivery Type radios from the loaded denomination (plain Manual, no buyer info required)", async () => {
     vi.mocked(apiGet).mockResolvedValue({
       product: {
         id: 42,
+        name: "Netflix Premium",
         denominations: [{ ...PRODUCT_DETAIL.product.denominations[0], deliveryType: "manual" }],
       },
     });
     render(<DenominationEditPage />, { wrapper: Wrapper });
 
     await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
-    expect(screen.getByRole("combobox", { name: "Delivery Type" })).toHaveTextContent(/manual \(admin fulfills/i);
+    expect(screen.getByRole("radio", { name: /^manual delivery/i })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /^automatic delivery/i })).not.toBeChecked();
+    // Step 2 (Buyer Information) is visible once Manual is loaded, defaulted
+    // to "no info required" — Step 3 (the field editor) stays hidden.
+    expect(screen.getByRole("radio", { name: /^no buyer information required/i })).toBeChecked();
+    expect(screen.queryByRole("button", { name: /add field/i })).not.toBeInTheDocument();
   });
 
-  it("prefills the custom field editor from the loaded additionalFields JSON when deliveryType is manual_with_info", async () => {
+  it("prefills the field editor from the loaded additionalFields JSON when deliveryType is manual_with_info", async () => {
     vi.mocked(apiGet).mockResolvedValue(MANUAL_WITH_INFO_PRODUCT_DETAIL);
     render(<DenominationEditPage />, { wrapper: Wrapper });
 
     await waitFor(() => expect(screen.getByDisplayValue("Netflix 1 Month")).toBeInTheDocument());
-    expect(screen.getByDisplayValue("ign")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /^manual delivery/i })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /^require buyer information/i })).toBeChecked();
+    expect(screen.getAllByDisplayValue("IGN")).toHaveLength(2);
   });
 
   it("submits the edited fields via PATCH and navigates back to the product detail page", async () => {
@@ -164,7 +181,7 @@ describe("DenominationEditPage", () => {
     );
   });
 
-  it("changing Delivery Type to Manual + Info requires at least one custom field before saving", async () => {
+  it("changing Delivery Type to Manual -> Require buyer information requires at least one field before saving", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
     render(<DenominationEditPage />, { wrapper: Wrapper });
@@ -173,10 +190,10 @@ describe("DenominationEditPage", () => {
     const btn = screen.getByRole("button", { name: /save changes/i });
     await waitFor(() => expect(btn).not.toBeDisabled());
 
-    await user.click(screen.getByRole("combobox", { name: "Delivery Type" }));
-    await waitFor(() => screen.getByRole("option", { name: /manual \+ info/i }));
-    await user.click(screen.getByRole("option", { name: /manual \+ info/i }));
+    await user.click(screen.getByRole("radio", { name: /^manual delivery/i }));
+    expect(btn).not.toBeDisabled(); // Step 2 defaults to "no info required" — still submittable.
 
+    await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
     expect(btn).toBeDisabled();
   });
 

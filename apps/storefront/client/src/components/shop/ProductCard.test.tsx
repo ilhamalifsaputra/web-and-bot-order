@@ -16,6 +16,7 @@ const base: ProductCardData = {
   rating_count: 12,
   bulk_discount: null,
   bulk_min_qty: null,
+  all_non_auto: false,
 };
 
 describe("ProductCard", () => {
@@ -56,6 +57,17 @@ describe("ProductCard", () => {
     );
     const badge = screen.getByText("Out of stock");
     expect(badge).toHaveClass("bg-rust-tint", "text-rust-dark");
+  });
+
+  it("does not show out-of-stock when every denomination is non-auto delivery (STO-001)", () => {
+    const manualDelivery: ProductCardData = { ...base, available: 0, all_non_auto: true };
+    render(
+      <MemoryRouter>
+        <ProductCard p={manualDelivery} fx="16000" lowThreshold={5} />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByText("Out of stock")).not.toBeInTheDocument();
+    expect(screen.getByText("Available")).toBeInTheDocument();
   });
 
   it("renders whole-number ratings without trailing .0", () => {

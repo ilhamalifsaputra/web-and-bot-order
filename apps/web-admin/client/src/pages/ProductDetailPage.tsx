@@ -153,7 +153,6 @@ export function ProductDetailPage() {
       <PageHeader
         title={product.name}
         breadcrumb={[{ label: "Catalog", href: "/catalog" }]}
-        actions={<Button variant="outline" size="sm" onClick={() => navigate("/catalog")}>← Back</Button>}
       />
 
       <Card className="mb-4">

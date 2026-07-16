@@ -24,6 +24,9 @@ export interface ProductCardData {
   rating_count: number;
   bulk_discount: string | null;
   bulk_min_qty: number | null;
+  /** True when every active denomination is non-`auto` delivery — these
+   * never carry a real stock count and are always purchasable (STO-001). */
+  all_non_auto: boolean;
 }
 
 export interface ProductCardProps {
@@ -91,7 +94,7 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
             {t("web.from_price")}
             <Price value={p.from_price} fx={fx} size="text-sm" />
           </p>
-          <StockBadge available={p.available} lowThreshold={lowThreshold} />
+          <StockBadge available={p.available} lowThreshold={lowThreshold} allNonAuto={p.all_non_auto} />
         </div>
 
         {p.bulk_discount && p.bulk_min_qty && (

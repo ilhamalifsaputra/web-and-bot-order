@@ -17,6 +17,7 @@ import { formatIdr } from "../lib/format";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import Stars from "../components/shop/Stars";
 import DenominationCard from "../components/shop/DenominationCard";
+import ProductCard from "../components/shop/ProductCard";
 import ErrorPage from "./ErrorPage";
 
 /** Mirrors product.njk's inline script `select()` cls/txt branches for the
@@ -117,7 +118,7 @@ export default function ProductPage() {
   }
   if (!data) return null;
 
-  const { product, denominations, reviews, low_threshold } = data;
+  const { product, denominations, reviews, related_products, low_threshold } = data;
   const fx = ctx?.fx;
 
   // Preselect the first in-stock plan, else the first plan — same order as
@@ -276,6 +277,19 @@ export default function ProductPage() {
           <div className="card card-pad text-center text-ink-faint py-10">{t("web.no_reviews")}</div>
         )}
       </section>
+
+      {/* STO-011: same-category "You might also like" shelf — this product
+          detail page had no cross-sell/discovery path back into the catalog. */}
+      {related_products.length > 0 && (
+        <section className="mt-10">
+          <h2 className="section-title mb-3">{t("web.related_products")}</h2>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+            {related_products.map((p) => (
+              <ProductCard key={p.slug} p={p} fx={fx} lowThreshold={low_threshold} />
+            ))}
+          </div>
+        </section>
+      )}
     </>
   );
 }

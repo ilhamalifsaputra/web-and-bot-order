@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Menu, Search, Plus } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { logout } from "../../api/client";
 
 interface TopBarProps {
   onMenuClick: () => void;
@@ -25,6 +26,14 @@ export function TopBar({ onMenuClick, onSearchOpen }: TopBarProps): JSX.Element 
     setUserOpen(false);
   }
 
+  async function handleLogout() {
+    try {
+      await logout();
+    } finally {
+      navigate("/login", { replace: true });
+    }
+  }
+
   return (
     <header className="sticky top-0 z-40 flex h-14 flex-shrink-0 items-center gap-2 border-b border-line bg-card px-3 sm:px-4">
       {/* Hamburger — mobile only */}
@@ -41,6 +50,7 @@ export function TopBar({ onMenuClick, onSearchOpen }: TopBarProps): JSX.Element 
       <button
         type="button"
         onClick={onSearchOpen}
+        aria-label="Search"
         className="flex items-center gap-2 rounded-md border border-line bg-paper px-3 py-1.5 text-sm text-ink-faint hover:bg-sand hover:text-ink-soft"
       >
         <Search className="h-4 w-4 flex-shrink-0" />
@@ -109,12 +119,13 @@ export function TopBar({ onMenuClick, onSearchOpen }: TopBarProps): JSX.Element 
           <>
             <div className="fixed inset-0 z-10" onClick={closeAll} />
             <div className="absolute right-0 z-20 mt-1 w-36 rounded-md border border-line bg-card shadow-lift">
-              <a
-                href="/logout"
-                className="block px-4 py-2 text-sm text-rust hover:bg-sand"
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="block w-full px-4 py-2 text-left text-sm text-rust hover:bg-sand"
               >
                 Logout
-              </a>
+              </button>
             </div>
           </>
         )}

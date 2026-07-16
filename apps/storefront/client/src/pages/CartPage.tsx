@@ -166,6 +166,11 @@ export default function CartPage() {
             <Link to="/checkout" className="btn btn-primary w-full mt-4">
               {t("web.to_checkout")} <ChevronRight className="w-4 h-4" />
             </Link>
+            {/* STO-008: cart previously offered no way back to browsing —
+                only "Continue to payment". */}
+            <Link to="/" className="btn btn-ghost w-full mt-2">
+              {t("web.continue_shopping")}
+            </Link>
             {ctx && !ctx.customer && <p className="text-xs text-ink-faint mt-3">{t("web.login_to_checkout")}</p>}
           </div>
         </div>

@@ -7,6 +7,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { FilterBar } from "../components/shared/FilterBar";
+import { MessageCircle } from "lucide-react";
 import {
   Select,
   SelectTrigger,
@@ -181,7 +182,7 @@ export function SupportPage() {
         isLoading={!data}
         keyExtractor={t => t.id}
         onRowClick={t => navigate(`/support/${t.id}`)}
-        empty={<EmptyState title="No open tickets" description="All support tickets will appear here." />}
+        empty={<EmptyState icon={MessageCircle} title="No open tickets" description="All support tickets will appear here." />}
       />
     </PageLayout>
   );

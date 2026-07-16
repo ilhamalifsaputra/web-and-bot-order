@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { FilterBar } from "../components/shared/FilterBar";
+import { Shield } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -17,28 +18,7 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { apiPost } from "../api/client";
-
-interface AdminRow {
-  telegramId: number;
-  role: string;
-  passwordSet: boolean;
-  twoFa: boolean;
-  hasSession: boolean;
-  name: string | null;
-  isSelf: boolean;
-  fromEnv: boolean;
-}
-
-function useAdmins() {
-  return useQuery<{ admins: AdminRow[]; roles: string[] }>({
-    queryKey: ["admins"],
-    queryFn: async () => {
-      const res = await fetch("/api/admins");
-      if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<{ admins: AdminRow[]; roles: string[] }>;
-    },
-  });
-}
+import { useAdmins } from "../hooks/useAdmins";
 
 export function AdminsPage() {
   const qc = useQueryClient();
@@ -77,13 +57,24 @@ export function AdminsPage() {
     <PageLayout title="Admins">
       <PageHeader title="Admins" />
 
+      {/* F-006: brought up to the same Label-above-field treatment used by
+       *  Vouchers' inline "New Voucher" form (post F-014) and the
+       *  Product/Denomination dedicated-page forms, instead of a bare
+       *  placeholder-only textbox — same "+ Add Admin" create endpoint,
+       *  presentation only. */}
       <FilterBar className="mb-4">
-        <Input
-          placeholder="Telegram ID"
-          value={addId}
-          onChange={e => setAddId(e.target.value)}
-          className="w-44"
-        />
+        <div className="flex flex-col gap-1">
+          <label htmlFor="admin-telegram-id" className="text-xs font-medium text-ink">
+            Telegram ID <span className="text-rust">*</span>
+          </label>
+          <Input
+            id="admin-telegram-id"
+            placeholder="e.g. 123456789"
+            value={addId}
+            onChange={e => setAddId(e.target.value)}
+            className="w-44"
+          />
+        </div>
         <Button onClick={() => add.mutate()} disabled={!addId || add.isPending}>
           + Add Admin
         </Button>
@@ -126,7 +117,7 @@ export function AdminsPage() {
           },
           {
             key: "pwd",
-            header: "Pwd",
+            header: "Password Set",
             render: a => a.passwordSet
               ? <Badge variant="default">✓</Badge>
               : <span className="text-ink-faint">—</span>,
@@ -169,7 +160,7 @@ export function AdminsPage() {
         data={data?.admins ?? []}
         isLoading={!data}
         keyExtractor={a => a.telegramId}
-        empty={<EmptyState title="No admins" />}
+        empty={<EmptyState icon={Shield} title="No admins" />}
       />
     </PageLayout>
   );

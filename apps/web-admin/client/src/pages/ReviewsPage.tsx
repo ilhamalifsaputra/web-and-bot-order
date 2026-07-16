@@ -4,6 +4,7 @@ import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { FilterBar } from "../components/shared/FilterBar";
 import { EmptyState } from "../components/shared/EmptyState";
+import { Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -97,7 +98,13 @@ export function ReviewsPage() {
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
         {isError && <p className="text-sm text-rust">Failed to load reviews.</p>}
 
-        {data && data.reviews.length === 0 && <EmptyState title="No reviews found." />}
+        {data && data.reviews.length === 0 && (
+          <EmptyState
+            icon={Star}
+            title="No reviews found."
+            description="Customer reviews will appear here."
+          />
+        )}
 
         {data && data.reviews.length > 0 && (
           <div className="flex flex-col divide-y divide-line rounded-lg border border-line bg-card">

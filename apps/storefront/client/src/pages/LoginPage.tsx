@@ -6,13 +6,15 @@
  * src/index.css). Markup/classes copied verbatim apart from the mechanical
  * Tailwind v3→v4 renames (docs/REACT_STOREFRONT_MIGRATION.md).
  */
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { LogIn, Send } from "lucide-react";
 import { apiGet, publicPost } from "../api/client";
 import { t } from "../lib/i18n";
+import { useTelegramWidget } from "../lib/useTelegramWidget";
 import Flash from "../components/shop/Flash";
+import PasswordInput from "../components/shop/PasswordInput";
 
 /** Only ever a local path — client-side twin of routes/auth.ts `safeNext`
  * (open-redirect guard); the server re-checks this itself on every POST, this
@@ -72,23 +74,10 @@ export default function LoginPage() {
   // Renders the Telegram Login Widget's own <script> tag only once we know
   // the bot username — exactly login.njk's `{% if bot_username %}` gate.
   const widgetContainerRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const container = widgetContainerRef.current;
-    if (!container || !widget?.bot_username) return;
-    const script = document.createElement("script");
-    script.async = true;
-    script.src = "https://telegram.org/js/telegram-widget.js?22";
-    script.setAttribute("data-telegram-login", widget.bot_username);
-    script.setAttribute("data-size", "large");
-    script.setAttribute("data-userpic", "false");
-    script.setAttribute("data-radius", "12");
-    script.setAttribute("data-auth-url", widget.auth_url);
-    script.setAttribute("data-request-access", "write");
-    container.appendChild(script);
-    return () => {
-      container.removeChild(script);
-    };
-  }, [widget?.bot_username, widget?.auth_url]);
+  const widgetFailed = useTelegramWidget(widgetContainerRef, {
+    botUsername: widget?.bot_username,
+    authUrl: widget?.auth_url ?? "",
+  });
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -149,9 +138,8 @@ export default function LoginPage() {
               <label className="text-sm font-semibold" htmlFor="password">
                 {t("web.login_password")}
               </label>
-              <input
+              <PasswordInput
                 className="field mt-1"
-                type="password"
                 id="password"
                 name="password"
                 autoComplete="current-password"
@@ -186,9 +174,16 @@ export default function LoginPage() {
                 <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-3 flex items-center justify-center gap-1.5">
                   <Send className="w-3.5 h-3.5" /> {t("web.login_telegram")}
                 </p>
-                <div className="flex justify-center" ref={widgetContainerRef}>
+                {/* STO-013: Telegram renders its own raw, unstyled error text
+                    (e.g. "Bot domain invalid") into this container when the
+                    origin isn't authorized — hide it and show our own styled
+                    fallback instead of leaking that text into the page. */}
+                <div className={`flex justify-center ${widgetFailed ? "hidden" : ""}`} ref={widgetContainerRef}>
                   <noscript className="text-xs text-ink-faint">{t("web.login_telegram")}</noscript>
                 </div>
+                {widgetFailed && (
+                  <p className="text-xs text-ink-soft text-center">{t("web.tg_widget_unavailable_login")}</p>
+                )}
               </div>
             </>
           )}

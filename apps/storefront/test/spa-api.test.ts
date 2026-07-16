@@ -7,7 +7,7 @@
 // `pnpm --filter @app/storefront-client build` first (same contract as the
 // web-admin dashboard SPA).
 import "./setup-env"; // FIRST import — sets env before @app/* load
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 // PayDisini's createTransaction hits a real gateway HTTP endpoint — mock it
 // for the PAYDISINI pay-view test below (mirrors the mock that lived in
 // storefront.test.ts before the cluster-C cutover moved the checkout tests
@@ -44,6 +44,7 @@ import {
   createDenomination,
   createVoucher,
   addToCart,
+  clearCart,
   getOrderByCode,
   updateDenomination,
 } from "@app/db";
@@ -216,6 +217,21 @@ describe("SPA shell wildcard", () => {
     expect(res.body).toContain("<title>Sign in — SPA Test Shop</title>");
   });
 
+  // STO-017: /search's <title> used to always show the generic placeholder
+  // copy, ignoring ?q= — now it echoes the query, matching the in-page <h1>
+  // (SearchPage.tsx's `web.search_results`).
+  it("200s GET /search?q=netflix with the query echoed in <title>", async () => {
+    const res = await app.inject({ method: "GET", url: "/search?q=netflix" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('<title>Results for &quot;netflix&quot; — SPA Test Shop</title>');
+  });
+
+  it("200s GET /search with no q with the generic placeholder title", async () => {
+    const res = await app.inject({ method: "GET", url: "/search" });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("<title>Search products… — SPA Test Shop</title>");
+  });
+
   // The single-use reset token rides in this page's own URL — the shell must
   // stop browsers leaking it via the Referer header (Storefront-1 fix,
   // security audit 2026-06-23), same guard as the deleted HTML route (and the
@@ -368,6 +384,47 @@ describe("GET /api/v1/pages/*", () => {
     const body = res.json();
     expect(body.q).toBe("netflix");
     expect(body.products.some((p: { slug: string }) => p.slug === productSlug)).toBe(true);
+  });
+
+  // STO-007: sort dropdown on Category/Search — cheapest-first is the one
+  // deterministic ordering that doesn't depend on review data or creation
+  // timestamps, so it's the one asserted end-to-end here.
+  it("category ?sort=cheapest orders products by starting price ascending", async () => {
+    const cat = await prisma.category.create({
+      data: { name: `Sort Test ${Math.random()}`, slug: `sort-test-${Math.random()}`, sortOrder: 99 },
+    });
+    const pricey = await createCatalogProduct(prisma, { categoryId: cat.id, name: `Pricey ${Math.random()}` });
+    await createDenomination(prisma, { productId: pricey.id, name: "Plan", type: "SHARED", durationLabel: "1 Month", price: "500000" });
+    const cheap = await createCatalogProduct(prisma, { categoryId: cat.id, name: `Cheap ${Math.random()}` });
+    await createDenomination(prisma, { productId: cheap.id, name: "Plan", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    const res = await app.inject({ method: "GET", url: `/api/v1/pages/category/${cat.slug}?sort=cheapest` });
+    expect(res.statusCode).toBe(200);
+    const slugs = res.json().products.map((p: { slug: string }) => p.slug);
+    expect(slugs.indexOf(cheap.slug)).toBeLessThan(slugs.indexOf(pricey.slug));
+  });
+
+  // An unrecognized sort value must fall back to the default ordering
+  // instead of 500ing or silently misbehaving.
+  it("category ignores an unknown ?sort= value instead of erroring", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/v1/pages/category/${categorySlug}?sort=bogus` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().products.some((p: { slug: string }) => p.slug === productSlug)).toBe(true);
+  });
+
+  // STO-011: "You might also like" — same category, current product excluded.
+  it("product includes same-category related_products, excluding itself", async () => {
+    const sibling = await createCatalogProduct(prisma, {
+      categoryId: (await prisma.category.findUniqueOrThrow({ where: { slug: categorySlug } })).id,
+      name: `Sibling ${Math.random()}`,
+    });
+    await createDenomination(prisma, { productId: sibling.id, name: "Plan", type: "SHARED", durationLabel: "1 Month", price: "60000" });
+
+    const res = await app.inject({ method: "GET", url: `/api/v1/pages/product/${productSlug}` });
+    expect(res.statusCode).toBe(200);
+    const related = res.json().related_products;
+    expect(related.some((p: { slug: string }) => p.slug === sibling.slug)).toBe(true);
+    expect(related.some((p: { slug: string }) => p.slug === productSlug)).toBe(false);
   });
 });
 
@@ -839,22 +896,87 @@ describe("checkout business rules (migrated from the Nunjucks checkout tests)", 
     }
   });
 
-  it("applies the IDR wallet credit when use_wallet_idr is set on an IDR method", async () => {
-    await setSetting(prisma, "tokopay_merchant_id", "m-test");
-    await setSetting(prisma, "tokopay_secret", "s-test");
-    await prisma.user.update({ where: { id: buyerId }, data: { walletBalance: "5000" } });
-    try {
+  describe("pay entirely with balance (wallet_idr / wallet_usdt)", () => {
+    afterEach(async () => {
+      await prisma.user.update({ where: { id: buyerId }, data: { walletBalance: "0", walletBalanceUsdt: "0" } });
+      // A rejected checkout rolls back its own clearCart() along with the
+      // order it failed to create, so a leftover cart item from a prior
+      // failed-checkout test would otherwise stack onto the next seedCart().
+      await clearCart(prisma, buyerId);
+    });
+
+    it("wallet_idr, sufficient balance: settles instantly with no gateway, debits exactly, credentials available", async () => {
+      await prisma.user.update({ where: { id: buyerId }, data: { walletBalance: "40000" } });
       await seedCart();
-      const created = await placeOrder("qris", { use_wallet_idr: true });
-      expect(created.statusCode).toBe(201);
-      const order = await getOrderByCode(prisma, created.json().order_code as string);
-      expect(order!.walletUsed.toString()).toBe("5000");
-      expect(order!.totalAmount.toString()).toBe("35000"); // 40000 cart - 5000 credit
-    } finally {
-      await deleteSetting(prisma, "tokopay_merchant_id");
-      await deleteSetting(prisma, "tokopay_secret");
-      await prisma.user.update({ where: { id: buyerId }, data: { walletBalance: "0" } });
-    }
+
+      const res = await placeOrder("wallet_idr");
+      expect(res.statusCode).toBe(201);
+      const body = res.json();
+      expect(body.pay_url).toBe(`/account/orders/${body.order_code}`);
+
+      const order = await getOrderByCode(prisma, body.order_code as string);
+      expect(order!.paymentMethod).toBe("WALLET");
+      expect(order!.currency).toBe("IDR");
+      expect(order!.walletUsed.toString()).toBe("40000");
+      expect(order!.totalAmount.toString()).toBe("0");
+      expect(order!.status).toBe(OrderStatus.DELIVERED);
+
+      const buyer = await prisma.user.findUniqueOrThrow({ where: { id: buyerId } });
+      expect(buyer.walletBalance.toString()).toBe("0");
+
+      const detail = await app.inject({
+        method: "GET",
+        url: `/api/v1/account/orders/${body.order_code}`,
+        headers: { cookie },
+      });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.json().delivered).toBe(true);
+      expect(detail.json().order.items[0].credentials).toBeTruthy();
+    });
+
+    it("wallet_idr, insufficient balance: 400 error.insufficient_wallet, no order created, wallet untouched", async () => {
+      await prisma.user.update({ where: { id: buyerId }, data: { walletBalance: "100" } }); // less than 40000
+      await seedCart();
+      const before = await prisma.order.count({ where: { userId: buyerId } });
+
+      const res = await placeOrder("wallet_idr");
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: "error.insufficient_wallet" });
+
+      const after = await prisma.order.count({ where: { userId: buyerId } });
+      expect(after).toBe(before);
+      const buyer = await prisma.user.findUniqueOrThrow({ where: { id: buyerId } });
+      expect(buyer.walletBalance.toString()).toBe("100");
+    });
+
+    it("wallet_usdt, sufficient balance: settles instantly, currency USDT", async () => {
+      await setSetting(prisma, "usd_idr_rate", "16000");
+      await prisma.user.update({ where: { id: buyerId }, data: { walletBalanceUsdt: "2.5" } }); // 40000 / 16000
+      await seedCart();
+
+      const res = await placeOrder("wallet_usdt");
+      expect(res.statusCode).toBe(201);
+      const order = await getOrderByCode(prisma, res.json().order_code as string);
+      expect(order!.paymentMethod).toBe("WALLET");
+      expect(order!.currency).toBe("USDT");
+      expect(order!.totalAmount.toString()).toBe("0");
+
+      const buyer = await prisma.user.findUniqueOrThrow({ where: { id: buyerId } });
+      expect(Number(buyer.walletBalanceUsdt)).toBeCloseTo(0);
+    });
+
+    it("wallet_usdt with no USD/IDR rate configured: 400 web.pay_method_unavailable", async () => {
+      await deleteSetting(prisma, "usd_idr_rate");
+      try {
+        await prisma.user.update({ where: { id: buyerId }, data: { walletBalanceUsdt: "10" } });
+        await seedCart();
+        const res = await placeOrder("wallet_usdt");
+        expect(res.statusCode).toBe(400);
+        expect(res.json()).toEqual({ error: "web.pay_method_unavailable" });
+      } finally {
+        await setSetting(prisma, "usd_idr_rate", "16000");
+      }
+    });
   });
 
   describe("payState mapping on a BYBIT_BSC order (status poll)", () => {
@@ -1064,6 +1186,14 @@ describe("/api/v1/account twins", () => {
       expect(body.order_count).toBe(0);
     });
 
+    // STO-002: a password-registered customer (no Telegram fullName/username,
+    // only `loginUsername`) must not see a blank "Signed in as" name.
+    it("GET /account falls back to loginUsername when no Telegram identity is linked", async () => {
+      const res = await app.inject({ method: "GET", url: "/api/v1/account", headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().name).toBe("accspauser");
+    });
+
     it("support ticket: create (trio) → list → detail → reply", async () => {
       const anon = await app.inject({ method: "POST", url: "/api/v1/account/support", payload: { message: "help" } });
       expect(anon.statusCode).toBe(401);
@@ -1081,6 +1211,9 @@ describe("/api/v1/account twins", () => {
         payload: { message: "help me please" },
       });
       expect(ok.statusCode).toBe(200);
+      // STO-020: the client's "Ticket #N created" toast needs the new
+      // ticket's id in the create response.
+      expect(typeof ok.json().ticket_id).toBe("number");
 
       const list = await app.inject({ method: "GET", url: "/api/v1/account/support", headers: { cookie } });
       const ticket = list.json().tickets[0];

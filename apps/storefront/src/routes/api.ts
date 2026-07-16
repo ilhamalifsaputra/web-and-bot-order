@@ -16,7 +16,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { Decimal } from "@app/core/money";
 import { config } from "@app/core/config";
 import { ValidationError } from "@app/core/errors";
-import { DeliveryType } from "@app/core/enums";
+import { DeliveryType, OrderCurrency } from "@app/core/enums";
 import {
   prisma,
   getCategoryBySlug,
@@ -33,7 +33,7 @@ import { optionalCustomer } from "../plugins/auth";
 import { productImage } from "../images";
 import { readGuestCart, writeGuestCart, CART_COOKIE, CART_COOKIE_VERSION, type GuestCartLine } from "../shop";
 import { loadCartLines } from "./cart";
-import { performCheckout } from "./checkout";
+import { performCheckout, performWalletCheckout } from "./checkout";
 
 interface CategoryJson {
   id: number;
@@ -214,8 +214,6 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     Body: {
       method?: string;
       voucher_code?: string;
-      use_wallet_idr?: boolean;
-      use_wallet_usdt?: boolean;
       customer_data?: unknown;
     };
   }>("/checkout", async (req, reply) => {
@@ -230,21 +228,29 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
 
     const method = (req.body?.method ?? "").toLowerCase();
     const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
-    // Wallet-credit flags (additive, default off — pre-existing callers are
-    // unaffected). Same semantics as the HTML form's use_wallet_idr/usdt
-    // checkboxes: performCheckout itself gates them by method currency.
-    const useWalletIdr = req.body?.use_wallet_idr === true;
-    const useWalletUsdt = req.body?.use_wallet_usdt === true;
+
+    // Wallet credit as a payment method — no gateway, settles synchronously.
+    // Separate method tokens from the gateway ones below; performCheckout
+    // is untouched by this branch.
+    if (method === "wallet_idr" || method === "wallet_usdt") {
+      try {
+        const { orderCode } = await performWalletCheckout(
+          customer,
+          method === "wallet_idr" ? OrderCurrency.IDR : OrderCurrency.USDT,
+          voucherCode,
+          req.body?.customer_data,
+        );
+        return reply.code(201).send({ order_code: orderCode, pay_url: `/account/orders/${orderCode}` });
+      } catch (e) {
+        if (e instanceof ValidationError) {
+          return reply.code(400).send({ error: e.key });
+        }
+        throw e;
+      }
+    }
 
     try {
-      const { orderCode } = await performCheckout(
-        customer,
-        method,
-        voucherCode,
-        useWalletIdr,
-        useWalletUsdt,
-        req.body?.customer_data,
-      );
+      const { orderCode } = await performCheckout(customer, method, voucherCode, req.body?.customer_data);
       return reply.code(201).send({ order_code: orderCode, pay_url: `/checkout/${orderCode}/pay` });
     } catch (e) {
       if (e instanceof ValidationError) {

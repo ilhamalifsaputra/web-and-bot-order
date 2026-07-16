@@ -88,4 +88,14 @@
     vertical-align: -0.125em;
     flex-shrink: 0;
   }
+
+  /* STO-003: the shared `:focus-visible` rule (app.css) draws a 40%-opacity
+     pine outline, tuned for the light `bg-paper`/`bg-card` surfaces used
+     almost everywhere. On a dark surface (hero's `bg-ink`, "Our Promise"'s
+     `bg-pine`) that same ring reads as invisible. Interactive elements
+     placed on a dark surface opt into this brighter override instead. */
+  .focus-on-dark:focus-visible {
+    outline: 2px solid rgba(255, 255, 255, 0.9);
+    outline-offset: 2px;
+  }
 }

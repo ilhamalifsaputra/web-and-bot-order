@@ -16,6 +16,7 @@ import { optionalCustomer } from "../plugins/auth";
 import { requestLang, readGuestCart, resolveBotUsername } from "../shop";
 import { getUsdIdrRate } from "../pricing";
 import { homePageData, categoryPageData, productPageData, searchPageData } from "../pageData";
+import { isSortKey } from "../cards";
 
 const apiPagesRoutes: FastifyPluginAsync = async (app) => {
   // ---- Shop chrome context (header/footer/cart badge) ----
@@ -60,11 +61,15 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ---- Category ----
-  app.get<{ Params: { slug: string } }>("/pages/category/:slug", async (req, reply) => {
-    const data = await categoryPageData(req.params.slug);
-    if (!data) return reply.code(404).send({ error: "not_found" });
-    return reply.send(data);
-  });
+  app.get<{ Params: { slug: string }; Querystring: { sort?: string } }>(
+    "/pages/category/:slug",
+    async (req, reply) => {
+      const sort = isSortKey(req.query.sort) ? req.query.sort : "default";
+      const data = await categoryPageData(req.params.slug, sort);
+      if (!data) return reply.code(404).send({ error: "not_found" });
+      return reply.send(data);
+    },
+  );
 
   // ---- Product detail ----
   app.get<{ Params: { slug: string } }>("/pages/product/:slug", async (req, reply) => {
@@ -85,8 +90,9 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ---- Search ----
-  app.get<{ Querystring: { q?: string } }>("/pages/search", async (req, reply) => {
-    return reply.send(await searchPageData(req.query.q ?? ""));
+  app.get<{ Querystring: { q?: string; sort?: string } }>("/pages/search", async (req, reply) => {
+    const sort = isSortKey(req.query.sort) ? req.query.sort : "default";
+    return reply.send(await searchPageData(req.query.q ?? "", sort));
   });
 };
 

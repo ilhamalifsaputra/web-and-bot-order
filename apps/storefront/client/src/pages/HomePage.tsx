@@ -33,10 +33,13 @@ import type { HomePageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import ProductCard from "../components/shop/ProductCard";
+import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
+import Skeleton from "../components/shop/Skeleton";
 import Stars from "../components/shop/Stars";
 import "./HomePage.css";
 
 const FAQ_NUMBERS = [1, 2, 3, 4, 5];
+const SKELETON_CARDS = Array.from({ length: 3 }, (_, i) => i);
 
 export default function HomePage() {
   const { data: ctx } = useShopContext();
@@ -48,10 +51,20 @@ export default function HomePage() {
   // document-wide querySelectorAll, same threshold/class toggling, same
   // no-IntersectionObserver / reduced-motion fallback (immediately visible,
   // also handled by the CSS `@media` rule in HomePage.css).
+  //
+  // STO-006: that mechanism has no safety net beyond real scrolling — a
+  // screenshot/print/PDF tool, a non-scrolling crawler, or slow/erroring JS
+  // left 5 of 7 sections permanently at `opacity:0`. A timeout forces every
+  // `.reveal` visible after REVEAL_FALLBACK_MS regardless of intersection,
+  // so no code path can leave content invisible forever.
   useEffect(() => {
     if (!data) return;
     const reveals = document.querySelectorAll<HTMLElement>(".reveal");
     if (!reveals.length) return;
+    const REVEAL_FALLBACK_MS = 2000;
+    const fallback = window.setTimeout(() => {
+      reveals.forEach((r) => r.classList.add("visible"));
+    }, REVEAL_FALLBACK_MS);
     if ("IntersectionObserver" in window) {
       const revObs = new IntersectionObserver(
         (entries) => {
@@ -65,13 +78,40 @@ export default function HomePage() {
         { threshold: 0.1 },
       );
       reveals.forEach((r) => revObs.observe(r));
-      return () => revObs.disconnect();
+      return () => {
+        revObs.disconnect();
+        window.clearTimeout(fallback);
+      };
     }
     reveals.forEach((r) => r.classList.add("visible"));
-    return undefined;
+    return () => window.clearTimeout(fallback);
   }, [data]);
 
-  if (!data) return null;
+  // STO-006/performance.md: rendering nothing while the initial query is
+  // pending reads as a blank/broken page on a slow connection. A full
+  // section-by-section skeleton would over-mimic a page this long — a
+  // hero + featured-products placeholder (the above-the-fold content) is
+  // enough to signal "loading" rather than "broken" (see AccountPage).
+  if (!data) {
+    return (
+      <div aria-busy="true" aria-label={t("web.loading")}>
+        <div className="rounded-3xl bg-ink px-6 py-12 sm:px-10 sm:py-16 mb-12">
+          <Skeleton className="h-5 w-28 bg-white/10" />
+          <Skeleton className="mt-5 h-10 w-3/4 max-w-md bg-white/10" />
+          <Skeleton className="mt-4 h-5 w-2/3 max-w-sm bg-white/10" />
+          <div className="mt-7 flex flex-wrap gap-3">
+            <Skeleton className="h-12 w-40 bg-white/10" />
+            <Skeleton className="h-12 w-40 bg-white/10" />
+          </div>
+        </div>
+        <div className="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          {SKELETON_CARDS.map((i) => (
+            <ProductCardSkeleton key={i} />
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   const { hero_image, categories, products, testimonials, low_threshold, bot_username, wa_number } = data;
   const fx = ctx?.fx;
@@ -111,14 +151,14 @@ export default function HomePage() {
           <div className="mt-7 flex flex-wrap gap-3">
             <a
               href="#produk"
-              className="inline-flex items-center gap-2 rounded-xl bg-pine px-5 py-3 font-semibold text-white hover:bg-pine-dark transition-colors shadow-soft"
+              className="focus-on-dark inline-flex items-center gap-2 rounded-xl bg-pine px-5 py-3 font-semibold text-white hover:bg-pine-dark transition-colors shadow-soft"
             >
               <ShoppingBag className="h-5 w-5" />
               {t("web.hero_cta")}
             </a>
             <a
               href="#kontak"
-              className="inline-flex items-center gap-2 rounded-xl border border-white/20 px-5 py-3 font-semibold text-white hover:bg-white/10 transition-colors"
+              className="focus-on-dark inline-flex items-center gap-2 rounded-xl border border-white/20 px-5 py-3 font-semibold text-white hover:bg-white/10 transition-colors"
             >
               <MessageCircle className="h-5 w-5" />
               {t("web.hero_cta2")}
@@ -226,7 +266,11 @@ export default function HomePage() {
         </div>
 
         {products.length > 0 ? (
-          <div className="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          // STO-018: a single product in a 3-column grid leaves two-thirds of
+          // the row empty, reading as broken rather than a deliberate
+          // one-item shelf — clamp to one column with a capped width instead
+          // of stretching an isolated card across the full row.
+          <div className={`mt-5 grid gap-5 ${products.length === 1 ? "max-w-sm" : "sm:grid-cols-2 lg:grid-cols-3"}`}>
             {products.map((p) => (
               <ProductCard key={p.slug} p={p} fx={fx} lowThreshold={low_threshold} />
             ))}

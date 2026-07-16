@@ -79,7 +79,11 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     if (!customer) return;
     const orderCount = await countUserOrders(prisma, customer.userId);
     return reply.send({
-      name: customer.user.fullName ?? customer.user.username ?? String(customer.telegramId ?? ""),
+      name:
+        customer.user.fullName ??
+        customer.user.username ??
+        customer.user.loginUsername ??
+        String(customer.telegramId ?? ""),
       order_count: orderCount,
       referral_code: customer.user.referralCode,
       wallet_idr: new Decimal(customer.user.walletBalance).toString(),
@@ -258,10 +262,14 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     if (!customer) return;
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
     const message = (req.body?.message ?? "").trim().slice(0, 2000);
+    let ticketId: number | null = null;
     if (message) {
-      await createTicket(prisma, customer.userId, message);
+      const ticket = await createTicket(prisma, customer.userId, message);
+      ticketId = ticket.id;
     }
-    return reply.send({ ok: true });
+    // STO-020: the client shows a "Ticket #N created" success toast — needs
+    // the new ticket's id, which `{ ok: true }` alone never carried.
+    return reply.send({ ok: true, ticket_id: ticketId });
   });
 
   app.post<{ Params: { id: string }; Body: { message?: string } }>(

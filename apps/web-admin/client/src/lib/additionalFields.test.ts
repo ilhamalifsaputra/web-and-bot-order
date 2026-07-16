@@ -91,8 +91,8 @@ describe("hasAtLeastOneField", () => {
     expect(hasAtLeastOneField([emptyFieldDraft(), { ...emptyFieldDraft(), key: "   " }])).toBe(false);
   });
 
-  it("is true once at least one draft has a non-empty key", () => {
-    expect(hasAtLeastOneField([emptyFieldDraft(), { ...emptyFieldDraft(), key: "ign" }])).toBe(true);
+  it("is true once at least one draft has a question typed in either language", () => {
+    expect(hasAtLeastOneField([emptyFieldDraft(), { ...emptyFieldDraft(), labelEn: "IGN" }])).toBe(true);
   });
 });
 
@@ -114,9 +114,9 @@ describe("fieldsAreValid", () => {
     expect(fieldsAreValid([good()])).toBe(true);
   });
 
-  it("is false when the key doesn't match the server's lowercase/underscore pattern", () => {
-    expect(fieldsAreValid([good({ key: "Invite Email" })])).toBe(false);
-    expect(fieldsAreValid([good({ key: "IGN" })])).toBe(false);
+  it("ignores key format — draftsToFields generates a valid key, key is never admin-typed", () => {
+    expect(fieldsAreValid([good({ key: "Invite Email" })])).toBe(true);
+    expect(fieldsAreValid([good({ key: "IGN" })])).toBe(true);
   });
 
   it("is false when either bilingual label is blank", () => {
@@ -132,8 +132,8 @@ describe("fieldsAreValid", () => {
     expect(fieldsAreValid([good({ type: "select", optionsText: "a, b" })])).toBe(true);
   });
 
-  it("is false when two active rows share the same key", () => {
-    expect(fieldsAreValid([good({ key: "dup" }), good({ key: "dup" })])).toBe(false);
+  it("ignores key uniqueness — draftsToFields dedupes generated keys", () => {
+    expect(fieldsAreValid([good({ key: "dup" }), good({ key: "dup" })])).toBe(true);
   });
 
   it("ignores a trailing blank draft row (in-progress '+ Add Field')", () => {

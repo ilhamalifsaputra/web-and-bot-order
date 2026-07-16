@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
-import { AdditionalFieldsEditor } from "../components/shared/AdditionalFieldsEditor";
+import { DeliveryTypeSection } from "../components/shared/DeliveryTypeSection";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,12 +21,6 @@ import type { AdditionalField, AdditionalFieldDraft } from "../api/types";
 const DENOMINATION_TYPES = [
   { value: "SHARED", label: "Shared" },
   { value: "PRIVATE", label: "Private" },
-];
-
-const DELIVERY_TYPES = [
-  { value: "auto", label: "Auto (deliver from stock)" },
-  { value: "manual", label: "Manual (admin fulfills by hand)" },
-  { value: "manual_with_info", label: "Manual + Info (buyer fills fields first)" },
 ];
 
 interface EditableDenomination {
@@ -68,6 +62,7 @@ interface BulkPricingRule {
 interface ProductDetailForEdit {
   product: {
     id: number;
+    name: string;
     category: { id: number; name: string } | null;
     denominations: EditableDenomination[];
   };
@@ -221,13 +216,11 @@ export function DenominationEditPage() {
         title="Edit Denomination"
         breadcrumb={[
           { label: "Catalog", href: "/catalog" },
-          { label: "Product", href: `/catalog/${productId}` },
+          // F-007: was the hardcoded literal "Product" — now the real
+          // product name (already loaded via the `["catalog", productId]`
+          // query above), falling back to the product id while loading.
+          { label: data?.product.name ?? `Product #${productId}`, href: `/catalog/${productId}` },
         ]}
-        actions={
-          <Button variant="outline" size="sm" onClick={() => navigate(`/catalog/${productId}`)}>
-            ← Back
-          </Button>
-        }
       />
 
       <div className="max-w-lg flex flex-col gap-4">
@@ -240,10 +233,17 @@ export function DenominationEditPage() {
 
         <div>
           <label className="text-sm font-medium text-ink">
-            Type <span className="text-rust">*</span>
+            Duration Label <span className="text-rust">*</span>
+          </label>
+          <Input className="mt-1" placeholder="e.g. 1 Month" value={durationLabel} onChange={(e) => setDurationLabel(e.target.value)} />
+        </div>
+
+        <div>
+          <label className="text-sm font-medium text-ink">
+            Account Type <span className="text-rust">*</span>
           </label>
           <Select value={type ?? ""} onValueChange={(v) => setType(v)}>
-            <SelectTrigger className="mt-1" aria-label="Type">
+            <SelectTrigger className="mt-1" aria-label="Account Type">
               <SelectValue placeholder="Select type" />
             </SelectTrigger>
             <SelectContent>
@@ -252,65 +252,48 @@ export function DenominationEditPage() {
               ))}
             </SelectContent>
           </Select>
+          <p className="mt-1 text-xs text-ink-soft">
+            Shared = one account used by multiple buyers at once. Private = a dedicated account for a
+            single buyer.
+          </p>
         </div>
 
-        <div>
-          <label className="text-sm font-medium text-ink">
-            Delivery Type <span className="text-rust">*</span>
-          </label>
-          <Select value={deliveryType} onValueChange={(v) => setDeliveryType(v)}>
-            <SelectTrigger className="mt-1" aria-label="Delivery Type">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {DELIVERY_TYPES.map((t) => (
-                <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        {deliveryType === "manual_with_info" && (
-          <div>
-            <label className="text-sm font-medium text-ink">Custom Fields</label>
-            <p className="mt-1 mb-2 text-xs text-ink-soft">
-              The buyer fills these in before paying. At least one field is required.
-            </p>
-            <AdditionalFieldsEditor value={additionalFields} onChange={setAdditionalFields} />
-          </div>
-        )}
-
-        <div>
-          <label className="text-sm font-medium text-ink">
-            Duration Label <span className="text-rust">*</span>
-          </label>
-          <Input className="mt-1" placeholder="e.g. 1 Month" value={durationLabel} onChange={(e) => setDurationLabel(e.target.value)} />
-        </div>
+        <DeliveryTypeSection
+          deliveryType={deliveryType}
+          onDeliveryTypeChange={setDeliveryType}
+          additionalFields={additionalFields}
+          onAdditionalFieldsChange={setAdditionalFields}
+        />
 
         <div>
           <label className="text-sm font-medium text-ink">
             Price <span className="text-rust">*</span>
           </label>
           <Input className="mt-1" placeholder="e.g. 15000" value={price} onChange={(e) => setPrice(e.target.value)} />
+          <p className="mt-1 text-xs text-ink-soft">Shown to customers.</p>
         </div>
 
         <div>
           <label className="text-sm font-medium text-ink">Cost Price</label>
           <Input className="mt-1" placeholder="Optional" value={costPrice} onChange={(e) => setCostPrice(e.target.value)} />
+          <p className="mt-1 text-xs text-ink-soft">
+            What you pay your supplier. For margin reports only — buyers never see this.
+          </p>
         </div>
 
         <div>
           <label className="text-sm font-medium text-ink">Reseller Price</label>
           <Input className="mt-1" placeholder="Optional" value={resellerPrice} onChange={(e) => setResellerPrice(e.target.value)} />
+          <p className="mt-1 text-xs text-ink-soft">Charged instead of Price to reseller-role customers.</p>
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Warranty Days</label>
+          <label className="block text-sm font-medium text-ink">Warranty Days</label>
           <Input className="mt-1 w-32" placeholder="Optional" value={warrantyDays} onChange={(e) => setWarrantyDays(e.target.value)} />
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Sort Order</label>
+          <label className="block text-sm font-medium text-ink">Sort Order</label>
           <Input
             className="mt-1 w-32"
             placeholder="0"
@@ -356,7 +339,7 @@ export function DenominationEditPage() {
 
           <div className="mt-3 flex items-end gap-3">
             <div>
-              <label className="text-sm font-medium text-ink">Min Quantity</label>
+              <label className="block text-sm font-medium text-ink">Min Quantity</label>
               <Input
                 className="mt-1 w-28"
                 placeholder="e.g. 5"
@@ -365,7 +348,7 @@ export function DenominationEditPage() {
               />
             </div>
             <div>
-              <label className="text-sm font-medium text-ink">Discount %</label>
+              <label className="block text-sm font-medium text-ink">Discount %</label>
               <Input
                 className="mt-1 w-28"
                 placeholder="e.g. 10"

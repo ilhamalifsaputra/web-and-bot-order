@@ -52,12 +52,26 @@ describe("SupportPage", () => {
     fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), {
       target: { value: "New issue" },
     });
-    (apiPost as Mock).mockResolvedValue({ ok: true });
+    (apiPost as Mock).mockResolvedValue({ ok: true, ticket_id: 2 });
     fireEvent.click(screen.getByRole("button", { name: /Send/ }));
     await waitFor(() =>
       expect(apiPost).toHaveBeenCalledWith("/api/v1/account/support", { message: "New issue" }),
     );
     await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(2));
+  });
+
+  // STO-020: submitting used to only clear the textbox and silently add a
+  // table row — a toast should confirm the ticket was actually created.
+  it("shows a 'Ticket #N created' toast on successful submission", async () => {
+    renderSupport();
+    await screen.findByRole("link", { name: "#1" });
+    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), {
+      target: { value: "New issue" },
+    });
+    (apiPost as Mock).mockResolvedValue({ ok: true, ticket_id: 2 });
+    fireEvent.click(screen.getByRole("button", { name: /Send/ }));
+    expect(await screen.findByText("Ticket #2 created")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeInTheDocument();
   });
 
   it("renders the empty state when there are no tickets", async () => {

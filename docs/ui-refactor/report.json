@@ -1,0 +1,218 @@
+{
+  "auditDate": "2026-07-14",
+  "scope": "apps/web-admin React SPA dashboard (apps/web-admin/client)",
+  "summary": {
+    "total": 18,
+    "critical": 2,
+    "high": 5,
+    "medium": 7,
+    "low": 4
+  },
+  "findings": [
+    {
+      "id": "F-001",
+      "severity": "Critical",
+      "page": "All pages (sidebar), most visible on Orders",
+      "screenshot": "screenshots/orders-list-desktop-empty.png",
+      "currentBehavior": "The sidebar's \"Sales\" group has two separate entries — \"Orders\" (/orders) and \"Awaiting Fulfillment\" (/orders?status=PROCESSING) — that both route to the same OrdersPage component, the second just pre-applying a status filter. Confirmed in apps/web-admin/client/src/components/layout/Sidebar.tsx lines 54-60.",
+      "expectedBehavior": "One \"Orders\" entry; \"Awaiting Fulfillment\" becomes a status filter/tab reachable from inside Orders, not a separate top-level nav item.",
+      "recommendation": "Remove the \"Awaiting Fulfillment\" NavItemConfig entry from NAV_GROUPS in Sidebar.tsx. Surface \"Awaiting Fulfillment\" as a quick-filter chip/tab inside OrdersPage.tsx instead.",
+      "implementationNotes": "UI-only change. No backend/API change needed. Keep the fulfillment badge count but move it onto the in-page filter/tab or keep it on the \"Orders\" sidebar item.",
+      "files": ["apps/web-admin/client/src/components/layout/Sidebar.tsx", "apps/web-admin/client/src/pages/OrdersPage.tsx"]
+    },
+    {
+      "id": "F-002",
+      "severity": "Critical",
+      "page": "Global (Sidebar footer link, TopBar user-avatar dropdown)",
+      "screenshot": "screenshots/logout-broken-page-not-found-desktop.png",
+      "currentBehavior": "Both logout controls are plain anchor tags (Sidebar.tsx ~line 190, TopBar.tsx ~lines 112-117) that do a GET /logout navigation. The backend logout route is POST-only (apps/web-admin/src/routes/auth.ts line 252), so the GET falls through to the SPA's catch-all and renders \"Page not found\" while the session cookie is never cleared. Confirmed: after clicking Logout, /orders still loads authenticated.",
+      "expectedBehavior": "Clicking Logout ends the session and returns the admin to /login.",
+      "recommendation": "Change both logout controls to issue a POST /logout via fetch, then redirect to /login on success.",
+      "implementationNotes": "UI-only fix — backend route already correct. Consider a shared logout() helper in apps/web-admin/client/src/api/client.ts.",
+      "files": ["apps/web-admin/client/src/components/layout/Sidebar.tsx", "apps/web-admin/client/src/components/layout/TopBar.tsx"]
+    },
+    {
+      "id": "F-003",
+      "severity": "High",
+      "page": "Orders (/orders)",
+      "screenshot": "screenshots/orders-list-desktop-empty.png",
+      "currentBehavior": "The Status filter combobox on Orders lists all 13 order statuses verbatim as backend enum identifiers (SCREAMING_SNAKE_CASE), e.g. \"PAYMENT_DETECTED\", \"PENDING_VERIFICATION\".",
+      "expectedBehavior": "Human-readable labels, e.g. \"Payment Detected\", \"Pending Verification\", ideally grouped/ordered by the customer journey.",
+      "recommendation": "Add a label map (ORDER_STATUS_LABELS) in OrdersPage.tsx or a shared lib/orderStatus.ts and render labels instead of raw enum values in both the filter dropdown and the table's Status column/badges.",
+      "implementationNotes": "UI-only. No backend change — purely a display-label mapping.",
+      "files": ["apps/web-admin/client/src/pages/OrdersPage.tsx"]
+    },
+    {
+      "id": "F-004",
+      "severity": "High",
+      "page": "Audit Log (/audit)",
+      "screenshot": "screenshots/audit-log-desktop.png",
+      "currentBehavior": "Every row's \"Admin\" column renders the raw internal user id (e.g. 1) instead of the admin's name/username.",
+      "expectedBehavior": "Show the admin's username/name, with the numeric ID available as a tooltip or secondary detail if needed.",
+      "recommendation": "Join admin username/name into the audit log API response (or resolve client-side from an already-fetched admins list) and render that instead of the bare ID.",
+      "implementationNotes": "May need a small backend change (include admin name in the audit log query/response) — borderline in-scope, triage in phase 2.",
+      "files": ["apps/web-admin/client/src/pages/AuditPage.tsx"]
+    },
+    {
+      "id": "F-009",
+      "severity": "High",
+      "page": "Global TopBar, mobile/small viewport",
+      "screenshot": "screenshots/dashboard-mobile-nav-closed.png",
+      "currentBehavior": "TopBar.tsx renders the search trigger button with icon, label span, and kbd hint, but the button itself has no aria-label. Below the sm breakpoint the label/hint are hidden via Tailwind, leaving an unnamed icon-only button for screen readers. Confirmed via accessibility snapshot at 375px width. Source: apps/web-admin/client/src/components/layout/TopBar.tsx lines 41-51.",
+      "expectedBehavior": "The search button always has a discoverable accessible name, regardless of viewport.",
+      "recommendation": "Add aria-label=\"Search\" to the button element itself.",
+      "implementationNotes": "One-line UI fix.",
+      "files": ["apps/web-admin/client/src/components/layout/TopBar.tsx"]
+    },
+    {
+      "id": "F-012",
+      "severity": "High",
+      "page": "Settings (/settings)",
+      "screenshot": "screenshots/settings-desktop.png",
+      "currentBehavior": "Settings renders 9+ sections top to bottom in a single column with no in-page navigation: General, Telegram & Bot, TokoPay, PayDisini, NOWPayments, Bybit, Bybit BSC, Binance Internal Transfer, Exchange Rates, Security. To reach Security an admin must scroll past 8 other sections. No anchor links, tabs, or sticky section index.",
+      "expectedBehavior": "Sectioned navigation (tabs, a sticky in-page sidebar, or anchor links/a \"jump to\" control) so admins can reach a specific section without scrolling through everything else.",
+      "recommendation": "Add a sticky section nav that scrolls to/highlights the active section, or split into tabs (General / Payments / Security). Preserve the current whitelist-only edit behavior — do not widen it.",
+      "implementationNotes": "UI-only, structural. No new fields, no whitelist change.",
+      "files": ["apps/web-admin/client/src/pages/SettingsPage.tsx"]
+    },
+    {
+      "id": "F-016",
+      "severity": "High",
+      "page": "Orders (/orders)",
+      "screenshot": "screenshots/orders-list-desktop-empty.png",
+      "currentBehavior": "With no filter applied (fresh DB, zero orders), the empty state reads \"No orders found / Try adjusting your filters.\" — wrong/confusing when there is no filter active at all.",
+      "expectedBehavior": "Context-aware messaging: \"No orders yet\" (no data, no filter) vs. \"No orders match these filters\" + a \"Clear filters\" action when a filter is actually narrowing an otherwise-populated set.",
+      "recommendation": "Branch the empty-state copy in OrdersPage.tsx on whether any filter (status, search, date range) is currently active.",
+      "implementationNotes": "UI-only.",
+      "files": ["apps/web-admin/client/src/pages/OrdersPage.tsx"]
+    },
+    {
+      "id": "F-005",
+      "severity": "Medium",
+      "page": "Audit Log (/audit)",
+      "screenshot": "screenshots/audit-log-desktop.png",
+      "currentBehavior": "The Action column renders backend action codes verbatim (denomination_create, catalog_product_create, category_create, web_setup_completed), redundant next to the already-readable Details sentence.",
+      "expectedBehavior": "A human-readable action label, or the raw code column de-emphasized/removed since Details already carries the readable sentence.",
+      "recommendation": "Add a label map for known action codes, or drop the column in favor of a small icon/badge derived from the action category plus the existing Details sentence.",
+      "implementationNotes": "UI-only.",
+      "files": ["apps/web-admin/client/src/pages/AuditPage.tsx"]
+    },
+    {
+      "id": "F-006",
+      "severity": "Medium",
+      "page": "Catalog vs. Vouchers vs. Admins",
+      "screenshot": "screenshots/product-create-desktop.png",
+      "currentBehavior": "\"Add a new X\" is implemented three different ways: Products/Denominations use a dedicated full page; Vouchers expands an inline form section above the table; Admins uses a single-row inline form built into the table header with no labels on additional fields.",
+      "expectedBehavior": "One consistent creation pattern for records of similar complexity, or at minimum two clear tiers applied consistently.",
+      "recommendation": "Keep the dedicated-page pattern for multi-field records (Product, Denomination); use the inline expand-in-place pattern (Vouchers' approach) for simpler ones (Voucher, Admin) rather than Admins' single-field table-row variant.",
+      "implementationNotes": "UI-only. No backend change — same create endpoints, different presentation only.",
+      "files": ["apps/web-admin/client/src/pages/VouchersPage.tsx", "apps/web-admin/client/src/pages/AdminsPage.tsx"]
+    },
+    {
+      "id": "F-007",
+      "severity": "Medium",
+      "page": "New Denomination (/catalog/:productId/denominations/new)",
+      "screenshot": "screenshots/denomination-create-desktop.png",
+      "currentBehavior": "The breadcrumb reads \"Catalog / Product\" — the literal word \"Product\" is rendered as link text instead of the actual product name. Confirmed via accessibility snapshot.",
+      "expectedBehavior": "Breadcrumb shows the real product name, e.g. \"Catalog / Netflix Premium / New Denomination\".",
+      "recommendation": "Pass the loaded product's name into the breadcrumb component instead of a hardcoded \"Product\" string; handle the loading state properly.",
+      "implementationNotes": "UI-only. Likely also affects DenominationEditPage.tsx — verify in phase 2.",
+      "files": ["apps/web-admin/client/src/pages/DenominationCreatePage.tsx", "apps/web-admin/client/src/pages/DenominationEditPage.tsx"]
+    },
+    {
+      "id": "F-010",
+      "severity": "Medium",
+      "page": "Dashboard (/)",
+      "screenshot": "screenshots/dashboard-desktop-empty.png",
+      "currentBehavior": "Only two real heading elements exist on the Dashboard (H1 Dashboard, H2 Operation Center). Visually-heading-styled section titles (Critical Stock, Upcoming Expirations, Sales Analytics, Recent Orders, Business Health, Top Products) are plain div/span elements, not h2/h3 tags. Confirmed via document.querySelectorAll('h1,h2,h3,h4,h5,h6').",
+      "expectedBehavior": "Each dashboard card/section title is a real heading element so screen-reader users can navigate by heading structure.",
+      "recommendation": "Change section-title elements to semantic heading tags, keeping existing visual styling via the same CSS classes.",
+      "implementationNotes": "UI-only.",
+      "files": [
+        "apps/web-admin/client/src/components/dashboard/InventoryMonitoringCard.tsx",
+        "apps/web-admin/client/src/components/dashboard/ExpirationsTable.tsx",
+        "apps/web-admin/client/src/components/dashboard/SalesAnalyticsCard.tsx",
+        "apps/web-admin/client/src/components/dashboard/RecentOrdersTable.tsx",
+        "apps/web-admin/client/src/components/dashboard/BusinessHealthGrid.tsx",
+        "apps/web-admin/client/src/components/dashboard/TopProductsList.tsx"
+      ]
+    },
+    {
+      "id": "F-011",
+      "severity": "Medium",
+      "page": "Global (TopBar), likely recurring pattern",
+      "screenshot": "screenshots/dashboard-desktop-empty.png",
+      "currentBehavior": "Measured via getComputedStyle: the \"Search...\" label renders as rgb(151, 161, 177) on a transparent/light background, ~2.6:1 contrast ratio — below the WCAG AA 4.5:1 minimum for normal text.",
+      "expectedBehavior": "Muted/secondary text meets at least 4.5:1 contrast against its background (or qualifies for the 3:1 large-text threshold).",
+      "recommendation": "Darken the muted text color token and audit other uses of the same utility class for the same issue, with an actual contrast-checker pass in phase 2.",
+      "implementationNotes": "Likely a shared Tailwind/theme token change, not a one-off. Needs a broader grep before fixing. Preserve existing brand colors — adjust only the token's lightness enough to pass contrast.",
+      "files": []
+    },
+    {
+      "id": "F-013",
+      "severity": "Medium",
+      "page": "Settings (/settings)",
+      "screenshot": "screenshots/settings-desktop.png",
+      "currentBehavior": "Every payment gateway section shows a \"not configured\" label right next to an \"Enabled\" switch that is toggled on by default, with all credential fields \"not set\" — reads as contradictory.",
+      "expectedBehavior": "Visual state should make it obvious that \"Enabled + not configured\" effectively means \"inactive\".",
+      "recommendation": "Derive a single combined status label/badge from enabled && hasRequiredFields instead of showing two seemingly contradictory signals.",
+      "implementationNotes": "UI-only. Confirm with product owner whether \"Enabled\" defaulting to true pre-setup is intentional business logic (out of scope) — this finding is about display only.",
+      "files": ["apps/web-admin/client/src/pages/SettingsPage.tsx"]
+    },
+    {
+      "id": "F-014",
+      "severity": "Medium",
+      "page": "Vouchers (/vouchers, inline \"New Voucher\" form)",
+      "screenshot": "screenshots/voucher-create-inline-form-desktop.png",
+      "currentBehavior": "The inline voucher-creation form relies on placeholder-only text (or, for one combobox, no label at all — confirmed via accessibility snapshot). Inconsistent with Product/Denomination create forms, which use a clear Label + helper-text pattern.",
+      "expectedBehavior": "Every field has a persistent visible label, consistent with the rest of the app's forms.",
+      "recommendation": "Apply the same Label + Input/Select composition already used in ProductCreatePage.tsx/DenominationCreatePage.tsx to the voucher inline form.",
+      "implementationNotes": "UI-only.",
+      "files": ["apps/web-admin/client/src/pages/VouchersPage.tsx"]
+    },
+    {
+      "id": "F-008",
+      "severity": "Low",
+      "page": "Product Create, Denomination Create, Product Detail",
+      "screenshot": "screenshots/product-create-desktop.png",
+      "currentBehavior": "These pages show both a breadcrumb link in the top-left and a separate \"← Back\" button in the top-right, doing the same job.",
+      "expectedBehavior": "One clear way back.",
+      "recommendation": "Keep the breadcrumb (it also communicates hierarchy) and drop the redundant \"← Back\" button, or merge them.",
+      "implementationNotes": "UI-only, low risk. Check apps/web-admin/client/src/components/shared/PageHeader.tsx and/or PageLayout.tsx for where this pattern is defined once.",
+      "files": ["apps/web-admin/client/src/components/shared/PageHeader.tsx"]
+    },
+    {
+      "id": "F-015",
+      "severity": "Low",
+      "page": "Admins (/admins)",
+      "screenshot": "screenshots/admins-list-desktop.png",
+      "currentBehavior": "The Admins table has a column header literally labeled \"Pwd\".",
+      "expectedBehavior": "A clearer label, e.g. \"Password Set\" or a tooltip-bearing icon.",
+      "recommendation": "Rename the header text (and/or add a title attribute / tooltip).",
+      "implementationNotes": "UI-only, trivial.",
+      "files": ["apps/web-admin/client/src/pages/AdminsPage.tsx"]
+    },
+    {
+      "id": "F-017",
+      "severity": "Low",
+      "page": "Global search modal (Ctrl+K)",
+      "screenshot": "screenshots/search-modal-results-desktop.png",
+      "currentBehavior": "Searching \"Netflix\" with a product named \"Netflix Premium\" existing in the DB returned \"No results for 'Netflix'\". Confirmed the request reached the backend and returned 200 OK with an empty result set.",
+      "expectedBehavior": "The product appears in search results.",
+      "recommendation": "Investigate the /api/search backend implementation (indexing/matching logic).",
+      "implementationNotes": "Likely backend/business-logic work, out of scope for UI-only phase 2 — schedule separately. Needs backend investigation before any UI change is relevant.",
+      "files": []
+    },
+    {
+      "id": "F-018",
+      "severity": "Low",
+      "page": "Dashboard (/), mobile viewport",
+      "screenshot": "screenshots/dashboard-mobile.png",
+      "currentBehavior": "On the 7-day Sales Analytics chart at 375px width, one date label (07-13) does not appear in the accessibility tree, while all 7 dates render at desktop width. Could be intentional label-thinning or a genuine bug — pattern looked inconsistent with simple thinning rules.",
+      "expectedBehavior": "Either a clearly intentional, evenly-spaced label thinning strategy on narrow viewports, or all 7 labels retained with smaller text/rotation.",
+      "recommendation": "Re-verify directly in the chart library's own responsive tick logic in phase 2 before changing anything.",
+      "implementationNotes": "Low priority — verify before investing implementation time.",
+      "files": ["apps/web-admin/client/src/components/dashboard/SalesAnalyticsCard.tsx"]
+    }
+  ]
+}

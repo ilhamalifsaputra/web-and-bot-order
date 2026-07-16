@@ -124,7 +124,23 @@
 
   --color-ink: #1b2330;
   --color-ink-soft: #5a6473;
-  --color-ink-faint: #97a1b1;
+  /* F-011: was #97a1b1 (rgb(151,161,177)) — ~2.6:1 against a white/near-white
+     background, below the 4.5:1 WCAG AA minimum for normal text (confirmed
+     via the TopBar "Search..." label). Darkened to the same hue/saturation
+     (HSL ~217°, 14%) at 45% lightness instead of 64%, which measures ~5.1:1
+     against white — comfortable AA margin without changing the color
+     family. Grepped every `text-ink-faint`/`bg-ink-faint` use across
+     apps/web-admin/client/src before changing this shared token: all are
+     small secondary text, icons, or a status dot, so a uniformly darker
+     value reads as "less washed out", not wrong, anywhere it's used.
+     NOTE: this token is intentionally kept in sync with
+     packages/web-ui/views/_theme.njk's `ink.faint` per that file's own
+     "byte-for-byte" comment, but that file drives the Nunjucks-rendered
+     storefront + surviving admin pages, which are out of scope for this
+     web-admin-SPA-only audit — left unchanged here; flagged in
+     docs/ui-refactor/before-after.md as a follow-up if the same audit is
+     ever extended to those surfaces. */
+  --color-ink-faint: #626f83;
 
   --color-pine: #2563eb;
   --color-pine-dark: #1d4ed8;

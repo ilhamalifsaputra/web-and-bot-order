@@ -7,7 +7,9 @@ export function InventoryMonitoringCard() {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>Critical Stock</CardTitle>
+        {/* F-010: real heading, same level as the Dashboard's other
+         *  top-level sections ("Operation Center" is already an <h2>). */}
+        <CardTitle as="h2">Critical Stock</CardTitle>
         <a href="/stock" className="text-xs font-semibold text-pine hover:underline">
           View inventory
         </a>

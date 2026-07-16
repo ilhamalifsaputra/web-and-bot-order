@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import CategoryPage from "./CategoryPage";
@@ -37,6 +37,7 @@ const product: ProductCardData = {
   rating_count: 12,
   bulk_discount: null,
   bulk_min_qty: null,
+  all_non_auto: false,
 };
 
 const categoryData: CategoryPageData = {
@@ -85,6 +86,54 @@ describe("CategoryPage", () => {
   it("renders the empty state when the category has no products", async () => {
     renderCategory("streaming", () => ({ ...categoryData, products: [] }));
     expect(await screen.findByText("No products yet — check back soon.")).toBeInTheDocument();
+  });
+
+  // STO-018: a single product in a grid-cols-2/3/4 grid used to leave the
+  // row visually broken — clamp to a capped-width single column instead.
+  it("clamps the product grid to one column when there's only one product", async () => {
+    renderCategory("streaming", () => categoryData);
+    const grid = (await screen.findByRole("heading", { name: "Netflix Premium" })).closest(".grid");
+    expect(grid?.className).toContain("max-w-xs");
+    expect(grid?.className).not.toMatch(/grid-cols-2|grid-cols-3|grid-cols-4/);
+  });
+
+  it("keeps the multi-column grid when there's more than one product", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
+    renderCategory("streaming", () => ({ ...categoryData, products: [product, second] }));
+    const grid = (await screen.findByRole("heading", { name: "Netflix Premium" })).closest(".grid");
+    expect(grid?.className).toMatch(/grid-cols-2/);
+  });
+
+  // STO-007: picking a sort re-fetches with ?sort= in the URL instead of
+  // re-ordering client-side (the server owns rating/price computation).
+  it("offers a sort dropdown once there's more than one product, and re-fetches on change", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
+    renderCategory("streaming", () => ({ ...categoryData, products: [product, second] }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/category/streaming?sort=default");
+    fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "cheapest" } });
+    await waitFor(() =>
+      expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/category/streaming?sort=cheapest"),
+    );
+  });
+
+  it("omits the sort dropdown when there's only one product", async () => {
+    renderCategory("streaming", () => categoryData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByLabelText("Sort")).not.toBeInTheDocument();
+  });
+
+  // STO-006/performance.md: rendering nothing while the query is pending
+  // reads as a blank/broken page — a skeleton signals "loading" instead.
+  it("shows a loading skeleton before data arrives", async () => {
+    let resolveData!: (value: unknown) => void;
+    const pending = new Promise((resolve) => {
+      resolveData = resolve;
+    });
+    renderCategory("streaming", () => pending);
+    expect(await screen.findByLabelText("Loading…")).toBeInTheDocument();
+    resolveData(categoryData);
+    expect(await screen.findByRole("heading", { name: "🎬 Streaming" })).toBeInTheDocument();
   });
 
   it("renders the ErrorPage copy on a 404", async () => {

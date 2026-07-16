@@ -8,6 +8,7 @@
  * `!w-20` → `w-20!`.
  */
 import { useEffect, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiGet, apiPost } from "../api/client";
 import type { AccountReview, PendingReview, ReviewsData } from "../api/types";
@@ -148,7 +149,14 @@ export default function ReviewsPage() {
             ))}
           </div>
         ) : (
-          <div className="card card-pad text-center text-ink-faint py-10">{t("web.reviews_none")}</div>
+          <div className="card card-pad text-center py-10">
+            <p className="text-ink-faint">{t("web.reviews_none")}</p>
+            {/* STO-016: same rationale as OrdersPage's empty state — give a
+                first-time visitor a forward action instead of a dead end. */}
+            <Link to="/" className="btn btn-soft mt-4">
+              {t("web.continue_shopping")}
+            </Link>
+          </div>
         )}
       </section>
     </>

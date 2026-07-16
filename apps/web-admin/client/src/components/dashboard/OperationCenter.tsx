@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { Card, CardContent } from "../ui/card";
 import { UrgencyDot } from "../shared/UrgencyDot";
 import { useOperations } from "../../hooks/useOperations";
@@ -54,9 +55,9 @@ export function OperationCenter() {
             return c.href === null ? (
               <div key={c.key}>{inner}</div>
             ) : (
-              <a key={c.key} href={c.href} className="block transition-transform hover:-translate-y-0.5">
+              <Link key={c.key} to={c.href} className="block transition-transform hover:-translate-y-0.5">
                 {inner}
-              </a>
+              </Link>
             );
           })}
       </div>

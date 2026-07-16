@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { FilterBar } from "../components/shared/FilterBar";
@@ -8,6 +8,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { DateInput } from "../components/shared/DateInput";
 import {
@@ -19,6 +20,8 @@ import {
 } from "@/components/ui/select";
 import { ShoppingCart } from "lucide-react";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
+import { useOperations } from "../hooks/useOperations";
+import { orderStatusLabel } from "../lib/orderStatus";
 
 interface OrderRow {
   id: number;
@@ -68,10 +71,15 @@ function useOrders(filters: Filters) {
 
 export function OrdersPage() {
   const navigate = useNavigate();
-  const [draft, setDraft] = useState({ status: "", q: "", since: "", until: "" });
-  const [filters, setFilters] = useState<Filters>({ status: "", q: "", since: "", until: "", page: 1 });
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialStatus = searchParams.get("status") ?? "";
+  const [draft, setDraft] = useState({ status: initialStatus, q: "", since: "", until: "" });
+  const [filters, setFilters] = useState<Filters>({ status: initialStatus, q: "", since: "", until: "", page: 1 });
 
   const { data, isLoading, isError } = useOrders(filters);
+  const { data: operations } = useOperations();
+  const awaitingFulfillmentCount = operations?.awaitingFulfillment ?? 0;
+  const awaitingFulfillmentActive = filters.status === "PROCESSING";
 
   if (isError) {
     return (
@@ -85,12 +93,31 @@ export function OrdersPage() {
 
   function applyFilters() {
     setFilters({ ...draft, page: 1 });
+    setSearchParams(draft.status ? { status: draft.status } : {});
   }
 
   function clearFilters() {
     setDraft({ status: "", q: "", since: "", until: "" });
     setFilters({ status: "", q: "", since: "", until: "", page: 1 });
+    setSearchParams({});
   }
+
+  // Quick-filter chip: replaces the old "Awaiting Fulfillment" sidebar nav
+  // item (F-001) — toggles the PROCESSING status filter in place, still
+  // deep-linkable via ?status=PROCESSING (same URL the Dashboard's Operation
+  // Center "Awaiting Fulfillment" card links to).
+  function toggleAwaitingFulfillment() {
+    const nextStatus = awaitingFulfillmentActive ? "" : "PROCESSING";
+    const nextDraft = { ...draft, status: nextStatus };
+    setDraft(nextDraft);
+    setFilters({ ...nextDraft, page: 1 });
+    setSearchParams(nextStatus ? { status: nextStatus } : {});
+  }
+
+  // F-016: "No orders yet" only makes sense with zero filters active — once a
+  // status/search/date-range filter is narrowing the view, the generic "no
+  // orders" copy is misleading (there IS data, just not matching the filter).
+  const hasActiveFilter = Boolean(filters.status || filters.q || filters.since || filters.until);
 
   const exportParams = new URLSearchParams();
   if (filters.status) exportParams.set("status", filters.status);
@@ -109,6 +136,23 @@ export function OrdersPage() {
         }
       />
 
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant={awaitingFulfillmentActive ? "secondary" : "outline"}
+          size="sm"
+          aria-pressed={awaitingFulfillmentActive}
+          onClick={toggleAwaitingFulfillment}
+        >
+          Awaiting Fulfillment
+          {awaitingFulfillmentCount > 0 && (
+            <Badge variant={awaitingFulfillmentActive ? "default" : "secondary"}>
+              {awaitingFulfillmentCount}
+            </Badge>
+          )}
+        </Button>
+      </div>
+
       <FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4">
         <div className="flex flex-col gap-1">
           <label className="text-xs text-ink-soft">Status</label>
@@ -125,7 +169,7 @@ export function OrdersPage() {
               <SelectItem value="_all_">All</SelectItem>
               {statuses.map((s) => (
                 <SelectItem key={s} value={s}>
-                  {s}
+                  {orderStatusLabel(s)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -237,12 +281,20 @@ export function OrdersPage() {
         keyExtractor={(row) => row.id}
         onRowClick={(row) => navigate(`/orders/${row.id}`)}
         empty={
-          <EmptyState
-            icon={ShoppingCart}
-            title="No orders found"
-            description="Try adjusting your filters."
-            action={{ label: "Clear filters", onClick: clearFilters }}
-          />
+          hasActiveFilter ? (
+            <EmptyState
+              icon={ShoppingCart}
+              title="No orders found"
+              description="Try adjusting your filters."
+              action={{ label: "Clear filters", onClick: clearFilters }}
+            />
+          ) : (
+            <EmptyState
+              icon={ShoppingCart}
+              title="No orders yet"
+              description="Orders placed by customers will show up here."
+            />
+          )
         }
       />
 

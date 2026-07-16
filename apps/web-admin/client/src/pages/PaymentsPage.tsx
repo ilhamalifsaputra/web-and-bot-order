@@ -8,6 +8,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
+import { CreditCard } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -445,7 +446,7 @@ export function PaymentsPage() {
         data={data?.ledger ?? []}
         isLoading={!data}
         keyExtractor={tx => tx.id}
-        empty={<EmptyState title="No transactions found" description="Try a different outcome filter." />}
+        empty={<EmptyState icon={CreditCard} title="No transactions found" description="Try a different outcome filter." />}
       />
 
       {data && (data.hasNext || page > 1) && (

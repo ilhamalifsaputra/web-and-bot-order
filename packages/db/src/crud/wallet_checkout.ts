@@ -15,12 +15,20 @@
  * nothing to wait for, the credit already fully paid for the order.
  */
 import { Decimal } from "@app/core/money";
-import { OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
+import { DeliveryType, OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import type { Db } from "./_types";
-import { createOrderDirect, getOrder, settlePaidOrder, applyUsdtWalletToOrder, type SettleResult } from "./orders";
+import {
+  createOrderDirect,
+  createOrderFromCart,
+  getOrder,
+  settlePaidOrder,
+  applyUsdtWalletToOrder,
+  type SettleResult,
+} from "./orders";
 import { finalizeOrderPayment } from "./pricing";
 import { transitionOrderStatus } from "./orderStatus";
+import { getCart } from "./cart";
 
 export type WalletCheckoutResult = SettleResult;
 
@@ -96,5 +104,84 @@ export async function completeOrderWithWalletCredit(
   // doesn't hinge on the outbox dispatcher running (same resilience as the
   // instant Binance Internal / Bybit rails). The MANUAL case's "being
   // prepared" DM is already enqueued by settlePaidOrder itself.
+  return await settlePaidOrder(db, finalized.id, { adminId: 0 });
+}
+
+/**
+ * Cart-based sibling of completeOrderWithWalletCredit, for the storefront
+ * (whose cart supports multiple SKUs, unlike the bot's single-product
+ * createOrderDirect rail). Same all-or-nothing contract: re-derives
+ * price/discount/stock from scratch via createOrderFromCart, never trusts a
+ * caller's "this is fully covered" claim, and throws error.insufficient_wallet
+ * if the order's total isn't exactly zero afterward. Must run inside the
+ * caller's prisma.$transaction for the same rollback reason as above.
+ *
+ * Replicates the cart-homogeneity guard performCheckout applies
+ * (apps/storefront/src/routes/checkout.ts) before calling createOrderFromCart,
+ * since createOrderFromCart itself does not enforce it. customerData
+ * validation is NOT duplicated here — createOrderFromCart already
+ * re-validates/normalizes a manual_with_info cart's answers from scratch
+ * whenever its single active line requires them, so it's the caller's job
+ * only to JSON-stringify the buyer's raw input, not to pre-validate it.
+ */
+export async function completeCartOrderWithWalletCredit(
+  db: Db,
+  args: {
+    user: { id: number; role: string; walletBalance: Decimal.Value; walletBalanceUsdt?: Decimal.Value };
+    voucherCode?: string | null;
+    currency: typeof OrderCurrency.IDR | typeof OrderCurrency.USDT;
+    /** Rupiah per 1 USDT — required when currency is USDT. */
+    rate?: Decimal.Value;
+    /** Buyer's raw manual_with_info answers, if any (not pre-stringified). */
+    customerData?: unknown;
+  },
+): Promise<WalletCheckoutResult> {
+  const cartLines = await getCart(db, args.user.id);
+  const activeCartLines = cartLines.filter((ci) => ci.product.isActive);
+  if (activeCartLines.length > 1 && activeCartLines.some((ci) => ci.product.deliveryType !== DeliveryType.AUTO)) {
+    throw new ValidationError("error.cart_mixed_delivery");
+  }
+
+  const created = await createOrderFromCart(db, {
+    user: { id: args.user.id, role: args.user.role, walletBalance: args.user.walletBalance },
+    voucherCode: args.voucherCode,
+    // Only the IDR track spends IDR credit during creation — the USDT track
+    // leaves this order's walletAmount unset and applies USDT credit below,
+    // mirroring the single-SKU rail above.
+    walletAmount: args.currency === OrderCurrency.IDR ? args.user.walletBalance : undefined,
+    customerData: args.customerData != null ? JSON.stringify(args.customerData) : null,
+  });
+  if (!created) throw new ValidationError("error.generic");
+
+  if (args.currency === OrderCurrency.IDR) {
+    await finalizeOrderPayment(db, created.id, { currency: OrderCurrency.IDR, method: PaymentMethod.WALLET });
+  } else {
+    if (!args.rate) throw new ValidationError("error.generic");
+    await finalizeOrderPayment(db, created.id, {
+      currency: OrderCurrency.USDT,
+      rate: args.rate,
+      method: PaymentMethod.WALLET,
+    });
+    await applyUsdtWalletToOrder(db, created.id, args.user.walletBalanceUsdt);
+  }
+
+  const finalized = await getOrder(db, created.id);
+  if (!finalized) throw new ValidationError("error.order_not_found");
+  if (new Decimal(finalized.totalAmount).greaterThan(0)) {
+    // The requested credit didn't actually cover the order (stale preview,
+    // or the balance moved between preview and this call) — refuse to
+    // "complete" an order that still has money owing on it.
+    throw new ValidationError("error.insufficient_wallet");
+  }
+
+  await db.order.update({ where: { id: finalized.id }, data: { paidAt: new Date() } });
+  await transitionOrderStatus(db, {
+    orderId: finalized.id,
+    from: OrderStatus.PENDING_PAYMENT,
+    to: OrderStatus.PENDING_VERIFICATION,
+    meta: "wallet_full_credit",
+  });
+  // No outbox DM here either — the storefront's own OrderDetailPage reads
+  // the order straight from the DB, there is no Telegram DM to send.
   return await settlePaidOrder(db, finalized.id, { adminId: 0 });
 }

@@ -47,8 +47,13 @@ export default function OrdersPage() {
           <tbody>
             {data.orders.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-4 py-10 text-center text-ink-faint">
-                  {t("web.no_orders")}
+                <td colSpan={5} className="px-4 py-10 text-center">
+                  <p className="text-ink-faint">{t("web.no_orders")}</p>
+                  {/* STO-016: a bare empty-state sentence with no forward action stranded
+                      first-time visitors here — link straight back to the catalog. */}
+                  <Link to="/" className="btn btn-soft mt-4">
+                    {t("web.continue_shopping")}
+                  </Link>
                 </td>
               </tr>
             ) : (

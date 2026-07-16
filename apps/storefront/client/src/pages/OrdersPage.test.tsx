@@ -69,8 +69,11 @@ describe("OrdersPage", () => {
     expect(screen.getByText("Delivered")).toBeInTheDocument();
   });
 
-  it("renders the empty-state row when there are no orders", async () => {
+  // STO-016: the empty state used to be a dead end — it now offers a way
+  // back to the catalog.
+  it("renders the empty-state row with a Continue shopping CTA when there are no orders", async () => {
     renderOrders(() => ({ orders: [] }));
     expect(await screen.findByText("No orders yet — your purchases will show up here.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Continue shopping" })).toHaveAttribute("href", "/");
   });
 });

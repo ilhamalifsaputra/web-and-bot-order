@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Copy, Check } from "lucide-react";
+import { Copy, Check, Tag } from "lucide-react";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { DataTable } from "../components/shared/DataTable";
@@ -135,52 +135,96 @@ export function VouchersPage() {
         <Card className="mb-6">
           <CardHeader><CardTitle>New Voucher</CardTitle></CardHeader>
           <CardContent>
+            {/* F-014: every field now has a persistent visible label (not
+             *  placeholder-only text), matching the Label-above-field
+             *  pattern used in ProductCreatePage.tsx / DenominationCreatePage.tsx —
+             *  including the Type combobox, which previously had no label at
+             *  all (confirmed via accessibility snapshot in the audit). */}
             <form
               onSubmit={e => { e.preventDefault(); create.mutate(form); }}
-              className="flex flex-wrap gap-2"
+              className="flex flex-wrap items-start gap-3"
             >
               {formError && <p className="w-full text-sm text-rust">{formError}</p>}
-              <Input
-                required
-                placeholder="Code"
-                value={form.code}
-                onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
-                className="w-32"
-              />
-              <Select value={form.type} onValueChange={v => setForm(f => ({ ...f, type: v }))}>
-                <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {(data?.types ?? ["PERCENT", "FIXED"]).map(t => (
-                    <SelectItem key={t} value={t}>{t}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Input
-                required
-                placeholder="Value"
-                value={form.value}
-                onChange={e => setForm(f => ({ ...f, value: e.target.value }))}
-                className="w-24"
-              />
-              <Input
-                placeholder="Min purchase"
-                value={form.min_purchase}
-                onChange={e => setForm(f => ({ ...f, min_purchase: e.target.value }))}
-                className="w-28"
-              />
-              <Input
-                placeholder="Usage limit"
-                value={form.usage_limit}
-                onChange={e => setForm(f => ({ ...f, usage_limit: e.target.value }))}
-                className="w-28"
-              />
-              <DateInput
-                placeholder="Expires"
-                value={form.expires_at}
-                onChange={e => setForm(f => ({ ...f, expires_at: e.target.value }))}
-                className="w-36"
-              />
-              <Button type="submit" disabled={create.isPending}>Create</Button>
+              <div className="flex flex-col gap-1">
+                <label htmlFor="voucher-code" className="text-xs font-medium text-ink">
+                  Code <span className="text-rust">*</span>
+                </label>
+                <Input
+                  id="voucher-code"
+                  required
+                  placeholder="e.g. SAVE10"
+                  value={form.code}
+                  onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
+                  className="w-32"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label htmlFor="voucher-type" className="text-xs font-medium text-ink">
+                  Type <span className="text-rust">*</span>
+                </label>
+                <Select value={form.type} onValueChange={v => setForm(f => ({ ...f, type: v }))}>
+                  <SelectTrigger id="voucher-type" className="w-32" aria-label="Type">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(data?.types ?? ["PERCENT", "FIXED"]).map(t => (
+                      <SelectItem key={t} value={t}>{t}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex flex-col gap-1">
+                <label htmlFor="voucher-value" className="text-xs font-medium text-ink">
+                  Value <span className="text-rust">*</span>
+                </label>
+                <Input
+                  id="voucher-value"
+                  required
+                  placeholder="e.g. 10"
+                  value={form.value}
+                  onChange={e => setForm(f => ({ ...f, value: e.target.value }))}
+                  className="w-24"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label htmlFor="voucher-min-purchase" className="text-xs font-medium text-ink">
+                  Min purchase
+                </label>
+                <Input
+                  id="voucher-min-purchase"
+                  placeholder="Optional"
+                  value={form.min_purchase}
+                  onChange={e => setForm(f => ({ ...f, min_purchase: e.target.value }))}
+                  className="w-28"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label htmlFor="voucher-usage-limit" className="text-xs font-medium text-ink">
+                  Usage limit
+                </label>
+                <Input
+                  id="voucher-usage-limit"
+                  placeholder="Optional"
+                  value={form.usage_limit}
+                  onChange={e => setForm(f => ({ ...f, usage_limit: e.target.value }))}
+                  className="w-28"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label htmlFor="voucher-expires" className="text-xs font-medium text-ink">
+                  Expires
+                </label>
+                <DateInput
+                  id="voucher-expires"
+                  placeholder="Optional"
+                  value={form.expires_at}
+                  onChange={e => setForm(f => ({ ...f, expires_at: e.target.value }))}
+                  className="w-36"
+                />
+              </div>
+              <Button type="submit" disabled={create.isPending} className="self-end">
+                Create
+              </Button>
             </form>
           </CardContent>
         </Card>
@@ -279,8 +323,8 @@ export function VouchersPage() {
         keyExtractor={v => v.id}
         empty={
           statusFilter === "_all_"
-            ? <EmptyState title="No vouchers found" description="Create your first voucher to offer discounts." />
-            : <EmptyState title="No matching vouchers" description="Try a different status filter." />
+            ? <EmptyState icon={Tag} title="No vouchers found" description="Create your first voucher to offer discounts." />
+            : <EmptyState icon={Tag} title="No matching vouchers" description="Try a different status filter." />
         }
       />
     </PageLayout>

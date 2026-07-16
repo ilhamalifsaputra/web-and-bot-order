@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
@@ -46,7 +46,6 @@ function useStockProduct(productId: string) {
 
 export function StockProductPage() {
   const { productId } = useParams<{ productId: string }>();
-  const navigate = useNavigate();
   const qc = useQueryClient();
   const { data, isError } = useStockProduct(productId ?? "");
   const [credentials, setCredentials] = useState("");
@@ -151,12 +150,9 @@ export function StockProductPage() {
         title={product.name}
         breadcrumb={[{ label: "Stock", href: "/stock" }]}
         actions={
-          <div className="flex items-center gap-2">
-            <a href={`/api/stock/${productId}/download`}>
-              <Button variant="outline" size="sm">Download credentials</Button>
-            </a>
-            <Button variant="outline" size="sm" onClick={() => navigate("/stock")}>← Back</Button>
-          </div>
+          <a href={`/api/stock/${productId}/download`}>
+            <Button variant="outline" size="sm">Download credentials</Button>
+          </a>
         }
       />
 

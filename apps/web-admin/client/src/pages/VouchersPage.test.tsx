@@ -179,4 +179,22 @@ describe("VouchersPage", () => {
     expect(screen.queryByText("OLDCODE")).not.toBeInTheDocument();
     expect(screen.queryByText("ALLGONE")).not.toBeInTheDocument();
   });
+
+  it("gives every inline 'New Voucher' field a persistent visible label, including the Type combobox (F-014)", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ vouchers: [], types: ["PERCENT", "FIXED"] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/no vouchers/i)).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "+ New Voucher" }));
+
+    expect(screen.getByLabelText(/^code/i)).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Type" })).toBeInTheDocument();
+    expect(screen.getByLabelText(/^value/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/min purchase/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/usage limit/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/expires/i)).toBeInTheDocument();
+  });
 });

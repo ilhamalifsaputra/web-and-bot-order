@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import SearchPage from "./SearchPage";
@@ -37,6 +37,7 @@ const product: ProductCardData = {
   rating_count: 12,
   bulk_discount: null,
   bulk_min_qty: null,
+  all_non_auto: false,
 };
 
 function renderSearch(entry: string, data: SearchPageData) {
@@ -78,5 +79,49 @@ describe("SearchPage", () => {
     renderSearch("/search", { q: "", products: [], low_threshold: 5 });
     expect(await screen.findByText("Nothing found — try another keyword.")).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: 'Results for ""' })).toBeInTheDocument();
+  });
+
+  // STO-007: picking a sort re-fetches with ?sort= in the URL (and keeps q=)
+  // instead of re-ordering client-side.
+  it("offers a sort dropdown once there's more than one result, and re-fetches with q+sort on change", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
+    renderSearch("/search?q=netflix", { q: "netflix", products: [product, second], low_threshold: 5 });
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/search?q=netflix&sort=default");
+    fireEvent.change(screen.getByLabelText("Sort"), { target: { value: "rating" } });
+    await waitFor(() =>
+      expect(apiGet).toHaveBeenCalledWith("/api/v1/pages/search?q=netflix&sort=rating"),
+    );
+  });
+
+  it("omits the sort dropdown when there's only one result", async () => {
+    renderSearch("/search?q=netflix", { q: "netflix", products: [product], low_threshold: 5 });
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByLabelText("Sort")).not.toBeInTheDocument();
+  });
+
+  // STO-006/performance.md: rendering nothing while the query is pending
+  // reads as a blank/broken page — a skeleton signals "loading" instead.
+  it("shows a loading skeleton before data arrives", async () => {
+    let resolveData!: (value: unknown) => void;
+    (apiGet as Mock).mockImplementation(async (path: string) => {
+      if (path === "/api/v1/pages/context") return context;
+      return new Promise((resolve) => {
+        resolveData = resolve;
+      });
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/search?q=netflix"]}>
+          <Routes>
+            <Route path="/search" element={<SearchPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByLabelText("Loading…")).toBeInTheDocument();
+    resolveData({ q: "netflix", products: [product], low_threshold: 5 });
+    expect(await screen.findByRole("heading", { name: 'Results for "netflix"' })).toBeInTheDocument();
   });
 });

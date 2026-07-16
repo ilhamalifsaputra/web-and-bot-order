@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import LoginPage from "./LoginPage";
@@ -102,5 +102,51 @@ describe("LoginPage", () => {
     renderLogin("/login", { bot_username: "", auth_url: "" });
     await waitFor(() => expect(apiGet).toHaveBeenCalled());
     expect(document.querySelector("script[data-telegram-login]")).not.toBeInTheDocument();
+  });
+
+  // STO-013: Telegram's widget script renders its own raw, unstyled error
+  // text (e.g. "Bot domain invalid") into the container — with no callback
+  // or error event — when the origin isn't authorized via BotFather
+  // /setdomain. No iframe ever appears in that case, which is the only
+  // signal useTelegramWidget can check for.
+  it("shows a styled fallback and hides the container when no iframe appears within the timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      renderLogin("/login", { bot_username: "tokobot", auth_url: "/auth/telegram?next=%2F" });
+      // Flush the mocked apiGet promise + the resulting widget-injection
+      // effect without relying on real timers (fake timers are active).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(document.querySelector('script[data-telegram-login="tokobot"]')).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4100);
+      });
+      expect(screen.getByText(/Telegram sign-in isn't loading right now/)).toBeInTheDocument();
+      const container = document.querySelector('script[data-telegram-login="tokobot"]')!.parentElement!;
+      expect(container).toHaveClass("hidden");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the widget visible and shows no fallback once an iframe appears", async () => {
+    vi.useFakeTimers();
+    try {
+      renderLogin("/login", { bot_username: "tokobot", auth_url: "/auth/telegram?next=%2F" });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      const script = document.querySelector('script[data-telegram-login="tokobot"]') as HTMLScriptElement;
+      expect(script).toBeInTheDocument();
+      script.parentElement!.appendChild(document.createElement("iframe"));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4100);
+      });
+      expect(screen.queryByText(/Telegram sign-in isn't loading right now/)).not.toBeInTheDocument();
+      expect(script.parentElement).not.toHaveClass("hidden");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

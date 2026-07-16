@@ -26,19 +26,58 @@ export function fieldToDraft(field: AdditionalField): AdditionalFieldDraft {
   };
 }
 
+function isActiveDraft(d: AdditionalFieldDraft): boolean {
+  return d.labelId.trim() !== "" || d.labelEn.trim() !== "";
+}
+
+/** Turns free-typed question text into the `^[a-z0-9_]+$` shape
+ * `zAdditionalField.key` requires (packages/core/src/deliveryFields.ts). */
+function slugifyKey(text: string): string {
+  const base = text
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "") // strip combining diacritics
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64)
+    .replace(/_+$/g, "");
+  return base || "field";
+}
+
+/** Dedupes a candidate key against every key already used in this
+ * submission, appending `_2`, `_3`, … — mirrors packages/db/src/migrate/slug.ts's
+ * uniqueSlug, underscore-joined since that's what the key regex allows. */
+function uniqueKey(base: string, taken: Set<string>): string {
+  let candidate = base;
+  for (let n = 2; taken.has(candidate); n++) {
+    candidate = `${base}_${n}`;
+  }
+  taken.add(candidate);
+  return candidate;
+}
+
 /**
  * Convert drafts to the real AdditionalField[] shape for submission. Rows
- * with an empty (or whitespace-only) key are dropped — they're incomplete/
- * abandoned rows, mirroring the "at least one field with a non-empty key"
- * canSubmit gate. This is a UX convenience only: the server's
+ * with no question text typed in either language are dropped — they're
+ * incomplete/abandoned rows, mirroring the "at least one field" canSubmit
+ * gate. This is a UX convenience only: the server's
  * zAdditionalFields.safeParse (via @app/core/deliveryFields) is still the
  * authority on full shape validity (labels present, select has options, …).
+ *
+ * `key` is never admin-typed (AdditionalFieldsEditor has no Key input — it's
+ * a pure implementation detail the buyer never sees, see the field's doc
+ * comment in api/types.ts). An edited row keeps its existing key (prefilled
+ * by fieldToDraft) so re-saving doesn't rename it out from under stored order
+ * data; a brand-new row's blank key is generated here from its English
+ * question text (falling back to the Indonesian one).
  */
 export function draftsToFields(drafts: AdditionalFieldDraft[]): AdditionalField[] {
-  return drafts
-    .filter((d) => d.key.trim() !== "")
-    .map((d) => ({
-      key: d.key.trim(),
+  const active = drafts.filter(isActiveDraft);
+  const taken = new Set(active.filter((d) => d.key.trim() !== "").map((d) => d.key.trim()));
+  return active.map((d) => {
+    const key = d.key.trim() || uniqueKey(slugifyKey(d.labelEn.trim() || d.labelId.trim()), taken);
+    return {
+      key,
       label: { id: d.labelId.trim(), en: d.labelEn.trim() },
       type: d.type,
       required: d.required,
@@ -50,33 +89,32 @@ export function draftsToFields(drafts: AdditionalFieldDraft[]): AdditionalField[
               .filter((o) => o !== "")
           : [],
       placeholder: d.placeholder.trim(),
-    }));
+    };
+  });
 }
 
-const KEY_PATTERN = /^[a-z0-9_]+$/;
-
-/** True once at least one draft row has a non-empty key — gates the
- * Create/Edit pages' submit button when deliveryType is manual_with_info,
- * mirroring the server's "at least one custom field is required" rule. */
+/** True once at least one draft row has a question typed in either language
+ * — gates the Create/Edit pages' submit button when deliveryType is
+ * manual_with_info, mirroring the server's "at least one custom field is
+ * required" rule. */
 export function hasAtLeastOneField(drafts: AdditionalFieldDraft[]): boolean {
-  return drafts.some((d) => d.key.trim() !== "");
+  return drafts.some(isActiveDraft);
 }
 
 /**
  * Mirrors @app/core/deliveryFields's zAdditionalField/zAdditionalFields
- * requirements client-side (key format, both bilingual labels, select-type
- * needs options, unique keys) — so Save/Create can't enable itself on a spec
- * the server is guaranteed to reject with only a generic error. Only checks
- * rows draftsToFields would actually submit (non-empty key); a still-blank
- * "+ Add Field" row in progress doesn't block submission.
+ * requirements client-side (both bilingual labels present, select-type needs
+ * options) — so Save/Create can't enable itself on a spec the server is
+ * guaranteed to reject with only a generic error. Only checks rows
+ * draftsToFields would actually submit (some question text typed); a
+ * still-blank "+ Add Field" row in progress doesn't block submission. Key
+ * uniqueness/format isn't checked here — draftsToFields generates it, so
+ * it's always valid by construction.
  */
 export function fieldsAreValid(drafts: AdditionalFieldDraft[]): boolean {
-  const active = drafts.filter((d) => d.key.trim() !== "");
+  const active = drafts.filter(isActiveDraft);
   if (active.length === 0) return false;
-  const keys = active.map((d) => d.key.trim());
-  if (new Set(keys).size !== keys.length) return false;
   return active.every((d) => {
-    if (!KEY_PATTERN.test(d.key.trim())) return false;
     if (!d.labelId.trim() || !d.labelEn.trim()) return false;
     if (d.type === "select") {
       const options = d.optionsText.split(/[,\n]/).map((o) => o.trim()).filter((o) => o !== "");

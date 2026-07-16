@@ -31,7 +31,8 @@ export function BusinessHealthGrid() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Business Health</CardTitle>
+        {/* F-010: real heading, same level as "Operation Center" (<h2>). */}
+        <CardTitle as="h2">Business Health</CardTitle>
       </CardHeader>
       <CardContent>
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}

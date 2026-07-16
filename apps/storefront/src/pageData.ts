@@ -28,7 +28,7 @@ import {
 } from "@app/db";
 import { categoryImage, productImage } from "./images";
 import { resolveBotUsername } from "./shop";
-import { shapeProducts } from "./cards";
+import { shapeProducts, sortProductCards, type SortKey } from "./cards";
 
 /**
  * A privacy-safe display name for a public testimonial: prefer the buyer's full
@@ -103,7 +103,7 @@ export async function homePageData() {
 }
 
 /** Category page data, or null for the 404 branch (GET /api/v1/pages/category/:slug). */
-export async function categoryPageData(rawSlug: string) {
+export async function categoryPageData(rawSlug: string, sort: SortKey = "default") {
   const slug = (rawSlug ?? "").trim();
   const category = slug ? await getCategoryBySlug(prisma, slug) : null;
   if (!category || !category.isActive) return null;
@@ -120,7 +120,7 @@ export async function categoryPageData(rawSlug: string) {
   return {
     category,
     categories,
-    products: cards,
+    products: sortProductCards(products, cards, sort),
     low_threshold: config.LOW_STOCK_THRESHOLD,
   };
 }
@@ -136,13 +136,16 @@ export async function productPageData(rawSlug: string) {
   if (!product || !product.isActive || product.denominations.length === 0) return null;
 
   // Per-denomination stock + bulk-pricing badge (price-asc order preserved).
-  const [stock, bulkRules, reviews] = await Promise.all([
+  const [stock, bulkRules, reviews, sameCategoryProducts, ratings] = await Promise.all([
     stockStatusCounts(prisma),
     activeBulkPricingByDenomination(prisma),
     // Reviews are tied to the specific denomination the customer bought —
     // gather across every active denomination of this Product, not just
     // the cheapest, or reviews left on other plans silently disappear.
     listReviews(prisma, { productId: product.denominations.map((d) => d.id), hidden: false, limit: 10 }),
+    // STO-011 "You might also like" — same category, current product excluded below.
+    listCatalogProducts(prisma, product.categoryId),
+    productRatingSummaries(prisma),
   ]);
 
   const catName = product.category.name;
@@ -174,6 +177,17 @@ export async function productPageData(rawSlug: string) {
   // `denominations` is never empty here (guarded by the null return above).
   const defaultRestockDenominationId = (denominations.find((d) => d.in_stock) ?? denominations[0])!.id;
 
+  // STO-011 "You might also like" — same category, current product excluded,
+  // capped at a small shelf rather than the full category listing.
+  const RELATED_PRODUCTS_LIMIT = 4;
+  const ratingByDenom = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
+  const relatedProducts = shapeProducts(
+    sameCategoryProducts.filter((p) => p.id !== product.id),
+    stock,
+    ratingByDenom,
+    bulkRules,
+  ).slice(0, RELATED_PRODUCTS_LIMIT);
+
   return {
     product: {
       slug: product.slug,
@@ -185,6 +199,7 @@ export async function productPageData(rawSlug: string) {
     },
     denominations,
     default_restock_denomination_id: defaultRestockDenominationId,
+    related_products: relatedProducts,
     reviews: reviews.map((r) => ({
       rating: r.rating,
       comment: r.comment,
@@ -197,7 +212,7 @@ export async function productPageData(rawSlug: string) {
 }
 
 /** Search page data — shaped for the JSON API (GET /api/v1/pages/search). */
-export async function searchPageData(rawQ: string) {
+export async function searchPageData(rawQ: string, sort: SortKey = "default") {
   const q = (rawQ ?? "").trim();
   const [products, stock, ratings, bulk] = await Promise.all([
     q ? searchCatalog(prisma, q, 24) : Promise.resolve([] as CatalogProduct[]),
@@ -209,7 +224,7 @@ export async function searchPageData(rawQ: string) {
   const cards = shapeProducts(products, stock, ratingByDenom, bulk);
   return {
     q,
-    products: cards,
+    products: sortProductCards(products, cards, sort),
     low_threshold: config.LOW_STOCK_THRESHOLD,
   };
 }

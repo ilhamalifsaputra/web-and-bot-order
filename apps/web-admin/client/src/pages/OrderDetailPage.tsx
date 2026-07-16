@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
@@ -100,7 +100,6 @@ function useOrderDetail(orderId: string) {
 
 export function OrderDetailPage() {
   const { orderId } = useParams<{ orderId: string }>();
-  const navigate = useNavigate();
   const qc = useQueryClient();
   const { data, isError } = useOrderDetail(orderId ?? "");
   const [rejectReason, setRejectReason] = useState("");
@@ -170,7 +169,6 @@ export function OrderDetailPage() {
       <PageHeader
         title={`Order ${order.orderCode}`}
         breadcrumb={[{ label: "Orders", href: "/orders" }]}
-        actions={<Button variant="outline" size="sm" onClick={() => navigate("/orders")}>← Back</Button>}
       />
 
       {actionError && <p className="mb-4 text-sm text-rust">{actionError}</p>}

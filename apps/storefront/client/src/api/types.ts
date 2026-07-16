@@ -136,9 +136,17 @@ export interface ProductPageData {
   };
   denominations: ProductDenomination[];
   default_restock_denomination_id: number;
+  /** STO-011 "You might also like" — same category, this product excluded,
+   * capped at a small shelf server-side (apps/storefront/src/pageData.ts). */
+  related_products: ProductCardData[];
   reviews: ProductReview[];
   low_threshold: number;
 }
+
+/** STO-007 — sort keys offered on the Category/Search grids, matching
+ * apps/storefront/src/cards.ts's `SORT_KEYS`. */
+export const SORT_KEYS = ["default", "cheapest", "newest", "rating"] as const;
+export type SortKey = (typeof SORT_KEYS)[number];
 
 /** One cart line — JSON twin of CartLineView (apps/storefront/src/routes/cart.ts). */
 export interface CartLineView {

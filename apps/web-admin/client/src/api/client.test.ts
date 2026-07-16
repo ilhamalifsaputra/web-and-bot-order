@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { apiGet, apiPost, apiPatch, apiDelete } from "./client";
+import { apiGet, apiPost, apiPatch, apiDelete, logout } from "./client";
 
 beforeEach(() => {
   document.head.insertAdjacentHTML("beforeend", '<meta name="csrf-token" content="test-token">');
@@ -63,5 +63,23 @@ describe("apiDelete", () => {
   it("throws the server's error message on failure", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 409, json: async () => ({ error: "Cannot delete a denomination with order history." }) })));
     await expect(apiDelete("/api/catalog/denominations/10")).rejects.toThrow("Cannot delete a denomination with order history.");
+  });
+});
+
+describe("logout", () => {
+  it("POSTs to /logout with credentials and no CSRF header (the route doesn't require one)", async () => {
+    const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({ ok: true, status: 200, json: async () => ({}) }));
+    vi.stubGlobal("fetch", fetchMock);
+    await logout();
+    const [path, init] = fetchMock.mock.calls[0]!;
+    expect(path).toBe("/logout");
+    expect(init.method).toBe("POST");
+    expect(init.credentials).toBe("include");
+    expect(init.headers).toBeUndefined();
+  });
+
+  it("throws when the response is not ok", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500, json: async () => ({}) })));
+    await expect(logout()).rejects.toThrow("500");
   });
 });

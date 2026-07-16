@@ -76,3 +76,18 @@ export async function apiDelete<T>(path: string): Promise<T> {
   }
   return res.json() as Promise<T>;
 }
+
+/**
+ * Ends the admin session. `POST /logout` (apps/web-admin/src/routes/auth.ts)
+ * uses `optionalAdmin`, not the `currentAdmin` + `csrfProtect` preHandler
+ * chain, so it doesn't check a CSRF token — a plain fetch is enough. The
+ * route clears the session cookie server-side and 303-redirects to /login;
+ * callers should navigate to /login themselves once this resolves (fetch
+ * follows the redirect internally, so `res.ok` reflects the final response).
+ */
+export async function logout(): Promise<void> {
+  const res = await fetch("/logout", { method: "POST", credentials: "include" });
+  if (!res.ok) {
+    throw new Error(`Logout failed (${res.status})`);
+  }
+}

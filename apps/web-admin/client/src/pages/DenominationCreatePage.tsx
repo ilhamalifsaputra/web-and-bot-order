@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
-import { AdditionalFieldsEditor } from "../components/shared/AdditionalFieldsEditor";
+import { DeliveryTypeSection } from "../components/shared/DeliveryTypeSection";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -14,7 +14,7 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import { apiPost } from "../api/client";
+import { apiGet, apiPost } from "../api/client";
 import { draftsToFields, fieldsAreValid } from "../lib/additionalFields";
 import type { AdditionalFieldDraft } from "../api/types";
 
@@ -23,21 +23,38 @@ const DENOMINATION_TYPES = [
   { value: "PRIVATE", label: "Private" },
 ];
 
-const DELIVERY_TYPES = [
-  { value: "auto", label: "Auto (deliver from stock)" },
-  { value: "manual", label: "Manual (admin fulfills by hand)" },
-  { value: "manual_with_info", label: "Manual + Info (buyer fills fields first)" },
-];
-
 function isValidPrice(value: string): boolean {
   if (value.trim() === "") return false;
   return !Number.isNaN(Number(value.trim()));
+}
+
+/** F-007: the breadcrumb previously showed the literal word "Product"
+ * instead of the actual product name. Only the name is needed here (not
+ * the full detail payload `ProductDetailPage.tsx` fetches), but it's the
+ * same `GET /api/catalog/:id` endpoint and `["catalog", productId]` query
+ * key, so react-query shares one cache entry when both pages are visited
+ * in a session — no extra request in the common "detail → new denomination"
+ * navigation path. */
+interface ProductForBreadcrumb {
+  product: { id: number; name: string };
+}
+
+function useProductName(productId: string | undefined): string {
+  const { data } = useQuery<ProductForBreadcrumb>({
+    queryKey: ["catalog", productId],
+    queryFn: async () => apiGet<ProductForBreadcrumb>(`/api/catalog/${productId}`),
+    enabled: !!productId,
+  });
+  // Fallback while loading (or if the fetch hasn't resolved yet): the
+  // product id, not a hardcoded generic "Product" label.
+  return data?.product.name ?? `Product #${productId ?? "?"}`;
 }
 
 export function DenominationCreatePage() {
   const { productId } = useParams<{ productId: string }>();
   const navigate = useNavigate();
   const qc = useQueryClient();
+  const productName = useProductName(productId);
   const [name, setName] = useState("");
   const [type, setType] = useState<string | null>(null);
   const [durationLabel, setDurationLabel] = useState("");
@@ -90,13 +107,8 @@ export function DenominationCreatePage() {
         title="New Denomination"
         breadcrumb={[
           { label: "Catalog", href: "/catalog" },
-          { label: "Product", href: `/catalog/${productId}` },
+          { label: productName, href: `/catalog/${productId}` },
         ]}
-        actions={
-          <Button variant="outline" size="sm" onClick={() => navigate(`/catalog/${productId}`)}>
-            ← Back
-          </Button>
-        }
       />
 
       <div className="max-w-lg flex flex-col gap-4">
@@ -114,52 +126,6 @@ export function DenominationCreatePage() {
 
         <div>
           <label className="text-sm font-medium text-ink">
-            Type <span className="text-rust">*</span>
-          </label>
-          <Select value={type ?? ""} onValueChange={(v) => setType(v)}>
-            <SelectTrigger className="mt-1" aria-label="Type">
-              <SelectValue placeholder="Select type" />
-            </SelectTrigger>
-            <SelectContent>
-              {DENOMINATION_TYPES.map((t) => (
-                <SelectItem key={t.value} value={t.value}>
-                  {t.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div>
-          <label className="text-sm font-medium text-ink">
-            Delivery Type <span className="text-rust">*</span>
-          </label>
-          <Select value={deliveryType} onValueChange={(v) => setDeliveryType(v)}>
-            <SelectTrigger className="mt-1" aria-label="Delivery Type">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {DELIVERY_TYPES.map((t) => (
-                <SelectItem key={t.value} value={t.value}>
-                  {t.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        {deliveryType === "manual_with_info" && (
-          <div>
-            <label className="text-sm font-medium text-ink">Custom Fields</label>
-            <p className="mt-1 mb-2 text-xs text-ink-soft">
-              The buyer fills these in before paying. At least one field is required.
-            </p>
-            <AdditionalFieldsEditor value={additionalFields} onChange={setAdditionalFields} />
-          </div>
-        )}
-
-        <div>
-          <label className="text-sm font-medium text-ink">
             Duration Label <span className="text-rust">*</span>
           </label>
           <Input
@@ -172,6 +138,35 @@ export function DenominationCreatePage() {
 
         <div>
           <label className="text-sm font-medium text-ink">
+            Account Type <span className="text-rust">*</span>
+          </label>
+          <Select value={type ?? ""} onValueChange={(v) => setType(v)}>
+            <SelectTrigger className="mt-1" aria-label="Account Type">
+              <SelectValue placeholder="Select type" />
+            </SelectTrigger>
+            <SelectContent>
+              {DENOMINATION_TYPES.map((t) => (
+                <SelectItem key={t.value} value={t.value}>
+                  {t.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="mt-1 text-xs text-ink-soft">
+            Shared = one account used by multiple buyers at once. Private = a dedicated account for a
+            single buyer.
+          </p>
+        </div>
+
+        <DeliveryTypeSection
+          deliveryType={deliveryType}
+          onDeliveryTypeChange={setDeliveryType}
+          additionalFields={additionalFields}
+          onAdditionalFieldsChange={setAdditionalFields}
+        />
+
+        <div>
+          <label className="text-sm font-medium text-ink">
             Price <span className="text-rust">*</span>
           </label>
           <Input
@@ -180,6 +175,7 @@ export function DenominationCreatePage() {
             value={price}
             onChange={(e) => setPrice(e.target.value)}
           />
+          <p className="mt-1 text-xs text-ink-soft">Shown to customers.</p>
         </div>
 
         <div>
@@ -190,6 +186,9 @@ export function DenominationCreatePage() {
             value={costPrice}
             onChange={(e) => setCostPrice(e.target.value)}
           />
+          <p className="mt-1 text-xs text-ink-soft">
+            What you pay your supplier. For margin reports only — buyers never see this.
+          </p>
         </div>
 
         <div>
@@ -200,10 +199,11 @@ export function DenominationCreatePage() {
             value={resellerPrice}
             onChange={(e) => setResellerPrice(e.target.value)}
           />
+          <p className="mt-1 text-xs text-ink-soft">Charged instead of Price to reseller-role customers.</p>
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Warranty Days</label>
+          <label className="block text-sm font-medium text-ink">Warranty Days</label>
           <Input
             className="mt-1 w-32"
             placeholder="Optional"

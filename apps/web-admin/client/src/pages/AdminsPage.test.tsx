@@ -33,4 +33,13 @@ describe("AdminsPage", () => {
     render(<AdminsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
   });
+
+  it("gives the inline 'Add Admin' Telegram ID field a persistent visible label (F-006)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ admins: [ADMIN], roles: ["super", "support", "readonly"] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<AdminsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Budi")).toBeInTheDocument());
+    expect(screen.getByLabelText(/telegram id/i)).toBeInTheDocument();
+  });
 });

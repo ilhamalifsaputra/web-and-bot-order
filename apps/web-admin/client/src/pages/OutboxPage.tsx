@@ -6,6 +6,7 @@ import { FilterBar } from "../components/shared/FilterBar";
 import { EmptyState } from "../components/shared/EmptyState";
 import { DataTable } from "../components/shared/DataTable";
 import { StatusBadge } from "../components/shared/StatusBadge";
+import { Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -136,7 +137,13 @@ export function OutboxPage() {
             ]}
             data={data.rows}
             keyExtractor={(row) => row.id}
-            empty={<EmptyState title="No notifications found." />}
+            empty={
+              <EmptyState
+                icon={Send}
+                title="No notifications found."
+                description="Outbound notifications will appear here."
+              />
+            }
           />
         )}
 

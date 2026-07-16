@@ -44,7 +44,8 @@ export function SalesAnalyticsCard() {
   return (
     <Card>
       <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <CardTitle>Sales Analytics</CardTitle>
+        {/* F-010: real heading, same level as "Operation Center" (<h2>). */}
+        <CardTitle as="h2">Sales Analytics</CardTitle>
         <div className="flex flex-wrap gap-2">
           <FilterGroup
             options={[

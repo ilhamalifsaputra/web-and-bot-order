@@ -70,7 +70,7 @@ interface HeadInfo {
 }
 
 /** Per-path <title>/OG-meta/status — one DB lookup max. */
-async function headInfo(path: string, lang: string, shopName: string): Promise<HeadInfo> {
+async function headInfo(path: string, lang: string, shopName: string, query: string): Promise<HeadInfo> {
   if (path === "/") {
     return {
       title: shopName,
@@ -108,7 +108,12 @@ async function headInfo(path: string, lang: string, shopName: string): Promise<H
     };
   }
   if (path === "/search") {
-    return { title: `${t("web.search_placeholder", lang)} — ${shopName}`, meta: "", status: 200 };
+    // STO-017: echo the query in the <title> once one's present, matching the
+    // in-page <h1> (SearchPage.tsx's `web.search_results`) instead of always
+    // showing the generic placeholder copy.
+    const q = new URLSearchParams(query).get("q")?.trim();
+    const heading = q ? t("web.search_results", lang, { q }) : t("web.search_placeholder", lang);
+    return { title: `${heading} — ${shopName}`, meta: "", status: 200 };
   }
   for (const [re, key] of TITLE_KEYS) {
     if (re.test(path)) return { title: `${t(key, lang)} — ${shopName}`, meta: "", status: 200 };
@@ -125,7 +130,7 @@ async function headInfo(path: string, lang: string, shopName: string): Promise<H
 
 export default async function spaShellRoutes(app: FastifyInstance): Promise<void> {
   app.get("/*", async (req, reply) => {
-    const path = req.url.split("?", 1)[0]!;
+    const [path, query = ""] = req.url.split("?", 2) as [string, string?];
     // Unmatched API paths land here too (the wildcard out-specifies the
     // not-found handler for GETs) — those must stay JSON, never an HTML shell.
     if (path.startsWith("/api/")) {
@@ -137,7 +142,7 @@ export default async function spaShellRoutes(app: FastifyInstance): Promise<void
       getSetting(prisma, "shop_name").then((v) => v ?? "Toko Digital"),
       getSetting(prisma, "web_favicon_url").then((v) => v || "/static/favicon.svg"),
     ]);
-    const head = await headInfo(path, lang, shopName);
+    const head = await headInfo(path, lang, shopName, query);
 
     if (path.startsWith("/reset/")) {
       void reply.header("Referrer-Policy", "no-referrer");

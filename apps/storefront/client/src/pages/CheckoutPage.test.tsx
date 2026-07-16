@@ -57,6 +57,7 @@ function renderCheckout(respond: (path: string) => unknown) {
         <Routes>
           <Route path="/checkout" element={<CheckoutPage />} />
           <Route path="/checkout/:code/pay" element={<div>pay-page-stub</div>} />
+          <Route path="/account/orders/:code" element={<div>order-detail-stub</div>} />
           <Route path="/cart" element={<div>cart-page-stub</div>} />
         </Routes>
       </MemoryRouter>
@@ -135,8 +136,6 @@ describe("CheckoutPage", () => {
       expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout", {
         method: "binance",
         voucher_code: "",
-        use_wallet_idr: false,
-        use_wallet_usdt: false,
       }),
     );
     expect(await screen.findByText("pay-page-stub")).toBeInTheDocument();
@@ -153,6 +152,33 @@ describe("CheckoutPage", () => {
   it("navigates to /cart when the cart is empty", async () => {
     renderCheckout(() => ({ ...checkoutData, items_empty: true }));
     expect(await screen.findByText("cart-page-stub")).toBeInTheDocument();
+  });
+
+  // STO-005: the voucher error used to render in #checkout-summary, a full
+  // column gutter away from the voucher input it's actually about.
+  it("renders the voucher error next to the voucher input, not in the summary column", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    const input = screen.getByPlaceholderText("Code");
+    fireEvent.change(input, { target: { value: "BADCODE" } });
+
+    (apiPost as Mock).mockResolvedValue({ ...checkoutData, error_key: "error.voucher_not_found" });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveTextContent("Voucher code not found.");
+    // Same card as the input (not #checkout-summary).
+    expect(error.closest("#checkout-summary")).toBeNull();
+    expect(input.closest(".card")).toBe(error.closest(".card"));
+  });
+
+  // STO-012: the "No payment methods" empty state must actually link to
+  // support, not just mention it as plain text.
+  it("links 'contact support' to /account/support in the no-payment-methods empty state", async () => {
+    renderCheckout(() => ({ ...checkoutData, binance_enabled: false }));
+    await screen.findByRole("heading", { name: "Checkout" });
+    expect(screen.getByText(/No payment methods are available/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "contact support" })).toHaveAttribute("href", "/account/support");
   });
 
   // Task 6: info-collection step for a manual_with_info cart (the
@@ -221,14 +247,31 @@ describe("CheckoutPage", () => {
         expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout", {
           method: "binance",
           voucher_code: "",
-          use_wallet_idr: false,
-          use_wallet_usdt: false,
           customer_data: [
             { game_id: "unit1game", email: "unit1@mail.com" },
             { game_id: "unit2game", email: "unit2@mail.com" },
           ],
         }),
       );
+    });
+
+    // STO-010: buying qty>1 of the same manual_with_info product for oneself
+    // shouldn't require retyping identical answers into every unit.
+    it("'Copy to all units' fills every other unit with Unit 1's answers", async () => {
+      renderCheckout(() => infoCheckoutData);
+      await screen.findByText("Order details");
+      const gameIdInputs = screen.getAllByLabelText("Game ID");
+      const emailInputs = screen.getAllByLabelText("Email");
+      fireEvent.change(gameIdInputs[0]!, { target: { value: "unit1game" } });
+      fireEvent.change(emailInputs[0]!, { target: { value: "unit1@mail.com" } });
+      expect((gameIdInputs[1] as HTMLInputElement).value).toBe("");
+
+      fireEvent.click(screen.getByRole("button", { name: "Copy to all units" }));
+
+      expect((gameIdInputs[1] as HTMLInputElement).value).toBe("unit1game");
+      expect((emailInputs[1] as HTMLInputElement).value).toBe("unit1@mail.com");
+      const placeOrderBtn = screen.getByRole("button", { name: /Place order/ });
+      expect(placeOrderBtn).not.toBeDisabled();
     });
 
     it("renders a select field populated from field.options", async () => {
@@ -244,6 +287,83 @@ describe("CheckoutPage", () => {
       expect(select.tagName).toBe("SELECT");
       fireEvent.change(select, { target: { value: "EU" } });
       expect(select.value).toBe("EU");
+    });
+  });
+
+  describe("wallet credit as a payment method", () => {
+    it("is absent when wallet balances don't cover the total (default fixture)", async () => {
+      renderCheckout(() => checkoutData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      expect(screen.queryByText("Wallet Credit (IDR)")).not.toBeInTheDocument();
+      expect(screen.queryByText("Wallet Credit (USDT)")).not.toBeInTheDocument();
+    });
+
+    it("shows a Wallet Credit (IDR) radio when wallet_idr covers the total, and posts wallet_idr on Place order", async () => {
+      renderCheckout(() => ({ ...checkoutData, wallet_idr: "200000" }));
+      await screen.findByRole("heading", { name: "Checkout" });
+      // Binance (the gateway) is still the default selection — the buyer must
+      // opt into spending their credit explicitly.
+      expect((screen.getByRole("radio", { name: /BINANCE/ }) as HTMLInputElement).checked).toBe(true);
+
+      fireEvent.click(screen.getByRole("radio", { name: /Wallet Credit \(IDR\)/ }));
+
+      const response: PlaceOrderResponse = { order_code: "ORD789", pay_url: "/account/orders/ORD789" };
+      (apiPost as Mock).mockResolvedValue(response);
+      fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+      await waitFor(() =>
+        expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout", {
+          method: "wallet_idr",
+          voucher_code: "",
+        }),
+      );
+      expect(await screen.findByText("order-detail-stub")).toBeInTheDocument();
+    });
+
+    it("shows a Wallet Credit (USDT) radio when wallet_usdt covers total_usdt, and posts wallet_usdt on Place order", async () => {
+      renderCheckout(() => ({ ...checkoutData, wallet_usdt: "10" })); // total_usdt fixture is 9.88
+      await screen.findByRole("heading", { name: "Checkout" });
+      fireEvent.click(screen.getByRole("radio", { name: /Wallet Credit \(USDT\)/ }));
+
+      const response: PlaceOrderResponse = { order_code: "ORD790", pay_url: "/account/orders/ORD790" };
+      (apiPost as Mock).mockResolvedValue(response);
+      fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+      await waitFor(() =>
+        expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout", {
+          method: "wallet_usdt",
+          voucher_code: "",
+        }),
+      );
+      expect(await screen.findByText("order-detail-stub")).toBeInTheDocument();
+    });
+
+    it("defaults to Wallet Credit and clears the empty-state message when no gateway is enabled but the balance covers the total", async () => {
+      renderCheckout(() => ({
+        ...checkoutData,
+        binance_enabled: false, // fixture default has only binance enabled -> now nothing is
+        wallet_idr: "200000",
+      }));
+      await screen.findByRole("heading", { name: "Checkout" });
+      expect((screen.getByRole("radio", { name: /Wallet Credit \(IDR\)/ }) as HTMLInputElement).checked).toBe(true);
+      expect(screen.queryByText(/No payment methods are available/)).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Place order/ })).not.toBeDisabled();
+    });
+
+    it("Place order stays disabled until every unit's manual_with_info fields validate, even with wallet credit selected", async () => {
+      const fields: AdditionalField[] = [
+        { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+      ];
+      renderCheckout(() => ({
+        ...checkoutData,
+        wallet_idr: "200000",
+        items: [{ denomination_id: 5, delivery_type: "manual_with_info", additional_fields: fields, qty: 1 }],
+      }));
+      await screen.findByText("Order details");
+      fireEvent.click(screen.getByRole("radio", { name: /Wallet Credit \(IDR\)/ }));
+      const placeOrderBtn = screen.getByRole("button", { name: /Place order/ });
+      expect(placeOrderBtn).toBeDisabled();
+
+      fireEvent.change(screen.getByLabelText("Game ID"), { target: { value: "abc" } });
+      expect(placeOrderBtn).not.toBeDisabled();
     });
   });
 });

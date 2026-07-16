@@ -14,6 +14,7 @@ import { apiGet, apiPost } from "../api/client";
 import type { AccountData } from "../api/types";
 import { t } from "../lib/i18n";
 import { formatIdr, money4 } from "../lib/format";
+import Skeleton from "../components/shop/Skeleton";
 
 /** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
  * submitting button while its mutation is pending (in addition to disabling
@@ -51,7 +52,36 @@ export default function AccountPage() {
     onSuccess: () => window.location.assign("/"),
   });
 
-  if (!data) return null;
+  // STO-006/performance.md: rendering nothing while the initial query is
+  // pending reads as a blank/broken page on a slow connection — show a
+  // skeleton shaped like the loaded layout instead.
+  if (!data) {
+    return (
+      <div aria-busy="true" aria-label={t("web.loading")}>
+        <div className="mb-6 flex items-start justify-between gap-4 flex-wrap">
+          <div className="space-y-2">
+            <Skeleton className="h-7 w-40" />
+            <Skeleton className="h-4 w-56" />
+          </div>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-4 mb-6">
+          {Array.from({ length: 4 }, (_, i) => (
+            <div key={i} className="card card-pad space-y-2">
+              <Skeleton className="h-3 w-24" />
+              <Skeleton className="h-6 w-32" />
+            </div>
+          ))}
+        </div>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {Array.from({ length: 5 }, (_, i) => (
+            <div key={i} className="card card-pad">
+              <Skeleton className="h-5 w-28" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>

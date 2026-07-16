@@ -16,7 +16,7 @@ interface UserRow {
   id: number;
   username: string | null;
   fullName: string | null;
-  telegramId: string;
+  telegramId: string | null;
   role: string;
   banned: boolean;
   createdAt: string;
@@ -119,7 +119,7 @@ export function UsersPage() {
             header: "Telegram ID",
             render: (row) => (
               <span className="font-mono text-xs text-ink-soft">
-                {row.telegramId}
+                {row.telegramId ?? "—"}
               </span>
             ),
           },
@@ -168,7 +168,13 @@ export function UsersPage() {
         isLoading={isLoading}
         keyExtractor={(row) => row.id}
         onRowClick={(row) => navigate(`/users/${row.id}`)}
-        empty={<EmptyState icon={Users} title="No customers yet" />}
+        empty={
+          <EmptyState
+            icon={Users}
+            title="No customers yet"
+            description="Customers will appear here once they interact with the shop."
+          />
+        }
       />
     </PageLayout>
   );

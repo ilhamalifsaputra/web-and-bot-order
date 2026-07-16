@@ -12,6 +12,7 @@ import { apiGet, apiPost } from "../api/client";
 import type { SupportData } from "../api/types";
 import { t } from "../lib/i18n";
 import StatusBadge from "../components/shop/StatusBadge";
+import Toast from "../components/shop/Toast";
 
 /** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
  * submitting button while its mutation is pending (in addition to disabling
@@ -24,6 +25,7 @@ function Spinner() {
 
 export default function SupportPage() {
   const [message, setMessage] = useState("");
+  const [toastText, setToastText] = useState<string | null>(null);
   const { data, error, refetch } = useQuery({
     queryKey: ["account-support"],
     queryFn: () => apiGet<SupportData>("/api/v1/account/support"),
@@ -36,11 +38,15 @@ export default function SupportPage() {
     }
   }, [error]);
 
+  // STO-020: submitting a ticket used to just clear the textbox and silently
+  // add a table row, with no confirmation at all.
   const createMutation = useMutation({
-    mutationFn: (vars: { message: string }) => apiPost<{ ok: boolean }>("/api/v1/account/support", vars),
-    onSuccess: () => {
+    mutationFn: (vars: { message: string }) =>
+      apiPost<{ ok: boolean; ticket_id: number | null }>("/api/v1/account/support", vars),
+    onSuccess: (resp) => {
       setMessage("");
       refetch();
+      if (resp.ticket_id != null) setToastText(t("web.support_ticket_created", { id: resp.ticket_id }));
     },
   });
 
@@ -53,6 +59,7 @@ export default function SupportPage() {
 
   return (
     <>
+      <Toast text={toastText} onDismiss={() => setToastText(null)} kind="success" />
       <h1 className="page-title mb-6">{t("web.account_support")}</h1>
 
       <form onSubmit={onSubmit} className="card card-pad mb-6">

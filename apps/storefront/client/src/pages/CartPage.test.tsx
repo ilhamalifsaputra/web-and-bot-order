@@ -109,9 +109,17 @@ describe("CartPage", () => {
     expect(screen.queryByText("Summary")).not.toBeInTheDocument();
   });
 
-  it("shows the login-to-checkout hint for a guest", async () => {
+  it("shows the login-to-checkout hint for a guest without singling out Telegram (STO-009)", async () => {
     renderCart(() => cartData);
-    expect(await screen.findByText("You'll sign in with Telegram at checkout — your cart comes along.")).toBeInTheDocument();
+    expect(await screen.findByText("Sign in to continue — your cart comes along.")).toBeInTheDocument();
+  });
+
+  // STO-008: the cart previously offered only "Continue to payment", with no
+  // way back to browsing.
+  it("offers a Continue shopping link back to the homepage", async () => {
+    renderCart(() => cartData);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    expect(screen.getByRole("link", { name: "Continue shopping" })).toHaveAttribute("href", "/");
   });
 
   // Bug B (Task 6): non-auto lines never have stock rows by design (available

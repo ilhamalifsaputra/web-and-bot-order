@@ -17,13 +17,15 @@
  * `rounded-xl`, both unaffected).
  */
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { CheckCircle, Send } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { SettingsData } from "../api/types";
 import { t } from "../lib/i18n";
+import { useTelegramWidget } from "../lib/useTelegramWidget";
 import Flash from "../components/shop/Flash";
+import PasswordInput from "../components/shop/PasswordInput";
 
 /** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
  * submitting button while its mutation is pending (in addition to disabling
@@ -88,28 +90,14 @@ export default function SettingsPage() {
   }
 
   // Telegram widget script injection — same pattern as LoginPage, but the
-  // auth-url is the fixed server route rather than a fetched value. Keyed on
-  // `page` (not `data`): the container div only renders once `page` is
-  // seeded, so an effect keyed on `data` would fire one render too early and
-  // bail on the still-null ref.
+  // auth-url is the fixed server route rather than a fetched value. The
+  // widget only mounts once `page` is seeded and the account isn't already
+  // linked, per settings.njk's `!tg_linked && bot_username` gate.
   const widgetContainerRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const container = widgetContainerRef.current;
-    if (!container || !page || page.tg_linked || !page.bot_username) return;
-    const script = document.createElement("script");
-    script.async = true;
-    script.src = "https://telegram.org/js/telegram-widget.js?22";
-    script.setAttribute("data-telegram-login", page.bot_username);
-    script.setAttribute("data-size", "large");
-    script.setAttribute("data-userpic", "false");
-    script.setAttribute("data-radius", "12");
-    script.setAttribute("data-auth-url", "/account/settings/link-telegram");
-    script.setAttribute("data-request-access", "write");
-    container.appendChild(script);
-    return () => {
-      container.removeChild(script);
-    };
-  }, [page]);
+  const widgetFailed = useTelegramWidget(widgetContainerRef, {
+    botUsername: page && !page.tg_linked ? page.bot_username : null,
+    authUrl: "/account/settings/link-telegram",
+  });
 
   if (!page) return null;
 
@@ -162,7 +150,8 @@ export default function SettingsPage() {
                 autoComplete="username"
                 minLength={3}
                 maxLength={32}
-                pattern="[a-zA-Z0-9_]+"
+                // STO-014: must match LOGIN_USERNAME_RE (packages/db/src/crud/webauth.ts).
+                pattern="[a-z0-9_]+"
               />
               <p className="text-xs text-ink-faint mt-1">{t("web.register_username_help")}</p>
             </div>
@@ -185,9 +174,8 @@ export default function SettingsPage() {
                 <label className="text-sm font-semibold" htmlFor="current_password">
                   {t("web.settings_current_password")}
                 </label>
-                <input
+                <PasswordInput
                   className="field mt-1"
-                  type="password"
                   id="current_password"
                   name="current_password"
                   autoComplete="current-password"
@@ -198,9 +186,8 @@ export default function SettingsPage() {
               <label className="text-sm font-semibold" htmlFor="new_password">
                 {t("web.settings_new_password")}
               </label>
-              <input
+              <PasswordInput
                 className="field mt-1"
-                type="password"
                 id="new_password"
                 name="new_password"
                 autoComplete="new-password"
@@ -231,7 +218,20 @@ export default function SettingsPage() {
                   <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-3 flex items-center gap-1.5">
                     <Send className="w-3.5 h-3.5" /> {t("web.settings_tg_connect_label")}
                   </p>
-                  <div ref={widgetContainerRef} />
+                  {/* STO-013: Telegram renders its own raw, unstyled error text
+                      (e.g. "Bot domain invalid") into this container when the
+                      origin isn't authorized — hide it and show our own styled
+                      fallback instead of leaking that text into the page. */}
+                  <div ref={widgetContainerRef} className={widgetFailed ? "hidden" : ""} />
+                  {widgetFailed && (
+                    <p className="text-sm text-ink-soft">
+                      {t("web.tg_widget_unavailable_prefix")}{" "}
+                      <Link to="/account/support" className="text-pine underline hover:text-pine-dark">
+                        {t("web.tg_widget_unavailable_link")}
+                      </Link>
+                      {t("web.tg_widget_unavailable_suffix")}
+                    </p>
+                  )}
                 </div>
               ) : (
                 <p className="text-sm text-ink-faint">{t("web.settings_tg_unconfigured")}</p>

@@ -6,6 +6,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { StatusBadge } from "../components/shared/StatusBadge";
+import { Megaphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -221,7 +222,13 @@ export function BroadcastPage() {
         data={data?.history ?? []}
         isLoading={!data}
         keyExtractor={b => b.id}
-        empty={<EmptyState title="No broadcasts yet" />}
+        empty={
+          <EmptyState
+            icon={Megaphone}
+            title="No broadcasts yet"
+            description="Sent and scheduled broadcasts will appear here."
+          />
+        }
       />
     </PageLayout>
   );

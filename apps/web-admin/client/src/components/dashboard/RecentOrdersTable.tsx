@@ -9,7 +9,8 @@ export function RecentOrdersTable() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Recent Orders</CardTitle>
+        {/* F-010: real heading, same level as "Operation Center" (<h2>). */}
+        <CardTitle as="h2">Recent Orders</CardTitle>
       </CardHeader>
       <CardContent>
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}

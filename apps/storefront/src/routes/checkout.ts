@@ -34,7 +34,7 @@ import {
   applyVoucherToSubtotal,
   computeBulkDiscountForCart,
   createOrderFromCart,
-  applyUsdtWalletToOrder,
+  completeCartOrderWithWalletCredit,
   finalizeOrderPayment,
   getUsdIdrRate,
   getOrderByCode,
@@ -288,8 +288,6 @@ export async function performCheckout(
   customer: Customer,
   method: string,
   voucherCode: string | null,
-  useWalletIdr = false,
-  useWalletUsdt = false,
   customerData?: unknown,
 ): Promise<{ orderCode: string }> {
   const [fxRate, tokopay, bybit, bybitBsc, binance, paydisini, nowpayments] = await Promise.all([
@@ -338,10 +336,6 @@ export async function performCheckout(
     throw new ValidationError("web.pay_method_unavailable");
   }
 
-  const isUsdtMethod = choice.currency === OrderCurrency.USDT;
-  const walletAmountIdr = useWalletIdr && !isUsdtMethod ? customer.user.walletBalance : 0;
-  const walletAmountUsdt = useWalletUsdt && isUsdtMethod ? customer.user.walletBalanceUsdt : undefined;
-
   const order = await prisma.$transaction(async (tx) => {
     if ((await countUserPendingOrders(tx, customer.userId)) >= MAX_PENDING_ORDERS) {
       throw new ValidationError("error.too_many_pending");
@@ -386,15 +380,48 @@ export async function performCheckout(
         walletBalance: customer.user.walletBalance,
       },
       voucherCode,
-      walletAmount: walletAmountIdr,
       customerData: customerDataJson,
     });
     if (!created) throw new ValidationError("error.generic");
-    const finalized = await finalizeOrderPayment(tx, created.id, choice);
-    if (walletAmountUsdt != null) await applyUsdtWalletToOrder(tx, created.id, walletAmountUsdt);
-    return walletAmountUsdt != null ? tx.order.findUnique({ where: { id: created.id } }) : finalized;
+    return finalizeOrderPayment(tx, created.id, choice);
   });
   return { orderCode: order!.orderCode };
+}
+
+/**
+ * "Pay entirely with wallet credit" — no gateway involved, settles
+ * synchronously. Sibling of performCheckout (left untouched above) for the
+ * all-or-nothing balance rail: only usable when the customer's IDR or USDT
+ * credit balance fully covers the cart total (completeCartOrderWithWalletCredit
+ * re-derives this from scratch and throws error.insufficient_wallet if not).
+ */
+export async function performWalletCheckout(
+  customer: Customer,
+  currency: typeof OrderCurrency.IDR | typeof OrderCurrency.USDT,
+  voucherCode: string | null,
+  customerData?: unknown,
+): Promise<{ orderCode: string }> {
+  const rate = currency === OrderCurrency.USDT ? await getUsdIdrRate(prisma) : null;
+  if (currency === OrderCurrency.USDT && !rate) throw new ValidationError("web.pay_method_unavailable");
+
+  const result = await prisma.$transaction(async (tx) => {
+    if ((await countUserPendingOrders(tx, customer.userId)) >= MAX_PENDING_ORDERS) {
+      throw new ValidationError("error.too_many_pending");
+    }
+    return completeCartOrderWithWalletCredit(tx, {
+      user: {
+        id: customer.userId,
+        role: customer.user.role,
+        walletBalance: customer.user.walletBalance,
+        walletBalanceUsdt: customer.user.walletBalanceUsdt,
+      },
+      voucherCode,
+      currency,
+      rate: rate ?? undefined,
+      customerData,
+    });
+  });
+  return { orderCode: result.order.orderCode };
 }
 
 /**

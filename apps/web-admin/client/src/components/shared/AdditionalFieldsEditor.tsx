@@ -50,44 +50,34 @@ export function AdditionalFieldsEditor({
       {value.map((row, index) => (
         <div key={index} className="rounded-lg border border-line p-3 flex flex-col gap-3">
           <div className="flex items-start justify-between gap-3">
-            <div className="flex-1">
-              <label className="text-xs font-medium text-ink">Key</label>
-              <Input
-                className="mt-1"
-                placeholder="e.g. game_id"
-                value={row.key}
-                onChange={(e) => updateRow(index, { key: e.target.value })}
-              />
+            <div className="flex-1 grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-medium text-ink">Question (Indonesian)</label>
+                <Input
+                  className="mt-1"
+                  placeholder="e.g. ID Game"
+                  value={row.labelId}
+                  onChange={(e) => updateRow(index, { labelId: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-ink">Question (English)</label>
+                <Input
+                  className="mt-1"
+                  placeholder="e.g. Game ID"
+                  value={row.labelEn}
+                  onChange={(e) => updateRow(index, { labelEn: e.target.value })}
+                />
+              </div>
             </div>
             <Button variant="ghost" size="sm" onClick={() => removeRow(index)}>
               Remove
             </Button>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-medium text-ink">Label (Indonesian)</label>
-              <Input
-                className="mt-1"
-                placeholder="e.g. ID Game"
-                value={row.labelId}
-                onChange={(e) => updateRow(index, { labelId: e.target.value })}
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-ink">Label (English)</label>
-              <Input
-                className="mt-1"
-                placeholder="e.g. Game ID"
-                value={row.labelEn}
-                onChange={(e) => updateRow(index, { labelEn: e.target.value })}
-              />
-            </div>
-          </div>
-
           <div className="flex items-end gap-3">
             <div>
-              <label className="text-xs font-medium text-ink">Type</label>
+              <label className="text-xs font-medium text-ink">Answer Type</label>
               <Select
                 value={row.type}
                 onValueChange={(v) => updateRow(index, { type: v as AdditionalFieldDraft["type"] })}
@@ -126,13 +116,16 @@ export function AdditionalFieldsEditor({
           )}
 
           <div>
-            <label className="text-xs font-medium text-ink">Placeholder</label>
+            <label className="text-xs font-medium text-ink">Placeholder (Optional)</label>
             <Input
               className="mt-1"
-              placeholder="Optional"
+              placeholder="e.g. 1023849571"
               value={row.placeholder}
               onChange={(e) => updateRow(index, { placeholder: e.target.value })}
             />
+            <p className="mt-1 text-xs text-ink-soft">
+              Optional. Shown as light grey text before the buyer types anything.
+            </p>
           </div>
         </div>
       ))}

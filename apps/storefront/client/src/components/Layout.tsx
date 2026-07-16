@@ -115,9 +115,20 @@ export default function Layout() {
           </nav>
         </div>
 
-        {/* Mobile search — second row below the brand bar. */}
-        <div className="sm:hidden border-t border-line px-4 py-2 bg-card">
-          <SearchForm inputAriaLabel={t("web.search_placeholder")} />
+        {/* Mobile secondary row — search plus the language switcher (STO-004:
+            the switcher itself is `hidden sm:flex` above, so mobile visitors
+            need it here or they can never reach it). */}
+        <div className="sm:hidden border-t border-line px-4 py-2 bg-card flex items-center gap-2">
+          <div className="flex-1">
+            <SearchForm inputAriaLabel={t("web.search_placeholder")} />
+          </div>
+          <a
+            href={`/lang?to=${otherLang}&back=${encodeURIComponent(backPath)}`}
+            className="flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-2 text-sm text-ink-soft hover:bg-sand uppercase"
+            aria-label={t("web.lang_label")}
+          >
+            <Globe className="h-4 w-4" /> {otherLang}
+          </a>
         </div>
       </header>
 

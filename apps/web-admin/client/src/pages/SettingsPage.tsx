@@ -129,6 +129,25 @@ const ALL_GROUPED_KEYS = new Set([
   ...PAY_CRED_KEYS,
 ]);
 
+/**
+ * F-013: previously rendered two independent, sometimes-contradictory
+ * signals side by side — a `methodState.configured === false` "not
+ * configured" label, and separately whatever the raw `enabled` toggle said
+ * ("Enabled"), even though the gateway can't actually process a payment
+ * without its credentials. Collapses both into one combined status: an
+ * unconfigured gateway always reads "Not set up" regardless of the toggle
+ * position (the toggle keeps its own real value — this is display only,
+ * per the task's explicit "do not change the enabled default" constraint —
+ * `enabled` is still whatever the backend returned and the Switch still
+ * flips the same value via the same `/api/settings/payments/toggle` call).
+ */
+function gatewayStatus(methodState: PayMethodState): { label: string; className: string } {
+  if (!methodState.configured) return { label: "Not set up", className: "text-ink-soft" };
+  return methodState.enabled
+    ? { label: "Enabled", className: "text-grass-dark" }
+    : { label: "Disabled", className: "text-ink-soft" };
+}
+
 function fieldGroup(fields: SettingsField[], keys: Set<string>): SettingsField[] {
   return fields.filter((f) => keys.has(f.key));
 }
@@ -328,12 +347,86 @@ export function SettingsPage() {
       {isLoading && <p className="text-ink-soft">Loading settings…</p>}
       {isError && <p className="text-rust">Failed to load settings.</p>}
 
-      {data && (
-        <div className="flex flex-col gap-6 max-w-2xl">
+      {data && (() => {
+        const showGeneral = fieldGroup(data.fields, BRANDING_KEYS).length > 0;
+        const showTelegram = fieldGroup(data.fields, TELEGRAM_KEYS).length > 0;
+        const showOther = fieldsOther(data.fields).length > 0;
+        const payGroups = PAY_CRED_GROUPS.map(({ methodKey, label, fieldKeys }) => {
+          const credFields = data.fields.filter((f) => (fieldKeys as readonly string[]).includes(f.key));
+          const methodState = data.payMethodState[methodKey];
+          return { methodKey, label, credFields, methodState, sectionId: `settings-pay-${methodKey}` };
+        }).filter((g) => g.credFields.length > 0 || !!g.methodState);
+
+        return (
+          // F-012: sticky section index so an admin can jump straight to a
+          // section (e.g. Security) instead of scrolling past 9+ others.
+          // Pure navigation/layout wrapper — every field, the whitelist-only
+          // edit behavior, and the per-field "Edit" button are unchanged
+          // below; this block only adds `id`s + anchor links around them.
+          <div className="lg:grid lg:grid-cols-[200px_minmax(0,1fr)] lg:items-start lg:gap-8">
+            <nav
+              aria-label="Settings sections"
+              className="sticky top-0 z-10 -mx-4 mb-4 flex gap-1 overflow-x-auto border-b border-line bg-paper px-4 py-2 sm:-mx-5 sm:px-5 lg:sticky lg:top-4 lg:z-auto lg:mx-0 lg:mb-0 lg:flex-col lg:gap-0.5 lg:overflow-visible lg:border-0 lg:bg-transparent lg:px-0 lg:py-0"
+            >
+              {showGeneral && (
+                <a
+                  href="#settings-general"
+                  className="whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium text-ink-soft hover:bg-sand hover:text-ink"
+                >
+                  General
+                </a>
+              )}
+              {showTelegram && (
+                <a
+                  href="#settings-telegram"
+                  className="whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium text-ink-soft hover:bg-sand hover:text-ink"
+                >
+                  Telegram &amp; Bot
+                </a>
+              )}
+              {payGroups.length > 0 && (
+                <>
+                  <div className="hidden px-3 pt-3 pb-1 text-xs font-semibold uppercase tracking-wider text-ink-soft lg:block">
+                    Payment Gateways
+                  </div>
+                  {payGroups.map((g) => (
+                    <a
+                      key={g.methodKey}
+                      href={`#${g.sectionId}`}
+                      className="whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium text-ink-soft hover:bg-sand hover:text-ink lg:pl-6"
+                    >
+                      {g.label}
+                    </a>
+                  ))}
+                </>
+              )}
+              {showOther && (
+                <a
+                  href="#settings-other"
+                  className="whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium text-ink-soft hover:bg-sand hover:text-ink"
+                >
+                  Other Settings
+                </a>
+              )}
+              <a
+                href="#settings-exchange-rates"
+                className="whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium text-ink-soft hover:bg-sand hover:text-ink"
+              >
+                Exchange Rates
+              </a>
+              <a
+                href="#settings-security"
+                className="whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium text-ink-soft hover:bg-sand hover:text-ink"
+              >
+                Security
+              </a>
+            </nav>
+
+            <div className="flex flex-col gap-6 max-w-2xl [&>*]:scroll-mt-20">
 
           {/* General */}
-          {fieldGroup(data.fields, BRANDING_KEYS).length > 0 && (
-            <Card>
+          {showGeneral && (
+            <Card id="settings-general">
               <CardHeader>
                 <CardTitle>General</CardTitle>
               </CardHeader>
@@ -346,8 +439,8 @@ export function SettingsPage() {
           )}
 
           {/* Telegram & Bot */}
-          {fieldGroup(data.fields, TELEGRAM_KEYS).length > 0 && (
-            <Card>
+          {showTelegram && (
+            <Card id="settings-telegram">
               <CardHeader>
                 <CardTitle>Telegram &amp; Bot</CardTitle>
               </CardHeader>
@@ -360,47 +453,49 @@ export function SettingsPage() {
           )}
 
           {/* Payment Credentials — one card per method */}
-          {PAY_CRED_GROUPS.map(({ methodKey, label, fieldKeys }) => {
-            const credFields = data.fields.filter((f) => (fieldKeys as readonly string[]).includes(f.key));
-            const methodState = data.payMethodState[methodKey];
-            if (credFields.length === 0 && !methodState) return null;
-            return (
-              <Card key={methodKey}>
-                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
-                  <div className="flex items-center gap-2">
-                    <CardTitle>{label}</CardTitle>
-                    {methodState && !methodState.configured && (
-                      <span className="text-xs text-amberx">not configured</span>
-                    )}
-                  </div>
+          {payGroups.map(({ methodKey, label, credFields, methodState, sectionId }) => (
+            <Card key={methodKey} id={sectionId}>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+                <div className="flex items-center gap-2">
+                  <CardTitle>{label}</CardTitle>
                   {methodState && (
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <Switch
-                        checked={methodState.enabled}
-                        onCheckedChange={(checked) =>
-                          togglePayment.mutate({ method: methodKey, enabled: checked })
-                        }
-                      />
-                      <span className="text-sm text-ink-soft">
-                        {methodState.enabled ? "Enabled" : "Disabled"}
-                      </span>
-                    </label>
+                    <span className={`text-xs font-medium ${gatewayStatus(methodState).className}`}>
+                      {gatewayStatus(methodState).label}
+                    </span>
                   )}
-                </CardHeader>
-                {credFields.length > 0 && (
-                  <CardContent className="divide-y divide-line pt-0">
-                    {credFields.map((field) => (
-                      <FieldRow key={field.key} field={field} onSaved={invalidate} />
-                    ))}
-                  </CardContent>
+                </div>
+                {methodState && (
+                  <label
+                    className="flex items-center gap-2 cursor-pointer"
+                    title={
+                      methodState.configured
+                        ? undefined
+                        : "Add the credentials below to actually activate this gateway."
+                    }
+                  >
+                    <Switch
+                      checked={methodState.enabled}
+                      onCheckedChange={(checked) =>
+                        togglePayment.mutate({ method: methodKey, enabled: checked })
+                      }
+                      aria-label={`${methodState.enabled ? "Disable" : "Enable"} ${label}`}
+                    />
+                  </label>
                 )}
-              </Card>
-            );
-          })}
+              </CardHeader>
+              {credFields.length > 0 && (
+                <CardContent className="divide-y divide-line pt-0">
+                  {credFields.map((field) => (
+                    <FieldRow key={field.key} field={field} onSaved={invalidate} />
+                  ))}
+                </CardContent>
+              )}
+            </Card>
+          ))}
 
           {/* Other / catch-all for any future fields */}
-          {fieldsOther(data.fields).length > 0 && (
-            <Card>
+          {showOther && (
+            <Card id="settings-other">
               <CardHeader>
                 <CardTitle>Other Settings</CardTitle>
               </CardHeader>
@@ -413,7 +508,7 @@ export function SettingsPage() {
           )}
 
           {/* Exchange Rates */}
-          <Card>
+          <Card id="settings-exchange-rates">
             <CardHeader>
               <CardTitle>Exchange Rates</CardTitle>
             </CardHeader>
@@ -436,7 +531,7 @@ export function SettingsPage() {
           </Card>
 
           {/* Security */}
-          <Card>
+          <Card id="settings-security">
             <CardHeader>
               <CardTitle>Security</CardTitle>
             </CardHeader>
@@ -581,8 +676,10 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
-        </div>
-      )}
+            </div>
+          </div>
+        );
+      })()}
     </PageLayout>
   );
 }

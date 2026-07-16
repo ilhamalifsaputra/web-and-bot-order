@@ -61,7 +61,6 @@ export function TicketDetailPage() {
       <PageHeader
         title={`Ticket #${ticket.id}: ${ticket.subject}`}
         breadcrumb={[{ label: "Support", href: "/support" }]}
-        actions={<Button variant="outline" size="sm" onClick={() => navigate("/support")}>← Back</Button>}
       />
 
       {/* Ticket meta */}

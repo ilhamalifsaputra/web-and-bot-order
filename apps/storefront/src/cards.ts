@@ -26,6 +26,12 @@ export type ProductCard = {
   rating_count: number;
   bulk_discount: string | null;
   bulk_min_qty: number | null;
+  /** True when every active denomination is a non-`auto` delivery type
+   * (manual/manual_with_info), so this product never carries a real stock
+   * count and is always purchasable — mirrors the product page's own
+   * `purchasable()` rule (STO-001). The card's stock badge should skip its
+   * red "out of stock" state in that case rather than reading `available`. */
+  all_non_auto: boolean;
 };
 
 /** Available stock keyed by denomination id. */
@@ -94,7 +100,39 @@ export function shapeProducts(
       rating_count: ratingCount,
       bulk_discount: bulkDiscount,
       bulk_min_qty: bulkMinQty,
+      all_non_auto: denoms.every((d) => d.deliveryType !== "auto"),
     });
   }
   return cards;
+}
+
+/** STO-007: sort keys offered on the Category/Search grids. */
+export const SORT_KEYS = ["default", "cheapest", "newest", "rating"] as const;
+export type SortKey = (typeof SORT_KEYS)[number];
+
+export function isSortKey(value: unknown): value is SortKey {
+  return typeof value === "string" && (SORT_KEYS as readonly string[]).includes(value);
+}
+
+/**
+ * Re-orders already-shaped cards by the chosen criterion. Runs in memory
+ * (not a DB `ORDER BY`) because `from_price`/`rating` are computed across a
+ * product's denominations by `shapeProducts` above, not columns the DB can
+ * sort on directly; catalog sizes here are small enough (a few dozen active
+ * products) that this is cheap. `products` must be the same array (order and
+ * length) `shapeProducts` was called with, so `createdAt` can be looked up
+ * by slug for the "newest" sort.
+ */
+export function sortProductCards(products: CatalogProduct[], cards: ProductCard[], sort: SortKey): ProductCard[] {
+  if (sort === "default") return cards;
+  const createdAtBySlug = new Map(products.map((p) => [p.slug, p.createdAt.getTime()]));
+  const sorted = [...cards];
+  if (sort === "cheapest") {
+    sorted.sort((a, b) => new Decimal(a.from_price).comparedTo(new Decimal(b.from_price)));
+  } else if (sort === "newest") {
+    sorted.sort((a, b) => (createdAtBySlug.get(b.slug) ?? 0) - (createdAtBySlug.get(a.slug) ?? 0));
+  } else if (sort === "rating") {
+    sorted.sort((a, b) => (b.rating ?? -1) - (a.rating ?? -1));
+  }
+  return sorted;
 }

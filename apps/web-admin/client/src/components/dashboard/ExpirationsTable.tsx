@@ -7,7 +7,8 @@ export function ExpirationsTable() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Upcoming Expirations</CardTitle>
+        {/* F-010: real heading, same level as "Operation Center" (<h2>). */}
+        <CardTitle as="h2">Upcoming Expirations</CardTitle>
       </CardHeader>
       <CardContent>
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}

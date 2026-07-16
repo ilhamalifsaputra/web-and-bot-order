@@ -69,8 +69,11 @@ describe("ReviewsPage", () => {
     await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(2));
   });
 
-  it("shows the empty state when there are no reviews yet", async () => {
+  // STO-016: the empty state used to be a dead end — it now offers a way
+  // back to the catalog.
+  it("shows the empty state with a Continue shopping CTA when there are no reviews yet", async () => {
     renderReviews(() => ({ pending: [], reviews: [] }));
     expect(await screen.findByText("You haven't reviewed anything yet.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Continue shopping" })).toHaveAttribute("href", "/");
   });
 });

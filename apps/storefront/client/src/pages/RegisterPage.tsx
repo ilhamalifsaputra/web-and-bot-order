@@ -13,6 +13,7 @@ import { UserPlus } from "lucide-react";
 import { publicPost } from "../api/client";
 import { t } from "../lib/i18n";
 import Flash from "../components/shop/Flash";
+import PasswordInput from "../components/shop/PasswordInput";
 
 /** Client-side twin of routes/auth.ts `safeNext` — see LoginPage.tsx. */
 function safeNext(raw: string | null): string {
@@ -92,7 +93,9 @@ export default function RegisterPage() {
                 required
                 minLength={3}
                 maxLength={32}
-                pattern="[a-zA-Z0-9_]+"
+                // STO-014: must match LOGIN_USERNAME_RE (packages/db/src/crud/webauth.ts) — was
+                // [a-zA-Z0-9_]+, letting an uppercase username pass client-side then 400 at the server.
+                pattern="[a-z0-9_]+"
               />
               <p className="text-xs text-ink-faint mt-1">{t("web.register_username_help")}</p>
             </div>
@@ -115,9 +118,8 @@ export default function RegisterPage() {
               <label className="text-sm font-semibold" htmlFor="password">
                 {t("web.login_password")}
               </label>
-              <input
+              <PasswordInput
                 className="field mt-1"
-                type="password"
                 id="password"
                 name="password"
                 autoComplete="new-password"
@@ -129,9 +131,8 @@ export default function RegisterPage() {
               <label className="text-sm font-semibold" htmlFor="password2">
                 {t("web.register_password2")}
               </label>
-              <input
+              <PasswordInput
                 className="field mt-1"
-                type="password"
                 id="password2"
                 name="password2"
                 autoComplete="new-password"

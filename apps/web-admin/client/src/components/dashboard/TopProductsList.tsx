@@ -8,7 +8,8 @@ export function TopProductsList() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Top Products · Last 30 Days</CardTitle>
+        {/* F-010: real heading, same level as "Operation Center" (<h2>). */}
+        <CardTitle as="h2">Top Products · Last 30 Days</CardTitle>
       </CardHeader>
       <CardContent>
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}

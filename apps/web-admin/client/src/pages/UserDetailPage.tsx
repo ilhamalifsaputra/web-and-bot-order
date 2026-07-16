@@ -23,7 +23,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { apiPost } from "../api/client";
 
 interface UserDetail {
-  user: { id: number; username: string | null; fullName: string | null; telegramId: string; role: string; banned: boolean; banReason: string | null; walletBalance: string; walletBalanceUsdt: string };
+  user: { id: number; username: string | null; fullName: string | null; telegramId: string | null; role: string; banned: boolean; banReason: string | null; walletBalance: string; walletBalanceUsdt: string };
   totalSpent: { idr: string; usdt: string };
   orders: { id: number; orderCode: string; status: string; totalIdr: string; createdAt: string; createdAtDisplay: string | null }[];
   tickets: { id: number; subject: string; status: string; createdAt: string; createdAtDisplay: string | null }[];
@@ -84,7 +84,6 @@ export function UserDetailPage() {
       <PageHeader
         title={user.fullName ?? user.username ?? `User #${user.id}`}
         breadcrumb={[{ label: "Customers", href: "/users" }]}
-        actions={<Button variant="outline" size="sm" onClick={() => navigate("/users")}>← Back</Button>}
       />
 
       {/* User info */}
@@ -97,7 +96,7 @@ export function UserDetailPage() {
                 BANNED{user.banReason ? ` — ${user.banReason}` : ""}
               </div>
             )}
-            <CardRow label="Telegram ID" value={<span className="font-mono text-xs">{user.telegramId}</span>} />
+            <CardRow label="Telegram ID" value={<span className="font-mono text-xs">{user.telegramId ?? "—"}</span>} />
             <CardRow label="Username" value={user.username ? `@${user.username}` : "—"} />
             <CardRow
               label="Role"

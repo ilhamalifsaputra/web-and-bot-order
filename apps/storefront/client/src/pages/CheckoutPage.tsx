@@ -6,16 +6,24 @@
  * plain event handler since none of our buttons are type="submit" anyway.
  *
  * State is split the same way the HTMX swap split the page: `page` (payment
- * method radios + wallet cards) is set ONCE from the initial GET and never
- * touched again — the voucher-preview response only ever swapped
- * #checkout-summary in the NJK, never the method radios. `totals` mirrors
- * that #checkout-summary fragment: initialized from the same GET, then
- * replaced wholesale by every voucher-preview response (subtotal/discounts/
- * total + the method-enabled flags _checkout_totals.njk uses to gate the
- * Place Order button). The voucher input itself is a THIRD, independent
- * piece of state — its live typed value is what Place Order submits,
- * whether or not Apply/Enter was ever pressed, exactly like the NJK's
- * hx-include="closest form" left the input's value untouched by the swap.
+ * method radios) is set ONCE from the initial GET and never touched again —
+ * the voucher-preview response only ever swapped #checkout-summary in the
+ * NJK, never the method radios. `totals` mirrors that #checkout-summary
+ * fragment: initialized from the same GET, then replaced wholesale by every
+ * voucher-preview response (subtotal/discounts/total + the method-enabled
+ * flags _checkout_totals.njk uses to gate the Place Order button). The
+ * voucher input itself is a THIRD, independent piece of state — its live
+ * typed value is what Place Order submits, whether or not Apply/Enter was
+ * ever pressed, exactly like the NJK's hx-include="closest form" left the
+ * input's value untouched by the swap.
+ *
+ * Wallet credit ("Wallet Credit (IDR)"/"Wallet Credit (USDT)") is just two
+ * more entries in the same method radio group — all-or-nothing, only
+ * rendered when that currency's balance covers the live (post-voucher)
+ * total. Selecting one and hitting "Place order & pay" posts
+ * method: "wallet_idr"/"wallet_usdt" to the same /api/v1/checkout endpoint
+ * gateway methods use; the server (routes/api.ts) branches to the no-gateway
+ * performWalletCheckout path before ever looking at a voucher/customer_data.
  *
  * Markup/classes copied verbatim apart from the mechanical Tailwind v3→v4
  * renames (docs/REACT_STOREFRONT_MIGRATION.md). checkout.njk's payment
@@ -45,9 +53,21 @@ function Spinner() {
   );
 }
 
+/** All-or-nothing wallet-credit gates: only "sufficient" when the balance
+ * covers the live total outright — never offered as a partial discount. */
+function isIdrWalletSufficient(data: CheckoutData): boolean {
+  return Number(data.total) > 0 && Number(data.wallet_idr) >= Number(data.total);
+}
+function isUsdtWalletSufficient(data: CheckoutData): boolean {
+  return data.total_usdt != null && Number(data.wallet_usdt) >= Number(data.total_usdt);
+}
+
 /** checkout.njk's default-selection cascade: the first enabled method wins,
  * in file/priority order (qris → paydisini → binance → bybit → bybit_bsc →
- * nowpayments). Returns null when no method is enabled at all. */
+ * nowpayments), falling back to wallet credit only when no gateway is
+ * configured at all — a buyer with both a gateway and wallet credit
+ * available shouldn't have their credit silently pre-selected for them.
+ * Returns null when nothing is payable. */
 function defaultMethod(data: CheckoutData): string | null {
   if (data.idr_enabled) return "qris";
   if (data.paydisini_enabled) return "paydisini";
@@ -55,6 +75,8 @@ function defaultMethod(data: CheckoutData): string | null {
   if (data.bybit_enabled) return "bybit";
   if (data.bybit_bsc_enabled) return "bybit_bsc";
   if (data.nowpayments_enabled) return "nowpayments";
+  if (isIdrWalletSufficient(data)) return "wallet_idr";
+  if (isUsdtWalletSufficient(data)) return "wallet_usdt";
   return null;
 }
 
@@ -91,6 +113,18 @@ function InfoStepCard({
   answers: Array<Record<string, string>>;
   onChange: (unitIdx: number, key: string, value: string) => void;
 }) {
+  // STO-010: buying multiple units of the same manual_with_info product for
+  // yourself is common — copy Unit 1's answers into every other unit rather
+  // than making the buyer retype the same email N times.
+  function copyToAll(): void {
+    const first = answers[0] ?? {};
+    for (let unitIdx = 1; unitIdx < qty; unitIdx++) {
+      for (const field of fields) {
+        onChange(unitIdx, field.key, first[field.key] ?? "");
+      }
+    }
+  }
+
   return (
     <div className="card card-pad">
       <h2 className="section-title mb-1">{t("web.checkout_info_title")}</h2>
@@ -99,8 +133,19 @@ function InfoStepCard({
         {Array.from({ length: qty }, (_, unitIdx) => (
           <div key={unitIdx} className={qty > 1 ? "border border-line rounded-xl p-3" : ""}>
             {qty > 1 && (
-              <div className="text-xs font-semibold text-ink-soft mb-2">
-                {t("web.checkout_info_unit", { unit: unitIdx + 1, total: qty })}
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <div className="text-xs font-semibold text-ink-soft">
+                  {t("web.checkout_info_unit", { unit: unitIdx + 1, total: qty })}
+                </div>
+                {unitIdx === 0 && (
+                  <button
+                    type="button"
+                    className="text-xs font-medium text-pine hover:text-pine-dark underline shrink-0"
+                    onClick={copyToAll}
+                  >
+                    {t("web.checkout_info_copy_all")}
+                  </button>
+                )}
               </div>
             )}
             <div className="grid gap-3 sm:grid-cols-2">
@@ -134,8 +179,6 @@ export default function CheckoutPage() {
   const [totals, setTotals] = useState<CheckoutData | null>(null);
   const [voucherInput, setVoucherInput] = useState("");
   const [method, setMethod] = useState<string | null>(null);
-  const [useWalletIdr, setUseWalletIdr] = useState(false);
-  const [useWalletUsdt, setUseWalletUsdt] = useState(false);
   const [placeOrderErrorKey, setPlaceOrderErrorKey] = useState<string | null>(null);
   // One answer-map per unit for the manual_with_info info step — [] when the
   // cart has no such line (the section then renders nothing).
@@ -187,13 +230,14 @@ export default function CheckoutPage() {
     applyVoucher();
   }
 
+  // Drives both gateway methods and wallet credit ("wallet_idr"/"wallet_usdt"
+  // — just two more radio values) — the server branches on `method` before
+  // ever looking at voucher_code/customer_data for the wallet case.
   const placeOrderMutation = useMutation({
     mutationFn: () =>
       apiPost<PlaceOrderResponse>("/api/v1/checkout", {
         method,
         voucher_code: voucherInput,
-        use_wallet_idr: useWalletIdr,
-        use_wallet_usdt: useWalletUsdt,
         customer_data: page?.items.some((i) => i.delivery_type === "manual_with_info") ? answers : undefined,
       }),
     onSuccess: (resp) => navigate(resp.pay_url),
@@ -202,9 +246,11 @@ export default function CheckoutPage() {
 
   if (!page || !totals) return null;
 
-  const hasWalletIdr = Boolean(page.wallet_idr) && page.wallet_idr !== "0";
-  const hasWalletUsdt = Boolean(page.wallet_usdt) && page.wallet_usdt !== "0";
-  const anyMethod = anyMethodEnabled(totals);
+  // Wallet-credit radios — only offered when credit fully covers the live
+  // total (post-voucher); hidden (not disabled) otherwise.
+  const idrWalletSufficient = isIdrWalletSufficient(totals);
+  const usdtWalletSufficient = isUsdtWalletSufficient(totals);
+  const anyMethod = anyMethodEnabled(totals) || idrWalletSufficient || usdtWalletSufficient;
   // Info step (Task 6): the single-SKU-per-non-auto-cart guard means there's
   // ever at most one manual_with_info line.
   const infoItem = page.items.find((i) => i.delivery_type === "manual_with_info") ?? null;
@@ -360,10 +406,54 @@ export default function CheckoutPage() {
                   </span>
                 </label>
               )}
-              {!anyMethodEnabled(page) && (
+              {idrWalletSufficient && (
+                <label className="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
+                  <input
+                    type="radio"
+                    name="method"
+                    value="wallet_idr"
+                    className="mt-1"
+                    checked={method === "wallet_idr"}
+                    onChange={() => setMethod("wallet_idr")}
+                  />
+                  <Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />
+                  <span>
+                    <span className="font-semibold text-sm block">{t("web.pay_wallet_idr_title")}</span>
+                    <span className="text-xs text-ink-soft block mt-0.5">
+                      {t("web.pay_wallet_idr_sub", { amount: formatIdr(page.wallet_idr) })}
+                    </span>
+                  </span>
+                </label>
+              )}
+              {usdtWalletSufficient && (
+                <label className="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
+                  <input
+                    type="radio"
+                    name="method"
+                    value="wallet_usdt"
+                    className="mt-1"
+                    checked={method === "wallet_usdt"}
+                    onChange={() => setMethod("wallet_usdt")}
+                  />
+                  <Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />
+                  <span>
+                    <span className="font-semibold text-sm block">{t("web.pay_wallet_usdt_title")}</span>
+                    <span className="text-xs text-ink-soft block mt-0.5">
+                      {t("web.pay_wallet_usdt_sub", { amount: `${money4(page.wallet_usdt)} USDT` })}
+                    </span>
+                  </span>
+                </label>
+              )}
+              {!anyMethodEnabled(page) && !idrWalletSufficient && !usdtWalletSufficient && (
                 <div className="text-center text-sm text-ink-soft border border-dashed border-line rounded-xl py-6 px-3">
                   <Wallet className="w-5 h-5 mx-auto mb-1.5 text-ink-faint" />
-                  <p>{t("web.pay_none_available")}</p>
+                  <p>
+                    {t("web.pay_none_available_prefix")}{" "}
+                    <Link to="/account/support" className="text-pine underline hover:text-pine-dark">
+                      {t("web.pay_none_available_link")}
+                    </Link>
+                    {t("web.pay_none_available_suffix")}
+                  </p>
                 </div>
               )}
             </div>
@@ -382,6 +472,8 @@ export default function CheckoutPage() {
                 className="field uppercase"
                 placeholder={t("web.voucher_placeholder")}
                 maxLength={32}
+                aria-invalid={totals.error_key ? true : undefined}
+                aria-describedby={totals.error_key ? "voucher_code_error" : undefined}
               />
               <button
                 type="button"
@@ -394,48 +486,18 @@ export default function CheckoutPage() {
                 {t("web.voucher_apply")}
               </button>
             </div>
+            {/* STO-005: the voucher error belongs next to the field it
+                validates, on every viewport — it used to render in the
+                summary column, a full column gutter away on desktop. */}
+            {totals.error_key && (
+              <p id="voucher_code_error" role="alert" className="mt-2 text-sm text-rust-dark flex items-center gap-1.5">
+                <AlertTriangle className="w-4 h-4 shrink-0" /> {t(totals.error_key)}
+              </p>
+            )}
           </div>
-
-          {hasWalletIdr && (
-            <div className="card card-pad">
-              <h2 className="section-title mb-2">{t("web.wallet_label")}</h2>
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="w-4 h-4 accent-pine"
-                  checked={useWalletIdr}
-                  onChange={(e) => setUseWalletIdr(e.target.checked)}
-                />
-                <span className="text-sm">{t("web.wallet_use_idr", { amount: formatIdr(page.wallet_idr) })}</span>
-              </label>
-              <p className="text-xs text-ink-soft mt-1.5">{t("web.wallet_idr_note")}</p>
-            </div>
-          )}
-          {hasWalletUsdt && (
-            <div className="card card-pad">
-              {!hasWalletIdr && <h2 className="section-title mb-2">{t("web.wallet_label")}</h2>}
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  className="w-4 h-4 accent-pine"
-                  checked={useWalletUsdt}
-                  onChange={(e) => setUseWalletUsdt(e.target.checked)}
-                />
-                <span className="text-sm">
-                  {t("web.wallet_use_usdt", { amount: `${money4(page.wallet_usdt)} USDT` })}
-                </span>
-              </label>
-              <p className="text-xs text-ink-soft mt-1.5">{t("web.wallet_usdt_note")}</p>
-            </div>
-          )}
         </div>
 
         <div id="checkout-summary">
-          {totals.error_key && (
-            <div className="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mb-3">
-              <AlertTriangle className="w-4 h-4" /> {t(totals.error_key)}
-            </div>
-          )}
           <div className="card card-pad">
             <h2 className="section-title mb-3">{t("web.summary")}</h2>
             <div className="text-sm divide-y divide-line">

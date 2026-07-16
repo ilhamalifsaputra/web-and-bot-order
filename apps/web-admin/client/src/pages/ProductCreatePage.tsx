@@ -90,11 +90,6 @@ export function ProductCreatePage() {
       <PageHeader
         title="New Product"
         breadcrumb={[{ label: "Catalog", href: "/catalog" }]}
-        actions={
-          <Button variant="outline" size="sm" onClick={() => navigate("/catalog")}>
-            ← Back
-          </Button>
-        }
       />
 
       <div className="max-w-lg flex flex-col gap-4">
@@ -171,7 +166,7 @@ export function ProductCreatePage() {
         </div>
 
         <div>
-          <label className="text-sm font-medium text-ink">Emoji</label>
+          <label className="block text-sm font-medium text-ink">Emoji</label>
           <Input
             className="mt-1 w-24"
             placeholder="e.g. 🎬"

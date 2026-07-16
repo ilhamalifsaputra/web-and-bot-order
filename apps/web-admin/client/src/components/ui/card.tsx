@@ -33,9 +33,21 @@ function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
-function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
+/**
+ * F-010: `as` lets a caller render this as a real heading element
+ * (`<h2>`/`<h3>`) instead of the default `<div>`, without touching any of
+ * the 20+ other `CardTitle` call sites across the app that intentionally
+ * aren't page-structure headings (dialog/section titles inside a single
+ * page that already has its own heading, etc). Visual styling (className)
+ * is identical either way — only the rendered tag changes.
+ */
+function CardTitle({
+  className,
+  as: Comp = "div",
+  ...props
+}: React.ComponentProps<"div"> & { as?: "div" | "h2" | "h3" | "h4" }) {
   return (
-    <div
+    <Comp
       data-slot="card-title"
       className={cn(
         "font-heading text-base leading-snug font-medium group-data-[size=sm]/card:text-sm",

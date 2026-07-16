@@ -1,0 +1,143 @@
+{
+  "audit": {
+    "scope": "Storefront customer-facing React SPA (apps/storefront/client) served at http://127.0.0.1:8100",
+    "date": "2026-07-15",
+    "method": "Playwright MCP, manual crawl + source cross-reference, audit-only (no code changes)",
+    "viewports_tested": ["1440x900 (desktop)", "1280x800 (laptop, spot-check)", "768x1024 (tablet)", "375x812 (mobile)"],
+    "account_used": "audit_tester01 (throwaway, registered via UI password flow)"
+  },
+  "summary": {
+    "total_findings": 20,
+    "by_severity": {
+      "critical": 1,
+      "high": 3,
+      "medium": 7,
+      "low": 9
+    },
+    "blockers": [
+      "No payment methods configured in this environment — checkout cannot be completed past the payment-method step (button stays disabled). Not a code defect; noted as an environment/config limitation."
+    ]
+  },
+  "findings": [
+    {
+      "id": "STO-001",
+      "severity": "critical",
+      "page": "Homepage / Category / Search (product cards)",
+      "description": "StockBadge shows \"Out of stock\" for any product whose only denomination is manual/manual_with_info delivery, even though the product detail page's own purchasable() logic treats those as always purchasable. Confirmed live on the only catalog product (Capcut Pro 1 Month): API returns available=0/in_stock=false for both its denominations, so every listing card renders a false out-of-stock badge, while the product page happily sells it."
+    },
+    {
+      "id": "STO-002",
+      "severity": "high",
+      "page": "Account",
+      "description": "\"Signed in as\" shows a blank name for password-registered (non-Telegram) customers. GET /api/v1/account returns name:\"\" because the fallback chain (fullName ?? username ?? telegramId) omits loginUsername, the field actually set at registration."
+    },
+    {
+      "id": "STO-003",
+      "severity": "high",
+      "page": "Homepage (hero CTAs)",
+      "description": "Keyboard focus outline on the hero's \"Browse products\"/\"Contact support\" buttons is a semi-transparent blue (rgba(37,99,235,0.4)) on a solid blue gradient background — effectively invisible. Confirmed via computed style on the focused element after Tab navigation."
+    },
+    {
+      "id": "STO-004",
+      "severity": "high",
+      "page": "Global navigation (mobile)",
+      "description": "The EN/ID language switcher link is hidden below the sm: breakpoint (className includes \"hidden ... sm:flex\") with no alternate access point anywhere in the app. Mobile visitors cannot change language at all."
+    },
+    {
+      "id": "STO-005",
+      "severity": "medium",
+      "page": "Checkout",
+      "description": "The voucher \"Voucher code not found.\" error renders inside the right-hand #checkout-summary column, well above the Summary card, while the voucher input lives in the left column — on desktop's 2-column layout the error appears disconnected from the field the customer just used. Correctly adjacent on mobile's single-column stack."
+    },
+    {
+      "id": "STO-006",
+      "severity": "medium",
+      "page": "Homepage",
+      "description": "All below-the-fold sections use a `.reveal` class (opacity:0, translateY(20px)) that only becomes visible via IntersectionObserver on scroll. Confirmed via computed styles: five of seven sections were still opacity:0 on initial load. This blanks large portions of the page for full-page screenshot tools, some crawlers/bots, print/PDF export, and any moment JS is slow or errors before the observer attaches (only prefers-reduced-motion is handled as a fallback)."
+    },
+    {
+      "id": "STO-007",
+      "severity": "medium",
+      "page": "Category / Search (product listing)",
+      "description": "No sort, filter, or pagination UI exists anywhere in CategoryPage.tsx or SearchPage.tsx — confirmed by source search, not just hidden for a small catalog. This is a real information-architecture gap once the catalog grows past a handful of items."
+    },
+    {
+      "id": "STO-008",
+      "severity": "medium",
+      "page": "Cart",
+      "description": "No \"Continue shopping\" link/button anywhere on the cart page; the only way back to browsing is the header logo or search box, contrary to the audit checklist's expected cart affordances."
+    },
+    {
+      "id": "STO-009",
+      "severity": "medium",
+      "page": "Cart / Login",
+      "description": "Cart summary copy (\"web.login_to_checkout\": \"You'll sign in with Telegram at checkout — your cart comes along.\") tells customers only Telegram sign-in exists at the exact moment they need to know about the password register/login option, which is fully functional and was used to complete this audit's account creation."
+    },
+    {
+      "id": "STO-010",
+      "severity": "medium",
+      "page": "Checkout",
+      "description": "For a manual_with_info product bought at quantity > 1, checkout renders one repeated \"Email\" field per unit (\"Unit 1 of 3\", \"Unit 2 of 3\"...) with no \"same for all units\" shortcut, forcing identical repeated input when a customer is buying multiple units for themselves."
+    },
+    {
+      "id": "STO-011",
+      "severity": "medium",
+      "page": "Product detail",
+      "description": "ProductPage.tsx has no scaffolding for a product description/specs section, multi-image gallery, or related/cross-sell products — confirmed by source read. Currently masked by the only product's null description, but the gap exists regardless of data."
+    },
+    {
+      "id": "STO-012",
+      "severity": "low",
+      "page": "Checkout",
+      "description": "The \"No payment methods are available right now\" empty state's \"contact support\" is plain text, not a link to /account/support or the Telegram bot, missing an easy actionable next step."
+    },
+    {
+      "id": "STO-013",
+      "severity": "low",
+      "page": "Account Settings",
+      "description": "When the Telegram Login widget's domain isn't authorized for the current origin, it renders Telegram's raw \"Bot domain invalid\" text in the page's default serif font inside an otherwise styled card, with no app-level fallback copy or graceful hiding."
+    },
+    {
+      "id": "STO-014",
+      "severity": "low",
+      "page": "Register",
+      "description": "Username helper text (\"3–32 characters: lowercase letters, numbers, underscores\") says lowercase-only, but the input's actual pattern ([a-zA-Z0-9_]+) accepts uppercase too — copy/validation mismatch."
+    },
+    {
+      "id": "STO-015",
+      "severity": "low",
+      "page": "Login / Register / Settings",
+      "description": "No password show/hide toggle on any password field, so customers cannot verify what they typed before submitting."
+    },
+    {
+      "id": "STO-016",
+      "severity": "low",
+      "page": "My orders / My reviews",
+      "description": "Empty states have good specific copy (\"No orders yet — your purchases will show up here.\") but no actionable CTA button such as \"Browse products\", leaving the customer to navigate away manually."
+    },
+    {
+      "id": "STO-017",
+      "severity": "low",
+      "page": "Search",
+      "description": "The browser tab title on /search always renders the generic placeholder string (\"Search products… — Trustance\") regardless of the actual query, unlike product/category pages which set a proper per-entity title server-side."
+    },
+    {
+      "id": "STO-018",
+      "severity": "low",
+      "page": "Homepage / Category (product grid)",
+      "description": "A 2-3 column product grid with a single product still reserves the empty column space, reading as an incomplete/broken layout rather than a deliberate single-item shelf."
+    },
+    {
+      "id": "STO-019",
+      "severity": "low",
+      "page": "Referral",
+      "description": "Referral page shows the code/link but explicitly defers commission balance to \"the bot\", splitting one feature's information across two surfaces with no number or history shown on the web at all."
+    },
+    {
+      "id": "STO-020",
+      "severity": "low",
+      "page": "Support",
+      "description": "Creating a support ticket gives no success toast/confirmation beyond a new row silently appearing in the ticket table below the form."
+    }
+  ]
+}

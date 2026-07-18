@@ -59,7 +59,7 @@ export async function subscribeToRestock(
 export function listRestockSubscribers(db: Db, productId: number) {
   return db.restockSubscription.findMany({
     where: { productId },
-    include: { product: true },
+    include: { product: { include: { product: true } } },
   });
 }
 

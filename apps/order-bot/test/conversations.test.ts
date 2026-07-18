@@ -229,6 +229,21 @@ describe("admin conversations", () => {
     expect(audit?.details).toContain("Netflix Premium - 1 Month");
   });
 
+  it("stockUpload: restock-subscriber DM also names both the product type and the denomination", async () => {
+    await prisma.product.update({ where: { id: sample.parentProduct.id }, data: { name: "Netflix Premium" } });
+    await prisma.denomination.update({ where: { id: sample.product.id }, data: { name: "1 Month" } });
+    const subscriber = await upsertUser(prisma, { telegramId: 555, username: "waiter", fullName: "Waiter" });
+    await prisma.restockSubscription.create({ data: { userId: subscriber.id, productId: sample.product.id } });
+
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:stock:add:${sample.product.id}`);
+    const conv = new FakeConversation([msg(sink, { text: "new1@x.com:pw1\nnew2@x.com:pw2" })]);
+    await stockUploadConversation(conv.asMyConversation(), entry);
+
+    expect(sentIncludes(sink, "Netflix Premium - 1 Month")).toBe(true);
+    expect(await prisma.restockSubscription.count({ where: { userId: subscriber.id } })).toBe(0);
+  });
+
   it("voucherCreate: 3 steps create a voucher", async () => {
     const sink: SentCall[] = [];
     const entry = entryAdmin(sink, "v1:adm:vouch:new");

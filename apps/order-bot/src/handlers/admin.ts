@@ -537,7 +537,8 @@ async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void>
 export async function notifyRestockSubscribers(ctx: MyContext, productId: number): Promise<void> {
   const subs = await listRestockSubscribers(prisma, productId);
   if (!subs.length) return;
-  const productName = (subs[0] as { product: { name: string } }).product.name;
+  const denomination = (subs[0] as { product: { name: string; product: { name: string } } }).product;
+  const productName = `${denomination.product.name} - ${denomination.name}`;
   const userIds = subs.map((s) => s.userId);
   const users = await prisma.user.findMany({ where: { id: { in: userIds } } });
   const targets = users.map((u) => ({ tgId: u.telegramId, lang: langCode(u.language) }));

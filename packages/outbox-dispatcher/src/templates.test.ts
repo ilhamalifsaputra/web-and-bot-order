@@ -242,4 +242,25 @@ describe("notifier templates.render", () => {
     });
     expect(text).not.toContain("via Website");
   });
+
+  it("renders PRODUCT_RESTOCKED_BROADCAST with the product name and stock count", () => {
+    const out = render("PRODUCT_RESTOCKED_BROADCAST", {
+      product_name: "1 Month CapCut Pro",
+      stock_count: 42,
+    });
+    expect(out).toContain("👋 Hello!");
+    expect(out).toContain("<b>1 Month CapCut Pro</b>");
+    expect(out).toContain("back in stock");
+    expect(out).toContain("<b>42</b>");
+    expect(out).toContain("Order now while supplies last");
+  });
+
+  it("HTML-escapes PRODUCT_RESTOCKED_BROADCAST's product_name", () => {
+    const out = render("PRODUCT_RESTOCKED_BROADCAST", {
+      product_name: "<script>alert(1)</script>",
+      stock_count: 5,
+    });
+    expect(out).not.toContain("<script>");
+    expect(out).toContain("&lt;script&gt;");
+  });
 });

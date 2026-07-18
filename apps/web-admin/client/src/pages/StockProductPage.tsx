@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { apiPost } from "../api/client";
 
 interface StockItem {
@@ -25,6 +27,7 @@ interface StockProductData {
     id: number;
     name: string;
     isActive: boolean;
+    broadcastOnRestock: boolean;
     product: { id: number; name: string; category: { name: string } | null } | null;
   };
   items: StockItem[];
@@ -55,6 +58,12 @@ export function StockProductPage() {
   const [bulkActing, setBulkActing] = useState(false);
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
+  const [activeTab, setActiveTab] = useState<"available" | "sold" | "dead">("available");
+
+  function changeTab(tab: string) {
+    setActiveTab(tab as typeof activeTab);
+    setSelected(new Set());
+  }
 
   const bulkAdd = useMutation({
     mutationFn: () =>
@@ -72,6 +81,15 @@ export function StockProductPage() {
       setBulkError(e.message);
       setBulkMsg(null);
     },
+  });
+
+  const toggleBroadcast = useMutation({
+    mutationFn: (enabled: boolean) =>
+      apiPost<{ ok: boolean; broadcastOnRestock: boolean }>(
+        `/api/stock/${productId}/broadcast`,
+        { enabled },
+      ),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ["stock", productId] }),
   });
 
   function toggleSelected(id: number) {
@@ -127,6 +145,98 @@ export function StockProductPage() {
     }
   }
 
+  function renderStockTable(tabItems: StockItem[]) {
+    return (
+      <>
+        {selected.size > 0 && (
+          <div className="mb-3 flex items-center gap-3 rounded-md border border-line bg-card px-3 py-2 text-sm">
+            <span className="text-ink-soft">{selected.size} selected</span>
+            <Button size="sm" variant="outline" disabled={bulkActing} onClick={() => void bulkMarkDead()}>
+              Mark selected dead
+            </Button>
+            <ConfirmDialog
+              trigger={<Button size="sm" variant="outline" disabled={bulkActing} className="text-rust">Delete</Button>}
+              title="Delete selected stock items?"
+              description={`Delete ${selected.size} stock item(s). Sold items or items tied to an order are skipped.`}
+              confirmLabel="Delete"
+              onConfirm={() => bulkDelete()}
+            />
+            <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+              Clear
+            </Button>
+          </div>
+        )}
+
+        <DataTable
+          columns={[
+            {
+              key: "select",
+              header: "",
+              render: item => (
+                <input
+                  type="checkbox"
+                  checked={selected.has(item.id)}
+                  onChange={() => toggleSelected(item.id)}
+                  aria-label={`Select stock item ${item.id}`}
+                />
+              ),
+            },
+            { key: "id", header: "#", render: item => <span className="font-mono text-xs text-ink-soft">{item.id}</span> },
+            { key: "status", header: "Status", render: item => <StatusBadge status={item.status} /> },
+            {
+              key: "note",
+              header: "Note",
+              render: item =>
+                editingNoteId === item.id ? (
+                  <div className="flex items-center gap-2">
+                    <Input
+                      aria-label={`Note for stock item ${item.id}`}
+                      value={noteDraft}
+                      onChange={e => setNoteDraft(e.target.value)}
+                      className="h-7 text-xs max-w-[180px]"
+                      autoFocus
+                    />
+                    <Button size="sm" variant="ghost" onClick={() => void saveNote(item.id)}>Save</Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditingNoteId(null)}>Cancel</Button>
+                  </div>
+                ) : (
+                  <span className="text-xs text-ink-soft">{item.note ?? "—"}</span>
+                ),
+            },
+            { key: "added", header: "Added", render: item => <span className="text-xs text-ink-soft">{item.createdAtDisplay ?? "—"}</span> },
+            {
+              key: "actions",
+              header: "",
+              render: item => (
+                <div className="flex gap-2">
+                  {item.status !== "DEAD" && (
+                    <ConfirmDialog
+                      trigger={<Button variant="ghost" size="sm">Mark Dead</Button>}
+                      title="Mark this stock item dead?"
+                      description={`Mark stock item #${item.id} dead. This removes it from availability.`}
+                      confirmLabel="Mark Dead"
+                      onConfirm={() => markItemDead(item.id)}
+                    />
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => { setEditingNoteId(item.id); setNoteDraft(item.note ?? ""); }}
+                  >
+                    Edit Note
+                  </Button>
+                </div>
+              ),
+            },
+          ]}
+          data={tabItems}
+          keyExtractor={item => item.id}
+          empty={<EmptyState title="No stock items" description="Add credentials above to stock this denomination." />}
+        />
+      </>
+    );
+  }
+
   if (isError) {
     return (
       <PageLayout title="Stock — Product">
@@ -143,6 +253,9 @@ export function StockProductPage() {
   }
 
   const { product, items, available, waiting } = data;
+  const availableItems = items.filter(i => i.status === "AVAILABLE");
+  const soldItems = items.filter(i => i.status === "SOLD" || i.status === "RESERVED");
+  const deadItems = items.filter(i => i.status === "DEAD");
 
   return (
     <PageLayout title={product.name}>
@@ -150,9 +263,11 @@ export function StockProductPage() {
         title={product.name}
         breadcrumb={[{ label: "Stock", href: "/stock" }]}
         actions={
-          <a href={`/api/stock/${productId}/download`}>
-            <Button variant="outline" size="sm">Download credentials</Button>
-          </a>
+          activeTab === "available" ? (
+            <a href={`/api/stock/${productId}/download`}>
+              <Button variant="outline" size="sm">Download credentials</Button>
+            </a>
+          ) : undefined
         }
       />
 
@@ -180,97 +295,36 @@ export function StockProductPage() {
           <Button onClick={() => bulkAdd.mutate()} disabled={bulkAdd.isPending || !credentials.trim()} className="self-start">
             {bulkAdd.isPending ? "Adding…" : "Add Stock"}
           </Button>
+          <label className="flex items-center gap-2 text-sm text-ink cursor-pointer">
+            <Checkbox
+              checked={product.broadcastOnRestock}
+              onCheckedChange={(checked) => toggleBroadcast.mutate(checked === true)}
+              aria-label="Broadcast to all customers when I add stock to this product"
+            />
+            Broadcast to all customers when I add stock to this product
+          </label>
         </CardContent>
       </Card>
 
-      {/* Items table */}
+      {/* Items table, grouped by status */}
       <h2 className="text-sm font-semibold text-ink mb-3">Stock Items ({items.length})</h2>
 
-      {selected.size > 0 && (
-        <div className="mb-3 flex items-center gap-3 rounded-md border border-line bg-card px-3 py-2 text-sm">
-          <span className="text-ink-soft">{selected.size} selected</span>
-          <Button size="sm" variant="outline" disabled={bulkActing} onClick={() => void bulkMarkDead()}>
-            Mark selected dead
-          </Button>
-          <ConfirmDialog
-            trigger={<Button size="sm" variant="outline" disabled={bulkActing} className="text-rust">Delete</Button>}
-            title="Delete selected stock items?"
-            description={`Delete ${selected.size} stock item(s). Sold items or items tied to an order are skipped.`}
-            confirmLabel="Delete"
-            onConfirm={() => bulkDelete()}
-          />
-          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
-            Clear
-          </Button>
-        </div>
-      )}
-
-      <DataTable
-        columns={[
-          {
-            key: "select",
-            header: "",
-            render: item => (
-              <input
-                type="checkbox"
-                checked={selected.has(item.id)}
-                onChange={() => toggleSelected(item.id)}
-                aria-label={`Select stock item ${item.id}`}
-              />
-            ),
-          },
-          { key: "id", header: "#", render: item => <span className="font-mono text-xs text-ink-soft">{item.id}</span> },
-          { key: "status", header: "Status", render: item => <StatusBadge status={item.status} /> },
-          {
-            key: "note",
-            header: "Note",
-            render: item =>
-              editingNoteId === item.id ? (
-                <div className="flex items-center gap-2">
-                  <Input
-                    aria-label={`Note for stock item ${item.id}`}
-                    value={noteDraft}
-                    onChange={e => setNoteDraft(e.target.value)}
-                    className="h-7 text-xs max-w-[180px]"
-                    autoFocus
-                  />
-                  <Button size="sm" variant="ghost" onClick={() => void saveNote(item.id)}>Save</Button>
-                  <Button size="sm" variant="ghost" onClick={() => setEditingNoteId(null)}>Cancel</Button>
-                </div>
-              ) : (
-                <span className="text-xs text-ink-soft">{item.note ?? "—"}</span>
-              ),
-          },
-          { key: "added", header: "Added", render: item => <span className="text-xs text-ink-soft">{item.createdAtDisplay ?? "—"}</span> },
-          {
-            key: "actions",
-            header: "",
-            render: item => (
-              <div className="flex gap-2">
-                {item.status !== "DEAD" && (
-                  <ConfirmDialog
-                    trigger={<Button variant="ghost" size="sm">Mark Dead</Button>}
-                    title="Mark this stock item dead?"
-                    description={`Mark stock item #${item.id} dead. This removes it from availability.`}
-                    confirmLabel="Mark Dead"
-                    onConfirm={() => markItemDead(item.id)}
-                  />
-                )}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => { setEditingNoteId(item.id); setNoteDraft(item.note ?? ""); }}
-                >
-                  Edit Note
-                </Button>
-              </div>
-            ),
-          },
-        ]}
-        data={items}
-        keyExtractor={item => item.id}
-        empty={<EmptyState title="No stock items" description="Add credentials above to stock this denomination." />}
-      />
+      <Tabs value={activeTab} onValueChange={changeTab}>
+        <TabsList>
+          <TabsTrigger value="available">Available ({availableItems.length})</TabsTrigger>
+          <TabsTrigger value="sold">Sold ({soldItems.length})</TabsTrigger>
+          <TabsTrigger value="dead">Dead ({deadItems.length})</TabsTrigger>
+        </TabsList>
+        <TabsContent value="available">
+          {renderStockTable(availableItems)}
+        </TabsContent>
+        <TabsContent value="sold">
+          {renderStockTable(soldItems)}
+        </TabsContent>
+        <TabsContent value="dead">
+          {renderStockTable(deadItems)}
+        </TabsContent>
+      </Tabs>
     </PageLayout>
   );
 }

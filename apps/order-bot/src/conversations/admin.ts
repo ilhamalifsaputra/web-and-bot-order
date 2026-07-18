@@ -22,6 +22,8 @@ import {
   getVoucherByCode,
   createVoucher,
   bulkAddStock,
+  countAvailableStock,
+  enqueueRestockBroadcast,
   getUserByTelegramId,
   logAdminAction,
   searchUsers,
@@ -146,7 +148,7 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
   await adminAnchor(ctx, t(ctx, "admin.processing"));
 
   const adminTg = ctx.from!.id;
-  const { added, dedupSkipped } = await prisma.$transaction(async (tx) => {
+  const { added, dedupSkipped, denomination } = await prisma.$transaction(async (tx) => {
     const { added: n, skipped } = await bulkAddStock(tx, productId, credentials);
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
@@ -156,7 +158,8 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
       targetId: productId,
       details: `Added ${n} items; skipped ${skippedCount} invalid lines and ${skipped} duplicates.`,
     });
-    return { added: n, dedupSkipped: skipped };
+    const denom = await tx.denomination.findUnique({ where: { id: productId } });
+    return { added: n, dedupSkipped: skipped, denomination: denom };
   });
 
   // Parse-time skips (malformed lines) and dedup skips (already-existing or
@@ -169,6 +172,26 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
     akb.backToAdminKb(lang),
   );
   await notifyRestockSubscribers(ctx, productId);
+
+  // Broadcast to ALL non-banned customers, separate from and in addition to
+  // the RestockSubscription opt-in DM above — only when the admin turned the
+  // per-product flag on.
+  if (added > 0 && denomination?.broadcastOnRestock) {
+    const stockCount = await countAvailableStock(prisma, productId);
+    const admin = await getUserByTelegramId(prisma, adminTg);
+    const notified = await enqueueRestockBroadcast(prisma, {
+      productName: denomination.name,
+      stockCount,
+      createdById: admin?.id ?? null,
+    });
+    await logAdminAction(prisma, {
+      adminId: requireAdminId(admin),
+      action: "restock_broadcast",
+      targetType: "product",
+      targetId: productId,
+      details: `Queued a restock broadcast for "${denomination.name}" to ${notified} customers.`,
+    });
+  }
 }
 
 // ===========================================================================

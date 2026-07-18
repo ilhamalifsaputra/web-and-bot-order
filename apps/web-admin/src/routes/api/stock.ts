@@ -17,6 +17,8 @@ import {
   setStockNote,
   restockSubscriberCounts,
   logAdminAction,
+  enqueueRestockBroadcast,
+  updateDenomination,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { displayDate } from "../../dateDisplay";
@@ -73,11 +75,55 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     logger.info(
       `Bulk-added ${added} stock items to product ${productId} (skipped ${skipped} duplicate lines)`,
     );
+
+    // Broadcast to ALL non-banned customers, separate from and in addition
+    // to the RestockSubscription opt-in DM — only when the admin turned the
+    // per-product flag on. The web NEVER sends Telegram itself; this just
+    // enqueues rows for the notifier/bot to deliver.
+    if (added > 0 && product.broadcastOnRestock) {
+      const stockCount = await countAvailableStock(prisma, productId);
+      const notified = await enqueueRestockBroadcast(prisma, {
+        productName: product.name,
+        stockCount,
+        createdById: req.admin!.userId,
+      });
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "restock_broadcast",
+        targetType: "product",
+        targetId: productId,
+        details: `Queued a restock broadcast for "${product.name}" to ${notified} customers.`,
+      });
+    }
+
     const message =
       skipped > 0
         ? `Added ${added} stock item(s). Skipped ${skipped} duplicate(s).`
         : `Added ${added} stock item(s).`;
     return reply.send({ ok: true, added, skipped, message });
+  });
+
+  // Toggle the "broadcast to all customers when I add stock" flag on this
+  // product (default off). Separate small endpoint, same shape as the
+  // isActive toggle at POST /api/catalog/denominations/:id/active.
+  app.post("/api/stock/:productId/broadcast", { preHandler: csrfProtect }, async (req, reply) => {
+    const productId = Number((req.params as { productId: string }).productId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body.enabled !== "boolean") {
+      return reply.code(400).send({ error: "enabled must be a boolean." });
+    }
+    const product = await getDenominationWithProduct(prisma, productId);
+    if (!product) return reply.code(404).send({ error: "Product not found." });
+
+    await updateDenomination(prisma, productId, { broadcastOnRestock: body.enabled });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "stock_broadcast_toggle",
+      targetType: "product",
+      targetId: productId,
+      details: `${body.enabled ? "Enabled" : "Disabled"} restock broadcast for "${product.name}".`,
+    });
+    return reply.send({ ok: true, broadcastOnRestock: body.enabled });
   });
 
   // Bulk mark selected stock items dead (one writer, audited once). Never logs

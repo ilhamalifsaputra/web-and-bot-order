@@ -18,6 +18,7 @@ data/
 *.db.bak-*
 *.log
 .tmp/
+tmp/
 
 # --- Python (legacy stack) ---
 .venv/

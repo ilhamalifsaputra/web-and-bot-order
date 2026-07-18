@@ -344,6 +344,72 @@ export async function enqueueManualDeliveredDm(
   });
 }
 
+/**
+ * Enqueue a "back in stock" DM to every non-banned customer with a linked
+ * Telegram account, for a product whose `broadcastOnRestock` flag is on.
+ * Unlike RestockSubscription (per-SKU opt-in, one-shot), this targets the
+ * entire customer base every time the flag is on and stock is added, so a
+ * single `createMany` is used instead of a per-row loop (potentially
+ * hundreds/thousands of recipients). No-op (returns 0) if there are no
+ * eligible customers. The web NEVER sends Telegram itself — this just drops
+ * the rows for the notifier/bot to deliver.
+ *
+ * Also writes a `Broadcast` row with status SENT so this shows up in the
+ * web-admin Broadcast History table alongside manually-composed broadcasts —
+ * that table is otherwise populated only by the separate admin-compose
+ * flow (`createBroadcast`/`drainBroadcasts` in crud/broadcasts.ts), which
+ * this feature deliberately does NOT route through (that pipeline sends with
+ * no parse_mode, so the bold formatting below wouldn't render). The
+ * sent/total counts here are optimistic (assume delivery succeeds) since the
+ * actual per-recipient send happens later, asynchronously, via the outbox
+ * dispatcher — unlike drainBroadcasts's real-time counts.
+ *
+ * `message` here MUST be kept in sync (plain-text, same content) with the
+ * HTML template for NotificationEvent.PRODUCT_RESTOCKED_BROADCAST in
+ * packages/outbox-dispatcher/src/templates.ts — that's the one actually sent
+ * to customers; this is only what the admin sees in the History table.
+ */
+export async function enqueueRestockBroadcast(
+  db: Db,
+  args: { productName: string; stockCount: number; createdById?: number | null },
+): Promise<number> {
+  const users = await db.user.findMany({
+    where: { banned: false, telegramId: { not: null } },
+    select: { telegramId: true, language: true },
+  });
+  if (!users.length) return 0;
+  await db.notificationOutbox.createMany({
+    data: users.map((u) => ({
+      event: NotificationEvent.PRODUCT_RESTOCKED_BROADCAST,
+      orderId: null,
+      payloadJson: JSON.stringify({
+        chat_id: Number(u.telegramId),
+        product_name: args.productName,
+        stock_count: args.stockCount,
+        buyer_language: langCode(u.language),
+      }),
+    })),
+  });
+  await db.broadcast.create({
+    data: {
+      message:
+        `👋 Hello!\n\n` +
+        `We're happy to let you know that ${args.productName} is back in stock! 🎉\n\n` +
+        `📦 Available Stock: ${args.stockCount} accounts\n\n` +
+        `Order now while supplies last. Thank you for choosing us!`,
+      segment: "ALL",
+      status: "SENT",
+      totalCount: users.length,
+      sentCount: users.length,
+      failedCount: 0,
+      createdById: args.createdById ?? null,
+      scheduledAt: null,
+      sentAt: new Date(),
+    },
+  });
+  return users.length;
+}
+
 // ---- Outbox monitor (web-admin /outbox) -----------------------------------
 
 /** Newest-first outbox rows, optionally filtered by status, with linked order code. */

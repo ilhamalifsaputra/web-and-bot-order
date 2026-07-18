@@ -23,6 +23,7 @@ const STOCK_PRODUCT_DATA = {
     id: 10,
     name: "1 Month",
     isActive: true,
+    broadcastOnRestock: false,
     product: { id: 1, name: "CapCut Pro", category: { name: "Apps" } },
   },
   items: [
@@ -151,6 +152,82 @@ describe("StockProductPage", () => {
       expect(fetchSpy).toHaveBeenCalledWith(
         "/api/stock/item/101/note",
         expect.objectContaining({ method: "POST", body: JSON.stringify({ note: "checked ok" }) }),
+      ),
+    );
+  });
+
+  it("splits items into Available/Sold/Dead tabs and scopes the download link to Available", async () => {
+    const mixedData = {
+      ...STOCK_PRODUCT_DATA,
+      items: [
+        { id: 101, status: "AVAILABLE", note: null, createdAt: "2026-01-01T00:00:00.000Z", createdAtDisplay: "2026-01-01" },
+        { id: 102, status: "SOLD", note: null, createdAt: "2026-01-02T00:00:00.000Z", createdAtDisplay: "2026-01-02" },
+        { id: 103, status: "RESERVED", note: null, createdAt: "2026-01-03T00:00:00.000Z", createdAtDisplay: "2026-01-03" },
+        { id: 104, status: "DEAD", note: null, createdAt: "2026-01-04T00:00:00.000Z", createdAtDisplay: "2026-01-04" },
+      ],
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(mixedData), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<StockProductPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Available (1)" })).toBeInTheDocument());
+    expect(screen.getByRole("tab", { name: "Sold (2)" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Dead (1)" })).toBeInTheDocument();
+
+    // Available tab is the default view: item 101 visible, download link shown.
+    expect(screen.getByText("101")).toBeInTheDocument();
+    expect(screen.queryByText("102")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /download credentials/i })).toBeInTheDocument();
+
+    // Switch to Sold: both the SOLD and RESERVED rows show up there; download link disappears.
+    fireEvent.click(screen.getByRole("tab", { name: "Sold (2)" }));
+    expect(await screen.findByText("102")).toBeInTheDocument();
+    expect(screen.getByText("103")).toBeInTheDocument();
+    expect(screen.queryByText("101")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /download credentials/i })).not.toBeInTheDocument();
+
+    // Switch to Dead: only the DEAD row shows up.
+    fireEvent.click(screen.getByRole("tab", { name: "Dead (1)" }));
+    expect(await screen.findByText("104")).toBeInTheDocument();
+    expect(screen.queryByText("102")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /download credentials/i })).not.toBeInTheDocument();
+
+    // Back to Available: download link reappears.
+    fireEvent.click(screen.getByRole("tab", { name: "Available (1)" }));
+    expect(await screen.findByRole("link", { name: /download credentials/i })).toBeInTheDocument();
+  });
+
+  it("toggles the restock broadcast checkbox", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(STOCK_PRODUCT_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<StockProductPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
+
+    const checkbox = screen.getByRole("checkbox", {
+      name: /broadcast to all customers when i add stock to this product/i,
+    });
+    expect(checkbox).not.toBeChecked();
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, broadcastOnRestock: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ...STOCK_PRODUCT_DATA, product: { ...STOCK_PRODUCT_DATA.product, broadcastOnRestock: true } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    fireEvent.click(checkbox);
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/stock/10/broadcast",
+        expect.objectContaining({ method: "POST", body: JSON.stringify({ enabled: true }) }),
       ),
     );
   });

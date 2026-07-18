@@ -245,6 +245,11 @@ export const NotificationEvent = {
   // admin's telegram id) plus order_code/reason, same fan-out-per-admin
   // shape as ADMIN_OVERPAID.
   ORDER_PIPELINE_FAILED: "ORDER_PIPELINE_FAILED",
+  // Buyer DM broadcast to ALL non-banned customers with a linked Telegram
+  // account, triggered when an admin adds stock to a product that has
+  // broadcastOnRestock enabled. payload carries chat_id + product_name +
+  // stock_count per recipient (one outbox row per customer).
+  PRODUCT_RESTOCKED_BROADCAST: "PRODUCT_RESTOCKED_BROADCAST",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];

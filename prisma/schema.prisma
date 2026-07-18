@@ -186,6 +186,10 @@ model Denomination {
   warrantyDays       Int      @default(30) @map("warranty_days")
   sortOrder          Int      @default(0) @map("sort_order")
   isActive           Boolean  @default(true) @map("is_active")
+  /// When true, adding stock to this SKU enqueues a "back in stock" DM to
+  /// every non-banned customer with a linked Telegram account (not just
+  /// RestockSubscription opt-ins) via notification_outbox.
+  broadcastOnRestock Boolean  @default(false) @map("broadcast_on_restock")
   createdAt          DateTime @default(now()) @map("created_at")
 
   product              Product               @relation(fields: [productId], references: [id], onUpdate: NoAction)

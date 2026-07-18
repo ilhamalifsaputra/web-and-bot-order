@@ -12,6 +12,7 @@ import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import {
   enqueueNotification,
   enqueueOrderPipelineFailed,
+  enqueueRestockBroadcast,
   fetchPendingNotifications,
   claimNotification,
   releaseNotificationClaim,
@@ -355,5 +356,83 @@ describe("enqueueOrderPipelineFailed", () => {
     const payload = JSON.parse(rows[0]!.payloadJson) as { order_code: string; reason: string };
     expect(payload.order_code).toBe("ORD-FAILTEST");
     expect(payload.reason.length).toBe(300); // truncated, not the full 1000-char input
+  });
+});
+
+describe("enqueueRestockBroadcast", () => {
+  function makeUser(overrides: { telegramId?: bigint | null; banned?: boolean; language?: string }) {
+    return prisma.user.create({
+      data: {
+        telegramId: overrides.telegramId === undefined ? BigInt(Math.floor(Math.random() * 1e15)) : overrides.telegramId,
+        referralCode: `r${Math.random()}`,
+        banned: overrides.banned ?? false,
+        language: overrides.language ?? "EN",
+      },
+    });
+  }
+
+  it("enqueues one DM per non-banned customer with a linked Telegram account, skipping banned and web-only users", async () => {
+    const eligible = await makeUser({ language: "ID" });
+    await makeUser({ banned: true }); // banned — must be skipped
+    await makeUser({ telegramId: null }); // web-only — must be skipped
+
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.PRODUCT_RESTOCKED_BROADCAST } });
+    const notified = await enqueueRestockBroadcast(prisma, { productName: "1 Month CapCut Pro", stockCount: 12 });
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.PRODUCT_RESTOCKED_BROADCAST },
+      orderBy: { id: "desc" },
+      take: notified,
+    });
+
+    expect(rows.length).toBe(notified);
+    expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.PRODUCT_RESTOCKED_BROADCAST } })).toBe(
+      before + notified,
+    );
+    const eligibleRow = rows.find((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id === Number(eligible.telegramId));
+    expect(eligibleRow).toBeDefined();
+    const payload = JSON.parse(eligibleRow!.payloadJson) as {
+      chat_id: number;
+      product_name: string;
+      stock_count: number;
+      buyer_language: string;
+    };
+    expect(payload.product_name).toBe("1 Month CapCut Pro");
+    expect(payload.stock_count).toBe(12);
+    expect(payload.buyer_language).toBe("id");
+    expect(eligibleRow!.orderId).toBeNull();
+  });
+
+  it("also writes a SENT Broadcast row (segment ALL) so it shows up in the web-admin Broadcast History table", async () => {
+    await makeUser({});
+    const admin = await prisma.user.create({ data: { referralCode: `admin-${Math.random()}`, role: "ADMIN" } });
+
+    const notified = await enqueueRestockBroadcast(prisma, {
+      productName: "Netflix Premium",
+      stockCount: 5,
+      createdById: admin.id,
+    });
+
+    const row = await prisma.broadcast.findFirst({ orderBy: { id: "desc" } });
+    expect(row!.segment).toBe("ALL");
+    expect(row!.status).toBe("SENT");
+    expect(row!.totalCount).toBe(notified);
+    expect(row!.sentCount).toBe(notified);
+    expect(row!.failedCount).toBe(0);
+    expect(row!.createdById).toBe(admin.id);
+    expect(row!.sentAt).not.toBeNull();
+    expect(row!.message).toContain("Netflix Premium");
+    expect(row!.message).toContain("5");
+    // Plain text — no HTML tags, unlike the outbox-dispatcher's rendered DM.
+    expect(row!.message).not.toContain("<b>");
+  });
+
+  it("returns 0 and enqueues nothing (no outbox rows, no Broadcast row) when there are no eligible customers", async () => {
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.PRODUCT_RESTOCKED_BROADCAST } });
+    const broadcastsBefore = await prisma.broadcast.count();
+    await prisma.user.updateMany({ data: { banned: true } }); // neutralize any users left over from earlier tests
+    const notified = await enqueueRestockBroadcast(prisma, { productName: "Nothing", stockCount: 0 });
+    expect(notified).toBe(0);
+    expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.PRODUCT_RESTOCKED_BROADCAST } })).toBe(before);
+    expect(await prisma.broadcast.count()).toBe(broadcastsBefore);
   });
 });

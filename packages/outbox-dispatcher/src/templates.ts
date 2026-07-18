@@ -148,6 +148,11 @@ interface OrderProcessingPayload {
   order_url?: unknown;
 }
 
+interface RestockBroadcastPayload {
+  product_name?: unknown;
+  stock_count?: unknown;
+}
+
 /** Return the message body for an outbox event, or "" to skip. */
 export function render(
   event: string,
@@ -155,8 +160,23 @@ export function render(
     AdminResetPayload &
     AdminOverpaidPayload &
     OrderPipelineFailedPayload &
-    OrderProcessingPayload,
+    OrderProcessingPayload &
+    RestockBroadcastPayload,
 ): string {
+  if (event === NotificationEvent.PRODUCT_RESTOCKED_BROADCAST) {
+    // Buyer DM broadcast to all customers, sent as-given (English only, not
+    // the bilingual EN+ID pattern the other DM templates use) — the shop
+    // owner supplied this exact copy. product_name is escaped since it's
+    // admin-entered text.
+    const name = escape(String(payload.product_name ?? ""));
+    const count = Number.parseInt(String(payload.stock_count ?? "0"), 10) || 0;
+    return (
+      `👋 Hello!\n\n` +
+      `We're happy to let you know that <b>${name}</b> is back in stock! 🎉\n\n` +
+      `📦 <b>Available Stock:</b> <b>${count}</b> accounts\n\n` +
+      `Order now while supplies last. Thank you for choosing us!`
+    );
+  }
   if (event === NotificationEvent.ORDER_PROCESSING_DM) {
     // Buyer DM: a manual-delivery order's payment was confirmed and it's now
     // queued for hand-fulfilment. Deliberately no ETA/SLA promise here — the

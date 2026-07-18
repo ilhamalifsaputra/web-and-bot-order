@@ -15,6 +15,7 @@ import {
   enqueueAdminPasswordReset,
   completeOrderWithWalletCredit,
   enqueueOrderDeliveredDm,
+  enqueueRestockBroadcast,
   adjustWallet,
   createOrderDirect,
   attachPaymentProof,
@@ -397,5 +398,26 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     });
     expect(row!.status).toBe("FAILED"); // markNotificationFailed(..., maxAttempts=1) fails immediately
     expect(row!.lastError).toContain("order not found");
+  });
+});
+
+describe("PRODUCT_RESTOCKED_BROADCAST", () => {
+  it("routes as a DM to the customer's chat_id (not a public-channel post) and marks the row SENT", async () => {
+    const user = await upsertUser(prisma, { telegramId: 700_001, username: "restockfan", fullName: null });
+    await enqueueRestockBroadcast(prisma, { productName: "1 Month CapCut Pro", stockCount: 7 });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      Number(user.telegramId),
+      expect.stringContaining("1 Month CapCut Pro"),
+      { parse_mode: "HTML" },
+    );
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.PRODUCT_RESTOCKED_BROADCAST },
+      orderBy: { id: "desc" },
+    });
+    expect(row!.status).toBe("SENT");
   });
 });

@@ -1928,6 +1928,36 @@ describe("stock", () => {
     expect(rows.length).toBe(1);
   });
 
+  it("restock broadcast message names both the product type and the denomination", async () => {
+    const cat = await createCategory(prisma, `BroadcastCat${counter++}`);
+    const parentProduct = await createCatalogProduct(prisma, {
+      categoryId: cat.id,
+      name: "Netflix Premium",
+      description: "x",
+    });
+    const denom = await createDenomination(prisma, {
+      productId: parentProduct.id,
+      name: "1 Month",
+      type: ProductType.SHARED,
+      durationLabel: "1 Month",
+      price: "5.00",
+      description: "x",
+    });
+    await updateDenomination(prisma, denom.id, { broadcastOnRestock: true });
+
+    const res = await post(`/api/stock/${denom.id}/bulk-add`, seed.cookie, {
+      csrf_token: seed.csrf,
+      credentials: `bcast${counter}@e.com:p`,
+    });
+    expect(res.statusCode).toBe(200);
+
+    const broadcast = await prisma.broadcast.findFirst({ orderBy: { id: "desc" } });
+    expect(broadcast?.message).toContain("Netflix Premium - 1 Month");
+
+    const audit = await prisma.auditLog.findFirst({ where: { action: "restock_broadcast", targetId: denom.id } });
+    expect(audit?.details).toContain("Netflix Premium - 1 Month");
+  });
+
   // bulk delete / download happy paths: covered by "stock JSON API —
   // bulk-dead, bulk-delete, item note/dead, download" below.
 

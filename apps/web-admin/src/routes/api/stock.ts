@@ -82,8 +82,9 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     // enqueues rows for the notifier/bot to deliver.
     if (added > 0 && product.broadcastOnRestock) {
       const stockCount = await countAvailableStock(prisma, productId);
+      const fullName = `${product.product.name} - ${product.name}`;
       const notified = await enqueueRestockBroadcast(prisma, {
-        productName: product.name,
+        productName: fullName,
         stockCount,
         createdById: req.admin!.userId,
       });
@@ -92,7 +93,7 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
         action: "restock_broadcast",
         targetType: "product",
         targetId: productId,
-        details: `Queued a restock broadcast for "${product.name}" to ${notified} customers.`,
+        details: `Queued a restock broadcast for "${fullName}" to ${notified} customers.`,
       });
     }
 

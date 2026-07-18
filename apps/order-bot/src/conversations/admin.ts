@@ -158,7 +158,7 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
       targetId: productId,
       details: `Added ${n} items; skipped ${skippedCount} invalid lines and ${skipped} duplicates.`,
     });
-    const denom = await tx.denomination.findUnique({ where: { id: productId } });
+    const denom = await tx.denomination.findUnique({ where: { id: productId }, include: { product: true } });
     return { added: n, dedupSkipped: skipped, denomination: denom };
   });
 
@@ -179,8 +179,9 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
   if (added > 0 && denomination?.broadcastOnRestock) {
     const stockCount = await countAvailableStock(prisma, productId);
     const admin = await getUserByTelegramId(prisma, adminTg);
+    const fullName = `${denomination.product.name} - ${denomination.name}`;
     const notified = await enqueueRestockBroadcast(prisma, {
-      productName: denomination.name,
+      productName: fullName,
       stockCount,
       createdById: admin?.id ?? null,
     });
@@ -189,7 +190,7 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
       action: "restock_broadcast",
       targetType: "product",
       targetId: productId,
-      details: `Queued a restock broadcast for "${denomination.name}" to ${notified} customers.`,
+      details: `Queued a restock broadcast for "${fullName}" to ${notified} customers.`,
     });
   }
 }

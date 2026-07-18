@@ -180,20 +180,21 @@ describe("StockProductPage", () => {
     expect(screen.getByRole("link", { name: /download credentials/i })).toBeInTheDocument();
 
     // Switch to Sold: both the SOLD and RESERVED rows show up there; download link disappears.
-    fireEvent.click(screen.getByRole("tab", { name: "Sold (2)" }));
+    // Radix Tabs selects on mousedown (or focus), not click — see Tabs.Trigger's onMouseDown handler.
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Sold (2)" }));
     expect(await screen.findByText("102")).toBeInTheDocument();
     expect(screen.getByText("103")).toBeInTheDocument();
     expect(screen.queryByText("101")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /download credentials/i })).not.toBeInTheDocument();
 
     // Switch to Dead: only the DEAD row shows up.
-    fireEvent.click(screen.getByRole("tab", { name: "Dead (1)" }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Dead (1)" }));
     expect(await screen.findByText("104")).toBeInTheDocument();
     expect(screen.queryByText("102")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /download credentials/i })).not.toBeInTheDocument();
 
     // Back to Available: download link reappears.
-    fireEvent.click(screen.getByRole("tab", { name: "Available (1)" }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Available (1)" }));
     expect(await screen.findByRole("link", { name: /download credentials/i })).toBeInTheDocument();
   });
 

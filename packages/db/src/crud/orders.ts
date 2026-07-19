@@ -31,6 +31,7 @@ import {
   enqueueNotification,
   enqueueOrderProcessingDm,
   enqueueManualDeliveredDm,
+  enqueueManualOrderAdminAlert,
 } from "./notifications";
 import { logAdminAction } from "./audit";
 import { transitionOrderStatus } from "./orderStatus";
@@ -1257,6 +1258,13 @@ export async function settlePaidOrder(
     orderCode: order.orderCode,
     telegramId: order.user.telegramId,
     language: order.user.language,
+  });
+  await enqueueManualOrderAdminAlert(db, {
+    orderId,
+    orderCode: order.orderCode,
+    items: order.items.map((item) => ({ name: item.product.name, qty: item.quantity })),
+    total: order.totalAmount,
+    currency: order.currency,
   });
   logger.info(
     `Order ${order.orderCode} payment confirmed; queued for manual fulfilment (admin ${args.adminId}).`,

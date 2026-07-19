@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrandingPage } from "./BrandingPage";
@@ -83,5 +84,82 @@ describe("BrandingPage", () => {
       expect(screen.getByText(/Recommended: 400x200px/)).toBeInTheDocument(); // Logo
       expect(screen.getAllByText(/Recommended: 1200x400px/)).toHaveLength(2); // Hero + Banner
     });
+  });
+
+  it("saving a text field opens a confirmation dialog and shows a checkmark on success", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(BRANDING_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<BrandingPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("My Test Shop")).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    const input = screen.getByDisplayValue("My Test Shop");
+    await user.clear(input);
+    await user.type(input, "Renamed Shop");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText('Save "Shop name"?')).toBeInTheDocument();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(BRANDING_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Saved successfully")).toBeInTheDocument();
+  });
+
+  it("removing the banner opens a confirmation dialog and shows a checkmark on success", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ ...BRANDING_DATA, bannerUrl: "/uploads/branding/banner.png" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<BrandingPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("My Test Shop")).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Remove banner" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Remove banner?")).toBeInTheDocument();
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(BRANDING_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+
+    expect(await screen.findByText("Banner removed")).toBeInTheDocument();
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/branding/banner/clear",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 });

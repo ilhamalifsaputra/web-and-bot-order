@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { CircleCheckIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 function csrfToken(): string {
@@ -26,6 +27,7 @@ export function ImageUploadField({
   accept,
   onUploaded,
   dimensions,
+  showSuccessCheckmark = false,
 }: {
   label: string;
   imageUrl: string;
@@ -34,11 +36,16 @@ export function ImageUploadField({
   accept: string;
   onUploaded: (url: string) => void;
   dimensions?: string;
+  /** Briefly shows a checkmark in place of the Save/Cancel row after a
+   * successful upload. Opt-in (default off) since this component is also
+   * used by Catalog and Broadcast, where the plain instant-revert is fine. */
+  showSuccessCheckmark?: boolean;
 }) {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [justSaved, setJustSaved] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -85,6 +92,10 @@ export function ImageUploadField({
       setPreviewUrl(null);
       const { url } = (await res.json()) as { url: string };
       onUploaded(url);
+      if (showSuccessCheckmark) {
+        setJustSaved(true);
+        setTimeout(() => setJustSaved(false), 800);
+      }
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed");
     } finally {
@@ -121,15 +132,22 @@ export function ImageUploadField({
           Choose file…
         </span>
       </label>
-      {pendingFile && (
-        <div className="flex gap-2 mt-2">
-          <Button size="sm" disabled={uploading} onClick={() => void confirmUpload()}>
-            {uploading ? "Saving…" : "Save"}
-          </Button>
-          <Button size="sm" variant="ghost" disabled={uploading} onClick={cancelPending}>
-            Cancel
-          </Button>
+      {justSaved ? (
+        <div className="flex items-center gap-1.5 mt-2 text-sm text-grass-dark">
+          <CircleCheckIcon className="size-4 motion-safe:animate-checkmark-pop" />
+          Saved
         </div>
+      ) : (
+        pendingFile && (
+          <div className="flex gap-2 mt-2">
+            <Button size="sm" disabled={uploading} onClick={() => void confirmUpload()}>
+              {uploading ? "Saving…" : "Save"}
+            </Button>
+            <Button size="sm" variant="ghost" disabled={uploading} onClick={cancelPending}>
+              Cancel
+            </Button>
+          </div>
+        )
       )}
       {uploadError && (
         <p className="mt-1 text-xs text-rust">{uploadError}</p>

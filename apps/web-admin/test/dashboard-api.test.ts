@@ -194,7 +194,7 @@ describe("GET /api/dashboard/top-products", () => {
 
     const res = await get("/api/dashboard/top-products?days=30&limit=5", cookie);
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual([{ productId: denom.id, name: "Top item", unitsSold: 1, revenueIdrEquiv: "10000", profitIdrEquiv: "5000", costUnknownUnits: 0 }]);
+    expect(res.json()).toEqual([{ productId: denom.id, productLabel: "Parent · Top item", unitsSold: 1, revenueIdrEquiv: "10000", profitIdrEquiv: "5000", costUnknownUnits: 0 }]);
   });
 });
 

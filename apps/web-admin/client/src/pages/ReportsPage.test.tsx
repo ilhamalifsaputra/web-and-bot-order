@@ -23,12 +23,12 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 }
 
 const MOCK_DATA = {
-  daily: [{ date: "2026-06-25", revenue_idr: "500000", revenue_usdt: "0", orders: 3 }],
+  daily: [{ day: "2026-06-25", revenue_idr: "500000", revenue_usdt: "0", orders: 3 }],
   totalIdr: "500000",
   totalUsdt: null,
-  products: [{ productName: "Netflix 1mo", sold: 5, revenue_idr: "500000" }],
-  funnel: { DELIVERED: 10, PENDING_PAYMENT: 2 },
-  vouchers: [],
+  products: [{ productId: 1, name: "Netflix 1mo", qty: 5, revenue: "500000" }],
+  funnel: [{ status: "DELIVERED", count: 10 }, { status: "PENDING_PAYMENT", count: 2 }],
+  vouchers: [{ id: 1, code: "SAVE10", usedCount: 4, usageLimit: 100, isActive: true }],
   days: 30,
 };
 
@@ -45,6 +45,10 @@ describe("ReportsPage", () => {
     render(<ReportsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Netflix 1mo")).toBeInTheDocument());
     expect(screen.getByText(/30-day revenue/i)).toBeInTheDocument();
+    // Regression: funnel is an array of {status, count}, not a Record — this
+    // used to crash the page with "Objects are not valid as a React child".
+    expect(screen.getByText(/DELIVERED/)).toBeInTheDocument();
+    expect(screen.getByText("SAVE10")).toBeInTheDocument();
   });
 
   it("shows error on fetch failure", async () => {

@@ -19,9 +19,9 @@ interface ReportsData {
   daily: DayRevenue[];
   totalIdr: string;
   totalUsdt: string | null;
-  products: { productName: string; sold: number; revenue_idr: string }[];
-  funnel: Record<string, number>;
-  vouchers: { code: string; uses: number; discountIdr: string }[];
+  products: { productId: number; name: string; qty: number; revenue: string }[];
+  funnel: { status: string; count: number }[];
+  vouchers: { id: number; code: string; usedCount: number; usageLimit: number | null; isActive: boolean }[];
   days: number;
 }
 
@@ -100,7 +100,7 @@ export function ReportsPage() {
               <CardHeader><CardTitle>Orders by Status</CardTitle></CardHeader>
               <CardContent>
                 <div className="flex flex-wrap gap-2">
-                  {Object.entries(data.funnel).map(([status, count]) => (
+                  {data.funnel.map(({ status, count }) => (
                     <span key={status} className="rounded bg-sand px-3 py-1.5 text-sm text-ink">
                       {status}: <strong>{count}</strong>
                     </span>
@@ -116,12 +116,12 @@ export function ReportsPage() {
                 <CardContent>
                   <DataTable
                     columns={[
-                      { key: "product", header: "Product", render: (p) => <span className="text-ink">{p.productName}</span> },
-                      { key: "sold", header: "Sold", render: (p) => <span className="text-ink-soft">{p.sold}</span> },
-                      { key: "revenue", header: "Revenue (IDR)", render: (p) => <span className="text-ink">{formatCurrencyDisplay(p.revenue_idr, "IDR")}</span> },
+                      { key: "product", header: "Product", render: (p) => <span className="text-ink">{p.name}</span> },
+                      { key: "sold", header: "Sold", render: (p) => <span className="text-ink-soft">{p.qty}</span> },
+                      { key: "revenue", header: "Revenue (IDR)", render: (p) => <span className="text-ink">{formatCurrencyDisplay(p.revenue, "IDR")}</span> },
                     ]}
                     data={data.products}
-                    keyExtractor={(p) => p.productName}
+                    keyExtractor={(p) => p.productId}
                     empty={<EmptyState title="No product sales yet." />}
                   />
                 </CardContent>
@@ -136,8 +136,8 @@ export function ReportsPage() {
                   <DataTable
                     columns={[
                       { key: "code", header: "Code", render: (v) => <span className="font-mono text-xs text-ink">{v.code}</span> },
-                      { key: "uses", header: "Uses", render: (v) => <span className="text-ink-soft">{v.uses}</span> },
-                      { key: "discount", header: "Discount (IDR)", render: (v) => <span className="text-ink">{formatCurrencyDisplay(v.discountIdr, "IDR")}</span> },
+                      { key: "uses", header: "Uses", render: (v) => <span className="text-ink-soft">{v.usedCount}{v.usageLimit != null ? ` / ${v.usageLimit}` : ""}</span> },
+                      { key: "active", header: "Active", render: (v) => <span className="text-ink-soft">{v.isActive ? "Yes" : "No"}</span> },
                     ]}
                     data={data.vouchers}
                     keyExtractor={(v) => v.code}

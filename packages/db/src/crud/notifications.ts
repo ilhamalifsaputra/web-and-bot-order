@@ -129,6 +129,41 @@ export async function enqueueOrderPipelineFailed(
 }
 
 /**
+ * Enqueue one admin DM per resolved admin alerting that a paid order routed
+ * to the hand-fulfilment queue (settlePaidOrder's MANUAL branch — a
+ * MANUAL/MANUAL_WITH_INFO SKU) and is waiting on an admin to fulfil it by
+ * hand. Same fan-out-per-admin shape as `enqueueOrderPipelineFailed`. Numbers
+ * are carried as Decimal `.toString()` — never `number` — per money rules.
+ * No-op if no admin is resolved.
+ */
+export async function enqueueManualOrderAdminAlert(
+  db: Db,
+  args: {
+    orderId: number;
+    orderCode: string;
+    items: { name: string; qty: number }[];
+    total: Decimal;
+    currency: string;
+  },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED,
+        orderId: args.orderId,
+        payloadJson: JSON.stringify({
+          chat_id: adminId,
+          order_code: args.orderCode,
+          items: args.items,
+          total: args.total.toString(),
+          currency: args.currency,
+        }),
+      },
+    });
+  }
+}
+
+/**
  * A SENDING row whose claim is older than this is treated as abandoned (the
  * dispatcher that claimed it died mid-send, before reaching
  * markNotificationSent/Failed) and becomes claimable again. Infra-2 fix,

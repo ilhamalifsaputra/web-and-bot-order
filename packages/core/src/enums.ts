@@ -250,6 +250,12 @@ export const NotificationEvent = {
   // broadcastOnRestock enabled. payload carries chat_id + product_name +
   // stock_count per recipient (one outbox row per customer).
   PRODUCT_RESTOCKED_BROADCAST: "PRODUCT_RESTOCKED_BROADCAST",
+  // Admin DM (not a channel post): a paid order routed to the hand-fulfilment
+  // queue (settlePaidOrder's MANUAL branch — a MANUAL/MANUAL_WITH_INFO SKU)
+  // and is waiting on an admin to fulfil it by hand. payload carries
+  // `chat_id` (the admin's telegram id) plus order_code/items/total/currency,
+  // same fan-out-per-admin shape as ORDER_PIPELINE_FAILED.
+  ADMIN_MANUAL_ORDER_QUEUED: "ADMIN_MANUAL_ORDER_QUEUED",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];

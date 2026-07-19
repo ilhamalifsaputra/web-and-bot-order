@@ -19,7 +19,7 @@ export function TopProductsList() {
           <ol className="flex flex-col divide-y divide-line">
             {data.map((p) => (
               <li key={p.productId} className="flex items-center justify-between py-2">
-                <span className="text-sm text-ink">{p.name}</span>
+                <span className="text-sm text-ink">{p.productLabel}</span>
                 <span className="text-right text-xs text-ink-soft">
                   {p.unitsSold} sold · {formatCurrencyDisplay(p.revenueIdrEquiv, "IDR")} revenue ·{" "}
                   {p.profitIdrEquiv === null

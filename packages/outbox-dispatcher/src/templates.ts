@@ -153,6 +153,13 @@ interface RestockBroadcastPayload {
   stock_count?: unknown;
 }
 
+interface ManualOrderQueuedPayload {
+  order_code?: unknown;
+  items?: Item[];
+  total?: unknown;
+  currency?: unknown;
+}
+
 /** Return the message body for an outbox event, or "" to skip. */
 export function render(
   event: string,
@@ -161,7 +168,8 @@ export function render(
     AdminOverpaidPayload &
     OrderPipelineFailedPayload &
     OrderProcessingPayload &
-    RestockBroadcastPayload,
+    RestockBroadcastPayload &
+    ManualOrderQueuedPayload,
 ): string {
   if (event === NotificationEvent.PRODUCT_RESTOCKED_BROADCAST) {
     // Buyer DM broadcast to all customers, sent as-given (English only, not
@@ -207,6 +215,25 @@ export function render(
       `⚠️ <b>Pelacakan pesanan <code>${code}</code> gagal</b>\n` +
       `${reason}\n` +
       `Perlu tindakan manual — cek pesanan ini di panel admin.`
+    );
+  }
+  if (event === NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED) {
+    // Admin DM (not a channel post): a paid order routed to the hand-fulfilment
+    // queue (settlePaidOrder's MANUAL branch) and needs an admin to fulfil it
+    // by hand. items/total mirror the ORDER_DELIVERED testimonial shape.
+    const code = escape(String(payload.order_code ?? ""));
+    const itemsText = fmtItems(payload.items ?? [], MAX_INTERPOLATION_LEN);
+    const total = truncateEscaped(escape(String(payload.total ?? "0")), MAX_INTERPOLATION_LEN);
+    const currency = escape(String(payload.currency ?? ""));
+    return (
+      `📦 <b>Order <code>${code}</code> needs manual fulfilment</b>\n` +
+      `${itemsText}\n` +
+      `💳 Total: <b>${total} ${currency}</b>\n` +
+      `Payment confirmed — please fulfil this order by hand in the admin panel.\n\n` +
+      `📦 <b>Pesanan <code>${code}</code> perlu difulfil manual</b>\n` +
+      `${itemsText}\n` +
+      `💳 Total: <b>${total} ${currency}</b>\n` +
+      `Pembayaran sudah dikonfirmasi — tolong fulfil pesanan ini secara manual di panel admin.`
     );
   }
   if (event === NotificationEvent.ADMIN_OVERPAID) {

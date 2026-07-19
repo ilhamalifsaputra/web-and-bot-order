@@ -87,6 +87,9 @@ describe("SettingsPage", () => {
     await user.type(screen.getByPlaceholderText("New password (min 8 chars)"), "new-password");
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Change Password" }));
+
     expect(await screen.findByText("Password changed successfully.")).toBeInTheDocument();
   });
 
@@ -112,7 +115,13 @@ describe("SettingsPage", () => {
     await user.type(screen.getByPlaceholderText("New password (min 8 chars)"), "new-password");
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: "Change Password" }));
+
     expect(await screen.findByText("Incorrect current password")).toBeInTheDocument();
+    // Errors keep the dialog open so the user can retry or cancel, unlike a
+    // toast that would have vanished with no way to correct the input.
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
   it("renders a section nav with links to General and Security that jump to the matching section id (F-012)", async () => {
@@ -189,5 +198,151 @@ describe("SettingsPage", () => {
     expect(screen.getByRole("switch", { name: /disable paydisini/i })).toBeChecked();
     // The still-configured TokoPay section shows the normal "Enabled" badge.
     expect(screen.getByText("Enabled")).toBeInTheDocument();
+  });
+
+  it("field Save opens a confirmation dialog and shows a checkmark on success", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    const input = screen.getByDisplayValue("Demo Shop");
+    await user.clear(input);
+    await user.type(input, "New Shop Name");
+    // This is the FieldRow's own Save button — the dialog doesn't exist yet.
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText('Save "Shop name"?')).toBeInTheDocument();
+    // Nothing persisted yet from opening the dialog alone.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Saved successfully")).toBeInTheDocument();
+  });
+
+  it("toggling a payment gateway opens a confirmation dialog before persisting", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("switch", { name: /disable tokopay/i }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Disable TokoPay?")).toBeInTheDocument();
+    // Clicking the switch alone must not have persisted anything yet.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Disable" }));
+
+    expect(await screen.findByText("Payment method updated")).toBeInTheDocument();
+  });
+
+  it("2FA 'Enable 2FA' (begin) persists immediately without a confirmation dialog", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Enable 2FA" }));
+
+    // Nothing is persisted at the "begin" step (just a pending secret), so
+    // there's nothing to confirm.
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("2FA 'Confirm' requires a confirmation dialog", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...SETTINGS_DATA,
+          twoFaPending: { secret: "SECRET123", uri: "otpauth://totp/test" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Enable two-factor authentication?")).toBeInTheDocument();
+  });
+
+  it("2FA 'Disable 2FA' requires a confirmation dialog", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ ...SETTINGS_DATA, twoFaEnabled: true }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Disable 2FA" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Disable two-factor authentication?")).toBeInTheDocument();
   });
 });

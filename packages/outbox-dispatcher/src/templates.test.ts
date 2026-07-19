@@ -263,4 +263,29 @@ describe("notifier templates.render", () => {
     expect(out).not.toContain("<script>");
     expect(out).toContain("&lt;script&gt;");
   });
+
+  it("renders ADMIN_MANUAL_ORDER_QUEUED with the order code, item, and total/currency, bilingually", () => {
+    const out = render("ADMIN_MANUAL_ORDER_QUEUED", {
+      order_code: "ORD-20260719-ABCD",
+      items: [{ name: "Netflix Premium", qty: 2 }],
+      total: "15.5",
+      currency: "USDT",
+    });
+    expect(out).toContain("ORD-20260719-ABCD");
+    expect(out).toContain("Netflix Premium x2");
+    expect(out).toContain("15.5 USDT");
+    expect(out).toContain("needs manual fulfilment");
+    expect(out).toContain("perlu difulfil manual");
+  });
+
+  it("HTML-escapes ADMIN_MANUAL_ORDER_QUEUED's item names", () => {
+    const out = render("ADMIN_MANUAL_ORDER_QUEUED", {
+      order_code: "ORD-1",
+      items: [{ name: "A & B <x>", qty: 1 }],
+      total: "1",
+      currency: "USDT",
+    });
+    expect(out).not.toContain("<x>");
+    expect(out).toContain("A &amp; B &lt;x&gt;");
+  });
 });

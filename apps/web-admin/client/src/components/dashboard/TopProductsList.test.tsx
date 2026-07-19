@@ -17,9 +17,9 @@ function renderWith(rows: unknown) {
 describe("TopProductsList", () => {
   it("shows units, IDR-equivalent revenue, and profit per product", async () => {
     renderWith([
-      { productId: 1, name: "Product A", unitsSold: 3, revenueIdrEquiv: "30000", profitIdrEquiv: "12000", costUnknownUnits: 0 },
+      { productId: 1, productLabel: "CapCut Pro · 1 Month", unitsSold: 3, revenueIdrEquiv: "30000", profitIdrEquiv: "12000", costUnknownUnits: 0 },
     ]);
-    await waitFor(() => expect(screen.getByText("Product A")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("CapCut Pro · 1 Month")).toBeInTheDocument());
     expect(screen.getByText(/3 sold/)).toBeInTheDocument();
     expect(screen.getByText(/Rp30\.000 revenue/)).toBeInTheDocument();
     expect(screen.getByText(/Rp12\.000 profit/)).toBeInTheDocument();
@@ -27,7 +27,7 @@ describe("TopProductsList", () => {
 
   it("shows N/A profit when some units have unknown cost", async () => {
     renderWith([
-      { productId: 2, name: "Product B", unitsSold: 1, revenueIdrEquiv: "10000", profitIdrEquiv: null, costUnknownUnits: 1 },
+      { productId: 2, productLabel: "Netflix · 1 Month", unitsSold: 1, revenueIdrEquiv: "10000", profitIdrEquiv: null, costUnknownUnits: 1 },
     ]);
     await waitFor(() => expect(screen.getByText(/N\/A profit/)).toBeInTheDocument());
   });

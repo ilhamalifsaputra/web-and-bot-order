@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { ImageUploadField } from "../components/shared/ImageUploadField";
-import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { SaveConfirmDialog } from "../components/shared/SaveConfirmDialog";
 import { apiPost } from "../api/client";
 
 interface BrandingData {
@@ -47,21 +47,12 @@ function TextFieldRow({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   async function save() {
-    setSaving(true);
-    setError(null);
-    try {
-      await apiPost("/api/branding/text", { key: fieldKey, value: draft });
-      setEditing(false);
-      onSaved();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save");
-    } finally {
-      setSaving(false);
-    }
+    await apiPost("/api/branding/text", { key: fieldKey, value: draft });
+    setEditing(false);
+    onSaved();
   }
 
   return (
@@ -102,20 +93,29 @@ function TextFieldRow({
             />
           )}
           <div className="flex gap-2">
-            <Button size="sm" onClick={save} disabled={saving}>
-              {saving ? "Saving…" : "Save"}
+            <Button size="sm" onClick={() => setConfirmOpen(true)}>
+              Save
             </Button>
             <Button
               size="sm"
               variant="ghost"
-              onClick={() => { setEditing(false); setError(null); }}
+              onClick={() => setEditing(false)}
             >
               Cancel
             </Button>
           </div>
-          {error && <p className="text-xs text-rust">{error}</p>}
         </div>
       )}
+      {/* Rendered unconditionally (not inside `editing && …`) — save()
+          flips `editing` false as soon as the request resolves, which would
+          otherwise unmount this mid-animation and cut off the checkmark. */}
+      <SaveConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={`Save "${label}"?`}
+        description="This updates the live setting immediately."
+        onConfirm={save}
+      />
     </div>
   );
 }
@@ -123,6 +123,7 @@ function TextFieldRow({
 export function BrandingPage() {
   const qc = useQueryClient();
   const { data, isLoading, isError } = useBranding();
+  const [removeBannerOpen, setRemoveBannerOpen] = useState(false);
 
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ["branding"] }); };
 
@@ -146,6 +147,7 @@ export function BrandingPage() {
                 accept=".png,.ico,.svg"
                 onUploaded={invalidate}
                 dimensions="512x512px"
+                showSuccessCheckmark
               />
               <ImageUploadField
                 label="Logo"
@@ -155,6 +157,7 @@ export function BrandingPage() {
                 accept=".png,.svg,.webp"
                 onUploaded={invalidate}
                 dimensions="400x200px"
+                showSuccessCheckmark
               />
               <ImageUploadField
                 label="Hero image"
@@ -164,6 +167,7 @@ export function BrandingPage() {
                 accept=".jpg,.jpeg,.png,.webp"
                 onUploaded={invalidate}
                 dimensions="1200x400px"
+                showSuccessCheckmark
               />
               <ImageUploadField
                 label="Banner"
@@ -173,6 +177,7 @@ export function BrandingPage() {
                 accept=".jpg,.jpeg,.png,.webp"
                 onUploaded={invalidate}
                 dimensions="1200x400px"
+                showSuccessCheckmark
               />
               {data.bannerIsLegacy && (
                 <p className="pt-2 text-xs text-amberx">
@@ -181,18 +186,27 @@ export function BrandingPage() {
               )}
               {(data.bannerUrl || data.bannerIsLegacy) && (
                 <div className="pt-2">
-                  <ConfirmDialog
-                    trigger={<Button variant="ghost" size="sm">Remove banner</Button>}
-                    title="Remove banner?"
-                    description="This clears the bot's promo banner. It won't be shown above the menu until a new one is uploaded."
-                    confirmLabel="Remove"
-                    onConfirm={async () => {
-                      await apiPost("/branding/banner/clear", {});
-                      invalidate();
-                    }}
-                  />
+                  <Button variant="ghost" size="sm" onClick={() => setRemoveBannerOpen(true)}>
+                    Remove banner
+                  </Button>
                 </div>
               )}
+              {/* Rendered unconditionally — removing the banner clears
+                  data.bannerUrl on refetch, which would otherwise unmount
+                  this mid-animation and cut off the checkmark. */}
+              <SaveConfirmDialog
+                open={removeBannerOpen}
+                onOpenChange={setRemoveBannerOpen}
+                title="Remove banner?"
+                description="This clears the bot's promo banner. It won't be shown above the menu until a new one is uploaded."
+                confirmLabel="Remove"
+                variant="destructive"
+                successMessage="Banner removed"
+                onConfirm={async () => {
+                  await apiPost("/branding/banner/clear", {});
+                  invalidate();
+                }}
+              />
             </CardContent>
           </Card>
 

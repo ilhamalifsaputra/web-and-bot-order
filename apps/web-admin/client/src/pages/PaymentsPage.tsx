@@ -432,7 +432,7 @@ export function PaymentsPage() {
           {
             key: "actions",
             header: "",
-            render: tx => tx.outcome === "UNMATCHED" ? (
+            render: tx => tx.outcome === "unmatched" ? (
               <ConfirmDialog
                 trigger={<Button variant="ghost" size="sm">Dismiss</Button>}
                 title="Dismiss transfer?"

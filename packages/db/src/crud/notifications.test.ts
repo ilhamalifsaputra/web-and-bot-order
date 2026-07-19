@@ -12,6 +12,7 @@ import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import {
   enqueueNotification,
   enqueueOrderPipelineFailed,
+  enqueueManualOrderAdminAlert,
   enqueueRestockBroadcast,
   fetchPendingNotifications,
   claimNotification,
@@ -27,6 +28,7 @@ import {
 } from "./notifications";
 import { addAdminIdToDb } from "./admins";
 import { NotificationEvent } from "@app/core/enums";
+import { Decimal } from "@app/core/money";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -356,6 +358,46 @@ describe("enqueueOrderPipelineFailed", () => {
     const payload = JSON.parse(rows[0]!.payloadJson) as { order_code: string; reason: string };
     expect(payload.order_code).toBe("ORD-FAILTEST");
     expect(payload.reason.length).toBe(300); // truncated, not the full 1000-char input
+  });
+});
+
+// enqueueManualOrderAdminAlert shares enqueueOrderPipelineFailed's exact
+// per-admin fan-out primitive (resolveAdminIds + one outbox row per id), so
+// the "no admin resolved -> no-op" behavior is already covered by that
+// block's first test above; this block only needs to assert this function's
+// own event/payload shape. Runs after enqueueOrderPipelineFailed's block, so
+// 4001/4002 are already persisted in the shared `admin_ids` Setting — assert
+// against the full resolved set (4001/4002 plus the ids added here) rather
+// than assuming a clean slate.
+describe("enqueueManualOrderAdminAlert", () => {
+  it("enqueues one ADMIN_MANUAL_ORDER_QUEUED DM per resolved admin, with chat_id/order_code/items/total/currency", async () => {
+    await addAdminIdToDb(prisma, 4501);
+    await addAdminIdToDb(prisma, 4502);
+    const orderId = await seedOrder();
+
+    await enqueueManualOrderAdminAlert(prisma, {
+      orderId,
+      orderCode: "ORD-MANUALTEST",
+      items: [{ name: "Netflix Premium", qty: 2 }],
+      total: new Decimal("15.50"),
+      currency: "USDT",
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED, orderId },
+    });
+    const chatIds = rows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b);
+    expect(chatIds).toEqual([4001, 4002, 4501, 4502]);
+    const payload = JSON.parse(rows[0]!.payloadJson) as {
+      order_code: string;
+      items: { name: string; qty: number }[];
+      total: string;
+      currency: string;
+    };
+    expect(payload.order_code).toBe("ORD-MANUALTEST");
+    expect(payload.items).toEqual([{ name: "Netflix Premium", qty: 2 }]);
+    expect(payload.total).toBe("15.5");
+    expect(payload.currency).toBe("USDT");
   });
 });
 

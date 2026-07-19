@@ -1,12 +1,12 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
+import { SaveConfirmDialog } from "../components/shared/SaveConfirmDialog";
 import { apiPost } from "../api/client";
 
 interface SettingsField {
@@ -170,30 +170,12 @@ function useSettings() {
 function FieldRow({ field, onSaved }: { field: SettingsField; onSaved: () => void }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(field.value);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (!success) return;
-    const timer = setTimeout(() => setSuccess(false), 2500);
-    return () => clearTimeout(timer);
-  }, [success]);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   async function save() {
-    setSaving(true);
-    setError(null);
-    setSuccess(false);
-    try {
-      await apiPost("/api/settings/edit", { key: field.key, value });
-      setEditing(false);
-      setSuccess(true);
-      onSaved();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to save");
-    } finally {
-      setSaving(false);
-    }
+    await apiPost("/api/settings/edit", { key: field.key, value });
+    setEditing(false);
+    onSaved();
   }
 
   return (
@@ -223,8 +205,8 @@ function FieldRow({ field, onSaved }: { field: SettingsField; onSaved: () => voi
               autoFocus
               className="w-full max-w-sm"
             />
-            <Button size="sm" onClick={save} disabled={saving}>
-              {saving ? "Saving…" : "Save"}
+            <Button size="sm" onClick={() => setConfirmOpen(true)}>
+              Save
             </Button>
             <Button
               size="sm"
@@ -232,16 +214,23 @@ function FieldRow({ field, onSaved }: { field: SettingsField; onSaved: () => voi
               onClick={() => {
                 setEditing(false);
                 setValue(field.value);
-                setError(null);
               }}
             >
               Cancel
             </Button>
-            {error && <p className="text-xs text-rust">{error}</p>}
-            {success && <p className="text-xs text-grass">Saved successfully</p>}
           </div>
         )}
       </div>
+      {/* Rendered unconditionally (not inside `editing && …`) — save()
+          flips `editing` false as soon as the request resolves, which would
+          otherwise unmount this mid-animation and cut off the checkmark. */}
+      <SaveConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={`Save "${field.label}"?`}
+        description="This updates the live setting immediately."
+        onConfirm={save}
+      />
       {!editing && (
         <Button
           size="sm"
@@ -265,7 +254,7 @@ export function SettingsPage() {
   // Password change
   const [pwCurrent, setPwCurrent] = useState("");
   const [pwNew, setPwNew] = useState("");
-  const [pwSaving, setPwSaving] = useState(false);
+  const [pwConfirmOpen, setPwConfirmOpen] = useState(false);
 
   // 2FA
   const [totpCode, setTotpCode] = useState("");
@@ -273,44 +262,36 @@ export function SettingsPage() {
   const [tfaSaving, setTfaSaving] = useState(false);
   const [disablePw, setDisablePw] = useState("");
   const [disableTotp, setDisableTotp] = useState("");
+  const [tfaEnableConfirmOpen, setTfaEnableConfirmOpen] = useState(false);
+  const [tfaDisableConfirmOpen, setTfaDisableConfirmOpen] = useState(false);
 
   // FX refresh
-  const [fxRefreshing, setFxRefreshing] = useState(false);
+  const [fxConfirmOpen, setFxConfirmOpen] = useState(false);
+
+  // Payment gateway toggle
+  const [pendingToggle, setPendingToggle] = useState<
+    { methodKey: string; label: string; nextEnabled: boolean } | null
+  >(null);
 
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ["settings"] }); };
 
   async function refreshFx() {
-    setFxRefreshing(true);
-    try {
-      const result = await apiPost<{ ok: boolean; status: string; rate: string }>(
-        "/api/settings/fx/refresh",
-        {},
-      );
-      toast.success(`Rate updated to ${result.rate} (${result.status})`);
-      invalidate();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to refresh rate");
-    } finally {
-      setFxRefreshing(false);
-    }
+    const result = await apiPost<{ ok: boolean; status: string; rate: string }>(
+      "/api/settings/fx/refresh",
+      {},
+    );
+    invalidate();
+    return `Rate updated to ${result.rate} (${result.status})`;
   }
 
-  async function changePassword(e: React.FormEvent) {
-    e.preventDefault();
-    setPwSaving(true);
-    try {
-      await apiPost("/api/settings/password", {
-        current_password: pwCurrent,
-        new_password: pwNew,
-      });
-      toast.success("Password changed successfully.");
-      setPwCurrent("");
-      setPwNew("");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to change password");
-    } finally {
-      setPwSaving(false);
-    }
+  async function changePassword() {
+    await apiPost("/api/settings/password", {
+      current_password: pwCurrent,
+      new_password: pwNew,
+    });
+    setPwCurrent("");
+    setPwNew("");
+    return "Password changed successfully.";
   }
 
   async function tfaAction(path: string, body: Record<string, string>) {
@@ -329,16 +310,28 @@ export function SettingsPage() {
     }
   }
 
+  async function enableTwoFa() {
+    await apiPost("/api/settings/2fa/enable", { totp_code: totpCode });
+    setTotpCode("");
+    invalidate();
+    return "Two-factor authentication enabled.";
+  }
+
+  async function disableTwoFa() {
+    await apiPost("/api/settings/2fa/disable", {
+      current_password: disablePw,
+      totp_code: disableTotp,
+    });
+    setDisablePw("");
+    setDisableTotp("");
+    invalidate();
+    return "Two-factor authentication disabled.";
+  }
+
   const togglePayment = useMutation({
     mutationFn: ({ method, enabled }: { method: string; enabled: boolean }) =>
       apiPost("/api/settings/payments/toggle", { method, enabled: enabled ? "true" : "false" }),
-    onSuccess: () => {
-      invalidate();
-      toast.success("Payment method updated");
-    },
-    onError: (error: Error) => {
-      toast.error(error.message || "Failed to update payment method");
-    },
+    onSuccess: () => invalidate(),
   });
 
   return (
@@ -476,7 +469,7 @@ export function SettingsPage() {
                     <Switch
                       checked={methodState.enabled}
                       onCheckedChange={(checked) =>
-                        togglePayment.mutate({ method: methodKey, enabled: checked })
+                        setPendingToggle({ methodKey, label, nextEnabled: checked })
                       }
                       aria-label={`${methodState.enabled ? "Disable" : "Enable"} ${label}`}
                     />
@@ -492,6 +485,31 @@ export function SettingsPage() {
               )}
             </Card>
           ))}
+
+          <SaveConfirmDialog
+            open={pendingToggle !== null}
+            onOpenChange={(open) => { if (!open) setPendingToggle(null); }}
+            title={
+              pendingToggle
+                ? `${pendingToggle.nextEnabled ? "Enable" : "Disable"} ${pendingToggle.label}?`
+                : ""
+            }
+            description={
+              pendingToggle?.nextEnabled
+                ? "Customers will be able to pay with this gateway immediately."
+                : "Customers will no longer be able to pay with this gateway."
+            }
+            confirmLabel={pendingToggle?.nextEnabled ? "Enable" : "Disable"}
+            variant={pendingToggle?.nextEnabled ? "default" : "destructive"}
+            successMessage="Payment method updated"
+            onConfirm={async () => {
+              if (!pendingToggle) return;
+              await togglePayment.mutateAsync({
+                method: pendingToggle.methodKey,
+                enabled: pendingToggle.nextEnabled,
+              });
+            }}
+          />
 
           {/* Other / catch-all for any future fields */}
           {showOther && (
@@ -519,13 +537,17 @@ export function SettingsPage() {
                 ))}
               </div>
               <div className="flex items-center gap-3 pt-3">
-                <Button
-                  onClick={refreshFx}
-                  disabled={fxRefreshing}
-                  variant="outline"
-                >
-                  {fxRefreshing ? "Refreshing…" : "Refresh USDT Rate"}
+                <Button onClick={() => setFxConfirmOpen(true)} variant="outline">
+                  Refresh USDT Rate
                 </Button>
+                <SaveConfirmDialog
+                  open={fxConfirmOpen}
+                  onOpenChange={setFxConfirmOpen}
+                  title="Refresh the USDT exchange rate?"
+                  description="Fetches the current market rate and applies it immediately."
+                  confirmLabel="Refresh"
+                  onConfirm={refreshFx}
+                />
               </div>
             </CardContent>
           </Card>
@@ -543,7 +565,10 @@ export function SettingsPage() {
                   Change Password
                 </div>
                 <form
-                  onSubmit={changePassword}
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    setPwConfirmOpen(true);
+                  }}
                   className="flex flex-col gap-2 max-w-xs"
                 >
                   <Input
@@ -561,14 +586,18 @@ export function SettingsPage() {
                     required
                     minLength={8}
                   />
-                  <Button
-                    type="submit"
-                    disabled={pwSaving}
-                    className="self-start"
-                  >
-                    {pwSaving ? "Saving…" : "Change Password"}
+                  <Button type="submit" className="self-start">
+                    Change Password
                   </Button>
                 </form>
+                <SaveConfirmDialog
+                  open={pwConfirmOpen}
+                  onOpenChange={setPwConfirmOpen}
+                  title="Change your password?"
+                  description="You'll need the new password next time you sign in."
+                  confirmLabel="Change Password"
+                  onConfirm={changePassword}
+                />
               </div>
 
               {/* Two-Factor Authentication */}
@@ -615,13 +644,8 @@ export function SettingsPage() {
                         className="w-36"
                         maxLength={6}
                       />
-                      <Button
-                        onClick={() =>
-                          tfaAction("/api/settings/2fa/enable", { totp_code: totpCode })
-                        }
-                        disabled={tfaSaving}
-                      >
-                        {tfaSaving ? "…" : "Confirm"}
+                      <Button onClick={() => setTfaEnableConfirmOpen(true)} disabled={tfaSaving}>
+                        Confirm
                       </Button>
                       <Button
                         variant="ghost"
@@ -657,20 +681,36 @@ export function SettingsPage() {
                       />
                       <Button
                         variant="destructive"
-                        onClick={() =>
-                          tfaAction("/api/settings/2fa/disable", {
-                            current_password: disablePw,
-                            totp_code: disableTotp,
-                          })
-                        }
+                        onClick={() => setTfaDisableConfirmOpen(true)}
                         disabled={tfaSaving}
                         className="self-start"
                       >
-                        {tfaSaving ? "…" : "Disable 2FA"}
+                        Disable 2FA
                       </Button>
                     </div>
                   </div>
                 )}
+                {/* Both rendered unconditionally — enabling/disabling 2FA
+                    flips data.twoFaPending/twoFaEnabled on refetch, which
+                    would otherwise unmount these mid-animation and cut off
+                    the checkmark. */}
+                <SaveConfirmDialog
+                  open={tfaEnableConfirmOpen}
+                  onOpenChange={setTfaEnableConfirmOpen}
+                  title="Enable two-factor authentication?"
+                  description="You'll need your authenticator app's code every time you sign in from now on."
+                  confirmLabel="Enable"
+                  onConfirm={enableTwoFa}
+                />
+                <SaveConfirmDialog
+                  open={tfaDisableConfirmOpen}
+                  onOpenChange={setTfaDisableConfirmOpen}
+                  title="Disable two-factor authentication?"
+                  description="Your account will only be protected by your password after this."
+                  confirmLabel="Disable"
+                  variant="destructive"
+                  onConfirm={disableTwoFa}
+                />
               </div>
 
             </CardContent>

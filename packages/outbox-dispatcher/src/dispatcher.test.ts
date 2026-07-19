@@ -26,6 +26,7 @@ import {
   createDenomination,
   updateDenomination,
   upsertUser,
+  addAdminIdToDb,
 } from "@app/db";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 import { NotificationEvent, OrderCurrency, DeliveryType } from "@app/core/enums";
@@ -284,13 +285,42 @@ describe("drainBatch delivers the per-SKU manual delivery-flow DMs", () => {
     const { bot, sendMessage } = fakeBot();
     await drainBatch(bot);
 
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    const [chatId, text] = sendMessage.mock.calls[0]!;
-    expect(chatId).toBe(500_001);
+    // settlePaidOrder also enqueues an ADMIN_MANUAL_ORDER_QUEUED alert
+    // (asserted separately below), so this buyer's chat id may not be the
+    // only call — find the buyer's specifically, same pattern the later
+    // tests in this block use to isolate one call among several.
+    const buyerCall = sendMessage.mock.calls.find((call) => call[0] === 500_001);
+    expect(buyerCall).toBeDefined();
+    const [, text] = buyerCall! as [number, string];
     expect(text).toContain(order!.orderCode);
 
     const row = await prisma.notificationOutbox.findFirst({
       where: { orderId: order!.id, event: NotificationEvent.ORDER_PROCESSING_DM },
+    });
+    expect(row!.status).toBe("SENT");
+  });
+
+  it("also alerts admins (ADMIN_MANUAL_ORDER_QUEUED) that the order needs hand-fulfilment", async () => {
+    const buyer = await makeBuyer(500_005);
+    const admin = await makeAdmin(900_000_005);
+    await addAdminIdToDb(prisma, 900_000_005);
+    const denom = await makeManualDenom();
+    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-1" });
+
+    const result = await settlePaidOrder(prisma, order!.id, { adminId: admin.id });
+    expect(result.kind).toBe("processing");
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    const adminCall = sendMessage.mock.calls.find((call) => call[0] === 900_000_005);
+    expect(adminCall).toBeDefined();
+    const [, text] = adminCall! as [number, string];
+    expect(text).toContain(order!.orderCode);
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order!.id, event: NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED },
     });
     expect(row!.status).toBe("SENT");
   });

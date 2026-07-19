@@ -46,6 +46,9 @@ apps/storefront/static/shop-app/
 # --- git worktrees (isolated workspaces for parallel feature work) ---
 /.worktrees/
 
+# --- Playwright MCP scratch output (console logs, page snapshots) ---
+/.playwright-mcp/
+
 # --- subagent-driven-development scratch (task briefs, reports, progress ledger) ---
 /.superpowers/
 

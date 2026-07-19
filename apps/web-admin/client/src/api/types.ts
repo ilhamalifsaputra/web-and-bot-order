@@ -106,7 +106,7 @@ export interface HealthStatus {
 
 export interface TopProductRow {
   productId: number;
-  name: string;
+  productLabel: string;
   unitsSold: number;
   revenueIdrEquiv: string;
   profitIdrEquiv: string | null;

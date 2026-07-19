@@ -152,6 +152,31 @@ describe("PaymentsPage", () => {
     fireEvent.change(screen.getByPlaceholderText("Order code"), { target: { value: "ORDER-9" } });
     expect(screen.getByRole("button", { name: "Match" })).not.toBeDisabled();
   });
+
+  it("shows a Dismiss action for an unmatched transfer and dismisses it after confirming", async () => {
+    const ledger = [
+      { id: 1, binanceTxId: "TX1", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger, total: 1, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("TX1")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/TX1/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Dismiss" }));
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "TX1" }));
+  });
+
+  it("does not show a Dismiss action for a matched transfer", async () => {
+    mockPaymentsFetch({ enabled: true, ledger: [TX], total: 1, page: 1, hasNext: false, outcomes: ["MATCHED", "UNMATCHED"], counts: { MATCHED: 1 } });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("TX123")).toBeInTheDocument());
+
+    expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument();
+  });
 });
 
 const UNDERPAID = {

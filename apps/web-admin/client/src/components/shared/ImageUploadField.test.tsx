@@ -91,4 +91,37 @@ describe("ImageUploadField", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
+
+  it("shows a brief checkmark after a successful upload when showSuccessCheckmark is set", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ url: "/uploads/products/product-abc123.png" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { onUploaded } = renderField({ showSuccessCheckmark: true });
+    const user = await pickFile();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onUploaded).toHaveBeenCalled());
+    expect(screen.getByText("Saved")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+
+    await waitFor(() => expect(screen.queryByText("Saved")).not.toBeInTheDocument(), { timeout: 2000 });
+  });
+
+  it("does not show a checkmark after upload when showSuccessCheckmark is unset (default)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ url: "/uploads/products/product-abc123.png" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const { onUploaded } = renderField();
+    const user = await pickFile();
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(onUploaded).toHaveBeenCalled());
+    expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+  });
 });

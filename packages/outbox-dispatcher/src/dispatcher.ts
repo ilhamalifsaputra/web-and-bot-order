@@ -56,6 +56,7 @@ const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.ORDER_PIPELINE_FAILED, // admin DM (Bybit BSC tracking pipeline failure)
   NotificationEvent.ORDER_PROCESSING_DM, // buyer DM (manual order queued for hand-fulfilment)
   NotificationEvent.PRODUCT_RESTOCKED_BROADCAST, // buyer DM (restock broadcast, all customers)
+  NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED, // admin DM (order queued for hand-fulfilment)
 ]);
 
 /** Telegram's hard cap on a single message's text length. */

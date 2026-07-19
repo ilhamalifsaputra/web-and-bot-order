@@ -23,6 +23,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FastifyInstance } from "fastify";
+import { config } from "@app/core/config";
 import { t } from "@app/core/i18n";
 import { prisma, getSetting, getCategoryBySlug, getCatalogProductBySlugWithDenominations } from "@app/db";
 import { optionalCustomer } from "../plugins/auth";
@@ -35,6 +36,21 @@ const SPA_INDEX_PATH = join(STATIC_DIR, "shop-app", "index.html");
 /** Minimal HTML-attribute escape for strings interpolated into meta tags. */
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/** Public origin for absolute canonical URLs — same fallback chain used in
+ * checkout.ts's shopPublicUrl() / seo.ts's baseUrl(). */
+function baseUrl(): string | null {
+  return config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null;
+}
+
+/** Absolute canonical <link> for `path` (query stripped, though callers
+ * already pass a query-free path) — omitted entirely when no public base
+ * URL is configured, rather than emitting a broken/relative href. */
+function canonicalLink(path: string): string {
+  const origin = baseUrl();
+  if (!origin) return "";
+  return `<link rel="canonical" href="${esc(origin + path.split("?")[0])}">`;
 }
 
 /** Static path → i18n title key. Everything else falls to shop_name / lookups. */
@@ -74,7 +90,7 @@ async function headInfo(path: string, lang: string, shopName: string, query: str
   if (path === "/") {
     return {
       title: shopName,
-      meta: `<meta name="description" content="${esc(t("web.hero_sub", lang))}">`,
+      meta: `<meta name="description" content="${esc(t("web.hero_sub", lang))}">` + canonicalLink(path),
       status: 200,
     };
   }
@@ -85,13 +101,40 @@ async function headInfo(path: string, lang: string, shopName: string, query: str
       return { title: `404 — ${shopName}`, meta: "", status: 404 };
     }
     const desc = (product.description ?? "").trim().slice(0, 160);
+    // Structured data (schema.org Product) for rich snippets — cheapest
+    // active denomination (already price-ascending, see catalog.ts's
+    // getCatalogProductBySlugWithDenominations orderBy) drives `offers`.
+    // Per-item stock counts are a separate table (out of scope), so
+    // availability is simplified to InStock whenever the page renders at
+    // all (it 404s above when denominations.length === 0).
+    const jsonLd: Record<string, unknown> = {
+      "@context": "https://schema.org",
+      "@type": "Product",
+      name: product.name,
+    };
+    if (product.description) jsonLd.description = product.description;
+    if (product.webImageUrl) jsonLd.image = product.webImageUrl;
+    jsonLd.offers = {
+      "@type": "Offer",
+      price: product.denominations[0]!.price.toString(),
+      priceCurrency: "IDR",
+      availability: "https://schema.org/InStock",
+    };
+    // The JSON payload can carry admin-entered free text (name/description)
+    // that includes the literal string `</script>` — escape any `</`
+    // sequence so it can't prematurely close this <script> tag and inject
+    // arbitrary HTML/JS (a real stored-XSS risk, not hypothetical).
+    const jsonLdScript =
+      `<script type="application/ld+json">${JSON.stringify(jsonLd).replace(/<\//g, "<\\/")}</script>`;
     return {
       title: `${product.name} — ${shopName}`,
       meta:
         `<meta name="description" content="${esc(desc)}">` +
         `<meta property="og:title" content="${esc(product.name)}">` +
         `<meta property="og:type" content="product">` +
-        (product.webImageUrl ? `<meta property="og:image" content="${esc(product.webImageUrl)}">` : ""),
+        (product.webImageUrl ? `<meta property="og:image" content="${esc(product.webImageUrl)}">` : "") +
+        canonicalLink(path) +
+        jsonLdScript,
       status: 200,
     };
   }
@@ -103,7 +146,7 @@ async function headInfo(path: string, lang: string, shopName: string, query: str
     }
     return {
       title: `${category.name} — ${shopName}`,
-      meta: `<meta property="og:title" content="${esc(category.name)}">`,
+      meta: `<meta property="og:title" content="${esc(category.name)}">` + canonicalLink(path),
       status: 200,
     };
   }
@@ -113,14 +156,16 @@ async function headInfo(path: string, lang: string, shopName: string, query: str
     // showing the generic placeholder copy.
     const q = new URLSearchParams(query).get("q")?.trim();
     const heading = q ? t("web.search_results", lang, { q }) : t("web.search_placeholder", lang);
-    return { title: `${heading} — ${shopName}`, meta: "", status: 200 };
+    // Canonicalizes to the bare /search path (no ?q=) — the query-stripped
+    // canonicalLink() dedupes every search-term variant to one URL.
+    return { title: `${heading} — ${shopName}`, meta: canonicalLink(path), status: 200 };
   }
   for (const [re, key] of TITLE_KEYS) {
-    if (re.test(path)) return { title: `${t(key, lang)} — ${shopName}`, meta: "", status: 200 };
+    if (re.test(path)) return { title: `${t(key, lang)} — ${shopName}`, meta: canonicalLink(path), status: 200 };
   }
   // /account/orders/:code — order codes are private; generic title, no lookup.
   if (/^\/account\/orders\/[^/]+$/.test(path)) {
-    return { title: `${t("web.account_orders", lang)} — ${shopName}`, status: 200, meta: "" };
+    return { title: `${t("web.account_orders", lang)} — ${shopName}`, status: 200, meta: canonicalLink(path) };
   }
   if (!KNOWN_PATHS.test(path)) {
     return { title: `404 — ${shopName}`, meta: "", status: 404 };

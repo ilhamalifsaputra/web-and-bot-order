@@ -330,6 +330,34 @@ describe("language", () => {
   });
 });
 
+describe("static assets — cache headers + compression (Group C, SEO plan)", () => {
+  // STATIC_DIR only (server.ts) — Vite content-hashes the built SPA's asset
+  // filenames, so a 1-year immutable cache is safe; UPLOADS_DIR deliberately
+  // gets none of this (product photos are admin-replaceable at a stable URL).
+  it("serves a /static/* asset with a 1-year immutable cache-control header", async () => {
+    const res = await app.inject({ method: "GET", url: "/static/favicon.svg" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["cache-control"]).toContain("immutable");
+    expect(res.headers["cache-control"]).toContain("max-age=31536000");
+  });
+
+  // @fastify/compress only engages above its default 1024-byte threshold, so
+  // this hits static/app.css (6.6KB, a real committed file — not the
+  // content-hashed shop-app/assets/* whose filenames change every build) to
+  // stay above that floor. Confirmed empirically against light-my-request:
+  // app.inject() does exercise the real compress hook (verified against
+  // @fastify/compress's own test suite, which asserts the same way).
+  it("compresses a large static response when the client sends Accept-Encoding: gzip", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/static/app.css",
+      headers: { "accept-encoding": "gzip" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-encoding"]).toBe("gzip");
+  });
+});
+
 describe("/api/v1/cart — guest line label + cookie versioning", () => {
   // spa-api.test.ts already covers the guest add/update/remove happy path and
   // the signed-in CSRF trio; the scenarios below (the `Product - Denomination`

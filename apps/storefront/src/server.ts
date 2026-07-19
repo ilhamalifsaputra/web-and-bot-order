@@ -7,6 +7,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
+import compress from "@fastify/compress";
 import cookie from "@fastify/cookie";
 import formbody from "@fastify/formbody";
 import fastifyStatic from "@fastify/static";
@@ -26,6 +27,7 @@ import apiAuthRoutes from "./routes/apiAuth";
 import apiCartRoutes from "./routes/apiCart";
 import apiCheckoutRoutes from "./routes/apiCheckout";
 import apiAccountRoutes from "./routes/apiAccount";
+import seoRoutes from "./routes/seo";
 import spaShellRoutes from "./routes/spaShell";
 import { requestLang } from "./shop";
 
@@ -76,7 +78,24 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   await app.register(cookie);
   await app.register(formbody);
-  await app.register(fastifyStatic, { root: STATIC_DIR, prefix: "/static/" });
+  // SEO/perf: gzip/br/zstd HTML, JSON and static-asset responses. `global: true`
+  // is the plugin default, so every route (SPA shell, /api/v1/*, /static/*) gets
+  // compressed transparently. Must be registered before @fastify/static per its
+  // own docs, so the compress hook wraps the static-file send path too.
+  await app.register(compress);
+  // Long-lived immutable caching is safe here ONLY because Vite content-hashes
+  // every built asset's filename (e.g. index-BWFJ4i1w.js) — a new deploy ships
+  // under a new URL, so there's no staleness risk. Do NOT copy these options to
+  // the UPLOADS_DIR registration below: product photos are admin-replaceable at
+  // the same URL with no content hash, so long caching there would serve stale
+  // images after an update.
+  await app.register(fastifyStatic, {
+    root: STATIC_DIR,
+    prefix: "/static/",
+    cacheControl: true,
+    maxAge: "1y",
+    immutable: true,
+  });
   await app.register(fastifyStatic, {
     root: UPLOADS_DIR,
     prefix: "/uploads/",
@@ -144,6 +163,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(apiCartRoutes, { prefix: "/api/v1" });
   await app.register(apiCheckoutRoutes, { prefix: "/api/v1" });
   await app.register(apiAccountRoutes, { prefix: "/api/v1" });
+  await app.register(seoRoutes);
 
   // Liveness probe for the combined server / uptime pings (admin has its own).
   app.get("/healthz", async () => {

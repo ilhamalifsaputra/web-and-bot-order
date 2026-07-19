@@ -34,6 +34,7 @@ vi.mock("@app/core/payments/nowpayments", async (orig) => ({
   }),
 }));
 import type { FastifyInstance } from "fastify";
+import { config } from "@app/core/config";
 import { cleanupTestDb } from "./setup-env";
 import {
   prisma,
@@ -277,6 +278,114 @@ describe("SPA shell wildcard", () => {
     const res = await app.inject({ method: "GET", url: path });
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain(`<title>${title} — SPA Test Shop</title>`);
+  });
+
+  // Group B (storefront SEO quick-wins): canonical <link> on every branch of
+  // headInfo(), absolute via the same SHOP_PUBLIC_URL/PUBLIC_URL fallback
+  // chain seo.ts uses — test env sets SHOP_PUBLIC_URL to shop.test.invalid.
+  describe("canonical <link>", () => {
+    it("is present and correct on /", async () => {
+      const res = await app.inject({ method: "GET", url: "/" });
+      expect(res.body).toContain('<link rel="canonical" href="https://shop.test.invalid/">');
+    });
+
+    it("is present and correct on a product page", async () => {
+      const res = await app.inject({ method: "GET", url: `/p/${productSlug}` });
+      expect(res.body).toContain(`<link rel="canonical" href="https://shop.test.invalid/p/${productSlug}">`);
+    });
+
+    it("is present and correct on a category page", async () => {
+      const res = await app.inject({ method: "GET", url: `/c/${categorySlug}` });
+      expect(res.body).toContain(`<link rel="canonical" href="https://shop.test.invalid/c/${categorySlug}">`);
+    });
+
+    it("canonicalizes /search?q=foo to /search, dropping the query string", async () => {
+      const res = await app.inject({ method: "GET", url: "/search?q=foo" });
+      expect(res.body).toContain('<link rel="canonical" href="https://shop.test.invalid/search">');
+      expect(res.body).not.toContain("q=foo");
+    });
+
+    // No public URL configured → omit the tag entirely rather than emit a
+    // broken/relative href (same degrade-gracefully philosophy as seo.ts's
+    // sitemap/robots routes for the same misconfiguration).
+    it("is absent (not broken) when SHOP_PUBLIC_URL and PUBLIC_URL are both unset", async () => {
+      const original = config.SHOP_PUBLIC_URL;
+      config.SHOP_PUBLIC_URL = undefined;
+      try {
+        expect(config.PUBLIC_URL).toBeUndefined();
+        const res = await app.inject({ method: "GET", url: "/" });
+        expect(res.statusCode).toBe(200);
+        expect(res.body).not.toContain('rel="canonical"');
+        expect(res.body).not.toContain("application/ld+json");
+      } finally {
+        config.SHOP_PUBLIC_URL = original;
+      }
+    });
+  });
+
+  // Group B: schema.org Product JSON-LD, product pages only.
+  describe("Product JSON-LD", () => {
+    /** Extracts and parses the single application/ld+json <script> block's contents. */
+    function extractJsonLd(html: string): unknown {
+      const blocks = [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)];
+      expect(blocks).toHaveLength(1); // exactly one — a breakout would produce 0 or >1
+      return JSON.parse(blocks[0]![1]!);
+    }
+
+    it("is present on a product page with the correct name and price", async () => {
+      const res = await app.inject({ method: "GET", url: `/p/${productSlug}` });
+      expect(res.statusCode).toBe(200);
+      const jsonLd = extractJsonLd(res.body) as Record<string, unknown>;
+      expect(jsonLd).toMatchObject({
+        "@context": "https://schema.org",
+        "@type": "Product",
+        name: "Netflix Premium",
+        offers: {
+          "@type": "Offer",
+          price: "40000",
+          priceCurrency: "IDR",
+          availability: "https://schema.org/InStock",
+        },
+      });
+    });
+
+    it("is absent on non-product pages", async () => {
+      const res = await app.inject({ method: "GET", url: "/" });
+      expect(res.body).not.toContain("application/ld+json");
+    });
+
+    // A product description containing the literal string `</script>` must
+    // not be able to close the JSON-LD <script> tag early and inject
+    // arbitrary markup — mirrors the $-pattern safety test above, for the
+    // JSON-LD escaping path instead of the .replace() function-form path.
+    it("escapes a </script>-breakout attempt in the product description", async () => {
+      const evilCategory = await prisma.category.create({
+        data: { name: "Evil Cat", slug: "evil-cat-jsonld", emoji: "😈", sortOrder: 99 },
+      });
+      const evilProduct = await createCatalogProduct(prisma, {
+        categoryId: evilCategory.id,
+        name: "Evil Product",
+        description: '</script><script>alert(1)</script>',
+      });
+      await createDenomination(prisma, {
+        productId: evilProduct.id,
+        name: "1 Month",
+        type: "SHARED",
+        durationLabel: "1 Month",
+        price: "10000",
+      });
+
+      const res = await app.inject({ method: "GET", url: `/p/${evilProduct.slug}` });
+      expect(res.statusCode).toBe(200);
+      // The raw, unescaped payload must never appear in the response body.
+      expect(res.body).not.toContain('</script><script>alert(1)</script>');
+      // Exactly one JSON-LD block — a successful breakout would split this
+      // into multiple <script> tags (or corrupt parsing entirely).
+      const jsonLd = extractJsonLd(res.body) as Record<string, unknown>;
+      expect(jsonLd.description).toBe('</script><script>alert(1)</script>');
+      // The escaped form (<\/script>) is what actually appears in the markup.
+      expect(res.body).toContain('<\\/script><script>alert(1)<\\/script>');
+    });
   });
 });
 

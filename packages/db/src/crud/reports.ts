@@ -28,7 +28,40 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
   const orders = await db.order.findMany({
     where: { status: { not: OrderStatus.CANCELLED } },
   });
+
+  // Which currency each order's wallet leg was actually paid in, read from the
+  // ledger rather than inferred from Order.currency. `Order.walletUsed` is a
+  // bare number with no currency of its own: on a USDT order it is USDT
+  // (applyUsdtWalletToOrder debits AFTER the IDR→USDT conversion), on an IDR
+  // order it is IDR (createOrder* debits BEFORE any conversion). That the two
+  // never mix on one order holds today only by caller discipline
+  // (createInternalOrder and the wallet_checkout rails each deliberately
+  // withhold the IDR walletAmount) — nothing enforces it, and a future caller
+  // that passed both would make every affected order look like drift while the
+  // real error went unnamed. Reading the WalletTransaction rows, which DO carry
+  // a currency, removes the assumption instead of restating it.
+  const walletLegs = await db.walletTransaction.findMany({
+    where: { reason: "order_payment", orderId: { in: orders.map((o) => o.id) } },
+    select: { orderId: true, currency: true, delta: true },
+  });
+  const walletByOrder = new Map<number, { idr: Decimal; usdt: Decimal; any: boolean }>();
+  for (const leg of walletLegs) {
+    if (leg.orderId == null) continue;
+    const acc = walletByOrder.get(leg.orderId) ?? { idr: new Decimal(0), usdt: new Decimal(0), any: false };
+    // Debits are stored negative; the order's wallet leg is their magnitude.
+    const spent = new Decimal(leg.delta).negated();
+    if (leg.currency === "USDT") acc.usdt = acc.usdt.plus(spent);
+    else acc.idr = acc.idr.plus(spent);
+    acc.any = true;
+    walletByOrder.set(leg.orderId, acc);
+  }
+
   for (const o of orders) {
+    // Orders predating the ledger's orderId stamping have no legs to read —
+    // fall back to the stored figure, interpreted the historical way.
+    const legs = walletByOrder.get(o.id);
+    const walletIdr = legs?.any ? legs.idr : o.currency === "USDT" ? new Decimal(0) : new Decimal(o.walletUsed);
+    const walletUsdt = legs?.any ? legs.usdt : o.currency === "USDT" ? new Decimal(o.walletUsed) : new Decimal(0);
     const afterDisc = new Decimal(o.subtotalAmount)
       .minus(o.bulkDiscountAmount)
       .minus(o.discountAmount);
@@ -36,22 +69,25 @@ export async function reconcileFinances(db: Db): Promise<ReconcileFindings> {
     // pre-cutover snapshot unit before). The CHARGED total depends on the
     // pay-time choice (plan.md §15.1): a USDT order with an fxRate snapshot is
     // round(base/rate, 0.1) + cents; an IDR order is the whole-Rupiah base.
+    //
+    // Each wallet leg is subtracted in ITS OWN currency and at the right point
+    // in the conversion: an IDR leg comes off the central-IDR base BEFORE the
+    // IDR→USDT conversion (that is where createOrder* spends it), a USDT leg
+    // comes off the already-converted total AFTER it (where
+    // applyUsdtWalletToOrder spends it). Written this way the expression is
+    // correct for either leg, both, or neither.
     let expected: Decimal;
     if (o.currency === "USDT" && o.fxRate != null) {
-      // walletUsed on a USDT order is USDT-denominated: applyUsdtWalletToOrder
-      // (orders.ts) debits the USDT balance and subtracts it from the
-      // ALREADY-converted totalAmount, after the IDR->USDT conversion — unlike
-      // the IDR wallet paths below, which subtract IDR walletUsed before any
-      // conversion happens.
-      let afterWallet = usdtFromIdr(afterDisc, o.fxRate).minus(o.walletUsed);
+      const baseIdr = Decimal.max(new Decimal(0), afterDisc.minus(walletIdr));
+      let afterWallet = usdtFromIdr(baseIdr, o.fxRate).minus(walletUsdt);
       if (afterWallet.lessThan(0)) afterWallet = new Decimal(0);
       expected = q4(afterWallet.plus(o.uniqueCents));
     } else if (o.currency === "IDR") {
-      let afterWallet = afterDisc.minus(o.walletUsed);
+      let afterWallet = afterDisc.minus(walletIdr);
       if (afterWallet.lessThan(0)) afterWallet = new Decimal(0);
       expected = quantizeMoney(afterWallet, 0);
     } else {
-      let afterWallet = afterDisc.minus(o.walletUsed);
+      let afterWallet = afterDisc.minus(walletIdr).minus(walletUsdt);
       if (afterWallet.lessThan(0)) afterWallet = new Decimal(0);
       expected = q4(afterWallet.plus(o.uniqueCents));
     }

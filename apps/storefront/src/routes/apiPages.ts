@@ -11,6 +11,7 @@
 import type { FastifyPluginAsync } from "fastify";
 import { config } from "@app/core/config";
 import { localize } from "@app/core/datetime";
+import { UserRole } from "@app/core/enums";
 import { prisma, getSetting } from "@app/db";
 import { optionalCustomer } from "../plugins/auth";
 import { requestLang, readGuestCart, resolveBotUsername } from "../shop";
@@ -73,7 +74,14 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
 
   // ---- Product detail ----
   app.get<{ Params: { slug: string } }>("/pages/product/:slug", async (req, reply) => {
-    const data = await productPageData(req.params.slug);
+    // Price the page for whoever is asking — a reseller pays
+    // min(resellerPrice, flashPrice) at checkout, so quoting the everyone-price
+    // here would show them a number they'll never be charged.
+    const viewer = await optionalCustomer(req);
+    const data = await productPageData(
+      req.params.slug,
+      viewer?.user.role === UserRole.RESELLER,
+    );
     if (!data) return reply.code(404).send({ error: "not_found" });
     return reply.send({
       ...data,

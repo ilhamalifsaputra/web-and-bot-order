@@ -171,6 +171,7 @@
   "error.generic_ref": "⚠ Terjadi kesalahan (ref: {ref}). Coba lagi, atau hubungi support dengan kode ini.",
   "error.insufficient_wallet": "Saldo dompet tidak cukup.",
   "error.invalid_discount_percent": "Persentase diskon harus lebih dari 0 dan maksimal 100.",
+  "error.invalid_min_quantity": "Kuantitas minimum harus bilangan bulat minimal 1.",
   "error.invalid_flash_window": "Flash sale harus berakhir setelah waktu mulai, dan waktu berakhirnya harus di masa depan.",
   "error.invalid_quantity": "Jumlah tidak valid untuk <b>{product}</b>. Coba lagi.",
   "error.invalid_rating": "Rating harus antara 1 dan 5.",

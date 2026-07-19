@@ -455,6 +455,13 @@ export async function upsertBulkPricing(
   if (discountPercent.lte(0) || discountPercent.gt(100)) {
     throw new ValidationError("error.invalid_discount_percent");
   }
+  // A threshold below 1 makes a "buy N+, save X%" rule fire on every
+  // single-unit order — a permanent price cut nobody meant to configure.
+  // activeBulkPercent refuses such a rule at read time too; this is where the
+  // admin finds out about it.
+  if (!Number.isInteger(args.minQuantity) || args.minQuantity < 1) {
+    throw new ValidationError("error.invalid_min_quantity");
+  }
   const existing = await db.bulkPricing.findUnique({ where: { productId: denominationId } });
   if (existing) {
     return db.bulkPricing.update({

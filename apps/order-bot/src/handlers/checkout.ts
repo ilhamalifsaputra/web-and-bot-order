@@ -12,6 +12,8 @@ import { InlineKeyboard } from "grammy";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { effectiveUnitPrice } from "@app/core/flash";
+import { bulkDiscountFor } from "@app/core/bulk";
+import { quantizeMoney } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
 import { DeliveryType, NotificationEvent, OrderCurrency, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -184,10 +186,13 @@ async function computeConfirmation(
   // Same helper createOrderDirect prices with, so the confirmation screen can
   // never quote a figure the order itself won't charge.
   const unitPrice = effectiveUnitPrice(product, isReseller);
-  let subtotal = unitPrice.times(quantity);
-  if (bulkRule && quantity >= bulkRule.minQuantity) {
-    subtotal = subtotal.times(new Decimal(1).minus(new Decimal(bulkRule.discountPercent).div(100)));
-  }
+  // Quantized and bulk-reduced exactly the way createOrderDirect does it
+  // (q4 subtotal, then subtract bulkDiscountFor) — this screen previously
+  // multiplied by (1 − percent/100) instead, which is the same value only up to
+  // rounding and is the kind of second spelling that drifts into quoting a
+  // figure the order won't charge.
+  const grossSubtotal = quantizeMoney(unitPrice.times(quantity), 4);
+  let subtotal = grossSubtotal.minus(bulkDiscountFor(grossSubtotal, bulkRule, quantity));
 
   let voucherCode = (ctx.session.scratch.appliedVoucherCode as string | undefined) ?? "";
   let voucherLine = "";

@@ -14,6 +14,7 @@ import {
 } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
+import { bulkDiscountFor } from "@app/core/bulk";
 import { utcStamp, addMinutes } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
@@ -245,7 +246,9 @@ function unitPrice(
   return effectiveUnitPrice(product, isReseller, now);
 }
 
-/** Pure: total bulk discount across all cart lines. */
+/** Pure: total bulk discount across all cart lines. The per-line rule (does it
+ * apply, and how much does it take off) lives in @app/core/bulk so the bot's
+ * confirmation screen and this function can't spell it differently. */
 export function computeBulkDiscountForCart(
   cart: CartLine[],
   bulkRules: Record<number, BulkRule>,
@@ -254,10 +257,8 @@ export function computeBulkDiscountForCart(
 ): Decimal {
   let total = ZERO;
   for (const ci of cart) {
-    const rule = bulkRules[ci.productId];
-    if (!rule || ci.quantity < rule.minQuantity) continue;
     const itemSubtotal = unitPrice(ci.product, isReseller, now).times(ci.quantity);
-    total = total.plus(itemSubtotal.times(rule.discountPercent).div(100));
+    total = total.plus(bulkDiscountFor(itemSubtotal, bulkRules[ci.productId], ci.quantity));
   }
   return q4(total);
 }
@@ -522,12 +523,11 @@ export async function createOrderDirect(
   const unit = unitPrice(product, isReseller, new Date());
   const subtotal = q4(unit.times(args.quantity));
 
-  // Bulk discount
-  let bulkDiscount = ZERO;
+  // Bulk discount — same helper computeBulkDiscountForCart and the bot's
+  // confirmation screen use, so a single-SKU order can never be discounted by a
+  // different rule than the cart path would have applied.
   const rule = await getBulkPricingForDenomination(db, args.productId);
-  if (rule && args.quantity >= rule.minQuantity) {
-    bulkDiscount = q4(subtotal.times(rule.discountPercent).div(100));
-  }
+  const bulkDiscount = bulkDiscountFor(subtotal, rule, args.quantity);
 
   // Voucher
   let voucher = null as Awaited<ReturnType<typeof getVoucherByCode>> | null;
@@ -631,7 +631,11 @@ export async function createOrderDirect(
     });
   }
 
-  const afterDiscount = subtotal.minus(bulkDiscount).minus(voucherDiscount);
+  // Clamped for the same reason createOrderFromCart clamps (Money-2): a
+  // negative here would be persisted as a negative walletUsed/totalAmount and
+  // corrupt the audit trail. The voucher cap above makes it unreachable today —
+  // the clamp keeps it unreachable if either discount's own guards ever slip.
+  const afterDiscount = Decimal.max(ZERO, subtotal.minus(bulkDiscount).minus(voucherDiscount));
 
   // IDR wallet credit — mirrors createOrderFromCart's deduction logic.
   const walletAmountReq = q4(Decimal.max(ZERO, new Decimal(args.walletAmount ?? 0)));

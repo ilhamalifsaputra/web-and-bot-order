@@ -44,6 +44,8 @@ import {
   createCatalogProduct,
   createDenomination,
   createVoucher,
+  upsertBulkPricing,
+  deleteBulkPricing,
   addToCart,
   clearCart,
   getOrderByCode,
@@ -917,6 +919,56 @@ describe("checkout business rules (migrated from the Nunjucks checkout tests)", 
 
     const after = await prisma.order.count({ where: { userId: buyerId } });
     expect(after).toBe(before); // <-- the actual Task 8 bug: this used to grow
+  });
+
+  // The preview and the order are two implementations of one price. They
+  // disagreed whenever a cart carried BOTH a bulk rule and a percent voucher:
+  // computeTotals capped the voucher against the gross subtotal while
+  // createOrderFromCart capped it against the subtotal net of the bulk discount
+  // (the Money-2 rule), so the page quoted a smaller total than checkout
+  // charged. Assert they agree on the actual number, not just that both exist.
+  it("quotes the same total it charges when a bulk discount and a voucher stack (math audit F1)", async () => {
+    await createVoucher(prisma, { code: "STACK50", type: VoucherType.PERCENT, value: "50" });
+    await upsertBulkPricing(prisma, { denominationId: denomId, minQuantity: 2, discountPercent: "25" });
+    // QRIS/TokoPay so the order settles in IDR and its total is directly
+    // comparable to the previewed IDR figure (a USDT rail would convert).
+    await setSetting(prisma, "tokopay_merchant_id", "m-test");
+    await setSetting(prisma, "tokopay_secret", "s-test");
+    try {
+      // Start from an empty cart: this buyer's cart is shared with the tests
+      // around it, and a leftover line would silently change the subtotal the
+      // arithmetic below is pinned to.
+      await clearCart(prisma, buyerId);
+      await addToCart(prisma, buyerId, denomId, 2); // 2 × 40000 = 80000 gross
+
+      const preview = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout/voucher/preview",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { voucher_code: "STACK50" },
+      });
+      expect(preview.statusCode).toBe(200);
+      const quoted = preview.json();
+      expect(quoted.error_key).toBeNull();
+      // 80000 − 25% bulk (20000) = 60000; the voucher takes 50% of THAT.
+      expect(quoted.bulk_discount).toBe("20000");
+      expect(quoted.voucher_discount).toBe("30000");
+      expect(quoted.total).toBe("30000");
+
+      const placed = await placeOrder("qris", { voucher_code: "STACK50" });
+      expect(placed.statusCode).toBe(201);
+      const order = await getOrderByCode(prisma, placed.json().order_code);
+      // The charged figure, whole-rupiah for the IDR rail — byte-identical to
+      // what the buyer was shown.
+      expect(order!.totalAmount.toString()).toBe(quoted.total);
+      expect(order!.bulkDiscountAmount.toString()).toBe(quoted.bulk_discount);
+      expect(order!.discountAmount.toString()).toBe(quoted.voucher_discount);
+    } finally {
+      await deleteBulkPricing(prisma, denomId);
+      await clearCart(prisma, buyerId);
+      await deleteSetting(prisma, "tokopay_merchant_id");
+      await deleteSetting(prisma, "tokopay_secret");
+    }
   });
 
   it("rejects a disabled or unknown payment method with 400 web.pay_method_unavailable", async () => {

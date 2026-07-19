@@ -14,7 +14,7 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
-import { prisma, createOrderDirect, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder } from "@app/db";
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
@@ -22,6 +22,7 @@ import { drainBroadcasts } from "../src/jobs";
 import { OrderStatus, OrderCurrency, PaymentMethod, StockStatus, UserRole, TicketStatus, DeliveryType } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { Decimal } from "@app/core/money";
+import { formatIdr } from "@app/core/formatters";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, calls, sentIncludes, offersForwardAction, lastMarkup, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
@@ -1075,6 +1076,33 @@ describe("checkout handlers", () => {
     // The now-invalid voucher is still dropped from session (same behavior as
     // before, just no longer silent).
     expect(ctx.session.scratch.appliedVoucherCode).toBeUndefined();
+  });
+
+  // The confirmation bubble and createOrderDirect are two implementations of
+  // one price. The screen used to reduce the subtotal with
+  // `subtotal × (1 − percent/100)` while the order subtracted
+  // `quantize(subtotal × percent/100)` — equal only up to rounding. Both now go
+  // through bulkDiscountFor (@app/core/bulk); this pins that they agree on the
+  // number actually shown (math audit F4).
+  it("quotes the same bulk-discounted total the order charges (math audit F4)", async () => {
+    await upsertBulkPricing(prisma, { denominationId: sample.product.id, minQuantity: 3, discountPercent: "33" });
+    try {
+      const { ctx, sink } = customerCtx();
+      await checkout.renderOrderConfirmation(ctx, sample.product.id, 3);
+
+      const order = await prisma.$transaction((tx) =>
+        createOrderDirect(tx, {
+          user: { id: sample.user.id, role: sample.user.role },
+          productId: sample.product.id,
+          quantity: 3,
+        }),
+      );
+      const charged = new Decimal(order!.subtotalAmount).minus(order!.bulkDiscountAmount);
+      expect(order!.bulkDiscountAmount.toString()).not.toBe("0"); // the rule really fired
+      expect(sentIncludes(sink, formatIdr(charged))).toBe(true);
+    } finally {
+      await deleteBulkPricing(prisma, sample.product.id);
+    }
   });
 
   it("buyNowTokopay creates an IDR/TOKOPAY order and sends the QR as one photo+caption bubble", async () => {

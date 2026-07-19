@@ -8,3 +8,5 @@ export * from "./i18n";
 export * from "./logger";
 export * from "./formatters";
 export * from "./flash";
+export * from "./bulk";
+export * from "./bulk";

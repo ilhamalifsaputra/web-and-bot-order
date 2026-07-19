@@ -252,10 +252,11 @@ export function DenominationEditPage() {
     flashPercentIsValid && flashStartsAt.trim() !== "" && flashEndsAt.trim() !== "";
 
   // Preview only — the server recomputes the charged price with Decimal. This
-  // exists so the admin sees what buyers will actually pay before saving.
+  // exists so the admin sees what buyers will actually pay before saving, so it
+  // must round the way flashPrice (@app/core/flash) does: to whole rupiah.
   const flashPreviewPrice =
     flashPercentIsValid && isValidPrice(price)
-      ? (Math.round(Number(price.trim()) * (100 - flashPercentNumber)) / 100).toString()
+      ? Math.round((Number(price.trim()) * (100 - flashPercentNumber)) / 100).toString()
       : null;
 
   const canSaveBulkPricing =

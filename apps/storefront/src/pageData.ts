@@ -7,7 +7,7 @@
  */
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
-import { activeFlashPercent, flashPrice } from "@app/core/flash";
+import { activeFlashPercent, effectiveUnitPrice, flashPrice } from "@app/core/flash";
 import { parseAdditionalFields } from "@app/core/deliveryFields";
 import {
   prisma,
@@ -131,7 +131,14 @@ export async function categoryPageData(rawSlug: string, sort: SortKey = "default
  * route (routes/apiPages.ts) pre-formats it with the same localize() the
  * Nunjucks localdt filter used to, so callers get a display string, not a
  * raw Date to serialize themselves. */
-export async function productPageData(rawSlug: string) {
+/**
+ * `isReseller` prices the page for the signed-in viewer: a reseller is charged
+ * `min(resellerPrice, flashPrice)` at checkout (@app/core/flash), so pricing the
+ * page with the everyone-price would quote them a figure that isn't theirs —
+ * higher than they pay whenever their standing price is the cheaper of the two.
+ * Guests and signed-out visitors keep the everyone price (the default).
+ */
+export async function productPageData(rawSlug: string, isReseller = false) {
   const slug = (rawSlug ?? "").trim();
   const product = slug ? await getCatalogProductBySlugWithDenominations(prisma, slug) : null;
   if (!product || !product.isActive || product.denominations.length === 0) return null;
@@ -153,8 +160,11 @@ export async function productPageData(rawSlug: string) {
   const denominations = product.denominations.map((d) => {
     const available = stock[d.id]?.available ?? 0;
     const rule = bulkRules[d.id];
-    const flashPct = activeFlashPercent(d);
     const salePrice = flashPrice(d);
+    const unit = effectiveUnitPrice(d, isReseller);
+    // Badge only when the flash price is the one this viewer actually gets —
+    // the same rule flashViewFor applies to a cart line.
+    const flashPct = salePrice !== null && unit.equals(salePrice) ? activeFlashPercent(d) : null;
     return {
       id: d.id,
       name: d.name,
@@ -162,7 +172,7 @@ export async function productPageData(rawSlug: string) {
       // Always the price a shopper actually pays — the pre-sale figure lives
       // in `flash.base_price` for the strike-through, so a client that ignores
       // `flash` still quotes the correct amount.
-      price: (salePrice ?? new Decimal(d.price)).toString(),
+      price: unit.toString(),
       flash:
         flashPct && salePrice
           ? {
@@ -200,6 +210,7 @@ export async function productPageData(rawSlug: string) {
     stock,
     ratingByDenom,
     bulkRules,
+    isReseller,
   ).slice(0, RELATED_PRODUCTS_LIMIT);
 
   return {

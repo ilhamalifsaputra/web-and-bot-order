@@ -9,7 +9,8 @@
  */
 import type { CatalogProduct } from "@app/db";
 import { Decimal } from "@app/core/money";
-import { activeFlashPercent, flashPrice } from "@app/core/flash";
+import { activeFlashPercent, effectiveUnitPrice, flashPrice } from "@app/core/flash";
+import { activeBulkPercent } from "@app/core/bulk";
 import { productImage } from "./images";
 
 export type ProductCard = {
@@ -66,15 +67,19 @@ export function shapeProducts(
   stock: StockMap,
   ratings: RatingMap,
   bulk: BulkMap = {},
+  isReseller = false,
 ): ProductCard[] {
   const cards: ProductCard[] = [];
   for (const p of products) {
     const denoms = p.denominations; // active, price-asc (cheapest first)
     if (denoms.length === 0) continue; // listCatalogProducts already filters these out
-    // "Starting price" is the cheapest price a shopper can actually pay right
+    // "Starting price" is the cheapest price THIS shopper can actually pay right
     // now, so a flash sale can reorder which denomination leads — take each
-    // one's live price rather than its list price.
-    const livePrice = (d: (typeof denoms)[number]) => flashPrice(d) ?? new Decimal(d.price);
+    // one's live price rather than its list price. effectiveUnitPrice (not
+    // flashPrice) is what checkout charges: a reseller pays whichever of their
+    // standing price and the flash price is cheaper, so quoting the flash price
+    // to a reseller whose own price is lower advertised MORE than they'd pay.
+    const livePrice = (d: (typeof denoms)[number]) => effectiveUnitPrice(d, isReseller);
     let cheapest = denoms[0]!;
     for (const d of denoms) {
       if (livePrice(d).lessThan(livePrice(cheapest))) cheapest = d;
@@ -86,9 +91,13 @@ export function shapeProducts(
     let bulkMinQty: number | null = null;
     for (const d of denoms) {
       const rule = bulk[d.id];
-      if (rule && (bulkDiscount === null || new Decimal(rule.discountPercent).greaterThan(bulkDiscount))) {
-        bulkDiscount = rule.discountPercent;
-        bulkMinQty = rule.minQuantity;
+      // activeBulkPercent, not the raw column: a badge must never advertise a
+      // rule checkout would refuse to honour (@app/core/bulk validates the
+      // stored row on read, the way activeFlashPercent does).
+      const percent = rule ? activeBulkPercent(rule, rule.minQuantity) : null;
+      if (percent && (bulkDiscount === null || percent.greaterThan(bulkDiscount))) {
+        bulkDiscount = rule!.discountPercent;
+        bulkMinQty = rule!.minQuantity;
       }
     }
     // The flash badge describes the plan behind `from_price` — NOT the biggest
@@ -97,7 +106,14 @@ export function shapeProducts(
     // 20%"), while the flash badge sits next to the headline price and its
     // struck-through original. Sourcing them from different denominations
     // would print a "was" price that no plan was ever sold at.
-    const leadFlash = activeFlashPercent(cheapest);
+    //
+    // The badge also only appears when the flash price is the one that actually
+    // won `from_price` — the same rule flashViewFor applies on the cart line. A
+    // reseller keeping their cheaper standing price sees no badge, because for
+    // them nothing was discounted and the struck-through "was" price would be
+    // a number they were never going to pay.
+    const leadSale = flashPrice(cheapest);
+    const leadFlash = leadSale !== null && fromPrice.equals(leadSale) ? activeFlashPercent(cheapest) : null;
     const flashDiscount = leadFlash ? leadFlash.toString() : null;
     const fromBasePrice = leadFlash ? new Decimal(cheapest.price).toString() : null;
     const flashEndsAt = leadFlash ? cheapest.flashEndsAt!.toISOString() : null;

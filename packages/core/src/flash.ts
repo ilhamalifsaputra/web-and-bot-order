@@ -69,7 +69,12 @@ export function isFlashActive(d: FlashFields, now: Date = new Date()): boolean {
 export function flashPrice(d: PricedDenomination, now: Date = new Date()): Decimal | null {
   const percent = activeFlashPercent(d, now);
   if (percent === null) return null;
-  return quantizeMoney(new Decimal(d.price).times(new Decimal(100).minus(percent)).div(100), 2);
+  // Whole rupiah, not 2dp: prices are central-IDR (plan.md §15), and the IDR
+  // rail quantizes the order total to 0dp at pay time (finalizeOrderPayment).
+  // A discounted line carrying sub-rupiah cents made the per-line figures on
+  // screen and the amount actually charged disagree by up to a rupiah, with
+  // formatIdr rounding each line independently so the gap was invisible.
+  return quantizeMoney(new Decimal(d.price).times(new Decimal(100).minus(percent)).div(100), 0);
 }
 
 /**

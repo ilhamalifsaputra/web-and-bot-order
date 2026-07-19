@@ -49,10 +49,14 @@ describe("activeFlashPercent", () => {
 });
 
 describe("flashPrice", () => {
-  it("applies the percent to the base price, rounded to 2 decimals", () => {
+  it("applies the percent to the base price, rounded to whole rupiah", () => {
     expect(flashPrice(sku(), DURING)!.toString()).toBe("8000");
     expect(flashPrice(sku({ flashDiscountPercent: "33" }), DURING)!.toString()).toBe("6700");
-    expect(flashPrice(sku({ price: "10001", flashDiscountPercent: "33" }), DURING)!.toString()).toBe("6700.67");
+    // 10001 × 67% = 6700.67 — quantized to whole rupiah (half-up), because
+    // prices are central-IDR and the IDR rail charges whole rupiah. Sub-rupiah
+    // cents here made per-line figures and the charged total disagree.
+    expect(flashPrice(sku({ price: "10001", flashDiscountPercent: "33" }), DURING)!.toString()).toBe("6701");
+    expect(flashPrice(sku({ price: "10000", flashDiscountPercent: "33.33" }), DURING)!.toString()).toBe("6667");
   });
 
   it("ignores resellerPrice — it is the everyone price the UI strikes through", () => {

@@ -10,8 +10,19 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { addToCart, createOrderFromCart, getOrder, getCart, countAvailableStock, markStockDead } from "@app/db";
+import {
+  addToCart,
+  createOrderFromCart,
+  createOrderDirect,
+  createVoucher,
+  upsertBulkPricing,
+  getOrder,
+  getCart,
+  countAvailableStock,
+  markStockDead,
+} from "@app/db";
 import { Decimal } from "@app/core/money";
+import { VoucherType } from "@app/core/enums";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -91,5 +102,47 @@ describe("create order from cart", () => {
     // The pre-check fails before any row is touched — nothing reserved.
     const reserved = await prisma.stockItem.count({ where: { status: "RESERVED" } });
     expect(reserved).toBe(0);
+  });
+});
+
+// Both order creators must bottom out at zero, never below it — a negative
+// total or walletUsed would be persisted as-is and corrupt the audit trail
+// (Money-2). createOrderFromCart has clamped since that fix; createOrderDirect
+// now clamps identically (math audit F2).
+describe("discounts can zero an order but never take it negative", () => {
+  it("createOrderDirect: a 100% bulk rule plus a voucher lands on exactly zero", async () => {
+    const { user, product } = sample;
+    await upsertBulkPricing(prisma, { denominationId: product.id, minQuantity: 2, discountPercent: "100" });
+    await createVoucher(prisma, { code: "ONTOP", type: VoucherType.PERCENT, value: "50" });
+
+    const created = await createOrderDirect(prisma, {
+      user,
+      productId: product.id,
+      quantity: 2,
+      voucherCode: "ONTOP",
+    });
+    const order = (await getOrder(prisma, created!.id))!;
+
+    // Bulk already took everything; the voucher is capped against what's left.
+    expect(new Decimal(order.bulkDiscountAmount).equals(order.subtotalAmount)).toBe(true);
+    expect(new Decimal(order.discountAmount).equals(0)).toBe(true);
+    expect(new Decimal(order.walletUsed).greaterThanOrEqualTo(0)).toBe(true);
+    // Only the unique cents remain payable — never a negative total.
+    expect(new Decimal(order.totalAmount).equals(order.uniqueCents)).toBe(true);
+  });
+
+  it("createOrderDirect: a bulk rule stored above 100% is refused at read time, not honoured", async () => {
+    const { user, product } = sample;
+    // Bypass upsertBulkPricing's write-time guard the way a hand-edited row or
+    // a pre-guard row would: write the rule straight to the table.
+    await prisma.bulkPricing.create({
+      data: { productId: product.id, minQuantity: 1, discountPercent: new Decimal("150"), isActive: true },
+    });
+
+    const created = await createOrderDirect(prisma, { user, productId: product.id, quantity: 2 });
+    const order = (await getOrder(prisma, created!.id))!;
+
+    expect(new Decimal(order.bulkDiscountAmount).equals(0)).toBe(true);
+    expect(new Decimal(order.totalAmount).greaterThan(0)).toBe(true);
   });
 });

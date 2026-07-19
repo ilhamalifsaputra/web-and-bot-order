@@ -498,6 +498,84 @@ export async function activeBulkPricingByDenomination(
   return out;
 }
 
+// ---- Flash sale (keyed by denomination) ----
+
+/**
+ * Schedule (or reschedule) a flash sale on one denomination: `discountPercent`
+ * off the base price for the half-open window [startsAt, endsAt).
+ *
+ * Rewriting the schedule clears `flashAnnouncedAt`, which is what lets the same
+ * SKU be flashed again — the announce job treats a null stamp as "not yet
+ * broadcast" and will fan out a fresh announcement once this window opens.
+ */
+export async function setFlashSale(
+  db: Db,
+  args: { denominationId: number; discountPercent: Decimal.Value; startsAt: Date; endsAt: Date },
+) {
+  const discountPercent = quantizeMoney(args.discountPercent, 2);
+  // Same guard as upsertBulkPricing (Pricing-4): a percent outside (0,100] is
+  // the difference between a promotion and giving stock away for free.
+  if (!discountPercent.isFinite() || discountPercent.lte(0) || discountPercent.gt(100)) {
+    throw new ValidationError("error.invalid_discount_percent");
+  }
+  if (Number.isNaN(args.startsAt.getTime()) || Number.isNaN(args.endsAt.getTime())) {
+    throw new ValidationError("error.invalid_flash_window");
+  }
+  // A window that ends before it starts, or one that is already over, would
+  // silently never discount anything — reject it at write time so the admin
+  // finds out now rather than wondering why the badge never appeared.
+  if (args.endsAt <= args.startsAt || args.endsAt <= new Date()) {
+    throw new ValidationError("error.invalid_flash_window");
+  }
+  return db.denomination.update({
+    where: { id: args.denominationId },
+    data: {
+      flashDiscountPercent: discountPercent,
+      flashStartsAt: args.startsAt,
+      flashEndsAt: args.endsAt,
+      flashAnnouncedAt: null,
+    },
+  });
+}
+
+/** Cancel a flash sale. Returns false when the SKU had none scheduled. */
+export async function clearFlashSale(db: Db, denominationId: number): Promise<boolean> {
+  const existing = await db.denomination.findUnique({
+    where: { id: denominationId },
+    select: { flashDiscountPercent: true },
+  });
+  if (!existing || existing.flashDiscountPercent == null) return false;
+  await db.denomination.update({
+    where: { id: denominationId },
+    data: {
+      flashDiscountPercent: null,
+      flashStartsAt: null,
+      flashEndsAt: null,
+      flashAnnouncedAt: null,
+    },
+  });
+  return true;
+}
+
+/**
+ * Denominations whose flash sale has STARTED but has not been announced yet,
+ * newest schedule last. Drives the announce job; inactive SKUs are skipped
+ * because broadcasting a sale nobody can buy would just be noise.
+ */
+export function listUnannouncedStartedFlashSales(db: Db, now: Date = new Date()) {
+  return db.denomination.findMany({
+    where: {
+      isActive: true,
+      flashAnnouncedAt: null,
+      flashDiscountPercent: { not: null },
+      flashStartsAt: { lte: now },
+      flashEndsAt: { gt: now },
+    },
+    include: { product: true },
+    orderBy: { flashStartsAt: "asc" },
+  });
+}
+
 // ---- Sold-count aggregates (§4.2) — Produk Populer screen ----
 
 /**

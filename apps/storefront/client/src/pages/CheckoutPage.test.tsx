@@ -172,6 +172,34 @@ describe("CheckoutPage", () => {
     expect(input.closest(".card")).toBe(error.closest(".card"));
   });
 
+  // Flash sales: the checkout totals are already priced with the discount, so
+  // the summary only carries a modest marker (badge + one line of copy) — the
+  // per-line strike-through and the countdown stay on cart/product. The flag
+  // rides on the checkout payload's own items, priced against the same instant
+  // as the totals it annotates.
+  it("marks the summary when a checkout line is on a flash sale", async () => {
+    const endsAt = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
+    renderCheckout(() => ({
+      ...checkoutData,
+      items: checkoutData.items.map((i) => ({
+        ...i,
+        flash: { discount_percent: "20", base_price: "79000", ends_at: endsAt },
+      })),
+    }));
+    await screen.findByRole("heading", { name: "Checkout" });
+    expect(await screen.findByText("Flash sale price applied")).toBeInTheDocument();
+    expect(screen.getByText(/Flash sale −/)).toHaveTextContent("20%");
+    // No countdown restated here.
+    expect(screen.queryByText(/Ends in/)).not.toBeInTheDocument();
+  });
+
+  it("leaves the summary unmarked when no checkout line is on a flash sale", async () => {
+    renderCheckout(() => checkoutData);
+    await screen.findByRole("heading", { name: "Checkout" });
+    expect(screen.queryByText("Flash sale price applied")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Flash sale −/)).not.toBeInTheDocument();
+  });
+
   // STO-012: the "No payment methods" empty state must actually link to
   // support, not just mention it as plain text.
   it("links 'contact support' to /account/support in the no-payment-methods empty state", async () => {

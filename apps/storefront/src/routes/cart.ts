@@ -14,6 +14,7 @@
  */
 import type { FastifyRequest } from "fastify";
 import { Decimal } from "@app/core/money";
+import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { UserRole } from "@app/core/enums";
 import {
   prisma,
@@ -62,6 +63,38 @@ export interface CartLineView {
    * single-SKU-per-non-auto-cart guard (POST /cart) and the checkout
    * info-collection step (checkoutView's items array). */
   delivery_type: string;
+  /** Live flash sale on this SKU, or null. `unit_price` above ALREADY carries
+   * the discount; this is only what the line needs to strike through the old
+   * price and count down to the end of the sale. */
+  flash: FlashLineView | null;
+}
+
+/** Flash-sale badge data shared by the cart line and the checkout summary. */
+export interface FlashLineView {
+  discount_percent: string;
+  /** The pre-sale price, for the strike-through. */
+  base_price: string;
+  ends_at: string;
+}
+
+/**
+ * Flash-badge payload for a denomination, or null when no sale is live. The
+ * struck-through price is the everyone price (`flashPrice`'s input), never the
+ * reseller's — a reseller keeping their cheaper standing price sees no badge,
+ * because for them nothing was discounted.
+ */
+export function flashViewFor(
+  denom: Parameters<typeof activeFlashPercent>[0] & { price: Decimal.Value; resellerPrice: Decimal.Value | null },
+  unit: Decimal,
+): FlashLineView | null {
+  const percent = activeFlashPercent(denom);
+  const sale = flashPrice(denom);
+  if (percent === null || sale === null || !unit.equals(sale)) return null;
+  return {
+    discount_percent: percent.toString(),
+    base_price: new Decimal(denom.price).toString(),
+    ends_at: denom.flashEndsAt!.toISOString(),
+  };
 }
 
 /** Shared shape for the cart page + checkout summary. */
@@ -79,9 +112,7 @@ export async function loadCartLines(
         .map(async (r) => {
           const denom = r.product; // the Denomination (SKU)
           const parent = denom.product; // the mid-tier Product
-          const unit = new Decimal(
-            isReseller && denom.resellerPrice != null ? denom.resellerPrice : denom.price,
-          );
+          const unit = effectiveUnitPrice(denom, isReseller);
           return {
             key: r.id,
             denomination_id: r.productId,
@@ -93,6 +124,7 @@ export async function loadCartLines(
             line_total: unit.times(r.quantity).toString(),
             available: await countAvailableStock(prisma, r.productId),
             delivery_type: denom.deliveryType,
+            flash: flashViewFor(denom, unit),
           };
         }),
     );
@@ -106,7 +138,8 @@ export async function loadCartLines(
       ]);
       if (!denom || !denom.isActive) return null;
       const parent = denom.product; // mid-tier Product (+ category)
-      const unit = new Decimal(denom.price);
+      // Guests are never resellers, so the everyone price is the right one.
+      const unit = effectiveUnitPrice(denom, false);
       return {
         key: l.p,
         denomination_id: l.p,
@@ -118,6 +151,7 @@ export async function loadCartLines(
         line_total: unit.times(l.q).toString(),
         available,
         delivery_type: denom.deliveryType,
+        flash: flashViewFor(denom, unit),
       } satisfies CartLineView;
     }),
   );

@@ -264,6 +264,36 @@ describe("notifier templates.render", () => {
     expect(out).toContain("&lt;script&gt;");
   });
 
+  it("renders FLASH_SALE_BROADCAST with the plan, percent off, new price and end time", () => {
+    const out = render("FLASH_SALE_BROADCAST", {
+      product_name: "CapCut Pro",
+      denomination_name: "1 Month",
+      discount_percent: "25",
+      old_price: "Rp50.000",
+      new_price: "Rp37.500",
+      ends_at: "2026-07-21 21:00 GMT+7",
+    });
+    expect(out).toContain("FLASH SALE — 25% OFF");
+    expect(out).toContain("<b>CapCut Pro — 1 Month</b>");
+    expect(out).toContain("<b>Now Rp37.500</b>");
+    expect(out).toContain("<s>Rp50.000</s>");
+    expect(out).toContain("2026-07-21 21:00 GMT+7");
+  });
+
+  it("HTML-escapes FLASH_SALE_BROADCAST's product and plan names", () => {
+    const out = render("FLASH_SALE_BROADCAST", {
+      product_name: "<script>alert(1)</script>",
+      denomination_name: "A & B",
+      discount_percent: "10",
+      old_price: "Rp1",
+      new_price: "Rp1",
+      ends_at: "x",
+    });
+    expect(out).not.toContain("<script>");
+    expect(out).toContain("&lt;script&gt;");
+    expect(out).toContain("A &amp; B");
+  });
+
   it("renders ADMIN_MANUAL_ORDER_QUEUED with the order code, item, and total/currency, bilingually", () => {
     const out = render("ADMIN_MANUAL_ORDER_QUEUED", {
       order_code: "ORD-20260719-ABCD",

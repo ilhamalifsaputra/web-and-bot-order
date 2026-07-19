@@ -122,6 +122,35 @@ describe("CartPage", () => {
     expect(screen.getByRole("link", { name: "Continue shopping" })).toHaveAttribute("href", "/");
   });
 
+  // Flash sales: `unit_price` on the line is ALREADY the sale price, so the
+  // line only adds the ⚡ badge and the struck-through pre-sale figure.
+  it("shows the flash badge and struck-through base price on a discounted line", async () => {
+    const endsAt = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
+    const onSale: CartPageData = {
+      items: [
+        {
+          ...cartData.items[0]!,
+          unit_price: "63200",
+          line_total: "126400",
+          flash: { discount_percent: "20", base_price: "79000", ends_at: endsAt },
+        },
+      ],
+      subtotal: "126400",
+    };
+    renderCart(() => onSale);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    expect(screen.getByText(/Flash sale/)).toHaveTextContent("20%");
+    expect(screen.getByText("Was Rp79.000")).toBeInTheDocument();
+    expect(screen.getAllByText("Rp63.200").length).toBeGreaterThan(0);
+  });
+
+  it("shows no flash badge or struck-through price on a line with no sale", async () => {
+    renderCart(() => cartData);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    expect(screen.queryByText(/Flash sale/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Was /)).not.toBeInTheDocument();
+  });
+
   // Bug B (Task 6): non-auto lines never have stock rows by design (available
   // is always 0), so `qty > available` was ALWAYS true for a legitimate
   // manual/manual_with_info cart line — the "N left" warning must be

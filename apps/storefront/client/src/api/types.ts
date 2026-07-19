@@ -1,6 +1,7 @@
 /** Response shapes for the storefront JSON API (/api/v1/pages/*).
  * Server side: apps/storefront/src/routes/apiPages.ts — keep in sync. */
 import type { ProductCardData } from "../components/shop/ProductCard";
+import type { FlashInfo } from "../components/shop/FlashBadge";
 
 /** Signed-in customer as exposed to the client (display fields only — the
  * CSRF token travels via the shell's meta tag, never in JSON). */
@@ -101,6 +102,11 @@ export interface ProductDenomination {
   name: string;
   duration_label: string | null;
   price: string;
+  /** Live flash sale on this plan, or null/absent when none is running.
+   * `price` above ALREADY carries the discount — `flash.base_price` is only
+   * the pre-sale figure to strike through (apps/storefront/src/pageData.ts).
+   * Optional so a payload predating flash sales still type-checks. */
+  flash?: FlashInfo | null;
   warranty_days: number;
   available: number;
   in_stock: boolean;
@@ -159,6 +165,10 @@ export interface CartLineView {
   qty: number;
   line_total: string;
   available: number;
+  /** Live flash sale on this SKU, or null/absent when none is running —
+   * JSON twin of FlashLineView (apps/storefront/src/routes/cart.ts).
+   * `unit_price`/`line_total` above ALREADY carry the discount. */
+  flash?: FlashInfo | null;
   /** "auto" | "manual" | "manual_with_info" (DeliveryType) — non-auto lines
    * have no stock concept, so `available` is always 0 for them (don't use it
    * to render a stock warning on a non-auto line). */
@@ -186,6 +196,9 @@ export interface CheckoutItem {
   delivery_type: string;
   additional_fields: AdditionalField[];
   qty: number;
+  /** Live flash sale on this line, or null. The totals beside it are priced
+   * against the same instant, so this only marks them as sale prices. */
+  flash?: FlashInfo | null;
 }
 
 export interface CheckoutData {

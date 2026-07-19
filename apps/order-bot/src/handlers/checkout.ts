@@ -11,6 +11,7 @@
 import { InlineKeyboard } from "grammy";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
+import { effectiveUnitPrice } from "@app/core/flash";
 import { localize } from "@app/core/datetime";
 import { DeliveryType, NotificationEvent, OrderCurrency, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -180,9 +181,9 @@ async function computeConfirmation(
   const bulkRule = await getBulkPricingForDenomination(prisma, productId);
 
   const isReseller = info.role === UserRole.RESELLER;
-  const unitPrice = new Decimal(
-    isReseller && product.resellerPrice != null ? product.resellerPrice : product.price,
-  );
+  // Same helper createOrderDirect prices with, so the confirmation screen can
+  // never quote a figure the order itself won't charge.
+  const unitPrice = effectiveUnitPrice(product, isReseller);
   let subtotal = unitPrice.times(quantity);
   if (bulkRule && quantity >= bulkRule.minQuantity) {
     subtotal = subtotal.times(new Decimal(1).minus(new Decimal(bulkRule.discountPercent).div(100)));

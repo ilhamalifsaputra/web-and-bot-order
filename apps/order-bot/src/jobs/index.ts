@@ -32,7 +32,12 @@ import {
   finishBroadcast,
   isBroadcastSegment,
   refreshUsdIdrRate,
+  listUnannouncedStartedFlashSales,
+  enqueueFlashSaleBroadcast,
 } from "@app/db";
+import { flashPrice } from "@app/core/flash";
+import { formatIdr } from "@app/core/formatters";
+import { localize } from "@app/core/datetime";
 import { coreT } from "../util/i18n";
 import { notificationKb } from "../keyboards/customer";
 import { esc } from "../util/format";
@@ -359,6 +364,68 @@ export async function drainBroadcasts(api: Api): Promise<void> {
   logger.info(`Broadcast #${bc.id} finished — sent to ${sent} recipient(s), ${failed} failed (blocked the bot or deactivated)`);
 }
 
+/**
+ * Announce every scheduled flash sale whose window has just opened, once.
+ *
+ * An admin schedules a sale for a future time; nothing is sent then. This job
+ * ticks every minute, picks up the sales that are now live and still carry
+ * `flashAnnouncedAt = null`, and fans a DM out to the whole customer base
+ * through the outbox (the bot never sends these itself either — the dispatcher
+ * delivers them, throttled).
+ *
+ * The stamp and the enqueue share ONE short transaction, and the stamp is a
+ * conditional `updateMany` on `flashAnnouncedAt` still being null: a crash
+ * between them rolls both back (so the sale is simply announced on the next
+ * tick), and a second worker — or an overlapping tick — that reaches the same
+ * row finds count 0 and skips it. Neither ordering can therefore fan the same
+ * sale out twice. Re-scheduling a SKU resets the stamp to null in
+ * `setFlashSale`, which is what legitimately re-announces it.
+ */
+export async function announceStartedFlashSales(): Promise<void> {
+  const started = await listUnannouncedStartedFlashSales(prisma);
+  if (!started.length) return;
+  let announced = 0;
+  let recipients = 0;
+  for (const denom of started) {
+    const discounted = flashPrice(denom);
+    const percent = denom.flashDiscountPercent;
+    const endsAt = denom.flashEndsAt;
+    if (discounted === null || percent == null || endsAt == null) {
+      // activeFlashPercent rejected the row (a percent outside (0,100] written
+      // before the write-time guard existed, or straight into the SQLite file
+      // by hand). Announcing a sale we would not actually honour at checkout is
+      // worse than staying quiet, so skip it and leave it for an admin to fix.
+      logger.warn(`Flash sale on denomination ${denom.id} has an unusable discount percent — skipping its announcement; an admin should re-save the sale`);
+      continue;
+    }
+    try {
+      const sent = await prisma.$transaction(async (tx) => {
+        const claimed = await tx.denomination.updateMany({
+          where: { id: denom.id, flashAnnouncedAt: null },
+          data: { flashAnnouncedAt: new Date() },
+        });
+        if (claimed.count !== 1) return null; // already announced elsewhere
+        return enqueueFlashSaleBroadcast(tx, {
+          productName: denom.product.name,
+          denominationName: denom.name,
+          discountPercent: percent.toString(),
+          oldPrice: formatIdr(denom.price),
+          newPrice: formatIdr(discounted),
+          endsAt: localize(endsAt, "yyyy-LL-dd HH:mm ZZZZ"),
+        });
+      });
+      if (sent === null) continue;
+      announced++;
+      recipients += sent;
+    } catch (err) {
+      logger.error({ err }, `Failed to announce the flash sale on denomination ${denom.id} — nothing was enqueued and it stays unannounced, so it will be retried on the next tick`);
+    }
+  }
+  if (announced > 0) {
+    logger.info(`Announced ${announced} newly started flash sale(s) — queued ${recipients} customer direct message(s) for the outbox dispatcher to deliver`);
+  }
+}
+
 /** Register all scheduled jobs against croner. Returns the Cron handles. */
 /**
  * Keep `usd_idr_rate` tracking the live market rate (rounded — plan.md §15.8).
@@ -393,5 +460,6 @@ export function scheduleJobs(api: Api): Cron[] {
     new Cron("*/2 * * * *", wrap("bybitPollWatchdog", bybitPollWatchdog)),
     new Cron("*/2 * * * *", wrap("bybitBscPollWatchdog", bybitBscPollWatchdog)),
     new Cron("*/1 * * * *", { protect: true }, wrap("drainBroadcasts", drainBroadcasts)),
+    new Cron("*/1 * * * *", { protect: true }, wrap("announceStartedFlashSales", announceStartedFlashSales)),
   ];
 }

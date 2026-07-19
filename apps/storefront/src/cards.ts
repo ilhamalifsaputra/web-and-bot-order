@@ -9,6 +9,7 @@
  */
 import type { CatalogProduct } from "@app/db";
 import { Decimal } from "@app/core/money";
+import { activeFlashPercent, flashPrice } from "@app/core/flash";
 import { productImage } from "./images";
 
 export type ProductCard = {
@@ -26,6 +27,16 @@ export type ProductCard = {
   rating_count: number;
   bulk_discount: string | null;
   bulk_min_qty: number | null;
+  /** Live flash discount on the SAME denomination that set `from_price`, or
+   * null. Deliberately not "the biggest discount on the product": the card
+   * shows one headline price, and a badge describing a different plan would
+   * make the struck-through figure below it a number that never existed. */
+  flash_discount: string | null;
+  /** That denomination's pre-sale price, for the strike-through. Null when no
+   * flash sale is behind `from_price`. */
+  from_base_price: string | null;
+  /** When the flash sale behind `flash_discount` ends (ISO), for the countdown. */
+  flash_ends_at: string | null;
   /** True when every active denomination is a non-`auto` delivery type
    * (manual/manual_with_info), so this product never carries a real stock
    * count and is always purchasable — mirrors the product page's own
@@ -60,11 +71,15 @@ export function shapeProducts(
   for (const p of products) {
     const denoms = p.denominations; // active, price-asc (cheapest first)
     if (denoms.length === 0) continue; // listCatalogProducts already filters these out
-    const lead = denoms[0]!; // cheapest → the "starting price"
-    const fromPrice = denoms.reduce(
-      (min, d) => Decimal.min(min, new Decimal(d.price)),
-      new Decimal(lead.price),
-    );
+    // "Starting price" is the cheapest price a shopper can actually pay right
+    // now, so a flash sale can reorder which denomination leads — take each
+    // one's live price rather than its list price.
+    const livePrice = (d: (typeof denoms)[number]) => flashPrice(d) ?? new Decimal(d.price);
+    let cheapest = denoms[0]!;
+    for (const d of denoms) {
+      if (livePrice(d).lessThan(livePrice(cheapest))) cheapest = d;
+    }
+    const fromPrice = livePrice(cheapest);
     const available = denoms.reduce((sum, d) => sum + (stock[d.id]?.available ?? 0), 0);
     // Best (largest) active bulk discount across this product's denominations.
     let bulkDiscount: string | null = null;
@@ -76,6 +91,16 @@ export function shapeProducts(
         bulkMinQty = rule.minQuantity;
       }
     }
+    // The flash badge describes the plan behind `from_price` — NOT the biggest
+    // discount on the product, the way the bulk badge above does. The two
+    // differ deliberately: bulk_discount is a standalone claim ("buy 5+, save
+    // 20%"), while the flash badge sits next to the headline price and its
+    // struck-through original. Sourcing them from different denominations
+    // would print a "was" price that no plan was ever sold at.
+    const leadFlash = activeFlashPercent(cheapest);
+    const flashDiscount = leadFlash ? leadFlash.toString() : null;
+    const fromBasePrice = leadFlash ? new Decimal(cheapest.price).toString() : null;
+    const flashEndsAt = leadFlash ? cheapest.flashEndsAt!.toISOString() : null;
     // Weighted average rating across every denomination (a review is left
     // against the specific plan bought, not the product), so the card's star
     // rating reflects the WHOLE product, never just its cheapest plan.
@@ -100,6 +125,9 @@ export function shapeProducts(
       rating_count: ratingCount,
       bulk_discount: bulkDiscount,
       bulk_min_qty: bulkMinQty,
+      flash_discount: flashDiscount,
+      from_base_price: fromBasePrice,
+      flash_ends_at: flashEndsAt,
       all_non_auto: denoms.every((d) => d.deliveryType !== "auto"),
     });
   }

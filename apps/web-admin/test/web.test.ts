@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
+import { localize } from "@app/core/datetime";
 import { ProductType, UserRole, DeliveryType } from "@app/core/enums";
 import {
   prisma,
@@ -1721,6 +1722,142 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
         discountPercent: "10",
       });
       expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("flash sale (POST/DELETE /api/catalog/denominations/:id/flash-sale)", () => {
+    // The form posts what an <input type="datetime-local"> holds: a bare
+    // wall-clock string with no offset, read in the shop's timezone.
+    const shopLocal = (msFromNow: number) =>
+      localize(new Date(Date.now() + msFromNow), "yyyy-LL-dd'T'HH:mm");
+    const HOUR = 3_600_000;
+
+    async function schedule(body: Record<string, unknown> = {}) {
+      return postJson(`/api/catalog/denominations/${seed.productId}/flash-sale`, seed.cookie, seed.csrf, {
+        discountPercent: "30",
+        startsAt: shopLocal(HOUR),
+        endsAt: shopLocal(5 * HOUR),
+        ...body,
+      });
+    }
+
+    it("happy path: schedules a flash sale, stores the window in UTC and audits", async () => {
+      const res = await schedule();
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true });
+
+      const denom = await getDenomination(prisma, seed.productId);
+      expect(Number(denom!.flashDiscountPercent)).toBe(30);
+      // The bare wall-clock string was read in the shop's timezone, so the
+      // stored instant is the UTC equivalent — within a minute, since the
+      // input carries no seconds.
+      expect(Math.abs(denom!.flashStartsAt!.getTime() - (Date.now() + HOUR))).toBeLessThan(60_000);
+      expect(Math.abs(denom!.flashEndsAt!.getTime() - (Date.now() + 5 * HOUR))).toBeLessThan(60_000);
+      expect(denom!.flashAnnouncedAt).toBeNull();
+
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: "flash_sale_set", targetId: seed.productId },
+      });
+      expect(audit).toBeTruthy();
+      expect(audit?.targetType).toBe("denomination");
+      expect(audit?.adminId).toBe(seed.adminId);
+      expect(audit?.details).toBe(
+        `Started a 30% flash sale on "${denom!.name}" running from ` +
+          `${localize(denom!.flashStartsAt, "dd LLL yyyy HH:mm")} to ` +
+          `${localize(denom!.flashEndsAt, "dd LLL yyyy HH:mm")}.`,
+      );
+    });
+
+    it("exposes the schedule on the product read endpoint so the edit form can prefill it", async () => {
+      await schedule({ startsAt: shopLocal(-HOUR), endsAt: shopLocal(HOUR) });
+      const res = await get(`/api/catalog/${seed.catalogProductId}`, seed.cookie);
+      expect(res.statusCode).toBe(200);
+      const data = JSON.parse(res.body) as {
+        statsByDenom: Record<string, { flash: { discountPercent: string; startsAt: string; startsAtLocal: string; active: boolean } | null }>;
+      };
+      const flash = data.statsByDenom[String(seed.productId)]!.flash!;
+      expect(Number(flash.discountPercent)).toBe(30);
+      expect(flash.active).toBe(true);
+      expect(flash.startsAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(flash.startsAtLocal).toBe(shopLocal(-HOUR));
+    });
+
+    it("happy path: cancels a flash sale and audits", async () => {
+      await schedule();
+      const res = await deleteJson(`/api/catalog/denominations/${seed.productId}/flash-sale`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, removed: true });
+
+      const denom = await getDenomination(prisma, seed.productId);
+      expect(denom!.flashDiscountPercent).toBeNull();
+      expect(denom!.flashStartsAt).toBeNull();
+      expect(denom!.flashEndsAt).toBeNull();
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: "flash_sale_delete", targetId: seed.productId },
+      });
+      expect(audit?.details).toBe(`Cancelled the flash sale on "${denom!.name}".`);
+    });
+
+    it("cancelling when nothing is scheduled returns removed: false and does not audit", async () => {
+      const res = await deleteJson(`/api/catalog/denominations/${seed.productId}/flash-sale`, seed.cookie, seed.csrf);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, removed: false });
+      expect(await prisma.auditLog.findFirst({ where: { action: "flash_sale_delete" } })).toBeNull();
+    });
+
+    it("rejects a discount percent outside (0,100] with 422", async () => {
+      const res = await schedule({ discountPercent: "150" });
+      expect(res.statusCode).toBe(422);
+      expect((await getDenomination(prisma, seed.productId))!.flashDiscountPercent).toBeNull();
+    });
+
+    it("rejects a window that ends before it starts with 422", async () => {
+      const res = await schedule({ startsAt: shopLocal(5 * HOUR), endsAt: shopLocal(HOUR) });
+      expect(res.statusCode).toBe(422);
+      expect((await getDenomination(prisma, seed.productId))!.flashDiscountPercent).toBeNull();
+    });
+
+    it("rejects an unparseable percent or timestamp with 400", async () => {
+      expect((await schedule({ discountPercent: "abc" })).statusCode).toBe(400);
+      expect((await schedule({ startsAt: "not-a-date" })).statusCode).toBe(400);
+      expect((await schedule({ endsAt: "" })).statusCode).toBe(400);
+    });
+
+    it("rejects a non-existent denomination id with 404", async () => {
+      const res = await postJson(`/api/catalog/denominations/99999/flash-sale`, seed.cookie, seed.csrf, {
+        discountPercent: "30",
+        startsAt: shopLocal(HOUR),
+        endsAt: shopLocal(5 * HOUR),
+      });
+      expect(res.statusCode).toBe(404);
+      const del = await deleteJson(`/api/catalog/denominations/99999/flash-sale`, seed.cookie, seed.csrf);
+      expect(del.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/catalog/denominations/${seed.productId}/flash-sale`, null, "x", {
+        discountPercent: "30",
+        startsAt: shopLocal(HOUR),
+        endsAt: shopLocal(5 * HOUR),
+      });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+
+      const del = await deleteJson(`/api/catalog/denominations/${seed.productId}/flash-sale`, null, "x");
+      expect(del.statusCode).toBe(303);
+      expect(del.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/catalog/denominations/${seed.productId}/flash-sale`, seed.cookie, "bad-token", {
+        discountPercent: "30",
+        startsAt: shopLocal(HOUR),
+        endsAt: shopLocal(5 * HOUR),
+      });
+      expect(res.statusCode).toBe(403);
+
+      const del = await deleteJson(`/api/catalog/denominations/${seed.productId}/flash-sale`, seed.cookie, "bad-token");
+      expect(del.statusCode).toBe(403);
     });
   });
 });

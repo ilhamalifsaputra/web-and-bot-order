@@ -14,6 +14,7 @@ import {
   enqueueOrderPipelineFailed,
   enqueueManualOrderAdminAlert,
   enqueueRestockBroadcast,
+  enqueueFlashSaleBroadcast,
   fetchPendingNotifications,
   claimNotification,
   releaseNotificationClaim,
@@ -475,6 +476,90 @@ describe("enqueueRestockBroadcast", () => {
     const notified = await enqueueRestockBroadcast(prisma, { productName: "Nothing", stockCount: 0 });
     expect(notified).toBe(0);
     expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.PRODUCT_RESTOCKED_BROADCAST } })).toBe(before);
+    expect(await prisma.broadcast.count()).toBe(broadcastsBefore);
+  });
+});
+
+describe("enqueueFlashSaleBroadcast", () => {
+  const sale = {
+    productName: "CapCut Pro",
+    denominationName: "1 Month",
+    discountPercent: "25",
+    oldPrice: "Rp50.000",
+    newPrice: "Rp37.500",
+    endsAt: "2026-07-21 21:00 GMT+7",
+  };
+
+  function makeUser(overrides: { telegramId?: bigint | null; banned?: boolean; language?: string }) {
+    return prisma.user.create({
+      data: {
+        telegramId: overrides.telegramId === undefined ? BigInt(Math.floor(Math.random() * 1e15)) : overrides.telegramId,
+        referralCode: `r${Math.random()}`,
+        banned: overrides.banned ?? false,
+        language: overrides.language ?? "EN",
+      },
+    });
+  }
+
+  it("enqueues one DM per non-banned customer with a linked Telegram account, skipping banned and web-only users", async () => {
+    await prisma.user.updateMany({ data: { banned: true } }); // neutralize leftovers from earlier tests
+    const eligible = await makeUser({ language: "ID" });
+    await makeUser({ banned: true }); // banned — must be skipped
+    await makeUser({ telegramId: null }); // web-only — must be skipped
+
+    const notified = await enqueueFlashSaleBroadcast(prisma, sale);
+
+    expect(notified).toBe(1);
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.FLASH_SALE_BROADCAST },
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.orderId).toBeNull();
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({
+      chat_id: Number(eligible.telegramId),
+      product_name: "CapCut Pro",
+      denomination_name: "1 Month",
+      discount_percent: "25",
+      old_price: "Rp50.000",
+      new_price: "Rp37.500",
+      ends_at: "2026-07-21 21:00 GMT+7",
+      buyer_language: "id",
+    });
+  });
+
+  it("also writes a SENT Broadcast row (segment ALL) so it shows up in the web-admin Broadcast History table", async () => {
+    await makeUser({});
+    const admin = await prisma.user.create({ data: { referralCode: `admin-${Math.random()}`, role: "ADMIN" } });
+
+    const notified = await enqueueFlashSaleBroadcast(prisma, { ...sale, createdById: admin.id });
+
+    const row = await prisma.broadcast.findFirst({ orderBy: { id: "desc" } });
+    expect(row!.segment).toBe("ALL");
+    expect(row!.status).toBe("SENT");
+    expect(row!.totalCount).toBe(notified);
+    expect(row!.sentCount).toBe(notified);
+    expect(row!.failedCount).toBe(0);
+    expect(row!.createdById).toBe(admin.id);
+    expect(row!.sentAt).not.toBeNull();
+    expect(row!.message).toContain("CapCut Pro — 1 Month");
+    expect(row!.message).toContain("25% OFF");
+    expect(row!.message).toContain("Rp37.500");
+    expect(row!.message).toContain("2026-07-21 21:00 GMT+7");
+    // Plain text — no HTML tags, unlike the outbox-dispatcher's rendered DM.
+    expect(row!.message).not.toContain("<b>");
+    expect(row!.message).not.toContain("<s>");
+  });
+
+  it("returns 0 and enqueues nothing (no outbox rows, no Broadcast row) when there are no eligible customers", async () => {
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.FLASH_SALE_BROADCAST } });
+    const broadcastsBefore = await prisma.broadcast.count();
+    await prisma.user.updateMany({ data: { banned: true } });
+
+    const notified = await enqueueFlashSaleBroadcast(prisma, sale);
+
+    expect(notified).toBe(0);
+    expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.FLASH_SALE_BROADCAST } })).toBe(before);
     expect(await prisma.broadcast.count()).toBe(broadcastsBefore);
   });
 });

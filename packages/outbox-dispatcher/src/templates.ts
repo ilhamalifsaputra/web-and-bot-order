@@ -153,6 +153,15 @@ interface RestockBroadcastPayload {
   stock_count?: unknown;
 }
 
+interface FlashSaleBroadcastPayload {
+  product_name?: unknown;
+  denomination_name?: unknown;
+  discount_percent?: unknown;
+  old_price?: unknown;
+  new_price?: unknown;
+  ends_at?: unknown;
+}
+
 interface ManualOrderQueuedPayload {
   order_code?: unknown;
   items?: Item[];
@@ -169,8 +178,32 @@ export function render(
     OrderPipelineFailedPayload &
     OrderProcessingPayload &
     RestockBroadcastPayload &
+    FlashSaleBroadcastPayload &
     ManualOrderQueuedPayload,
 ): string {
+  if (event === NotificationEvent.FLASH_SALE_BROADCAST) {
+    // Buyer DM broadcast to all customers when a scheduled flash sale goes
+    // live. English only — same choice as PRODUCT_RESTOCKED_BROADCAST above
+    // (the other broadcast event), rather than the bilingual EN+ID block the
+    // per-order DM templates use. product_name/denomination_name are
+    // admin-entered, so both are escaped; the prices and end time are already
+    // display-formatted at enqueue time (shop currency + shop timezone) and
+    // escaped here on the same "payload values are untrusted" principle every
+    // other template follows.
+    const product = escape(String(payload.product_name ?? ""));
+    const plan = escape(String(payload.denomination_name ?? ""));
+    const percent = escape(String(payload.discount_percent ?? "0"));
+    const oldPrice = escape(String(payload.old_price ?? ""));
+    const newPrice = escape(String(payload.new_price ?? ""));
+    const endsAt = escape(String(payload.ends_at ?? ""));
+    return (
+      `⚡ <b>FLASH SALE — ${percent}% OFF</b>\n\n` +
+      `<b>${product} — ${plan}</b> is on sale right now! 🎉\n\n` +
+      `💸 <b>Now ${newPrice}</b> (was <s>${oldPrice}</s>)\n` +
+      `⏳ <b>Ends:</b> ${endsAt}\n\n` +
+      `Grab it before the timer runs out!`
+    );
+  }
   if (event === NotificationEvent.PRODUCT_RESTOCKED_BROADCAST) {
     // Buyer DM broadcast to all customers, sent as-given (English only, not
     // the bilingual EN+ID pattern the other DM templates use) — the shop

@@ -7,6 +7,7 @@
  */
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
+import { activeFlashPercent, flashPrice } from "@app/core/flash";
 import { parseAdditionalFields } from "@app/core/deliveryFields";
 import {
   prisma,
@@ -152,11 +153,24 @@ export async function productPageData(rawSlug: string) {
   const denominations = product.denominations.map((d) => {
     const available = stock[d.id]?.available ?? 0;
     const rule = bulkRules[d.id];
+    const flashPct = activeFlashPercent(d);
+    const salePrice = flashPrice(d);
     return {
       id: d.id,
       name: d.name,
       duration_label: d.durationLabel,
-      price: new Decimal(d.price).toString(),
+      // Always the price a shopper actually pays — the pre-sale figure lives
+      // in `flash.base_price` for the strike-through, so a client that ignores
+      // `flash` still quotes the correct amount.
+      price: (salePrice ?? new Decimal(d.price)).toString(),
+      flash:
+        flashPct && salePrice
+          ? {
+              discount_percent: flashPct.toString(),
+              base_price: new Decimal(d.price).toString(),
+              ends_at: d.flashEndsAt!.toISOString(),
+            }
+          : null,
       warranty_days: d.warrantyDays,
       available,
       in_stock: available > 0,

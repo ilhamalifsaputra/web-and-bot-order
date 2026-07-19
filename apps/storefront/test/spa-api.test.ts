@@ -48,6 +48,8 @@ import {
   clearCart,
   getOrderByCode,
   updateDenomination,
+  setFlashSale,
+  clearFlashSale,
 } from "@app/db";
 import { DeliveryType, OrderStatus, VoucherType } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
@@ -753,8 +755,31 @@ describe("/api/v1/checkout + orders", () => {
       // Per-item data (Task 6): the SPA's checkout info-collection step needs
       // delivery_type + the parsed field spec per cart line.
       expect(body.items).toEqual([
-        { denomination_id: denomId, delivery_type: "auto", additional_fields: [], qty: 1 },
+        { denomination_id: denomId, delivery_type: "auto", additional_fields: [], qty: 1, flash: null },
       ]);
+    });
+
+    // The summary's "flash sale price applied" marker reads these flags, so
+    // they must ride on the same payload as the totals they annotate — and the
+    // totals must already be the discounted ones.
+    it("GET /checkout discounts the totals and flags the line while a flash sale runs", async () => {
+      await setFlashSale(prisma, {
+        denominationId: denomId,
+        discountPercent: "25",
+        startsAt: new Date(Date.now() - 60_000),
+        endsAt: new Date(Date.now() + 3_600_000),
+      });
+      try {
+        const body = (await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie } })).json();
+        expect(body.subtotal).toBe("30000"); // 40000 less 25%
+        expect(body.items[0].flash).toEqual({
+          discount_percent: "25",
+          base_price: "40000",
+          ends_at: expect.any(String),
+        });
+      } finally {
+        await clearFlashSale(prisma, denomId);
+      }
     });
 
     it("voucher preview: trio + unknown voucher key in error_key", async () => {
@@ -1190,7 +1215,13 @@ describe("POST /api/v1/checkout — manual_with_info customer_data revalidation"
     await addToCart(prisma, buyerId, infoDenomId, 2);
     const res = await app.inject({ method: "GET", url: "/api/v1/checkout", headers: { cookie } });
     expect(res.json().items).toEqual([
-      { denomination_id: infoDenomId, delivery_type: "manual_with_info", additional_fields: fields, qty: 2 },
+      {
+        denomination_id: infoDenomId,
+        delivery_type: "manual_with_info",
+        additional_fields: fields,
+        qty: 2,
+        flash: null,
+      },
     ]);
   });
 

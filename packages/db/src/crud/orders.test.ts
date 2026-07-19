@@ -14,10 +14,11 @@ import {
   releaseGatewaySlot,
   gatewayClaimSentinel,
   createOrderFromCart,
+  createOrderDirect,
   rejectOrder,
   getOrder,
 } from "./orders";
-import { addToCart, upsertBulkPricing, createVoucher } from "@app/db";
+import { addToCart, upsertBulkPricing, createVoucher, setFlashSale } from "@app/db";
 import { VoucherType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
@@ -458,5 +459,103 @@ describe("createOrderFromCart — manual_with_info customerData re-validation (F
 
     const order = await createOrderFromCart(prisma, { user, customerData });
     expect(order!.customerData).toBe(customerData);
+  });
+});
+
+// Flash sales replace the base price at order time (see @app/core/flash).
+// These cover the ORDER path specifically: what actually gets charged and
+// snapshotted onto OrderItem.unitPrice, not just what the catalog displays.
+describe("createOrderFromCart / createOrderDirect — flash sale pricing", () => {
+  let sample: SampleData;
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  /** Schedule a live flash sale on the sample SKU. */
+  const flash = (percent: string) =>
+    setFlashSale(prisma, {
+      denominationId: sample.product.id,
+      discountPercent: percent,
+      startsAt: new Date(Date.now() - 60_000),
+      endsAt: new Date(Date.now() + 3_600_000),
+    });
+
+  it("charges a regular buyer the discounted price and snapshots it on the order item", async () => {
+    const { user, product } = sample;
+    await flash("40"); // 5.00 -> 3.00
+    await addToCart(prisma, user.id, product.id, 2);
+
+    const order = await createOrderFromCart(prisma, { user });
+
+    expect(new Decimal(order!.subtotalAmount).equals("6.0000")).toBe(true);
+    for (const item of order!.items) {
+      expect(new Decimal(item.unitPrice).equals("3.0000")).toBe(true);
+    }
+  });
+
+  it("ignores a flash sale whose window has already closed", async () => {
+    const { user, product } = sample;
+    await setFlashSale(prisma, {
+      denominationId: product.id,
+      discountPercent: "40",
+      startsAt: new Date(Date.now() - 7_200_000),
+      // Still in the future at write time (setFlashSale rejects a past window),
+      // then rewound below to simulate a sale that has since ended.
+      endsAt: new Date(Date.now() + 60_000),
+    });
+    await prisma.denomination.update({
+      where: { id: product.id },
+      data: { flashEndsAt: new Date(Date.now() - 1_000) },
+    });
+    await addToCart(prisma, user.id, product.id, 1);
+
+    const order = await createOrderFromCart(prisma, { user });
+
+    expect(new Decimal(order!.subtotalAmount).equals("5.0000")).toBe(true);
+  });
+
+  it("gives a reseller whichever of the reseller price and the flash price is cheaper", async () => {
+    const { product } = sample;
+    const reseller = await prisma.user.create({
+      data: {
+        telegramId: BigInt(Math.floor(Math.random() * 1e15)),
+        referralCode: `r${Math.random()}`,
+        role: "RESELLER",
+      },
+    });
+
+    // 10% off 5.00 = 4.50, which is worse than the 4.00 reseller price.
+    await flash("10");
+    const keepsResellerPrice = await createOrderDirect(prisma, {
+      user: reseller,
+      productId: product.id,
+      quantity: 1,
+    });
+    expect(new Decimal(keepsResellerPrice!.subtotalAmount).equals("4.0000")).toBe(true);
+
+    // 40% off 5.00 = 3.00, which now beats the reseller price.
+    await flash("40");
+    const takesFlashPrice = await createOrderDirect(prisma, {
+      user: reseller,
+      productId: product.id,
+      quantity: 1,
+    });
+    expect(new Decimal(takesFlashPrice!.subtotalAmount).equals("3.0000")).toBe(true);
+  });
+
+  it("lets bulk pricing and a voucher stack on top of the flash price", async () => {
+    const { user, product } = sample;
+    await flash("40"); // 5.00 -> 3.00
+    await addToCart(prisma, user.id, product.id, 4); // subtotal 12.00
+    await upsertBulkPricing(prisma, { denominationId: product.id, minQuantity: 4, discountPercent: 50 });
+    await createVoucher(prisma, { code: "TEN", type: VoucherType.PERCENT, value: "10" });
+
+    const order = await createOrderFromCart(prisma, { user, voucherCode: "TEN" });
+
+    expect(new Decimal(order!.subtotalAmount).equals("12.0000")).toBe(true);
+    expect(new Decimal(order!.bulkDiscountAmount).equals("6.0000")).toBe(true); // 50% of 12.00
+    expect(new Decimal(order!.discountAmount).equals("0.6000")).toBe(true); // 10% of the net 6.00
   });
 });

@@ -6,7 +6,8 @@ import { prisma, createOrderDirect, finalizeOrderPayment, setOrderPaymentMessage
 import type { Api } from "grammy";
 import { OrderStatus, OrderCurrency } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { autoCancelExpiredOrders, scheduleJobs, drainBroadcasts } from "../src/jobs";
+import { autoCancelExpiredOrders, scheduleJobs, drainBroadcasts, announceStartedFlashSales } from "../src/jobs";
+import { NotificationEvent } from "@app/core/enums";
 
 let sample: SampleData;
 
@@ -199,6 +200,90 @@ describe("drainBroadcasts", () => {
   });
 });
 
+describe("announceStartedFlashSales", () => {
+  const HOUR = 3_600_000;
+
+  /** A second SKU under the sample product, so a test can hold several sales. */
+  async function makeDenomination(name: string, isActive = true) {
+    return prisma.denomination.create({
+      data: {
+        productId: sample.parentProduct.id,
+        name,
+        slug: `slug-${name}-${Math.random()}`,
+        type: "SHARED",
+        durationLabel: "1 Month",
+        price: "50000",
+        isActive,
+      },
+    });
+  }
+
+  function scheduleFlash(id: number, startsAt: Date, endsAt: Date) {
+    return prisma.denomination.update({
+      where: { id },
+      data: {
+        // Central IDR (the fixture's default 5.00 is a USDT-era leftover) so
+        // the announced price is a realistic Rupiah figure.
+        price: "50000",
+        flashDiscountPercent: "25",
+        flashStartsAt: startsAt,
+        flashEndsAt: endsAt,
+        flashAnnouncedAt: null,
+      },
+    });
+  }
+
+  const flashRows = () =>
+    prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.FLASH_SALE_BROADCAST } });
+
+  it("announces a started sale once, and the flashAnnouncedAt guard stops the next tick re-sending it", async () => {
+    const now = Date.now();
+    await scheduleFlash(sample.product.id, new Date(now - HOUR), new Date(now + HOUR));
+
+    await announceStartedFlashSales();
+    const afterFirst = await flashRows();
+    expect(afterFirst.length).toBe(1); // one recipient: the sample user
+    const payload = JSON.parse(afterFirst[0]!.payloadJson) as {
+      chat_id: number;
+      product_name: string;
+      denomination_name: string;
+      discount_percent: string;
+      new_price: string;
+    };
+    expect(payload.chat_id).toBe(42);
+    expect(payload.product_name).toBe(sample.parentProduct.name);
+    expect(payload.denomination_name).toBe(sample.product.name);
+    expect(payload.discount_percent).toBe("25");
+    expect(payload.new_price).toBe("Rp37.500");
+
+    const stamped = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
+    expect(stamped!.flashAnnouncedAt).not.toBeNull();
+
+    await announceStartedFlashSales();
+    expect((await flashRows()).length).toBe(1); // still exactly one batch
+    expect(await prisma.broadcast.count()).toBe(1);
+  });
+
+  it("skips sales that have not started yet, have already ended, or sit on an inactive SKU", async () => {
+    const now = Date.now();
+    const future = await makeDenomination("not-yet");
+    await scheduleFlash(future.id, new Date(now + HOUR), new Date(now + 2 * HOUR));
+    const ended = await makeDenomination("already-over");
+    await scheduleFlash(ended.id, new Date(now - 2 * HOUR), new Date(now - HOUR));
+    const inactive = await makeDenomination("inactive", false);
+    await scheduleFlash(inactive.id, new Date(now - HOUR), new Date(now + HOUR));
+
+    await announceStartedFlashSales();
+
+    expect(await flashRows()).toEqual([]);
+    expect(await prisma.broadcast.count()).toBe(0);
+    for (const id of [future.id, ended.id, inactive.id]) {
+      const row = await prisma.denomination.findUnique({ where: { id } });
+      expect(row!.flashAnnouncedAt).toBeNull();
+    }
+  });
+});
+
 // Bot-5 (security audit, 2026-06-23): a slow tick (or a restart racing the
 // next scheduled fire) must not overlap with itself and re-process the same
 // expired-orders/stale-tickets set, sending duplicate DMs.
@@ -206,7 +291,8 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
   it("registers autoCancelExpiredOrders and autoCloseStaleTickets with protect:true", () => {
     // Indices match scheduleJobs' literal array order in src/jobs/index.ts:
     // [autoCancelExpiredOrders, autoCloseStaleTickets, reconcileFinancesJob,
-    //  binancePollWatchdog, bybitPollWatchdog, bybitBscPollWatchdog, drainBroadcasts].
+    //  binancePollWatchdog, bybitPollWatchdog, bybitBscPollWatchdog, drainBroadcasts,
+    //  announceStartedFlashSales].
     const crons = scheduleJobs(fakeApi());
     try {
       expect(crons[0]!.getPattern()).toBe("*/1 * * * *"); // autoCancelExpiredOrders
@@ -215,6 +301,10 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       expect(crons[1]!.options.protect).toBe(true);
       // drainBroadcasts (reference pattern) already had it — must stay on.
       expect(crons[6]!.options.protect).toBe(true);
+      // announceStartedFlashSales — every minute, protected so an overlapping
+      // tick can't race the flashAnnouncedAt stamp.
+      expect(crons[7]!.getPattern()).toBe("*/1 * * * *");
+      expect(crons[7]!.options.protect).toBe(true);
     } finally {
       for (const c of crons) c.stop();
     }

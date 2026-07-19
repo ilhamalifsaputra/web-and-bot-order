@@ -49,7 +49,8 @@ import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/ban
 import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
-import { esc, formatPrice, formatIdr, statusBadge, groupOrderItems, formatCountdown, priceIdr, orderAmount, mixedAmount, renderBybitBscTrackingScreen } from "../util/format";
+import { esc, formatPrice, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, orderAmount, mixedAmount, renderBybitBscTrackingScreen } from "../util/format";
+import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
 import { showFaq, showTerms } from "./static";
@@ -463,11 +464,22 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   // mirroring the detail screen. Stock is read per denomination in parallel.
   const planLines = await Promise.all(
     active.map(async (d) => {
-      const unitPrice = isReseller && d.resellerPrice != null ? d.resellerPrice : d.price;
+      const unitPrice = effectiveUnitPrice(d, isReseller);
       const stock = await countAvailableStock(prisma, d.id);
+      // A flash sale shows as the old price struck through next to the new one,
+      // but only when this buyer is actually paying the sale price — a reseller
+      // whose standing price still wins sees the plain line.
+      const sale = flashPrice(d);
+      const priceText =
+        sale && unitPrice.equals(sale)
+          ? t(ctx, "browse.flash_price", {
+              old: priceIdr(d.price, rate),
+              new: priceIdr(unitPrice, rate),
+            })
+          : priceIdr(unitPrice, rate);
       return t(ctx, "browse.denomination_line", {
         duration: esc(d.durationLabel || d.name),
-        price: priceIdr(unitPrice, rate),
+        price: priceText,
         stock,
       });
     }),
@@ -541,12 +553,17 @@ export async function browseDenomination(
   }
 
   const isReseller = info.role === UserRole.RESELLER;
-  const unit = isReseller && d.resellerPrice != null ? d.resellerPrice : d.price;
+  const unit = effectiveUnitPrice(d, isReseller);
+  const rate = await currentUsdtRate();
+  const sale = flashPrice(d);
+  const onSale = sale !== null && unit.equals(sale);
 
   let text = t(ctx, "browse.denomination_detail", {
     product: esc(d.product.name),
     plan: esc(d.name),
-    price: priceIdr(unit, await currentUsdtRate()),
+    price: onSale
+      ? t(ctx, "browse.flash_price", { old: priceIdr(d.price, rate), new: priceIdr(unit, rate) })
+      : priceIdr(unit, rate),
     duration: esc(d.durationLabel),
     type: d.type.toLowerCase(),
     warranty: d.warrantyDays,
@@ -555,6 +572,14 @@ export async function browseDenomination(
     rating: ratingStr,
     updated: localize(new Date(), "HH:mm:ss"),
   });
+  if (onSale) {
+    text +=
+      "\n\n" +
+      t(ctx, "browse.flash_deal", {
+        percent: activeFlashPercent(d)!.toString(),
+        remaining: formatFlashRemaining(d.flashEndsAt!),
+      });
+  }
   if (bulkRule) {
     text +=
       "\n\n" +

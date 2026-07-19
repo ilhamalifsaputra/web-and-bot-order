@@ -40,6 +40,7 @@ import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { formatIdr, money4 } from "../lib/format";
 import { allFieldsValid } from "../lib/deliveryFields";
+import FlashBadge, { flashPercentLabel } from "../components/shop/FlashBadge";
 import Price from "../components/shop/Price";
 import Stepper from "../components/shop/Stepper";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
@@ -78,6 +79,26 @@ function defaultMethod(data: CheckoutData): string | null {
   if (isIdrWalletSufficient(data)) return "wallet_idr";
   if (isUsdtWalletSufficient(data)) return "wallet_usdt";
   return null;
+}
+
+/**
+ * The biggest live flash discount in the cart, plus the last moment any of
+ * them is still running — the summary's one modest "this is a sale price"
+ * marker. Read from the checkout payload's own `items`, which are priced and
+ * flagged against the same instant as the totals beside them, so the marker
+ * can never disagree with the figures it annotates.
+ */
+function cartFlashSummary(data: CheckoutData | undefined): { percent: number; endsAt: string | null } | null {
+  let percent: number | null = null;
+  let endsAt: string | null = null;
+  for (const line of data?.items ?? []) {
+    const pct = flashPercentLabel(line.flash?.discount_percent);
+    if (pct === null) continue;
+    if (percent === null || pct > percent) percent = pct;
+    const lineEnd = line.flash?.ends_at ?? null;
+    if (lineEnd && (endsAt === null || lineEnd > endsAt)) endsAt = lineEnd;
+  }
+  return percent === null ? null : { percent, endsAt };
 }
 
 function anyMethodEnabled(data: CheckoutData): boolean {
@@ -255,6 +276,9 @@ export default function CheckoutPage() {
   // ever at most one manual_with_info line.
   const infoItem = page.items.find((i) => i.delivery_type === "manual_with_info") ?? null;
   const infoValid = !infoItem || allFieldsValid(infoItem.additional_fields, answers, infoItem.qty);
+  // `page` holds the item list; `totals` is the re-priced payload after a
+  // voucher apply. Either carries the same per-line flash flags.
+  const flashSummary = cartFlashSummary(page);
 
   function setAnswer(unitIdx: number, key: string, value: string): void {
     setAnswers((prev) => {
@@ -505,6 +529,14 @@ export default function CheckoutPage() {
                 <span className="text-ink-soft">{t("web.subtotal")}</span>
                 <span>{formatIdr(totals.subtotal)}</span>
               </div>
+              {/* Modest marker only: the subtotal above is already the sale
+                  price, and the full countdown belongs on the product page. */}
+              {flashSummary && (
+                <div className="flex flex-wrap items-center justify-between gap-2 py-2">
+                  <span className="text-ink-soft">{t("web.flash_applied")}</span>
+                  <FlashBadge percent={flashSummary.percent} endsAt={flashSummary.endsAt} />
+                </div>
+              )}
               {totals.bulk_discount !== "0" && (
                 <div className="flex justify-between py-2 text-grass-dark">
                   <span>{t("web.bulk_discount")}</span>

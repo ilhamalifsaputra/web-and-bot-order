@@ -100,6 +100,52 @@ describe("ProductDetailPage", () => {
     await waitFor(() => expect(screen.getByText("denomination-create-page")).toBeInTheDocument());
   });
 
+  it("badges a denomination whose flash sale is live right now", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...PRODUCT_DETAIL,
+          statsByDenom: {
+            "10": {
+              id: 10,
+              available: 5,
+              waiting: 0,
+              rule: null,
+              flash: { discountPercent: "30", active: true },
+            },
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
+    expect(screen.getByTitle("Flash sale live: 30% off")).toBeInTheDocument();
+  });
+
+  it("does not badge a denomination whose flash sale is scheduled but not yet live", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...PRODUCT_DETAIL,
+          statsByDenom: {
+            "10": {
+              id: 10,
+              available: 5,
+              waiting: 0,
+              rule: null,
+              flash: { discountPercent: "30", active: false },
+            },
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<ProductDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
+    expect(screen.queryByTitle(/flash sale live/i)).not.toBeInTheDocument();
+  });
+
   it("shows error on fetch failure", async () => {
     vi.spyOn(globalThis, "fetch").mockRejectedValueOnce(new Error("network"));
     render(<ProductDetailPage />, { wrapper: Wrapper });

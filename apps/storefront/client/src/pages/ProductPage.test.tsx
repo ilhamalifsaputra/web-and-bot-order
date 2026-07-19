@@ -324,6 +324,43 @@ describe("ProductPage", () => {
     expect(qtyInput.value).toBe("99");
   });
 
+  // Flash sales: `price` on the denomination is ALREADY the sale price, so
+  // the page adds the ⚡ badge, the struck-through `flash.base_price`, and a
+  // countdown that reads in hours/days, not bare mm:ss.
+  it("shows the flash badge, struck-through base price and countdown for a discounted denomination", async () => {
+    // 26h + a minute of slack: the countdown floors, so a flat 26h would tick
+    // down to "1d 1h" between the fixture being built and the assertion.
+    const endsAt = new Date(Date.now() + 26 * 3600 * 1000 + 60_000).toISOString();
+    const onSale: ProductPageData = {
+      ...productData,
+      denominations: [
+        {
+          ...productData.denominations[1]!,
+          price: "175200",
+          flash: { discount_percent: "20", base_price: "219000", ends_at: endsAt },
+        },
+      ],
+    };
+    renderProduct("netflix-premium", () => onSale);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const selectedPrice = document.querySelector(".font-display.font-semibold.text-pine.text-2xl");
+    expect(selectedPrice).toHaveTextContent("Rp175.200");
+    // One badge on the plan card, one in the live summary.
+    expect(screen.getAllByText(/Flash sale/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Flash sale/)[0]).toHaveTextContent("20%");
+    expect(screen.getAllByText("Was Rp219.000").length).toBeGreaterThan(0);
+    // 26h left -> days/hours wording, never a mm:ss clock.
+    expect(screen.getByText(/Ends in/)).toHaveTextContent("1d 2h");
+  });
+
+  it("shows no flash badge, struck-through price or countdown when no sale is running", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByText(/Flash sale/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Was /)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Ends in/)).not.toBeInTheDocument();
+  });
+
   it("does not show a false out-of-stock indicator for a non-auto denomination", async () => {
     const manualOnly: ProductPageData = {
       ...productData,

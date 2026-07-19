@@ -58,6 +58,24 @@ export function truncLabel(text: string, max = 24): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
+/**
+ * Coarse "time left" for a flash sale, e.g. "2d 5h", "5h 12m", "12m", "<1m".
+ * Deliberately NOT formatCountdown's "M:SS" — a sale runs for hours or days, and
+ * a bot message can't tick, so a stale "132:07" would be both wrong and
+ * unreadable. Returns "<1m" rather than a negative or zero value; callers only
+ * render this while the sale is still live.
+ */
+export function formatFlashRemaining(endsAt: Date, now: Date = new Date()): string {
+  const totalMins = Math.floor((ensureUtc(endsAt).toMillis() - now.getTime()) / 60000);
+  if (totalMins < 1) return "<1m";
+  const days = Math.floor(totalMins / 1440);
+  const hours = Math.floor((totalMins % 1440) / 60);
+  const mins = totalMins % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${mins}m`;
+  return `${mins}m`;
+}
+
 /** Remaining time until expiry as "M:SS" (e.g. "4:32"). Port of _format_countdown. */
 export function formatCountdown(expiresAt: Date): string {
   const remainingMs = ensureUtc(expiresAt).toMillis() - Date.now();

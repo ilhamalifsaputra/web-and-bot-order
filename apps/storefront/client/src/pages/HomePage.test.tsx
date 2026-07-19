@@ -169,6 +169,53 @@ describe("HomePage", () => {
     expect(grid?.className).toMatch(/sm:grid-cols-2/);
   });
 
+  // Flash sales: `from_price` already carries the discount, so the card only
+  // adds the ⚡ badge (percent as text, not colour/emoji alone) and the
+  // server-supplied pre-sale figure struck through beside it.
+  it("shows the flash badge and the struck-through pre-sale price on a discounted card", async () => {
+    const endsAt = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
+    renderHome(
+      homeFixture({
+        products: [
+          { ...product, flash_discount: "20", from_base_price: "98750", flash_ends_at: endsAt },
+        ],
+      }),
+    );
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.getByText(/Flash sale/)).toHaveTextContent("20%");
+    expect(screen.getByText("Rp98.750")).toBeInTheDocument();
+    expect(screen.getByText("Was Rp98.750")).toBeInTheDocument();
+  });
+
+  // The struck-through figure is a factual claim about what this plan used to
+  // cost, so it is only ever the server's `from_base_price` — a card that
+  // names a discount but carries no base price shows the badge alone rather
+  // than inventing an original price from the percent.
+  it("shows the badge but no struck-through price when the card carries no base price", async () => {
+    const endsAt = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
+    renderHome(homeFixture({ products: [{ ...product, flash_discount: "20", flash_ends_at: endsAt }] }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.getByText(/Flash sale/)).toHaveTextContent("20%");
+    expect(screen.queryByText(/^Was /)).not.toBeInTheDocument();
+  });
+
+  it("shows no flash badge or struck-through price when the card carries no flash sale", async () => {
+    renderHome(homeFixture());
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByText(/Flash sale/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Was /)).not.toBeInTheDocument();
+  });
+
+  // A sale that has already ended must not leave a badge (or a strike-through
+  // against a price nothing beats) behind on a page left open.
+  it("hides the flash badge once flash_ends_at has passed", async () => {
+    const endedAt = new Date(Date.now() - 60_000).toISOString();
+    renderHome(homeFixture({ products: [{ ...product, flash_discount: "20", flash_ends_at: endedAt }] }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByText(/Flash sale/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Was /)).not.toBeInTheDocument();
+  });
+
   // STO-006/performance.md: rendering nothing while the query is pending
   // reads as a blank/broken page — a skeleton signals "loading" instead.
   it("shows a loading skeleton before data arrives", async () => {

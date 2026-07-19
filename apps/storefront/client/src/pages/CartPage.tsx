@@ -14,6 +14,7 @@ import { apiGet, apiPost } from "../api/client";
 import type { CartLineView, CartPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
+import FlashBadge, { FlashWasPrice } from "../components/shop/FlashBadge";
 import Price from "../components/shop/Price";
 import Stepper from "../components/shop/Stepper";
 
@@ -63,9 +64,17 @@ function CartLine({ item, fx, onMutated }: CartLineProps) {
         >
           {item.name}
         </Link>
-        <div className="mt-1">
+        {/* `unit_price` already carries the flash discount — the badge and
+            the struck figure only explain where the price came from. */}
+        <div className="mt-1 flex flex-wrap items-center gap-2">
           <Price value={item.unit_price} fx={fx} size="text-sm" />
+          {item.flash && <FlashWasPrice value={item.flash.base_price} endsAt={item.flash.ends_at} />}
         </div>
+        {item.flash && (
+          <div className="mt-1">
+            <FlashBadge percent={item.flash.discount_percent} endsAt={item.flash.ends_at} />
+          </div>
+        )}
         {/* Non-auto lines never have stock rows by design (available is
             always 0), so this comparison is only meaningful for auto lines —
             gating on delivery_type avoids a permanent, misleading "0 left"

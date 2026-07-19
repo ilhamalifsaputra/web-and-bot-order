@@ -41,6 +41,7 @@ interface DenomStat {
   available: number;
   waiting: number;
   rule: { minQuantity: number; discountPercent: string } | null;
+  flash?: { discountPercent: string; active: boolean } | null;
 }
 
 interface ProductDetailData {
@@ -226,7 +227,26 @@ export function ProductDetailPage() {
       </div>
       <DataTable
         columns={[
-          { key: "name", header: "Name", render: d => <span className={`text-sm ${!d.isActive ? "text-ink-faint" : "text-ink"}`}>{d.name}</span> },
+          {
+            key: "name",
+            header: "Name",
+            render: d => {
+              // ⚡ marks a flash sale that is live *right now* (the API decides
+              // that from the window), so the row shows the price buyers are
+              // actually being charged rather than the column's base price.
+              const flash = statsByDenom[String(d.id)]?.flash;
+              return (
+                <span className={`text-sm ${!d.isActive ? "text-ink-faint" : "text-ink"}`}>
+                  {d.name}
+                  {flash?.active && (
+                    <span className="ml-1.5" title={`Flash sale live: ${flash.discountPercent}% off`}>
+                      ⚡
+                    </span>
+                  )}
+                </span>
+              );
+            },
+          },
           { key: "type", header: "Type", render: d => <StatusBadge status={d.type} /> },
           { key: "duration", header: "Duration", render: d => <span className="text-sm text-ink-soft">{d.durationLabel}</span> },
           { key: "price", header: "Price", render: d => <span className="font-mono text-sm">{d.price}</span> },

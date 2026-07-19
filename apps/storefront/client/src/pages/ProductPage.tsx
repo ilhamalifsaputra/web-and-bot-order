@@ -17,6 +17,7 @@ import { formatIdr } from "../lib/format";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import Stars from "../components/shop/Stars";
 import DenominationCard from "../components/shop/DenominationCard";
+import FlashBadge, { FlashCountdown, FlashWasPrice } from "../components/shop/FlashBadge";
 import ProductCard from "../components/shop/ProductCard";
 import ErrorPage from "./ErrorPage";
 
@@ -184,13 +185,26 @@ export default function ProductPage() {
           {/* Live summary — price/stock/warranty of the selected denomination. */}
           <div className="card card-pad mt-5">
             <div className="flex items-center justify-between gap-3 flex-wrap">
-              <div className="font-display font-semibold text-pine text-2xl">{formatIdr(selected.price)}</div>
+              <div className="flex items-baseline gap-2 flex-wrap">
+                {/* `selected.price` already carries the flash discount — the
+                    struck figure beside it is the pre-sale one. */}
+                <div className="font-display font-semibold text-pine text-2xl">{formatIdr(selected.price)}</div>
+                {selected.flash && (
+                  <FlashWasPrice value={selected.flash.base_price} endsAt={selected.flash.ends_at} />
+                )}
+              </div>
               {chip && (
                 <div>
                   <span className={`chip ${chip.cls}`}>{chip.text}</span>
                 </div>
               )}
             </div>
+            {selected.flash && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <FlashBadge percent={selected.flash.discount_percent} endsAt={selected.flash.ends_at} />
+                <FlashCountdown endsAt={selected.flash.ends_at} />
+              </div>
+            )}
             {fx && <div className="text-xs text-ink-faint mt-1.5">{t("web.usdt_note")}</div>}
 
             {cartErrorKey && (

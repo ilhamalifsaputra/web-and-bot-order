@@ -157,40 +157,53 @@ model Product {
 /// (stock_items, order_items, cart_items, bulk_pricing, reviews,
 /// restock_subscriptions) keeps pointing at the same rows.
 model Denomination {
-  id                 Int      @id @default(autoincrement())
-  productId          Int      @map("product_id")
-  name               String
+  id                   Int       @id @default(autoincrement())
+  productId            Int       @map("product_id")
+  name                 String
   /// URL-safe handle. UNIQUE + NOT NULL.
-  slug               String   @unique(map: "ix_denominations_slug")
-  description        String?
-  imageFileId        String?  @map("image_file_id")
+  slug                 String    @unique(map: "ix_denominations_slug")
+  description          String?
+  imageFileId          String?   @map("image_file_id")
   /// Web-facing photo URL (admin-set, storefront only); null → curated fallback.
-  webImageUrl        String?  @map("web_image_url")
-  type               String
-  durationLabel      String   @map("duration_label")
-  price              Decimal
+  webImageUrl          String?   @map("web_image_url")
+  type                 String
+  durationLabel        String    @map("duration_label")
+  price                Decimal
   /// Unit cost for margin reporting. Null = unknown / not tracked.
-  costPrice          Decimal? @map("cost_price")
-  resellerPrice      Decimal? @map("reseller_price")
+  costPrice            Decimal?  @map("cost_price")
+  resellerPrice        Decimal?  @map("reseller_price")
   /// Source key for auto-fulfilment (e.g. provider/handler id). Null = manual.
-  autoDeliverySource String?  @map("auto_delivery_source")
+  autoDeliverySource   String?   @map("auto_delivery_source")
   /// How this SKU is fulfilled: "auto" (pull stock, deliver instantly — default,
   /// unchanged behavior), "manual" (admin types & sends the account by hand, no
   /// stock), or "manual_with_info" (manual + buyer fills custom fields at
   /// checkout before payment). See packages/core/src/enums.ts DeliveryType.
-  deliveryType       String   @default("auto") @map("delivery_type")
+  deliveryType         String    @default("auto") @map("delivery_type")
   /// For "manual_with_info" only: JSON-encoded array of buyer-input field specs
   /// (key/label{id,en}/type/required/options/placeholder). Null otherwise. Stored
   /// as TEXT per the repo's JSON-in-string convention (see NotificationOutbox).
-  additionalFields   String?  @map("additional_fields")
-  warrantyDays       Int      @default(30) @map("warranty_days")
-  sortOrder          Int      @default(0) @map("sort_order")
-  isActive           Boolean  @default(true) @map("is_active")
+  additionalFields     String?   @map("additional_fields")
+  warrantyDays         Int       @default(30) @map("warranty_days")
+  sortOrder            Int       @default(0) @map("sort_order")
+  isActive             Boolean   @default(true) @map("is_active")
   /// When true, adding stock to this SKU enqueues a "back in stock" DM to
   /// every non-banned customer with a linked Telegram account (not just
   /// RestockSubscription opt-ins) via notification_outbox.
-  broadcastOnRestock Boolean  @default(false) @map("broadcast_on_restock")
-  createdAt          DateTime @default(now()) @map("created_at")
+  broadcastOnRestock   Boolean   @default(false) @map("broadcast_on_restock")
+  /// Flash sale: percent off (0,100] that REPLACES the base price for everyone
+  /// while now is inside [flashStartsAt, flashEndsAt). All three fields are set
+  /// and cleared together — any of them null means this SKU has no flash sale.
+  /// Bulk pricing and vouchers still stack on top of the discounted price; a
+  /// reseller pays whichever of resellerPrice/flash price is cheaper, never
+  /// both discounts (see effectiveUnitPrice in @app/core/flash).
+  flashDiscountPercent Decimal?  @map("flash_discount_percent")
+  flashStartsAt        DateTime? @map("flash_starts_at")
+  flashEndsAt          DateTime? @map("flash_ends_at")
+  /// Stamped once the "flash sale started" broadcast has been enqueued, so the
+  /// announce job can't fan it out twice. Reset to null whenever the schedule
+  /// is rewritten or cleared, which is what lets the same SKU be flashed again.
+  flashAnnouncedAt     DateTime? @map("flash_announced_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
 
   product              Product               @relation(fields: [productId], references: [id], onUpdate: NoAction)
   stockItems           StockItem[]
@@ -201,6 +214,9 @@ model Denomination {
   bulkPricing          BulkPricing?
 
   @@index([productId], map: "ix_denominations_product_id")
+  // The announce job scans for flash sales that have started but not yet been
+  // broadcast; both it and the catalog reads filter on the window's end.
+  @@index([flashEndsAt], map: "ix_denominations_flash_ends_at")
   @@map("denominations")
 }
 

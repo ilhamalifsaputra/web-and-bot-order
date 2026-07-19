@@ -6,6 +6,7 @@
 import { Link } from "react-router-dom";
 import { Tag, Zap } from "lucide-react";
 import { t } from "../../lib/i18n";
+import FlashBadge, { FlashWasPrice } from "./FlashBadge";
 import Price from "./Price";
 import Stars from "./Stars";
 import StockBadge from "./StockBadge";
@@ -24,6 +25,17 @@ export interface ProductCardData {
   rating_count: number;
   bulk_discount: string | null;
   bulk_min_qty: number | null;
+  /** Live flash discount on the plan behind `from_price`, or null/absent.
+   * `from_price` ALREADY reflects it — this only drives the ⚡ badge. Optional
+   * so a payload predating flash sales still type-checks. */
+  flash_discount?: string | null;
+  /** That plan's exact pre-sale price, for the strike-through. Never derive
+   * this from the percent: the discount and the headline price must describe
+   * the same plan or the struck figure is one no plan ever had. */
+  from_base_price?: string | null;
+  /** ISO end of the sale behind `flash_discount` — the badge retires itself
+   * when it passes. */
+  flash_ends_at?: string | null;
   /** True when every active denomination is non-`auto` delivery — these
    * never carry a real stock count and are always purchasable (STO-001). */
   all_non_auto: boolean;
@@ -37,6 +49,7 @@ export interface ProductCardProps {
 
 export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
   const bulkPercent = p.bulk_discount ? Math.round(Number(p.bulk_discount)) : null;
+  const preSale = p.flash_discount ? (p.from_base_price ?? null) : null;
   return (
     <Link
       to={`/p/${p.slug}`}
@@ -60,10 +73,20 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
           </>
         )}
 
-        {p.bulk_discount && (
-          <span className="absolute top-3 left-3 inline-flex items-center rounded-full bg-rust/90 px-2.5 py-1 text-xs font-medium text-white shadow-xs backdrop-blur-sm">
-            −{bulkPercent}%
-          </span>
+        {/* Flash badge above the bulk badge in one stacked column — they can
+            both be live on the same product, and two absolutely-positioned
+            badges at top-3 left-3 would sit on top of each other. */}
+        {(p.flash_discount || p.bulk_discount) && (
+          <div className="absolute top-3 left-3 flex flex-col items-start gap-1.5">
+            {p.flash_discount && (
+              <FlashBadge percent={p.flash_discount} endsAt={p.flash_ends_at ?? null} tone="solid" />
+            )}
+            {p.bulk_discount && (
+              <span className="inline-flex items-center rounded-full bg-rust/90 px-2.5 py-1 text-xs font-medium text-white shadow-xs backdrop-blur-sm">
+                −{bulkPercent}%
+              </span>
+            )}
+          </div>
         )}
         <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-black/40 px-2.5 py-1 text-xs font-medium text-amber-300 backdrop-blur-sm">
           <Zap className="w-3 h-3" /> {t("web.badge_instant")}
@@ -90,9 +113,13 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
         )}
 
         <div className="mt-auto pt-3 flex items-center justify-between gap-2 flex-wrap">
-          <p className="text-sm text-ink-soft inline-flex items-baseline gap-1">
+          <p className="text-sm text-ink-soft inline-flex items-baseline gap-1 flex-wrap">
             {t("web.from_price")}
             <Price value={p.from_price} fx={fx} size="text-sm" />
+            {/* The card payload carries no base price (cards.ts), so the
+                pre-sale figure is reconstructed from the percent — display
+                only, and it never feeds a total. */}
+            {preSale !== null && <FlashWasPrice value={preSale} endsAt={p.flash_ends_at ?? null} />}
           </p>
           <StockBadge available={p.available} lowThreshold={lowThreshold} allNonAuto={p.all_non_auto} />
         </div>

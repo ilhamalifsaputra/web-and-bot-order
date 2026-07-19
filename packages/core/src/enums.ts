@@ -250,6 +250,13 @@ export const NotificationEvent = {
   // broadcastOnRestock enabled. payload carries chat_id + product_name +
   // stock_count per recipient (one outbox row per customer).
   PRODUCT_RESTOCKED_BROADCAST: "PRODUCT_RESTOCKED_BROADCAST",
+  // Buyer DM broadcast to ALL non-banned customers with a linked Telegram
+  // account, triggered by the order-bot's announceStartedFlashSales job the
+  // first minute a scheduled flash sale becomes live (its flashAnnouncedAt is
+  // still null). payload carries chat_id + product_name + denomination_name +
+  // discount_percent + old_price/new_price (already display-formatted) +
+  // ends_at per recipient (one outbox row per customer).
+  FLASH_SALE_BROADCAST: "FLASH_SALE_BROADCAST",
   // Admin DM (not a channel post): a paid order routed to the hand-fulfilment
   // queue (settlePaidOrder's MANUAL branch — a MANUAL/MANUAL_WITH_INFO SKU)
   // and is waiting on an admin to fulfil it by hand. payload carries

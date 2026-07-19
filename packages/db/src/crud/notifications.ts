@@ -445,6 +445,85 @@ export async function enqueueRestockBroadcast(
   return users.length;
 }
 
+/**
+ * Enqueue a "flash sale is live" DM to every non-banned customer with a linked
+ * Telegram account, for a denomination whose scheduled sale window has just
+ * opened (see the order-bot's `announceStartedFlashSales` job — that job stamps
+ * `flashAnnouncedAt` in the same transaction, which is what stops the same sale
+ * fanning out twice). Same shape as `enqueueRestockBroadcast`: one `createMany`
+ * rather than a per-row loop, because this targets the whole customer base
+ * (potentially hundreds/thousands of recipients). No-op (returns 0) if there
+ * are no eligible customers.
+ *
+ * Prices and the end time arrive here as already-formatted display strings
+ * (shop currency via `formatIdr`, shop timezone via `localize`) — the caller
+ * owns that formatting, exactly like ORDER_DELIVERED's `delivered_at`, so the
+ * dispatcher never has to do money or timezone math at send time.
+ *
+ * Also writes a `Broadcast` row with status SENT so the announcement shows up
+ * in the web-admin Broadcast History table alongside the restock ones; the
+ * sent/total counts are optimistic (assume delivery succeeds) since the actual
+ * per-recipient send happens later, asynchronously, via the outbox dispatcher.
+ *
+ * `message` here MUST be kept in sync (plain-text, same content) with the HTML
+ * template for NotificationEvent.FLASH_SALE_BROADCAST in
+ * packages/outbox-dispatcher/src/templates.ts — that's the one actually sent to
+ * customers; this is only what the admin sees in the History table.
+ */
+export async function enqueueFlashSaleBroadcast(
+  db: Db,
+  args: {
+    productName: string;
+    denominationName: string;
+    discountPercent: string;
+    oldPrice: string;
+    newPrice: string;
+    endsAt: string;
+    createdById?: number | null;
+  },
+): Promise<number> {
+  const users = await db.user.findMany({
+    where: { banned: false, telegramId: { not: null } },
+    select: { telegramId: true, language: true },
+  });
+  if (!users.length) return 0;
+  await db.notificationOutbox.createMany({
+    data: users.map((u) => ({
+      event: NotificationEvent.FLASH_SALE_BROADCAST,
+      orderId: null,
+      payloadJson: JSON.stringify({
+        chat_id: Number(u.telegramId),
+        product_name: args.productName,
+        denomination_name: args.denominationName,
+        discount_percent: args.discountPercent,
+        old_price: args.oldPrice,
+        new_price: args.newPrice,
+        ends_at: args.endsAt,
+        buyer_language: langCode(u.language),
+      }),
+    })),
+  });
+  await db.broadcast.create({
+    data: {
+      message:
+        `⚡ FLASH SALE — ${args.discountPercent}% OFF\n\n` +
+        `${args.productName} — ${args.denominationName} is on sale right now! 🎉\n\n` +
+        `💸 Now ${args.newPrice} (was ${args.oldPrice})\n` +
+        `⏳ Ends: ${args.endsAt}\n\n` +
+        `Grab it before the timer runs out!`,
+      segment: "ALL",
+      status: "SENT",
+      totalCount: users.length,
+      sentCount: users.length,
+      failedCount: 0,
+      createdById: args.createdById ?? null,
+      scheduledAt: null,
+      sentAt: new Date(),
+    },
+  });
+  return users.length;
+}
+
 // ---- Outbox monitor (web-admin /outbox) -----------------------------------
 
 /** Newest-first outbox rows, optionally filtered by status, with linked order code. */

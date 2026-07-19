@@ -5,11 +5,13 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DenominationEditPage } from "./DenominationEditPage";
-import { apiGet, apiPatch } from "../api/client";
+import { apiGet, apiPatch, apiPost, apiDelete } from "../api/client";
 
 vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
   apiPatch: vi.fn(),
+  apiPost: vi.fn(),
+  apiDelete: vi.fn(),
 }));
 
 function Wrapper({ children }: { children: React.ReactNode }) {
@@ -71,6 +73,8 @@ beforeEach(() => {
   vi.restoreAllMocks();
   vi.mocked(apiGet).mockReset();
   vi.mocked(apiPatch).mockReset();
+  vi.mocked(apiPost).mockReset();
+  vi.mocked(apiDelete).mockReset();
   Element.prototype.scrollIntoView = vi.fn();
   Element.prototype.hasPointerCapture = vi.fn(() => false);
   Element.prototype.setPointerCapture = vi.fn();
@@ -195,6 +199,108 @@ describe("DenominationEditPage", () => {
 
     await user.click(screen.getByRole("radio", { name: /^require buyer information/i }));
     expect(btn).toBeDisabled();
+  });
+
+  describe("Flash Sale card", () => {
+    // Only the flash inputs are label-associated (htmlFor/id), so these
+    // queries can't accidentally hit the Bulk Pricing "Discount %" field.
+    const flashInputs = () => ({
+      percent: screen.getByLabelText("Discount %"),
+      starts: screen.getByLabelText("Starts"),
+      ends: screen.getByLabelText("Ends"),
+    });
+
+    const WITH_FLASH = {
+      ...PRODUCT_DETAIL,
+      statsByDenom: {
+        10: {
+          rule: null,
+          flash: {
+            discountPercent: "30",
+            startsAt: "2026-07-20T07:00:00.000Z",
+            endsAt: "2026-07-20T15:00:00.000Z",
+            startsAtLocal: "2026-07-20T14:00",
+            endsAtLocal: "2026-07-20T22:00",
+            active: true,
+          },
+        },
+      },
+    };
+
+    it("keeps Save disabled until a percent and both ends of the window are filled in", async () => {
+      vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
+      render(<DenominationEditPage />, { wrapper: Wrapper });
+      await waitFor(() => expect(screen.getByText("Flash Sale")).toBeInTheDocument());
+
+      const save = screen.getAllByRole("button", { name: "Save" }).at(-1)!;
+      expect(save).toBeDisabled();
+
+      fireEvent.change(flashInputs().percent, { target: { value: "30" } });
+      expect(save).toBeDisabled();
+      fireEvent.change(flashInputs().starts, { target: { value: "2026-07-20T14:00" } });
+      expect(save).toBeDisabled();
+      fireEvent.change(flashInputs().ends, { target: { value: "2026-07-20T22:00" } });
+      expect(save).not.toBeDisabled();
+
+      // A percent outside (0,100] is refused client-side too — the server
+      // would 422 it anyway.
+      fireEvent.change(flashInputs().percent, { target: { value: "150" } });
+      expect(save).toBeDisabled();
+    });
+
+    it("posts the flash sale and previews what buyers will pay", async () => {
+      vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
+      vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+      render(<DenominationEditPage />, { wrapper: Wrapper });
+      await waitFor(() => expect(screen.getByText("Flash Sale")).toBeInTheDocument());
+
+      fireEvent.change(flashInputs().percent, { target: { value: "30" } });
+      fireEvent.change(flashInputs().starts, { target: { value: "2026-07-20T14:00" } });
+      fireEvent.change(flashInputs().ends, { target: { value: "2026-07-20T22:00" } });
+
+      // 15000 - 30% = 10500
+      expect(screen.getByText("10500")).toBeInTheDocument();
+
+      fireEvent.click(screen.getAllByRole("button", { name: "Save" }).at(-1)!);
+      await waitFor(() =>
+        expect(apiPost).toHaveBeenCalledWith("/api/catalog/denominations/10/flash-sale", {
+          discountPercent: "30",
+          startsAt: "2026-07-20T14:00",
+          endsAt: "2026-07-20T22:00",
+        }),
+      );
+    });
+
+    it("prefills an existing schedule from the shop-local window and can remove it", async () => {
+      vi.mocked(apiGet).mockResolvedValue(WITH_FLASH);
+      vi.mocked(apiDelete).mockResolvedValueOnce({ ok: true, removed: true });
+      render(<DenominationEditPage />, { wrapper: Wrapper });
+      await waitFor(() => expect(screen.getByText("Flash Sale")).toBeInTheDocument());
+
+      expect(flashInputs().percent).toHaveValue("30");
+      expect(flashInputs().starts).toHaveValue("2026-07-20T14:00");
+      expect(flashInputs().ends).toHaveValue("2026-07-20T22:00");
+      expect(screen.getByText(/this flash sale is live right now/i)).toBeInTheDocument();
+
+      fireEvent.click(screen.getAllByRole("button", { name: "Remove" }).at(-1)!);
+      await waitFor(() =>
+        expect(apiDelete).toHaveBeenCalledWith("/api/catalog/denominations/10/flash-sale"),
+      );
+    });
+
+    it("shows the server's rejection when scheduling fails", async () => {
+      vi.mocked(apiGet).mockResolvedValue(PRODUCT_DETAIL);
+      vi.mocked(apiPost).mockRejectedValueOnce(new Error("error.invalid_flash_window"));
+      render(<DenominationEditPage />, { wrapper: Wrapper });
+      await waitFor(() => expect(screen.getByText("Flash Sale")).toBeInTheDocument());
+
+      fireEvent.change(flashInputs().percent, { target: { value: "30" } });
+      fireEvent.change(flashInputs().starts, { target: { value: "2026-07-20T22:00" } });
+      fireEvent.change(flashInputs().ends, { target: { value: "2026-07-20T14:00" } });
+      fireEvent.click(screen.getAllByRole("button", { name: "Save" }).at(-1)!);
+
+      await waitFor(() => expect(screen.getByText("error.invalid_flash_window")).toBeInTheDocument());
+    });
   });
 
   it("shows an error message when saving fails", async () => {

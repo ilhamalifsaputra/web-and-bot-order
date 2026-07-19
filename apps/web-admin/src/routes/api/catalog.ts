@@ -18,6 +18,8 @@ import {
   getBulkPricingForDenomination,
   upsertBulkPricing,
   deleteBulkPricing,
+  setFlashSale,
+  clearFlashSale,
   createCatalogProduct,
   createCategory,
   createDenomination,
@@ -28,6 +30,8 @@ import {
   logAdminAction,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
+import { localize, parseShopLocal } from "@app/core/datetime";
+import { isFlashActive } from "@app/core/flash";
 import { ProductType, DeliveryType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { zAdditionalFields } from "@app/core/deliveryFields";
@@ -513,18 +517,102 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     return reply.send({ ok: true, removed });
   });
 
+  // ---- Flash sale (percent off the base price for a bounded window) ----
+  //
+  // Mirrors the bulk-pricing pair above: same id/404 guards, 400 for anything
+  // this route can parse itself, 422 for the write-time rules setFlashSale
+  // owns (percent outside (0,100], a window that ends before it starts or is
+  // already over).
+
+  app.post("/api/catalog/denominations/:id/flash-sale", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid denomination id." });
+    const existing = await getDenominationWithProduct(prisma, id);
+    if (!existing) return reply.code(404).send({ error: "Denomination not found." });
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const discountPercent = parseDecimal(body.discountPercent);
+    if (discountPercent === null) return reply.code(400).send({ error: "A valid discount percent is required." });
+
+    // The form submits bare wall-clock strings (<input type="datetime-local">),
+    // which parseShopLocal reads in the shop's timezone — the admin types the
+    // local time they see everywhere else in the panel.
+    const startsAt = typeof body.startsAt === "string" ? parseShopLocal(body.startsAt) : null;
+    if (startsAt === null) return reply.code(400).send({ error: "A valid start time is required." });
+    const endsAt = typeof body.endsAt === "string" ? parseShopLocal(body.endsAt) : null;
+    if (endsAt === null) return reply.code(400).send({ error: "A valid end time is required." });
+
+    try {
+      await setFlashSale(prisma, { denominationId: id, discountPercent, startsAt, endsAt });
+    } catch (e) {
+      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
+      throw e;
+    }
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "flash_sale_set",
+      targetType: "denomination",
+      targetId: id,
+      details:
+        `Started a ${discountPercent.toString()}% flash sale on "${existing.name}" running from ` +
+        `${localize(startsAt, "dd LLL yyyy HH:mm")} to ${localize(endsAt, "dd LLL yyyy HH:mm")}.`,
+    });
+    return reply.send({ ok: true });
+  });
+
+  app.delete("/api/catalog/denominations/:id/flash-sale", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid denomination id." });
+    const existing = await getDenominationWithProduct(prisma, id);
+    if (!existing) return reply.code(404).send({ error: "Denomination not found." });
+
+    const removed = await clearFlashSale(prisma, id);
+    if (removed) {
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "flash_sale_delete",
+        targetType: "denomination",
+        targetId: id,
+        details: `Cancelled the flash sale on "${existing.name}".`,
+      });
+    }
+    return reply.send({ ok: true, removed });
+  });
+
   app.get("/api/catalog/:productId", { preHandler: currentAdmin }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
     if (!Number.isInteger(productId)) return reply.code(404).send({ error: "Product not found." });
     const product = await getCatalogProductWithDenominations(prisma, productId);
     if (!product) return reply.code(404).send({ error: "Product not found." });
 
+    const now = new Date();
     const denomStats = await Promise.all(
       product.denominations.map(async (d) => ({
         id: d.id,
         available: await countAvailableStock(prisma, d.id),
         waiting: await countRestockSubscribers(prisma, d.id),
         rule: await getBulkPricingForDenomination(prisma, d.id),
+        // The flash schedule as the edit form needs it back: percent as a
+        // string (same as every other money/percent field on the wire),
+        // timestamps as ISO UTC, plus whether the window is live right now so
+        // the product list can badge the row without re-deriving the rule.
+        // The *Local pair is the same instant pre-rendered as a shop-local
+        // wall clock, because that is literally what an
+        // `<input type="datetime-local">` holds and what the POST above reads
+        // back through parseShopLocal — the browser's own timezone must never
+        // enter the round trip, or an admin abroad would reschedule the sale
+        // just by opening the form.
+        flash:
+          d.flashDiscountPercent != null && d.flashStartsAt != null && d.flashEndsAt != null
+            ? {
+                discountPercent: d.flashDiscountPercent.toString(),
+                startsAt: d.flashStartsAt.toISOString(),
+                endsAt: d.flashEndsAt.toISOString(),
+                startsAtLocal: localize(d.flashStartsAt, "yyyy-LL-dd'T'HH:mm"),
+                endsAtLocal: localize(d.flashEndsAt, "yyyy-LL-dd'T'HH:mm"),
+                active: isFlashActive(d, now),
+              }
+            : null,
       })),
     );
     const statsByDenom: Record<number, (typeof denomStats)[number]> = {};

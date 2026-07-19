@@ -13,6 +13,7 @@ import {
   computeUniqueCents,
 } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
+import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
 import { utcStamp, addMinutes } from "@app/core/datetime";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
@@ -215,7 +216,7 @@ const fullInclude = {
 type CartLine = {
   productId: number;
   quantity: number;
-  product: {
+  product: FlashFields & {
     price: Decimal.Value;
     resellerPrice: Decimal.Value | null;
     name: string;
@@ -227,13 +228,21 @@ type CartLine = {
 
 type BulkRule = { minQuantity: number; discountPercent: Decimal.Value };
 
+/**
+ * What one unit costs this buyer, flash sale included (@app/core/flash owns the
+ * rule; this is just the orders-domain entry point).
+ *
+ * `now` is passed in rather than read here so a single order creation prices
+ * every line against ONE instant — otherwise a flash sale expiring midway
+ * through the function could discount the subtotal loop but not the OrderItem
+ * loop, leaving the order's stored line prices disagreeing with its total.
+ */
 function unitPrice(
-  product: { price: Decimal.Value; resellerPrice: Decimal.Value | null },
+  product: FlashFields & { price: Decimal.Value; resellerPrice: Decimal.Value | null },
   isReseller: boolean,
+  now: Date = new Date(),
 ): Decimal {
-  return new Decimal(
-    isReseller && product.resellerPrice != null ? product.resellerPrice : product.price,
-  );
+  return effectiveUnitPrice(product, isReseller, now);
 }
 
 /** Pure: total bulk discount across all cart lines. */
@@ -241,12 +250,13 @@ export function computeBulkDiscountForCart(
   cart: CartLine[],
   bulkRules: Record<number, BulkRule>,
   isReseller = false,
+  now: Date = new Date(),
 ): Decimal {
   let total = ZERO;
   for (const ci of cart) {
     const rule = bulkRules[ci.productId];
     if (!rule || ci.quantity < rule.minQuantity) continue;
-    const itemSubtotal = unitPrice(ci.product, isReseller).times(ci.quantity);
+    const itemSubtotal = unitPrice(ci.product, isReseller, now).times(ci.quantity);
     total = total.plus(itemSubtotal.times(rule.discountPercent).div(100));
   }
   return q4(total);
@@ -314,11 +324,14 @@ export async function createOrderFromCart(
   for (const ci of cart) assertValidQuantity(ci.quantity, ci.product.name);
 
   const isReseller = args.user.role === UserRole.RESELLER;
+  // One instant for the whole order — see unitPrice's note on why a flash sale
+  // must not be allowed to expire between the subtotal and the line prices.
+  const pricedAt = new Date();
 
   // 1. Subtotal
   let subtotal = ZERO;
   for (const ci of cart) {
-    subtotal = subtotal.plus(unitPrice(ci.product, isReseller).times(ci.quantity));
+    subtotal = subtotal.plus(unitPrice(ci.product, isReseller, pricedAt).times(ci.quantity));
   }
 
   // 2. Bulk discount
@@ -327,7 +340,7 @@ export async function createOrderFromCart(
     const rule = await getBulkPricingForDenomination(db, ci.productId);
     if (rule) bulkRules[ci.productId] = rule;
   }
-  const bulkDiscount = computeBulkDiscountForCart(cart, bulkRules, isReseller);
+  const bulkDiscount = computeBulkDiscountForCart(cart, bulkRules, isReseller, pricedAt);
 
   // 3. Voucher
   let discount = ZERO;
@@ -426,7 +439,7 @@ export async function createOrderFromCart(
     }
   }
   for (const ci of cart) {
-    const unit = q4(unitPrice(ci.product, isReseller));
+    const unit = q4(unitPrice(ci.product, isReseller, pricedAt));
     const isManual = ci.product.deliveryType !== DeliveryType.AUTO;
     for (let k = 0; k < ci.quantity; k++) {
       let stockItemId: number | null = null;
@@ -506,7 +519,7 @@ export async function createOrderDirect(
   assertValidQuantity(args.quantity, product.name);
 
   const isReseller = args.user.role === UserRole.RESELLER;
-  const unit = unitPrice(product, isReseller);
+  const unit = unitPrice(product, isReseller, new Date());
   const subtotal = q4(unit.times(args.quantity));
 
   // Bulk discount

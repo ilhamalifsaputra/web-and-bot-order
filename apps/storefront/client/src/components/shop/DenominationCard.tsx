@@ -9,12 +9,16 @@
  */
 import StockBadge from "./StockBadge";
 import Price from "./Price";
+import FlashBadge, { FlashWasPrice, type FlashInfo } from "./FlashBadge";
 
 export interface DenominationCardData {
   id: number;
   name: string;
   duration_label: string | null;
+  /** Already the flash price when `flash` is set (pageData.ts). */
   price: string;
+  /** Live flash sale on this plan, or null when none is running. */
+  flash?: FlashInfo | null;
   available: number;
   in_stock: boolean;
   /** "auto" | "manual" | "manual_with_info" (DeliveryType). */
@@ -64,15 +68,20 @@ export default function DenominationCard({ d, fx, lowThreshold, checked, onChang
           </div>
           {/* Non-auto plans have no stock concept — showing a stock badge
               (even a false "in stock") would be misleading, so omit it. */}
-          {d.delivery_type === "auto" && (
-            <div className="mt-0.5">
-              <StockBadge available={d.available} lowThreshold={lowThreshold} />
-            </div>
-          )}
+          <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+            {d.delivery_type === "auto" && <StockBadge available={d.available} lowThreshold={lowThreshold} />}
+            {d.flash && <FlashBadge percent={d.flash.discount_percent} endsAt={d.flash.ends_at} />}
+          </div>
         </div>
       </div>
       <div className="text-right shrink-0">
         <Price value={d.price} fx={fx} size="text-sm" />
+        {/* `price` is already the sale price — this is the pre-sale figure. */}
+        {d.flash && (
+          <div>
+            <FlashWasPrice value={d.flash.base_price} endsAt={d.flash.ends_at} />
+          </div>
+        )}
       </div>
     </label>
   );

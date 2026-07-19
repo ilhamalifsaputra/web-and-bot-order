@@ -24,6 +24,7 @@ import { ValidationError } from "@app/core/errors";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
+import { effectiveUnitPrice } from "@app/core/flash";
 import { ensureUtc } from "@app/core/datetime";
 import { formatIdr, formatPrice } from "@app/core/formatters";
 import {
@@ -71,6 +72,7 @@ import {
 } from "@app/core/payments/nowpayments";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
+import { flashViewFor } from "./cart";
 import { resolveBotUsername } from "../shop";
 
 const MAX_PENDING_ORDERS = 10;
@@ -85,12 +87,14 @@ const shopPublicUrl = (): string | null =>
 async function computeTotals(customer: Customer, voucherCode: string | null) {
   const cart = await getCart(prisma, customer.userId);
   const isReseller = customer.user.role === "RESELLER";
+  // Price the whole preview against one instant, mirroring createOrderFromCart
+  // — otherwise a flash sale ending mid-request could discount some lines but
+  // not others and the preview would not match what checkout actually charges.
+  const pricedAt = new Date();
   let subtotal = new Decimal(0);
   const lines = cart.filter((ci) => ci.product.isActive);
   for (const ci of lines) {
-    const unit = new Decimal(
-      isReseller && ci.product.resellerPrice != null ? ci.product.resellerPrice : ci.product.price,
-    );
+    const unit = effectiveUnitPrice(ci.product, isReseller, pricedAt);
     subtotal = subtotal.plus(unit.times(ci.quantity));
   }
   const bulkRules: Record<number, { minQuantity: number; discountPercent: Decimal.Value }> = {};
@@ -102,6 +106,7 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
     lines as Parameters<typeof computeBulkDiscountForCart>[0],
     bulkRules,
     isReseller,
+    pricedAt,
   );
 
   let voucherDiscount = new Decimal(0);
@@ -112,7 +117,14 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
       voucherError = "error.voucher_not_found";
     } else {
       try {
-        voucherDiscount = applyVoucherToSubtotal(voucher, subtotal);
+        // Cap against the subtotal NET of the bulk discount — the exact input
+        // createOrderFromCart uses (packages/db/src/crud/orders.ts, the Money-2
+        // fix). Capping against the gross subtotal here made this preview quote
+        // a bigger discount (and so a smaller total) than checkout actually
+        // charged whenever a cart carried both a bulk rule and a percent
+        // voucher, and let a voucher pass its minPurchase check on screen only
+        // to be rejected at order creation.
+        voucherDiscount = applyVoucherToSubtotal(voucher, subtotal.minus(bulkDiscount));
       } catch (e) {
         if (e instanceof ValidationError) voucherError = e.key;
         else throw e;
@@ -123,7 +135,20 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
   // `lines` (the already-joined CartItem rows, each with its Denomination via
   // `ci.product`) rides along so checkoutView can build its per-item array
   // without a second cart query.
-  return { empty: lines.length === 0, subtotal, bulkDiscount, voucherDiscount, voucherError, total, lines };
+  // `isReseller`/`pricedAt` ride along too so checkoutView can label the same
+  // lines with the flash sale they were actually priced against, rather than
+  // re-deriving it against a later instant.
+  return {
+    empty: lines.length === 0,
+    subtotal,
+    bulkDiscount,
+    voucherDiscount,
+    voucherError,
+    total,
+    lines,
+    isReseller,
+    pricedAt,
+  };
 }
 
 /** View context shared by GET /checkout, the failed-POST re-render, and the
@@ -156,6 +181,12 @@ export async function checkoutView(
       delivery_type: ci.product.deliveryType,
       additional_fields: parseAdditionalFields(ci.product.additionalFields),
       qty: ci.quantity,
+      // Live flash sale on this line (null when none), so the summary can mark
+      // the discount without the page having to fetch the cart separately.
+      flash: flashViewFor(
+        ci.product,
+        effectiveUnitPrice(ci.product, totals.isReseller, totals.pricedAt),
+      ),
     })),
     subtotal: totals.subtotal.toString(),
     bulk_discount: totals.bulkDiscount.toString(),

@@ -21,8 +21,12 @@ import {
   listNewestCatalogProducts,
   searchCatalog,
   lowStockDenominations,
+  setFlashSale,
+  clearFlashSale,
+  listUnannouncedStartedFlashSales,
   CategoryMismatchError,
 } from "./catalog";
+import { ValidationError } from "@app/core/errors";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -282,6 +286,224 @@ describe("lowStockDenominations", () => {
     expect(ids).toContain(autoDenom.id);
     expect(ids).not.toContain(manualDenom.id);
     expect(ids).not.toContain(manualWithInfoDenom.id);
+  });
+});
+
+describe("flash sales", () => {
+  const HOUR = 3_600_000;
+  const inHours = (h: number) => new Date(Date.now() + h * HOUR);
+
+  describe("setFlashSale", () => {
+    it("stores the percent and window on the denomination", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Flash Happy");
+      const d = await makeDenom(p.id, "1 Month", "10000");
+
+      const startsAt = inHours(1);
+      const endsAt = inHours(5);
+      await setFlashSale(prisma, { denominationId: d.id, discountPercent: "30", startsAt, endsAt });
+
+      const fresh = await prisma.denomination.findUnique({ where: { id: d.id } });
+      expect(Number(fresh!.flashDiscountPercent)).toBe(30);
+      expect(fresh!.flashStartsAt!.getTime()).toBe(startsAt.getTime());
+      expect(fresh!.flashEndsAt!.getTime()).toBe(endsAt.getTime());
+      expect(fresh!.flashAnnouncedAt).toBeNull();
+    });
+
+    it("accepts a window that has already started but not yet ended", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Flash Running");
+      const d = await makeDenom(p.id, "1 Month", "10000");
+      await setFlashSale(prisma, {
+        denominationId: d.id,
+        discountPercent: "10",
+        startsAt: inHours(-1),
+        endsAt: inHours(1),
+      });
+      const fresh = await prisma.denomination.findUnique({ where: { id: d.id } });
+      expect(Number(fresh!.flashDiscountPercent)).toBe(10);
+    });
+
+    it("rejects a discount percent of 0 or above 100", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Flash Bad Percent");
+      const d = await makeDenom(p.id, "1 Month", "10000");
+      const window = { startsAt: inHours(1), endsAt: inHours(5) };
+
+      await expect(
+        setFlashSale(prisma, { denominationId: d.id, discountPercent: "0", ...window }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        setFlashSale(prisma, { denominationId: d.id, discountPercent: "101", ...window }),
+      ).rejects.toBeInstanceOf(ValidationError);
+
+      const fresh = await prisma.denomination.findUnique({ where: { id: d.id } });
+      expect(fresh!.flashDiscountPercent).toBeNull();
+    });
+
+    it("rejects a window that ends before or exactly when it starts", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Flash Bad Window");
+      const d = await makeDenom(p.id, "1 Month", "10000");
+      const startsAt = inHours(2);
+
+      await expect(
+        setFlashSale(prisma, { denominationId: d.id, discountPercent: "20", startsAt, endsAt: inHours(1) }),
+      ).rejects.toThrow("error.invalid_flash_window");
+      await expect(
+        setFlashSale(prisma, { denominationId: d.id, discountPercent: "20", startsAt, endsAt: startsAt }),
+      ).rejects.toThrow("error.invalid_flash_window");
+    });
+
+    it("rejects a window that is already over", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Flash Past");
+      const d = await makeDenom(p.id, "1 Month", "10000");
+      await expect(
+        setFlashSale(prisma, {
+          denominationId: d.id,
+          discountPercent: "20",
+          startsAt: inHours(-5),
+          endsAt: inHours(-1),
+        }),
+      ).rejects.toThrow("error.invalid_flash_window");
+    });
+
+    it("clears flashAnnouncedAt so a rescheduled sale is announced again", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Flash Reschedule");
+      const d = await makeDenom(p.id, "1 Month", "10000");
+      await setFlashSale(prisma, {
+        denominationId: d.id,
+        discountPercent: "20",
+        startsAt: inHours(-1),
+        endsAt: inHours(1),
+      });
+      await prisma.denomination.update({
+        where: { id: d.id },
+        data: { flashAnnouncedAt: new Date() },
+      });
+
+      await setFlashSale(prisma, {
+        denominationId: d.id,
+        discountPercent: "25",
+        startsAt: inHours(2),
+        endsAt: inHours(4),
+      });
+      const fresh = await prisma.denomination.findUnique({ where: { id: d.id } });
+      expect(fresh!.flashAnnouncedAt).toBeNull();
+      expect(Number(fresh!.flashDiscountPercent)).toBe(25);
+    });
+  });
+
+  describe("clearFlashSale", () => {
+    it("returns false when nothing is scheduled", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Flash None");
+      const d = await makeDenom(p.id, "1 Month", "10000");
+      expect(await clearFlashSale(prisma, d.id)).toBe(false);
+    });
+
+    it("returns true and nulls every flash column", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Flash Clearable");
+      const d = await makeDenom(p.id, "1 Month", "10000");
+      await setFlashSale(prisma, {
+        denominationId: d.id,
+        discountPercent: "20",
+        startsAt: inHours(-1),
+        endsAt: inHours(1),
+      });
+      await prisma.denomination.update({
+        where: { id: d.id },
+        data: { flashAnnouncedAt: new Date() },
+      });
+
+      expect(await clearFlashSale(prisma, d.id)).toBe(true);
+      const fresh = await prisma.denomination.findUnique({ where: { id: d.id } });
+      expect(fresh!.flashDiscountPercent).toBeNull();
+      expect(fresh!.flashStartsAt).toBeNull();
+      expect(fresh!.flashEndsAt).toBeNull();
+      expect(fresh!.flashAnnouncedAt).toBeNull();
+    });
+  });
+
+  describe("listUnannouncedStartedFlashSales", () => {
+    it("returns only live, unannounced sales on active denominations", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Flash Announce");
+
+      const live = await makeDenom(p.id, "Live", "10000");
+      await setFlashSale(prisma, {
+        denominationId: live.id,
+        discountPercent: "20",
+        startsAt: inHours(-1),
+        endsAt: inHours(1),
+      });
+
+      const notStarted = await makeDenom(p.id, "Not Started", "10000");
+      await setFlashSale(prisma, {
+        denominationId: notStarted.id,
+        discountPercent: "20",
+        startsAt: inHours(2),
+        endsAt: inHours(4),
+      });
+
+      // An ended window can't be written through setFlashSale (it refuses a
+      // sale that is already over), so it is planted directly — the same shape
+      // a sale that simply ran its course leaves behind.
+      const ended = await makeDenom(p.id, "Ended", "10000");
+      await prisma.denomination.update({
+        where: { id: ended.id },
+        data: {
+          flashDiscountPercent: "20",
+          flashStartsAt: inHours(-5),
+          flashEndsAt: inHours(-1),
+        },
+      });
+
+      const announced = await makeDenom(p.id, "Announced", "10000");
+      await setFlashSale(prisma, {
+        denominationId: announced.id,
+        discountPercent: "20",
+        startsAt: inHours(-1),
+        endsAt: inHours(1),
+      });
+      await prisma.denomination.update({
+        where: { id: announced.id },
+        data: { flashAnnouncedAt: new Date() },
+      });
+
+      const inactive = await makeDenom(p.id, "Inactive", "10000");
+      await setFlashSale(prisma, {
+        denominationId: inactive.id,
+        discountPercent: "20",
+        startsAt: inHours(-1),
+        endsAt: inHours(1),
+      });
+      await prisma.denomination.update({ where: { id: inactive.id }, data: { isActive: false } });
+
+      const ids = (await listUnannouncedStartedFlashSales(prisma)).map((d) => d.id);
+      expect(ids).toContain(live.id);
+      expect(ids).not.toContain(notStarted.id);
+      expect(ids).not.toContain(ended.id);
+      expect(ids).not.toContain(announced.id);
+      expect(ids).not.toContain(inactive.id);
+    });
+
+    it("includes the parent product so the announcement can name it", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Flash Parent");
+      const d = await makeDenom(p.id, "1 Month", "10000");
+      await setFlashSale(prisma, {
+        denominationId: d.id,
+        discountPercent: "20",
+        startsAt: inHours(-1),
+        endsAt: inHours(1),
+      });
+      const row = (await listUnannouncedStartedFlashSales(prisma)).find((x) => x.id === d.id);
+      expect(row!.product.name).toBe("Flash Parent");
+    });
   });
 });
 

@@ -19,6 +19,15 @@ export default defineConfig({
       "tests/**/*.test.ts",
     ],
     environment: "node",
+    // bcryptjs at the production work factor (12) costs ~450ms per hash and
+    // ~500ms per compare, which is real time inside every auth test — enough
+    // that the storefront's cross-IP account-lockout test spent ~3s in bcrypt
+    // and intermittently blew Vitest's 5s default timeout under a loaded
+    // parallel run. Set here rather than in each app's test/setup-env.ts so it
+    // also covers suites with no env bootstrap (e.g. packages/core). Only
+    // honoured when running under Vitest — see packages/core/src/password.ts,
+    // where the production cost is a hard constant.
+    env: { BCRYPT_COST: "4" },
     environmentMatchGlobs: [
       ["apps/web-admin/client/**", "jsdom"],
       ["apps/storefront/client/**", "jsdom"],

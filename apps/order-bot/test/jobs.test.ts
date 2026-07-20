@@ -299,11 +299,15 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       expect(crons[0]!.options.protect).toBe(true);
       expect(crons[1]!.getPattern()).toBe("0 * * * *"); // autoCloseStaleTickets
       expect(crons[1]!.options.protect).toBe(true);
-      // drainBroadcasts (reference pattern) already had it — must stay on.
+      // drainBroadcasts — offset to :20 past the minute (not :00, same as
+      // autoCancelExpiredOrders above) so the two don't contend for SQLite's
+      // single write-lock in the same instant every tick; still protected.
+      expect(crons[6]!.getPattern()).toBe("20 * * * * *");
       expect(crons[6]!.options.protect).toBe(true);
-      // announceStartedFlashSales — every minute, protected so an overlapping
-      // tick can't race the flashAnnouncedAt stamp.
-      expect(crons[7]!.getPattern()).toBe("*/1 * * * *");
+      // announceStartedFlashSales — offset to :40 past the minute for the same
+      // reason, protected so an overlapping tick can't race the
+      // flashAnnouncedAt stamp.
+      expect(crons[7]!.getPattern()).toBe("40 * * * * *");
       expect(crons[7]!.options.protect).toBe(true);
     } finally {
       for (const c of crons) c.stop();

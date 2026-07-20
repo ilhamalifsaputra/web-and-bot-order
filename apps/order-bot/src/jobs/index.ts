@@ -413,7 +413,7 @@ export async function announceStartedFlashSales(): Promise<void> {
           newPrice: formatIdr(discounted),
           endsAt: localize(endsAt, "yyyy-LL-dd HH:mm ZZZZ"),
         });
-      });
+      }, { timeout: 15000 });
       if (sent === null) continue;
       announced++;
       recipients += sent;
@@ -459,7 +459,12 @@ export function scheduleJobs(api: Api): Cron[] {
     new Cron("*/2 * * * *", wrap("binancePollWatchdog", binancePollWatchdog)),
     new Cron("*/2 * * * *", wrap("bybitPollWatchdog", bybitPollWatchdog)),
     new Cron("*/2 * * * *", wrap("bybitBscPollWatchdog", bybitBscPollWatchdog)),
-    new Cron("*/1 * * * *", { protect: true }, wrap("drainBroadcasts", drainBroadcasts)),
-    new Cron("*/1 * * * *", { protect: true }, wrap("announceStartedFlashSales", announceStartedFlashSales)),
+    // Offset 20s/40s past the minute (croner's optional leading seconds field) so
+    // these two don't fire in the same SQLite write-lock instant as
+    // autoCancelExpiredOrders above — all three land on second 0 otherwise, and
+    // one of them ends up waiting out the 5s busy_timeout (P1008/P2028 in
+    // production, 2026-07-20).
+    new Cron("20 * * * * *", { protect: true }, wrap("drainBroadcasts", drainBroadcasts)),
+    new Cron("40 * * * * *", { protect: true }, wrap("announceStartedFlashSales", announceStartedFlashSales)),
   ];
 }

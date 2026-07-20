@@ -368,7 +368,7 @@ These jobs are defined in [apps/order-bot/src/jobs/index.ts](file:///c:/Users/ma
 | Cron Pattern | Task Target | Core Purpose |
 |---|---|---|
 | `* * * * *` (Every 1m) | `autoCancelExpiredOrders` | Checks for `PENDING_PAYMENT` orders past their `expiresAt` timestamp, releases reserved stock items, and marks the orders as `CANCELLED`. |
-| `* * * * *` (Every 1m) | `drainBroadcasts` | Batches and dispatches pending global broadcast queues to user Telegram IDs. |
+| `20 * * * * *` (Every 1m, at :20s) | `drainBroadcasts` | Batches and dispatches pending global broadcast queues to user Telegram IDs. Offset off :00 so it doesn't contend with `autoCancelExpiredOrders` for SQLite's write-lock every tick. |
 | `0 * * * *` (Every 1h) | `autoCloseStaleTickets` | Closes customer support tickets that have been left in `REPLIED` status without customer activity for over 48 hours. |
 | `0 */6 * * *` (Every 6h) | `reconcileFinancesJob` | Compares catalog price sheets against user transaction history to flag financial discrepancies. |
 | `*/2 * * * *` (Every 2m) | `binancePollWatchdog` | Alerts administrators if the Binance API poller fails to report status checks. |

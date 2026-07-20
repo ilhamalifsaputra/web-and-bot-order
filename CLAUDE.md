@@ -20,11 +20,32 @@ schema at `prisma/schema.prisma` (datasource `DATABASE_URL_PRISMA`). See `DOCS.m
   and cover them with Vitest (`*.test.ts` colocated in `crud/`).
 - **UTC in DB, `TIMEZONE` on display** (web `localdt` filter; bot `localize`).
 - **Audit every state change** with the acting admin id (`logAdminAction`).
-- **Shared SQLite is single-writer** — keep each `$transaction` short; the trigger
-  to move to Postgres is ≥2 concurrent writers.
+- **Shared SQLite is single-writer** — keep each `$transaction` short, and
+  stagger writer crons to different seconds within the minute (see
+  `apps/order-bot/src/jobs/index.ts`) so two jobs don't collide on the same
+  tick and wait out the busy_timeout; the trigger to move to Postgres is ≥2
+  concurrent writers.
 - **Schema change on deploy**: migrate the live DB (`pnpm prisma db push` or apply
   the migration) and restart order-bot **before** new code runs, or you get
   `P2022 column … does not exist`.
+- **Price a SKU through one place only** — `effectiveUnitPrice` (`@app/core/flash`)
+  and `bulkDiscountFor` (`@app/core/bulk`) are the sole source of truth for
+  discounts; every price-computing surface (storefront pages/cart/checkout, bot
+  confirmation, `createOrder*`) must call them directly, never re-derive a
+  discount locally — a drifted copy is how the storefront once quoted Rp20.000
+  and charged Rp30.000 (`docs/audit-matematika-2026-07-20.md`). Flash and bulk
+  discounts stack; reseller price and flash price don't — a reseller always
+  pays `min(resellerPrice, flashPrice)`, never both.
+- **Wallet credit at checkout is all-or-nothing** — a currency's credit only
+  applies when it fully covers the order (total → zero); never leave a
+  partial-remainder state no payment gateway can collect.
+- **Denominations declare a `deliveryType`** (`auto` / `manual` /
+  `manual_with_info`, `@app/core/enums`) — manual flows route through
+  `Order.PROCESSING` and the admin's Awaiting Fulfillment queue
+  (`fulfillManualOrder`) instead of instant stock fulfillment. Every
+  payment-confirmation call site (all payment rails) must settle through
+  `settlePaidOrder`, which branches on this — don't fulfill directly from a
+  new call site or it'll skip manual orders.
 
 ## Never do
 - **Never send Telegram from the web** (admin or storefront) — enqueue to
@@ -74,6 +95,12 @@ schema at `prisma/schema.prisma` (datasource `DATABASE_URL_PRISMA`). See `DOCS.m
 - **No leaked English:** customer- and admin-facing strings go through
   `t(ctx, key, args)` against `packages/core/locales/{en,id}.json`. Keep both
   files' key sets identical (and `{placeholders}` matched per key).
+- **Custom emoji:** outgoing HTML text/captions optionally route through the
+  `custom_emoji_map` Settings-driven transformer (`@app/core/customEmoji`),
+  which wraps mapped unicode emoji in `<tg-emoji>`. Write new bot strings
+  with plain unicode emoji and let the transformer handle mapping — never
+  hand-wrap `<tg-emoji>` yourself. It skips text inside `<pre>`/`<code>` and
+  inline-keyboard labels, where entities aren't allowed.
 
 ## Web (Fastify — admin & storefront)
 - Both `apps/web-admin` and `apps/storefront` are Fastify+Nunjucks+HTMX and share
@@ -103,6 +130,40 @@ schema at `prisma/schema.prisma` (datasource `DATABASE_URL_PRISMA`). See `DOCS.m
 - Bind `127.0.0.1` by default; public exposure needs reverse proxy + TLS + a
   stronger auth review (RBAC/2FA). Storefront is the public surface — treat its
   auth (`apps/storefront/src/auth.ts`) and forgot-password flow as untrusted input.
+- **Product/branding photo uploads generate WebP srcset variants on upload**
+  (`apps/web-admin/src/lib/webpVariants.ts`) and the storefront serves those
+  variants — don't assume the on-disk original format when adding a new image
+  surface; `pnpm images:backfill` regenerates variants for pre-existing photos.
+
+## Fast, efficient monorepo workflow
+- **Scope commands to the workspace you're touching while iterating** — use
+  `pnpm --filter <name> dev|typecheck|build` (every workspace has these
+  scripts) instead of the repo-wide `pnpm -r ...` / root `pnpm typecheck` /
+  `pnpm build`, which walk all 8 workspaces plus both SPA client packages on
+  every run. Still run the full `pnpm typecheck` and `pnpm test` before
+  considering a change done — see `## Tests` below, this doesn't relax that.
+- **Scope test runs while iterating** — `pnpm vitest run <path>` (or watch
+  mode `pnpm vitest <pattern>`) against the file/dir you're changing, not the
+  full `pnpm test`. The root `vitest.config.ts` is one shared config, so an
+  unscoped run always spins up both React SPA suites under jsdom too.
+- **Only rebuild the SPA client you touched** — `@app/web-admin-client` and
+  `@app/storefront-client` (Vite builds) are the slow step in `pnpm build`.
+  Build just the one you edited (`pnpm --filter @app/web-admin-client build`
+  / `pnpm --filter @app/storefront-client build`); don't rebuild both, and
+  don't rebuild either on unrelated backend changes. (See `## Web` above for
+  *when* a build is required at all.)
+- **Only regenerate the Prisma client after a schema change** — `pnpm
+  prisma:generate` writes a gitignored generated client; running it on
+  unrelated edits is wasted work.
+- **Don't run the dev server and one-off scripts (backfill/reconcile/probe)
+  against `data/bot.db` at the same time** — the shared SQLite is
+  single-writer (see above); concurrent WAL writers serialize and slow each
+  other down instead of parallelizing.
+- **Don't delete `node_modules` or the pnpm store to "fix" install issues** —
+  pnpm's content-addressed store already makes installs incremental. Prefer
+  `pnpm install --frozen-lockfile` for a fast, reproducible install (e.g. to
+  verify CI-like state) over a full `pnpm install` that may rewrite the
+  lockfile.
 
 ## Tests
 - `pnpm typecheck` (runs `pnpm -r typecheck` + `tsc -p tsconfig.test.json`) and

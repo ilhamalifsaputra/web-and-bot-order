@@ -13,13 +13,26 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Eye, EyeOff, Copy, Check } from "lucide-react";
 import { apiPost } from "../api/client";
 
 interface StockItem {
   id: number;
   status: string;
   note: string | null;
+  credentials: string;
   createdAtDisplay: string | null;
+}
+
+/** Masked preview of an account credential — enough of a prefix to tell rows
+ *  apart while screen-sharing, the rest dotted out. The dot run is capped so a
+ *  long `email:password:recovery` line can't stretch the column. */
+export function maskCredential(value: string): string {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) return "—";
+  const visible = trimmed.slice(0, 10);
+  const hiddenCount = Math.min(Math.max(trimmed.length - visible.length, 0), 8);
+  return visible + "•".repeat(hiddenCount);
 }
 
 interface StockProductData {
@@ -59,10 +72,25 @@ export function StockProductPage() {
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [activeTab, setActiveTab] = useState<"available" | "sold" | "dead">("available");
+  // Only one account is readable at a time — revealing another row hides the
+  // previous one, so a shared screen never shows a column of plaintext logins.
+  const [revealedId, setRevealedId] = useState<number | null>(null);
+  const [copiedId, setCopiedId] = useState<number | null>(null);
 
   function changeTab(tab: string) {
     setActiveTab(tab as typeof activeTab);
     setSelected(new Set());
+    setRevealedId(null);
+  }
+
+  function copyCredential(item: StockItem) {
+    if (!navigator.clipboard) return;
+    navigator.clipboard.writeText(item.credentials).then(() => {
+      setCopiedId(item.id);
+      setTimeout(() => setCopiedId(id => (id === item.id ? null : id)), 1500);
+    }).catch(err => {
+      console.error("Failed to copy the stock item's account credential to the clipboard", err);
+    });
   }
 
   const bulkAdd = useMutation({
@@ -183,6 +211,42 @@ export function StockProductPage() {
             },
             { key: "id", header: "#", render: item => <span className="font-mono text-xs text-ink-soft">{item.id}</span> },
             { key: "status", header: "Status", render: item => <StatusBadge status={item.status} /> },
+            {
+              key: "credentials",
+              header: "Account",
+              render: item => {
+                const revealed = revealedId === item.id;
+                return (
+                  <div className="flex items-center gap-1">
+                    <span className="font-mono text-xs text-ink break-all">
+                      {revealed ? (item.credentials || "—") : maskCredential(item.credentials)}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={
+                        revealed
+                          ? `Hide account for stock item ${item.id}`
+                          : `Show account for stock item ${item.id}`
+                      }
+                      onClick={() => setRevealedId(id => (id === item.id ? null : item.id))}
+                    >
+                      {revealed ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      aria-label={`Copy account for stock item ${item.id}`}
+                      onClick={() => copyCredential(item)}
+                    >
+                      {copiedId === item.id
+                        ? <Check className="h-3.5 w-3.5 text-grass" />
+                        : <Copy className="h-3.5 w-3.5" />}
+                    </Button>
+                  </div>
+                );
+              },
+            },
             {
               key: "note",
               header: "Note",

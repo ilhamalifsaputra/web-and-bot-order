@@ -46,7 +46,16 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     // `createdAt`) — the client's "Added" column had been reading a
     // nonexistent `createdAt` field (always undefined → Invalid Date).
     // Fixed here alongside adding the pre-formatted display string.
-    const itemsWithDisplay = items.map((i) => ({ ...i, createdAtDisplay: displayDate(i.addedAt) }));
+    // Shape the rows explicitly rather than spreading them: the page needs the
+    // account credential, but not the order linkage (orderId/reservedAt/soldAt)
+    // the raw row carries.
+    const itemsWithDisplay = items.map((i) => ({
+      id: i.id,
+      status: i.status,
+      note: i.note,
+      credentials: i.credentials,
+      createdAtDisplay: displayDate(i.addedAt),
+    }));
     return reply.send({ product, items: itemsWithDisplay, available, waiting });
   });
 

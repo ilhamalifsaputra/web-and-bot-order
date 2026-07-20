@@ -2103,6 +2103,22 @@ describe("stock", () => {
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
   });
+
+  // The Stock Items table shows the account credential (masked, with a reveal
+  // toggle), so the detail payload must carry it — but nothing more of the raw
+  // row than the page actually renders.
+  it("detail returns each item's credential and no order linkage", async () => {
+    const res = await get(`/api/stock/${seed.productId}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { items: Record<string, unknown>[] };
+    expect(data.items.length).toBeGreaterThan(0);
+    const item = data.items[0]!;
+    expect(Object.keys(item).sort()).toEqual(
+      ["createdAtDisplay", "credentials", "id", "note", "status"],
+    );
+    expect(typeof item.credentials).toBe("string");
+    expect(item).not.toHaveProperty("orderId");
+  });
 });
 
 describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", () => {

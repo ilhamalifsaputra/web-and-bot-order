@@ -8,11 +8,12 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Send } from "lucide-react";
-import { apiGet, apiPost } from "../api/client";
+import { apiGet, apiPost, apiPostForm } from "../api/client";
 import type { SupportData } from "../api/types";
 import { t } from "../lib/i18n";
 import StatusBadge from "../components/shop/StatusBadge";
 import Toast from "../components/shop/Toast";
+import AttachmentPicker from "../components/shop/AttachmentPicker";
 
 /** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
  * submitting button while its mutation is pending (in addition to disabling
@@ -24,7 +25,10 @@ function Spinner() {
 }
 
 export default function SupportPage() {
-  const [message, setMessage] = useState("");
+  // Pre-filled skeleton so customers know what info to include — they edit
+  // it in place rather than starting from a blank box.
+  const [message, setMessage] = useState(() => t("web.support_template"));
+  const [files, setFiles] = useState<File[]>([]);
   const [toastText, setToastText] = useState<string | null>(null);
   const { data, error, refetch } = useQuery({
     queryKey: ["account-support"],
@@ -41,10 +45,20 @@ export default function SupportPage() {
   // STO-020: submitting a ticket used to just clear the textbox and silently
   // add a table row, with no confirmation at all.
   const createMutation = useMutation({
-    mutationFn: (vars: { message: string }) =>
-      apiPost<{ ok: boolean; ticket_id: number | null }>("/api/v1/account/support", vars),
+    mutationFn: (vars: { message: string; files: File[] }) => {
+      if (vars.files.length === 0) {
+        return apiPost<{ ok: boolean; ticket_id: number | null }>("/api/v1/account/support", {
+          message: vars.message,
+        });
+      }
+      const form = new FormData();
+      form.append("message", vars.message);
+      for (const file of vars.files) form.append("attachments", file);
+      return apiPostForm<{ ok: boolean; ticket_id: number | null }>("/api/v1/account/support", form);
+    },
     onSuccess: (resp) => {
-      setMessage("");
+      setMessage(t("web.support_template"));
+      setFiles([]);
       refetch();
       if (resp.ticket_id != null) setToastText(t("web.support_ticket_created", { id: resp.ticket_id }));
     },
@@ -52,7 +66,7 @@ export default function SupportPage() {
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    createMutation.mutate({ message });
+    createMutation.mutate({ message, files });
   }
 
   if (!data) return null;
@@ -67,11 +81,12 @@ export default function SupportPage() {
         <textarea
           value={message}
           onChange={(e) => setMessage(e.target.value)}
-          rows={3}
+          rows={6}
           required
           className="field"
           placeholder={t("web.support_placeholder")}
         />
+        <AttachmentPicker files={files} onChange={setFiles} disabled={createMutation.isPending} />
         <div className="mt-3 text-right">
           <button type="submit" className="btn btn-primary btn-sm" disabled={createMutation.isPending}>
             {createMutation.isPending && <Spinner />}

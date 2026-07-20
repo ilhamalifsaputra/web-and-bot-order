@@ -127,6 +127,10 @@ export async function createCatalogProduct(
     name: string;
     emoji?: string | null;
     description?: string | null;
+    /** Storefront detail blocks — see prisma/schema.prisma Product. */
+    whatYouGet?: string | null;
+    terms?: string | null;
+    warrantyNote?: string | null;
     webImageUrl?: string | null;
     imageFileId?: string | null;
     sortOrder?: number;
@@ -141,6 +145,9 @@ export async function createCatalogProduct(
       slug,
       emoji: args.emoji ?? null,
       description: args.description ?? null,
+      whatYouGet: args.whatYouGet ?? null,
+      terms: args.terms ?? null,
+      warrantyNote: args.warrantyNote ?? null,
       webImageUrl: args.webImageUrl ?? null,
       imageFileId: args.imageFileId ?? null,
       sortOrder: args.sortOrder ?? 0,

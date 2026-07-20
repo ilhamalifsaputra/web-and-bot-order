@@ -9,7 +9,9 @@ import { basename, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { prisma, getSetting, setSetting, logAdminAction } from "@app/db";
+import { sniffImageMime, canonicalImageMime } from "@app/core/media";
 import { canMutate } from "../plugins/auth";
+import { deleteWebpVariants, isConvertible, tryGenerateWebpVariants } from "./webpVariants";
 
 export interface HandleUploadOpts {
   /** Filename prefix, e.g. "banner" → banner-<hex>.png. */
@@ -33,26 +35,15 @@ export interface HandleUploadOpts {
   /** Natural-language audit `details` sentence for the saved filename. */
   details: (filename: string) => string;
   afterSave?: (url: string) => Promise<void>;
+  /**
+   * Widths to build WebP siblings at, for images the storefront renders in an
+   * <img>. The uploaded file itself is left untouched — see webpVariants.ts for
+   * why that matters (the bot re-uploads these same files to Telegram).
+   * Omit for Telegram-only images (banner, broadcast), for the payment QR
+   * (must stay pixel-crisp to scan), and for the favicon.
+   */
+  webVariants?: number[];
 }
-
-/**
- * Sniff the real image type from a file's magic bytes (M-6). Returns a canonical
- * MIME, or null when the bytes don't look like a supported image. SVG is text
- * (no binary signature) so it's matched by a leading `<svg`/XML heuristic.
- */
-function sniffImageMime(buf: Buffer): string | null {
-  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return "image/png";
-  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
-  if (buf.length >= 12 && buf.toString("ascii", 0, 4) === "RIFF" && buf.toString("ascii", 8, 12) === "WEBP") return "image/webp";
-  if (buf.length >= 4 && buf[0] === 0x00 && buf[1] === 0x00 && buf[2] === 0x01 && buf[3] === 0x00) return "image/x-icon";
-  const head = buf.subarray(0, 1024).toString("utf8").trimStart().toLowerCase();
-  if (head.includes("<svg")) return "image/svg+xml";
-  return null;
-}
-
-/** Collapse the two icon MIME spellings so a sniffed type matches either header. */
-const canonicalImageMime = (m: string): string =>
-  m === "image/vnd.microsoft.icon" ? "image/x-icon" : m;
 
 /** Shared multipart image upload: CSRF + role gate + MIME + size, then save. */
 export async function handleUpload(
@@ -101,9 +92,13 @@ export async function handleUpload(
     : opts.getOldUrl
       ? await opts.getOldUrl()
       : null;
-  await deleteOldUpload(opts.urlPrefix, opts.destDir, oldValue);
+  await deleteOldUpload(opts.urlPrefix, opts.destDir, oldValue, opts.webVariants);
   await mkdir(opts.destDir, { recursive: true });
   await writeFile(join(opts.destDir, filename), fileBuffer);
+  // After the original is safely on disk, and only for web-facing images.
+  if (opts.webVariants && isConvertible(filename)) {
+    await tryGenerateWebpVariants(opts.destDir, filename, opts.webVariants);
+  }
   if (opts.settingKey) await setSetting(prisma, opts.settingKey, url);
   if (opts.afterSave) await opts.afterSave(url);
   await logAdminAction(prisma, {
@@ -121,8 +116,12 @@ export async function deleteOldUpload(
   urlPrefix: string,
   destDir: string,
   oldValue: string | null,
+  webVariants?: number[],
 ): Promise<void> {
   if (oldValue && oldValue.startsWith(`${urlPrefix}/`)) {
-    await unlink(join(destDir, basename(oldValue))).catch(() => undefined);
+    const filename = basename(oldValue);
+    await unlink(join(destDir, filename)).catch(() => undefined);
+    // The WebP siblings would otherwise outlive the image they were made from.
+    if (webVariants) await deleteWebpVariants(destDir, filename, webVariants);
   }
 }

@@ -10,6 +10,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import compress from "@fastify/compress";
 import cookie from "@fastify/cookie";
 import formbody from "@fastify/formbody";
+import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import { config } from "@app/core/config";
 import { t } from "@app/core/i18n";
@@ -78,6 +79,7 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   await app.register(cookie);
   await app.register(formbody);
+  await app.register(multipart);
   // SEO/perf: gzip/br/zstd HTML, JSON and static-asset responses. `global: true`
   // is the plugin default, so every route (SPA shell, /api/v1/*, /static/*) gets
   // compressed transparently. Must be registered before @fastify/static per its

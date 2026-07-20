@@ -7,8 +7,8 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
-import { closeTicket, createTicket } from "./support";
-import { TicketStatus } from "@app/core/enums";
+import { closeTicket, createTicket, addTicketMessage } from "./support";
+import { TicketStatus, SenderType } from "@app/core/enums";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -66,5 +66,45 @@ describe("closeTicket atomic guard", () => {
     expect(tgId).toBeNull();
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
     expect(fresh!.status).toBe(TicketStatus.CLOSED); // still closed — just nobody to DM
+  });
+});
+
+// Web-uploaded evidence URLs — kept in a column separate from photo_file_ids
+// (Telegram file_ids from the bot's support flow), since a file_id is
+// meaningless as a web <img src>.
+describe("attachmentUrls", () => {
+  it("defaults to null and round-trips a comma-joined URL string on createTicket", async () => {
+    const user = await makeUser(777n);
+    const bare = await createTicket(prisma, user.id, "no evidence");
+    expect(bare.attachmentUrls).toBeNull();
+
+    const withEvidence = await createTicket(
+      prisma,
+      user.id,
+      "evidence attached",
+      null,
+      "/uploads/tickets/evidence-a.png,/uploads/tickets/evidence-b.mp4",
+    );
+    expect(withEvidence.attachmentUrls).toBe(
+      "/uploads/tickets/evidence-a.png,/uploads/tickets/evidence-b.mp4",
+    );
+    // photo_file_ids (Telegram-origin) is untouched by the new parameter.
+    expect(withEvidence.photoFileIds).toBeNull();
+  });
+
+  it("round-trips attachmentUrls on addTicketMessage, independent of photoFileIds", async () => {
+    const user = await makeUser(778n);
+    const ticket = await createTicket(prisma, user.id, "help me");
+
+    const msg = await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.USER,
+      senderId: user.id,
+      content: "here's a follow-up video",
+      attachmentUrls: "/uploads/tickets/evidence-c.webm",
+    });
+
+    expect(msg.attachmentUrls).toBe("/uploads/tickets/evidence-c.webm");
+    expect(msg.photoFileIds).toBeNull();
   });
 });

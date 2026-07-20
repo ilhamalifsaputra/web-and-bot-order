@@ -18,6 +18,7 @@
     "./runtime": "./src/runtime.ts",
     "./fx": "./src/fx.ts",
     "./flash": "./src/flash.ts",
+    "./media": "./src/media.ts",
     "./bulk": "./src/bulk.ts",
     "./bulk": "./src/bulk.ts",
     "./password": "./src/password.ts",

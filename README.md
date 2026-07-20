@@ -296,6 +296,15 @@ nginx + TLS (terminasi HTTPS, proxy ke app), lalu set `WEB_COOKIE_SECURE=true`.
 Config nginx siap pakai + checklist deploy + **runbook 502** ada di
 **`deploy/README.md`** dan **`deploy/nginx/telegram-shop.conf`**.
 
+> 🔍 **Penting untuk SEO toko web.** Config nginx bawaan itu yang menyalakan
+> HTTP/2, kompresi, cache aset, dan redirect **www → non-www**. Kalau toko
+> dilayani lewat proxy lain (atau tanpa proxy), audit SEO akan melaporkan
+> "HTTP/2 tidak dipakai" dan "situs melayani www dan non-www sekaligus" —
+> duplicate content yang menurunkan peringkat. Pastikan juga `SHOP_PUBLIC_URL`
+> di `.env` diisi domain kanonik **tanpa `www`**: nilai itulah yang dipakai
+> untuk `<link rel="canonical">`, `og:url`, dan `sitemap.xml`. Tanpa
+> `SHOP_PUBLIC_URL`, tag-tag itu tidak dikirim sama sekali.
+
 **Banyak toko dalam satu VPS:** bisa menjalankan beberapa bisnis **independen**
 (masing-masing bot, DB, domain, dan port sendiri) di satu server — tiap toko =
 satu instance penuh dari direktori repo sendiri. Aturan emasnya: **tiap instance

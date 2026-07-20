@@ -36,7 +36,14 @@ const seoRoutes: FastifyPluginAsync = async (app) => {
       listCatalogProducts(prisma),
     ]);
 
-    const urlTags: string[] = [];
+    // The home page and the informational pages are static but indexable, and
+    // were missing from the sitemap entirely — it listed only the catalog, so
+    // the two pages a search engine most wants for a shop's identity (about,
+    // policies) had no entry at all. Keep in sync with STATIC_PAGES in
+    // spaShell.ts.
+    const urlTags: string[] = ["/", "/about", "/how-to-order", "/terms", "/privacy", "/refund"].map(
+      (p) => `<url><loc>${xmlEscape(origin + p)}</loc></url>`,
+    );
     for (const c of categories) {
       urlTags.push(`<url><loc>${xmlEscape(`${origin}/c/${c.slug}`)}</loc></url>`);
     }

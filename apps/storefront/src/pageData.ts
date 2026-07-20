@@ -27,7 +27,7 @@ import {
   shopFulfilmentStats,
   type CatalogProduct,
 } from "@app/db";
-import { categoryImage, productImage } from "./images";
+import { PRODUCT_VARIANT_WIDTHS, categoryImage, productImage, webpSrcset } from "./images";
 import { resolveBotUsername } from "./shop";
 import { shapeProducts, sortProductCards, type SortKey } from "./cards";
 
@@ -218,9 +218,13 @@ export async function productPageData(rawSlug: string, isReseller = false) {
       slug: product.slug,
       name: product.name,
       description: product.description,
+      what_you_get: product.whatYouGet,
+      terms: product.terms,
+      warranty_note: product.warrantyNote,
       category_name: catName,
       category_slug: product.category.slug,
       image: product.webImageUrl ?? productImage(product, catName),
+      image_srcset: webpSrcset(product.webImageUrl, PRODUCT_VARIANT_WIDTHS),
     },
     denominations,
     default_restock_denomination_id: defaultRestockDenominationId,

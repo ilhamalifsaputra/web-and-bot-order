@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
 import ErrorPage from "./pages/ErrorPage";
@@ -5,21 +6,40 @@ import HomePage from "./pages/HomePage";
 import CategoryPage from "./pages/CategoryPage";
 import SearchPage from "./pages/SearchPage";
 import ProductPage from "./pages/ProductPage";
-import CartPage from "./pages/CartPage";
-import CheckoutPage from "./pages/CheckoutPage";
-import PayPage from "./pages/PayPage";
-import LoginPage from "./pages/LoginPage";
-import RegisterPage from "./pages/RegisterPage";
-import ForgotPage from "./pages/ForgotPage";
-import ResetPage from "./pages/ResetPage";
-import AccountPage from "./pages/AccountPage";
-import OrdersPage from "./pages/OrdersPage";
-import OrderDetailPage from "./pages/OrderDetailPage";
-import ReferralPage from "./pages/ReferralPage";
-import ReviewsPage from "./pages/ReviewsPage";
-import SupportPage from "./pages/SupportPage";
-import TicketDetailPage from "./pages/TicketDetailPage";
-import SettingsPage from "./pages/SettingsPage";
+
+// Code splitting, by who asks for the page.
+//
+// The catalog pages above stay in the main bundle: they're the entry points a
+// search engine indexes and a first-time visitor lands on, so their render must
+// not wait on a second network round-trip.
+//
+// Everything below is reached only after a deliberate click (sign in, check
+// out, open an order), by which time the chunk has long since been fetched in
+// the background. Shipping them eagerly meant someone browsing a product page
+// downloaded the entire checkout and account area — the bulk of a single
+// 455 kB bundle — before anything appeared on screen.
+const CartPage = lazy(() => import("./pages/CartPage"));
+const CheckoutPage = lazy(() => import("./pages/CheckoutPage"));
+const PayPage = lazy(() => import("./pages/PayPage"));
+const LoginPage = lazy(() => import("./pages/LoginPage"));
+const RegisterPage = lazy(() => import("./pages/RegisterPage"));
+const ForgotPage = lazy(() => import("./pages/ForgotPage"));
+const ResetPage = lazy(() => import("./pages/ResetPage"));
+const AccountPage = lazy(() => import("./pages/AccountPage"));
+const OrdersPage = lazy(() => import("./pages/OrdersPage"));
+const OrderDetailPage = lazy(() => import("./pages/OrderDetailPage"));
+const ReferralPage = lazy(() => import("./pages/ReferralPage"));
+const ReviewsPage = lazy(() => import("./pages/ReviewsPage"));
+const SupportPage = lazy(() => import("./pages/SupportPage"));
+const TicketDetailPage = lazy(() => import("./pages/TicketDetailPage"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+// Informational pages: read once, if ever, and never on the path to a
+// purchase — they have no business in the catalog bundle.
+const AboutPage = lazy(() => import("./pages/AboutPage"));
+const HowToOrderPage = lazy(() => import("./pages/HowToOrderPage"));
+const TermsPage = lazy(() => import("./pages/TermsPage"));
+const PrivacyPage = lazy(() => import("./pages/PrivacyPage"));
+const RefundPage = lazy(() => import("./pages/RefundPage"));
 
 /**
  * Full route table for every storefront URL. Ported cluster by cluster
@@ -30,32 +50,40 @@ import SettingsPage from "./pages/SettingsPage";
  */
 export default function App() {
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/register" element={<RegisterPage />} />
-      <Route path="/forgot" element={<ForgotPage />} />
-      <Route path="/reset/:token" element={<ResetPage />} />
+    <Suspense fallback={<div className="min-h-[50vh]" aria-busy="true" />}>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
+        <Route path="/forgot" element={<ForgotPage />} />
+        <Route path="/reset/:token" element={<ResetPage />} />
 
-      <Route element={<Layout />}>
-        <Route path="/" element={<HomePage />} />
-        <Route path="/c/:slug" element={<CategoryPage />} />
-        <Route path="/p/:slug" element={<ProductPage />} />
-        <Route path="/search" element={<SearchPage />} />
-        <Route path="/cart" element={<CartPage />} />
-        <Route path="/checkout" element={<CheckoutPage />} />
-        <Route path="/checkout/:code/pay" element={<PayPage />} />
-        <Route path="/account" element={<AccountPage />} />
-        <Route path="/account/orders" element={<OrdersPage />} />
-        <Route path="/account/orders/:code" element={<OrderDetailPage />} />
-        <Route path="/account/referral" element={<ReferralPage />} />
-        <Route path="/account/reviews" element={<ReviewsPage />} />
-        <Route path="/account/support" element={<SupportPage />} />
-        <Route path="/account/support/:id" element={<TicketDetailPage />} />
-        <Route path="/account/settings" element={<SettingsPage />} />
-        {/* Unknown paths: the SPA shell already sent a real 404 status; this
+        <Route element={<Layout />}>
+          <Route path="/" element={<HomePage />} />
+          <Route path="/c/:slug" element={<CategoryPage />} />
+          <Route path="/p/:slug" element={<ProductPage />} />
+          <Route path="/search" element={<SearchPage />} />
+          <Route path="/cart" element={<CartPage />} />
+          <Route path="/checkout" element={<CheckoutPage />} />
+          <Route path="/checkout/:code/pay" element={<PayPage />} />
+          <Route path="/account" element={<AccountPage />} />
+          <Route path="/account/orders" element={<OrdersPage />} />
+          <Route path="/account/orders/:code" element={<OrderDetailPage />} />
+          <Route path="/account/referral" element={<ReferralPage />} />
+          <Route path="/account/reviews" element={<ReviewsPage />} />
+          <Route path="/account/support" element={<SupportPage />} />
+          <Route path="/account/support/:id" element={<TicketDetailPage />} />
+          <Route path="/account/settings" element={<SettingsPage />} />
+
+          <Route path="/about" element={<AboutPage />} />
+          <Route path="/how-to-order" element={<HowToOrderPage />} />
+          <Route path="/terms" element={<TermsPage />} />
+          <Route path="/privacy" element={<PrivacyPage />} />
+          <Route path="/refund" element={<RefundPage />} />
+          {/* Unknown paths: the SPA shell already sent a real 404 status; this
             renders the error.njk visuals. */}
-        <Route path="*" element={<ErrorPage />} />
-      </Route>
-    </Routes>
+          <Route path="*" element={<ErrorPage />} />
+        </Route>
+      </Routes>
+    </Suspense>
   );
 }

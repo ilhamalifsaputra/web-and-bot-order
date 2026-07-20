@@ -135,6 +135,15 @@ model Product {
   slug        String   @unique(map: "ix_products_slug")
   emoji       String?
   description String?
+  /// Storefront-only detail blocks, rendered under `description` on the
+  /// product page and folded into its structured data. All optional — a
+  /// product created before these existed simply shows fewer blocks.
+  /// What the buyer actually receives ("Akun private, 1 device…").
+  whatYouGet   String? @map("what_you_get")
+  /// Product-specific rules ("jangan ganti email — garansi hangus").
+  terms        String?
+  /// Warranty detail for this product, overriding the generic warranty copy.
+  warrantyNote String? @map("warranty_note")
   /// Web-facing product photo URL (admin-set, storefront only). Telegram
   /// imageFileId can't be used as an <img src>; when this is null the
   /// storefront falls back to its curated Unsplash map (plan.md §8).
@@ -450,15 +459,16 @@ model Referral {
 }
 
 model SupportTicket {
-  id           Int       @id @default(autoincrement())
-  userId       Int       @map("user_id")
-  message      String
-  photoFileIds String?   @map("photo_file_ids")
-  status       String    @default("OPEN")
-  adminReply   String?   @map("admin_reply")
-  adminId      Int?      @map("admin_id")
-  createdAt    DateTime  @default(now()) @map("created_at")
-  repliedAt    DateTime? @map("replied_at")
+  id             Int       @id @default(autoincrement())
+  userId         Int       @map("user_id")
+  message        String
+  photoFileIds   String?   @map("photo_file_ids")
+  attachmentUrls String?   @map("attachment_urls")
+  status         String    @default("OPEN")
+  adminReply     String?   @map("admin_reply")
+  adminId        Int?      @map("admin_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  repliedAt      DateTime? @map("replied_at")
 
   user     User            @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   admin    User?           @relation("TicketAdmin", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -469,13 +479,14 @@ model SupportTicket {
 }
 
 model TicketMessage {
-  id           Int      @id @default(autoincrement())
-  ticketId     Int      @map("ticket_id")
-  senderType   String   @map("sender_type")
-  senderId     Int?     @map("sender_id")
-  content      String
-  photoFileIds String?  @map("photo_file_ids")
-  createdAt    DateTime @default(now()) @map("created_at")
+  id             Int      @id @default(autoincrement())
+  ticketId       Int      @map("ticket_id")
+  senderType     String   @map("sender_type")
+  senderId       Int?     @map("sender_id")
+  content        String
+  photoFileIds   String?  @map("photo_file_ids")
+  attachmentUrls String?  @map("attachment_urls")
+  createdAt      DateTime @default(now()) @map("created_at")
 
   ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   sender User?         @relation(fields: [senderId], references: [id], onUpdate: NoAction)

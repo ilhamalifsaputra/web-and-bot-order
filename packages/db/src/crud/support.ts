@@ -9,8 +9,9 @@ export function createTicket(
   userId: number,
   message: string,
   photoFileIds: string | null = null,
+  attachmentUrls: string | null = null,
 ) {
-  return db.supportTicket.create({ data: { userId, message, photoFileIds } });
+  return db.supportTicket.create({ data: { userId, message, photoFileIds, attachmentUrls } });
 }
 
 export function getTicket(db: Db, ticketId: number) {
@@ -75,6 +76,7 @@ export async function addTicketMessage(
     senderId: number;
     content: string;
     photoFileIds?: string | null;
+    attachmentUrls?: string | null;
   },
 ) {
   const msg = await db.ticketMessage.create({
@@ -84,6 +86,7 @@ export async function addTicketMessage(
       senderId: args.senderId,
       content: args.content,
       photoFileIds: args.photoFileIds ?? null,
+      attachmentUrls: args.attachmentUrls ?? null,
     },
   });
   const ticket = await db.supportTicket.findUnique({

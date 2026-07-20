@@ -11,7 +11,7 @@ import type { CatalogProduct } from "@app/db";
 import { Decimal } from "@app/core/money";
 import { activeFlashPercent, effectiveUnitPrice, flashPrice } from "@app/core/flash";
 import { activeBulkPercent } from "@app/core/bulk";
-import { productImage } from "./images";
+import { PRODUCT_VARIANT_WIDTHS, productImage, webpSrcset } from "./images";
 
 export type ProductCard = {
   slug: string;
@@ -22,6 +22,9 @@ export type ProductCard = {
   /** Number of denominations (plans) the product offers. */
   variant_count: number;
   image: string;
+  /** WebP `srcset` for `image`, or null when no derivatives exist — see
+   *  webpSrcset(). Null means "render a plain <img>", never a broken image. */
+  image_srcset: string | null;
   /** Available stock across all denominations of this product. */
   available: number;
   rating: number | null;
@@ -136,6 +139,7 @@ export function shapeProducts(
       from_price: fromPrice.toString(),
       variant_count: denoms.length,
       image: p.webImageUrl ?? productImage(p, p.category.name),
+      image_srcset: webpSrcset(p.webImageUrl, PRODUCT_VARIANT_WIDTHS),
       available,
       rating: ratingCount > 0 ? weightedSum / ratingCount : null,
       rating_count: ratingCount,

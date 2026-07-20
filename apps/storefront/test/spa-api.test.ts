@@ -88,6 +88,37 @@ async function makeUser(username: string, password: string, refCode: string): Pr
   return u.id;
 }
 
+// 1x1 PNG, same constant as apps/web-admin/test/branding.test.ts.
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+/** Builds a multipart/form-data payload for app.inject — text fields plus
+ * zero or more files (ticket attachments send several files all under the
+ * "attachments" field name, so this takes an array rather than one file). */
+function multipart(
+  fields: Record<string, string>,
+  files: Array<{ field: string; filename: string; contentType: string; content: Buffer }> = [],
+): { payload: Buffer; headers: Record<string, string> } {
+  const boundary = "----vitest" + Math.random().toString(16).slice(2);
+  const chunks: Buffer[] = [];
+  for (const [k, v] of Object.entries(fields)) {
+    chunks.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+  }
+  for (const file of files) {
+    chunks.push(
+      Buffer.from(
+        `--${boundary}\r\nContent-Disposition: form-data; name="${file.field}"; filename="${file.filename}"\r\n` +
+          `Content-Type: ${file.contentType}\r\n\r\n`,
+      ),
+    );
+    chunks.push(file.content, Buffer.from("\r\n"));
+  }
+  chunks.push(Buffer.from(`--${boundary}--\r\n`));
+  return { payload: Buffer.concat(chunks), headers: { "content-type": `multipart/form-data; boundary=${boundary}` } };
+}
+
 beforeAll(async () => {
   await initDb();
   app = await buildApp();
@@ -329,17 +360,29 @@ describe("SPA shell wildcard", () => {
 
   // Group B: schema.org Product JSON-LD, product pages only.
   describe("Product JSON-LD", () => {
-    /** Extracts and parses the single application/ld+json <script> block's contents. */
-    function extractJsonLd(html: string): unknown {
-      const blocks = [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)];
-      expect(blocks).toHaveLength(1); // exactly one — a breakout would produce 0 or >1
-      return JSON.parse(blocks[0]![1]!);
+    /** Parses every application/ld+json block in the document. */
+    function allJsonLd(html: string): Array<Record<string, unknown>> {
+      return [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)].map(
+        (m) => JSON.parse(m[1]!) as Record<string, unknown>,
+      );
+    }
+
+    /**
+     * The one block of the given @type. A product page carries Product AND
+     * BreadcrumbList, so the count is asserted per type rather than per
+     * document — a `</script>` breakout would still show up as a parse failure
+     * or a missing/duplicated block.
+     */
+    function extractJsonLd(html: string, type = "Product"): Record<string, unknown> {
+      const blocks = allJsonLd(html).filter((b) => b["@type"] === type);
+      expect(blocks).toHaveLength(1);
+      return blocks[0]!;
     }
 
     it("is present on a product page with the correct name and price", async () => {
       const res = await app.inject({ method: "GET", url: `/p/${productSlug}` });
       expect(res.statusCode).toBe(200);
-      const jsonLd = extractJsonLd(res.body) as Record<string, unknown>;
+      const jsonLd = extractJsonLd(res.body);
       expect(jsonLd).toMatchObject({
         "@context": "https://schema.org",
         "@type": "Product",
@@ -353,9 +396,20 @@ describe("SPA shell wildcard", () => {
       });
     });
 
-    it("is absent on non-product pages", async () => {
+    it("puts the product in a breadcrumb trail below its category", async () => {
+      const res = await app.inject({ method: "GET", url: `/p/${productSlug}` });
+      const crumbs = extractJsonLd(res.body, "BreadcrumbList");
+      const items = crumbs.itemListElement as Array<Record<string, unknown>>;
+      expect(items).toHaveLength(3);
+      expect(items[2]).toMatchObject({ position: 3, name: "Netflix Premium" });
+    });
+
+    it("describes the shop itself on the home page, not a Product", async () => {
       const res = await app.inject({ method: "GET", url: "/" });
-      expect(res.body).not.toContain("application/ld+json");
+      const types = allJsonLd(res.body).map((b) => b["@type"]);
+      expect(types).toContain("Organization");
+      expect(types).toContain("WebSite");
+      expect(types).not.toContain("Product");
     });
 
     // A product description containing the literal string `</script>` must
@@ -383,9 +437,9 @@ describe("SPA shell wildcard", () => {
       expect(res.statusCode).toBe(200);
       // The raw, unescaped payload must never appear in the response body.
       expect(res.body).not.toContain('</script><script>alert(1)</script>');
-      // Exactly one JSON-LD block — a successful breakout would split this
-      // into multiple <script> tags (or corrupt parsing entirely).
-      const jsonLd = extractJsonLd(res.body) as Record<string, unknown>;
+      // Exactly one Product block that still parses — a successful breakout
+      // would corrupt parsing or split it into extra <script> tags.
+      const jsonLd = extractJsonLd(res.body);
       expect(jsonLd.description).toBe('</script><script>alert(1)</script>');
       // The escaped form (<\/script>) is what actually appears in the markup.
       expect(res.body).toContain('<\\/script><script>alert(1)<\\/script>');
@@ -1434,6 +1488,93 @@ describe("/api/v1/account twins", () => {
       expect(reply.statusCode).toBe(200);
       const detail2 = await app.inject({ method: "GET", url: `/api/v1/account/support/${ticket.id}`, headers: { cookie } });
       expect(detail2.json().messages.some((m: { content: string }) => m.content === "more details")).toBe(true);
+    });
+
+    it("support ticket: create + reply with an image attachment (multipart), shown in list + detail", async () => {
+      const mp = multipart({ message: "evidence attached" }, [
+        { field: "attachments", filename: "proof.png", contentType: "image/png", content: PNG },
+      ]);
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf, ...mp.headers },
+        payload: mp.payload,
+      });
+      expect(res.statusCode).toBe(200);
+      const ticketId = res.json().ticket_id as number;
+
+      const list = await app.inject({ method: "GET", url: "/api/v1/account/support", headers: { cookie } });
+      const listed = list.json().tickets.find((tk: { id: number }) => tk.id === ticketId);
+      expect(listed.attachments).toHaveLength(1);
+      expect(listed.attachments[0]).toMatch(/^\/uploads\/tickets\/evidence-[0-9a-f]+\.png$/);
+
+      const detail = await app.inject({ method: "GET", url: `/api/v1/account/support/${ticketId}`, headers: { cookie } });
+      expect(detail.json().ticket.attachments).toEqual(listed.attachments);
+
+      const replyMp = multipart({ message: "here's another angle" }, [
+        { field: "attachments", filename: "proof2.png", contentType: "image/png", content: PNG },
+      ]);
+      const reply = await app.inject({
+        method: "POST",
+        url: `/api/v1/account/support/${ticketId}/reply`,
+        headers: { cookie, "x-csrf-token": csrf, ...replyMp.headers },
+        payload: replyMp.payload,
+      });
+      expect(reply.statusCode).toBe(200);
+      const detail2 = await app.inject({ method: "GET", url: `/api/v1/account/support/${ticketId}`, headers: { cookie } });
+      const msg = detail2
+        .json()
+        .messages.find((m: { content: string }) => m.content === "here's another angle");
+      expect(msg.attachments).toHaveLength(1);
+    });
+
+    it("support ticket create rejects a bad file type, an oversized file, and too many files", async () => {
+      const badType = multipart({ message: "bad type" }, [
+        { field: "attachments", filename: "x.txt", contentType: "text/plain", content: Buffer.from("nope") },
+      ]);
+      const badTypeRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf, ...badType.headers },
+        payload: badType.payload,
+      });
+      expect(badTypeRes.statusCode).toBe(400);
+      expect(badTypeRes.json()).toEqual({ error: "web.support_attach_error_type" });
+
+      const oversized = multipart({ message: "too big" }, [
+        {
+          field: "attachments",
+          filename: "big.png",
+          contentType: "image/png",
+          content: Buffer.concat([PNG, Buffer.alloc(6 * 1024 * 1024)]),
+        },
+      ]);
+      const oversizedRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf, ...oversized.headers },
+        payload: oversized.payload,
+      });
+      expect(oversizedRes.statusCode).toBe(400);
+      expect(oversizedRes.json()).toEqual({ error: "web.support_attach_error_size" });
+
+      const tooMany = multipart(
+        { message: "too many" },
+        Array.from({ length: 4 }, (_, i) => ({
+          field: "attachments",
+          filename: `p${i}.png`,
+          contentType: "image/png",
+          content: PNG,
+        })),
+      );
+      const tooManyRes = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf, ...tooMany.headers },
+        payload: tooMany.payload,
+      });
+      expect(tooManyRes.statusCode).toBe(400);
+      expect(tooManyRes.json()).toEqual({ error: "web.support_attach_error_count" });
     });
 
     it("another user's ticket 404s (never 403)", async () => {

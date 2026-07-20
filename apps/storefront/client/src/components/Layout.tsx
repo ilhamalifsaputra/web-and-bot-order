@@ -25,6 +25,16 @@ export function useShopContext() {
   });
 }
 
+/** Footer link row — keep in step with App.tsx's routes and with
+ * STATIC_PAGES in apps/storefront/src/routes/spaShell.ts. */
+const FOOTER_LINKS = [
+  { to: "/about", key: "web.about_title" },
+  { to: "/how-to-order", key: "web.hto_title" },
+  { to: "/terms", key: "web.terms_title" },
+  { to: "/privacy", key: "web.privacy_title" },
+  { to: "/refund", key: "web.refund_title" },
+];
+
 function SearchForm({ inputAriaLabel }: { inputAriaLabel: string }) {
   const navigate = useNavigate();
   const [params] = useSearchParams();
@@ -67,7 +77,15 @@ export default function Layout() {
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-4 px-4 lg:px-6">
           <Link to="/" className="flex shrink-0 items-center gap-2 text-pine">
             {ctx?.logo_url ? (
-              <img src={ctx.logo_url} alt={shopName} className="h-7 w-auto max-w-[10rem] object-contain" />
+              // object-contain, so the logo keeps its own ratio; the declared
+              // box just stops the header reflowing while it loads.
+              <img
+                src={ctx.logo_url}
+                alt={shopName}
+                width={160}
+                height={28}
+                className="h-7 w-auto max-w-[10rem] object-contain"
+              />
             ) : (
               <Store className="h-6 w-6" />
             )}
@@ -137,7 +155,24 @@ export default function Layout() {
       </main>
 
       <footer className="mt-16 border-t border-line bg-card">
-        <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-3 px-4 py-6 text-sm sm:flex-row lg:px-6">
+        {/* The informational pages live here and nowhere else — this row is
+            both how a visitor finds the policies and the only internal link
+            that lets a crawler reach them at all. */}
+        <nav
+          className="mx-auto max-w-6xl px-4 pt-6 lg:px-6"
+          aria-label={t("web.about_title")}
+        >
+          <ul className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm sm:justify-start">
+            {FOOTER_LINKS.map(({ to, key }) => (
+              <li key={to}>
+                <Link to={to} className="text-ink-soft transition-colors hover:text-pine">
+                  {t(key)}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </nav>
+        <div className="mx-auto mt-4 flex max-w-6xl flex-col items-center justify-between gap-3 border-t border-line px-4 py-6 text-sm sm:flex-row lg:px-6">
           <span className="flex items-center gap-2 font-display font-semibold text-pine">
             <Store className="h-5 w-5" /> {shopName}
           </span>

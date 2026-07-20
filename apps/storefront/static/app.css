@@ -103,7 +103,7 @@ textarea.field { resize: vertical; }
 .stat-sub   { font-size: .75rem; color: var(--ink-soft); margin-top: .5rem; }
 
 .data-table          { min-width: 100%; font-size: .875rem; border-collapse: collapse; }
-.data-table thead th { padding: .75rem 1rem; text-align: left; font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); background: rgba(238,241,246,.5); }
+.data-table thead th { padding: .875rem 1.25rem; text-align: left; font-size: .8125rem; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; color: var(--ink-soft); background: rgba(238,241,246,.5); }
 .data-table tbody td { padding: .75rem 1rem; vertical-align: middle; }
 .data-table tbody tr { border-top: 1px solid var(--line); }
 .data-table tbody tr:hover { background: rgba(238,241,246,.3); }

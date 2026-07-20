@@ -30,6 +30,10 @@ interface ProductDetail {
   id: number;
   name: string;
   description: string | null;
+  /** Storefront detail blocks (prisma Product) — optional per product. */
+  whatYouGet: string | null;
+  terms: string | null;
+  warrantyNote: string | null;
   isActive: boolean;
   webImageUrl: string | null;
   category: { id: number; name: string } | null;
@@ -67,6 +71,11 @@ export function ProductDetailPage() {
   const [editingProduct, setEditingProduct] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [descriptionDraft, setDescriptionDraft] = useState("");
+  // Storefront detail blocks — each renders as its own titled section on the
+  // product page, and stays hidden there while it's blank.
+  const [whatYouGetDraft, setWhatYouGetDraft] = useState("");
+  const [termsDraft, setTermsDraft] = useState("");
+  const [warrantyNoteDraft, setWarrantyNoteDraft] = useState("");
   const [savingProduct, setSavingProduct] = useState(false);
   const [productError, setProductError] = useState<string | null>(null);
 
@@ -77,6 +86,9 @@ export function ProductDetailPage() {
       await apiPatch(`/api/catalog/products/${productId}`, {
         name: nameDraft.trim(),
         description: descriptionDraft.trim(),
+        whatYouGet: whatYouGetDraft.trim(),
+        terms: termsDraft.trim(),
+        warrantyNote: warrantyNoteDraft.trim(),
       });
       setEditingProduct(false);
       await queryClient.invalidateQueries({ queryKey: ["catalog", productId] });
@@ -174,10 +186,13 @@ export function ProductDetailPage() {
               onClick={() => {
                 setNameDraft(product.name);
                 setDescriptionDraft(product.description ?? "");
+                setWhatYouGetDraft(product.whatYouGet ?? "");
+                setTermsDraft(product.terms ?? "");
+                setWarrantyNoteDraft(product.warrantyNote ?? "");
                 setEditingProduct(true);
               }}
             >
-              Edit name/description
+              Edit storefront details
             </Button>
           )}
         </CardContent>
@@ -193,6 +208,36 @@ export function ProductDetailPage() {
             <div>
               <label className="text-sm font-medium text-ink">Description</label>
               <Textarea className="mt-1" rows={3} value={descriptionDraft} onChange={(e) => setDescriptionDraft(e.target.value)} />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-ink">What the buyer gets</label>
+              <Textarea
+                className="mt-1"
+                rows={3}
+                placeholder="Private account, 1 device&#10;Can change the profile name&#10;Active for 30 days"
+                value={whatYouGetDraft}
+                onChange={(e) => setWhatYouGetDraft(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-ink">Terms of use</label>
+              <Textarea
+                className="mt-1"
+                rows={2}
+                placeholder="Don't change the account email or password — it voids the warranty."
+                value={termsDraft}
+                onChange={(e) => setTermsDraft(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-ink">Warranty</label>
+              <Textarea
+                className="mt-1"
+                rows={2}
+                placeholder="Full 30-day warranty, claimed through a support ticket."
+                value={warrantyNoteDraft}
+                onChange={(e) => setWarrantyNoteDraft(e.target.value)}
+              />
             </div>
             {productError && <p className="text-sm text-rust">{productError}</p>}
             <div className="flex gap-2">

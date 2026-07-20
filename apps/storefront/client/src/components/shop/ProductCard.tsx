@@ -20,6 +20,10 @@ export interface ProductCardData {
   from_price: string;
   variant_count: number;
   image: string;
+  /** WebP `srcset` for `image` (apps/storefront/src/images.ts webpSrcset).
+   * Null/absent — an upload predating the derivatives, or a hotlinked
+   * placeholder — means render the plain <img>, never a broken <source>. */
+  image_srcset?: string | null;
   available: number;
   rating: number | null;
   rating_count: number;
@@ -57,13 +61,32 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
     >
       <div className="relative flex h-44 items-center justify-center bg-sand overflow-hidden shrink-0">
         {p.image ? (
-          <img
-            src={p.image}
-            alt={p.name}
-            loading="lazy"
-            decoding="async"
-            className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
-          />
+          <picture className="block w-full h-full">
+            {/* block + full size: <picture> is inline by default, which would
+                drop the w-full/h-full the <img> relies on in this flex well. */}
+            {p.image_srcset && (
+              // Two cards per row on phones, a ~300px column on desktop.
+              <source
+                type="image/webp"
+                srcSet={p.image_srcset}
+                sizes="(max-width: 640px) 50vw, 300px"
+              />
+            )}
+            <img
+              src={p.image}
+              alt={p.name}
+              loading="lazy"
+              decoding="async"
+              // Intrinsic size for the card's 11rem-tall well. object-cover still
+              // decides the crop, but without these the browser can't reserve
+              // space before the image loads — the row jumps as each card fills
+              // in (layout shift), and an auditor comparing natural to displayed
+              // dimensions reports the image as distorted.
+              width={400}
+              height={176}
+              className="w-full h-full object-cover group-hover:scale-[1.03] transition-transform duration-300"
+            />
+          </picture>
         ) : (
           <>
             <div className="absolute inset-0 bg-linear-to-br from-ink to-ink-soft"></div>

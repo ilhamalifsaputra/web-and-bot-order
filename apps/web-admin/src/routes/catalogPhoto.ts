@@ -9,6 +9,7 @@ import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { UPLOADS_DIR } from "../paths";
 import { handleUpload } from "../lib/upload";
+import { PRODUCT_WIDTHS } from "../lib/webpVariants";
 import { prisma, getCatalogProduct, updateCatalogProduct } from "@app/db";
 import { currentAdmin } from "../plugins/auth";
 
@@ -41,6 +42,10 @@ export default async function catalogPhotoRoutes(app: FastifyInstance): Promise<
         destDir: PRODUCTS_DIR,
         urlPrefix: PRODUCTS_URL_PREFIX,
         getOldUrl: async () => product.webImageUrl,
+        // Storefront cards and the product page render this in an <img>, so it
+        // gets WebP siblings. The original stays as uploaded — the bot sends
+        // this very file to Telegram (order-bot/src/util/productPhoto.ts).
+        webVariants: PRODUCT_WIDTHS,
         auditAction: "product_photo_upload",
         auditTarget: { type: "product", id: productId },
         details: (filename) => `Uploaded a new photo for product "${product.name}" (${filename}).`,

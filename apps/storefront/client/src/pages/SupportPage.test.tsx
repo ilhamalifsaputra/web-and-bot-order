@@ -4,17 +4,25 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import SupportPage from "./SupportPage";
-import { apiGet, apiPost } from "../api/client";
+import { apiGet, apiPost, apiPostForm } from "../api/client";
 import type { SupportData } from "../api/types";
 
 vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(),
+  apiPostForm: vi.fn(),
 }));
 
 const supportData: SupportData = {
   tickets: [
-    { id: 1, message: "Help please", status: "open", created_at_display: "2026-07-01 09:00", admin_reply: null },
+    {
+      id: 1,
+      message: "Help please",
+      status: "open",
+      created_at_display: "2026-07-01 09:00",
+      admin_reply: null,
+      attachments: [],
+    },
   ],
 };
 
@@ -37,6 +45,8 @@ describe("SupportPage", () => {
   beforeEach(() => {
     document.documentElement.lang = "en";
     vi.clearAllMocks();
+    URL.createObjectURL = vi.fn(() => "blob:mock-preview");
+    URL.revokeObjectURL = vi.fn();
   });
 
   it("renders the ticket list", async () => {
@@ -77,5 +87,30 @@ describe("SupportPage", () => {
   it("renders the empty state when there are no tickets", async () => {
     renderSupport(() => ({ tickets: [] }));
     expect(await screen.findByText("No support tickets yet.")).toBeInTheDocument();
+  });
+
+  it("pre-fills the new-ticket textarea with a template skeleton", async () => {
+    renderSupport();
+    await screen.findByRole("link", { name: "#1" });
+    const textarea = screen.getByPlaceholderText("Tell us what's wrong…") as HTMLTextAreaElement;
+    expect(textarea.value).toContain("Order number:");
+  });
+
+  it("attaches a file and submits via apiPostForm instead of apiPost", async () => {
+    renderSupport();
+    await screen.findByRole("link", { name: "#1" });
+    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), {
+      target: { value: "New issue" },
+    });
+    const file = new File(["fake image bytes"], "evidence.png", { type: "image/png" });
+    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [file] } });
+    (apiPostForm as Mock).mockResolvedValue({ ok: true, ticket_id: 3 });
+    fireEvent.click(screen.getByRole("button", { name: /Send/ }));
+    await waitFor(() => expect(apiPostForm).toHaveBeenCalled());
+    expect(apiPost).not.toHaveBeenCalled();
+    const [path, form] = (apiPostForm as Mock).mock.calls[0] as [string, FormData];
+    expect(path).toBe("/api/v1/account/support");
+    expect(form.get("message")).toBe("New issue");
+    expect(form.get("attachments")).toBeInstanceOf(File);
   });
 });

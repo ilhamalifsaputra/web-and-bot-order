@@ -31,6 +31,9 @@ const productData: ProductPageData = {
     slug: "netflix-premium",
     name: "Netflix Premium",
     description: "Shared account, instant delivery.",
+    what_you_get: null,
+    terms: null,
+    warranty_note: null,
     category_name: "Streaming",
     category_slug: "streaming",
     image: "/img/netflix.jpg",
@@ -382,5 +385,84 @@ describe("ProductPage", () => {
     renderProduct("netflix-premium", () => manualOnly);
     await screen.findByRole("heading", { name: "Netflix Premium" });
     expect(screen.queryByText("Out of stock")).not.toBeInTheDocument();
+  });
+});
+
+describe("ProductPage sharing and image formats", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    vi.clearAllMocks();
+  });
+
+  it("offers WhatsApp, Telegram and X share links carrying the product URL", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+
+    const whatsapp = screen.getByRole("link", { name: /Share on WhatsApp/i });
+    const telegram = screen.getByRole("link", { name: /Share on Telegram/i });
+    const x = screen.getByRole("link", { name: /Share on X/i });
+
+    expect(whatsapp.getAttribute("href")).toContain("api.whatsapp.com");
+    // The product name rides along, encoded.
+    expect(whatsapp.getAttribute("href")).toContain(encodeURIComponent("Netflix Premium"));
+    expect(telegram.getAttribute("href")).toContain("t.me/share/url");
+    expect(x.getAttribute("href")).toContain("twitter.com/intent/tweet");
+
+    // Opening a share target must not hand the shop's tab to the other site.
+    for (const link of [whatsapp, telegram, x]) {
+      expect(link.getAttribute("rel")).toContain("noopener");
+      expect(link.getAttribute("target")).toBe("_blank");
+    }
+  });
+
+  it("renders only the detail blocks the admin actually filled in", async () => {
+    const withDetails: ProductPageData = {
+      ...productData,
+      product: {
+        ...productData.product,
+        what_you_get: "Private account, 1 device",
+        terms: null,
+        warranty_note: "Full 30-day warranty.",
+      },
+    };
+    renderProduct("netflix-premium", () => withDetails);
+    expect(await screen.findByText("Private account, 1 device")).toBeInTheDocument();
+    expect(screen.getByText("Full 30-day warranty.")).toBeInTheDocument();
+    // `terms` is empty, so its heading must not dangle over nothing.
+    expect(screen.queryByRole("heading", { name: "Terms of use" })).not.toBeInTheDocument();
+  });
+
+  it("shows no detail section at all when all three blocks are empty", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByText("Shared account, instant delivery.");
+    expect(screen.queryByRole("heading", { name: "What you get" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Warranty" })).not.toBeInTheDocument();
+  });
+
+  it("renders a plain <img> when the image has no WebP derivatives", async () => {
+    renderProduct("netflix-premium", () => productData);
+    const img = await screen.findByAltText("Netflix Premium");
+    expect(img.tagName).toBe("IMG");
+    expect(img.parentElement?.querySelector("source")).toBeNull();
+  });
+
+  it("offers the WebP derivatives as a <source> when they exist", async () => {
+    const withSrcset: ProductPageData = {
+      ...productData,
+      product: {
+        ...productData.product,
+        image: "/uploads/products/product-abc.jpg",
+        image_srcset:
+          "/uploads/products/product-abc-400.webp 400w, /uploads/products/product-abc-800.webp 800w",
+      },
+    };
+    renderProduct("netflix-premium", () => withSrcset);
+    const img = await screen.findByAltText("Netflix Premium");
+    const source = img.parentElement?.querySelector("source");
+    expect(source).not.toBeNull();
+    expect(source?.getAttribute("type")).toBe("image/webp");
+    expect(source?.getAttribute("srcset")).toContain("product-abc-800.webp 800w");
+    // The original stays the fallback, so a browser without WebP still works.
+    expect(img.getAttribute("src")).toBe("/uploads/products/product-abc.jpg");
   });
 });

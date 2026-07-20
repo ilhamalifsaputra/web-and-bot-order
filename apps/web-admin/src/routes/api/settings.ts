@@ -33,6 +33,7 @@ const EDITABLE: Record<string, string> = {
   shop_name: "Shop name",
   shop_tagline: "Shop tagline",
   support_whatsapp: "WhatsApp number for website",
+  web_analytics_id: "Google Analytics measurement ID (G-XXXXXXXXXX)",
   usd_idr_rate: "USDT rate (IDR per 1 USDT)",
   usd_idr_rate_auto: "Auto-update USDT rate",
   usd_idr_rate_rounding: "Rate rounding",
@@ -198,6 +199,19 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
       let valid = false;
       try { const d = new Decimal(value); valid = d.isFinite() && d.greaterThan(0); } catch { valid = false; }
       if (!valid) return reply.code(400).send({ error: "Minimum amount must be a positive number, or blank to disable." });
+    }
+
+    // This value is interpolated into a <script> tag on every storefront page
+    // (spaShell.ts), so it is validated strictly rather than escaped: a
+    // measurement ID is only ever "G-" followed by letters and digits, and
+    // anything else is a typo at best and script injection at worst.
+    if (key === "web_analytics_id" && value !== "") {
+      if (!/^G-[A-Z0-9]{4,20}$/i.test(value)) {
+        return reply.code(400).send({
+          error:
+            'That doesn\'t look like a Google Analytics measurement ID. It starts with "G-" followed by letters and numbers, like G-ABC1234XYZ — find it in Google Analytics under Admin › Data streams. Leave it blank to turn analytics off.',
+        });
+      }
     }
 
     if (key === "bybit_bsc_required_confirmations" && value !== "") {

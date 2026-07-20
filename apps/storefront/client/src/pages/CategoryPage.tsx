@@ -67,6 +67,13 @@ export default function CategoryPage() {
           {category.emoji ? `${category.emoji} ` : ""}
           {category.name}
         </h1>
+        {/* The admin's own category blurb. The API has always sent it and
+            spaShell.ts has always put it in the meta description, but no page
+            ever rendered it — so the description a visitor saw in search
+            results was text that didn't exist on the page they landed on. */}
+        {category.description && (
+          <p className="mt-2 max-w-2xl text-ink-soft">{category.description}</p>
+        )}
       </div>
 
       {/* Pills for switching category */}

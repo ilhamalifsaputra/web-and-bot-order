@@ -10,6 +10,8 @@ import {
   createCategory,
   createCatalogProduct,
   createDenomination,
+  getCatalogProduct,
+  updateCatalogProduct,
   getCatalogProductWithDenominations,
   getDenominationWithProduct,
   assignDenominationToProduct,
@@ -214,6 +216,37 @@ describe("getCatalogProductWithDenominations / getDenominationWithProduct", () =
     const got = await getDenominationWithProduct(prisma, d.id);
     expect(got!.product.id).toBe(p.id);
     expect(got!.product.category.id).toBe(cat.id);
+  });
+});
+
+describe("storefront detail blocks (whatYouGet / terms / warrantyNote)", () => {
+  it("defaults all three to null so products predating the columns stay valid", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "No Details");
+    expect(p.whatYouGet).toBeNull();
+    expect(p.terms).toBeNull();
+    expect(p.warrantyNote).toBeNull();
+  });
+
+  it("round-trips the three blocks through create and update", async () => {
+    const cat = await makeCategory();
+    const p = await createCatalogProduct(prisma, {
+      categoryId: cat.id,
+      name: "With Details",
+      whatYouGet: "Private account, 1 device",
+      terms: "Don't change the email.",
+      warrantyNote: "30 days.",
+    });
+    expect(p.whatYouGet).toBe("Private account, 1 device");
+    expect(p.terms).toBe("Don't change the email.");
+
+    await updateCatalogProduct(prisma, p.id, { warrantyNote: null, terms: "New terms." });
+    const after = await getCatalogProduct(prisma, p.id);
+    // Clearing a block must actually clear it — the product page decides
+    // whether to render a heading from exactly this null.
+    expect(after!.warrantyNote).toBeNull();
+    expect(after!.terms).toBe("New terms.");
+    expect(after!.whatYouGet).toBe("Private account, 1 device");
   });
 });
 

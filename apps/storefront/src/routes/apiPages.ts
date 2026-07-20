@@ -23,7 +23,7 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
   // ---- Shop chrome context (header/footer/cart badge) ----
   app.get("/pages/context", async (req, reply) => {
     const customer = await optionalCustomer(req);
-    const [fxRate, shopName, shopTagline, cartCount, favicon, logo, botUsername] = await Promise.all([
+    const [fxRate, shopName, shopTagline, cartCount, favicon, logo, botUsername, analyticsId] = await Promise.all([
       getUsdIdrRate(prisma),
       getSetting(prisma, "shop_name"),
       getSetting(prisma, "shop_tagline"),
@@ -35,6 +35,7 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       getSetting(prisma, "web_favicon_url"),
       getSetting(prisma, "web_logo_url"),
       resolveBotUsername(),
+      getSetting(prisma, "web_analytics_id"),
     ]);
     return reply.send({
       lang: requestLang(req),
@@ -53,6 +54,10 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
       logo_url: logo || "",
       bot_username: botUsername,
       tzname: config.TIMEZONE,
+      // Whether this shop loads Google Analytics at all — the privacy page
+      // only mentions tracking when there genuinely is some. The ID itself
+      // stays server-side; the client has no use for it.
+      analytics_enabled: (analyticsId ?? "").trim() !== "",
     });
   });
 

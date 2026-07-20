@@ -21,6 +21,7 @@ import { ValidationError } from "@app/core/errors";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { Decimal } from "@app/core/money";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
+import { parseTicketMultipart } from "../lib/ticketAttachments";
 import {
   prisma,
   setSetting,
@@ -55,6 +56,9 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Stored-UTC → shop-timezone display, byte-identical to the localdt filter. */
 const dt = (d: Date, fmt = "yyyy-LL-dd HH:mm"): string => localize(d, fmt);
+
+/** `attachment_urls` is stored as a comma-joined string (same convention as photo_file_ids). */
+const splitAttachments = (v: string | null): string[] => (v ? v.split(",").filter(Boolean) : []);
 
 /** JSON-flavored auth gate: 401 body instead of the HTML routes' 303. */
 async function requireCustomer(req: FastifyRequest, reply: FastifyReply): Promise<Customer | null> {
@@ -253,6 +257,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         status: tk.status,
         created_at_display: dt(tk.createdAt),
         admin_reply: tk.adminReply,
+        attachments: splitAttachments(tk.attachmentUrls),
       })),
     });
   });
@@ -261,10 +266,21 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
-    const message = (req.body?.message ?? "").trim().slice(0, 2000);
+    let message: string;
+    let attachmentUrls: string | null = null;
+    if (req.isMultipart()) {
+      try {
+        ({ message, attachmentUrls } = await parseTicketMultipart(req));
+      } catch (e) {
+        if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
+        throw e;
+      }
+    } else {
+      message = (req.body?.message ?? "").trim().slice(0, 2000);
+    }
     let ticketId: number | null = null;
     if (message) {
-      const ticket = await createTicket(prisma, customer.userId, message);
+      const ticket = await createTicket(prisma, customer.userId, message, null, attachmentUrls);
       ticketId = ticket.id;
     }
     // STO-020: the client shows a "Ticket #N created" success toast — needs
@@ -279,13 +295,25 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       if (!customer) return;
       if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
       const ticket = await getTicket(prisma, Number(req.params.id));
-      const message = (req.body?.message ?? "").trim().slice(0, 2000);
+      let message: string;
+      let attachmentUrls: string | null = null;
+      if (req.isMultipart()) {
+        try {
+          ({ message, attachmentUrls } = await parseTicketMultipart(req));
+        } catch (e) {
+          if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
+          throw e;
+        }
+      } else {
+        message = (req.body?.message ?? "").trim().slice(0, 2000);
+      }
       if (ticket && ticket.userId === customer.userId && ticket.status !== TicketStatus.CLOSED && message) {
         await addTicketMessage(prisma, {
           ticketId: ticket.id,
           senderType: SenderType.USER,
           senderId: customer.userId,
           content: message,
+          attachmentUrls,
         });
       }
       return reply.send({ ok: true });
@@ -308,11 +336,13 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         created_at_display: dt(ticket.createdAt),
         admin_reply: ticket.adminReply,
         closed: ticket.status === TicketStatus.CLOSED,
+        attachments: splitAttachments(ticket.attachmentUrls),
       },
       messages: messages.map((m) => ({
         from_user: m.senderType === SenderType.USER,
         content: m.content,
         created_at_display: dt(m.createdAt),
+        attachments: splitAttachments(m.attachmentUrls),
       })),
     });
   });

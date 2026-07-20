@@ -38,6 +38,21 @@ import { zAdditionalFields } from "@app/core/deliveryFields";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { parseDenominationCsv, categoryNameMap, resolveOrCreateProduct } from "../../lib/catalogImport";
 
+/**
+ * The three storefront-only detail blocks on a product (prisma Product:
+ * whatYouGet / terms / warrantyNote), read off a request body with the same
+ * "trim, blank means null" rule the other free-text product fields use.
+ * Shared by product create and update so the two can't drift apart.
+ */
+function storefrontDetailFields(body: Record<string, unknown>) {
+  const text = (value: unknown) => (typeof value === "string" ? value.trim() || null : null);
+  return {
+    whatYouGet: text(body.whatYouGet),
+    terms: text(body.terms),
+    warrantyNote: text(body.warrantyNote),
+  };
+}
+
 /** Parse a possibly-blank string into a Decimal, or null if blank/invalid. */
 function parseDecimal(value: unknown): Decimal | null {
   if (typeof value !== "string" || value.trim() === "") return null;
@@ -73,6 +88,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       name,
       emoji: typeof body.emoji === "string" ? body.emoji.trim() || null : null,
       description: typeof body.description === "string" ? body.description.trim() || null : null,
+      ...storefrontDetailFields(body),
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
@@ -237,6 +253,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     await updateCatalogProduct(prisma, id, {
       name,
       description: typeof body.description === "string" ? body.description.trim() || null : null,
+      ...storefrontDetailFields(body),
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,

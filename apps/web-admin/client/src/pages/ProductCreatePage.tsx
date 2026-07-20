@@ -47,6 +47,9 @@ export function ProductCreatePage() {
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [emoji, setEmoji] = useState("");
   const [description, setDescription] = useState("");
+  const [whatYouGet, setWhatYouGet] = useState("");
+  const [terms, setTerms] = useState("");
+  const [warrantyNote, setWarrantyNote] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [creatingCategory, setCreatingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
@@ -74,6 +77,9 @@ export function ProductCreatePage() {
         categoryId: categoryId!,
         ...(emoji.trim() ? { emoji: emoji.trim() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
+        ...(whatYouGet.trim() ? { whatYouGet: whatYouGet.trim() } : {}),
+        ...(terms.trim() ? { terms: terms.trim() } : {}),
+        ...(warrantyNote.trim() ? { warrantyNote: warrantyNote.trim() } : {}),
       }),
     onMutate: () => setError(null),
     onSuccess: (product) => {
@@ -183,6 +189,43 @@ export function ProductCreatePage() {
             placeholder="Short description shown on the storefront."
             value={description}
             onChange={(e) => setDescription(e.target.value)}
+          />
+        </div>
+
+        {/* The three storefront detail blocks. Optional here — they can be
+            filled in later from the product page — but offering them at
+            creation is what stops products going live with nothing but a
+            one-line description. */}
+        <div>
+          <label className="text-sm font-medium text-ink">What the buyer gets</label>
+          <Textarea
+            className="mt-1"
+            rows={3}
+            placeholder="Private account, 1 device&#10;Can change the profile name&#10;Active for 30 days"
+            value={whatYouGet}
+            onChange={(e) => setWhatYouGet(e.target.value)}
+          />
+        </div>
+
+        <div>
+          <label className="text-sm font-medium text-ink">Terms of use</label>
+          <Textarea
+            className="mt-1"
+            rows={2}
+            placeholder="Don't change the account email or password — it voids the warranty."
+            value={terms}
+            onChange={(e) => setTerms(e.target.value)}
+          />
+        </div>
+
+        <div>
+          <label className="text-sm font-medium text-ink">Warranty</label>
+          <Textarea
+            className="mt-1"
+            rows={2}
+            placeholder="Full 30-day warranty, claimed through a support ticket."
+            value={warrantyNote}
+            onChange={(e) => setWarrantyNote(e.target.value)}
           />
         </div>
 

@@ -290,6 +290,28 @@ describe("PATCH /api/catalog/products/:id", () => {
     expect(audit).toBeTruthy();
   });
 
+  it("saves the three storefront detail blocks, trimming and blanking them", async () => {
+    const category = await createCategory(prisma, "Cat");
+    const product = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Detailed",
+      warrantyNote: "Old warranty",
+    });
+    const res = await patchJson(`/api/catalog/products/${product.id}`, cookie, csrf, {
+      name: "Detailed",
+      whatYouGet: "  Private account, 1 device  ",
+      terms: "Don't change the email.",
+      // Blanking a field must null it out, not store an empty string — the
+      // storefront decides whether to render a heading from exactly that null.
+      warrantyNote: "   ",
+    });
+    expect(res.statusCode).toBe(200);
+    const row = await prisma.product.findUnique({ where: { id: product.id } });
+    expect(row!.whatYouGet).toBe("Private account, 1 device");
+    expect(row!.terms).toBe("Don't change the email.");
+    expect(row!.warrantyNote).toBeNull();
+  });
+
   it("rejects an empty name with 400", async () => {
     const category = await createCategory(prisma, "Cat");
     const product = await createCatalogProduct(prisma, { categoryId: category.id, name: "Old Name" });

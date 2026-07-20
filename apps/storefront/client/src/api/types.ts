@@ -136,9 +136,18 @@ export interface ProductPageData {
     slug: string;
     name: string;
     description: string | null;
+    /** Optional detail blocks (prisma Product.whatYouGet / terms /
+     * warrantyNote) — each rendered as its own titled block on the product
+     * page, and skipped entirely when the admin left it empty. */
+    what_you_get: string | null;
+    terms: string | null;
+    warranty_note: string | null;
     category_name: string;
     category_slug: string;
     image: string;
+    /** WebP `srcset` for `image`, or null when no derivatives exist — see
+     *  webpSrcset() in apps/storefront/src/images.ts. */
+    image_srcset?: string | null;
   };
   denominations: ProductDenomination[];
   default_restock_denomination_id: number;
@@ -307,6 +316,11 @@ export interface ShopContext {
   logo_url: string;
   bot_username: string;
   tzname: string;
+  /** True only when `web_analytics_id` is set, i.e. this shop actually loads
+   * Google Analytics. The privacy page reads it so it never claims tracking a
+   * given shop doesn't do; optional so an older/mocked payload reads as
+   * "no analytics", which is the safe direction to be wrong in. */
+  analytics_enabled?: boolean;
 }
 
 /** GET /api/v1/account — account.njk's overview stats + logout button
@@ -415,6 +429,8 @@ export interface SupportTicketSummary {
   status: string;
   created_at_display: string;
   admin_reply: string | null;
+  /** Evidence uploaded with the ticket — `/uploads/tickets/...` URLs. */
+  attachments: string[];
 }
 
 export interface SupportData {
@@ -426,6 +442,7 @@ export interface TicketMessage {
   from_user: boolean;
   content: string;
   created_at_display: string;
+  attachments: string[];
 }
 
 /** GET /api/v1/account/support/:id — ticket_detail.njk. */
@@ -437,6 +454,7 @@ export interface TicketDetailData {
     created_at_display: string;
     admin_reply: string | null;
     closed: boolean;
+    attachments: string[];
   };
   messages: TicketMessage[];
 }

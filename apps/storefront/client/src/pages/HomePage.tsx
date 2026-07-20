@@ -38,7 +38,9 @@ import Skeleton from "../components/shop/Skeleton";
 import Stars from "../components/shop/Stars";
 import "./HomePage.css";
 
-const FAQ_NUMBERS = [1, 2, 3, 4, 5];
+const FAQ_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+const HOW_STEPS = [1, 2, 3, 4];
+const TRUST_POINTS = [1, 2, 3, 4];
 const SKELETON_CARDS = Array.from({ length: 3 }, (_, i) => i);
 
 export default function HomePage() {
@@ -131,6 +133,8 @@ export default function HomePage() {
               aria-hidden="true"
               loading="eager"
               decoding="async"
+              width={1600}
+              height={600}
               className="absolute inset-0 h-full w-full object-cover"
             />
             <div className="absolute inset-0 bg-linear-to-br from-ink/95 via-ink/85 to-pine-dark/80"></div>
@@ -220,6 +224,44 @@ export default function HomePage() {
             <p className="mt-1 text-sm text-ink-soft">{t("web.feat_support_d")}</p>
           </div>
         </div>
+      </section>
+
+      {/* 2b. Cara pesan — a numbered stepper, deliberately NOT a fourth card
+          grid: the features above and "Our Promise" below already use that
+          shape, and stacking three identical grids made the page read as one
+          undifferentiated wall. The connector line only appears at `lg`, where
+          all four steps genuinely sit on one row. */}
+      <section className="mt-16 reveal" id="how-to-order">
+        <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">{t("web.how_kicker")}</p>
+        <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.how_title")}</h2>
+        <p className="mx-auto mt-2 max-w-2xl text-center text-ink-soft">{t("web.how_sub")}</p>
+
+        {/* Below `lg` the numeral sits beside the text instead of above it —
+            stacked, four steps ran ~600px on a phone for very little content. */}
+        <ol className="mt-10 grid gap-x-8 gap-y-6 sm:grid-cols-2 lg:grid-cols-4 lg:gap-y-8">
+          {HOW_STEPS.map((n, idx) => (
+            <li key={n} className="relative flex gap-4 lg:block">
+              {idx < HOW_STEPS.length - 1 && (
+                <span
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-12 right-0 top-5 hidden h-px bg-line lg:block"
+                />
+              )}
+              {/* The <ol> already conveys order to a screen reader — the
+                  numeral is the visual half of that, so it's decorative. */}
+              <span
+                aria-hidden="true"
+                className="relative grid h-10 w-10 shrink-0 place-items-center rounded-full bg-pine font-display font-bold text-white"
+              >
+                {n}
+              </span>
+              <div className="min-w-0 lg:mt-4">
+                <h3 className="font-semibold text-ink">{t(`web.how_s${n}`)}</h3>
+                <p className="mt-1 text-sm text-ink-soft">{t(`web.how_s${n}_d`)}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
       </section>
 
       {/* 3. Kategori */}
@@ -352,6 +394,31 @@ export default function HomePage() {
             <p className="mt-3 font-semibold">{t("web.promise_replies")}</p>
             <p className="text-sm text-pine-tint">{t("web.promise_replies_d")}</p>
           </div>
+        </div>
+      </section>
+
+      {/* 5b. Kenapa aman — every claim here is verifiable in this codebase
+          (auto-verified payments, order history on the account, ticketed
+          support, reviews only from delivered orders), which is the same bar
+          "Our Promise" set when it replaced the invented stats band. Rendered
+          as a checklist inside one card so it reads differently from the pine
+          promise block directly above it. */}
+      <section className="mt-16 reveal">
+        <div className="rounded-3xl border border-line bg-card p-6 shadow-xs sm:p-10">
+          <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.trust_kicker")}</p>
+          <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.trust_title")}</h2>
+          <p className="mt-2 max-w-2xl text-ink-soft">{t("web.trust_sub")}</p>
+          <ul className="mt-8 grid gap-x-8 gap-y-6 sm:grid-cols-2">
+            {TRUST_POINTS.map((n) => (
+              <li key={n} className="flex items-start gap-3">
+                <CheckCircle className="mt-0.5 h-5 w-5 shrink-0 text-grass" aria-hidden="true" />
+                <div className="min-w-0">
+                  <h3 className="font-semibold text-ink">{t(`web.trust_${n}`)}</h3>
+                  <p className="mt-1 text-sm text-ink-soft">{t(`web.trust_${n}_d`)}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
       </section>
 

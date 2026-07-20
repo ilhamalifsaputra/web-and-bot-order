@@ -56,6 +56,24 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** Same CSRF-header contract as apiPost, for a multipart `FormData` body (ticket
+ * evidence uploads) — no Content-Type header, the browser sets the boundary. */
+export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
+  const res = await fetch(path, {
+    method: "POST",
+    credentials: "include",
+    headers: { "X-CSRF-Token": csrfToken() },
+    body: form,
+  });
+  if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string };
+    const err = new Error(data.error ?? `${path} responded ${res.status}`);
+    (err as Error & { status?: number }).status = res.status;
+    throw err;
+  }
+  return res.json() as Promise<T>;
+}
+
 /** Same CSRF-header contract as apiPost — for account-scoped edits (e.g.
  * the order-detail info-edit form, Task 10) where PATCH is the more accurate
  * verb than POST. */

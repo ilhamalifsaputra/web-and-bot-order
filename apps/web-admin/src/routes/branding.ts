@@ -11,6 +11,9 @@ import { currentAdmin, csrfProtect, canMutate } from "../plugins/auth";
 import { redirectWithFlash } from "../flash";
 import { UPLOADS_DIR } from "../paths";
 import { handleUpload, deleteOldUpload } from "../lib/upload";
+// Banner and favicon deliberately get no WebP siblings: the banner is uploaded
+// to Telegram by the bot, and the favicon is an ICO/SVG. See webpVariants.ts.
+import { HERO_WIDTHS, LOGO_WIDTHS } from "../lib/webpVariants";
 
 const BRANDING_DIR = join(UPLOADS_DIR, "branding");
 const BRANDING_URL_PREFIX = "/uploads/branding";
@@ -61,6 +64,7 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
       destDir: BRANDING_DIR,
       urlPrefix: BRANDING_URL_PREFIX,
       settingKey: "web_logo_url",
+      webVariants: LOGO_WIDTHS,
       auditAction: "branding_logo_upload",
       details: (filename) => `Uploaded a new logo image (${filename}).`,
     }),
@@ -75,6 +79,7 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
       destDir: BRANDING_DIR,
       urlPrefix: BRANDING_URL_PREFIX,
       settingKey: "web_hero_url",
+      webVariants: HERO_WIDTHS,
       auditAction: "branding_hero_upload",
       details: (filename) => `Uploaded a new hero image (${filename}).`,
     }),

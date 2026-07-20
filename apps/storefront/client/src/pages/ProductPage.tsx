@@ -8,7 +8,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Bell, ShoppingCart, Zap } from "lucide-react";
+import { AlertTriangle, Bell, Share2, ShoppingCart, Zap } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { CartPageData, ProductPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
@@ -60,6 +60,63 @@ function clampQty(raw: number, available: number, isAuto: boolean): number {
  * permanently unbuyable on the storefront. */
 function purchasable(d: { delivery_type: string; in_stock: boolean }): boolean {
   return d.delivery_type !== "auto" || d.in_stock;
+}
+
+/**
+ * Share links for the product page.
+ *
+ * These are the platforms' own share URLs, not embedded share widgets: no
+ * third-party script, no network request until the shopper actually clicks, and
+ * nothing that could track visitors who don't. That keeps the page weight the
+ * code-splitting work bought us, and keeps the shop free of trackers it never
+ * asked for.
+ *
+ * Instagram is absent on purpose — it has no link-sharing URL, so a button for
+ * it could only pretend to work.
+ */
+function ShareRow({ productName }: { productName: string }) {
+  // Read at click time, not render time: the URL is right even if the router
+  // changed it after mount, and this stays safe if the component ever renders
+  // somewhere without a DOM.
+  const targets = [
+    {
+      key: "whatsapp",
+      label: "WhatsApp",
+      href: (url: string) => `https://api.whatsapp.com/send?text=${encodeURIComponent(`${productName} — ${url}`)}`,
+    },
+    {
+      key: "telegram",
+      label: "Telegram",
+      href: (url: string) =>
+        `https://t.me/share/url?url=${encodeURIComponent(url)}&text=${encodeURIComponent(productName)}`,
+    },
+    {
+      key: "x",
+      label: "X",
+      href: (url: string) =>
+        `https://twitter.com/intent/tweet?url=${encodeURIComponent(url)}&text=${encodeURIComponent(productName)}`,
+    },
+  ];
+
+  return (
+    <section className="mt-10">
+      <h2 className="section-title mb-3">{t("web.share_title")}</h2>
+      <div className="flex flex-wrap gap-2">
+        {targets.map((target) => (
+          <a
+            key={target.key}
+            href={target.href(window.location.href)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="btn btn-soft btn-sm"
+            aria-label={t("web.share_on", { platform: target.label })}
+          >
+            <Share2 className="w-3.5 h-3.5" /> {target.label}
+          </a>
+        ))}
+      </div>
+    </section>
+  );
 }
 
 export default function ProductPage() {
@@ -151,7 +208,27 @@ export default function ProductPage() {
         {/* Image */}
         <div className="card overflow-hidden self-start">
           <div className="aspect-[4/3] bg-sand">
-            <img src={product.image} alt={product.name} decoding="async" className="w-full h-full object-cover" />
+            {/* 4:3 to match the wrapper's aspect-[4/3] — see ProductCard for why
+                the intrinsic size is declared even under object-cover, and why
+                <picture> needs to be block. */}
+            <picture className="block w-full h-full">
+              {product.image_srcset && (
+                // Full width on phones, roughly half the grid on desktop.
+                <source
+                  type="image/webp"
+                  srcSet={product.image_srcset}
+                  sizes="(max-width: 768px) 100vw, 600px"
+                />
+              )}
+              <img
+                src={product.image}
+                alt={product.name}
+                decoding="async"
+                width={800}
+                height={600}
+                className="w-full h-full object-cover"
+              />
+            </picture>
           </div>
         </div>
 
@@ -269,6 +346,36 @@ export default function ProductPage() {
           </div>
         </div>
       </div>
+
+      {/* Product detail blocks — deliberately BELOW the buy area, not next to
+          the short description: these are what a buyer reads while deciding,
+          and putting three paragraphs above the plan picker would push the
+          buy action off the first screen. Each block disappears when the
+          admin left that field empty, so no headings dangle over nothing. */}
+      {(product.what_you_get || product.terms || product.warranty_note) && (
+        <section className="mt-10 card card-pad space-y-5">
+          {product.what_you_get && (
+            <div>
+              <h2 className="font-display font-bold text-ink">{t("web.what_you_get")}</h2>
+              <p className="mt-1 text-sm text-ink-soft whitespace-pre-line">{product.what_you_get}</p>
+            </div>
+          )}
+          {product.terms && (
+            <div>
+              <h2 className="font-display font-bold text-ink">{t("web.product_terms")}</h2>
+              <p className="mt-1 text-sm text-ink-soft whitespace-pre-line">{product.terms}</p>
+            </div>
+          )}
+          {product.warranty_note && (
+            <div>
+              <h2 className="font-display font-bold text-ink">{t("web.warranty")}</h2>
+              <p className="mt-1 text-sm text-ink-soft whitespace-pre-line">{product.warranty_note}</p>
+            </div>
+          )}
+        </section>
+      )}
+
+      <ShareRow productName={product.name} />
 
       {/* Reviews */}
       <section className="mt-10">

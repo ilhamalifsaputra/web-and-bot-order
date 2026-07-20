@@ -8,10 +8,12 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Send } from "lucide-react";
-import { apiGet, apiPost } from "../api/client";
+import { apiGet, apiPost, apiPostForm } from "../api/client";
 import type { TicketDetailData } from "../api/types";
 import { t } from "../lib/i18n";
 import StatusBadge from "../components/shop/StatusBadge";
+import AttachmentPicker from "../components/shop/AttachmentPicker";
+import AttachmentGallery from "../components/shop/AttachmentGallery";
 import ErrorPage from "./ErrorPage";
 
 /** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
@@ -26,6 +28,7 @@ function Spinner() {
 export default function TicketDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
   const [message, setMessage] = useState("");
+  const [files, setFiles] = useState<File[]>([]);
   const { data, error, refetch } = useQuery({
     queryKey: ["account-ticket", id],
     queryFn: () => apiGet<TicketDetailData>(`/api/v1/account/support/${id}`),
@@ -39,16 +42,25 @@ export default function TicketDetailPage() {
   }, [error, id]);
 
   const replyMutation = useMutation({
-    mutationFn: (vars: { message: string }) => apiPost<{ ok: boolean }>(`/api/v1/account/support/${id}/reply`, vars),
+    mutationFn: (vars: { message: string; files: File[] }) => {
+      if (vars.files.length === 0) {
+        return apiPost<{ ok: boolean }>(`/api/v1/account/support/${id}/reply`, { message: vars.message });
+      }
+      const form = new FormData();
+      form.append("message", vars.message);
+      for (const file of vars.files) form.append("attachments", file);
+      return apiPostForm<{ ok: boolean }>(`/api/v1/account/support/${id}/reply`, form);
+    },
     onSuccess: () => {
       setMessage("");
+      setFiles([]);
       refetch();
     },
   });
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    replyMutation.mutate({ message });
+    replyMutation.mutate({ message, files });
   }
 
   if (error) {
@@ -80,6 +92,7 @@ export default function TicketDetailPage() {
         <div className="card card-pad">
           <div className="text-xs text-ink-faint mb-1">{ticket.created_at_display}</div>
           <p className="text-sm whitespace-pre-line">{ticket.message}</p>
+          <AttachmentGallery urls={ticket.attachments} />
         </div>
         {ticket.admin_reply && (
           <div className="card card-pad bg-pine-tint/40 ml-6">
@@ -91,6 +104,7 @@ export default function TicketDetailPage() {
           <div key={idx} className={`card card-pad ${!m.from_user ? "bg-pine-tint/40 ml-6" : "mr-6"}`}>
             <div className="text-xs text-ink-faint mb-1">{m.created_at_display}</div>
             <p className="text-sm whitespace-pre-line">{m.content}</p>
+            <AttachmentGallery urls={m.attachments} />
           </div>
         ))}
       </div>
@@ -105,6 +119,7 @@ export default function TicketDetailPage() {
             className="field"
             placeholder={t("web.support_placeholder")}
           />
+          <AttachmentPicker files={files} onChange={setFiles} disabled={replyMutation.isPending} />
           <div className="mt-3 text-right">
             <button type="submit" className="btn btn-primary btn-sm" disabled={replyMutation.isPending}>
               {replyMutation.isPending && <Spinner />}

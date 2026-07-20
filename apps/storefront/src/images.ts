@@ -9,6 +9,10 @@
  * pada skala besar — lihat plan.md §17.2 #8).
  */
 
+import { existsSync } from "node:fs";
+import { dirname, extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 /** Keep images light: card-sized, compressed, cropped. */
 const UNSPLASH_PARAMS = "?w=800&q=80&auto=format&fit=crop";
 
@@ -65,4 +69,67 @@ export function productImage(
 ): string {
   if (p.webImageUrl) return p.webImageUrl;
   return categoryImage(categoryName);
+}
+
+// --------------------------------------------------------------- WebP srcset
+
+// Same directory web-admin writes uploads into (apps/web-admin/src/paths.ts) —
+// one shared volume, so the derivatives it generates are readable from here.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const UPLOADS_DIR = process.env.UPLOADS_DIR ?? join(HERE, "..", "..", "..", "data", "uploads");
+
+/** Widths web-admin generates for product photos (webpVariants.ts PRODUCT_WIDTHS). */
+export const PRODUCT_VARIANT_WIDTHS = [400, 800, 1600];
+
+/**
+ * Probing the filesystem is cheap but not free, and the same handful of images
+ * is re-shaped on every catalog request. Derivatives only appear at upload time
+ * (or via the backfill script), so a hit can be cached for the process's life.
+ * A miss is cached too — that's the common case for pre-existing uploads, and
+ * re-stat-ing those on every request would be the actual cost.
+ *
+ * The cache is keyed by URL. Replacing an image gives it a new random filename
+ * (handleUpload), so a stale entry can't point at the wrong picture.
+ */
+const srcsetCache = new Map<string, string | null>();
+
+/**
+ * `srcset` of WebP derivatives for an admin-uploaded image, or null when there
+ * are none — pre-existing uploads that predate the backfill, images sharp
+ * couldn't convert, and every non-upload URL. Callers that get null render a
+ * plain <img>, so a missing derivative degrades to today's behaviour instead of
+ * a broken image.
+ *
+ * Unsplash URLs (the placeholder catalog imagery above) are skipped on purpose:
+ * they already carry `auto=format`, so Unsplash serves WebP by itself.
+ */
+export function webpSrcset(url: string | null | undefined, widths: number[]): string | null {
+  if (!url || !url.startsWith("/uploads/")) return null;
+  const cached = srcsetCache.get(url);
+  if (cached !== undefined) return cached;
+
+  const relative = url.slice("/uploads/".length);
+  // Defence in depth: the URL comes from the DB, and `..` in it would let a
+  // crafted value probe outside the uploads tree.
+  if (relative.includes("..")) {
+    srcsetCache.set(url, null);
+    return null;
+  }
+  const ext = extname(relative);
+  const stem = relative.slice(0, relative.length - ext.length);
+
+  const entries: string[] = [];
+  for (const width of widths) {
+    if (existsSync(join(UPLOADS_DIR, `${stem}-${width}.webp`))) {
+      entries.push(`/uploads/${stem}-${width}.webp ${width}w`);
+    }
+  }
+  const result = entries.length > 0 ? entries.join(", ") : null;
+  srcsetCache.set(url, result);
+  return result;
+}
+
+/** Test seam — the cache lives for the process, so tests that write files need to reset it. */
+export function clearSrcsetCache(): void {
+  srcsetCache.clear();
 }

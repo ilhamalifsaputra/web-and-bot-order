@@ -32,6 +32,15 @@ beforeEach(() => {
   vi.restoreAllMocks();
   vi.mocked(apiGet).mockReset();
   vi.mocked(apiPost).mockReset();
+  // Safe default so the 300ms order-code-suggest debounce (PaymentsPage.tsx's
+  // useOrderCodeSuggest) never calls `.then` on `undefined`: several tests
+  // type into the "Order code" field without caring about the suggestion
+  // feature and never give apiGet its own mock. Under a slow/loaded test run
+  // the debounce can fire before the component unmounts, and a bare vi.fn()
+  // resolves to undefined — an uncaught exception outside any assertion.
+  // Tests that DO care about the suggestion override this with their own
+  // mockResolvedValue/mockImplementation.
+  vi.mocked(apiGet).mockResolvedValue({ q: "", exactOrderId: null });
   // Radix Dialog/Select use pointer-capture APIs and scrollIntoView — jsdom
   // doesn't implement them.
   Element.prototype.scrollIntoView = vi.fn();

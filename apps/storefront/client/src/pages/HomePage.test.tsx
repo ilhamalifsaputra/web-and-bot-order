@@ -94,6 +94,35 @@ describe("HomePage", () => {
     expect(screen.queryByText("340")).not.toBeInTheDocument();
   });
 
+  it("renders the four how-it-works steps as an ordered list", async () => {
+    renderHome(homeFixture());
+    expect(await screen.findByText("Four steps, done")).toBeInTheDocument();
+    // An <ol> — the order of the steps is part of the meaning, not decoration.
+    expect(document.querySelector("#how-to-order ol")?.children).toHaveLength(4);
+    expect(screen.getByRole("heading", { name: "Pick a product & plan" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Credentials appear on your order" })).toBeInTheDocument();
+  });
+
+  it("renders the four trust points", async () => {
+    renderHome(homeFixture());
+    expect(await screen.findByText("Why buying here is safe")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Payments are verified by the system" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "Reviews only come from orders that were really delivered" }),
+    ).toBeInTheDocument();
+  });
+
+  it("renders all eleven FAQ entries, with only the first one open", async () => {
+    renderHome(homeFixture());
+    await screen.findByText("Frequently asked questions");
+    const entries = document.querySelectorAll("details.faq");
+    expect(entries).toHaveLength(11);
+    expect((entries[0] as HTMLDetailsElement).open).toBe(true);
+    // A page that opened every answer would be an unreadable wall of text.
+    expect([...entries].filter((d) => (d as HTMLDetailsElement).open)).toHaveLength(1);
+    expect(screen.getByText("Which network should I send USDT on?")).toBeInTheDocument();
+  });
+
   it("renders testimonials when present, and hides the section when empty", async () => {
     const { unmount } = renderHome(
       homeFixture({

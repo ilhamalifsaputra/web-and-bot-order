@@ -255,6 +255,68 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
 }
 
 // ===========================================================================
+// /emojiid — harvest custom emoji ids for Settings → Custom emoji map
+// ===========================================================================
+
+/**
+ * Pull `{emoji: custom_emoji_id}` out of a message's entities. Telegram counts
+ * entity offsets in UTF-16 code units, which is exactly how JS indexes strings,
+ * so a plain slice is correct for multi-codepoint emoji too.
+ */
+function collectCustomEmoji(
+  text: string | undefined,
+  entities: readonly { type: string; offset: number; length: number; custom_emoji_id?: string }[] | undefined,
+): Record<string, string> {
+  const found: Record<string, string> = {};
+  if (!text || !entities) return found;
+  for (const e of entities) {
+    if (e.type !== "custom_emoji" || !e.custom_emoji_id) continue;
+    const emoji = text.slice(e.offset, e.offset + e.length);
+    if (emoji) found[emoji] = e.custom_emoji_id;
+  }
+  return found;
+}
+
+/**
+ * `/emojiid` — reply with the JSON map for the custom emoji in this message (or
+ * in the message it replies to). Only a Telegram Premium account can put custom
+ * emoji into a message, so this is how the shop owner reads the ids off the
+ * emoji pack they want the bot to use.
+ */
+export async function adminEmojiIdCommand(ctx: MyContext): Promise<void> {
+  if (!ctx.from || !isAdmin(ctx.from.id)) {
+    logger.warn(`Non-admin user ${ctx.from?.id} tried to use /emojiid — request blocked, user is not in the admin id list`);
+    if (ctx.callbackQuery) await ctx.answerCallbackQuery({ text: t(ctx, "error.admin_only"), show_alert: true });
+    else await ctx.reply(t(ctx, "error.admin_only"));
+    return;
+  }
+  ctx.session.adminMsgId = undefined;
+  const lang = ctx.session.lang;
+  const msg = ctx.message;
+  const replied = msg?.reply_to_message;
+
+  const found = {
+    ...collectCustomEmoji(replied?.text, replied?.entities),
+    ...collectCustomEmoji(replied?.caption, replied?.caption_entities),
+    ...collectCustomEmoji(msg?.text, msg?.entities),
+  };
+  const count = Object.keys(found).length;
+  logger.info(`Admin ${ctx.from.id} asked for custom emoji ids with /emojiid; ${count} custom emoji were found in the message`);
+
+  if (count === 0) {
+    // No entities at all → the admin probably just typed the command.
+    const bare = !replied && (msg?.text ?? "").trim().split(/\s+/).length <= 1;
+    await adminEdit(ctx, t(ctx, bare ? "admin.emojiid_usage" : "admin.emojiid_none"), akb.backToAdminKb(lang));
+    return;
+  }
+  await adminEdit(
+    ctx,
+    t(ctx, "admin.emojiid_result", { count, json: esc(JSON.stringify(found, null, 2)) }),
+    akb.backToAdminKb(lang),
+  );
+}
+
+// ===========================================================================
 // Reports (CSV export)
 // ===========================================================================
 

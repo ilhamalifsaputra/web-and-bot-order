@@ -32,7 +32,7 @@ import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuc
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
-import { handleAdminCallback, adminCommand, adminWalletCommand } from "../src/handlers/admin";
+import { handleAdminCallback, adminCommand, adminWalletCommand, adminEmojiIdCommand } from "../src/handlers/admin";
 import { routeCallback } from "../src/handlers/callbacks";
 import { upsertUser } from "@app/db";
 
@@ -1720,6 +1720,40 @@ describe("admin handlers", () => {
     await adminWalletCommand(ctx);
     expect(sentIncludes(sink, "Saldo baru")).toBe(true); // localized to the admin's language
     expect(offersForwardAction(sink)).toBe(true);
+  });
+
+  it("/emojiid explains itself when the command arrives bare", async () => {
+    const { ctx, sink } = adminCtx({ text: "/emojiid" });
+    await adminEmojiIdCommand(ctx);
+    expect(sentIncludes(sink, "Custom emoji ids")).toBe(true);
+    expect(offersForwardAction(sink)).toBe(true);
+  });
+
+  it("/emojiid returns paste-ready JSON for the custom emoji in the message", async () => {
+    const { ctx, sink } = adminCtx({
+      text: "/emojiid ✅",
+      messageExtra: {
+        entities: [{ type: "custom_emoji", offset: 9, length: 1, custom_emoji_id: "5368324170671202286" }],
+      },
+    });
+    await adminEmojiIdCommand(ctx);
+    expect(sentIncludes(sink, "5368324170671202286")).toBe(true);
+    expect(sentIncludes(sink, "✅")).toBe(true);
+  });
+
+  it("/emojiid reads the replied-to message and says so when there is nothing to read", async () => {
+    const { ctx, sink } = adminCtx({
+      text: "/emojiid",
+      messageExtra: { reply_to_message: { text: "plain ✅ only", message_id: 5 } },
+    });
+    await adminEmojiIdCommand(ctx);
+    expect(sentIncludes(sink, "No custom emoji in that message")).toBe(true);
+  });
+
+  it("non-admin cannot harvest emoji ids via /emojiid", async () => {
+    const { ctx, sink } = customerCtx({ text: "/emojiid" });
+    await adminEmojiIdCommand(ctx);
+    expect(sentIncludes(sink, "Access restricted")).toBe(true);
   });
 
   // 'user ban toggles the flag and writes an audit row' moved to

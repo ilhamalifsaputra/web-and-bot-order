@@ -22,8 +22,10 @@ import { run } from "@grammyjs/runner";
 import { config } from "@app/core/config";
 import { botToken as runtimeBotToken, notifBotToken, publicChannelId, setBotIdentity, setAdminIds, setWebSecret } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
-import { initDb, prisma, resolveBotCredentials, resolveAdminIds, resolveWebCookieSecret, missingTables, PAYMENT_LEDGER_TABLES } from "@app/db";
+import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmoji";
+import { initDb, prisma, resolveBotCredentials, resolveAdminIds, resolveWebCookieSecret, missingTables, PAYMENT_LEDGER_TABLES, getSetting } from "@app/db";
 import { buildBot, setupCommandMenu, guardRunnerTask } from "@app/order-bot/main";
+import { htmlDefaultsTransformer } from "@app/order-bot/util/apiDefaults";
 import { scheduleJobs, scheduleFxRefresh } from "@app/order-bot/jobs";
 import { startPolling, stopPolling } from "@app/order-bot/payments/binanceInternal";
 import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "@app/order-bot/payments/bybitDeposit";
@@ -182,7 +184,11 @@ async function startNotifier(mainBot: ReturnType<typeof buildBot> | null, signal
     logger.warn("Notifier disabled — no notifier token is configured and the main bot is off, so outbox notifications cannot be delivered");
     return;
   }
+  // A dedicated notifier bot is built here rather than by buildBot(), so it
+  // needs the same send defaults (HTML + custom emoji). When it IS the main
+  // bot, buildBot already installed them — don't double-install.
   const notifBot: Bot = dedicated ? new Bot(dedicated) : (mainBot as unknown as Bot);
+  if (dedicated) notifBot.api.config.use(htmlDefaultsTransformer());
   try {
     if (dedicated) await notifBot.init();
     logger.info(
@@ -216,6 +222,9 @@ export async function start(): Promise<void> {
   const adminIdList = await resolveAdminIds(prisma);
   setAdminIds(adminIdList);
   setWebSecret(await resolveWebCookieSecret(prisma));
+  // Custom emoji map — stamped for the synchronous send-layer transformer. A
+  // Settings save re-stamps it live (same process), so no restart is needed.
+  setCustomEmojiMap(await getSetting(prisma, CUSTOM_EMOJI_MAP_SETTING));
 
   // Resolve bot credentials ONCE (Setting wins, env fallback — plan.md §16.3)
   // and stamp them for the synchronous consumers (referral links, Telegram

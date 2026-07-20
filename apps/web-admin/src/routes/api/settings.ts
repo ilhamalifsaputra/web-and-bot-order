@@ -22,6 +22,7 @@ import {
   verifyTotp,
   otpauthUri,
 } from "../../auth";
+import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmoji";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { getTokenValidator, getChannelValidator } from "../../lib/telegramCheck";
 
@@ -68,6 +69,7 @@ const EDITABLE: Record<string, string> = {
   bot_username: "Bot username",
   notif_bot_token: "Channel Notifier Bot token",
   public_channel_id: "Public channel ID",
+  [CUSTOM_EMOJI_MAP_SETTING]: "Custom emoji map (JSON)",
 };
 
 const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key"]);
@@ -84,6 +86,31 @@ const PAYMENT_METHODS: Record<string, { enabledKey: string; credKeys: string[]; 
   bybit_bsc: { enabledKey: "bybit_bsc_enabled", credKeys: ["bybit_bsc_deposit_address", "bybit_api_key", "bybit_api_secret"], label: "Bybit BSC" },
   binance_internal: { enabledKey: "binance_internal_enabled", credKeys: ["binance_receive_uid", "binance_api_key", "binance_api_secret"], label: "Binance Internal Transfer" },
 };
+
+/**
+ * Validate the custom emoji map before it is saved: `{"✅": "5368324170671202286"}`
+ * — emoji as the key, the custom emoji sticker's numeric id as the value. A typo
+ * here would silently drop icons from every message, so it's rejected with a
+ * sentence the shop admin can act on. Returns the problem, or null when valid.
+ */
+function customEmojiMapProblem(value: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return 'That isn\'t valid JSON. Expected something like {"✅": "5368324170671202286"} — or leave it blank to turn custom emoji off.';
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return 'Expected a JSON object mapping each emoji to its custom emoji id, like {"✅": "5368324170671202286"}.';
+  }
+  for (const [emoji, id] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!emoji.trim()) return "One of the entries has an empty emoji. Every key must be the emoji the icon replaces.";
+    if (typeof id !== "string" || !/^\d+$/.test(id)) {
+      return `The id for ${emoji} must be the custom emoji's numeric id, in quotes. Send /emojiid to the bot from a Telegram Premium account to get it.`;
+    }
+  }
+  return null;
+}
 
 export default async function settingsApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/settings", { preHandler: currentAdmin }, async (req, reply) => {
@@ -178,8 +205,16 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
       if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return reply.code(400).send({ error: "Required confirmations must be a positive whole number." });
     }
 
+    if (key === CUSTOM_EMOJI_MAP_SETTING && value !== "") {
+      const problem = customEmojiMapProblem(value);
+      if (problem) return reply.code(400).send({ error: problem });
+    }
+
     const displayValue = SECRET_KEYS.has(key) ? "(updated)" : value.slice(0, 80);
     await setSetting(prisma, key, value);
+    // Single process (apps/server): re-stamp so the bot's send layer picks the
+    // new icons up immediately instead of at the next restart.
+    if (key === CUSTOM_EMOJI_MAP_SETTING) setCustomEmojiMap(value);
     await logAdminAction(prisma, { adminId: req.admin!.userId, action: "setting_set", targetType: "setting", details: `Changed setting "${key}" to "${displayValue}".` });
     return reply.send({ ok: true });
   });

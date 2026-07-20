@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
+import { applyCustomEmoji, resetCustomEmojiMap } from "@app/core/customEmoji";
 import { prisma, initDb, upsertUser, setSetting, getSetting, setFxRateFetcher } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import {
@@ -43,6 +44,7 @@ beforeEach(async () => {
   cookie = raw;
   csrf = data.csrf;
   await setSetting(prisma, "setup_completed", "true");
+  resetCustomEmojiMap(); // module-level state a settings save stamps live
 });
 
 function postJson(url: string, c: string | null, csrfToken: string, body: Record<string, unknown> = {}) {
@@ -81,6 +83,38 @@ describe("POST /api/settings/edit", () => {
     const res = await postJson("/api/settings/edit", cookie, "bad", { key: "shop_name", value: "x" });
     expect(res.statusCode).toBe(403);
     expect(await getSetting(prisma, "shop_name")).toBeNull();
+  });
+});
+
+describe("POST /api/settings/edit — custom emoji map", () => {
+  const MAP = JSON.stringify({ "✅": "5368324170671202286" });
+
+  it("happy path: saves a valid map and applies it to outgoing text", async () => {
+    const res = await postJson("/api/settings/edit", cookie, csrf, { key: "custom_emoji_map", value: MAP });
+    expect(res.statusCode).toBe(200);
+    expect(await getSetting(prisma, "custom_emoji_map")).toBe(MAP);
+    // Saved live (same process) — no restart needed.
+    expect(applyCustomEmoji("✅ ok")).toBe('<tg-emoji emoji-id="5368324170671202286">✅</tg-emoji> ok');
+  });
+
+  it("rejects malformed JSON and a non-numeric id, writing nothing", async () => {
+    for (const value of ["{oops", JSON.stringify({ "✅": "abc" }), JSON.stringify(["✅"])]) {
+      const res = await postJson("/api/settings/edit", cookie, csrf, { key: "custom_emoji_map", value });
+      expect(res.statusCode).toBe(400);
+      expect(await getSetting(prisma, "custom_emoji_map")).toBeNull();
+    }
+  });
+
+  it("requires auth (anon → 303 /login)", async () => {
+    const res = await postJson("/api/settings/edit", null, csrf, { key: "custom_emoji_map", value: MAP });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("rejects bad CSRF (403)", async () => {
+    const res = await postJson("/api/settings/edit", cookie, "bad", { key: "custom_emoji_map", value: MAP });
+    expect(res.statusCode).toBe(403);
+    expect(await getSetting(prisma, "custom_emoji_map")).toBeNull();
   });
 });
 

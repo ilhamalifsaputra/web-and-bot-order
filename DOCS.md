@@ -143,6 +143,28 @@ ke kolom `Product.imageFileId` setelah pengiriman pertama, mengikuti pola cache
 banner di atas. Produk tanpa foto tetap jatuh ke perilaku lama (banner/teks
 biasa).
 
+**Custom emoji Telegram (ikon animasi di dalam pesan bot).** Setting
+`custom_emoji_map` menyimpan JSON `{"✅": "5368324170671202286"}` — emoji unicode
+sebagai kunci, id sticker custom emoji sebagai nilai. Transformer API bersama
+(`apps/order-bot/src/util/apiDefaults.ts`) membungkus setiap emoji yang dipetakan
+menjadi `<tg-emoji emoji-id="…">✅</tg-emoji>` pada `text`/`caption` yang dikirim
+mode HTML, jadi ratusan string di `packages/core/locales/*.json` tidak perlu
+diubah; peta kosong = tampilan persis seperti sebelumnya. Isi teks di dalam
+`<pre>`/`<code>` sengaja dilewati (entity tak boleh bersarang di sana, dan isinya
+memang untuk disalin).
+
+- **Syarat Telegram:** bot hanya boleh mengirim entity custom emoji bila punya
+  username beli-an Fragment, **atau** — untuk pesan langsung ke chat
+  privat/grup/supergrup — bila pemilik bot berlangganan Premium. **Post ke
+  channel tidak tercakup jalur Premium**: kalau Telegram menolak, transformer
+  mengirim ulang sekali dengan emoji biasa (satu baris log warn) agar pesan
+  tetap sampai.
+- **Teks tombol inline keyboard tidak mendukung entity sama sekali** — emoji di
+  tombol selalu unicode biasa.
+- **Cara dapat id-nya:** dari akun Premium, kirim `/emojiid <emoji>` ke bot (atau
+  balas pesan yang memuatnya); bot membalas JSON siap tempel ke Settings.
+  Perubahan Settings langsung berlaku tanpa restart (satu proses `apps/server`).
+
 ---
 
 ## 4. Harga: IDR pusat + USDT turunan
@@ -224,6 +246,8 @@ Kredensial & setelan terpusat di **web-admin → Settings**
 - **QRIS/TokoPay:** `tokopay_merchant_id`, `tokopay_secret`, `tokopay_enabled`.
 - **Bybit:** `bybit_uid`, `bybit_api_key`, `bybit_api_secret`.
 - **Branding:** identitas toko + upload aset (halaman `/branding` terpisah).
+- **Custom emoji:** `custom_emoji_map` (JSON emoji → id, divalidasi saat simpan;
+  langsung berlaku — lihat §3).
 
 **Aturan umum: DB (Setting) menang, `.env` = bootstrap/pemulihan** — tapi ada
 tiga pola resolver yang sengaja berbeda. `.env.example` sengaja TIDAK lagi

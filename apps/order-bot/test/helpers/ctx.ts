@@ -42,6 +42,8 @@ export interface MakeCtxOptions {
   photo?: Array<{ file_id: string }>;
   /** Sets ctx.message.document. */
   document?: { file_id: string; file_name?: string; file_size?: number };
+  /** Extra fields merged into ctx.message (e.g. `entities`, `reply_to_message`). */
+  messageExtra?: Record<string, unknown>;
   /** ctx.match (command args / regex match). */
   match?: string;
   /** Extra fields merged into replyWithPhoto's resolved Message (e.g. `photo`). */
@@ -137,6 +139,7 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
           text: opts.text,
           photo: opts.photo,
           document: opts.document,
+          ...opts.messageExtra,
         }
       : undefined;
 

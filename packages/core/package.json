@@ -10,6 +10,7 @@
     "./datetime": "./src/datetime.ts",
     "./i18n": "./src/i18n.ts",
     "./formatters": "./src/formatters.ts",
+    "./customEmoji": "./src/customEmoji.ts",
     "./errors": "./src/errors.ts",
     "./logger": "./src/logger.ts",
     "./enums": "./src/enums.ts",

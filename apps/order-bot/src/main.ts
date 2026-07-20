@@ -21,12 +21,14 @@ import { conversations, createConversation } from "@grammyjs/conversations";
 import { run, sequentialize } from "@grammyjs/runner";
 import { config } from "@app/core/config";
 import { botToken, setBotIdentity, adminIds, setAdminIds } from "@app/core/runtime";
-import { initDb, prisma, resolveBotCredentials, resolveAdminIds } from "@app/db";
+import { initDb, prisma, resolveBotCredentials, resolveAdminIds, getSetting } from "@app/db";
+import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmoji";
 import { logger } from "@app/core/logger";
 import type { MyContext } from "./context";
 import { initialSession } from "./context";
 import { bindUpdateId, registeredUser, rateLimit, adminOnly } from "./middleware";
 import { boundedSessionStorage } from "./util/boundedSessionStorage";
+import { htmlDefaultsTransformer } from "./util/apiDefaults";
 import { CONVERSATIONS } from "./conversations";
 import { coreT } from "./util/i18n";
 import { newErrorRef } from "./util/errors";
@@ -54,18 +56,9 @@ export function buildBot(token?: string): Bot<MyContext> {
   }
   const bot = new Bot<MyContext>(resolvedToken);
 
-  // Global send defaults (replaces PTB Defaults(parse_mode=HTML, no link preview)).
-  // Add parse_mode HTML only when neither parse_mode nor (caption_)entities is set.
-  bot.api.config.use((prev, method, payload, signal) => {
-    const p = payload as Record<string, unknown>;
-    if (method === "sendMessage" || method === "editMessageText") {
-      if (p && !("parse_mode" in p) && !("entities" in p)) p.parse_mode = "HTML";
-      if (p && !("link_preview_options" in p)) p.link_preview_options = { is_disabled: true };
-    } else if (method === "sendPhoto" || method === "editMessageCaption") {
-      if (p && !("parse_mode" in p) && !("caption_entities" in p)) p.parse_mode = "HTML";
-    }
-    return prev(method, payload as never, signal);
-  });
+  // Global send defaults (replaces PTB Defaults(parse_mode=HTML, no link preview))
+  // plus the custom-emoji upgrade — see util/apiDefaults.ts.
+  bot.api.config.use(htmlDefaultsTransformer());
 
   // --- Middleware chain ----------------------------------------------------
   bot.use(bindUpdateId); // group -2: bind update_id into the logging context
@@ -104,6 +97,7 @@ export function buildBot(token?: string): Bot<MyContext> {
   bot.command("howtopay", staticPages.howtopayCommand);
   bot.command("admin", adminOnly, admin.adminCommand);
   bot.command("wallet", adminOnly, admin.adminWalletCommand);
+  bot.command("emojiid", adminOnly, admin.adminEmojiIdCommand);
 
   // --- Callback router + persistent-keyboard number input (PTB group 2) ----
   bot.callbackQuery(/^v1:/, routeCallback);
@@ -225,6 +219,7 @@ export function guardRunnerTask(task: Promise<unknown> | undefined, onError: (er
 export async function start(): Promise<void> {
   await initDb();
   setAdminIds(await resolveAdminIds(prisma));
+  setCustomEmojiMap(await getSetting(prisma, CUSTOM_EMOJI_MAP_SETTING));
   // Market-rate auto-update needs no bot token, so schedule it BEFORE the token
   // guard — it must keep running on a web-only / pre-setup boot (§16.3), matching
   // apps/server. As a side effect the croner timer keeps this process alive

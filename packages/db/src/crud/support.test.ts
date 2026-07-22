@@ -40,6 +40,8 @@ describe("closeTicket atomic guard", () => {
     expect(tgId).toBe(555n);
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
     expect(fresh!.status).toBe(TicketStatus.CLOSED);
+    // Storage-efficiency cleanup keys off this timestamp to age out evidence files.
+    expect(fresh!.closedAt).not.toBeNull();
   });
 
   it("a SECOND close call on an already-CLOSED ticket returns null — no second DM", async () => {

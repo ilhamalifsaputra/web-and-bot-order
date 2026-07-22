@@ -8,7 +8,10 @@ import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { Send, CircleX } from "lucide-react";
+import { toast } from "sonner";
 import { apiPost } from "../api/client";
+import { describeError } from "../lib/errorMessages";
 
 interface TicketDetail {
   ticket: { id: number; subject: string; status: string; createdAt: string };
@@ -47,8 +50,11 @@ export function TicketDetailPage() {
 
   const close = useMutation({
     mutationFn: () => apiPost(`/api/support/${ticketId}/close`, {}),
-    onSuccess: () => { navigate("/support"); },
-    onError: (e: Error) => alert(e.message),
+    onSuccess: () => {
+      toast.success("Ticket closed.");
+      navigate("/support");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   if (isError) return <PageLayout title="Ticket"><p className="text-sm text-rust">Failed to load ticket.</p></PageLayout>;
@@ -102,10 +108,11 @@ export function TicketDetailPage() {
             />
             <div className="flex gap-2">
               <Button onClick={() => sendReply.mutate()} disabled={!reply || sendReply.isPending}>
+                <Send className="h-4 w-4" />
                 {sendReply.isPending ? "Saving…" : "Send Reply"}
               </Button>
               <ConfirmDialog
-                trigger={<Button variant="destructive">Close Ticket</Button>}
+                trigger={<Button variant="destructive"><CircleX className="h-4 w-4" />Close Ticket</Button>}
                 title="Close this ticket?"
                 description="The ticket will be marked as closed and no further replies can be added."
                 confirmLabel="Close"

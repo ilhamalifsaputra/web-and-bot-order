@@ -36,7 +36,7 @@ export function listOpenTickets(db: Db, limit = 50) {
 export async function closeTicket(db: Db, ticketId: number): Promise<bigint | null> {
   const res = await db.supportTicket.updateMany({
     where: { id: ticketId, status: { not: TicketStatus.CLOSED } },
-    data: { status: TicketStatus.CLOSED },
+    data: { status: TicketStatus.CLOSED, closedAt: new Date() },
   });
   if (res.count === 0) return null;
   const ticket = await db.supportTicket.findUnique({ where: { id: ticketId } });

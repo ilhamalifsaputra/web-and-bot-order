@@ -1,10 +1,11 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BroadcastPage } from "./BroadcastPage";
+import { FakeXHR } from "@/test/fakeXhr";
 
 function Wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -17,7 +18,14 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 
 const BROADCAST = { id: 1, message: "Hello customers!", segment: "ALL", status: "SENT", total: 100, sent: 100, scheduledAt: null, scheduledAtDisplay: null, createdAt: "2026-06-26T10:00:00.000Z", webImageUrl: null };
 
-beforeEach(() => { vi.restoreAllMocks(); });
+beforeEach(() => {
+  vi.restoreAllMocks();
+  FakeXHR.instances = [];
+  vi.stubGlobal("XMLHttpRequest", FakeXHR as unknown as typeof XMLHttpRequest);
+});
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("BroadcastPage", () => {
   it("renders broadcast history", async () => {
@@ -80,13 +88,12 @@ describe("BroadcastPage", () => {
     expect(screen.getByText("2 / 4000")).toBeInTheDocument();
 
     const longMessage = "a".repeat(1025);
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ url: "/uploads/broadcasts/broadcast-xyz.jpg" }), { status: 200, headers: { "Content-Type": "application/json" } }),
-    );
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
     const file = new File(["fake"], "photo.jpg", { type: "image/jpeg" });
     await user.upload(fileInput, file);
     await user.click(screen.getByRole("button", { name: /save/i }));
+    await waitFor(() => expect(FakeXHR.instances).toHaveLength(1));
+    FakeXHR.instances[0]!.respond(200, JSON.stringify({ url: "/uploads/broadcasts/broadcast-xyz.jpg" }));
     await waitFor(() => expect(screen.getByPlaceholderText(/Caption \(max 1024/)).toBeInTheDocument());
 
     fireEvent.change(textarea, { target: { value: longMessage } });

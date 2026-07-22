@@ -161,7 +161,9 @@ describe("ProductDetailPage", () => {
     render(<ProductDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
 
-    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.click(screen.getByRole("button", { name: "Actions for 1 Month" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Edit"));
 
     await waitFor(() => expect(screen.getByText("denomination-edit-page")).toBeInTheDocument());
   });
@@ -181,7 +183,10 @@ describe("ProductDetailPage", () => {
     render(<ProductDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Private")).toBeInTheDocument());
 
-    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "Actions for 1 Month" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Delete"));
+
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: "Delete" }));
 

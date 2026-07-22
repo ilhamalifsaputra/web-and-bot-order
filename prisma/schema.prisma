@@ -151,6 +151,11 @@ model Product {
   imageFileId String?  @map("image_file_id")
   sortOrder   Int      @default(0) @map("sort_order")
   isActive    Boolean  @default(true) @map("is_active")
+  /// Soft-hide independent of isActive: an archived product drops out of the
+  /// admin's default catalog list and every customer-facing surface, but
+  /// keeps its data (denominations, order history) intact — unlike a hard
+  /// Delete, which is refused once it has denominations.
+  isArchived  Boolean  @default(false) @map("is_archived")
   createdAt   DateTime @default(now()) @map("created_at")
 
   category      Category       @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
@@ -469,12 +474,16 @@ model SupportTicket {
   adminId        Int?      @map("admin_id")
   createdAt      DateTime  @default(now()) @map("created_at")
   repliedAt      DateTime? @map("replied_at")
+  /// Set once, when `closeTicket` flips status -> CLOSED. Drives the storage
+  /// cleanup job's "delete evidence N days after close" eligibility check.
+  closedAt       DateTime? @map("closed_at")
 
   user     User            @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   admin    User?           @relation("TicketAdmin", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   messages TicketMessage[]
 
   @@index([userId], map: "ix_support_tickets_user_id")
+  @@index([closedAt], map: "ix_support_tickets_closed_at")
   @@map("support_tickets")
 }
 

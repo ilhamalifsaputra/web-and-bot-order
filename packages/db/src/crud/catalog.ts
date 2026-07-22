@@ -16,6 +16,7 @@
 import { config } from "@app/core/config";
 import { DeliveryType, OrderStatus, ProductType, StockStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
+import { isFlashActive } from "@app/core/flash";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import type { Category, Denomination, Product } from "@prisma/client";
@@ -191,10 +192,17 @@ export function getCatalogProductBySlugWithDenominations(db: Db, slug: string) {
   });
 }
 
-/** Every product (active + inactive) with category + denomination count — admin. */
-export function listProducts(db: Db, categoryId?: number) {
+/**
+ * Every product (active + inactive) with category + denomination count —
+ * admin. `archived` defaults to "exclude" (the admin's default catalog view
+ * hides archived products); "only" / "all" let a caller surface them.
+ */
+export function listProducts(db: Db, categoryId?: number, archived: "exclude" | "only" | "all" = "exclude") {
   return db.product.findMany({
-    where: categoryId != null ? { categoryId } : {},
+    where: {
+      ...(categoryId != null ? { categoryId } : {}),
+      ...(archived === "exclude" ? { isArchived: false } : archived === "only" ? { isArchived: true } : {}),
+    },
     include: { category: true, _count: { select: { denominations: true } } },
     orderBy: [{ categoryId: "asc" }, { sortOrder: "asc" }, { name: "asc" }],
   });
@@ -204,6 +212,18 @@ export function listProducts(db: Db, categoryId?: number) {
 export async function bulkSetCatalogProductsActive(db: Db, ids: number[], isActive: boolean): Promise<number> {
   if (!ids.length) return 0;
   const res = await db.product.updateMany({ where: { id: { in: ids } }, data: { isActive } });
+  return res.count;
+}
+
+/** Archive/unarchive one product (soft-hide from the default admin list and all customer surfaces). */
+export async function setCatalogProductArchived(db: Db, productId: number, isArchived: boolean): Promise<void> {
+  await db.product.update({ where: { id: productId }, data: { isArchived } });
+}
+
+/** Bulk archive/unarchive products (mid-tier) in one writer. Returns count updated. */
+export async function bulkSetCatalogProductsArchived(db: Db, ids: number[], isArchived: boolean): Promise<number> {
+  if (!ids.length) return 0;
+  const res = await db.product.updateMany({ where: { id: { in: ids } }, data: { isArchived } });
   return res.count;
 }
 
@@ -400,6 +420,7 @@ export function listCatalogProducts(db: Db, categoryId?: number): Promise<Catalo
   return db.product.findMany({
     where: {
       isActive: true,
+      isArchived: false,
       ...(categoryId != null ? { categoryId } : {}),
       denominations: { some: { isActive: true, price: { gt: 0 } } },
     },
@@ -414,7 +435,7 @@ export function listCatalogProducts(db: Db, categoryId?: number): Promise<Catalo
 /** Newest active products (by newest active denomination) for the home grid. */
 export async function listNewestCatalogProducts(db: Db, limit = 12): Promise<CatalogProduct[]> {
   const products = await db.product.findMany({
-    where: { isActive: true, denominations: { some: { isActive: true, price: { gt: 0 } } } },
+    where: { isActive: true, isArchived: false, denominations: { some: { isActive: true, price: { gt: 0 } } } },
     include: {
       category: true,
       denominations: { where: { isActive: true, price: { gt: 0 } }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
@@ -436,6 +457,7 @@ export function searchCatalog(db: Db, query: string, limit = 24): Promise<Catalo
   return db.product.findMany({
     where: {
       isActive: true,
+      isArchived: false,
       denominations: { some: { isActive: true, price: { gt: 0 } } },
       OR: [{ name: { contains: q } }, { description: { contains: q } }],
     },
@@ -446,6 +468,41 @@ export function searchCatalog(db: Db, query: string, limit = 24): Promise<Catalo
     orderBy: { name: "asc" },
     take: limit,
   });
+}
+
+/**
+ * Active products with at least one denomination whose flash sale is running
+ * right now — the storefront's /flash shelf.
+ *
+ * Deliberately filtered in memory on top of `listCatalogProducts` rather than
+ * with a date-range `where`: whether a sale counts as live is decided by
+ * `activeFlashPercent` (@app/core/flash), which also rejects a percent outside
+ * (0,100] that a hand-edited row could carry. A SQL predicate would be a second
+ * copy of that rule, free to drift from the one the checkout charges against.
+ */
+export async function listFlashSaleProducts(db: Db, now: Date = new Date()): Promise<CatalogProduct[]> {
+  const products = await listCatalogProducts(db);
+  return products.filter((p) => p.denominations.some((d) => isFlashActive(d, now)));
+}
+
+/**
+ * True when any denomination in the catalog is on flash sale at `now` — lets a
+ * navigation surface hide its "Flash Sale" entry instead of linking to an empty
+ * shelf. Same liveness rule as `listFlashSaleProducts`, applied to the narrow
+ * set of rows whose window could possibly contain `now`.
+ */
+export async function hasActiveFlashSale(db: Db, now: Date = new Date()): Promise<boolean> {
+  const candidates = await db.denomination.findMany({
+    where: {
+      isActive: true,
+      price: { gt: 0 },
+      flashDiscountPercent: { gt: 0 },
+      flashStartsAt: { lte: now },
+      flashEndsAt: { gt: now },
+    },
+    select: { flashDiscountPercent: true, flashStartsAt: true, flashEndsAt: true },
+  });
+  return candidates.some((d) => isFlashActive(d, now));
 }
 
 // ---- Bulk pricing (keyed by denomination) ----
@@ -588,6 +645,82 @@ export function listUnannouncedStartedFlashSales(db: Db, now: Date = new Date())
     include: { product: true },
     orderBy: { flashStartsAt: "asc" },
   });
+}
+
+/**
+ * Every denomination across the whole catalog with its flash-sale fields, for
+ * the bulk Flash Sales admin page (one query backs both its "pick SKUs to
+ * flash" and "currently active/scheduled" views). Includes inactive SKUs —
+ * an admin may want to pre-schedule a sale before reactivating a product.
+ */
+export function listDenominationsWithFlashInfo(db: Db) {
+  return db.denomination.findMany({
+    select: {
+      id: true,
+      name: true,
+      price: true,
+      isActive: true,
+      flashDiscountPercent: true,
+      flashStartsAt: true,
+      flashEndsAt: true,
+      product: { select: { name: true, category: { select: { name: true } } } },
+    },
+    orderBy: [{ product: { name: "asc" } }, { name: "asc" }],
+  });
+}
+
+/**
+ * Apply the same flash-sale schedule to many denominations at once (the
+ * "set flash sale for N selected SKUs" bulk action). Loops individual
+ * `setFlashSale` calls rather than one big `$transaction` — each call is
+ * already a single atomic UPDATE, and a bad id (e.g. a denomination deleted
+ * between page-load and submit) should only fail that one row, not roll back
+ * every other admin's-worth of discount in the same batch.
+ */
+export async function bulkSetFlashSale(
+  db: Db,
+  args: { denominationIds: number[]; discountPercent: Decimal.Value; startsAt: Date; endsAt: Date },
+): Promise<{ applied: number; overwritten: number; failed: number }> {
+  let applied = 0;
+  let overwritten = 0;
+  let failed = 0;
+  for (const denominationId of args.denominationIds) {
+    try {
+      const existing = await db.denomination.findUnique({
+        where: { id: denominationId },
+        select: { flashDiscountPercent: true },
+      });
+      if (!existing) {
+        failed++;
+        continue;
+      }
+      await setFlashSale(db, {
+        denominationId,
+        discountPercent: args.discountPercent,
+        startsAt: args.startsAt,
+        endsAt: args.endsAt,
+      });
+      applied++;
+      if (existing.flashDiscountPercent != null) overwritten++;
+    } catch {
+      failed++;
+    }
+  }
+  return { applied, overwritten, failed };
+}
+
+/** Cancel the flash sale on many denominations at once ("end now", bulk). */
+export async function bulkClearFlashSale(
+  db: Db,
+  denominationIds: number[],
+): Promise<{ cleared: number; skipped: number }> {
+  let cleared = 0;
+  let skipped = 0;
+  for (const denominationId of denominationIds) {
+    const removed = await clearFlashSale(db, denominationId);
+    if (removed) cleared++; else skipped++;
+  }
+  return { cleared, skipped };
 }
 
 // ---- Sold-count aggregates (§4.2) — Produk Populer screen ----

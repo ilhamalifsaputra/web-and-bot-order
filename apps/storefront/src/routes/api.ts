@@ -34,6 +34,7 @@ import { productImage } from "../images";
 import { readGuestCart, writeGuestCart, CART_COOKIE, CART_COOKIE_VERSION, type GuestCartLine } from "../shop";
 import { loadCartLines } from "./cart";
 import { performCheckout, performWalletCheckout } from "./checkout";
+import { constantTimeEqual } from "../auth";
 
 interface CategoryJson {
   id: number;
@@ -133,7 +134,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
   // ---- 4. GET /products/:slug ----
   app.get<{ Params: { slug: string } }>("/products/:slug", async (req, reply) => {
     const product = await getCatalogProductBySlugWithDenominations(prisma, req.params.slug);
-    if (!product || !product.isActive || product.denominations.length === 0) {
+    if (!product || !product.isActive || product.isArchived || product.denominations.length === 0) {
       return reply.code(404).send({ error: "not_found" });
     }
     return reply.send({ product: await productJson(product) });
@@ -142,7 +143,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
   // ---- 5. GET /products/:slug/denominations ----
   app.get<{ Params: { slug: string } }>("/products/:slug/denominations", async (req, reply) => {
     const product = await getCatalogProductBySlugWithDenominations(prisma, req.params.slug);
-    if (!product || !product.isActive || product.denominations.length === 0) {
+    if (!product || !product.isActive || product.isArchived || product.denominations.length === 0) {
       return reply.code(404).send({ error: "not_found" });
     }
     return reply.send({ denominations: await Promise.all(product.denominations.map(denominationJson)) });
@@ -153,7 +154,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     const customer = await optionalCustomer(req);
     if (customer) {
       const token = req.headers["x-csrf-token"];
-      if (!token || token !== customer.csrf) {
+      if (typeof token !== "string" || !constantTimeEqual(token, customer.csrf)) {
         return reply.code(403).send({ error: "csrf_failed" });
       }
     }
@@ -222,7 +223,7 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(401).send({ error: "unauthorized" });
     }
     const token = req.headers["x-csrf-token"];
-    if (!token || token !== customer.csrf) {
+    if (typeof token !== "string" || !constantTimeEqual(token, customer.csrf)) {
       return reply.code(403).send({ error: "csrf_failed" });
     }
 

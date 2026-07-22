@@ -8,7 +8,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
-import { CreditCard } from "lucide-react";
+import { CreditCard, ChevronLeft, ChevronRight, PackageCheck, Undo2, X, MoreVertical } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -19,6 +19,14 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 
@@ -140,6 +148,9 @@ export function PaymentsPage() {
   const [matchForm, setMatchForm] = useState({ binance_tx_id: "", order_code: "" });
   const [matchError, setMatchError] = useState<string | null>(null);
   const [orderCodeFocused, setOrderCodeFocused] = useState(false);
+  const [pendingDeliver, setPendingDeliver] = useState<UnderpaidOrderRow | null>(null);
+  const [pendingRefund, setPendingRefund] = useState<UnderpaidOrderRow | null>(null);
+  const [pendingCancel, setPendingCancel] = useState<UnderpaidOrderRow | null>(null);
   const { data, isError } = usePayments(outcome, page);
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
   const underpaid = data?.underpaid ?? [];
@@ -170,26 +181,38 @@ export function PaymentsPage() {
 
   const dismiss = useMutation({
     mutationFn: (txId: string) => apiPost("/api/payments/dismiss", { binance_tx_id: txId }),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["payments"] }); },
-    onError: (e: Error) => alert(describeError(e.message)),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["payments"] });
+      toast.success("Transfer dismissed.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   const deliverAnyway = useMutation({
     mutationFn: (orderId: number) => apiPost(`/api/payments/order/${orderId}/deliver`, {}),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["payments"] }); },
-    onError: (e: Error) => alert(describeError(e.message)),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["payments"] });
+      toast.success("Order delivered.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   const refundUnderpaid = useMutation({
     mutationFn: (orderId: number) => apiPost(`/api/payments/order/${orderId}/refund`, {}),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["payments"] }); },
-    onError: (e: Error) => alert(describeError(e.message)),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["payments"] });
+      toast.success("Order refunded to wallet.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   const cancelUnderpaid = useMutation({
     mutationFn: (orderId: number) => apiPost(`/api/payments/order/${orderId}/cancel`, {}),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["payments"] }); },
-    onError: (e: Error) => alert(describeError(e.message)),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["payments"] });
+      toast.success("Order cancelled.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   if (isError) return <PageLayout title="Payments"><p className="text-sm text-rust">Failed to load payments.</p></PageLayout>;
@@ -314,37 +337,36 @@ export function PaymentsPage() {
                 key: "actions",
                 header: "",
                 render: o => (
-                  <div className="flex gap-2">
-                    <ConfirmDialog
-                      trigger={<Button variant="outline" size="sm" disabled={deliverAnyway.isPending}>Deliver anyway</Button>}
-                      title="Deliver this order anyway?"
-                      description={`Order ${o.orderCode} was underpaid. Deliver it anyway — this writes off the shortfall.`}
-                      confirmLabel="Deliver anyway"
-                      variant="default"
-                      onConfirm={() => deliverAnyway.mutate(o.id)}
-                    />
-                    <ConfirmDialog
-                      trigger={<Button variant="outline" size="sm" disabled={refundUnderpaid.isPending}>Refund</Button>}
-                      title="Refund to the buyer's wallet?"
-                      description={`Refund order ${o.orderCode}'s payment to the buyer's wallet balance.`}
-                      confirmLabel="Refund"
-                      variant="default"
-                      onConfirm={() => refundUnderpaid.mutate(o.id)}
-                    />
-                    <ConfirmDialog
-                      trigger={<Button variant="destructive" size="sm" disabled={cancelUnderpaid.isPending}>Cancel order</Button>}
-                      title="Cancel this order?"
-                      description={`Cancel order ${o.orderCode}. Any reserved stock or wallet holds are released.`}
-                      confirmLabel="Cancel order"
-                      onConfirm={() => cancelUnderpaid.mutate(o.id)}
-                    />
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="icon-sm" aria-label={`Actions for order ${o.orderCode}`}>
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingDeliver(o); }}>
+                          <PackageCheck className="h-4 w-4" />
+                          Deliver anyway
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingRefund(o); }}>
+                          <Undo2 className="h-4 w-4" />
+                          Refund
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem variant="destructive" onSelect={(e) => { e.preventDefault(); setPendingCancel(o); }}>
+                          <X className="h-4 w-4" />
+                          Cancel order
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 ),
               },
             ]}
             data={underpaid}
             keyExtractor={o => o.id}
-            empty={<EmptyState title="No underpaid orders" />}
+            empty={<EmptyState title="No underpaid orders" description="Orders will show here if a payment falls short of the total." />}
           />
           </CardContent>
         </Card>
@@ -364,7 +386,7 @@ export function PaymentsPage() {
             ]}
             data={pendingInternal}
             keyExtractor={o => o.id}
-            empty={<EmptyState title="No pending internal transfers" />}
+            empty={<EmptyState title="No pending internal transfers" description="Internal transfers awaiting confirmation will appear here." />}
           />
           </CardContent>
         </Card>
@@ -434,7 +456,7 @@ export function PaymentsPage() {
             header: "",
             render: tx => tx.outcome === "unmatched" ? (
               <ConfirmDialog
-                trigger={<Button variant="ghost" size="sm">Dismiss</Button>}
+                trigger={<Button variant="ghost" size="sm"><X className="h-4 w-4" />Dismiss</Button>}
                 title="Dismiss transfer?"
                 description={`Mark transfer ${tx.binanceTxId} as dismissed.`}
                 confirmLabel="Dismiss"
@@ -446,19 +468,61 @@ export function PaymentsPage() {
         data={data?.ledger ?? []}
         isLoading={!data}
         keyExtractor={tx => tx.id}
-        empty={<EmptyState icon={CreditCard} title="No transactions found" description="Try a different outcome filter." />}
+        empty={
+          <EmptyState
+            icon={CreditCard}
+            title="No transactions found"
+            description={outcome ? "Try a different outcome filter." : "Transactions will appear here once payments are processed."}
+            secondaryAction={outcome ? { label: "Clear Filters", onClick: () => { setOutcome(""); setPage(1); } } : undefined}
+          />
+        }
       />
 
       {data && (data.hasNext || page > 1) && (
         <div className="mt-4 flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => setPage(p => p - 1)} disabled={page === 1}>
-            ← Prev
+            <ChevronLeft className="h-4 w-4" />
+            Prev
           </Button>
           <span className="text-sm text-ink-soft">Page {page}</span>
           <Button variant="outline" size="sm" onClick={() => setPage(p => p + 1)} disabled={!data.hasNext}>
-            Next →
+            Next
+            <ChevronRight className="h-4 w-4" />
           </Button>
         </div>
+      )}
+
+      {pendingDeliver && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => { if (!open) setPendingDeliver(null); }}
+          title="Deliver this order anyway?"
+          description={`Order ${pendingDeliver.orderCode} was underpaid. Deliver it anyway — this writes off the shortfall.`}
+          confirmLabel="Deliver anyway"
+          variant="default"
+          onConfirm={() => deliverAnyway.mutate(pendingDeliver.id)}
+        />
+      )}
+      {pendingRefund && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => { if (!open) setPendingRefund(null); }}
+          title="Refund to the buyer's wallet?"
+          description={`Refund order ${pendingRefund.orderCode}'s payment to the buyer's wallet balance.`}
+          confirmLabel="Refund"
+          variant="default"
+          onConfirm={() => refundUnderpaid.mutate(pendingRefund.id)}
+        />
+      )}
+      {pendingCancel && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => { if (!open) setPendingCancel(null); }}
+          title="Cancel this order?"
+          description={`Cancel order ${pendingCancel.orderCode}. Any reserved stock or wallet holds are released.`}
+          confirmLabel="Cancel order"
+          onConfirm={() => cancelUnderpaid.mutate(pendingCancel.id)}
+        />
       )}
     </PageLayout>
   );

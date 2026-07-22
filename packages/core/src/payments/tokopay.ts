@@ -32,6 +32,30 @@ export interface TokopayOrderInfo {
   totalBayar: string | null;
 }
 
+/** QRIS admin-fee constants — TokoPay only; PayDisini and every other gateway
+ * stay fee-free. Charged ON TOP of the order total. */
+export const QRIS_ADMIN_FEE_FLAT = new Decimal(100);
+export const QRIS_ADMIN_FEE_PERCENT = new Decimal("0.007"); // 0.70%
+
+/**
+ * Rp100 + 0.70% of the order subtotal, rounded to the nearest whole Rupiah
+ * (IDR has no fractional currency in this codebase). The ONE place this
+ * formula is computed — every caller (bot checkout, storefront checkout/pay,
+ * webhook, reconcile poller, overpayment check) must import this rather than
+ * re-deriving it inline.
+ */
+export function computeQrisAdminFee(subtotalAmount: Decimal.Value): Decimal {
+  return QRIS_ADMIN_FEE_FLAT
+    .plus(new Decimal(subtotalAmount).times(QRIS_ADMIN_FEE_PERCENT))
+    .toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
+}
+
+/** totalAmount (already net of discounts/wallet) + the QRIS admin fee — the
+ * amount actually sent to TokoPay and compared against on confirm. */
+export function qrisChargeAmount(totalAmount: Decimal.Value, subtotalAmount: Decimal.Value): Decimal {
+  return new Decimal(totalAmount).plus(computeQrisAdminFee(subtotalAmount));
+}
+
 /** Create (or fetch — ref_id is idempotent) the gateway transaction for an order. */
 export async function createTransaction(
   creds: TokopayCreds,

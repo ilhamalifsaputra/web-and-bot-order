@@ -23,9 +23,8 @@ import { adminIds } from "@app/core/runtime";
 import { PaymentMethod, langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
-import { Decimal } from "@app/core/money";
 import { t as coreT } from "@app/core/i18n";
-import { checkTransaction } from "@app/core/payments/tokopay";
+import { checkTransaction, qrisChargeAmount } from "@app/core/payments/tokopay";
 import {
   prisma,
   getTokopayCreds,
@@ -98,9 +97,10 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
  */
 export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof getTokopayCreds>>, order: PendingOrder): Promise<void> {
   if (!creds) return;
+  const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
   let status: Awaited<ReturnType<typeof checkTransaction>>;
   try {
-    status = await checkTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
+    status = await checkTransaction(creds, { refId: order.orderCode, amountIdr: expectedCharge });
   } catch (err) {
     logger.warn({ err }, `Failed to check TokoPay status for order ${order.orderCode} — will retry on the next reconcile cycle`);
     return;
@@ -108,8 +108,8 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   if (!status.paid) return;
 
   // Paid but short — never deliver on an underpayment; leave for manual review.
-  if (status.amount.lessThan(new Decimal(order.totalAmount))) {
-    logger.warn(`Order ${order.orderCode} underpaid — TokoPay reports ${status.amount}, expected ${order.totalAmount}, left PENDING for manual review`);
+  if (status.amount.lessThan(expectedCharge)) {
+    logger.warn(`Order ${order.orderCode} underpaid — TokoPay reports ${status.amount}, expected ${expectedCharge}, left PENDING for manual review`);
     return;
   }
 

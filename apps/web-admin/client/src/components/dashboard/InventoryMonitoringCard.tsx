@@ -17,7 +17,7 @@ export function InventoryMonitoringCard() {
       <CardContent>
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
         {isError && <p className="text-sm text-rust">Couldn't load inventory.</p>}
-        {data && data.length === 0 && <EmptyState message="Stock levels are healthy." />}
+        {data && data.length === 0 && <EmptyState title="Stock levels are healthy." />}
         {data && data.length > 0 && (
           <ul className="flex flex-col divide-y divide-line">
             {data.map((r) => (

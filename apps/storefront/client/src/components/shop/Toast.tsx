@@ -12,7 +12,9 @@
  * page yet needs.
  */
 import { useEffect } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 import { CheckCircle, AlertTriangle, Info } from "lucide-react";
+import { fadeUp } from "../../lib/motion";
 
 export interface ToastProps {
   text: string | null;
@@ -28,8 +30,6 @@ export default function Toast({ text, onDismiss, kind = "success", durationMs = 
     return () => window.clearTimeout(id);
   }, [text, durationMs, onDismiss]);
 
-  if (!text) return null;
-
   const toneClass =
     kind === "error"
       ? "bg-rust-tint text-rust-dark border-rust/30"
@@ -44,12 +44,20 @@ export default function Toast({ text, onDismiss, kind = "success", durationMs = 
       aria-live="polite"
       className="fixed inset-x-0 bottom-4 z-50 flex justify-center px-4 pointer-events-none"
     >
-      <div
-        className={`pointer-events-auto flex items-center gap-2 rounded-xl border px-4 py-3 text-sm font-medium shadow-lift ${toneClass}`}
-      >
-        <Icon className="w-4 h-4 shrink-0" />
-        <span>{text}</span>
-      </div>
+      <AnimatePresence>
+        {text && (
+          <motion.div
+            variants={fadeUp}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            className={`pointer-events-auto flex items-center gap-2 rounded-xl border px-4 py-3 text-sm font-medium shadow-lift ${toneClass}`}
+          >
+            <Icon className="w-4 h-4 shrink-0" />
+            <span>{text}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

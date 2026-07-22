@@ -13,8 +13,17 @@ import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, SquarePen, Save, X, Plus, Trash2, Zap, MoreVertical } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { toast } from "sonner";
 import { apiGet, apiPost, apiPatch, apiDelete } from "../api/client";
+import { describeError } from "../lib/errorMessages";
 
 interface DenominationRow {
   id: number;
@@ -78,6 +87,7 @@ export function ProductDetailPage() {
   const [warrantyNoteDraft, setWarrantyNoteDraft] = useState("");
   const [savingProduct, setSavingProduct] = useState(false);
   const [productError, setProductError] = useState<string | null>(null);
+  const [pendingDeleteDenom, setPendingDeleteDenom] = useState<DenominationRow | null>(null);
 
   async function saveProduct() {
     setSavingProduct(true);
@@ -131,8 +141,9 @@ export function ProductDetailPage() {
     try {
       await apiDelete(`/api/catalog/denominations/${id}`);
       await queryClient.invalidateQueries({ queryKey: ["catalog", productId] });
+      toast.success("Denomination deleted.");
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to delete denomination.");
+      toast.error(describeError(e instanceof Error ? e.message : "Failed to delete denomination."));
     }
   }
 
@@ -192,6 +203,7 @@ export function ProductDetailPage() {
                 setEditingProduct(true);
               }}
             >
+              <SquarePen className="h-4 w-4" />
               Edit storefront details
             </Button>
           )}
@@ -242,9 +254,11 @@ export function ProductDetailPage() {
             {productError && <p className="text-sm text-rust">{productError}</p>}
             <div className="flex gap-2">
               <Button size="sm" disabled={!nameDraft.trim() || savingProduct} onClick={() => void saveProduct()}>
+                <Save className="h-4 w-4" />
                 {savingProduct ? "Saving…" : "Save"}
               </Button>
               <Button size="sm" variant="ghost" onClick={() => { setEditingProduct(false); setProductError(null); }}>
+                <X className="h-4 w-4" />
                 Cancel
               </Button>
             </div>
@@ -260,14 +274,20 @@ export function ProductDetailPage() {
           fieldName="photo"
           accept=".jpg,.jpeg,.png,.webp"
           dimensions="800x600px"
-          onUploaded={() => void queryClient.invalidateQueries({ queryKey: ["catalog", productId] })}
+          maxBytes={5 * 1024 * 1024}
+          onUploaded={(url) =>
+            queryClient.setQueryData<ProductDetailData>(["catalog", productId], (old) =>
+              old ? { ...old, product: { ...old.product, webImageUrl: url } } : old,
+            )
+          }
         />
       </div>
 
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-sm font-semibold text-ink">Denominations ({product.denominations.length})</h2>
         <Button size="sm" onClick={() => navigate(`/catalog/${productId}/denominations/new`)}>
-          + Add Denomination
+          <Plus className="h-4 w-4" />
+          Add Denomination
         </Button>
       </div>
       <DataTable
@@ -284,8 +304,11 @@ export function ProductDetailPage() {
                 <span className={`text-sm ${!d.isActive ? "text-ink-faint" : "text-ink"}`}>
                   {d.name}
                   {flash?.active && (
-                    <span className="ml-1.5" title={`Flash sale live: ${flash.discountPercent}% off`}>
-                      ⚡
+                    <span
+                      className="ml-1.5 inline-flex items-center align-middle"
+                      title={`Flash sale live: ${flash.discountPercent}% off`}
+                    >
+                      <Zap className="h-4 w-4 text-amberx" />
                     </span>
                   )}
                 </span>
@@ -312,25 +335,47 @@ export function ProductDetailPage() {
             key: "actions",
             header: "",
             render: d => (
-              <div className="flex gap-2">
-                <Button variant="ghost" size="sm" onClick={() => navigate(`/catalog/${productId}/denominations/${d.id}/edit`)}>
-                  Edit
-                </Button>
-                <ConfirmDialog
-                  trigger={<Button variant="ghost" size="sm" className="text-rust">Delete</Button>}
-                  title="Delete this denomination?"
-                  description={`Delete "${d.name}". This is refused if it has order history.`}
-                  confirmLabel="Delete"
-                  onConfirm={() => deleteDenomination(d.id)}
-                />
+              <div onClick={(e) => e.stopPropagation()}>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${d.name}`}>
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => navigate(`/catalog/${productId}/denominations/${d.id}/edit`)}>
+                      <SquarePen className="h-4 w-4" />
+                      Edit
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onSelect={(e) => { e.preventDefault(); setPendingDeleteDenom(d); }}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             ),
           },
         ]}
         data={product.denominations}
         keyExtractor={d => d.id}
-        empty={<EmptyState title="No denominations" />}
+        empty={<EmptyState title="No denominations" description="Add a denomination to start selling this product." />}
       />
+
+      {pendingDeleteDenom && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => { if (!open) setPendingDeleteDenom(null); }}
+          title="Delete this denomination?"
+          description={`Delete "${pendingDeleteDenom.name}". This is refused if it has order history.`}
+          confirmLabel="Delete"
+          onConfirm={() => deleteDenomination(pendingDeleteDenom.id)}
+        />
+      )}
     </PageLayout>
   );
 }

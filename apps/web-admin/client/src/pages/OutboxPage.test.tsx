@@ -3,13 +3,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Toaster } from "@/components/ui/sonner";
 import { OutboxPage } from "./OutboxPage";
 
 function Wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
     <MemoryRouter>
-      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+      <QueryClientProvider client={qc}>
+        {children}
+        <Toaster />
+      </QueryClientProvider>
     </MemoryRouter>
   );
 }
@@ -38,7 +42,8 @@ describe("OutboxPage", () => {
       ),
     );
     render(<OutboxPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText("ORDER_DELIVERED")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Order delivered")).toBeInTheDocument());
+    expect(screen.getByText("Order delivered")).toHaveAttribute("title", "ORDER_DELIVERED");
     expect(screen.getAllByText("Sent").length).toBeGreaterThan(0);
     expect(screen.getAllByText("2026-06-26 17:00").length).toBeGreaterThan(0); // createdAtDisplay/sentAtDisplay
   });
@@ -89,9 +94,8 @@ describe("OutboxPage", () => {
     await waitFor(() => expect(screen.getAllByText("Pending").length).toBeGreaterThan(0));
   });
 
-  it("shows an alert when retrying a notification fails", async () => {
+  it("shows a toast when retrying a notification fails", async () => {
     const failedRow = { ...ROW, id: 9, status: "FAILED" };
-    const alertSpy = vi.spyOn(globalThis, "alert").mockImplementation(() => {});
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(
       new Response(
@@ -111,8 +115,6 @@ describe("OutboxPage", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
-    await waitFor(() =>
-      expect(alertSpy).toHaveBeenCalledWith("That notification no longer exists."),
-    );
+    expect(await screen.findByText("That notification no longer exists.")).toBeInTheDocument();
   });
 });

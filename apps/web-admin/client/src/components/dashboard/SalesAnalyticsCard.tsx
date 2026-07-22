@@ -77,16 +77,16 @@ export function SalesAnalyticsCard() {
       <CardContent>
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
         {isError && <p className="text-sm text-rust">Couldn't load analytics.</p>}
-        {data && chartData.length === 0 && <EmptyState message="No data for this range." />}
+        {data && chartData.length === 0 && <EmptyState title="No data for this range." />}
         {data && chartData.length > 0 && (
           <div className="h-64 w-full overflow-x-auto">
             <div className="h-full min-w-[480px]">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData} margin={{ top: 8, right: 12, bottom: 8, left: 12 }}>
-                  <XAxis dataKey="day" tick={{ fontSize: 11 }} stroke="#97a1b1" />
-                  <YAxis tick={{ fontSize: 11 }} stroke="#97a1b1" width={56} />
+                  <XAxis dataKey="day" tick={{ fontSize: 11 }} stroke="var(--color-ink-faint)" />
+                  <YAxis tick={{ fontSize: 11 }} stroke="var(--color-ink-faint)" width={56} />
                   <Tooltip />
-                  <Line type="monotone" dataKey="value" stroke="#2563eb" strokeWidth={2} dot={false} />
+                  <Line type="monotone" dataKey="value" stroke="var(--color-pine)" strokeWidth={2} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>

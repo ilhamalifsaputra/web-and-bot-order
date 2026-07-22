@@ -42,14 +42,14 @@ import type { MyContext } from "../context";
 import { adminEdit } from "../util/chat";
 import { BANNER_FILEID_KEY } from "../util/banner";
 import { coreT, t } from "../util/i18n";
-import { esc, formatPrice, formatIdr, mixedAmount } from "../util/format";
+import { esc, formatUsdtAmount, formatIdr, mixedAmount } from "../util/format";
 import { requireAdminId } from "../util/adminAudit";
 import * as akb from "../keyboards/admin";
 import * as verification from "./verification";
 
 // USDT figures only (wallet balances). Catalog prices and voucher FIXED values
 // are central Rupiah → formatIdr; mixed revenue totals → mixedAmount.
-const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimals);
+const price = (v: Decimal.Value) => formatUsdtAmount(v);
 
 // ===========================================================================
 // /admin command + main menu

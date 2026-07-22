@@ -11,7 +11,7 @@
  * /auth/telegram) — the widget redirects the whole page, not an XHR.
  */
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
-import { config, isSmtpEnabled } from "@app/core/config";
+import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { sendMail } from "@app/core/mailer";
 import { hashPassword, verifyPassword } from "@app/core/password";
@@ -26,6 +26,7 @@ import {
   consumePasswordResetToken,
   setLoginCredentials,
   LOGIN_USERNAME_RE,
+  getSmtpCreds,
 } from "@app/db";
 import { newJti, shopSessionJtiKey, SHOP_COOKIE_NAME } from "../auth";
 import { optionalCustomer } from "../plugins/auth";
@@ -147,7 +148,8 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
     if (loginRateLimited(ip) || forgotEmailRateLimited(email)) {
       return reply.code(429).send({ error: "error.rate_limited" });
     }
-    if (!isSmtpEnabled()) {
+    const smtp = await getSmtpCreds(prisma);
+    if (!smtp) {
       return reply.send({ sent: false, unavailable: true });
     }
     if (email) {
@@ -157,7 +159,7 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
         const link = `${publicBase(req)}/reset/${token}`;
         const shopName = (await getSetting(prisma, "shop_name")) ?? "Toko Digital";
         try {
-          await sendMail({
+          await sendMail(smtp, {
             to: email,
             subject: `${shopName} — reset password`,
             text:

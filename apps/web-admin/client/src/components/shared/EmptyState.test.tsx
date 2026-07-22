@@ -37,4 +37,30 @@ describe("EmptyState", () => {
     render(<EmptyState message="Nothing to review." />);
     expect(screen.getByText("Nothing to review.")).toBeInTheDocument();
   });
+
+  it("renders both a primary and secondary action, each firing its own onClick", () => {
+    const onPrimary = vi.fn();
+    const onSecondary = vi.fn();
+    render(
+      <EmptyState
+        title="No orders found."
+        action={{ label: "Refresh", onClick: onPrimary }}
+        secondaryAction={{ label: "Clear Filters", onClick: onSecondary }}
+      />
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(onPrimary).toHaveBeenCalledOnce();
+    expect(onSecondary).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Clear Filters" }));
+    expect(onSecondary).toHaveBeenCalledOnce();
+  });
+
+  it("renders only the secondary action when no primary action is given", () => {
+    const onSecondary = vi.fn();
+    render(<EmptyState title="Empty" secondaryAction={{ label: "Clear Filters", onClick: onSecondary }} />);
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clear Filters" }));
+    expect(onSecondary).toHaveBeenCalledOnce();
+  });
 });

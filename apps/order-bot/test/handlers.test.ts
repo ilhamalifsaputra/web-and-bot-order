@@ -1111,18 +1111,29 @@ describe("checkout handlers", () => {
     const { ctx, sink } = customerCtx();
     await checkout.buyNowTokopay(ctx, sample.product.id, 1);
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id }, orderBy: { id: "desc" }, take: 1 });
-    expect(orders[0]!.paymentMethod).toBe("TOKOPAY");
-    expect(orders[0]!.currency).toBe("IDR");
+    const order = orders[0]!;
+    expect(order.paymentMethod).toBe("TOKOPAY");
+    expect(order.currency).toBe("IDR");
     // QR + instructions are unified into ONE photo+caption bubble (not a
     // separate sendPhoto below a text bubble).
     expect(calls(sink, "sendPhoto").length).toBe(0);
     const photoCalls = calls(sink, "replyWithPhoto");
     expect(photoCalls.length).toBe(1);
-    expect((photoCalls[0]!.args[1] as { caption?: string }).caption).toBeTruthy();
+    const caption = (photoCalls[0]!.args[1] as { caption?: string }).caption;
+    expect(caption).toBeTruthy();
+    // The gateway is charged subtotal + QRIS admin fee (Rp100 + 0.70%), not
+    // the bare order total — and the caption shows the same breakdown.
+    const { computeQrisAdminFee } = await import("@app/core/payments/tokopay");
+    const fee = computeQrisAdminFee(order.subtotalAmount);
+    const chargeAmount = new Decimal(order.totalAmount).plus(fee);
+    const lastCall = vi.mocked(mockedCreateTokopayTransaction).mock.lastCall!;
+    expect(new Decimal(lastCall[1].amountIdr).toString()).toBe(chargeAmount.toString());
+    expect(sentIncludes(sink, formatIdr(fee))).toBe(true);
+    expect(sentIncludes(sink, formatIdr(chargeAmount))).toBe(true);
     // paymentRef is cached as JSON tagged `gateway: "tokopay"` — the same
     // discriminator the storefront's parseCachedGateway() requires, so a
     // storefront view of a bot-created order is a cache HIT, not a re-fetch.
-    const cached = JSON.parse(orders[0]!.paymentRef!) as { gateway?: string; trxId?: string };
+    const cached = JSON.parse(order.paymentRef!) as { gateway?: string; trxId?: string };
     expect(cached.gateway).toBe("tokopay");
     expect(cached.trxId).toBe("TP-TEST");
   });

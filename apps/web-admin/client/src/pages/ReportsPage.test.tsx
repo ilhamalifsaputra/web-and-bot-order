@@ -47,7 +47,8 @@ describe("ReportsPage", () => {
     expect(screen.getByText(/30-day revenue/i)).toBeInTheDocument();
     // Regression: funnel is an array of {status, count}, not a Record — this
     // used to crash the page with "Objects are not valid as a React child".
-    expect(screen.getByText(/DELIVERED/)).toBeInTheDocument();
+    // Rendered via StatusBadge, which title-cases the raw status string.
+    expect(screen.getByText("Delivered")).toBeInTheDocument();
     expect(screen.getByText("SAVE10")).toBeInTheDocument();
   });
 

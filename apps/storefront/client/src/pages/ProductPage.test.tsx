@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ProductPage from "./ProductPage";
@@ -12,6 +12,53 @@ vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(),
 }));
+
+// jsdom has no IntersectionObserver (see HomePage.test.tsx's own note on this)
+// and the detail/reviews/related-products sections now mount with Framer
+// Motion's `whileInView`, which throws on mount without it — a no-op stub is
+// enough since these tests don't assert scroll-triggered reveal behavior.
+// The stub also records every observer with the elements it watches, because
+// the sticky purchase bar keys off whether the buy card is on screen and jsdom
+// computes no layout at all — the only way an observer can ever fire here is a
+// test firing it (see `setBuyAreaOnScreen`). Not firing anything by default
+// keeps the page in its initial state: buy card visible, no sticky bar.
+type ObserverCallback = (entries: Array<{ isIntersecting: boolean }>) => void;
+const observers: Array<{ callback: ObserverCallback; elements: Element[] }> = [];
+
+class NoOpIntersectionObserver {
+  private record: { callback: ObserverCallback; elements: Element[] };
+  constructor(callback: ObserverCallback) {
+    this.record = { callback, elements: [] };
+    observers.push(this.record);
+  }
+  observe(element: Element) {
+    this.record.elements.push(element);
+  }
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return [];
+  }
+}
+vi.stubGlobal("IntersectionObserver", NoOpIntersectionObserver);
+
+/** Simulate the buy card scrolling in or out of the viewport. Only the
+ * observer watching the buy card is fired, so Framer Motion's own
+ * `whileInView` observers on this page are left alone. */
+function setBuyAreaOnScreen(visible: boolean) {
+  act(() => {
+    for (const observer of observers) {
+      if (observer.elements.some((element) => element.id === "buy-summary")) {
+        observer.callback([{ isIntersecting: visible }]);
+      }
+    }
+  });
+}
+
+/** The sticky bar is the only landmark on the page, so this is unambiguous. */
+function stickyBar() {
+  return screen.queryByRole("region");
+}
 
 const context: ShopContext = {
   lang: "en",
@@ -122,6 +169,7 @@ function renderProduct(slug: string, respond: (path: string) => unknown) {
 describe("ProductPage", () => {
   beforeEach(() => {
     document.documentElement.lang = "en";
+    observers.length = 0;
     vi.clearAllMocks();
   });
 
@@ -388,9 +436,75 @@ describe("ProductPage", () => {
   });
 });
 
+// Sticky mobile purchase bar. `useIsDesktop()` reports false under jsdom
+// (no matchMedia -> mobile-first), so the mobile branch is what renders here.
+describe("ProductPage sticky purchase bar", () => {
+  beforeEach(() => {
+    document.documentElement.lang = "en";
+    observers.length = 0;
+    vi.clearAllMocks();
+  });
+
+  it("stays hidden while the in-page buy controls are on screen", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(stickyBar()).not.toBeInTheDocument();
+  });
+
+  it("appears once the buy controls scroll out of view, showing the selected plan and price", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    setBuyAreaOnScreen(false);
+    const bar = stickyBar();
+    expect(bar).toBeInTheDocument();
+    // Preselected plan is the first in-stock one, 3 Months at Rp219.000.
+    expect(within(bar!).getByText("3 Months")).toBeInTheDocument();
+    expect(within(bar!).getByText("Rp219.000")).toBeInTheDocument();
+    expect(within(bar!).getByRole("button", { name: /Buy now/ })).toBeInTheDocument();
+    // Scrolling back to the buy card retires it again.
+    setBuyAreaOnScreen(true);
+    expect(stickyBar()).not.toBeInTheDocument();
+  });
+
+  it("tracks the plan the shopper selects", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    fireEvent.click(screen.getByRole("radio", { name: /6 Months/ }));
+    setBuyAreaOnScreen(false);
+    const bar = stickyBar();
+    expect(within(bar!).getByText("6 Months")).toBeInTheDocument();
+    expect(within(bar!).getByText("Rp399.000")).toBeInTheDocument();
+  });
+
+  it("buys through the same mutation as the in-page button, with the current qty", async () => {
+    (apiPost as Mock).mockResolvedValue({ items: [], subtotal: "0" });
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    fireEvent.change(screen.getByLabelText("Quantity"), { target: { value: "2" } });
+    setBuyAreaOnScreen(false);
+    fireEvent.click(within(stickyBar()!).getByRole("button", { name: /Buy now/ }));
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/cart", { denomination_id: 2, qty: 2 }));
+    expect(await screen.findByText("checkout-page-stub")).toBeInTheDocument();
+  });
+
+  it("offers the restock CTA instead of Buy now when nothing is purchasable", async () => {
+    const allOut: ProductPageData = {
+      ...productData,
+      denominations: productData.denominations.map((d) => ({ ...d, available: 0, in_stock: false })),
+    };
+    renderProduct("netflix-premium", () => allOut);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    setBuyAreaOnScreen(false);
+    const bar = stickyBar();
+    expect(within(bar!).getByRole("button", { name: /Notify me when ready/ })).toBeInTheDocument();
+    expect(within(bar!).queryByRole("button", { name: /Buy now/ })).not.toBeInTheDocument();
+  });
+});
+
 describe("ProductPage sharing and image formats", () => {
   beforeEach(() => {
     document.documentElement.lang = "en";
+    observers.length = 0;
     vi.clearAllMocks();
   });
 
@@ -444,6 +558,22 @@ describe("ProductPage sharing and image formats", () => {
     const img = await screen.findByAltText("Netflix Premium");
     expect(img.tagName).toBe("IMG");
     expect(img.parentElement?.querySelector("source")).toBeNull();
+  });
+
+  // The hero image is the LCP element: it must not be deferred, and it must
+  // declare its intrinsic size so the page doesn't jump as it decodes.
+  it("loads the hero image eagerly with intrinsic dimensions", async () => {
+    renderProduct("netflix-premium", () => productData);
+    const img = await screen.findByAltText("Netflix Premium");
+    expect(img).toHaveAttribute("loading", "eager");
+    expect(img).toHaveAttribute("width", "800");
+    expect(img).toHaveAttribute("height", "600");
+  });
+
+  it("asks phones for the numeric keypad on the qty field", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.getByLabelText("Quantity")).toHaveAttribute("inputmode", "numeric");
   });
 
   it("offers the WebP derivatives as a <source> when they exist", async () => {

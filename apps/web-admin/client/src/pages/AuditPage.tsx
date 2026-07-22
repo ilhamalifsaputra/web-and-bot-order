@@ -6,6 +6,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DateInput } from "../components/shared/DateInput";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useAudit } from "../hooks/useAudit";
 import { useAdmins } from "../hooks/useAdmins";
 
@@ -44,6 +45,9 @@ const ACTION_LABELS: Record<string, string> = {
   web_admin_force_logout: "Admin force-logged-out",
   web_setup_completed: "Setup completed",
   branding_banner_clear: "Banner cleared",
+  branding_favicon_clear: "Favicon cleared",
+  branding_logo_clear: "Logo cleared",
+  branding_hero_clear: "Hero image cleared",
   setting_set: "Setting changed",
   setting_clear: "Setting cleared",
   payment_method_toggle: "Payment method toggled",
@@ -257,7 +261,8 @@ export function AuditPage() {
               disabled={page <= 1}
               onClick={() => goPage(page - 1)}
             >
-              ← Prev
+              <ChevronLeft className="h-4 w-4" />
+              Prev
             </Button>
             <span className="text-sm text-ink-soft">Page {page}</span>
             <Button
@@ -266,7 +271,8 @@ export function AuditPage() {
               disabled={!data.hasNext}
               onClick={() => goPage(page + 1)}
             >
-              Next →
+              Next
+              <ChevronRight className="h-4 w-4" />
             </Button>
           </div>
         )}

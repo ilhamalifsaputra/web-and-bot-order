@@ -68,6 +68,7 @@ import {
   recordAccountFailure,
   resetAccountFailures,
 } from "../src/auth";
+import { registerOutboxNudge } from "@app/core/nudge";
 import { canMutate } from "../src/plugins/auth";
 import { isAdmin, adminIds, setAdminIds, setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 
@@ -377,8 +378,16 @@ describe("forgot/reset password", () => {
   it("forgot enqueues an ADMIN_PW_RESET DM for a real admin, then reset works", async () => {
     await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("oldpassword"));
 
+    // The OTP must wake the dispatcher immediately rather than waiting for
+    // its next poll tick — registerOutboxNudge is the same hook runDispatcher
+    // installs while it's asleep between ticks.
+    let nudged = false;
+    registerOutboxNudge(() => { nudged = true; });
+
     const forgot = await post("/forgot", null, { telegram_id: String(ADMIN_TG) });
     expect(forgot.statusCode).toBe(200);
+    expect(nudged).toBe(true);
+    registerOutboxNudge(null);
 
     const rows = await prisma.notificationOutbox.findMany({ where: { event: "ADMIN_PW_RESET" } });
     expect(rows.length).toBe(1);
@@ -398,9 +407,14 @@ describe("forgot/reset password", () => {
   });
 
   it("forgot for a non-admin / no-password id is neutral and enqueues nothing", async () => {
+    let nudged = false;
+    registerOutboxNudge(() => { nudged = true; });
+
     const res = await post("/forgot", null, { telegram_id: "424242" });
     expect(res.statusCode).toBe(200); // same page, no enumeration
     expect(await prisma.notificationOutbox.count({ where: { event: "ADMIN_PW_RESET" } })).toBe(0);
+    expect(nudged).toBe(false); // nothing enqueued -> nothing to wake the dispatcher for
+    registerOutboxNudge(null);
 
     // Admin in ADMIN_IDS but with NO password set yet → must bootstrap, not reset.
     const noPw = await post("/forgot", null, { telegram_id: String(ADMIN_TG) });
@@ -433,6 +447,48 @@ describe("account lockout", () => {
     expect(accountLockedOut(tg)).toBe(true);
     resetAccountFailures(tg);
     expect(accountLockedOut(tg)).toBe(false);
+  });
+});
+
+// ---- per-IP login throttle is not spoofable via X-Forwarded-For -----------
+// Security patch: trustProxy is unset (false) by default, so a caller cannot
+// evade loginRateLimited(ip) by sending a different X-Forwarded-For header on
+// every request — every attempt below must be counted against the same real
+// peer IP (app.inject's default remote address), not the forged header.
+
+describe("login rate limit ignores a forged X-Forwarded-For", () => {
+  it("still trips the per-IP throttle after WEB_LOGIN_RATE_LIMIT_MAX attempts from spoofed IPs", async () => {
+    resetLoginAttempts("127.0.0.1");
+    const max = config.WEB_LOGIN_RATE_LIMIT_MAX;
+    // A distinct, never-admin telegram_id per attempt so the SEPARATE
+    // per-account lockout (keyed by telegram_id) never trips — this isolates
+    // the per-IP throttle under test. loginRateLimited(ip) is checked before
+    // the account lockout in routes/auth.ts, so every attempt below still
+    // counts against the real peer IP regardless of the forged header.
+    for (let i = 0; i < max; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/login",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          "x-forwarded-for": `10.0.0.${i}`, // a different forged IP every attempt
+        },
+        payload: form({ telegram_id: String(800000 + i), password: "WRONG" }),
+      });
+      expect(res.statusCode).toBe(401);
+    }
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/login",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-forwarded-for": "10.0.0.999", // yet another forged IP
+      },
+      payload: form({ telegram_id: "800999", password: "WRONG" }),
+    });
+    expect(res.statusCode).toBe(429);
+    resetLoginAttempts("127.0.0.1");
   });
 });
 
@@ -900,6 +956,267 @@ describe("orders API — approve/resend enqueue the buyer's account DM", () => {
     expect(
       await prisma.notificationOutbox.count({ where: { orderId, event: "ORDER_DELIVERED_DM" } }),
     ).toBe(0);
+  });
+});
+
+// ---- Orders admin-page refactor: pagination, KPIs, cancel, bulk-action ----
+
+function postJsonOrders(url: string, cookie: string | null, csrf: string | null, body: Record<string, unknown> = {}) {
+  return app.inject({
+    method: "POST",
+    url,
+    headers: { "content-type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+    cookies: cookie ? { [COOKIE]: cookie } : {},
+    payload: JSON.stringify(body),
+  });
+}
+
+describe("GET /api/orders — pageSize resolution + eligibility", () => {
+  it("accepts each valid pageSize option and echoes it back", async () => {
+    for (const size of [20, 50, 100]) {
+      const res = await get(`/api/orders?pageSize=${size}`, seed.cookie);
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).pageSize).toBe(size);
+    }
+  });
+
+  it("falls back to 20 for an invalid pageSize", async () => {
+    const res = await get("/api/orders?pageSize=999", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).pageSize).toBe(20);
+  });
+
+  it("defaults to 20 when pageSize is omitted", async () => {
+    const res = await get("/api/orders", seed.cookie);
+    expect(JSON.parse(res.body).pageSize).toBe(20);
+  });
+
+  it("list rows carry a server-computed eligibility object", async () => {
+    await makePendingOrder();
+    const res = await get("/api/orders", seed.cookie);
+    const data = JSON.parse(res.body) as { orders: Array<{ eligibility: { canAct: boolean; isDelivered: boolean } }> };
+    expect(data.orders[0]!.eligibility).toMatchObject({ canAct: true, isDelivered: false });
+  });
+});
+
+describe("CSV export — q multi-field search + ids filter", () => {
+  it("q now matches customer identity fields too, not just orderCode", async () => {
+    const buyer = await upsertUser(prisma, { telegramId: 314159, username: "csvsearchuser", fullName: "CSV Search" });
+    await createOrderDirect(prisma, { user: buyer, productId: seed.productId, quantity: 1 });
+    await makePendingOrder(); // unrelated order, must be excluded
+
+    const res = await get("/api/orders/export?q=csvsearchuser", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const lines = res.body.trim().split("\r\n");
+    expect(lines.length - 1).toBe(1);
+  });
+
+  it("ids restricts the export to exactly the selected rows", async () => {
+    const orderA = await makePendingOrder();
+    await makePendingOrder(); // not selected, must be excluded
+
+    const res = await get(`/api/orders/export?ids=${orderA}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const lines = res.body.trim().split("\r\n");
+    expect(lines.length - 1).toBe(1);
+  });
+});
+
+describe("GET /api/orders/kpis", () => {
+  it("returns the global KPI snapshot shape, ignoring any list filters", async () => {
+    setBotIdentity({ publicChannelId: -100123456789 });
+    await makePendingOrder(); // stays PENDING_VERIFICATION
+    const deliveredId = await makePendingOrder();
+    await post(`/api/orders/${deliveredId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+
+    const res = await get("/api/orders/kpis", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body).toMatchObject({
+      totalOrders: expect.any(Number),
+      awaitingFulfillment: expect.any(Number),
+      processing: expect.any(Number),
+      delivered: expect.any(Number),
+      cancelled: expect.any(Number),
+    });
+    // shapeRevenue nulls out a zero currency (dashboard.ts convention) — just
+    // assert the three keys are present, not truthy.
+    expect(Object.keys(body.revenueToday).sort()).toEqual(["idr", "usd", "usdt"]);
+    expect(body.delivered).toBeGreaterThanOrEqual(1);
+    expect(body.totalOrders).toBeGreaterThanOrEqual(2);
+  });
+
+  it("requires auth (anon → 303 /login)", async () => {
+    const res = await get("/api/orders/kpis", null);
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+});
+
+describe("POST /api/orders/:orderId/cancel", () => {
+  it("cancels a PENDING_VERIFICATION order and audits with the reason", async () => {
+    const orderId = await makePendingOrder();
+    const res = await post(`/api/orders/${orderId}/cancel`, seed.cookie, {
+      csrf_token: seed.csrf,
+      reason: "buyer requested",
+    });
+    expect(res.statusCode).toBe(200);
+    const order = (await getOrder(prisma, orderId))!;
+    expect(order.status).toBe("CANCELLED");
+    const audit = await prisma.auditLog.findMany({ where: { action: "cancel_order", targetId: orderId } });
+    expect(audit.length).toBe(1);
+    expect(audit[0]!.details).toBe(`Cancelled order ${order.orderCode}: "buyer requested".`);
+  });
+
+  it("requires a non-empty reason (400)", async () => {
+    const orderId = await makePendingOrder();
+    const res = await post(`/api/orders/${orderId}/cancel`, seed.cookie, { csrf_token: seed.csrf, reason: "   " });
+    expect(res.statusCode).toBe(400);
+    expect((await getOrder(prisma, orderId))!.status).toBe("PENDING_VERIFICATION");
+  });
+
+  it("refuses to cancel an already-DELIVERED order (422)", async () => {
+    setBotIdentity({ publicChannelId: -100123456789 });
+    const orderId = await makePendingOrder();
+    await post(`/api/orders/${orderId}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    const res = await post(`/api/orders/${orderId}/cancel`, seed.cookie, { csrf_token: seed.csrf, reason: "too late" });
+    expect(res.statusCode).toBe(422);
+    expect((await getOrder(prisma, orderId))!.status).toBe("DELIVERED");
+  });
+
+  it("requires auth (anon → 303 /login)", async () => {
+    const orderId = await makePendingOrder();
+    const res = await post(`/api/orders/${orderId}/cancel`, null, { csrf_token: "anything", reason: "x" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("rejects bad CSRF (403)", async () => {
+    const orderId = await makePendingOrder();
+    const res = await post(`/api/orders/${orderId}/cancel`, seed.cookie, { csrf_token: "wrong-token", reason: "x" });
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+describe("POST /api/orders/bulk-action", () => {
+  it("bulk deliver: eligible PENDING_VERIFICATION orders succeed, a PROCESSING (manual) order is skipped, exactly one summary audit row", async () => {
+    setBotIdentity({ publicChannelId: -100123456789 });
+    const eligible1 = await makePendingOrder();
+    const eligible2 = await makePendingOrder();
+    const ineligible = await makeProcessingOrder(); // canFulfill, NOT canAct — must be skipped, not bulk-delivered
+
+    const res = await postJsonOrders("/api/orders/bulk-action", seed.cookie, seed.csrf, {
+      ids: [eligible1, eligible2, ineligible],
+      action: "deliver",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as { succeeded: number[]; failed: { id: number; error: string }[] };
+    expect(body.succeeded.slice().sort((a, b) => a - b)).toEqual([eligible1, eligible2].sort((a, b) => a - b));
+    expect(body.failed).toEqual([{ id: ineligible, error: "error.not_eligible" }]);
+
+    expect((await getOrder(prisma, eligible1))!.status).toBe("DELIVERED");
+    expect((await getOrder(prisma, eligible2))!.status).toBe("DELIVERED");
+    expect((await getOrder(prisma, ineligible))!.status).toBe("PROCESSING");
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "order_bulk_deliver" } });
+    expect(audit.length).toBe(1);
+    expect(audit[0]!.details).toBe("Bulk deliver: 2 succeeded, 1 failed (of 3 selected).");
+  });
+
+  it("bulk resend: only an already-DELIVERED order with a Telegram buyer succeeds", async () => {
+    const delivered = await makePendingOrder();
+    await post(`/api/orders/${delivered}/approve`, seed.cookie, { csrf_token: seed.csrf });
+    const notDelivered = await makePendingOrder();
+
+    const res = await postJsonOrders("/api/orders/bulk-action", seed.cookie, seed.csrf, {
+      ids: [delivered, notDelivered],
+      action: "resend",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as { succeeded: number[]; failed: { id: number; error: string }[] };
+    expect(body.succeeded).toEqual([delivered]);
+    expect(body.failed).toEqual([{ id: notDelivered, error: "error.not_eligible" }]);
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "order_bulk_resend" } });
+    expect(audit.length).toBe(1);
+  });
+
+  it("bulk cancel: requires a reason, cancels eligible orders, skips an already-delivered one", async () => {
+    const cancelable = await makePendingOrder();
+    const delivered = await makePendingOrder();
+    await post(`/api/orders/${delivered}/approve`, seed.cookie, { csrf_token: seed.csrf });
+
+    const missingReason = await postJsonOrders("/api/orders/bulk-action", seed.cookie, seed.csrf, {
+      ids: [cancelable],
+      action: "cancel",
+    });
+    expect(missingReason.statusCode).toBe(400);
+
+    const res = await postJsonOrders("/api/orders/bulk-action", seed.cookie, seed.csrf, {
+      ids: [cancelable, delivered],
+      action: "cancel",
+      reason: "storewide cleanup",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as { succeeded: number[]; failed: { id: number; error: string }[] };
+    expect(body.succeeded).toEqual([cancelable]);
+    expect(body.failed).toEqual([{ id: delivered, error: "error.not_eligible" }]);
+    expect((await getOrder(prisma, cancelable))!.status).toBe("CANCELLED");
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "order_bulk_cancel" } });
+    expect(audit.length).toBe(1);
+    expect(audit[0]!.details).toBe("Bulk cancel: 1 succeeded, 1 failed (of 2 selected).");
+  });
+
+  it("an unknown order id lands in failed with error.order_not_found, not a hard error for the whole batch", async () => {
+    const res = await postJsonOrders("/api/orders/bulk-action", seed.cookie, seed.csrf, {
+      ids: [999999],
+      action: "cancel",
+      reason: "x",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as { succeeded: number[]; failed: { id: number; error: string }[] };
+    expect(body.succeeded).toEqual([]);
+    expect(body.failed).toEqual([{ id: 999999, error: "error.order_not_found" }]);
+  });
+
+  it("caps a batch at 50 ids (400)", async () => {
+    const ids = Array.from({ length: 51 }, (_, i) => i + 1);
+    const res = await postJsonOrders("/api/orders/bulk-action", seed.cookie, seed.csrf, {
+      ids,
+      action: "cancel",
+      reason: "x",
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("rejects an unknown action (400)", async () => {
+    const orderId = await makePendingOrder();
+    const res = await postJsonOrders("/api/orders/bulk-action", seed.cookie, seed.csrf, {
+      ids: [orderId],
+      action: "explode",
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("requires auth (anon → 303 /login)", async () => {
+    const orderId = await makePendingOrder();
+    const res = await postJsonOrders("/api/orders/bulk-action", null, null, {
+      ids: [orderId],
+      action: "cancel",
+      reason: "x",
+    });
+    expect(res.statusCode).toBe(303);
+  });
+
+  it("rejects bad CSRF (403)", async () => {
+    const orderId = await makePendingOrder();
+    const res = await postJsonOrders("/api/orders/bulk-action", seed.cookie, "wrong-token", {
+      ids: [orderId],
+      action: "cancel",
+      reason: "x",
+    });
+    expect(res.statusCode).toBe(403);
   });
 });
 
@@ -1648,6 +1965,99 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
     });
   });
 
+  describe("POST /api/catalog/products/:id/archive", () => {
+    it("happy path: archives a product and audits", async () => {
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/archive`, seed.cookie, seed.csrf, {
+        archived: true,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ id: seed.catalogProductId, isArchived: true });
+      expect((await getCatalogProduct(prisma, seed.catalogProductId))!.isArchived).toBe(true);
+
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: "product_archive_toggle", targetId: seed.catalogProductId },
+      });
+      expect(audit).toBeTruthy();
+      expect(audit?.targetType).toBe("product");
+      expect(audit?.adminId).toBe(seed.adminId);
+      const product = await getCatalogProduct(prisma, seed.catalogProductId);
+      expect(audit?.details).toBe(`Archived product "${product!.name}".`);
+    });
+
+    it("happy path: unarchives a product and audits", async () => {
+      await postJson(`/api/catalog/products/${seed.catalogProductId}/archive`, seed.cookie, seed.csrf, { archived: true });
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/archive`, seed.cookie, seed.csrf, {
+        archived: false,
+      });
+      expect(res.statusCode).toBe(200);
+      expect((await getCatalogProduct(prisma, seed.catalogProductId))!.isArchived).toBe(false);
+      const audit = await prisma.auditLog.findFirst({
+        where: { action: "product_archive_toggle", targetId: seed.catalogProductId },
+        orderBy: { id: "desc" },
+      });
+      const product = await getCatalogProduct(prisma, seed.catalogProductId);
+      expect(audit?.details).toBe(`Unarchived product "${product!.name}".`);
+    });
+
+    it("rejects a non-boolean archived with 400", async () => {
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/archive`, seed.cookie, seed.csrf, {
+        archived: "true",
+      });
+      expect(res.statusCode).toBe(400);
+      expect(JSON.parse(res.body).error).toBeTruthy();
+    });
+
+    it("rejects a non-existent product id with 404", async () => {
+      const res = await postJson(`/api/catalog/products/99999/archive`, seed.cookie, seed.csrf, { archived: true });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/archive`, null, "x", { archived: true });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/catalog/products/${seed.catalogProductId}/archive`, seed.cookie, "bad-token", {
+        archived: true,
+      });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("POST /api/catalog/products/bulk-archive", () => {
+    it("happy path: archives multiple products and audits with a count", async () => {
+      const other = await createCatalogProduct(prisma, { categoryId: seed.categoryId, name: "Other" });
+      const res = await postJson(`/api/catalog/products/bulk-archive`, seed.cookie, seed.csrf, {
+        ids: [seed.catalogProductId, other.id],
+        archived: true,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, count: 2 });
+      expect((await getCatalogProduct(prisma, seed.catalogProductId))!.isArchived).toBe(true);
+      expect((await getCatalogProduct(prisma, other.id))!.isArchived).toBe(true);
+      const audit = await prisma.auditLog.findFirst({ where: { action: "product_bulk_archive" } });
+      expect(audit?.details).toBe("Archived 2 products.");
+    });
+
+    it("rejects an empty ids array with 400", async () => {
+      const res = await postJson(`/api/catalog/products/bulk-archive`, seed.cookie, seed.csrf, { ids: [], archived: true });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson(`/api/catalog/products/bulk-archive`, null, "x", { ids: [seed.catalogProductId], archived: true });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson(`/api/catalog/products/bulk-archive`, seed.cookie, "bad-token", { ids: [seed.catalogProductId], archived: true });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
   describe("bulk pricing (POST/DELETE /api/catalog/denominations/:id/bulk-pricing)", () => {
     it("happy path: sets bulk pricing and audits", async () => {
       const res = await postJson(`/api/catalog/denominations/${seed.productId}/bulk-pricing`, seed.cookie, seed.csrf, {
@@ -1725,139 +2135,209 @@ describe("catalog JSON API — category update/toggle, product delete/bulk-activ
     });
   });
 
-  describe("flash sale (POST/DELETE /api/catalog/denominations/:id/flash-sale)", () => {
-    // The form posts what an <input type="datetime-local"> holds: a bare
-    // wall-clock string with no offset, read in the shop's timezone.
-    const shopLocal = (msFromNow: number) =>
-      localize(new Date(Date.now() + msFromNow), "yyyy-LL-dd'T'HH:mm");
-    const HOUR = 3_600_000;
+});
 
-    async function schedule(body: Record<string, unknown> = {}) {
-      return postJson(`/api/catalog/denominations/${seed.productId}/flash-sale`, seed.cookie, seed.csrf, {
-        discountPercent: "30",
-        startsAt: shopLocal(HOUR),
-        endsAt: shopLocal(5 * HOUR),
-        ...body,
-      });
-    }
+describe("flash sales bulk API — /api/flash-sales/*", () => {
+  function getJson(url: string, cookie: string | null) {
+    return app.inject({ method: "GET", url, cookies: cookie ? { [COOKIE]: cookie } : {} });
+  }
+  function postJson(url: string, cookie: string | null, csrf: string | null, body: Record<string, unknown>) {
+    return app.inject({
+      method: "POST",
+      url,
+      headers: { "content-type": "application/json", ...(csrf ? { "x-csrf-token": csrf } : {}) },
+      cookies: cookie ? { [COOKIE]: cookie } : {},
+      payload: JSON.stringify(body),
+    });
+  }
 
-    it("happy path: schedules a flash sale, stores the window in UTC and audits", async () => {
-      const res = await schedule();
+  const shopLocal = (msFromNow: number) => localize(new Date(Date.now() + msFromNow), "yyyy-LL-dd'T'HH:mm");
+  const HOUR = 3_600_000;
+
+  /** A second denomination under a second product, so bulk actions have >1 SKU to select. */
+  async function makeSecondDenomination(): Promise<number> {
+    const cat2 = await createCategory(prisma, `BulkFlashCat${Math.random()}`);
+    const product2 = await createCatalogProduct(prisma, { categoryId: cat2.id, name: "Second Product" });
+    const denom2 = await createDenomination(prisma, {
+      productId: product2.id,
+      name: "1 Month",
+      type: ProductType.SHARED,
+      durationLabel: "1 Month",
+      price: "20.00",
+    });
+    return denom2.id;
+  }
+
+  describe("GET /api/flash-sales/denominations", () => {
+    it("happy path: lists denominations across products with flash status", async () => {
+      const secondId = await makeSecondDenomination();
+      const res = await getJson("/api/flash-sales/denominations", seed.cookie);
       expect(res.statusCode).toBe(200);
-      expect(JSON.parse(res.body)).toEqual({ ok: true });
-
-      const denom = await getDenomination(prisma, seed.productId);
-      expect(Number(denom!.flashDiscountPercent)).toBe(30);
-      // The bare wall-clock string was read in the shop's timezone, so the
-      // stored instant is the UTC equivalent — within a minute, since the
-      // input carries no seconds.
-      expect(Math.abs(denom!.flashStartsAt!.getTime() - (Date.now() + HOUR))).toBeLessThan(60_000);
-      expect(Math.abs(denom!.flashEndsAt!.getTime() - (Date.now() + 5 * HOUR))).toBeLessThan(60_000);
-      expect(denom!.flashAnnouncedAt).toBeNull();
-
-      const audit = await prisma.auditLog.findFirst({
-        where: { action: "flash_sale_set", targetId: seed.productId },
-      });
-      expect(audit).toBeTruthy();
-      expect(audit?.targetType).toBe("denomination");
-      expect(audit?.adminId).toBe(seed.adminId);
-      expect(audit?.details).toBe(
-        `Started a 30% flash sale on "${denom!.name}" running from ` +
-          `${localize(denom!.flashStartsAt, "dd LLL yyyy HH:mm")} to ` +
-          `${localize(denom!.flashEndsAt, "dd LLL yyyy HH:mm")}.`,
-      );
-    });
-
-    it("exposes the schedule on the product read endpoint so the edit form can prefill it", async () => {
-      await schedule({ startsAt: shopLocal(-HOUR), endsAt: shopLocal(HOUR) });
-      const res = await get(`/api/catalog/${seed.catalogProductId}`, seed.cookie);
-      expect(res.statusCode).toBe(200);
-      const data = JSON.parse(res.body) as {
-        statsByDenom: Record<string, { flash: { discountPercent: string; startsAt: string; startsAtLocal: string; active: boolean } | null }>;
-      };
-      const flash = data.statsByDenom[String(seed.productId)]!.flash!;
-      expect(Number(flash.discountPercent)).toBe(30);
-      expect(flash.active).toBe(true);
-      expect(flash.startsAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-      expect(flash.startsAtLocal).toBe(shopLocal(-HOUR));
-    });
-
-    it("happy path: cancels a flash sale and audits", async () => {
-      await schedule();
-      const res = await deleteJson(`/api/catalog/denominations/${seed.productId}/flash-sale`, seed.cookie, seed.csrf);
-      expect(res.statusCode).toBe(200);
-      expect(JSON.parse(res.body)).toEqual({ ok: true, removed: true });
-
-      const denom = await getDenomination(prisma, seed.productId);
-      expect(denom!.flashDiscountPercent).toBeNull();
-      expect(denom!.flashStartsAt).toBeNull();
-      expect(denom!.flashEndsAt).toBeNull();
-      const audit = await prisma.auditLog.findFirst({
-        where: { action: "flash_sale_delete", targetId: seed.productId },
-      });
-      expect(audit?.details).toBe(`Cancelled the flash sale on "${denom!.name}".`);
-    });
-
-    it("cancelling when nothing is scheduled returns removed: false and does not audit", async () => {
-      const res = await deleteJson(`/api/catalog/denominations/${seed.productId}/flash-sale`, seed.cookie, seed.csrf);
-      expect(res.statusCode).toBe(200);
-      expect(JSON.parse(res.body)).toEqual({ ok: true, removed: false });
-      expect(await prisma.auditLog.findFirst({ where: { action: "flash_sale_delete" } })).toBeNull();
-    });
-
-    it("rejects a discount percent outside (0,100] with 422", async () => {
-      const res = await schedule({ discountPercent: "150" });
-      expect(res.statusCode).toBe(422);
-      expect((await getDenomination(prisma, seed.productId))!.flashDiscountPercent).toBeNull();
-    });
-
-    it("rejects a window that ends before it starts with 422", async () => {
-      const res = await schedule({ startsAt: shopLocal(5 * HOUR), endsAt: shopLocal(HOUR) });
-      expect(res.statusCode).toBe(422);
-      expect((await getDenomination(prisma, seed.productId))!.flashDiscountPercent).toBeNull();
-    });
-
-    it("rejects an unparseable percent or timestamp with 400", async () => {
-      expect((await schedule({ discountPercent: "abc" })).statusCode).toBe(400);
-      expect((await schedule({ startsAt: "not-a-date" })).statusCode).toBe(400);
-      expect((await schedule({ endsAt: "" })).statusCode).toBe(400);
-    });
-
-    it("rejects a non-existent denomination id with 404", async () => {
-      const res = await postJson(`/api/catalog/denominations/99999/flash-sale`, seed.cookie, seed.csrf, {
-        discountPercent: "30",
-        startsAt: shopLocal(HOUR),
-        endsAt: shopLocal(5 * HOUR),
-      });
-      expect(res.statusCode).toBe(404);
-      const del = await deleteJson(`/api/catalog/denominations/99999/flash-sale`, seed.cookie, seed.csrf);
-      expect(del.statusCode).toBe(404);
+      const body = JSON.parse(res.body) as { denominations: Array<{ id: number; flash: { discountPercent: string } | null }> };
+      const ids = body.denominations.map((d) => d.id);
+      expect(ids).toContain(seed.productId);
+      expect(ids).toContain(secondId);
+      expect(body.denominations.find((d) => d.id === seed.productId)!.flash).toBeNull();
     });
 
     it("rejects missing auth (anon -> 303 /login)", async () => {
-      const res = await postJson(`/api/catalog/denominations/${seed.productId}/flash-sale`, null, "x", {
+      const res = await getJson("/api/flash-sales/denominations", null);
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+  });
+
+  describe("POST /api/flash-sales/bulk-apply", () => {
+    it("happy path: applies one schedule to many SKUs across products and audits by count", async () => {
+      const secondId = await makeSecondDenomination();
+      const res = await postJson("/api/flash-sales/bulk-apply", seed.cookie, seed.csrf, {
+        denominationIds: [seed.productId, secondId],
+        discountPercent: "20",
+        startsAt: shopLocal(HOUR),
+        endsAt: shopLocal(5 * HOUR),
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, applied: 2, overwritten: 0, failed: 0 });
+
+      const d1 = await getDenomination(prisma, seed.productId);
+      const d2 = await getDenomination(prisma, secondId);
+      expect(Number(d1!.flashDiscountPercent)).toBe(20);
+      expect(Number(d2!.flashDiscountPercent)).toBe(20);
+
+      const audit = await prisma.auditLog.findFirst({ where: { action: "flash_sale_bulk_set" } });
+      expect(audit).toBeTruthy();
+      expect(audit?.targetType).toBe("denomination");
+      expect(audit?.adminId).toBe(seed.adminId);
+      expect(audit?.details).toContain("2 SKU(s)");
+    });
+
+    it("reports how many replaced an existing schedule", async () => {
+      await postJson("/api/flash-sales/bulk-apply", seed.cookie, seed.csrf, {
+        denominationIds: [seed.productId],
+        discountPercent: "5",
+        startsAt: shopLocal(HOUR),
+        endsAt: shopLocal(2 * HOUR),
+      });
+      const res = await postJson("/api/flash-sales/bulk-apply", seed.cookie, seed.csrf, {
+        denominationIds: [seed.productId],
         discountPercent: "30",
+        startsAt: shopLocal(HOUR),
+        endsAt: shopLocal(5 * HOUR),
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, applied: 1, overwritten: 1, failed: 0 });
+    });
+
+    it("mixed valid/invalid ids: applies to the valid one and reports the rest as failed", async () => {
+      const res = await postJson("/api/flash-sales/bulk-apply", seed.cookie, seed.csrf, {
+        denominationIds: [seed.productId, 999999],
+        discountPercent: "20",
+        startsAt: shopLocal(HOUR),
+        endsAt: shopLocal(5 * HOUR),
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, applied: 1, overwritten: 0, failed: 1 });
+    });
+
+    it("rejects an empty selection with 400", async () => {
+      const res = await postJson("/api/flash-sales/bulk-apply", seed.cookie, seed.csrf, {
+        denominationIds: [],
+        discountPercent: "20",
+        startsAt: shopLocal(HOUR),
+        endsAt: shopLocal(5 * HOUR),
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects an invalid discount percent with 400", async () => {
+      const res = await postJson("/api/flash-sales/bulk-apply", seed.cookie, seed.csrf, {
+        denominationIds: [seed.productId],
+        discountPercent: "not-a-number",
+        startsAt: shopLocal(HOUR),
+        endsAt: shopLocal(5 * HOUR),
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects an invalid window with 400", async () => {
+      const res = await postJson("/api/flash-sales/bulk-apply", seed.cookie, seed.csrf, {
+        denominationIds: [seed.productId],
+        discountPercent: "20",
+        startsAt: "not-a-date",
+        endsAt: shopLocal(5 * HOUR),
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson("/api/flash-sales/bulk-apply", null, "x", {
+        denominationIds: [seed.productId],
+        discountPercent: "20",
         startsAt: shopLocal(HOUR),
         endsAt: shopLocal(5 * HOUR),
       });
       expect(res.statusCode).toBe(303);
       expect(res.headers.location).toBe("/login");
-
-      const del = await deleteJson(`/api/catalog/denominations/${seed.productId}/flash-sale`, null, "x");
-      expect(del.statusCode).toBe(303);
-      expect(del.headers.location).toBe("/login");
     });
 
     it("rejects bad CSRF with 403", async () => {
-      const res = await postJson(`/api/catalog/denominations/${seed.productId}/flash-sale`, seed.cookie, "bad-token", {
-        discountPercent: "30",
+      const res = await postJson("/api/flash-sales/bulk-apply", seed.cookie, "bad-token", {
+        denominationIds: [seed.productId],
+        discountPercent: "20",
         startsAt: shopLocal(HOUR),
         endsAt: shopLocal(5 * HOUR),
       });
       expect(res.statusCode).toBe(403);
+    });
+  });
 
-      const del = await deleteJson(`/api/catalog/denominations/${seed.productId}/flash-sale`, seed.cookie, "bad-token");
-      expect(del.statusCode).toBe(403);
+  describe("POST /api/flash-sales/bulk-end", () => {
+    it("happy path: clears the schedule on selected SKUs and audits by count", async () => {
+      const secondId = await makeSecondDenomination();
+      await postJson("/api/flash-sales/bulk-apply", seed.cookie, seed.csrf, {
+        denominationIds: [seed.productId, secondId],
+        discountPercent: "20",
+        startsAt: shopLocal(HOUR),
+        endsAt: shopLocal(5 * HOUR),
+      });
+
+      const res = await postJson("/api/flash-sales/bulk-end", seed.cookie, seed.csrf, {
+        denominationIds: [seed.productId, secondId],
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, cleared: 2, skipped: 0 });
+
+      const d1 = await getDenomination(prisma, seed.productId);
+      expect(d1!.flashDiscountPercent).toBeNull();
+
+      const audit = await prisma.auditLog.findFirst({ where: { action: "flash_sale_bulk_end" } });
+      expect(audit?.details).toBe("Ended the flash sale on 2 SKU(s).");
+    });
+
+    it("reports SKUs with nothing scheduled as skipped", async () => {
+      const res = await postJson("/api/flash-sales/bulk-end", seed.cookie, seed.csrf, {
+        denominationIds: [seed.productId],
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ ok: true, cleared: 0, skipped: 1 });
+    });
+
+    it("rejects an empty selection with 400", async () => {
+      const res = await postJson("/api/flash-sales/bulk-end", seed.cookie, seed.csrf, { denominationIds: [] });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await postJson("/api/flash-sales/bulk-end", null, "x", { denominationIds: [seed.productId] });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const res = await postJson("/api/flash-sales/bulk-end", seed.cookie, "bad-token", {
+        denominationIds: [seed.productId],
+      });
+      expect(res.statusCode).toBe(403);
     });
   });
 });

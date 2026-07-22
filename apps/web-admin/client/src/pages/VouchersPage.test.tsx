@@ -188,7 +188,7 @@ describe("VouchersPage", () => {
     render(<VouchersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/no vouchers/i)).toBeInTheDocument());
 
-    await user.click(screen.getByRole("button", { name: "+ New Voucher" }));
+    await user.click(screen.getByRole("button", { name: "New Voucher" }));
 
     expect(screen.getByLabelText(/^code/i)).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Type" })).toBeInTheDocument();

@@ -1,9 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
+import { Download } from "lucide-react";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { EmptyState } from "../components/shared/EmptyState";
 import { DataTable } from "../components/shared/DataTable";
+import { StatusBadge } from "../components/shared/StatusBadge";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -42,7 +44,10 @@ export function ReportsPage() {
         title="Reports"
         actions={
           <a href="/api/reports/export">
-            <Button variant="outline" size="sm">Export CSV</Button>
+            <Button variant="outline" size="sm">
+              <Download className="h-4 w-4" />
+              Export CSV
+            </Button>
           </a>
         }
       />
@@ -101,9 +106,10 @@ export function ReportsPage() {
               <CardContent>
                 <div className="flex flex-wrap gap-2">
                   {data.funnel.map(({ status, count }) => (
-                    <span key={status} className="rounded bg-sand px-3 py-1.5 text-sm text-ink">
-                      {status}: <strong>{count}</strong>
-                    </span>
+                    <div key={status} className="flex items-center gap-2 rounded bg-sand px-3 py-1.5 text-sm">
+                      <StatusBadge status={status} />
+                      <strong className="text-ink">{count}</strong>
+                    </div>
                   ))}
                 </div>
               </CardContent>

@@ -19,13 +19,21 @@ import {
   deleteCatalogProductCascade,
   deleteDenomination,
   bulkSetCatalogProductsActive,
+  setCatalogProductArchived,
+  bulkSetCatalogProductsArchived,
+  listProducts,
   listCatalogProducts,
   listNewestCatalogProducts,
+  listFlashSaleProducts,
+  hasActiveFlashSale,
   searchCatalog,
   lowStockDenominations,
   setFlashSale,
   clearFlashSale,
   listUnannouncedStartedFlashSales,
+  listDenominationsWithFlashInfo,
+  bulkSetFlashSale,
+  bulkClearFlashSale,
   CategoryMismatchError,
 } from "./catalog";
 import { ValidationError } from "@app/core/errors";
@@ -198,6 +206,75 @@ describe("bulkSetCatalogProductsActive", () => {
   });
 });
 
+describe("setCatalogProductArchived", () => {
+  it("flips isArchived on the given product only", async () => {
+    const cat = await makeCategory();
+    const a = await makeProduct(cat.id, "A");
+    const b = await makeProduct(cat.id, "B");
+
+    await setCatalogProductArchived(prisma, a.id, true);
+    expect((await prisma.product.findUnique({ where: { id: a.id } }))!.isArchived).toBe(true);
+    expect((await prisma.product.findUnique({ where: { id: b.id } }))!.isArchived).toBe(false);
+
+    await setCatalogProductArchived(prisma, a.id, false);
+    expect((await prisma.product.findUnique({ where: { id: a.id } }))!.isArchived).toBe(false);
+  });
+});
+
+describe("bulkSetCatalogProductsArchived", () => {
+  it("flips isArchived on the given products only, returns the updated count", async () => {
+    const cat = await makeCategory();
+    const a = await makeProduct(cat.id, "A");
+    const b = await makeProduct(cat.id, "B");
+    const c = await makeProduct(cat.id, "C");
+
+    const count = await bulkSetCatalogProductsArchived(prisma, [a.id, b.id], true);
+    expect(count).toBe(2);
+    expect((await prisma.product.findUnique({ where: { id: a.id } }))!.isArchived).toBe(true);
+    expect((await prisma.product.findUnique({ where: { id: b.id } }))!.isArchived).toBe(true);
+    expect((await prisma.product.findUnique({ where: { id: c.id } }))!.isArchived).toBe(false);
+  });
+
+  it("returns 0 for an empty id list", async () => {
+    expect(await bulkSetCatalogProductsArchived(prisma, [], true)).toBe(0);
+  });
+});
+
+describe("listProducts — archived filtering", () => {
+  it("defaults to excluding archived products", async () => {
+    const cat = await makeCategory();
+    const shown = await makeProduct(cat.id, "Shown");
+    const archived = await makeProduct(cat.id, "Archived");
+    await setCatalogProductArchived(prisma, archived.id, true);
+
+    const list = await listProducts(prisma, cat.id);
+    expect(list.some((p) => p.id === shown.id)).toBe(true);
+    expect(list.some((p) => p.id === archived.id)).toBe(false);
+  });
+
+  it('"only" returns just the archived products', async () => {
+    const cat = await makeCategory();
+    const shown = await makeProduct(cat.id, "Shown");
+    const archived = await makeProduct(cat.id, "Archived");
+    await setCatalogProductArchived(prisma, archived.id, true);
+
+    const list = await listProducts(prisma, cat.id, "only");
+    expect(list.some((p) => p.id === archived.id)).toBe(true);
+    expect(list.some((p) => p.id === shown.id)).toBe(false);
+  });
+
+  it('"all" returns both archived and non-archived products', async () => {
+    const cat = await makeCategory();
+    const shown = await makeProduct(cat.id, "Shown");
+    const archived = await makeProduct(cat.id, "Archived");
+    await setCatalogProductArchived(prisma, archived.id, true);
+
+    const list = await listProducts(prisma, cat.id, "all");
+    expect(list.some((p) => p.id === shown.id)).toBe(true);
+    expect(list.some((p) => p.id === archived.id)).toBe(true);
+  });
+});
+
 describe("getCatalogProductWithDenominations / getDenominationWithProduct", () => {
   it("loads a product with denominations price-asc + category", async () => {
     const cat = await makeCategory();
@@ -271,6 +348,15 @@ describe("listCatalogProducts", () => {
     const p = await makeProduct(cat.id, "OnlyInactive");
     const d = await makeDenom(p.id, "1 Month", "5");
     await prisma.denomination.update({ where: { id: d.id }, data: { isActive: false } });
+    const list = await listCatalogProducts(prisma, cat.id);
+    expect(list.some((x) => x.id === p.id)).toBe(false);
+  });
+
+  it("excludes an archived product even when active with active denominations", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Archived");
+    await makeDenom(p.id, "1 Month", "5");
+    await setCatalogProductArchived(prisma, p.id, true);
     const list = await listCatalogProducts(prisma, cat.id);
     expect(list.some((x) => x.id === p.id)).toBe(false);
   });
@@ -538,6 +624,102 @@ describe("flash sales", () => {
       expect(row!.product.name).toBe("Flash Parent");
     });
   });
+
+  describe("listDenominationsWithFlashInfo", () => {
+    it("includes inactive denominations, ordered by product then name", async () => {
+      const cat = await makeCategory();
+      const pB = await makeProduct(cat.id, "Zzz Product");
+      const pA = await makeProduct(cat.id, "Aaa Product");
+      const dInactive = await makeDenom(pA.id, "1 Month", "10000");
+      await prisma.denomination.update({ where: { id: dInactive.id }, data: { isActive: false } });
+      await makeDenom(pB.id, "1 Month", "10000");
+
+      const rows = await listDenominationsWithFlashInfo(prisma);
+      const ids = rows.map((r) => r.id);
+      expect(ids).toContain(dInactive.id);
+      const row = rows.find((r) => r.id === dInactive.id)!;
+      expect(row.isActive).toBe(false);
+      expect(row.product.name).toBe("Aaa Product");
+
+      const aIndex = rows.findIndex((r) => r.product.name === "Aaa Product");
+      const bIndex = rows.findIndex((r) => r.product.name === "Zzz Product");
+      expect(aIndex).toBeLessThan(bIndex);
+    });
+  });
+
+  describe("bulkSetFlashSale", () => {
+    it("applies the same schedule to every valid id and reports overwrites", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Bulk Flash");
+      const fresh = await makeDenom(p.id, "Fresh", "10000");
+      const already = await makeDenom(p.id, "Already Flashed", "10000");
+      await setFlashSale(prisma, { denominationId: already.id, discountPercent: "5", startsAt: inHours(-1), endsAt: inHours(1) });
+
+      const startsAt = inHours(1);
+      const endsAt = inHours(5);
+      const result = await bulkSetFlashSale(prisma, {
+        denominationIds: [fresh.id, already.id],
+        discountPercent: "30",
+        startsAt,
+        endsAt,
+      });
+
+      expect(result).toEqual({ applied: 2, overwritten: 1, failed: 0 });
+      const freshRow = await prisma.denomination.findUnique({ where: { id: fresh.id } });
+      expect(Number(freshRow!.flashDiscountPercent)).toBe(30);
+      const alreadyRow = await prisma.denomination.findUnique({ where: { id: already.id } });
+      expect(Number(alreadyRow!.flashDiscountPercent)).toBe(30);
+    });
+
+    it("collects a failure for a non-existent id without aborting the rest", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Bulk Flash Partial");
+      const ok = await makeDenom(p.id, "Ok", "10000");
+      const missingId = ok.id + 1_000_000;
+
+      const result = await bulkSetFlashSale(prisma, {
+        denominationIds: [ok.id, missingId],
+        discountPercent: "15",
+        startsAt: inHours(1),
+        endsAt: inHours(3),
+      });
+
+      expect(result).toEqual({ applied: 1, overwritten: 0, failed: 1 });
+      const okRow = await prisma.denomination.findUnique({ where: { id: ok.id } });
+      expect(Number(okRow!.flashDiscountPercent)).toBe(15);
+    });
+
+    it("collects a failure for an invalid discount percent without aborting the rest", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Bulk Flash Bad Percent");
+      const a = await makeDenom(p.id, "A", "10000");
+      const b = await makeDenom(p.id, "B", "10000");
+
+      const result = await bulkSetFlashSale(prisma, {
+        denominationIds: [a.id, b.id],
+        discountPercent: "0",
+        startsAt: inHours(1),
+        endsAt: inHours(3),
+      });
+
+      expect(result).toEqual({ applied: 0, overwritten: 0, failed: 2 });
+    });
+  });
+
+  describe("bulkClearFlashSale", () => {
+    it("clears sales that exist and skips ones that don't", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Bulk Clear Flash");
+      const withSale = await makeDenom(p.id, "With Sale", "10000");
+      const withoutSale = await makeDenom(p.id, "Without Sale", "10000");
+      await setFlashSale(prisma, { denominationId: withSale.id, discountPercent: "20", startsAt: inHours(-1), endsAt: inHours(1) });
+
+      const result = await bulkClearFlashSale(prisma, [withSale.id, withoutSale.id]);
+      expect(result).toEqual({ cleared: 1, skipped: 1 });
+      const row = await prisma.denomination.findUnique({ where: { id: withSale.id } });
+      expect(row!.flashDiscountPercent).toBeNull();
+    });
+  });
 });
 
 describe("listNewestCatalogProducts", () => {
@@ -548,5 +730,80 @@ describe("listNewestCatalogProducts", () => {
     const list = await listNewestCatalogProducts(prisma, 1);
     expect(list).toHaveLength(1);
     expect(list[0]!.denominations.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("flash-sale shelves", () => {
+  const inHours = (h: number) => new Date(Date.now() + h * 3600_000);
+
+  it("lists only products whose sale window is open, and reports whether any is", async () => {
+    const cat = await makeCategory();
+
+    const onSale = await makeProduct(cat.id, "Shelf Live");
+    const live = await makeDenom(onSale.id, "1 Month", "10000");
+    await setFlashSale(prisma, {
+      denominationId: live.id,
+      discountPercent: "20",
+      startsAt: inHours(-1),
+      endsAt: inHours(1),
+    });
+
+    // Not yet started and already finished are both "not on sale now". An
+    // ended window can't be written through setFlashSale (it refuses a sale
+    // that is already over), so it's planted directly.
+    const upcoming = await makeProduct(cat.id, "Shelf Upcoming");
+    const later = await makeDenom(upcoming.id, "1 Month", "10000");
+    await setFlashSale(prisma, {
+      denominationId: later.id,
+      discountPercent: "20",
+      startsAt: inHours(2),
+      endsAt: inHours(4),
+    });
+
+    const past = await makeProduct(cat.id, "Shelf Past");
+    const over = await makeDenom(past.id, "1 Month", "10000");
+    await prisma.denomination.update({
+      where: { id: over.id },
+      data: { flashDiscountPercent: "20", flashStartsAt: inHours(-5), flashEndsAt: inHours(-1) },
+    });
+
+    const plain = await makeProduct(cat.id, "Shelf Plain");
+    await makeDenom(plain.id, "1 Month", "10000");
+
+    const slugs = (await listFlashSaleProducts(prisma)).map((p) => p.slug);
+    expect(slugs).toContain(onSale.slug);
+    expect(slugs).not.toContain(upcoming.slug);
+    expect(slugs).not.toContain(past.slug);
+    expect(slugs).not.toContain(plain.slug);
+    expect(await hasActiveFlashSale(prisma)).toBe(true);
+  });
+
+  it("ignores a percent outside (0,100], the same rule pricing applies", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Shelf Bogus");
+    const d = await makeDenom(p.id, "1 Month", "10000");
+    // Only reachable by a hand-edited row — setFlashSale rejects it — but a
+    // shelf that trusted the columns would advertise a 0%-off "sale".
+    await prisma.denomination.update({
+      where: { id: d.id },
+      data: { flashDiscountPercent: "0", flashStartsAt: inHours(-1), flashEndsAt: inHours(1) },
+    });
+    const slugs = (await listFlashSaleProducts(prisma)).map((x) => x.slug);
+    expect(slugs).not.toContain(p.slug);
+  });
+
+  it("reports no live sale once every window has closed", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Shelf Quiet");
+    const d = await makeDenom(p.id, "1 Month", "10000");
+    await setFlashSale(prisma, {
+      denominationId: d.id,
+      discountPercent: "20",
+      startsAt: inHours(-1),
+      endsAt: inHours(1),
+    });
+    // Ask as of a moment after the last window ends, rather than mutating rows.
+    expect(await hasActiveFlashSale(prisma, inHours(48))).toBe(false);
+    expect(await listFlashSaleProducts(prisma, inHours(48))).toEqual([]);
   });
 });

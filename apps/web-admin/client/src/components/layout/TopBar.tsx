@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { Menu, Search, Plus } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { AnimatePresence, motion } from "framer-motion";
 import { logout } from "../../api/client";
+import { fadeIn } from "@/lib/motion";
 
 interface TopBarProps {
   onMenuClick: () => void;
@@ -9,11 +11,11 @@ interface TopBarProps {
 }
 
 const QUICK_ACTIONS = [
-  { label: "+ Add Product", to: "/catalog" },
-  { label: "+ Add Stock", to: "/stock" },
-  { label: "+ Broadcast", to: "/broadcast" },
-  { label: "+ Add Customer", to: "/users" },
-  { label: "Reports", to: "/reports" },
+  { label: "Add Product", to: "/catalog", icon: true },
+  { label: "Add Stock", to: "/stock", icon: true },
+  { label: "Broadcast", to: "/broadcast", icon: true },
+  { label: "Add Customer", to: "/users", icon: true },
+  { label: "Reports", to: "/reports", icon: false },
 ] as const;
 
 export function TopBar({ onMenuClick, onSearchOpen }: TopBarProps): JSX.Element {
@@ -40,7 +42,7 @@ export function TopBar({ onMenuClick, onSearchOpen }: TopBarProps): JSX.Element 
       <button
         type="button"
         onClick={onMenuClick}
-        className="rounded-md min-h-11 min-w-11 flex items-center justify-center text-ink-soft hover:bg-sand hover:text-ink lg:hidden"
+        className="flex h-10 w-10 items-center justify-center rounded-md text-ink-soft transition-colors duration-150 hover:bg-sand hover:text-ink lg:hidden"
         aria-label="Open navigation"
       >
         <Menu className="h-5 w-5" />
@@ -51,7 +53,7 @@ export function TopBar({ onMenuClick, onSearchOpen }: TopBarProps): JSX.Element 
         type="button"
         onClick={onSearchOpen}
         aria-label="Search"
-        className="flex items-center gap-2 rounded-md border border-line bg-paper px-3 py-1.5 text-sm text-ink-faint hover:bg-sand hover:text-ink-soft"
+        className="flex items-center gap-2 rounded-md border border-line bg-paper px-3 py-1.5 text-sm text-ink-faint transition-colors duration-150 hover:bg-sand hover:text-ink-soft"
       >
         <Search className="h-4 w-4 flex-shrink-0" />
         <span className="hidden sm:inline">Search...</span>
@@ -71,31 +73,40 @@ export function TopBar({ onMenuClick, onSearchOpen }: TopBarProps): JSX.Element 
             setActionsOpen((o) => !o);
             setUserOpen(false);
           }}
-          className="flex items-center rounded-md border border-line p-2 text-ink-soft hover:bg-sand hover:text-ink"
+          className="flex h-10 w-10 items-center justify-center rounded-md border border-line text-ink-soft transition-colors duration-150 hover:bg-sand hover:text-ink"
           aria-label="Quick actions"
         >
           <Plus className="h-4 w-4" />
         </button>
-        {actionsOpen && (
-          <>
-            <div className="fixed inset-0 z-10" onClick={closeAll} />
-            <div className="absolute right-0 z-20 mt-1 w-44 rounded-md border border-line bg-card shadow-lift">
-              {QUICK_ACTIONS.map(({ label, to }) => (
-                <button
-                  key={to}
-                  type="button"
-                  className="block w-full px-4 py-2 text-left text-sm text-ink-soft hover:bg-sand hover:text-ink"
-                  onClick={() => {
-                    navigate(to);
-                    setActionsOpen(false);
-                  }}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </>
-        )}
+        <AnimatePresence>
+          {actionsOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={closeAll} />
+              <motion.div
+                variants={fadeIn}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                className="absolute right-0 z-20 mt-1 w-44 rounded-md border border-line bg-card shadow-lift"
+              >
+                {QUICK_ACTIONS.map(({ label, to, icon }) => (
+                  <button
+                    key={to}
+                    type="button"
+                    className="flex w-full items-center gap-2 px-4 py-2 text-left text-sm text-ink-soft transition-colors duration-150 hover:bg-sand hover:text-ink"
+                    onClick={() => {
+                      navigate(to);
+                      setActionsOpen(false);
+                    }}
+                  >
+                    {icon && <Plus className="h-4 w-4" />}
+                    {label}
+                  </button>
+                ))}
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* User avatar */}
@@ -106,7 +117,7 @@ export function TopBar({ onMenuClick, onSearchOpen }: TopBarProps): JSX.Element 
             setUserOpen((o) => !o);
             setActionsOpen(false);
           }}
-          className="flex items-center gap-2 rounded-md p-1 hover:bg-sand"
+          className="flex items-center gap-2 rounded-md p-1 transition-colors duration-150 hover:bg-sand"
         >
           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-pine-tint text-xs font-semibold text-pine">
             AD
@@ -115,20 +126,28 @@ export function TopBar({ onMenuClick, onSearchOpen }: TopBarProps): JSX.Element 
             Admin
           </span>
         </button>
-        {userOpen && (
-          <>
-            <div className="fixed inset-0 z-10" onClick={closeAll} />
-            <div className="absolute right-0 z-20 mt-1 w-36 rounded-md border border-line bg-card shadow-lift">
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="block w-full px-4 py-2 text-left text-sm text-rust hover:bg-sand"
+        <AnimatePresence>
+          {userOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={closeAll} />
+              <motion.div
+                variants={fadeIn}
+                initial="initial"
+                animate="animate"
+                exit="exit"
+                className="absolute right-0 z-20 mt-1 w-36 rounded-md border border-line bg-card shadow-lift"
               >
-                Logout
-              </button>
-            </div>
-          </>
-        )}
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="block w-full px-4 py-2 text-left text-sm text-rust transition-colors duration-150 hover:bg-sand"
+                >
+                  Logout
+                </button>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
       </div>
     </header>
   );

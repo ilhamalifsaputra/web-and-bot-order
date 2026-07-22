@@ -5,10 +5,19 @@
  */
 import { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
-import { formatIdr, formatPrice, usdtFromIdr } from "@app/core/formatters";
+import { formatIdr, formatPrice, formatUsdt, usdtFromIdr } from "@app/core/formatters";
 import { OrderStatus } from "@app/core/enums";
 import { coreT } from "./i18n";
-export { esc, redactCredentials, quantizeMoney, formatPrice, formatIdr, usdtFromIdr } from "@app/core/formatters";
+export {
+  esc,
+  redactCredentials,
+  quantizeMoney,
+  formatPrice,
+  formatIdr,
+  formatUsdt,
+  formatUsdtAmount,
+  usdtFromIdr,
+} from "@app/core/formatters";
 
 /**
  * Catalog price display (plan.md §15.6): the central Rupiah price with the
@@ -44,7 +53,7 @@ export function mixedAmount(idr: Decimal.Value, usdt: Decimal.Value): string {
   const usdtDec = new Decimal(usdt);
   const parts: string[] = [];
   if (idrDec.greaterThan(0) || usdtDec.lessThanOrEqualTo(0)) parts.push(formatIdr(idrDec));
-  if (usdtDec.greaterThan(0)) parts.push(formatPrice(usdtDec, "USDT", 2));
+  if (usdtDec.greaterThan(0)) parts.push(formatUsdt(usdtDec));
   return parts.join(" + ");
 }
 

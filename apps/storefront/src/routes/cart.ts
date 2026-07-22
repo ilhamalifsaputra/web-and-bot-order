@@ -25,6 +25,7 @@ import {
 import type { Customer } from "../plugins/auth";
 import { productImage } from "../images";
 import { readGuestCart } from "../shop";
+import { constantTimeEqual } from "../auth";
 
 /** Cart-line label per the 3-tier spec: `Product - Denomination`. */
 function cartLineLabel(productName: string, denominationName: string): string {
@@ -43,7 +44,7 @@ export function csrfOk(req: FastifyRequest, customer: Customer | null): boolean 
   if (!customer) return true;
   const body = (req.body ?? {}) as Record<string, unknown>;
   const token = body.csrf_token ?? req.headers["x-csrf-token"];
-  return Boolean(token) && token === customer.csrf;
+  return typeof token === "string" && constantTimeEqual(token, customer.csrf);
 }
 
 export interface CartLineView {

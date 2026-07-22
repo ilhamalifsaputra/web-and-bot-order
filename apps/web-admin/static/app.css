@@ -79,17 +79,23 @@ body { font-family: 'Manrope', system-ui, sans-serif; background-color: var(--pa
 h1, h2, h3 { font-family: 'Outfit', system-ui, sans-serif; }
 
 /* Surfaces */
-.card     { background: var(--card); border-radius: var(--r-lg); border: 1px solid var(--line); box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px -14px rgba(16,24,40,.12); }
+.card     { background: var(--card); border-radius: var(--r-lg); border: 1px solid var(--line); box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px -14px rgba(16,24,40,.12); transition: background-color .15s cubic-bezier(.22,1,.36,1), transform .15s cubic-bezier(.22,1,.36,1); }
 .card-pad { padding: 1.25rem; }
 @media (min-width: 640px) { .card-pad { padding: 1.5rem; } }
 
 /* Page headings */
-.page-title    { font-family: 'Outfit', system-ui, sans-serif; font-size: 1.875rem; font-weight: 600; letter-spacing: -0.025em; color: var(--ink); display: flex; align-items: center; gap: 0.625rem; }
+/* 30px is a desktop heading; at 320px it eats two lines before the content
+   starts. Steps up at the sm breakpoint instead. */
+.page-title    { font-family: 'Outfit', system-ui, sans-serif; font-size: 1.5rem; font-weight: 600; letter-spacing: -0.025em; color: var(--ink); display: flex; align-items: center; gap: 0.625rem; }
+@media (min-width: 640px) { .page-title { font-size: 1.875rem; } }
 .page-lead     { font-size: 0.875rem; color: var(--ink-soft); margin-top: 0.25rem; }
 .section-title { font-family: 'Outfit', system-ui, sans-serif; font-size: 1.125rem; font-weight: 600; color: var(--ink); }
 
 /* Buttons */
-.btn         { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; border-radius: var(--r-md); padding: 0.5rem 1rem; font-size: 0.875rem; font-weight: 600; transition: background-color .15s, color .15s, box-shadow .15s; cursor: pointer; border: none; text-decoration: none; line-height: 1.25; }
+/* min-height 44px: the WCAG/iOS minimum tap target. Padding is unchanged, so
+   proportions barely shift — only short-label buttons ("OK", an icon) grow to
+   a size a thumb can actually hit. */
+.btn         { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; border-radius: var(--r-md); padding: 0.5rem 1rem; min-height: 2.75rem; font-size: 0.875rem; font-weight: 600; transition: background-color .15s, color .15s, box-shadow .15s, transform .15s cubic-bezier(.22,1,.36,1); cursor: pointer; border: none; text-decoration: none; line-height: 1.25; }
 .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgb(var(--pine-rgb) / .35); }
 .btn-primary { background: var(--pine); color: #fff; box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 24px -14px rgba(16,24,40,.12); }
 .btn-primary:hover { background: var(--pine-dark); }
@@ -99,11 +105,24 @@ h1, h2, h3 { font-family: 'Outfit', system-ui, sans-serif; }
 .btn-ghost:hover { background: var(--sand); color: var(--ink); }
 .btn-danger  { background: var(--rust); color: #fff; }
 .btn-danger:hover { background: var(--rust-dark); }
-.btn-sm      { padding: .375rem .75rem; font-size: .75rem; border-radius: var(--r-sm); }
+/* The compact variant stays dense where a cursor does the pointing, and grows
+   to the full 44px target on touch screens. Gating on the input device rather
+   than on viewport width is what lets one rule serve both: a narrow desktop
+   window keeps its dense toolbar, while a large tablet still gets thumb-sized
+   controls. */
+.btn-sm      { padding: .375rem .75rem; min-height: 2rem; font-size: .75rem; border-radius: var(--r-sm); }
+@media (pointer: coarse) {
+  .btn-sm    { min-height: 2.75rem; padding: .5rem 1rem; font-size: .875rem; }
+}
 
 /* Forms */
 .field-label { display: block; font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-soft); margin-bottom: .375rem; }
-.field       { display: block; width: 100%; border-radius: var(--r-md); border: 1px solid var(--line); background: var(--card); padding: .5rem .75rem; font-size: .875rem; color: var(--ink); transition: border-color .15s, box-shadow .15s; outline: none; font-family: inherit; box-sizing: border-box; }
+/* 16px on small screens is not a style choice: Safari on iOS zooms the whole
+   viewport in when a focused input's text is smaller than that, which knocks
+   the page out of alignment on every form. Desktop keeps the denser 14px from
+   640px up, where no such behaviour exists. */
+.field       { display: block; width: 100%; border-radius: var(--r-md); border: 1px solid var(--line); background: var(--card); padding: .5rem .75rem; min-height: 2.75rem; font-size: 1rem; color: var(--ink); transition: border-color .15s, box-shadow .15s; outline: none; font-family: inherit; box-sizing: border-box; }
+@media (min-width: 640px) { .field { font-size: .875rem; } }
 .field::placeholder { color: var(--ink-faint); }
 .field:focus { border-color: var(--pine); box-shadow: 0 0 0 3px rgb(var(--pine-rgb) / .2); outline: none; }
 select.field { -webkit-appearance: auto; appearance: auto; }
@@ -126,7 +145,7 @@ textarea.field { resize: vertical; }
 .link    { color: var(--pine); font-weight: 600; text-decoration: none; text-underline-offset: .125rem; }
 .link:hover { color: var(--pine-dark); text-decoration: underline; }
 .codeish { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: .75rem; background: rgba(238,241,246,.6); border-radius: var(--r-xs); padding: .125rem .375rem; color: var(--ink); }
-.chip    { display: inline-flex; align-items: center; gap: .25rem; border-radius: var(--r-pill); padding: .125rem .625rem; font-size: .75rem; font-weight: 600; }
+.chip    { display: inline-flex; align-items: center; gap: .5rem; border-radius: var(--r-pill); padding: .125rem .625rem; font-size: .75rem; font-weight: 600; }
 
 /* ---- Component-layer support (web-admin only) -------------------------------
    Styling the interactive macros in _macros.njk (tabs, AlertDialog, tooltip,

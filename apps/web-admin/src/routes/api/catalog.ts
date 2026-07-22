@@ -18,8 +18,6 @@ import {
   getBulkPricingForDenomination,
   upsertBulkPricing,
   deleteBulkPricing,
-  setFlashSale,
-  clearFlashSale,
   createCatalogProduct,
   createCategory,
   createDenomination,
@@ -27,10 +25,11 @@ import {
   deleteDenomination,
   bulkSetCatalogProductsActive,
   bulkSetDenominationsActive,
+  setCatalogProductArchived,
+  bulkSetCatalogProductsArchived,
   logAdminAction,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
-import { localize, parseShopLocal } from "@app/core/datetime";
 import { isFlashActive } from "@app/core/flash";
 import { ProductType, DeliveryType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
@@ -67,7 +66,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
   app.get("/api/catalog", { preHandler: currentAdmin }, async (req, reply) => {
     const [categories, products] = await Promise.all([
       listAllCategories(prisma),
-      listProducts(prisma),
+      listProducts(prisma, undefined, "all"),
     ]);
     return reply.send({ categories, products });
   });
@@ -303,6 +302,44 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     return reply.send({ ok: true, count });
   });
 
+  app.post("/api/catalog/products/:id/archive", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid product id." });
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof body.archived !== "boolean") return reply.code(400).send({ error: "archived must be a boolean." });
+    const archived = body.archived;
+
+    const product = await getCatalogProduct(prisma, id);
+    if (!product) return reply.code(404).send({ error: "Product not found." });
+
+    await setCatalogProductArchived(prisma, id, archived);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "product_archive_toggle",
+      targetType: "product",
+      targetId: id,
+      details: `${archived ? "Archived" : "Unarchived"} product "${product.name}".`,
+    });
+    return reply.send({ id, isArchived: archived });
+  });
+
+  app.post("/api/catalog/products/bulk-archive", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const ids = Array.isArray(body.ids) ? body.ids.filter((n): n is number => Number.isInteger(n)) : [];
+    if (ids.length === 0) return reply.code(400).send({ error: "At least one product id is required." });
+    if (typeof body.archived !== "boolean") return reply.code(400).send({ error: "archived must be a boolean." });
+    const archived = body.archived;
+
+    const count = await bulkSetCatalogProductsArchived(prisma, ids, archived);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "product_bulk_archive",
+      targetType: "product",
+      details: `${archived ? "Archived" : "Unarchived"} ${count} product${count === 1 ? "" : "s"}.`,
+    });
+    return reply.send({ ok: true, count });
+  });
+
   app.delete("/api/catalog/products/:id", { preHandler: csrfProtect }, async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
     if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid product id." });
@@ -534,68 +571,6 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
     return reply.send({ ok: true, removed });
   });
 
-  // ---- Flash sale (percent off the base price for a bounded window) ----
-  //
-  // Mirrors the bulk-pricing pair above: same id/404 guards, 400 for anything
-  // this route can parse itself, 422 for the write-time rules setFlashSale
-  // owns (percent outside (0,100], a window that ends before it starts or is
-  // already over).
-
-  app.post("/api/catalog/denominations/:id/flash-sale", { preHandler: csrfProtect }, async (req, reply) => {
-    const id = Number((req.params as { id: string }).id);
-    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid denomination id." });
-    const existing = await getDenominationWithProduct(prisma, id);
-    if (!existing) return reply.code(404).send({ error: "Denomination not found." });
-
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const discountPercent = parseDecimal(body.discountPercent);
-    if (discountPercent === null) return reply.code(400).send({ error: "A valid discount percent is required." });
-
-    // The form submits bare wall-clock strings (<input type="datetime-local">),
-    // which parseShopLocal reads in the shop's timezone — the admin types the
-    // local time they see everywhere else in the panel.
-    const startsAt = typeof body.startsAt === "string" ? parseShopLocal(body.startsAt) : null;
-    if (startsAt === null) return reply.code(400).send({ error: "A valid start time is required." });
-    const endsAt = typeof body.endsAt === "string" ? parseShopLocal(body.endsAt) : null;
-    if (endsAt === null) return reply.code(400).send({ error: "A valid end time is required." });
-
-    try {
-      await setFlashSale(prisma, { denominationId: id, discountPercent, startsAt, endsAt });
-    } catch (e) {
-      if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
-      throw e;
-    }
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "flash_sale_set",
-      targetType: "denomination",
-      targetId: id,
-      details:
-        `Started a ${discountPercent.toString()}% flash sale on "${existing.name}" running from ` +
-        `${localize(startsAt, "dd LLL yyyy HH:mm")} to ${localize(endsAt, "dd LLL yyyy HH:mm")}.`,
-    });
-    return reply.send({ ok: true });
-  });
-
-  app.delete("/api/catalog/denominations/:id/flash-sale", { preHandler: csrfProtect }, async (req, reply) => {
-    const id = Number((req.params as { id: string }).id);
-    if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid denomination id." });
-    const existing = await getDenominationWithProduct(prisma, id);
-    if (!existing) return reply.code(404).send({ error: "Denomination not found." });
-
-    const removed = await clearFlashSale(prisma, id);
-    if (removed) {
-      await logAdminAction(prisma, {
-        adminId: req.admin!.userId,
-        action: "flash_sale_delete",
-        targetType: "denomination",
-        targetId: id,
-        details: `Cancelled the flash sale on "${existing.name}".`,
-      });
-    }
-    return reply.send({ ok: true, removed });
-  });
-
   app.get("/api/catalog/:productId", { preHandler: currentAdmin }, async (req, reply) => {
     const productId = Number((req.params as { productId: string }).productId);
     if (!Number.isInteger(productId)) return reply.code(404).send({ error: "Product not found." });
@@ -609,26 +584,12 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
         available: await countAvailableStock(prisma, d.id),
         waiting: await countRestockSubscribers(prisma, d.id),
         rule: await getBulkPricingForDenomination(prisma, d.id),
-        // The flash schedule as the edit form needs it back: percent as a
-        // string (same as every other money/percent field on the wire),
-        // timestamps as ISO UTC, plus whether the window is live right now so
-        // the product list can badge the row without re-deriving the rule.
-        // The *Local pair is the same instant pre-rendered as a shop-local
-        // wall clock, because that is literally what an
-        // `<input type="datetime-local">` holds and what the POST above reads
-        // back through parseShopLocal — the browser's own timezone must never
-        // enter the round trip, or an admin abroad would reschedule the sale
-        // just by opening the form.
+        // Percent + whether the window is live right now, so the product
+        // list can badge the row (editing a flash sale itself happens on the
+        // bulk Flash Sales page, not here).
         flash:
           d.flashDiscountPercent != null && d.flashStartsAt != null && d.flashEndsAt != null
-            ? {
-                discountPercent: d.flashDiscountPercent.toString(),
-                startsAt: d.flashStartsAt.toISOString(),
-                endsAt: d.flashEndsAt.toISOString(),
-                startsAtLocal: localize(d.flashStartsAt, "yyyy-LL-dd'T'HH:mm"),
-                endsAtLocal: localize(d.flashEndsAt, "yyyy-LL-dd'T'HH:mm"),
-                active: isFlashActive(d, now),
-              }
+            ? { discountPercent: d.flashDiscountPercent.toString(), active: isFlashActive(d, now) }
             : null,
       })),
     );

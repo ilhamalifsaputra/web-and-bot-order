@@ -12,6 +12,7 @@ import {
   readCustomerSession,
   shopSessionJtiKey,
   SHOP_COOKIE_NAME,
+  constantTimeEqual,
   type CustomerSession,
 } from "../auth";
 
@@ -50,7 +51,7 @@ export const currentCustomer: preHandlerHookHandler = async (req, reply) => {
 const csrfCheck: preHandlerHookHandler = async (req, reply) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const token = body.csrf_token ?? req.headers["x-csrf-token"];
-  if (!token || token !== req.customer?.csrf) {
+  if (typeof token !== "string" || !req.customer || !constantTimeEqual(token, req.customer.csrf)) {
     return reply.code(403).type("text/plain").send("CSRF check failed");
   }
 };

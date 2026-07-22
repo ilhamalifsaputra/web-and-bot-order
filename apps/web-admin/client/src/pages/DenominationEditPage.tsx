@@ -14,6 +14,7 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
+import { Save, Trash2 } from "lucide-react";
 import { apiGet, apiPatch, apiPost, apiDelete } from "../api/client";
 import { draftsToFields, fieldToDraft, fieldsAreValid } from "../lib/additionalFields";
 import type { AdditionalField, AdditionalFieldDraft } from "../api/types";
@@ -59,19 +60,6 @@ interface BulkPricingRule {
   discountPercent: string;
 }
 
-/** A scheduled flash sale as /api/catalog/:productId reports it. The *Local
- * pair is the window already rendered in the shop's timezone, which is what an
- * `<input type="datetime-local">` holds — the browser's own timezone never
- * enters the round trip. */
-interface FlashSaleSchedule {
-  discountPercent: string;
-  startsAt: string;
-  endsAt: string;
-  startsAtLocal: string;
-  endsAtLocal: string;
-  active: boolean;
-}
-
 interface ProductDetailForEdit {
   product: {
     id: number;
@@ -79,7 +67,7 @@ interface ProductDetailForEdit {
     category: { id: number; name: string } | null;
     denominations: EditableDenomination[];
   };
-  statsByDenom: Record<number, { rule: BulkPricingRule | null; flash?: FlashSaleSchedule | null }>;
+  statsByDenom: Record<number, { rule: BulkPricingRule | null }>;
 }
 
 interface SiblingProduct {
@@ -137,12 +125,6 @@ export function DenominationEditPage() {
   const [bulkError, setBulkError] = useState<string | null>(null);
   const existingRule = data?.statsByDenom?.[Number(denomId)]?.rule ?? null;
 
-  const [flashDiscountPercent, setFlashDiscountPercent] = useState("");
-  const [flashStartsAt, setFlashStartsAt] = useState("");
-  const [flashEndsAt, setFlashEndsAt] = useState("");
-  const [flashError, setFlashError] = useState<string | null>(null);
-  const existingFlash = data?.statsByDenom?.[Number(denomId)]?.flash ?? null;
-
   useEffect(() => {
     if (loaded || !denomination) return;
     setName(denomination.name);
@@ -161,13 +143,8 @@ export function DenominationEditPage() {
       setBulkMinQuantity(String(existingRule.minQuantity));
       setBulkDiscountPercent(existingRule.discountPercent);
     }
-    if (existingFlash) {
-      setFlashDiscountPercent(existingFlash.discountPercent);
-      setFlashStartsAt(existingFlash.startsAtLocal);
-      setFlashEndsAt(existingFlash.endsAtLocal);
-    }
     setLoaded(true);
-  }, [denomination, loaded, existingRule, existingFlash]);
+  }, [denomination, loaded, existingRule]);
 
   const save = useMutation({
     mutationFn: () =>
@@ -217,47 +194,6 @@ export function DenominationEditPage() {
     },
     onError: (e: Error) => setBulkError(e.message),
   });
-
-  const saveFlashSale = useMutation({
-    mutationFn: () =>
-      apiPost(`/api/catalog/denominations/${denomId}/flash-sale`, {
-        discountPercent: flashDiscountPercent.trim(),
-        startsAt: flashStartsAt,
-        endsAt: flashEndsAt,
-      }),
-    onMutate: () => setFlashError(null),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["catalog", productId] }),
-    onError: (e: Error) => setFlashError(e.message),
-  });
-
-  const removeFlashSale = useMutation({
-    mutationFn: () => apiDelete(`/api/catalog/denominations/${denomId}/flash-sale`),
-    onMutate: () => setFlashError(null),
-    onSuccess: () => {
-      setFlashDiscountPercent("");
-      setFlashStartsAt("");
-      setFlashEndsAt("");
-      void qc.invalidateQueries({ queryKey: ["catalog", productId] });
-    },
-    onError: (e: Error) => setFlashError(e.message),
-  });
-
-  const flashPercentNumber = Number(flashDiscountPercent.trim());
-  const flashPercentIsValid =
-    flashDiscountPercent.trim() !== "" &&
-    !Number.isNaN(flashPercentNumber) &&
-    flashPercentNumber > 0 &&
-    flashPercentNumber <= 100;
-  const canSaveFlashSale =
-    flashPercentIsValid && flashStartsAt.trim() !== "" && flashEndsAt.trim() !== "";
-
-  // Preview only — the server recomputes the charged price with Decimal. This
-  // exists so the admin sees what buyers will actually pay before saving, so it
-  // must round the way flashPrice (@app/core/flash) does: to whole rupiah.
-  const flashPreviewPrice =
-    flashPercentIsValid && isValidPrice(price)
-      ? Math.round((Number(price.trim()) * (100 - flashPercentNumber)) / 100).toString()
-      : null;
 
   const canSaveBulkPricing =
     Number.isInteger(Number(bulkMinQuantity.trim())) &&
@@ -426,6 +362,7 @@ export function DenominationEditPage() {
               disabled={!canSaveBulkPricing || saveBulkPricing.isPending}
               onClick={() => saveBulkPricing.mutate()}
             >
+              <Save className="h-4 w-4" />
               {saveBulkPricing.isPending ? "Saving…" : existingRule ? "Update" : "Save"}
             </Button>
             {existingRule && (
@@ -433,86 +370,14 @@ export function DenominationEditPage() {
                 variant="ghost"
                 disabled={removeBulkPricing.isPending}
                 onClick={() => removeBulkPricing.mutate()}
+                className="text-rust"
               >
+                <Trash2 className="h-4 w-4" />
                 Remove
               </Button>
             )}
           </div>
           {bulkError && <p className="mt-2 text-sm text-rust">{bulkError}</p>}
-        </div>
-
-        <div className="mt-4 border-t border-line pt-4">
-          <h2 className="text-sm font-medium text-ink">Flash Sale</h2>
-          <p className="mt-1 text-xs text-ink-soft">
-            Take a percentage off the price for a limited window. It replaces the normal price for
-            everyone while it runs; bulk pricing and vouchers still apply on top. Times are in the
-            shop&apos;s timezone.
-          </p>
-
-          <div className="mt-3 flex flex-wrap items-end gap-3">
-            <div>
-              <label className="block text-sm font-medium text-ink" htmlFor="flash-discount-percent">
-                Discount %
-              </label>
-              <Input
-                id="flash-discount-percent"
-                className="mt-1 w-28"
-                placeholder="e.g. 30"
-                value={flashDiscountPercent}
-                onChange={(e) => setFlashDiscountPercent(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-ink" htmlFor="flash-starts-at">
-                Starts
-              </label>
-              <Input
-                id="flash-starts-at"
-                type="datetime-local"
-                className="mt-1 w-52"
-                value={flashStartsAt}
-                onChange={(e) => setFlashStartsAt(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-ink" htmlFor="flash-ends-at">
-                Ends
-              </label>
-              <Input
-                id="flash-ends-at"
-                type="datetime-local"
-                className="mt-1 w-52"
-                value={flashEndsAt}
-                onChange={(e) => setFlashEndsAt(e.target.value)}
-              />
-            </div>
-            <Button
-              variant="outline"
-              disabled={!canSaveFlashSale || saveFlashSale.isPending}
-              onClick={() => saveFlashSale.mutate()}
-            >
-              {saveFlashSale.isPending ? "Saving…" : existingFlash ? "Update" : "Save"}
-            </Button>
-            {existingFlash && (
-              <Button
-                variant="ghost"
-                disabled={removeFlashSale.isPending}
-                onClick={() => removeFlashSale.mutate()}
-              >
-                Remove
-              </Button>
-            )}
-          </div>
-          {flashPreviewPrice && (
-            <p className="mt-2 text-xs text-ink-soft">
-              Buyers pay <span className="font-mono text-ink">{flashPreviewPrice}</span> instead of{" "}
-              <span className="font-mono line-through">{price.trim()}</span> while the sale is running.
-            </p>
-          )}
-          {existingFlash?.active && (
-            <p className="mt-2 text-xs text-ink-soft">⚡ This flash sale is live right now.</p>
-          )}
-          {flashError && <p className="mt-2 text-sm text-rust">{flashError}</p>}
         </div>
       </div>
     </PageLayout>

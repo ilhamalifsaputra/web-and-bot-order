@@ -1,15 +1,22 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ImageUploadField } from "./ImageUploadField";
+import { FakeXHR } from "@/test/fakeXhr";
 
 const FILE = new File(["fake-bytes"], "photo.png", { type: "image/png" });
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  FakeXHR.instances = [];
+  vi.stubGlobal("XMLHttpRequest", FakeXHR as unknown as typeof XMLHttpRequest);
   URL.createObjectURL = vi.fn(() => "blob:mock-preview");
   URL.revokeObjectURL = vi.fn();
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 function renderField(overrides: Partial<React.ComponentProps<typeof ImageUploadField>> = {}) {
@@ -35,15 +42,20 @@ async function pickFile() {
   return user;
 }
 
+async function saveAndGetXhr(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(FakeXHR.instances).toHaveLength(1));
+  return FakeXHR.instances[0]!;
+}
+
 describe("ImageUploadField", () => {
   it("shows a preview plus Save/Cancel after picking a file, without uploading", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
     renderField();
     await pickFile();
     expect(screen.getByRole("img", { name: "Product photo" })).toHaveAttribute("src", "blob:mock-preview");
     expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(FakeXHR.instances).toHaveLength(0);
   });
 
   it("Cancel discards the pick and reverts to the prior display", async () => {
@@ -58,33 +70,38 @@ describe("ImageUploadField", () => {
   });
 
   it("Save uploads the picked file and calls onUploaded with the saved URL on success", async () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ url: "/uploads/products/product-abc123.png" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
     const { onUploaded } = renderField();
     const user = await pickFile();
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    const xhr = await saveAndGetXhr(user);
 
+    expect(xhr.method).toBe("POST");
+    expect(xhr.url).toBe("/catalog/product/1/photo");
+    expect(xhr.sentBody?.get("photo")).toBe(FILE);
+    expect(xhr.sentBody?.has("csrf_token")).toBe(true);
+
+    xhr.respond(200, JSON.stringify({ url: "/uploads/products/product-abc123.png" }));
     await waitFor(() => expect(onUploaded).toHaveBeenCalledWith("/uploads/products/product-abc123.png"));
-    expect(fetchSpy).toHaveBeenCalledOnce();
-    const [url, init] = fetchSpy.mock.calls[0]!;
-    expect(url).toBe("/catalog/product/1/photo");
-    const body = init!.body as FormData;
-    expect(body.get("photo")).toBe(FILE);
-    expect(body.has("csrf_token")).toBe(true);
-    expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Save/ })).not.toBeInTheDocument();
+  });
+
+  it("shows live upload progress while the request is in flight", async () => {
+    renderField();
+    const user = await pickFile();
+    const xhr = await saveAndGetXhr(user);
+
+    expect(screen.getByRole("button", { name: "Saving…" })).toBeInTheDocument();
+    act(() => xhr.progress(50, 100));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Saving… 50%" })).toBeInTheDocument());
+
+    xhr.respond(200, JSON.stringify({ url: "/uploads/products/product-abc123.png" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /^Saving/ })).not.toBeInTheDocument());
   });
 
   it("shows the server error and keeps the pending file when Save fails", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response("That file type is not allowed.", { status: 400 }),
-    );
     const { onUploaded } = renderField();
     const user = await pickFile();
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    const xhr = await saveAndGetXhr(user);
+    xhr.respond(400, "That file type is not allowed.");
 
     await waitFor(() => expect(screen.getByText("That file type is not allowed.")).toBeInTheDocument());
     expect(onUploaded).not.toHaveBeenCalled();
@@ -92,16 +109,28 @@ describe("ImageUploadField", () => {
     expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
   });
 
+  it("shows a friendly reload message and a working Reload button on a stale-session CSRF failure", async () => {
+    const reloadSpy = vi.fn();
+    Object.defineProperty(window, "location", {
+      value: { ...window.location, reload: reloadSpy },
+      writable: true,
+    });
+    const { onUploaded } = renderField();
+    const user = await pickFile();
+    const xhr = await saveAndGetXhr(user);
+    xhr.respond(403, "CSRF check failed");
+
+    await waitFor(() => expect(screen.getByText(/session was refreshed in another tab/i)).toBeInTheDocument());
+    expect(onUploaded).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /reload/i }));
+    expect(reloadSpy).toHaveBeenCalledOnce();
+  });
+
   it("shows a brief checkmark after a successful upload when showSuccessCheckmark is set", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ url: "/uploads/products/product-abc123.png" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
     const { onUploaded } = renderField({ showSuccessCheckmark: true });
     const user = await pickFile();
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    const xhr = await saveAndGetXhr(user);
+    xhr.respond(200, JSON.stringify({ url: "/uploads/products/product-abc123.png" }));
 
     await waitFor(() => expect(onUploaded).toHaveBeenCalled());
     expect(screen.getByText("Saved")).toBeInTheDocument();
@@ -111,15 +140,10 @@ describe("ImageUploadField", () => {
   });
 
   it("does not show a checkmark after upload when showSuccessCheckmark is unset (default)", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ url: "/uploads/products/product-abc123.png" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
     const { onUploaded } = renderField();
     const user = await pickFile();
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    const xhr = await saveAndGetXhr(user);
+    xhr.respond(200, JSON.stringify({ url: "/uploads/products/product-abc123.png" }));
 
     await waitFor(() => expect(onUploaded).toHaveBeenCalled());
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();

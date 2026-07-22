@@ -18,6 +18,8 @@ import {
   Shield,
   Settings,
   Palette,
+  Zap,
+  HardDrive,
   X,
 } from "lucide-react";
 import { useOperations } from "../../hooks/useOperations";
@@ -60,6 +62,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/catalog", label: "Catalog", icon: Package },
       { to: "/stock", label: "Stock", icon: Boxes, badge: "stock" },
+      { to: "/flash-sales", label: "Flash Sales", icon: Zap },
       { to: "/vouchers", label: "Vouchers", icon: Tag },
     ],
   },
@@ -89,6 +92,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/admins", label: "Admins", icon: Shield },
       { to: "/settings", label: "Settings", icon: Settings },
       { to: "/branding", label: "Branding", icon: Palette },
+      { to: "/storage", label: "Storage", icon: HardDrive },
     ],
   },
 ];
@@ -131,10 +135,10 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
         <button
           type="button"
           onClick={onClose}
-          className="rounded-md p-2 min-h-11 min-w-11 flex items-center justify-center text-ink-soft hover:text-ink lg:hidden"
+          className="flex h-10 w-10 items-center justify-center rounded-md text-ink-soft hover:text-ink lg:hidden"
           aria-label="Close navigation"
         >
-          <X className="h-4 w-4" />
+          <X className="h-5 w-5" />
         </button>
       </div>
 

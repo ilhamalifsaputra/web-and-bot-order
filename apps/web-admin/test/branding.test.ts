@@ -67,6 +67,16 @@ function postMultipart(url: string, c: string | null, mp: ReturnType<typeof mult
   return app.inject({ method: "POST", url, headers: mp.headers, cookies: c ? { [COOKIE]: c } : {}, payload: mp.payload });
 }
 
+function postJson(url: string, c: string | null, csrfToken: string, body: Record<string, unknown> = {}) {
+  return app.inject({
+    method: "POST",
+    url,
+    headers: { "content-type": "application/json", "x-csrf-token": csrfToken },
+    cookies: c ? { [COOKIE]: c } : {},
+    payload: JSON.stringify(body),
+  });
+}
+
 describe("branding page", () => {
   it("GET /api/branding returns branding data for an admin", async () => {
     const res = await app.inject({ method: "GET", url: "/api/branding", cookies: { [COOKIE]: cookie } });
@@ -105,6 +115,17 @@ describe("branding page", () => {
 
   it("favicon upload rejects a non-image MIME", async () => {
     const mp = multipart({ csrf_token: csrf }, { field: "favicon", filename: "f.txt", contentType: "text/plain", content: Buffer.from("nope") });
+    const res = await postMultipart("/branding/favicon", cookie, mp);
+    expect(res.statusCode).toBe(400);
+    expect(await getSetting(prisma, "web_favicon_url")).toBeNull();
+  });
+
+  // A file over the route's maxBytes (favicon: 1MB) must be a clean 400, not
+  // an uncaught RequestFileTooLargeError falling through to the app's blanket
+  // 500 handler (the bug this test guards against).
+  it("favicon upload over the size limit is a clean 400, not a 500", async () => {
+    const big = Buffer.alloc(2 * 1024 * 1024, 0xff);
+    const mp = multipart({ csrf_token: csrf }, { field: "favicon", filename: "f.png", contentType: "image/png", content: big });
     const res = await postMultipart("/branding/favicon", cookie, mp);
     expect(res.statusCode).toBe(400);
     expect(await getSetting(prisma, "web_favicon_url")).toBeNull();
@@ -166,14 +187,77 @@ describe("branding page", () => {
   it("banner clear removes both keys", async () => {
     await setSetting(prisma, "banner_image", "/uploads/branding/banner-x.png");
     await setSetting(prisma, "banner_image_fileid", "ID");
-    const res = await app.inject({
-      method: "POST", url: "/branding/banner/clear",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      cookies: { [COOKIE]: cookie }, payload: new URLSearchParams({ csrf_token: csrf }).toString(),
-    });
-    expect(res.statusCode).toBe(303);
+    const res = await postJson("/api/branding/image/clear", cookie, csrf, { field: "banner" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, cleared: true });
     expect(await getSetting(prisma, "banner_image")).toBeNull();
     expect(await getSetting(prisma, "banner_image_fileid")).toBeNull();
+    const audit = await prisma.auditLog.findFirst({ where: { action: "branding_banner_clear" } });
+    expect(audit).toBeTruthy();
+  });
+
+  it("favicon/logo/hero clear each nulls its own setting", async () => {
+    await setSetting(prisma, "web_favicon_url", "/uploads/branding/favicon-x.png");
+    await setSetting(prisma, "web_logo_url", "/uploads/branding/logo-x.png");
+    await setSetting(prisma, "web_hero_url", "/uploads/branding/hero-x.png");
+
+    const favicon = await postJson("/api/branding/image/clear", cookie, csrf, { field: "favicon" });
+    expect(favicon.statusCode).toBe(200);
+    expect(await getSetting(prisma, "web_favicon_url")).toBeNull();
+
+    const logo = await postJson("/api/branding/image/clear", cookie, csrf, { field: "logo" });
+    expect(logo.statusCode).toBe(200);
+    expect(await getSetting(prisma, "web_logo_url")).toBeNull();
+
+    const hero = await postJson("/api/branding/image/clear", cookie, csrf, { field: "hero" });
+    expect(hero.statusCode).toBe(200);
+    expect(await getSetting(prisma, "web_hero_url")).toBeNull();
+  });
+
+  it("clearing an already-empty image field is a no-op, not an error", async () => {
+    const res = await postJson("/api/branding/image/clear", cookie, csrf, { field: "favicon" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, cleared: false });
+  });
+
+  it("image clear rejects an unknown field", async () => {
+    const res = await postJson("/api/branding/image/clear", cookie, csrf, { field: "background" });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("image clear requires auth", async () => {
+    const res = await postJson("/api/branding/image/clear", null, csrf, { field: "favicon" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("image clear rejects bad CSRF", async () => {
+    const res = await postJson("/api/branding/image/clear", cookie, "bad", { field: "favicon" });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("text reset clears a whitelisted key and rejects others", async () => {
+    await setSetting(prisma, "shop_name", "My Shop");
+    const ok = await postJson("/api/branding/text/reset", cookie, csrf, { key: "shop_name" });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toEqual({ ok: true });
+    expect(await getSetting(prisma, "shop_name")).toBeNull();
+    const audit = await prisma.auditLog.findFirst({ where: { action: "setting_clear" } });
+    expect(audit).toBeTruthy();
+
+    const bad = await postJson("/api/branding/text/reset", cookie, csrf, { key: "bot_token" });
+    expect(bad.statusCode).toBe(400);
+  });
+
+  it("text reset requires auth", async () => {
+    const res = await postJson("/api/branding/text/reset", null, csrf, { key: "shop_name" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("text reset rejects bad CSRF", async () => {
+    const res = await postJson("/api/branding/text/reset", cookie, "bad", { key: "shop_name" });
+    expect(res.statusCode).toBe(403);
   });
 
   it("text edit updates a whitelisted key and rejects others", async () => {

@@ -28,6 +28,7 @@ import { getVoucherByCode, applyVoucherToSubtotal, assertVoucherNotRedeemedByUse
 import { countAvailableStock, allocateOneAvailableStock } from "./stock";
 import { adjustWallet, getUser } from "./users";
 import { clearCart, getCart } from "./cart";
+import { getSetting } from "./settings";
 import { maybePayReferralCommission } from "./referrals";
 import {
   enqueueNotification,
@@ -45,6 +46,12 @@ const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
 // (typed input, a crafted callback, or a cart row). Checkout-5 fix, security
 // audit 2026-06-23.
 const MAX_QTY_PER_ORDER = 99;
+
+// Fallback copy for the bulk-purchase channel broadcast (see
+// finalizeDeliverySideEffects) when the admin hasn't set
+// "bulk_purchase_broadcast_template" yet — lets the feature work the moment
+// it's turned on, with a sensible default an admin can override.
+const DEFAULT_BULK_BROADCAST_TEMPLATE = "Someone just purchased x{qty} of {product} - {denomination}!";
 
 function assertValidQuantity(quantity: number, productName: string): void {
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_QTY_PER_ORDER) {
@@ -837,6 +844,18 @@ export function countAwaitingManualFulfillment(db: Db): Promise<number> {
   return db.order.count({ where: { status: OrderStatus.PROCESSING } });
 }
 
+/** Orders successfully delivered — the Orders page KPI's "Delivered" count. */
+export function countDelivered(db: Db): Promise<number> {
+  return db.order.count({ where: { status: OrderStatus.DELIVERED } });
+}
+
+/** Orders voided (admin-cancelled or rejected) — folded together for the
+ * Orders page KPI's "Cancelled" count, matching the display bucket
+ * OrderStatusBadge groups them into on the client. */
+export function countCancelled(db: Db): Promise<number> {
+  return db.order.count({ where: { status: { in: [OrderStatus.CANCELLED, OrderStatus.REJECTED] } } });
+}
+
 /** PENDING_PAYMENT orders whose window has already lapsed — the count form of `listExpiredPendingOrders`. */
 export function countExpiredPending(db: Db, now: Date): Promise<number> {
   return db.order.count({ where: { status: OrderStatus.PENDING_PAYMENT, expiresAt: { not: null, lt: now } } });
@@ -1218,6 +1237,53 @@ async function finalizeDeliverySideEffects(
       via_website: viaWebsite,
     });
   }
+
+  await maybeEnqueueBulkPurchaseBroadcast(db, order);
+}
+
+/**
+ * Post a "someone just bought a lot of X" channel announcement when a single
+ * denomination's quantity within this order crosses the admin-configured
+ * threshold. Off by default (bulk_purchase_broadcast_enabled unset/"false"),
+ * and — like the ORDER_DELIVERED testimonial above — skipped entirely rather
+ * than enqueued when no channel is configured, so it doesn't leave a dead
+ * PENDING row behind.
+ */
+async function maybeEnqueueBulkPurchaseBroadcast(db: Db, order: OrderWithIncludes): Promise<void> {
+  const enabled = (await getSetting(db, "bulk_purchase_broadcast_enabled")) === "true";
+  if (!enabled) return;
+  if (publicChannelId() === undefined) return;
+
+  const threshold = Number.parseInt((await getSetting(db, "bulk_purchase_broadcast_threshold")) ?? "", 10);
+  if (!Number.isFinite(threshold) || threshold < 2) return;
+
+  const qtyByDenominationId = new Map<number, number>();
+  for (const item of order.items) {
+    qtyByDenominationId.set(item.productId, (qtyByDenominationId.get(item.productId) ?? 0) + item.quantity);
+  }
+  const qualifyingIds = [...qtyByDenominationId.entries()]
+    .filter(([, qty]) => qty >= threshold)
+    .map(([id]) => id);
+  if (!qualifyingIds.length) return;
+
+  const denominations = await db.denomination.findMany({
+    where: { id: { in: qualifyingIds } },
+    include: { product: true },
+  });
+  const template = (await getSetting(db, "bulk_purchase_broadcast_template")) || DEFAULT_BULK_BROADCAST_TEMPLATE;
+
+  for (const denom of denominations) {
+    const qty = qtyByDenominationId.get(denom.id)!;
+    await enqueueNotification(db, NotificationEvent.BULK_PURCHASE_BROADCAST, order.id, {
+      product_name: denom.product.name,
+      denomination_name: denom.name,
+      qty,
+      template,
+    });
+    logger.info(
+      `Order ${order.orderCode} purchased ${qty} of ${denom.product.name} - ${denom.name} in one order, crossing the bulk-purchase broadcast threshold (${threshold}) — queued a channel announcement.`,
+    );
+  }
 }
 
 /**
@@ -1370,27 +1436,83 @@ export async function updateOrderCustomerData(
   return refreshed!;
 }
 
+/** The eligibility flags the Orders list/detail/bulk-action surfaces all
+ * gate their actions on — one function so those three can't drift apart
+ * (see `docs/` refactor notes on the Orders admin page). `telegramId` is
+ * `null` for web-only buyers, who have no Telegram DM to resend to. */
+export interface OrderEligibility {
+  isDelivered: boolean;
+  /** PENDING_VERIFICATION — one-click approve/deliver. */
+  canAct: boolean;
+  /** PENDING_VERIFICATION | UNDERPAID — eligible for credit-to-balance. */
+  canCredit: boolean;
+  /** PROCESSING — manual hand-fulfil, needs admin-typed content. */
+  canFulfill: boolean;
+  /** PENDING_VERIFICATION | PROCESSING — reject is legal from both. */
+  canReject: boolean;
+  /** Delivered orders with a Telegram buyer can have their credentials DM resent. */
+  canResend: boolean;
+}
+
+export function computeOrderEligibility(status: string, telegramId: bigint | null): OrderEligibility {
+  const isDelivered = status === OrderStatus.DELIVERED;
+  return {
+    isDelivered,
+    canAct: status === OrderStatus.PENDING_VERIFICATION,
+    canCredit: status === OrderStatus.PENDING_VERIFICATION || status === OrderStatus.UNDERPAID,
+    canFulfill: status === OrderStatus.PROCESSING,
+    canReject: status === OrderStatus.PENDING_VERIFICATION || status === OrderStatus.PROCESSING,
+    canResend: isDelivered && telegramId != null,
+  };
+}
+
 // ---- Filtered list/count for the admin web ----
 
 export interface OrderFilter {
-  status?: OrderStatus | null;
+  status?: OrderStatus | OrderStatus[] | null;
   userId?: number | null;
   since?: Date | null;
   until?: Date | null;
   orderCode?: string | null;
+  /** Free-text search across order code + customer identity fields +
+   * purchased product name — the Orders page's search box. Replaces
+   * orderCode-only matching for the list/export routes; `orderCode` itself
+   * stays available for any caller that wants an exact/prefix code match. */
+  q?: string | null;
+  paymentMethod?: string | null;
   voucherId?: number | null;
+  /** Restrict to this exact set of order ids — the bulk-toolbar's
+   * "export only the selected rows" path. */
+  ids?: number[] | null;
 }
 
 function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
   const where: Prisma.OrderWhereInput = {};
-  if (f.status != null) where.status = f.status;
+  if (f.status != null) {
+    where.status = Array.isArray(f.status) ? { in: f.status } : f.status;
+  }
   if (f.userId != null) where.userId = f.userId;
   if (f.orderCode) where.orderCode = { contains: f.orderCode.trim() };
+  if (f.paymentMethod) where.paymentMethod = f.paymentMethod;
   if (f.voucherId != null) where.voucherId = f.voucherId;
+  if (f.ids != null) where.id = { in: f.ids };
   if (f.since != null || f.until != null) {
     where.createdAt = {};
     if (f.since != null) where.createdAt.gte = f.since;
     if (f.until != null) where.createdAt.lte = f.until;
+  }
+  if (f.q) {
+    const term = f.q.trim();
+    const or: Prisma.OrderWhereInput[] = [
+      { orderCode: { contains: term } },
+      { user: { username: { contains: term } } },
+      { user: { fullName: { contains: term } } },
+      { user: { loginUsername: { contains: term } } },
+      { user: { email: { contains: term } } },
+      { items: { some: { product: { name: { contains: term } } } } },
+    ];
+    if (/^\d+$/.test(term)) or.push({ user: { telegramId: BigInt(term) } });
+    where.OR = or;
   }
   return where;
 }

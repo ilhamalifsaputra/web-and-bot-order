@@ -14,7 +14,7 @@ export function TopProductsList() {
       <CardContent>
         {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
         {isError && <p className="text-sm text-rust">Couldn't load top products.</p>}
-        {data && data.length === 0 && <EmptyState message="No sales in this period." />}
+        {data && data.length === 0 && <EmptyState title="No sales in this period." />}
         {data && data.length > 0 && (
           <ol className="flex flex-col divide-y divide-line">
             {data.map((p) => (

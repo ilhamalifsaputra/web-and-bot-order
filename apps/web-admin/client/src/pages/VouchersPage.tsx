@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Copy, Check, Tag } from "lucide-react";
+import { Copy, Check, Tag, Plus, X, Trash2 } from "lucide-react";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { DataTable } from "../components/shared/DataTable";
@@ -20,7 +20,9 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "../components/shared/StatusBadge";
+import { toast } from "sonner";
 import { apiPost } from "../api/client";
+import { describeError } from "../lib/errorMessages";
 
 interface Voucher {
   id: number;
@@ -108,8 +110,11 @@ export function VouchersPage() {
 
   const del = useMutation({
     mutationFn: (id: number) => apiPost(`/api/vouchers/${id}/delete`, {}),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["vouchers"] }); },
-    onError: (e: Error) => alert(e.message),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["vouchers"] });
+      toast.success("Voucher deleted.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   if (isError) return <PageLayout title="Vouchers"><p className="text-sm text-rust">Failed to load vouchers.</p></PageLayout>;
@@ -126,7 +131,8 @@ export function VouchersPage() {
         title="Vouchers"
         actions={
           <Button onClick={() => setShowForm(v => !v)}>
-            {showForm ? "Cancel" : "+ New Voucher"}
+            {showForm ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            {showForm ? "Cancel" : "New Voucher"}
           </Button>
         }
       />
@@ -309,7 +315,7 @@ export function VouchersPage() {
             header: "",
             render: v => (
               <ConfirmDialog
-                trigger={<Button variant="ghost" size="sm" className="text-rust">Delete</Button>}
+                trigger={<Button variant="ghost" size="sm" className="text-rust"><Trash2 className="h-4 w-4" />Delete</Button>}
                 title="Delete voucher?"
                 description={`Permanently delete voucher "${v.code}".`}
                 confirmLabel="Delete"

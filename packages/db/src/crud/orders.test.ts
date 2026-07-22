@@ -9,6 +9,8 @@ import {
   countPendingVerifications,
   countUnderpaid,
   countExpiredPending,
+  countDelivered,
+  countCancelled,
   claimGatewaySlot,
   commitGatewayResult,
   releaseGatewaySlot,
@@ -17,6 +19,9 @@ import {
   createOrderDirect,
   rejectOrder,
   getOrder,
+  listOrders,
+  countOrders,
+  computeOrderEligibility,
 } from "./orders";
 import { addToCart, upsertBulkPricing, createVoucher, setFlashSale } from "@app/db";
 import { VoucherType } from "@app/core/enums";
@@ -107,6 +112,176 @@ describe("order status counts", () => {
     await makeOrder("PENDING_PAYMENT", { expiresAt: new Date(now.getTime() + 60_000) });
     await makeOrder("PENDING_PAYMENT", { expiresAt: null });
     expect(await countExpiredPending(prisma, now)).toBe(1);
+  });
+
+  it("countDelivered counts DELIVERED orders only", async () => {
+    await makeOrder("DELIVERED");
+    await makeOrder("DELIVERED");
+    await makeOrder("PROCESSING");
+    expect(await countDelivered(prisma)).toBe(2);
+  });
+
+  // The Orders page KPI's "Cancelled" card folds REJECTED in with CANCELLED —
+  // matching the display bucket OrderStatusBadge groups them into on the
+  // client — but must NOT also fold in REFUNDED.
+  it("countCancelled folds CANCELLED and REJECTED together, but not REFUNDED", async () => {
+    await makeOrder("CANCELLED");
+    await makeOrder("REJECTED");
+    await makeOrder("REFUNDED");
+    expect(await countCancelled(prisma)).toBe(2);
+  });
+});
+
+// Orders admin-page refactor: computeOrderEligibility is the single source
+// of truth the list, detail, and bulk-action surfaces all gate their
+// actions on — one case per status covering all 6 booleans so the three
+// call sites can't quietly drift apart.
+describe("computeOrderEligibility", () => {
+  it("PENDING_VERIFICATION: canAct, canCredit, canReject — not canFulfill/canResend/isDelivered", () => {
+    expect(computeOrderEligibility("PENDING_VERIFICATION", null)).toEqual({
+      isDelivered: false,
+      canAct: true,
+      canCredit: true,
+      canFulfill: false,
+      canReject: true,
+      canResend: false,
+    });
+  });
+
+  it("UNDERPAID: only canCredit", () => {
+    expect(computeOrderEligibility("UNDERPAID", null)).toEqual({
+      isDelivered: false,
+      canAct: false,
+      canCredit: true,
+      canFulfill: false,
+      canReject: false,
+      canResend: false,
+    });
+  });
+
+  it("PROCESSING: canFulfill and canReject, not canAct/canCredit", () => {
+    expect(computeOrderEligibility("PROCESSING", null)).toEqual({
+      isDelivered: false,
+      canAct: false,
+      canCredit: false,
+      canFulfill: true,
+      canReject: true,
+      canResend: false,
+    });
+  });
+
+  it("DELIVERED with a Telegram id: isDelivered and canResend, nothing else", () => {
+    expect(computeOrderEligibility("DELIVERED", BigInt(123))).toEqual({
+      isDelivered: true,
+      canAct: false,
+      canCredit: false,
+      canFulfill: false,
+      canReject: false,
+      canResend: true,
+    });
+  });
+
+  it("DELIVERED with no Telegram id (web-only buyer): canResend stays false", () => {
+    expect(computeOrderEligibility("DELIVERED", null)).toEqual({
+      isDelivered: true,
+      canAct: false,
+      canCredit: false,
+      canFulfill: false,
+      canReject: false,
+      canResend: false,
+    });
+  });
+
+  it("a terminal status with no action left (e.g. CANCELLED) has every flag false", () => {
+    expect(computeOrderEligibility("CANCELLED", null)).toEqual({
+      isDelivered: false,
+      canAct: false,
+      canCredit: false,
+      canFulfill: false,
+      canReject: false,
+      canResend: false,
+    });
+  });
+});
+
+// Orders admin-page refactor: orderWhere()'s widened OrderFilter (q free-text
+// search, array status, paymentMethod, ids) via listOrders/countOrders.
+describe("listOrders/countOrders — q search + array status + paymentMethod + ids", () => {
+  it("q matches the order code", async () => {
+    const order = await makeOrder("PENDING_VERIFICATION");
+    await makeOrder("PENDING_VERIFICATION"); // decoy, unrelated code
+
+    const results = await listOrders(prisma, { q: order.orderCode });
+    expect(results.map((o) => o.id)).toEqual([order.id]);
+    expect(await countOrders(prisma, { q: order.orderCode })).toBe(1);
+  });
+
+  it("q matches the buyer's username, fullName, loginUsername, email, or telegramId", async () => {
+    const buyer = await prisma.user.create({
+      data: {
+        telegramId: BigInt(778899),
+        referralCode: `r${Math.random()}`,
+        username: "searchuname",
+        fullName: "Search Fullname",
+        loginUsername: "searchlogin",
+        email: "search@example.com",
+      },
+    });
+    const order = await makeOrder("PENDING_VERIFICATION", { userId: buyer.id });
+
+    for (const term of ["searchuname", "Search Fullname", "searchlogin", "search@example.com", "778899"]) {
+      const results = await listOrders(prisma, { q: term });
+      expect(results.map((o) => o.id), `q="${term}" should match`).toContain(order.id);
+    }
+  });
+
+  it("q matches the purchased product's (Denomination) name", async () => {
+    const category = await createCategory(prisma, `SearchCat${Math.random()}`);
+    const catalogProduct = await createCatalogProduct(prisma, {
+      categoryId: category.id,
+      name: "Search Catalog Product",
+    });
+    const denom = await createDenomination(prisma, {
+      productId: catalogProduct.id,
+      name: "UniqueSearchableDenomName",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "5.00",
+    });
+    const order = await makeOrder("PENDING_VERIFICATION");
+    await prisma.orderItem.create({
+      data: { orderId: order.id, productId: denom.id, quantity: 1, unitPrice: "5.00", warrantyDaysSnapshot: 30 },
+    });
+
+    const results = await listOrders(prisma, { q: "UniqueSearchableDenomName" });
+    expect(results.map((o) => o.id)).toEqual([order.id]);
+  });
+
+  it("array status filters with an IN clause", async () => {
+    const a = await makeOrder("PENDING_VERIFICATION");
+    const b = await makeOrder("PROCESSING");
+    await makeOrder("DELIVERED");
+
+    const results = await listOrders(prisma, { status: ["PENDING_VERIFICATION", "PROCESSING"] });
+    expect(results.map((o) => o.id).sort()).toEqual([a.id, b.id].sort());
+    expect(await countOrders(prisma, { status: ["PENDING_VERIFICATION", "PROCESSING"] })).toBe(2);
+  });
+
+  it("paymentMethod filters by exact match", async () => {
+    const a = await makeOrder("PENDING_VERIFICATION", { paymentMethod: "BINANCE_PAY" });
+    await makeOrder("PENDING_VERIFICATION", { paymentMethod: "TOKOPAY" });
+
+    const results = await listOrders(prisma, { paymentMethod: "BINANCE_PAY" });
+    expect(results.map((o) => o.id)).toEqual([a.id]);
+  });
+
+  it("ids restricts the result to exactly the given id set", async () => {
+    const a = await makeOrder("PENDING_VERIFICATION");
+    const b = await makeOrder("PENDING_VERIFICATION");
+    await makeOrder("PENDING_VERIFICATION");
+
+    const results = await listOrders(prisma, { ids: [a.id, b.id] });
+    expect(results.map((o) => o.id).sort((x, y) => x - y)).toEqual([a.id, b.id].sort((x, y) => x - y));
   });
 });
 

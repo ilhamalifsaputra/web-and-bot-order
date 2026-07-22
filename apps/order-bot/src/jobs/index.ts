@@ -6,6 +6,8 @@
  * Schedule (scheduleJobs): auto-cancel every minute, stale-ticket close hourly,
  * finance reconcile every 6h.
  */
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Cron } from "croner";
 import type { Api } from "grammy";
 import { adminIds } from "@app/core/runtime";
@@ -34,6 +36,7 @@ import {
   refreshUsdIdrRate,
   listUnannouncedStartedFlashSales,
   enqueueFlashSaleBroadcast,
+  runStorageCleanup,
 } from "@app/db";
 import { flashPrice } from "@app/core/flash";
 import { formatIdr } from "@app/core/formatters";
@@ -426,6 +429,29 @@ export async function announceStartedFlashSales(): Promise<void> {
   }
 }
 
+// Module-relative, not cwd-relative — same reasoning as web-admin's paths.ts
+// and the storefront's ticketAttachments.ts: pnpm runs each app's `start`
+// script with cwd = the package dir, so anchoring to this module keeps this
+// job in agreement with wherever web-admin/storefront actually write uploads.
+const HERE = dirname(fileURLToPath(import.meta.url));
+const UPLOADS_DIR = process.env.UPLOADS_DIR ?? join(HERE, "..", "..", "..", "..", "data", "uploads");
+
+/**
+ * Daily storage-efficiency sweep: delete broadcast images/ticket evidence
+ * past their retention window, prune terminal outbox rows / dead reset
+ * tokens / abandoned carts, and checkpoint the WAL. Same `runStorageCleanup`
+ * the web-admin Storage page's "Run cleanup now" button calls, so the
+ * scheduled and manual paths can never drift apart.
+ */
+export async function storageCleanupJob(): Promise<void> {
+  const summary = await runStorageCleanup(prisma, UPLOADS_DIR);
+  logger.info(
+    `Storage cleanup finished — removed ${summary.broadcastFilesDeleted} broadcast image(s) and ` +
+      `${summary.ticketFilesDeleted} ticket attachment(s) from disk; pruned ${summary.outboxRowsDeleted} outbox row(s), ` +
+      `${summary.resetTokensDeleted} expired reset token(s), and ${summary.cartsDeleted} abandoned cart line(s).`,
+  );
+}
+
 /** Register all scheduled jobs against croner. Returns the Cron handles. */
 /**
  * Keep `usd_idr_rate` tracking the live market rate (rounded — plan.md §15.8).
@@ -466,5 +492,9 @@ export function scheduleJobs(api: Api): Cron[] {
     // production, 2026-07-20).
     new Cron("20 * * * * *", { protect: true }, wrap("drainBroadcasts", drainBroadcasts)),
     new Cron("40 * * * * *", { protect: true }, wrap("announceStartedFlashSales", announceStartedFlashSales)),
+    // Once daily, off-peak (03:15) — well clear of every other job's
+    // minutely/hourly ticks, and unlike those it's a single sweep rather
+    // than something that needs to run often.
+    new Cron("30 15 3 * * *", { protect: true }, wrap("storageCleanupJob", storageCleanupJob)),
   ];
 }

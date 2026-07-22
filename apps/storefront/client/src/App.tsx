@@ -4,8 +4,11 @@ import Layout from "./components/Layout";
 import ErrorPage from "./pages/ErrorPage";
 import HomePage from "./pages/HomePage";
 import CategoryPage from "./pages/CategoryPage";
+import CategoriesPage from "./pages/CategoriesPage";
 import SearchPage from "./pages/SearchPage";
 import ProductPage from "./pages/ProductPage";
+import ProductsPage from "./pages/ProductsPage";
+import FlashPage from "./pages/FlashPage";
 
 // Code splitting, by who asks for the page.
 //
@@ -60,6 +63,9 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="/" element={<HomePage />} />
           <Route path="/c/:slug" element={<CategoryPage />} />
+          <Route path="/categories" element={<CategoriesPage />} />
+          <Route path="/products" element={<ProductsPage />} />
+          <Route path="/flash" element={<FlashPage />} />
           <Route path="/p/:slug" element={<ProductPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/cart" element={<CartPage />} />

@@ -13,6 +13,7 @@ import {
   enqueueNotification,
   enqueueOrderPipelineFailed,
   enqueueManualOrderAdminAlert,
+  enqueueAdminPasswordReset,
   enqueueRestockBroadcast,
   enqueueFlashSaleBroadcast,
   fetchPendingNotifications,
@@ -561,5 +562,67 @@ describe("enqueueFlashSaleBroadcast", () => {
     expect(notified).toBe(0);
     expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.FLASH_SALE_BROADCAST } })).toBe(before);
     expect(await prisma.broadcast.count()).toBe(broadcastsBefore);
+  });
+});
+
+// A bulk broadcast (enqueueRestockBroadcast/enqueueFlashSaleBroadcast) can
+// createMany hundreds/thousands of rows into the same notification_outbox
+// table an urgent single-recipient DM (e.g. ADMIN_PW_RESET, the admin-panel
+// forgot-password OTP) rides in. Strict createdAt-FIFO would let a broadcast
+// backlog delay an OTP by many minutes. fetchPendingNotifications must
+// return urgent (non-broadcast) rows ahead of broadcast rows regardless of
+// enqueue order, without starving the broadcast rows entirely.
+// This file's tests share one DB and don't all clean up after themselves, so
+// by the time this block runs there can be an arbitrary number of leftover
+// claimable PENDING rows from earlier tests. These assertions are written to
+// hold regardless of that backlog: they check the *invariant* (no broadcast
+// row is ever returned while a claimable urgent row still exists; broadcast
+// rows are still reachable, not starved forever) rather than an exact
+// position or an exact small `limit`.
+describe("fetchPendingNotifications priority (urgent DMs before bulk broadcasts)", () => {
+  it("never returns a broadcast row while a claimable urgent row exists, even at limit=1", async () => {
+    await prisma.user.updateMany({ data: { banned: true } }); // neutralize leftovers from earlier tests
+    const buyer = await prisma.user.create({
+      data: { telegramId: BigInt(Math.floor(Math.random() * 1e15)), referralCode: `r${Math.random()}`, banned: false },
+    });
+
+    // Broadcast row enqueued first (older createdAt) — must still lose priority.
+    const notified = await enqueueFlashSaleBroadcast(prisma, {
+      productName: "CapCut Pro",
+      denominationName: "1 Month",
+      discountPercent: "25",
+      oldPrice: "Rp50.000",
+      newPrice: "Rp37.500",
+      endsAt: "2026-07-21 21:00 GMT+7",
+    });
+    expect(notified).toBe(1);
+
+    // OTP enqueued after — newer createdAt, but must still be reachable first.
+    await enqueueAdminPasswordReset(prisma, { telegramId: 9001, code: "123456", ttlMinutes: 10 });
+
+    const [top] = await fetchPendingNotifications(prisma, 1);
+    expect(top).toBeDefined();
+    expect(top!.event).not.toBe(NotificationEvent.FLASH_SALE_BROADCAST);
+    expect(top!.event).not.toBe(NotificationEvent.PRODUCT_RESTOCKED_BROADCAST);
+
+    void buyer; // only needed so enqueueFlashSaleBroadcast has an eligible recipient
+  });
+
+  it("still surfaces broadcast rows once the limit covers every claimable urgent row — not starved forever", async () => {
+    await prisma.user.updateMany({ data: { banned: true } }); // neutralize leftovers from earlier tests
+    await prisma.user.create({
+      data: { telegramId: BigInt(Math.floor(Math.random() * 1e15)), referralCode: `r${Math.random()}`, banned: false },
+    });
+
+    await enqueueAdminPasswordReset(prisma, { telegramId: 9002, code: "654321", ttlMinutes: 10 });
+    const notified = await enqueueRestockBroadcast(prisma, { productName: "Netflix Premium", stockCount: 3 });
+    expect(notified).toBe(1);
+
+    // A limit covering every currently-PENDING row (urgent leftovers included)
+    // must still include the broadcast row — priority reorders, never drops.
+    const totalPending = await prisma.notificationOutbox.count({ where: { status: "PENDING" } });
+    const fullBatch = await fetchPendingNotifications(prisma, totalPending);
+    expect(fullBatch.some((r) => r.event === NotificationEvent.ADMIN_PW_RESET)).toBe(true);
+    expect(fullBatch.some((r) => r.event === NotificationEvent.PRODUCT_RESTOCKED_BROADCAST)).toBe(true);
   });
 });

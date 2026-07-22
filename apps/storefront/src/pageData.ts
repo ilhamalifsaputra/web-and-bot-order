@@ -16,6 +16,7 @@ import {
   listActiveCategories,
   listNewestCatalogProducts,
   listCatalogProducts,
+  listFlashSaleProducts,
   getCatalogProductBySlugWithDenominations,
   searchCatalog,
   stockStatusCounts,
@@ -141,7 +142,7 @@ export async function categoryPageData(rawSlug: string, sort: SortKey = "default
 export async function productPageData(rawSlug: string, isReseller = false) {
   const slug = (rawSlug ?? "").trim();
   const product = slug ? await getCatalogProductBySlugWithDenominations(prisma, slug) : null;
-  if (!product || !product.isActive || product.denominations.length === 0) return null;
+  if (!product || !product.isActive || product.isArchived || product.denominations.length === 0) return null;
 
   // Per-denomination stock + bulk-pricing badge (price-asc order preserved).
   const [stock, bulkRules, reviews, sameCategoryProducts, ratings] = await Promise.all([
@@ -256,4 +257,41 @@ export async function searchPageData(rawQ: string, sort: SortKey = "default") {
     products: sortProductCards(products, cards, sort),
     low_threshold: config.LOW_STOCK_THRESHOLD,
   };
+}
+
+/**
+ * Shared tail of the two full-grid shelves below: shape a set of catalog rows
+ * into sorted cards. The three companion queries (stock counts, ratings, bulk
+ * rules) are catalog-wide, so they're the same work whichever shelf asked.
+ */
+async function shelfFrom(products: CatalogProduct[], sort: SortKey) {
+  const [stock, ratings, bulk] = await Promise.all([
+    stockStatusCounts(prisma),
+    productRatingSummaries(prisma),
+    activeBulkPricingByDenomination(prisma),
+  ]);
+  const ratingByDenom = new Map(ratings.map((r) => [r.productId, { avg: r.avg, count: r.count }]));
+  const cards = shapeProducts(products, stock, ratingByDenom, bulk);
+  return {
+    products: sortProductCards(products, cards, sort),
+    low_threshold: config.LOW_STOCK_THRESHOLD,
+  };
+}
+
+/** Every purchasable product — the "Browse products" shelf (GET /api/v1/pages/products). */
+export async function allProductsPageData(sort: SortKey = "default") {
+  return shelfFrom(await listCatalogProducts(prisma), sort);
+}
+
+/** Products with a flash sale running right now (GET /api/v1/pages/flash). An
+ * empty list is a normal state — no sale is on — not an error. */
+export async function flashPageData(sort: SortKey = "default") {
+  return shelfFrom(await listFlashSaleProducts(prisma), sort);
+}
+
+/** The category index (GET /api/v1/pages/categories). `image` is resolved the
+ * same way the homepage tiles do, so both surfaces show the same artwork. */
+export async function categoriesPageData() {
+  const categories = await listActiveCategories(prisma);
+  return { categories: categories.map((c) => ({ ...c, image: categoryImage(c.name) })) };
 }

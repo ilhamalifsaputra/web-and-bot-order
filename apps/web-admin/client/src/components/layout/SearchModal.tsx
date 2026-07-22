@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ShoppingCart, Package, Users } from "lucide-react";
+import { ShoppingCart, Package, Users, Search } from "lucide-react";
 import { apiGet } from "../../api/client";
 
 interface SearchResult {
@@ -86,16 +86,7 @@ export function SearchModal({ open, onClose }: SearchModalProps): JSX.Element {
       >
         {/* Input row */}
         <div className="flex items-center gap-2 border-b border-line px-4 py-3">
-          <svg
-            className="h-4 w-4 flex-shrink-0 text-ink-faint"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={2}
-            viewBox="0 0 24 24"
-          >
-            <circle cx={11} cy={11} r={8} />
-            <path d="m21 21-4.35-4.35" />
-          </svg>
+          <Search className="h-4 w-4 flex-shrink-0 text-ink-faint" />
           <input
             ref={inputRef}
             type="text"

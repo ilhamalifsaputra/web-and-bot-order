@@ -19,6 +19,7 @@ import {
   rejectOrder,
   getOrder,
   getUser,
+  setSetting,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
 import { NotificationEvent, OrderStatus } from "@app/core/enums";
@@ -232,6 +233,116 @@ describe("stock deduction", () => {
       where: { orderId: created!.id, event: NotificationEvent.ORDER_DELIVERED },
     });
     expect(testimonialRows).toHaveLength(1);
+  });
+});
+
+describe("bulk purchase broadcast", () => {
+  it("enqueues nothing when the feature is off (default)", async () => {
+    setBotIdentity({ publicChannelId: -100123456789 });
+    const { user, product } = sample;
+    await addToCart(prisma, user.id, product.id, 2);
+    const created = await createOrderFromCart(prisma, { user });
+    await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
+
+    await approveOrder(prisma, created!.id, { adminId: user.id });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { orderId: created!.id, event: NotificationEvent.BULK_PURCHASE_BROADCAST },
+    });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("enqueues nothing when enabled but the order's quantity is below the threshold", async () => {
+    setBotIdentity({ publicChannelId: -100123456789 });
+    await setSetting(prisma, "bulk_purchase_broadcast_enabled", "true");
+    await setSetting(prisma, "bulk_purchase_broadcast_threshold", "3");
+    const { user, product } = sample;
+    await addToCart(prisma, user.id, product.id, 2); // below the threshold of 3
+    const created = await createOrderFromCart(prisma, { user });
+    await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
+
+    await approveOrder(prisma, created!.id, { adminId: user.id });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { orderId: created!.id, event: NotificationEvent.BULK_PURCHASE_BROADCAST },
+    });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("enqueues nothing when enabled and over threshold but no PUBLIC_CHANNEL_ID is configured", async () => {
+    await setSetting(prisma, "bulk_purchase_broadcast_enabled", "true");
+    await setSetting(prisma, "bulk_purchase_broadcast_threshold", "2");
+    const { user, product } = sample;
+    await addToCart(prisma, user.id, product.id, 2);
+    const created = await createOrderFromCart(prisma, { user });
+    await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
+
+    await approveOrder(prisma, created!.id, { adminId: user.id });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { orderId: created!.id, event: NotificationEvent.BULK_PURCHASE_BROADCAST },
+    });
+    expect(rows).toHaveLength(0);
+  });
+
+  it("enqueues a channel-post row with the substituted payload once the order's quantity for a denomination crosses the threshold", async () => {
+    setBotIdentity({ publicChannelId: -100123456789 });
+    await setSetting(prisma, "bulk_purchase_broadcast_enabled", "true");
+    await setSetting(prisma, "bulk_purchase_broadcast_threshold", "2");
+    const { user, product, parentProduct } = sample;
+    await addToCart(prisma, user.id, product.id, 2);
+    const created = await createOrderFromCart(prisma, { user });
+    await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
+
+    await approveOrder(prisma, created!.id, { adminId: user.id });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { orderId: created!.id, event: NotificationEvent.BULK_PURCHASE_BROADCAST },
+    });
+    expect(rows).toHaveLength(1);
+    const payload = JSON.parse(rows[0]!.payloadJson);
+    expect(payload).toMatchObject({
+      product_name: parentProduct.name,
+      denomination_name: product.name,
+      qty: 2,
+    });
+  });
+
+  it("falls back to the default template text when no custom template is set", async () => {
+    setBotIdentity({ publicChannelId: -100123456789 });
+    await setSetting(prisma, "bulk_purchase_broadcast_enabled", "true");
+    await setSetting(prisma, "bulk_purchase_broadcast_threshold", "2");
+    const { user, product } = sample;
+    await addToCart(prisma, user.id, product.id, 2);
+    const created = await createOrderFromCart(prisma, { user });
+    await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
+
+    await approveOrder(prisma, created!.id, { adminId: user.id });
+
+    const row = (await prisma.notificationOutbox.findFirst({
+      where: { orderId: created!.id, event: NotificationEvent.BULK_PURCHASE_BROADCAST },
+    }))!;
+    const payload = JSON.parse(row.payloadJson);
+    expect(payload.template).toBe("Someone just purchased x{qty} of {product} - {denomination}!");
+  });
+
+  it("uses the admin's custom template when one is set", async () => {
+    setBotIdentity({ publicChannelId: -100123456789 });
+    await setSetting(prisma, "bulk_purchase_broadcast_enabled", "true");
+    await setSetting(prisma, "bulk_purchase_broadcast_threshold", "2");
+    await setSetting(prisma, "bulk_purchase_broadcast_template", "🔥 x{qty} {product} - {denomination} just sold!");
+    const { user, product } = sample;
+    await addToCart(prisma, user.id, product.id, 2);
+    const created = await createOrderFromCart(prisma, { user });
+    await attachPaymentProof(prisma, created!.id, { fileId: "dummy", txid: "ABC123XYZ" });
+
+    await approveOrder(prisma, created!.id, { adminId: user.id });
+
+    const row = (await prisma.notificationOutbox.findFirst({
+      where: { orderId: created!.id, event: NotificationEvent.BULK_PURCHASE_BROADCAST },
+    }))!;
+    const payload = JSON.parse(row.payloadJson);
+    expect(payload.template).toBe("🔥 x{qty} {product} - {denomination} just sold!");
   });
 });
 

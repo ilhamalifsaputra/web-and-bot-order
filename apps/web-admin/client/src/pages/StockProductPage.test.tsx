@@ -101,6 +101,7 @@ describe("StockProductPage", () => {
   });
 
   it("marks a single item dead after confirming", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify(STOCK_PRODUCT_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),
@@ -108,7 +109,10 @@ describe("StockProductPage", () => {
     render(<StockProductPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: "Mark Dead" }));
+    await user.click(screen.getByRole("button", { name: "Actions for stock item 101" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Mark Dead"));
+
     const dialog = await screen.findByRole("dialog");
 
     fetchSpy.mockResolvedValueOnce(
@@ -128,6 +132,7 @@ describe("StockProductPage", () => {
   });
 
   it("edits a stock item's note", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify(STOCK_PRODUCT_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),
@@ -135,7 +140,10 @@ describe("StockProductPage", () => {
     render(<StockProductPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit Note" }));
+    await user.click(screen.getByRole("button", { name: "Actions for stock item 101" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Edit Note"));
+
     fireEvent.change(screen.getByRole("textbox", { name: "Note for stock item 101" }), { target: { value: "checked ok" } });
 
     fetchSpy.mockResolvedValueOnce(

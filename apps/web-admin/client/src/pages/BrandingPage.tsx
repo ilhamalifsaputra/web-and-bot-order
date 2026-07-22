@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { RotateCcw, Save, SquarePen } from "lucide-react";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -32,6 +33,50 @@ function useBranding() {
   });
 }
 
+function ResetImageButton({
+  label,
+  field,
+  hasValue,
+  description,
+  onReset,
+}: {
+  label: string;
+  field: "favicon" | "logo" | "hero" | "banner";
+  hasValue: boolean;
+  description?: string;
+  onReset: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  // Guarded by `open`, not just `hasValue`: a successful reset invalidates
+  // the query, which flips `hasValue` false on refetch — without the `open`
+  // escape hatch that would unmount this (and the dialog with it) mid-
+  // animation, cutting off the success checkmark before the user sees it.
+  if (!hasValue && !open) return null;
+  return (
+    <div className="pt-2">
+      {hasValue && (
+        <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>
+          <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+          Reset to default
+        </Button>
+      )}
+      <SaveConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        title={`Reset ${label} to default?`}
+        description={description ?? `This clears the current ${label.toLowerCase()}. It won't be shown until a new one is uploaded.`}
+        confirmLabel="Reset"
+        variant="destructive"
+        successMessage={`${label} reset`}
+        onConfirm={async () => {
+          await apiPost("/api/branding/image/clear", { field });
+          onReset();
+        }}
+      />
+    </div>
+  );
+}
+
 function TextFieldRow({
   label,
   fieldKey,
@@ -48,10 +93,16 @@ function TextFieldRow({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
 
   async function save() {
     await apiPost("/api/branding/text", { key: fieldKey, value: draft });
     setEditing(false);
+    onSaved();
+  }
+
+  async function reset() {
+    await apiPost("/api/branding/text/reset", { key: fieldKey });
     onSaved();
   }
 
@@ -60,13 +111,26 @@ function TextFieldRow({
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-ink">{label}</span>
         {!editing && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => { setEditing(true); setDraft(value); }}
-          >
-            Edit
-          </Button>
+          <div className="flex items-center gap-1">
+            {value && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Reset ${label} to default`}
+                onClick={() => setResetOpen(true)}
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => { setEditing(true); setDraft(value); }}
+            >
+              <SquarePen className="h-4 w-4" />
+              Edit
+            </Button>
+          </div>
         )}
       </div>
       {!editing && (
@@ -94,6 +158,7 @@ function TextFieldRow({
           )}
           <div className="flex gap-2">
             <Button size="sm" onClick={() => setConfirmOpen(true)}>
+              <Save className="h-4 w-4" />
               Save
             </Button>
             <Button
@@ -116,6 +181,16 @@ function TextFieldRow({
         description="This updates the live setting immediately."
         onConfirm={save}
       />
+      <SaveConfirmDialog
+        open={resetOpen}
+        onOpenChange={setResetOpen}
+        title={`Reset ${label} to default?`}
+        description={`This clears the current ${label.toLowerCase()}. It won't be shown until a new value is saved.`}
+        confirmLabel="Reset"
+        variant="destructive"
+        successMessage={`${label} reset`}
+        onConfirm={reset}
+      />
     </div>
   );
 }
@@ -123,9 +198,13 @@ function TextFieldRow({
 export function BrandingPage() {
   const qc = useQueryClient();
   const { data, isLoading, isError } = useBranding();
-  const [removeBannerOpen, setRemoveBannerOpen] = useState(false);
 
   const invalidate = () => { void qc.invalidateQueries({ queryKey: ["branding"] }); };
+  // Patch just the one field the upload response told us about, instead of
+  // refetching every branding image + text setting for a single-field change.
+  const patchImage = (field: keyof BrandingData) => (url: string) => {
+    qc.setQueryData<BrandingData>(["branding"], (old) => (old ? { ...old, [field]: url } : old));
+  };
 
   return (
     <PageLayout title="Branding">
@@ -145,9 +224,16 @@ export function BrandingPage() {
                 uploadPath="/branding/favicon"
                 fieldName="favicon"
                 accept=".png,.ico,.svg"
-                onUploaded={invalidate}
+                onUploaded={patchImage("faviconUrl")}
+                maxBytes={1 * 1024 * 1024}
                 dimensions="512x512px"
                 showSuccessCheckmark
+              />
+              <ResetImageButton
+                label="Favicon"
+                field="favicon"
+                hasValue={Boolean(data.faviconUrl)}
+                onReset={invalidate}
               />
               <ImageUploadField
                 label="Logo"
@@ -155,9 +241,16 @@ export function BrandingPage() {
                 uploadPath="/branding/logo"
                 fieldName="logo"
                 accept=".png,.svg,.webp"
-                onUploaded={invalidate}
+                onUploaded={patchImage("logoUrl")}
+                maxBytes={1 * 1024 * 1024}
                 dimensions="400x200px"
                 showSuccessCheckmark
+              />
+              <ResetImageButton
+                label="Logo"
+                field="logo"
+                hasValue={Boolean(data.logoUrl)}
+                onReset={invalidate}
               />
               <ImageUploadField
                 label="Hero image"
@@ -165,9 +258,16 @@ export function BrandingPage() {
                 uploadPath="/branding/hero"
                 fieldName="hero"
                 accept=".jpg,.jpeg,.png,.webp"
-                onUploaded={invalidate}
+                onUploaded={patchImage("heroUrl")}
+                maxBytes={5 * 1024 * 1024}
                 dimensions="1200x400px"
                 showSuccessCheckmark
+              />
+              <ResetImageButton
+                label="Hero image"
+                field="hero"
+                hasValue={Boolean(data.heroUrl)}
+                onReset={invalidate}
               />
               <ImageUploadField
                 label="Banner"
@@ -175,7 +275,14 @@ export function BrandingPage() {
                 uploadPath="/branding/banner"
                 fieldName="banner"
                 accept=".jpg,.jpeg,.png,.webp"
-                onUploaded={invalidate}
+                onUploaded={(url) =>
+                  // The upload also clears the legacy Telegram file_id server-side
+                  // (branding.ts's afterSave), so drop the stale warning locally too.
+                  qc.setQueryData<BrandingData>(["branding"], (old) =>
+                    old ? { ...old, bannerUrl: url, bannerIsLegacy: false } : old,
+                  )
+                }
+                maxBytes={5 * 1024 * 1024}
                 dimensions="1200x400px"
                 showSuccessCheckmark
               />
@@ -184,28 +291,12 @@ export function BrandingPage() {
                   Banner is stored as a Telegram file_id. Upload an image file to replace it.
                 </p>
               )}
-              {(data.bannerUrl || data.bannerIsLegacy) && (
-                <div className="pt-2">
-                  <Button variant="ghost" size="sm" onClick={() => setRemoveBannerOpen(true)}>
-                    Remove banner
-                  </Button>
-                </div>
-              )}
-              {/* Rendered unconditionally — removing the banner clears
-                  data.bannerUrl on refetch, which would otherwise unmount
-                  this mid-animation and cut off the checkmark. */}
-              <SaveConfirmDialog
-                open={removeBannerOpen}
-                onOpenChange={setRemoveBannerOpen}
-                title="Remove banner?"
+              <ResetImageButton
+                label="Banner"
+                field="banner"
+                hasValue={Boolean(data.bannerUrl || data.bannerIsLegacy)}
                 description="This clears the bot's promo banner. It won't be shown above the menu until a new one is uploaded."
-                confirmLabel="Remove"
-                variant="destructive"
-                successMessage="Banner removed"
-                onConfirm={async () => {
-                  await apiPost("/branding/banner/clear", {});
-                  invalidate();
-                }}
+                onReset={invalidate}
               />
             </CardContent>
           </Card>

@@ -21,6 +21,7 @@ import { buildSampleData, resetDb, type SampleData } from "../../../../tests/hel
 import { createOrderDirect, deliverPaidTokopayOrder, recordUnmatchedTokopayTx, getTokopayCreds, setSetting, deleteSetting } from "@app/db";
 import { OrderStatus, PaymentMethod, NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
+import { qrisChargeAmount } from "@app/core/payments/tokopay";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -127,9 +128,10 @@ describe("deliverPaidTokopayOrder", () => {
     const order = await makePendingTokopayOrder();
     // Pricing applies USE_UNIQUE_CENTS jitter, so totalAmount isn't a round
     // number — compute the expected excess from the actual total instead of
-    // assuming "5".
-    const expectedTotal = new Decimal(order.totalAmount);
-    const paid = expectedTotal.plus("3"); // overpay by 3
+    // assuming "5". "Expected" now includes the QRIS admin fee, since that's
+    // the amount actually charged (createTransaction) and checked.
+    const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
+    const paid = expectedCharge.plus("3"); // overpay by 3
 
     const result = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
@@ -150,9 +152,29 @@ describe("deliverPaidTokopayOrder", () => {
     expect(payload.chat_id).toBe(444);
     expect(payload.order_code).toBe(result.order.orderCode);
     expect(payload.paid).toBe(paid.toString());
-    expect(payload.expected).toBe(expectedTotal.toString());
+    expect(payload.expected).toBe(expectedCharge.toString());
     expect(payload.excess).toBe("3");
     expect(payload.currency).toBe(result.order.currency);
+  });
+
+  it("paying exactly subtotal + QRIS admin fee is NOT flagged overpaid", async () => {
+    const order = await makePendingTokopayOrder();
+    const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
+
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-exact-fee-1",
+      amount: expectedCharge,
+    });
+    expect(result.status).toBe("delivered");
+
+    const ledgerRow = await prisma.processedTokopayTx.findUnique({ where: { trxId: "trx-exact-fee-1" } });
+    expect(ledgerRow?.outcome).toBe("matched"); // not "overpaid"
+
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    expect(adminRows.length).toBe(0);
   });
 });
 

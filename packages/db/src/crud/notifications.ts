@@ -187,14 +187,40 @@ function claimableWhere(staleCutoff: Date, now: Date) {
   };
 }
 
-/** Oldest claimable rows first (PENDING, or SENDING claimed past STALE_CLAIM_MS), capped at `limit`. */
-export function fetchPendingNotifications(db: Db, limit = 50, now: Date = new Date()) {
+// Bulk fan-out events (createMany, one row per customer — potentially
+// hundreds/thousands at once) that must never be allowed to queue ahead of a
+// single-recipient urgent DM (e.g. ADMIN_PW_RESET, the admin-panel
+// forgot-password OTP) just because they happened to enqueue first.
+const BROADCAST_EVENTS = new Set<string>([
+  NotificationEvent.PRODUCT_RESTOCKED_BROADCAST,
+  NotificationEvent.FLASH_SALE_BROADCAST,
+]);
+
+/**
+ * Oldest claimable rows first (PENDING, or SENDING claimed past
+ * STALE_CLAIM_MS), capped at `limit` — but urgent (non-broadcast) rows are
+ * always returned ahead of bulk-broadcast rows, regardless of enqueue order.
+ * Without this split, a large `enqueueRestockBroadcast`/
+ * `enqueueFlashSaleBroadcast` fan-out sitting in the same FIFO queue could
+ * delay an urgent DM enqueued moments later by many minutes.
+ */
+export async function fetchPendingNotifications(db: Db, limit = 50, now: Date = new Date()) {
   const staleCutoff = new Date(now.getTime() - STALE_CLAIM_MS);
-  return db.notificationOutbox.findMany({
-    where: claimableWhere(staleCutoff, now),
+  const where = claimableWhere(staleCutoff, now);
+
+  const urgent = await db.notificationOutbox.findMany({
+    where: { ...where, event: { notIn: [...BROADCAST_EVENTS] } },
     orderBy: { createdAt: "asc" },
     take: limit,
   });
+  if (urgent.length >= limit) return urgent;
+
+  const broadcasts = await db.notificationOutbox.findMany({
+    where: { ...where, event: { in: [...BROADCAST_EVENTS] } },
+    orderBy: { createdAt: "asc" },
+    take: limit - urgent.length,
+  });
+  return [...urgent, ...broadcasts];
 }
 
 /**

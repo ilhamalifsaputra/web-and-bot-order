@@ -81,7 +81,8 @@ pembayaran, dan webhook Telegram — detail lengkap di
 | POST | `/settings/edit`, `/settings/password`, `/settings/payments/toggle`, `/settings/fx/refresh`, `/settings/2fa/*` | `csrfProtect` | Edit Settings (whitelist-only — lihat [SECURITY.md](SECURITY.md)) |
 | GET | `/branding` | `currentAdmin` | Lihat Branding |
 | POST | `/branding/favicon`, `/logo`, `/hero`, `/banner` | `currentAdmin` (upload, lihat catatan) | Upload aset |
-| POST | `/branding/banner/clear`, `/branding/text` | `csrfProtect` | Mutasi non-upload |
+| POST | `/branding/text` | `csrfProtect` | Mutasi non-upload |
+| POST | `/api/branding/image/clear`, `/api/branding/text/reset` | `csrfProtect` | Reset field branding (favicon/logo/hero/banner/teks) ke default |
 
 > Upload branding (`favicon`/`logo`/`hero`/`banner`) memakai `currentAdmin`
 > saja (bukan `csrfProtect` penuh) di registrasi route — multipart body tidak

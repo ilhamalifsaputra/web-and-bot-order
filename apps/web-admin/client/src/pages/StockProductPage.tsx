@@ -13,8 +13,17 @@ import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Eye, EyeOff, Copy, Check } from "lucide-react";
+import { Eye, EyeOff, Copy, Check, Save, X, Ban, SquarePen, Lock, MoreVertical } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { toast } from "sonner";
 import { apiPost } from "../api/client";
+import { describeError } from "../lib/errorMessages";
 
 interface StockItem {
   id: number;
@@ -76,6 +85,7 @@ export function StockProductPage() {
   // previous one, so a shared screen never shows a column of plaintext logins.
   const [revealedId, setRevealedId] = useState<number | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [pendingMarkDead, setPendingMarkDead] = useState<StockItem | null>(null);
 
   function changeTab(tab: string) {
     setActiveTab(tab as typeof activeTab);
@@ -129,26 +139,30 @@ export function StockProductPage() {
   }
 
   async function bulkMarkDead() {
+    const count = selected.size;
     setBulkActing(true);
     try {
       await apiPost(`/api/stock/${productId}/bulk-dead`, { ids: Array.from(selected) });
       setSelected(new Set());
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
+      toast.success(`${count} item(s) marked dead.`);
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to mark items dead.");
+      toast.error(describeError(e instanceof Error ? e.message : "Failed to mark items dead."));
     } finally {
       setBulkActing(false);
     }
   }
 
   async function bulkDelete() {
+    const count = selected.size;
     setBulkActing(true);
     try {
       await apiPost(`/api/stock/${productId}/bulk-delete`, { ids: Array.from(selected) });
       setSelected(new Set());
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
+      toast.success(`${count} item(s) deleted.`);
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to delete items.");
+      toast.error(describeError(e instanceof Error ? e.message : "Failed to delete items."));
     } finally {
       setBulkActing(false);
     }
@@ -158,8 +172,9 @@ export function StockProductPage() {
     try {
       await apiPost(`/api/stock/item/${id}/dead`, {});
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
+      toast.success("Stock item marked dead.");
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to mark item dead.");
+      toast.error(describeError(e instanceof Error ? e.message : "Failed to mark item dead."));
     }
   }
 
@@ -168,8 +183,9 @@ export function StockProductPage() {
       await apiPost(`/api/stock/item/${id}/note`, { note: noteDraft });
       setEditingNoteId(null);
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
+      toast.success("Note saved.");
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to update note.");
+      toast.error(describeError(e instanceof Error ? e.message : "Failed to update note."));
     }
   }
 
@@ -201,10 +217,9 @@ export function StockProductPage() {
               key: "select",
               header: "",
               render: item => (
-                <input
-                  type="checkbox"
+                <Checkbox
                   checked={selected.has(item.id)}
-                  onChange={() => toggleSelected(item.id)}
+                  onCheckedChange={() => toggleSelected(item.id)}
                   aria-label={`Select stock item ${item.id}`}
                 />
               ),
@@ -213,7 +228,12 @@ export function StockProductPage() {
             { key: "status", header: "Status", render: item => <StatusBadge status={item.status} /> },
             {
               key: "credentials",
-              header: "Account",
+              header: (
+                <span className="inline-flex items-center gap-1">
+                  <Lock className="h-3.5 w-3.5 text-ink-faint" />
+                  Account
+                </span>
+              ),
               render: item => {
                 const revealed = revealedId === item.id;
                 return (
@@ -260,8 +280,8 @@ export function StockProductPage() {
                       className="h-7 text-xs max-w-[180px]"
                       autoFocus
                     />
-                    <Button size="sm" variant="ghost" onClick={() => void saveNote(item.id)}>Save</Button>
-                    <Button size="sm" variant="ghost" onClick={() => setEditingNoteId(null)}>Cancel</Button>
+                    <Button size="sm" variant="ghost" onClick={() => void saveNote(item.id)}><Save className="h-4 w-4" />Save</Button>
+                    <Button size="sm" variant="ghost" onClick={() => setEditingNoteId(null)}><X className="h-4 w-4" />Cancel</Button>
                   </div>
                 ) : (
                   <span className="text-xs text-ink-soft">{item.note ?? "—"}</span>
@@ -272,23 +292,32 @@ export function StockProductPage() {
               key: "actions",
               header: "",
               render: item => (
-                <div className="flex gap-2">
-                  {item.status !== "DEAD" && (
-                    <ConfirmDialog
-                      trigger={<Button variant="ghost" size="sm">Mark Dead</Button>}
-                      title="Mark this stock item dead?"
-                      description={`Mark stock item #${item.id} dead. This removes it from availability.`}
-                      confirmLabel="Mark Dead"
-                      onConfirm={() => markItemDead(item.id)}
-                    />
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => { setEditingNoteId(item.id); setNoteDraft(item.note ?? ""); }}
-                  >
-                    Edit Note
-                  </Button>
+                <div onClick={(e) => e.stopPropagation()}>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon-sm" aria-label={`Actions for stock item ${item.id}`}>
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onSelect={() => { setEditingNoteId(item.id); setNoteDraft(item.note ?? ""); }}>
+                        <SquarePen className="h-4 w-4" />
+                        Edit Note
+                      </DropdownMenuItem>
+                      {item.status !== "DEAD" && (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            variant="destructive"
+                            onSelect={(e) => { e.preventDefault(); setPendingMarkDead(item); }}
+                          >
+                            <Ban className="h-4 w-4" />
+                            Mark Dead
+                          </DropdownMenuItem>
+                        </>
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               ),
             },
@@ -389,6 +418,17 @@ export function StockProductPage() {
           {renderStockTable(deadItems)}
         </TabsContent>
       </Tabs>
+
+      {pendingMarkDead && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => { if (!open) setPendingMarkDead(null); }}
+          title="Mark this stock item dead?"
+          description={`Mark stock item #${pendingMarkDead.id} dead. This removes it from availability.`}
+          confirmLabel="Mark Dead"
+          onConfirm={() => markItemDead(pendingMarkDead.id)}
+        />
+      )}
     </PageLayout>
   );
 }

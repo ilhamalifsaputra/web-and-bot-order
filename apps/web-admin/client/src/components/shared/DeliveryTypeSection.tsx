@@ -1,6 +1,7 @@
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { AdditionalFieldsEditor } from "./AdditionalFieldsEditor";
 import type { AdditionalFieldDraft } from "../../api/types";
+import { Zap, Hand, FileText, type LucideIcon } from "lucide-react";
 
 type DeliveryMethod = "auto" | "manual";
 
@@ -13,11 +14,13 @@ function RadioOptionCard({
   value,
   title,
   description,
+  icon: Icon,
 }: {
   id: string;
   value: string;
   title: string;
   description: string;
+  icon: LucideIcon;
 }) {
   return (
     <label
@@ -26,7 +29,10 @@ function RadioOptionCard({
     >
       <RadioGroupItem id={id} value={value} className="mt-0.5" />
       <span>
-        <span className="block text-sm font-medium text-ink">{title}</span>
+        <span className="flex items-center gap-1.5 text-sm font-medium text-ink">
+          <Icon className="h-4 w-4" />
+          {title}
+        </span>
         <span className="block text-xs text-ink-soft">{description}</span>
       </span>
     </label>
@@ -86,12 +92,14 @@ export function DeliveryTypeSection({
             value="auto"
             title="Automatic Delivery"
             description="The product is delivered automatically after payment."
+            icon={Zap}
           />
           <RadioOptionCard
             id="delivery-method-manual"
             value="manual"
             title="Manual Delivery"
             description="The seller manually delivers the product after payment."
+            icon={Hand}
           />
         </RadioGroup>
       </div>
@@ -112,12 +120,14 @@ export function DeliveryTypeSection({
               value="none"
               title="No buyer information required"
               description="Buyer pays first and waits for manual delivery."
+              icon={Hand}
             />
             <RadioOptionCard
               id="buyer-info-required"
               value="required"
               title="Require buyer information"
               description="Buyer must provide required information before checkout."
+              icon={FileText}
             />
           </RadioGroup>
         </div>

@@ -125,11 +125,20 @@ describe("BrandingPage", () => {
     expect(await screen.findByText("Saved successfully")).toBeInTheDocument();
   });
 
-  it("removing the banner opens a confirmation dialog and shows a checkmark on success", async () => {
+  it("resetting the banner opens a confirmation dialog and shows a checkmark on success", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
+    // Only the banner has a value here, so exactly one "Reset to default"
+    // button renders — no need to disambiguate against the other three
+    // image fields, which all share the same button copy.
     fetchSpy.mockResolvedValueOnce(
       new Response(
-        JSON.stringify({ ...BRANDING_DATA, bannerUrl: "/uploads/branding/banner.png" }),
+        JSON.stringify({
+          ...BRANDING_DATA,
+          faviconUrl: "",
+          logoUrl: "",
+          heroUrl: "",
+          bannerUrl: "/uploads/branding/banner.png",
+        }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );
@@ -137,10 +146,48 @@ describe("BrandingPage", () => {
     await waitFor(() => expect(screen.getByText("My Test Shop")).toBeInTheDocument());
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Remove banner" }));
+    await user.click(screen.getByRole("button", { name: "Reset to default" }));
 
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("Remove banner?")).toBeInTheDocument();
+    expect(within(dialog).getByText("Reset Banner to default?")).toBeInTheDocument();
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, cleared: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(BRANDING_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Reset" }));
+
+    expect(await screen.findByText("Banner reset")).toBeInTheDocument();
+    const call = fetchSpy.mock.calls.find(([url]) => url === "/api/branding/image/clear");
+    expect(call).toBeTruthy();
+    expect(call![1]).toEqual(expect.objectContaining({ method: "POST" }));
+    expect(JSON.parse(call![1]!.body as string)).toEqual({ field: "banner" });
+  });
+
+  it("resetting a text field opens a confirmation dialog and shows a checkmark on success", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(BRANDING_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<BrandingPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("My Test Shop")).toBeInTheDocument());
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Reset Shop name to default" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Reset Shop name to default?")).toBeInTheDocument();
 
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify({ ok: true }), {
@@ -154,12 +201,26 @@ describe("BrandingPage", () => {
         headers: { "Content-Type": "application/json" },
       }),
     );
-    await user.click(within(dialog).getByRole("button", { name: "Remove" }));
+    await user.click(within(dialog).getByRole("button", { name: "Reset" }));
 
-    expect(await screen.findByText("Banner removed")).toBeInTheDocument();
-    expect(fetchSpy).toHaveBeenCalledWith(
-      "/branding/banner/clear",
-      expect.objectContaining({ method: "POST" }),
+    expect(await screen.findByText("Shop name reset")).toBeInTheDocument();
+    const call = fetchSpy.mock.calls.find(([url]) => url === "/api/branding/text/reset");
+    expect(call).toBeTruthy();
+    expect(JSON.parse(call![1]!.body as string)).toEqual({ key: "shop_name" });
+  });
+
+  it("has no reset control for an empty image field but shows one for populated fields", async () => {
+    // Fixture: favicon + logo populated, hero and banner empty.
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(BRANDING_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
     );
+    render(<BrandingPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("My Test Shop")).toBeInTheDocument());
+
+    // Only favicon and logo have a value — hero and banner render no button.
+    expect(screen.getAllByRole("button", { name: "Reset to default" })).toHaveLength(2);
   });
 });

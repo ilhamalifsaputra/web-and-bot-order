@@ -19,7 +19,7 @@ describe("apiGet", () => {
   });
 
   it("throws when the response is not ok", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 403, json: async () => ({}) })));
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 403, text: async () => "{}" })));
     await expect(apiGet("/api/dashboard/kpis")).rejects.toThrow("403");
   });
 });
@@ -33,6 +33,16 @@ describe("apiPost", () => {
     expect(new Headers(init.headers).get("X-CSRF-Token")).toBe("test-token");
     expect(init.credentials).toBe("include");
     expect(JSON.parse(init.body as string)).toEqual({ foo: "bar" });
+  });
+
+  it("translates a CSRF-check-failed 403 into an actionable reload message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: false, status: 403, text: async () => "CSRF check failed" })),
+    );
+    await expect(apiPost("/api/dashboard/something", {})).rejects.toThrow(
+      "Your session was refreshed in another tab. Reload this page to continue.",
+    );
   });
 });
 
@@ -61,8 +71,17 @@ describe("apiDelete", () => {
   });
 
   it("throws the server's error message on failure", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 409, json: async () => ({ error: "Cannot delete a denomination with order history." }) })));
-    await expect(apiDelete("/api/catalog/denominations/10")).rejects.toThrow("Cannot delete a denomination with order history.");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 409,
+        text: async () => JSON.stringify({ error: "Cannot delete a denomination with order history." }),
+      })),
+    );
+    await expect(apiDelete("/api/catalog/denominations/10")).rejects.toThrow(
+      "Cannot delete a denomination with order history.",
+    );
   });
 });
 

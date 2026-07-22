@@ -1,6 +1,8 @@
 import type { FastifyInstance } from "fastify";
-import { prisma, getSetting, setSetting, logAdminAction } from "@app/db";
+import { prisma, getSetting, setSetting, deleteSetting, logAdminAction } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
+import { deleteOldUpload } from "../../lib/upload";
+import { BRANDING_DIR, BRANDING_URL_PREFIX, BRANDING_IMAGE_FIELDS } from "../branding";
 
 const TEXT_KEYS = new Set(["shop_name", "shop_tagline", "welcome"]);
 
@@ -38,6 +40,39 @@ export default async function brandingApiRoutes(app: FastifyInstance): Promise<v
       action: "setting_set",
       targetType: "setting",
       details: `Changed setting "${key}" to "${value.slice(0, 80)}${value.length > 80 ? "…" : ""}".`,
+    });
+    return reply.send({ ok: true });
+  });
+
+  app.post("/api/branding/image/clear", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, string>;
+    const field = body.field ?? "";
+    const cfg = BRANDING_IMAGE_FIELDS[field];
+    if (!cfg) return reply.code(400).send({ error: "That field is not editable here." });
+    const oldValue = await getSetting(prisma, cfg.settingKey);
+    if (!oldValue) return reply.send({ ok: true, cleared: false });
+    await deleteOldUpload(BRANDING_URL_PREFIX, BRANDING_DIR, oldValue, cfg.webVariants);
+    await deleteSetting(prisma, cfg.settingKey);
+    for (const key of cfg.extraKeys ?? []) await deleteSetting(prisma, key);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: cfg.auditAction,
+      targetType: "setting",
+      details: `Cleared setting "${cfg.settingKey}" to its default value.`,
+    });
+    return reply.send({ ok: true, cleared: true });
+  });
+
+  app.post("/api/branding/text/reset", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, string>;
+    const key = body.key ?? "";
+    if (!TEXT_KEYS.has(key)) return reply.code(400).send({ error: "That field is not editable here." });
+    await deleteSetting(prisma, key);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "setting_clear",
+      targetType: "setting",
+      details: `Cleared setting "${key}" to its default value.`,
     });
     return reply.send({ ok: true });
   });

@@ -22,6 +22,22 @@ export function formatPrice(
 }
 
 /**
+ * Native USDT amount for display: up to 4dp, half-up, trailing zeros
+ * stripped, whole values with no decimal point at all — "0", "1", "1.5",
+ * "12.34", "96.7", "123.4568". Distinct from formatPrice (fixed-width
+ * decimals): use this for USDT wallet/order/payment amounts so they never
+ * carry misleading trailing zeros.
+ */
+export function formatUsdtAmount(amount: Decimal.Value): string {
+  return new Decimal(amount).toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toString();
+}
+
+/** formatUsdtAmount with the " USDT" suffix, e.g. "12.34 USDT". */
+export function formatUsdt(amount: Decimal.Value): string {
+  return `${formatUsdtAmount(amount)} USDT`;
+}
+
+/**
  * Indonesian Rupiah display, e.g. "Rp123.456" (prefix symbol, dotted
  * thousands, no decimals). formatPrice can't represent this layout (it emits a
  * suffix currency with a decimal point), so IDR rendering routes through this

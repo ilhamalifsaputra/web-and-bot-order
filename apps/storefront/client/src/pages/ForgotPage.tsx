@@ -19,13 +19,7 @@ import { KeyRound } from "lucide-react";
 import { publicPost } from "../api/client";
 import { t } from "../lib/i18n";
 import Flash from "../components/shop/Flash";
-
-/** base.njk's `data-submit-once` double-submit guard, ported (see LoginPage.tsx). */
-function Spinner() {
-  return (
-    <span className="inline-block w-3.5 h-3.5 mr-1.5 align-[-2px] rounded-full border-2 border-current border-r-transparent animate-spin" />
-  );
-}
+import Spinner from "../components/shop/Spinner";
 
 interface ForgotResponse {
   sent: boolean;

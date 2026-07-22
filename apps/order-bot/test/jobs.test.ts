@@ -292,7 +292,7 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
     // Indices match scheduleJobs' literal array order in src/jobs/index.ts:
     // [autoCancelExpiredOrders, autoCloseStaleTickets, reconcileFinancesJob,
     //  binancePollWatchdog, bybitPollWatchdog, bybitBscPollWatchdog, drainBroadcasts,
-    //  announceStartedFlashSales].
+    //  announceStartedFlashSales, storageCleanupJob].
     const crons = scheduleJobs(fakeApi());
     try {
       expect(crons[0]!.getPattern()).toBe("*/1 * * * *"); // autoCancelExpiredOrders
@@ -309,6 +309,10 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       // flashAnnouncedAt stamp.
       expect(crons[7]!.getPattern()).toBe("40 * * * * *");
       expect(crons[7]!.options.protect).toBe(true);
+      // storageCleanupJob — once daily, off-peak (03:15), well clear of every
+      // other job's minutely/hourly ticks.
+      expect(crons[8]!.getPattern()).toBe("30 15 3 * * *");
+      expect(crons[8]!.options.protect).toBe(true);
     } finally {
       for (const c of crons) c.stop();
     }

@@ -12,9 +12,10 @@
  * FormData at submit like every other auth form. The Telegram widget embed
  * mirrors LoginPage's script-injection effect, but `data-auth-url` is the
  * fixed server route (not fetched) and the gate is `!tg_linked && bot_username`
- * per settings.njk. Markup/classes copied verbatim — no v3→v4 renames apply
- * to this page (settings.njk's only bare-`rounded` here is `rounded-full`/
- * `rounded-xl`, both unaffected).
+ * per settings.njk. The form markup has since been reworked for the phone —
+ * consistent label/field spacing, mobile keyboard hints, and the credentials
+ * error moved next to the button that produced it — but every endpoint,
+ * payload and validation rule is unchanged from the port.
  */
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -26,15 +27,7 @@ import { t } from "../lib/i18n";
 import { useTelegramWidget } from "../lib/useTelegramWidget";
 import Flash from "../components/shop/Flash";
 import PasswordInput from "../components/shop/PasswordInput";
-
-/** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
- * submitting button while its mutation is pending (in addition to disabling
- * the button itself). */
-function Spinner() {
-  return (
-    <span className="inline-block w-3.5 h-3.5 mr-1.5 align-[-2px] rounded-full border-2 border-current border-r-transparent animate-spin" />
-  );
-}
+import Spinner from "../components/shop/Spinner";
 
 interface CredentialsVars {
   username: string;
@@ -108,7 +101,11 @@ export default function SettingsPage() {
         ? t("web.error_message")
         : null;
   const mutationErrorKey = credentialsMutation.error ? (credentialsMutation.error as Error).message : null;
-  const errorText = mutationErrorKey ? t(mutationErrorKey) : queryErrorText;
+  // A failed credentials POST is about the form, so it renders inside the
+  // form; only the redirect-flow (?err=…) messages, which belong to the
+  // Telegram link round-trip, stay at page level. The two can never be
+  // showing at once — a failed POST never navigates.
+  const mutationErrorText = mutationErrorKey ? t(mutationErrorKey) : null;
   const saved = Boolean(params.get("saved"));
   const linked = Boolean(params.get("linked"));
 
@@ -116,9 +113,9 @@ export default function SettingsPage() {
     <>
       <h1 className="page-title mb-6">{t("web.settings_title")}</h1>
 
-      {errorText && (
+      {queryErrorText && (
         <div className="mb-4 max-w-md">
-          <Flash text={errorText} kind="error" />
+          <Flash text={queryErrorText} kind="error" />
         </div>
       )}
       {saved && (
@@ -135,47 +132,66 @@ export default function SettingsPage() {
       <div className="grid lg:grid-cols-2 gap-6 items-start">
         <div className="card card-pad">
           <h2 className="font-display text-lg font-semibold mb-4">{t("web.settings_login_section")}</h2>
-          <form onSubmit={onSubmit} className="space-y-4">
+          {/* `space-y-5` rather than `space-y-4`: with a help line hanging off
+              the username field, tighter gaps made the help text look like it
+              belonged to the field below it. */}
+          <form onSubmit={onSubmit} className="space-y-5">
             <div>
-              <label className="text-sm font-semibold" htmlFor="username">
+              <label className="block text-sm font-semibold mb-1.5" htmlFor="username">
                 {t("web.register_username")}
               </label>
               <input
-                className="field mt-1"
+                className="field"
                 type="text"
                 id="username"
                 name="username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 autoComplete="username"
+                // The pattern below only accepts lowercase, so a phone keyboard
+                // must not auto-capitalise or autocorrect what is typed here —
+                // otherwise the field silently fails validation on the first
+                // character. Unchanged rules, just a keyboard that respects them.
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 minLength={3}
                 maxLength={32}
                 // STO-014: must match LOGIN_USERNAME_RE (packages/db/src/crud/webauth.ts).
                 pattern="[a-z0-9_]+"
+                aria-describedby="username_help"
               />
-              <p className="text-xs text-ink-faint mt-1">{t("web.register_username_help")}</p>
+              <p id="username_help" className="text-xs text-ink-faint mt-1.5">
+                {t("web.register_username_help")}
+              </p>
             </div>
             <div>
-              <label className="text-sm font-semibold" htmlFor="email">
+              <label className="block text-sm font-semibold mb-1.5" htmlFor="email">
                 {t("web.register_email")}
               </label>
               <input
-                className="field mt-1"
+                className="field"
                 type="email"
                 id="email"
                 name="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 autoComplete="email"
+                // `type="email"` alone is enough on iOS but not everywhere;
+                // inputMode makes the "@" and "." keyboard the explicit ask.
+                inputMode="email"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
               />
             </div>
             {page.has_password && (
               <div>
-                <label className="text-sm font-semibold" htmlFor="current_password">
+                <label className="block text-sm font-semibold mb-1.5" htmlFor="current_password">
                   {t("web.settings_current_password")}
                 </label>
                 <PasswordInput
-                  className="field mt-1"
+                  className="field"
                   id="current_password"
                   name="current_password"
                   autoComplete="current-password"
@@ -183,18 +199,31 @@ export default function SettingsPage() {
               </div>
             )}
             <div>
-              <label className="text-sm font-semibold" htmlFor="new_password">
+              <label className="block text-sm font-semibold mb-1.5" htmlFor="new_password">
                 {t("web.settings_new_password")}
               </label>
               <PasswordInput
-                className="field mt-1"
+                className="field"
                 id="new_password"
                 name="new_password"
                 autoComplete="new-password"
                 minLength={8}
               />
             </div>
-            <button type="submit" className="btn btn-primary" disabled={credentialsMutation.isPending}>
+            {/* Next to the button that produced it: on a phone a failure
+                announced at the top of the page is off-screen by the time the
+                thumb reaches Save. `role="alert"` so it is spoken when it
+                appears rather than only on the next focus move. */}
+            {mutationErrorText && (
+              <div role="alert">
+                <Flash text={mutationErrorText} kind="error" />
+              </div>
+            )}
+            <button
+              type="submit"
+              className="btn btn-primary w-full sm:w-auto"
+              disabled={credentialsMutation.isPending}
+            >
               {credentialsMutation.isPending && <Spinner />}
               {t("web.settings_save")}
             </button>

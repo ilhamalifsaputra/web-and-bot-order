@@ -13,8 +13,11 @@ import {
 import { Button } from "@/components/ui/button"
 
 interface ConfirmDialogProps {
-  /** The element that opens the dialog (e.g. a Button). */
-  trigger: ReactNode;
+  /** The element that opens the dialog (e.g. a Button). Omit when driving the
+   *  dialog from external state via `open`/`onOpenChange` (e.g. a row picked
+   *  from a dropdown menu — Radix's dropdown-menu-closes-on-select doesn't
+   *  compose with this component's own `DialogTrigger`). */
+  trigger?: ReactNode;
   title: string;
   description: string;
   /** Label for the confirm button. Default: "Confirm". */
@@ -24,6 +27,10 @@ interface ConfirmDialogProps {
   /** shadcn Button variant applied to the confirm button. Default: "destructive". */
   variant?: "default" | "destructive";
   onConfirm: () => void | Promise<void>;
+  /** Controlled mode: pass both to drive `open` from page-level state instead
+   *  of the self-managed default (used together, `trigger` is typically omitted). */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }
 
 export function ConfirmDialog({
@@ -34,8 +41,13 @@ export function ConfirmDialog({
   cancelLabel = "Cancel",
   variant = "destructive",
   onConfirm,
+  open: openProp,
+  onOpenChange: onOpenChangeProp,
 }: ConfirmDialogProps): JSX.Element {
-  const [open, setOpen] = React.useState(false)
+  const [openState, setOpenState] = React.useState(false)
+  const isControlled = openProp !== undefined
+  const open = isControlled ? openProp : openState
+  const setOpen = isControlled ? (onOpenChangeProp ?? (() => {})) : setOpenState
 
   const handleConfirm = async () => {
     try {
@@ -47,7 +59,7 @@ export function ConfirmDialog({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>{trigger}</DialogTrigger>
+      {trigger && <DialogTrigger asChild>{trigger}</DialogTrigger>}
       <DialogContent showCloseButton={false}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>

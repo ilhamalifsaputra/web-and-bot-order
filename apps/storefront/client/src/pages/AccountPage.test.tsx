@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import AccountPage from "./AccountPage";
@@ -41,6 +41,7 @@ describe("AccountPage", () => {
     document.documentElement.lang = "en";
     vi.clearAllMocks();
     originalLocation = Object.getOwnPropertyDescriptor(window, "location");
+    Object.assign(navigator, { clipboard: { writeText: vi.fn() } });
   });
 
   afterEach(() => {
@@ -52,9 +53,12 @@ describe("AccountPage", () => {
     expect(await screen.findByRole("heading", { name: "My account" })).toBeInTheDocument();
     expect(screen.getByText("Alice")).toBeInTheDocument();
     expect(screen.getByText("4")).toBeInTheDocument();
-    expect(screen.getByText("ALICE01")).toBeInTheDocument();
-    expect(screen.getByText("Rp50.000")).toBeInTheDocument();
-    expect(screen.getByText("1.5000 USDT")).toBeInTheDocument();
+    // Referral code and both wallet balances now also appear in the
+    // (CSS-hidden below `lg`) desktop dashboard widgets, so each can match
+    // twice in the DOM — assert presence rather than a single match.
+    expect(screen.getAllByText("ALICE01").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Rp50.000").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("1.5 USDT").length).toBeGreaterThan(0);
   });
 
   it("logout posts to /api/v1/auth/logout then assigns / on success", async () => {
@@ -71,10 +75,60 @@ describe("AccountPage", () => {
   it("renders the account-menu links", async () => {
     renderAccount();
     await screen.findByRole("heading", { name: "My account" });
-    expect(screen.getByRole("link", { name: /My orders/ })).toHaveAttribute("href", "/account/orders");
+    // Reviews/Settings/Support each appear twice now — once as a Quick
+    // Actions shortcut, once in the grouped menu below — so assert at least
+    // one accessible link per destination points at the right href, rather
+    // than requiring exactly one match.
+    const hasLinkTo = (name: RegExp, href: string) =>
+      screen.getAllByRole("link", { name }).some((el) => el.getAttribute("href") === href);
+    expect(hasLinkTo(/My orders/, "/account/orders")).toBe(true);
+    expect(hasLinkTo(/My reviews/, "/account/reviews")).toBe(true);
+    expect(hasLinkTo(/Help & support/, "/account/support")).toBe(true);
+    expect(hasLinkTo(/Settings/, "/account/settings")).toBe(true);
+  });
+
+  it("renders the referral summary card as a copy button alongside the grouped menu link", async () => {
+    renderAccount();
+    await screen.findByRole("heading", { name: "My account" });
+    // The summary card is a button (tap-to-copy); the grouped menu below still
+    // has its own "Referral" link to /account/referral — exactly one of each.
+    expect(screen.getByRole("button", { name: /Referral/ })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Referral/ })).toHaveAttribute("href", "/account/referral");
-    expect(screen.getByRole("link", { name: /My reviews/ })).toHaveAttribute("href", "/account/reviews");
-    expect(screen.getByRole("link", { name: /Help & support/ })).toHaveAttribute("href", "/account/support");
-    expect(screen.getByRole("link", { name: /Settings/ })).toHaveAttribute("href", "/account/settings");
+  });
+
+  it("copies the referral code and shows a confirmation toast when the referral card is tapped", async () => {
+    renderAccount();
+    await screen.findByRole("heading", { name: "My account" });
+    fireEvent.click(screen.getByRole("button", { name: /Referral/ }));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith("ALICE01");
+    expect(await screen.findByText("Copied")).toBeInTheDocument();
+  });
+
+  it("groups the destinations into labelled navigation sections", async () => {
+    renderAccount();
+    await screen.findByRole("heading", { name: "My account" });
+    const orders = screen.getByRole("navigation", { name: "Orders & purchases" });
+    expect(within(orders).getByRole("link", { name: /My orders/ })).toBeInTheDocument();
+    expect(within(orders).getByRole("link", { name: /My reviews/ })).toBeInTheDocument();
+    const profile = screen.getByRole("navigation", { name: "Profile & security" });
+    expect(within(profile).getByRole("link", { name: /Settings/ })).toBeInTheDocument();
+    const help = screen.getByRole("navigation", { name: "Help & rewards" });
+    expect(within(help).getByRole("link", { name: /Referral/ })).toBeInTheDocument();
+    expect(within(help).getByRole("link", { name: /Help & support/ })).toBeInTheDocument();
+  });
+
+  it("derives the avatar initial from the name and keeps it out of the a11y tree", async () => {
+    renderAccount();
+    await screen.findByRole("heading", { name: "My account" });
+    const avatar = screen.getByText("A");
+    expect(avatar).toHaveAttribute("aria-hidden", "true");
+  });
+
+  // A single-character name is the shortest thing the server accepts, and a
+  // name that starts outside the BMP would be cut in half by `name[0]`.
+  it("takes one whole glyph for the avatar of an emoji-led name", async () => {
+    renderAccount(() => ({ ...account, name: "🐉 Dragon" }));
+    await screen.findByRole("heading", { name: "My account" });
+    expect(screen.getByText("🐉")).toBeInTheDocument();
   });
 });

@@ -4,12 +4,16 @@
  * product detail page.
  */
 import { Link } from "react-router-dom";
+import { motion } from "framer-motion";
 import { Tag, Zap } from "lucide-react";
 import { t } from "../../lib/i18n";
+import { pressable } from "../../lib/motion";
 import FlashBadge, { FlashWasPrice } from "./FlashBadge";
 import Price from "./Price";
 import Stars from "./Stars";
 import StockBadge from "./StockBadge";
+
+const MotionLink = motion.create(Link);
 
 /** Client-side twin of the server's ProductCard shape (apps/storefront/src/cards.ts)
  * — the JSON a grid endpoint returns for one card. Decimals arrive as strings. */
@@ -55,9 +59,10 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
   const bulkPercent = p.bulk_discount ? Math.round(Number(p.bulk_discount)) : null;
   const preSale = p.flash_discount ? (p.from_base_price ?? null) : null;
   return (
-    <Link
+    <MotionLink
       to={`/p/${p.slug}`}
-      className="group overflow-hidden rounded-2xl border border-line bg-card shadow-xs transition hover:shadow-md hover:border-pine-tint flex flex-col"
+      {...pressable}
+      className="group h-full overflow-hidden rounded-2xl border border-line bg-card shadow-xs transition hover:shadow-md hover:border-pine-tint flex flex-col"
     >
       <div className="relative flex h-44 items-center justify-center bg-sand overflow-hidden shrink-0">
         {p.image ? (
@@ -154,6 +159,6 @@ export default function ProductCard({ p, fx, lowThreshold }: ProductCardProps) {
           </div>
         )}
       </div>
-    </Link>
+    </MotionLink>
   );
 }

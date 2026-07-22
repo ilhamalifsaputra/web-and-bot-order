@@ -6,7 +6,7 @@ import { FilterBar } from "../components/shared/FilterBar";
 import { EmptyState } from "../components/shared/EmptyState";
 import { DataTable } from "../components/shared/DataTable";
 import { StatusBadge } from "../components/shared/StatusBadge";
-import { Send } from "lucide-react";
+import { Send, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -15,7 +15,38 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
+import { toast } from "sonner";
 import { apiPost } from "../api/client";
+import { describeError } from "../lib/errorMessages";
+
+/** All 11 NotificationEvent values from packages/core/src/enums.ts. Mirrors
+ * AuditPage.tsx's ACTION_LABELS pattern: unknown/future values fall back to
+ * humanizeEventCode() instead of showing the raw enum. */
+const EVENT_LABELS: Record<string, string> = {
+  ORDER_DELIVERED: "Order delivered",
+  ADMIN_OVERPAID: "Admin overpaid alert",
+  ADMIN_PW_RESET: "Admin password reset",
+  ORDER_DELIVERED_DM: "Order delivered (DM)",
+  ORDER_PROCESSING_DM: "Order processing (DM)",
+  ORDER_MANUAL_DELIVERED_DM: "Manual order delivered (DM)",
+  ORDER_PIPELINE_FAILED: "Order pipeline failed",
+  PRODUCT_RESTOCKED_BROADCAST: "Product restocked broadcast",
+  FLASH_SALE_BROADCAST: "Flash sale broadcast",
+  ADMIN_MANUAL_ORDER_QUEUED: "Manual order queued",
+  BULK_PURCHASE_BROADCAST: "Bulk purchase broadcast",
+};
+
+function humanizeEventCode(event: string): string {
+  return event
+    .split("_")
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function eventLabel(event: string): string {
+  return EVENT_LABELS[event] ?? humanizeEventCode(event);
+}
 
 interface OutboxRow {
   id: number;
@@ -61,8 +92,9 @@ export function OutboxPage() {
     try {
       await apiPost(`/api/outbox/${id}/retry`, {});
       await refetch();
+      toast.success("Notification retried.");
     } catch (e: unknown) {
-      alert((e instanceof Error ? e.message : String(e)) || "Failed to retry notification");
+      toast.error(describeError((e instanceof Error ? e.message : String(e)) || "Failed to retry notification"));
     } finally {
       setRetrying((s) => { const n = new Set(s); n.delete(id); return n; });
     }
@@ -114,7 +146,7 @@ export function OutboxPage() {
           <DataTable
             columns={[
               { key: "id", header: "ID", render: (row) => <span className="font-mono text-xs text-ink-soft">{row.id}</span> },
-              { key: "event", header: "Event", render: (row) => <span className="text-ink">{row.event}</span> },
+              { key: "event", header: "Event", render: (row) => <span className="text-ink" title={row.event}>{eventLabel(row.event)}</span> },
               { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status} /> },
               { key: "attempts", header: "Attempts", render: (row) => <span className="text-ink-soft">{row.attempts}</span> },
               { key: "created", header: "Created", render: (row) => <span className="whitespace-nowrap text-ink-soft">{row.createdAtDisplay ?? "—"}</span> },
@@ -130,6 +162,7 @@ export function OutboxPage() {
                       disabled={retrying.has(row.id)}
                       onClick={() => retry(row.id)}
                     >
+                      <RefreshCw className="h-4 w-4" />
                       Retry
                     </Button>
                   ) : null,
@@ -155,7 +188,8 @@ export function OutboxPage() {
               disabled={page <= 1}
               onClick={() => goPage(page - 1)}
             >
-              ← Prev
+              <ChevronLeft className="h-4 w-4" />
+              Prev
             </Button>
             <span className="text-sm text-ink-soft">Page {page}</span>
             <Button
@@ -164,7 +198,8 @@ export function OutboxPage() {
               disabled={!data.hasNext}
               onClick={() => goPage(page + 1)}
             >
-              Next →
+              Next
+              <ChevronRight className="h-4 w-4" />
             </Button>
           </div>
         )}

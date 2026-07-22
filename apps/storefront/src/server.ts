@@ -15,7 +15,6 @@ import fastifyStatic from "@fastify/static";
 import { config } from "@app/core/config";
 import { t } from "@app/core/i18n";
 import { logger } from "@app/core/logger";
-import viewsPlugin from "./plugins/views";
 import authPlugin from "./plugins/auth";
 import setupGatePlugin from "./plugins/setupGate";
 import homeRoutes from "./routes/home";
@@ -31,6 +30,7 @@ import apiAccountRoutes from "./routes/apiAccount";
 import seoRoutes from "./routes/seo";
 import spaShellRoutes from "./routes/spaShell";
 import { requestLang } from "./shop";
+import { renderSpecialShell, esc } from "./lib/spaFallback";
 
 // Scrubs a live, single-use password-reset token out of a request path
 // before it's logged (CLAUDE.md: "Never log secrets"). The token has
@@ -42,6 +42,36 @@ import { requestLang } from "./shop";
 // dependency) so it's unit-testable directly.
 export function redactPath(path: string): string {
   return path.replace(/\/reset\/[^/]+/g, "/reset/[redacted]");
+}
+
+/**
+ * Shared shape for the error (500) / not-found (404) shells — a status-code
+ * card matching the React ErrorPage (client/src/pages/ErrorPage.tsx), with a
+ * `<meta name="server-error-status">` main.tsx reads to mount it directly
+ * instead of the normal router. See lib/spaFallback.ts for the build-missing
+ * last resort this falls back to.
+ */
+function renderErrorShell(
+  reply: import("fastify").FastifyReply,
+  status: number,
+  lang: string,
+  message: string,
+): void {
+  renderSpecialShell(reply, {
+    status,
+    lang,
+    metaTag: `<meta name="server-error-status" content="${status}">`,
+    title: String(status),
+    seoBodyHtml: `<h1>${status}</h1><p>${esc(message)}</p>`,
+    fallbackBodyHtml:
+      `<main class="max-w-6xl mx-auto px-4 py-8 flex-1">` +
+      `<div class="card card-pad max-w-lg mx-auto text-center py-14">` +
+      `<div class="font-display text-5xl font-semibold text-ink-faint">${status}</div>` +
+      `<p class="mt-3 text-ink-soft">${esc(message)}</p>` +
+      `<a href="/" class="btn btn-primary mt-6">${esc(t("web.back_home", lang))}</a>` +
+      `</div>` +
+      `</main>`,
+  });
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -108,7 +138,6 @@ export async function buildApp(): Promise<FastifyInstance> {
       res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'");
     },
   });
-  await app.register(viewsPlugin);
   await app.register(authPlugin);
   await app.register(setupGatePlugin);
 
@@ -122,16 +151,7 @@ export async function buildApp(): Promise<FastifyInstance> {
         return reply.code(500).send({ error: "error.generic" });
       }
       const lang = requestLang(req);
-      void reply.code(500).view("error.njk", {
-        lang,
-        status_code: 500,
-        message: t("web.error_message", lang),
-        shop_name: "",
-        cart_count: 0,
-        fx: null,
-        favicon_url: "/static/favicon.svg",
-        logo_url: "",
-      });
+      renderErrorShell(reply, 500, lang, t("web.error_message", lang));
     }
   });
   // Unmatched GETs fall through to the SPA shell wildcard below, so this
@@ -141,16 +161,7 @@ export async function buildApp(): Promise<FastifyInstance> {
       return reply.code(404).send({ error: "not_found" });
     }
     const lang = requestLang(req);
-    void reply.code(404).view("error.njk", {
-      lang,
-      status_code: 404,
-      message: t("web.not_found", lang),
-      shop_name: "",
-      cart_count: 0,
-      fx: null,
-      favicon_url: "/static/favicon.svg",
-      logo_url: "",
-    });
+    renderErrorShell(reply, 404, lang, t("web.not_found", lang));
   });
 
   await app.register(homeRoutes);

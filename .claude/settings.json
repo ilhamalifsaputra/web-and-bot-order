@@ -1,5 +1,8 @@
 {
   "worktree": {
     "bgIsolation": "none"
+  },
+  "enabledPlugins": {
+    "superpowers@superpowers-dev": true
   }
 }

@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import SettingsPage from "./SettingsPage";
@@ -75,6 +75,32 @@ describe("SettingsPage", () => {
     (apiPost as Mock).mockRejectedValue(new Error("web.settings_wrong_password"));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByText("Current password is wrong.")).toBeInTheDocument();
+  });
+
+  // The credentials error belongs to the form, not the page: on a phone a
+  // message at the top of the document is off-screen once you have scrolled
+  // down to Save.
+  it("renders the credentials error inside the form as an alert", async () => {
+    renderSettings();
+    const form = (await screen.findByLabelText("Username")).closest("form")!;
+    (apiPost as Mock).mockRejectedValue(new Error("web.settings_wrong_password"));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Current password is wrong.");
+    expect(within(form).getByRole("alert")).toHaveTextContent("Current password is wrong.");
+  });
+
+  it("gives every credentials field its autofill and mobile-keyboard hints", async () => {
+    renderSettings();
+    const username = await screen.findByLabelText("Username");
+    expect(username).toHaveAttribute("autocomplete", "username");
+    expect(username).toHaveAttribute("autocapitalize", "none");
+    expect(username).toHaveAttribute("pattern", "[a-z0-9_]+");
+    const email = screen.getByLabelText("Email");
+    expect(email).toHaveAttribute("type", "email");
+    expect(email).toHaveAttribute("inputmode", "email");
+    expect(email).toHaveAttribute("autocomplete", "email");
+    expect(screen.getByLabelText("Current password")).toHaveAttribute("autocomplete", "current-password");
+    expect(screen.getByLabelText(/New password/)).toHaveAttribute("autocomplete", "new-password");
   });
 
   it("assigns /account/settings?saved=1 on a successful credentials save", async () => {

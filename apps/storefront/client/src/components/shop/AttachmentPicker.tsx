@@ -4,7 +4,8 @@
  * (apps/storefront/src/lib/ticketAttachments.ts) but are defense-in-depth
  * only — the server is the real gate. Picking a file stages it in the
  * caller's state; nothing uploads until the surrounding form submits
- * (SupportPage/TicketDetailPage build the FormData and POST via apiPostForm).
+ * (SupportPage/TicketDetailPage build the FormData and POST via
+ * apiPostFormWithProgress).
  */
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Paperclip, FileVideo, X } from "lucide-react";
@@ -93,7 +94,7 @@ export default function AttachmentPicker({ files, onChange, disabled }: Attachme
           {files.map((file, idx) => (
             <li
               key={`${file.name}-${idx}`}
-              className="flex items-center gap-1.5 rounded-md border border-line bg-card px-2 py-1 text-xs"
+              className="flex items-center gap-2 rounded-md border border-line bg-card px-2 py-1 text-xs"
             >
               {previewUrls[idx] ? (
                 <img src={previewUrls[idx]!} alt="" className="w-6 h-6 rounded object-cover" />
@@ -105,7 +106,7 @@ export default function AttachmentPicker({ files, onChange, disabled }: Attachme
                 type="button"
                 onClick={() => removeAt(idx)}
                 aria-label={t("web.support_attach_remove")}
-                className="text-ink-faint hover:text-rust"
+                className="-mr-1 rounded p-1 text-ink-faint hover:text-rust"
               >
                 <X className="w-3.5 h-3.5" />
               </button>

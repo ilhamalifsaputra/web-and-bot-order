@@ -209,6 +209,30 @@ describe("SPA shell wildcard", () => {
     expect(res.body).toContain('<meta property="og:title" content="Netflix Premium">');
   });
 
+  // The nav drawer's three browse-all shelves. These live in KNOWN_PATHS, so
+  // the regression they guard against is a 404 on refresh: the React route
+  // table alone doesn't make a URL real to the server.
+  it("200s the browse-all shelves with an indexable heading, not a 404", async () => {
+    for (const [path, heading] of [
+      ["/products", "All products"],
+      ["/categories", "Categories"],
+      ["/flash", "Flash sale"],
+    ] as const) {
+      const res = await app.inject({ method: "GET", url: path });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toContain("text/html");
+      expect(res.body).toContain(`<title>${heading} — SPA Test Shop</title>`);
+      expect(res.body).toContain(`<h1>${heading}</h1>`);
+    }
+  });
+
+  it("gives a crawler real links into the catalog from /products and /categories", async () => {
+    const products = await app.inject({ method: "GET", url: "/products" });
+    expect(products.body).toContain(`href="/p/${productSlug}"`);
+    const categories = await app.inject({ method: "GET", url: "/categories" });
+    expect(categories.body).toContain(`href="/c/${categorySlug}"`);
+  });
+
   // Parity with the deleted base.njk, which rendered a <link rel="icon"> on
   // every page (web_favicon_url setting, default /static/favicon.svg —
   // shopContext() in ../src/shop.ts).

@@ -7,7 +7,7 @@
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { prisma, getSetting, deleteSetting, setSetting, logAdminAction } from "@app/db";
-import { currentAdmin, csrfProtect, canMutate } from "../plugins/auth";
+import { currentAdmin, csrfProtect } from "../plugins/auth";
 import { redirectWithFlash } from "../flash";
 import { UPLOADS_DIR } from "../paths";
 import { handleUpload, deleteOldUpload } from "../lib/upload";
@@ -15,8 +15,21 @@ import { handleUpload, deleteOldUpload } from "../lib/upload";
 // to Telegram by the bot, and the favicon is an ICO/SVG. See webpVariants.ts.
 import { HERO_WIDTHS, LOGO_WIDTHS } from "../lib/webpVariants";
 
-const BRANDING_DIR = join(UPLOADS_DIR, "branding");
-const BRANDING_URL_PREFIX = "/uploads/branding";
+export const BRANDING_DIR = join(UPLOADS_DIR, "branding");
+export const BRANDING_URL_PREFIX = "/uploads/branding";
+
+/** Per-field config for "reset to default" (`POST /api/branding/image/clear`). */
+export const BRANDING_IMAGE_FIELDS: Record<string, {
+  settingKey: string;
+  webVariants?: number[];
+  extraKeys?: string[];
+  auditAction: string;
+}> = {
+  favicon: { settingKey: "web_favicon_url", auditAction: "branding_favicon_clear" },
+  logo: { settingKey: "web_logo_url", webVariants: LOGO_WIDTHS, auditAction: "branding_logo_clear" },
+  hero: { settingKey: "web_hero_url", webVariants: HERO_WIDTHS, auditAction: "branding_hero_clear" },
+  banner: { settingKey: "banner_image", extraKeys: ["banner_image_fileid"], auditAction: "branding_banner_clear" },
+};
 
 const FAVICON_MIME: Record<string, string> = {
   "image/png": "png",
@@ -100,20 +113,11 @@ export default async function brandingRoutes(app: FastifyInstance): Promise<void
     }),
   );
 
-  app.post("/branding/banner/clear", { preHandler: csrfProtect }, async (req, reply) => {
-    if (!canMutate(req.admin!.role, req.url)) {
-      return reply.code(403).type("text/plain").send("Insufficient permissions for this action.");
-    }
-    await deleteOldUpload(BRANDING_URL_PREFIX, BRANDING_DIR, await getSetting(prisma, "banner_image"));
-    await deleteSetting(prisma, "banner_image");
-    await deleteSetting(prisma, "banner_image_fileid");
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "branding_banner_clear",
-      targetType: "setting",
-    });
-    return redirectWithFlash(reply, "/branding", "Banner cleared.", "success");
-  });
+  // POST /branding/banner/clear retired — superseded by the JSON
+  // POST /api/branding/image/clear (apps/web-admin/src/routes/api/branding.ts).
+  // The old route 303-redirected to the now-unregistered /branding, which fell
+  // through to the SPA shell's HTML 200 — fetch()'s res.json() on that body
+  // always threw, so this route was already broken from the frontend's side.
 
   app.post("/branding/text", { preHandler: csrfProtect }, async (req, reply) => {
     const body = (req.body ?? {}) as Record<string, string>;

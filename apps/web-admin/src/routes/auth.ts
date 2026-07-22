@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 import { isAdmin } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
+import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { UserRole } from "@app/core/enums";
 import {
   prisma,
@@ -52,9 +53,15 @@ async function resetEligible(telegramId: number): Promise<boolean> {
 
 const RESET_TTL_MINUTES = Math.round(PW_RESET_TTL_MS / 60000);
 
+// Fastify's own req.ip, computed from X-Forwarded-For ONLY when trustProxy is
+// configured (TRUST_PROXY env — see server.ts) to the real reverse proxy's
+// address. Previously this read the raw x-forwarded-for header directly,
+// always trusting its client-supplied left-most entry — any direct caller
+// could forge that header and spoof a different IP per request, defeating
+// the per-IP login/forgot/reset rate limit entirely (mirrors the storefront's
+// Storefront-4 fix, security audit 2026-06-23, applied here to close the same
+// gap in web-admin).
 function clientIp(req: FastifyRequest): string {
-  const fwd = req.headers["x-forwarded-for"];
-  if (typeof fwd === "string" && fwd) return fwd.split(",")[0]!.trim();
   return req.ip || "unknown";
 }
 
@@ -195,6 +202,7 @@ export default async function authRoutes(app: FastifyInstance): Promise<void> {
       const { code, store } = newResetCode();
       await setSetting(prisma, pwResetKey(telegramId), store);
       await enqueueAdminPasswordReset(prisma, { telegramId, code, ttlMinutes: RESET_TTL_MINUTES });
+      nudgeOutboxDispatcher(); // wake the dispatcher now instead of waiting up to NOTIF_POLL_INTERVAL_SECONDS
       logger.info(`Enqueued a password reset code for Telegram id ${telegramId}, requested from IP ${ip}`); // never log the code
     }
     return reply.send({ ok: true, sent: true });

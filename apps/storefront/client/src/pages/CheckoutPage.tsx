@@ -26,11 +26,11 @@
  * performWalletCheckout path before ever looking at a voucher/customer_data.
  *
  * Markup/classes copied verbatim apart from the mechanical Tailwind v3→v4
- * renames (docs/REACT_STOREFRONT_MIGRATION.md). checkout.njk's payment
- * method `<label>`s have no `has-[:checked]:` styling (that pattern only
- * exists on product.njk's DenominationCard) — ported as-is, template wins.
+ * renames (docs/REACT_STOREFRONT_MIGRATION.md), with two deliberate mobile
+ * departures from template parity documented at PaymentMethodRow (selected
+ * state) and at the sticky total bar near the bottom of this file.
  */
-import { useEffect, useState, type KeyboardEvent } from "react";
+import { useEffect, useState, type ReactNode, type KeyboardEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ChevronRight, Wallet } from "lucide-react";
@@ -38,21 +38,14 @@ import { apiGet, apiPost } from "../api/client";
 import type { AdditionalField, CheckoutData, PlaceOrderResponse } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
-import { formatIdr, money4 } from "../lib/format";
+import { formatIdr, formatNativeUsdt } from "../lib/format";
 import { allFieldsValid } from "../lib/deliveryFields";
+import { useIsDesktop } from "../lib/useMediaQuery";
 import FlashBadge, { flashPercentLabel } from "../components/shop/FlashBadge";
 import Price from "../components/shop/Price";
 import Stepper from "../components/shop/Stepper";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
-
-/** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
- * submitting button while its mutation is pending (in addition to disabling
- * the button itself). */
-function Spinner() {
-  return (
-    <span className="inline-block w-3.5 h-3.5 mr-1.5 align-[-2px] rounded-full border-2 border-current border-r-transparent animate-spin" />
-  );
-}
+import Spinner from "../components/shop/Spinner";
 
 /** All-or-nothing wallet-credit gates: only "sufficient" when the balance
  * covers the live total outright — never offered as a partial discount. */
@@ -113,6 +106,61 @@ function anyMethodEnabled(data: CheckoutData): boolean {
 }
 
 /**
+ * One payment-method radio row (gateway or wallet credit — they are the same
+ * radio group). The row has always been a `<label>` wrapping its radio, so the
+ * whole rectangle was already tappable; what it lacked was a selected state a
+ * thumb-held phone can read. The native radio dot sits at the row's left edge,
+ * exactly where the hand covering the screen is, so the buyer could not tell
+ * which rail was armed without moving their hand. `has-[:checked]:` tints and
+ * outlines the entire row instead, and `focus-within` gives the same row a
+ * visible ring when the group is walked with the arrow keys. checkout.njk had
+ * neither (that pattern only existed on product.njk's DenominationCard) — a
+ * deliberate departure from template parity, not a porting oversight.
+ *
+ * Extracted from eight near-identical inline labels so the row treatment lives
+ * in one place; which rows render, and under what conditions, stays at the
+ * call sites untouched.
+ */
+function PaymentMethodRow({
+  value,
+  checked,
+  onSelect,
+  icon,
+  title,
+  subtitle,
+  feeNote,
+}: {
+  value: string;
+  checked: boolean;
+  onSelect: () => void;
+  icon: ReactNode;
+  title: string;
+  subtitle: string;
+  feeNote?: string;
+}) {
+  return (
+    <label className="flex items-start gap-3 p-3 rounded-xl border border-line transition-colors cursor-pointer hover:border-pine focus-within:ring-2 focus-within:ring-pine has-[:checked]:border-pine has-[:checked]:bg-pine-tint">
+      <input
+        type="radio"
+        name="method"
+        value={value}
+        className="mt-1 size-4 shrink-0 accent-pine"
+        checked={checked}
+        onChange={onSelect}
+      />
+      {icon}
+      {/* min-w-0 lets a long gateway description wrap rather than push the row
+          wider than a 320px viewport. */}
+      <span className="min-w-0">
+        <span className="font-semibold text-sm block">{title}</span>
+        <span className="text-xs text-ink-soft block mt-0.5">{subtitle}</span>
+        {feeNote && <span className="text-xs text-ink-faint block mt-0.5">{feeNote}</span>}
+      </span>
+    </label>
+  );
+}
+
+/**
  * Info-collection step (Task 6, item 1): for the ONE manual_with_info line a
  * cart may hold (single-SKU-per-non-auto-cart guard, routes/api.ts POST
  * /cart), collects `additional_fields` answers once per unit (qty times) —
@@ -161,7 +209,7 @@ function InfoStepCard({
                 {unitIdx === 0 && (
                   <button
                     type="button"
-                    className="text-xs font-medium text-pine hover:text-pine-dark underline shrink-0"
+                    className="text-xs font-medium text-pine transition-colors hover:text-pine-dark underline shrink-0"
                     onClick={copyToAll}
                   >
                     {t("web.checkout_info_copy_all")}
@@ -190,6 +238,8 @@ function InfoStepCard({
 export default function CheckoutPage() {
   const navigate = useNavigate();
   const { data: ctx } = useShopContext();
+  // Decides which of the two submit controls exists — see the sticky bar below.
+  const isDesktop = useIsDesktop();
   const { data, error } = useQuery({
     queryKey: ["checkout"],
     queryFn: () => apiGet<CheckoutData>("/api/v1/checkout"),
@@ -279,6 +329,11 @@ export default function CheckoutPage() {
   // `page` holds the item list; `totals` is the re-priced payload after a
   // voucher apply. Either carries the same per-line flash flags.
   const flashSummary = cartFlashSummary(page);
+  // Both submit controls share one set of gates so neither can offer an order
+  // the other refuses: `blocked` is the permanent "not payable yet" state the
+  // dimmed styling explains, `disabled` adds the transient in-flight state.
+  const placeOrderBlocked = !anyMethod || !infoValid;
+  const placeOrderDisabled = placeOrderBlocked || placeOrderMutation.isPending;
 
   function setAnswer(unitIdx: number, key: string, value: string): void {
     setAnswers((prev) => {
@@ -299,7 +354,14 @@ export default function CheckoutPage() {
         </div>
       )}
 
-      <form onSubmit={(e) => e.preventDefault()} className="grid lg:grid-cols-3 gap-6 items-start">
+      <form
+        onSubmit={(e) => e.preventDefault()}
+        className="grid lg:grid-cols-3 gap-6 items-start"
+        // The sticky bar is fixed, so it is out of flow and would otherwise sit
+        // on top of the last thing in the form ("Back to cart"). Reserve its
+        // height plus the home-indicator inset at the end of the page instead.
+        style={isDesktop ? undefined : { paddingBottom: "calc(env(safe-area-inset-bottom) + 5.5rem)" }}
+      >
         <div className="lg:col-span-2 space-y-6">
           {infoItem && (
             <InfoStepCard fields={infoItem.additional_fields} qty={infoItem.qty} answers={answers} onChange={setAnswer} />
@@ -309,171 +371,128 @@ export default function CheckoutPage() {
             <h2 className="section-title mb-3">{t("web.pay_method")}</h2>
             <div className="space-y-3">
               {page.idr_enabled && (
-                <label className="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
-                  <input
-                    type="radio"
-                    name="method"
-                    value="qris"
-                    className="mt-1"
-                    checked={method === "qris"}
-                    onChange={() => setMethod("qris")}
-                  />
-                  <img
-                    src="/static/pay/qris.png"
-                    alt="QRIS"
-                    className="h-7 w-auto max-w-[80px] object-contain shrink-0 mt-0.5"
-                  />
-                  <span>
-                    <span className="font-semibold text-sm block">{t("web.pay_idr_title")}</span>
-                    <span className="text-xs text-ink-soft block mt-0.5">{t("web.pay_idr_sub")}</span>
-                  </span>
-                </label>
+                <PaymentMethodRow
+                  value="qris"
+                  checked={method === "qris"}
+                  onSelect={() => setMethod("qris")}
+                  icon={
+                    <img
+                      src="/static/pay/qris.png"
+                      alt="QRIS"
+                      className="h-7 w-auto max-w-[80px] object-contain shrink-0 mt-0.5"
+                    />
+                  }
+                  title={t("web.pay_idr_title")}
+                  subtitle={t("web.pay_idr_sub")}
+                  feeNote={t("web.qris_admin_fee_note")}
+                />
               )}
               {page.paydisini_enabled && (
-                <label className="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
-                  <input
-                    type="radio"
-                    name="method"
-                    value="paydisini"
-                    className="mt-1"
-                    checked={method === "paydisini"}
-                    onChange={() => setMethod("paydisini")}
-                  />
-                  <img
-                    src="/static/pay/qris.png"
-                    alt="PayDisini"
-                    className="h-7 w-auto max-w-[80px] object-contain shrink-0 mt-0.5"
-                  />
-                  <span>
-                    <span className="font-semibold text-sm block">{t("web.pay_paydisini_title")}</span>
-                    <span className="text-xs text-ink-soft block mt-0.5">{t("web.pay_paydisini_sub")}</span>
-                  </span>
-                </label>
+                <PaymentMethodRow
+                  value="paydisini"
+                  checked={method === "paydisini"}
+                  onSelect={() => setMethod("paydisini")}
+                  icon={
+                    <img
+                      src="/static/pay/qris.png"
+                      alt="PayDisini"
+                      className="h-7 w-auto max-w-[80px] object-contain shrink-0 mt-0.5"
+                    />
+                  }
+                  title={t("web.pay_paydisini_title")}
+                  subtitle={t("web.pay_paydisini_sub")}
+                />
               )}
               {page.binance_enabled && (
-                <label className="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
-                  <input
-                    type="radio"
-                    name="method"
-                    value="binance"
-                    className="mt-1"
-                    checked={method === "binance"}
-                    onChange={() => setMethod("binance")}
-                  />
-                  <img src="/static/pay/binance.png" alt="Binance" className="h-7 w-7 object-contain shrink-0 mt-0.5" />
-                  <span>
-                    <span className="font-semibold text-sm block">{t("web.pay_usdt_title")}</span>
-                    <span className="text-xs text-ink-soft block mt-0.5">{t("web.pay_usdt_sub")}</span>
-                  </span>
-                </label>
+                <PaymentMethodRow
+                  value="binance"
+                  checked={method === "binance"}
+                  onSelect={() => setMethod("binance")}
+                  icon={
+                    <img
+                      src="/static/pay/binance.png"
+                      alt="Binance"
+                      className="h-7 w-7 object-contain shrink-0 mt-0.5"
+                    />
+                  }
+                  title={t("web.pay_usdt_title")}
+                  subtitle={t("web.pay_usdt_sub")}
+                />
               )}
               {page.bybit_enabled && (
-                <label className="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
-                  <input
-                    type="radio"
-                    name="method"
-                    value="bybit"
-                    className="mt-1"
-                    checked={method === "bybit"}
-                    onChange={() => setMethod("bybit")}
-                  />
-                  <img
-                    src="/static/pay/bybit.png"
-                    alt="Bybit"
-                    className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
-                  />
-                  <span>
-                    <span className="font-semibold text-sm block">{t("web.pay_bybit_title")}</span>
-                    <span className="text-xs text-ink-soft block mt-0.5">{t("web.pay_bybit_sub")}</span>
-                  </span>
-                </label>
+                <PaymentMethodRow
+                  value="bybit"
+                  checked={method === "bybit"}
+                  onSelect={() => setMethod("bybit")}
+                  icon={
+                    <img
+                      src="/static/pay/bybit.png"
+                      alt="Bybit"
+                      className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
+                    />
+                  }
+                  title={t("web.pay_bybit_title")}
+                  subtitle={t("web.pay_bybit_sub")}
+                />
               )}
               {page.bybit_bsc_enabled && (
-                <label className="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
-                  <input
-                    type="radio"
-                    name="method"
-                    value="bybit_bsc"
-                    className="mt-1"
-                    checked={method === "bybit_bsc"}
-                    onChange={() => setMethod("bybit_bsc")}
-                  />
-                  <img
-                    src="/static/pay/bybit.png"
-                    alt="Bybit"
-                    className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
-                  />
-                  <span>
-                    <span className="font-semibold text-sm block">{t("web.pay_bybit_bsc_title")}</span>
-                    <span className="text-xs text-ink-soft block mt-0.5">{t("web.pay_bybit_bsc_sub")}</span>
-                  </span>
-                </label>
+                <PaymentMethodRow
+                  value="bybit_bsc"
+                  checked={method === "bybit_bsc"}
+                  onSelect={() => setMethod("bybit_bsc")}
+                  icon={
+                    <img
+                      src="/static/pay/bybit.png"
+                      alt="Bybit"
+                      className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
+                    />
+                  }
+                  title={t("web.pay_bybit_bsc_title")}
+                  subtitle={t("web.pay_bybit_bsc_sub")}
+                />
               )}
               {page.nowpayments_enabled && (
-                <label className="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
-                  <input
-                    type="radio"
-                    name="method"
-                    value="nowpayments"
-                    className="mt-1"
-                    checked={method === "nowpayments"}
-                    onChange={() => setMethod("nowpayments")}
-                  />
-                  <img
-                    src="/static/pay/nowpayments.png"
-                    alt="NOWPayments"
-                    className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
-                  />
-                  <span>
-                    <span className="font-semibold text-sm block">{t("web.pay_nowpayments_title")}</span>
-                    <span className="text-xs text-ink-soft block mt-0.5">{t("web.pay_nowpayments_sub")}</span>
-                  </span>
-                </label>
+                <PaymentMethodRow
+                  value="nowpayments"
+                  checked={method === "nowpayments"}
+                  onSelect={() => setMethod("nowpayments")}
+                  icon={
+                    <img
+                      src="/static/pay/nowpayments.png"
+                      alt="NOWPayments"
+                      className="h-7 w-7 rounded-sm object-contain shrink-0 mt-0.5"
+                    />
+                  }
+                  title={t("web.pay_nowpayments_title")}
+                  subtitle={t("web.pay_nowpayments_sub")}
+                />
               )}
               {idrWalletSufficient && (
-                <label className="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
-                  <input
-                    type="radio"
-                    name="method"
-                    value="wallet_idr"
-                    className="mt-1"
-                    checked={method === "wallet_idr"}
-                    onChange={() => setMethod("wallet_idr")}
-                  />
-                  <Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />
-                  <span>
-                    <span className="font-semibold text-sm block">{t("web.pay_wallet_idr_title")}</span>
-                    <span className="text-xs text-ink-soft block mt-0.5">
-                      {t("web.pay_wallet_idr_sub", { amount: formatIdr(page.wallet_idr) })}
-                    </span>
-                  </span>
-                </label>
+                <PaymentMethodRow
+                  value="wallet_idr"
+                  checked={method === "wallet_idr"}
+                  onSelect={() => setMethod("wallet_idr")}
+                  icon={<Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />}
+                  title={t("web.pay_wallet_idr_title")}
+                  subtitle={t("web.pay_wallet_idr_sub", { amount: formatIdr(page.wallet_idr) })}
+                />
               )}
               {usdtWalletSufficient && (
-                <label className="flex items-start gap-3 p-3 rounded-xl border border-line hover:border-pine cursor-pointer">
-                  <input
-                    type="radio"
-                    name="method"
-                    value="wallet_usdt"
-                    className="mt-1"
-                    checked={method === "wallet_usdt"}
-                    onChange={() => setMethod("wallet_usdt")}
-                  />
-                  <Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />
-                  <span>
-                    <span className="font-semibold text-sm block">{t("web.pay_wallet_usdt_title")}</span>
-                    <span className="text-xs text-ink-soft block mt-0.5">
-                      {t("web.pay_wallet_usdt_sub", { amount: `${money4(page.wallet_usdt)} USDT` })}
-                    </span>
-                  </span>
-                </label>
+                <PaymentMethodRow
+                  value="wallet_usdt"
+                  checked={method === "wallet_usdt"}
+                  onSelect={() => setMethod("wallet_usdt")}
+                  icon={<Wallet className="h-7 w-7 object-contain shrink-0 mt-0.5 text-pine" />}
+                  title={t("web.pay_wallet_usdt_title")}
+                  subtitle={t("web.pay_wallet_usdt_sub", { amount: formatNativeUsdt(page.wallet_usdt) })}
+                />
               )}
               {!anyMethodEnabled(page) && !idrWalletSufficient && !usdtWalletSufficient && (
                 <div className="text-center text-sm text-ink-soft border border-dashed border-line rounded-xl py-6 px-3">
                   <Wallet className="w-5 h-5 mx-auto mb-1.5 text-ink-faint" />
                   <p>
                     {t("web.pay_none_available_prefix")}{" "}
-                    <Link to="/account/support" className="text-pine underline hover:text-pine-dark">
+                    <Link to="/account/support" className="text-pine underline transition-colors hover:text-pine-dark">
                       {t("web.pay_none_available_link")}
                     </Link>
                     {t("web.pay_none_available_suffix")}
@@ -549,28 +568,78 @@ export default function CheckoutPage() {
                   <span>−{formatIdr(totals.voucher_discount)}</span>
                 </div>
               )}
+              {method === "qris" && (
+                <div className="flex justify-between py-2">
+                  <span className="text-ink-soft">{t("web.qris_admin_fee")}</span>
+                  <span>{formatIdr(totals.qris_admin_fee)}</span>
+                </div>
+              )}
               <div className="flex justify-between py-3 items-baseline">
                 <span className="font-semibold">{t("web.order_total")}</span>
-                <Price value={totals.total} fx={ctx?.fx} size="text-lg" />
+                <Price value={method === "qris" ? totals.qris_grand_total : totals.total} fx={ctx?.fx} size="text-lg" />
               </div>
             </div>
             {ctx?.fx && <p className="text-xs text-ink-faint">{t("web.usdt_note")}</p>}
-            <button
-              type="button"
-              className="btn btn-primary w-full mt-4"
-              disabled={!anyMethod || placeOrderMutation.isPending || !infoValid}
-              style={!anyMethod || !infoValid ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
-              onClick={() => placeOrderMutation.mutate()}
-            >
-              {placeOrderMutation.isPending && <Spinner />}
-              {t("web.place_order")} <ChevronRight className="w-4 h-4" />
-            </button>
+            {/* Desktop only: on a phone this button lives in the sticky bar
+                below instead. Rendering it in both places would put two
+                identically-labelled submits in the page for assistive tech to
+                disambiguate, so only one exists at a time. */}
+            {isDesktop && (
+              <button
+                type="button"
+                className="btn btn-primary w-full mt-4"
+                disabled={placeOrderDisabled}
+                style={placeOrderBlocked ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+                onClick={() => placeOrderMutation.mutate()}
+              >
+                {placeOrderMutation.isPending && <Spinner />}
+                {t("web.place_order")} <ChevronRight className="w-4 h-4" />
+              </button>
+            )}
             <Link to="/cart" className="btn btn-ghost w-full mt-2">
               {t("web.back_to_cart")}
             </Link>
           </div>
         </div>
       </form>
+
+      {/* Sticky mobile total: on a phone the summary card stacks *below* the method
+          list, so the buyer chooses a payment rail with the amount they are
+          about to pay scrolled off-screen — the one number that should never
+          leave view on a checkout. This bar pins the live total (the same
+          `totals.total` the summary renders, after any voucher preview) next
+          to the only submit control mobile has, and reuses the summary
+          button's mutation and gating verbatim: no second request path, no
+          second notion of "ready to pay". Desktop keeps the in-card button —
+          there the summary sits beside the methods and is already in view. */}
+      {!isDesktop && (
+        <div
+          className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-card/95 px-4 pt-3 backdrop-blur-sm"
+          style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.75rem)" }}
+        >
+          <div className="flex items-center gap-3">
+            {/* The IDR figure only: the USDT hint stays in the summary card,
+                where there is room for it without crowding the button off a
+                320px row. */}
+            <div className="min-w-0">
+              <div className="text-xs text-ink-soft">{t("web.order_total")}</div>
+              <div className="text-base font-semibold text-pine truncate">
+                {formatIdr(method === "qris" ? totals.qris_grand_total : totals.total)}
+              </div>
+            </div>
+            <button
+              type="button"
+              className="btn btn-primary ml-auto shrink-0"
+              disabled={placeOrderDisabled}
+              style={placeOrderBlocked ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
+              onClick={() => placeOrderMutation.mutate()}
+            >
+              {placeOrderMutation.isPending && <Spinner />}
+              {t("web.place_order")}
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }

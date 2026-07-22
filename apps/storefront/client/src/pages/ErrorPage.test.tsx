@@ -29,4 +29,14 @@ describe("ErrorPage", () => {
     expect(screen.getByText("500")).toBeInTheDocument();
     expect(screen.getByText("Something broke.")).toBeInTheDocument();
   });
+
+  it("defaults to the web.error_message copy for a 500 with no message override", () => {
+    render(
+      <MemoryRouter>
+        <ErrorPage statusCode={500} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("500")).toBeInTheDocument();
+    expect(screen.getByText("Something went wrong. Please try again.")).toBeInTheDocument();
+  });
 });

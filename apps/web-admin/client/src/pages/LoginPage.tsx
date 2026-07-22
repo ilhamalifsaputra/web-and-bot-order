@@ -57,11 +57,13 @@ export function LoginPage() {
         )}
 
         <form onSubmit={(e) => void handleSubmit(e)} className="flex flex-col gap-4">
-          <div>
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="tg">Telegram ID</Label>
             <Input
               id="tg"
-              type="number"
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
               value={telegramId}
               onChange={(e) => setTelegramId(e.target.value)}
               required
@@ -69,7 +71,7 @@ export function LoginPage() {
             />
           </div>
 
-          <div>
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="pw">Password</Label>
             <div className="relative">
               <Input
@@ -98,7 +100,7 @@ export function LoginPage() {
           </div>
 
           {showTotp && (
-            <div>
+            <div className="flex flex-col gap-1.5">
               <Label htmlFor="totp">2FA Code</Label>
               <Input
                 id="totp"

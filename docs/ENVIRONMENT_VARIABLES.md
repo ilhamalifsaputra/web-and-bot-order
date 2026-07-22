@@ -116,13 +116,19 @@ setelah setup awal — lihat [CONFIGURATION.md](CONFIGURATION.md).
 
 ## SMTP (forgot-password storefront)
 
+Kredensial normalnya diisi di web admin → Settings → **Email (SMTP)**
+(`smtp_host`, `smtp_port`, `smtp_user`, `smtp_pass`, `smtp_from`,
+`smtp_secure`) — Setting menang atas env, tanpa restart (lihat
+`getSmtpCreds()` di `@app/db`). Variabel `.env` di bawah **hanya** fallback
+darurat/bootstrap kalau web-admin belum bisa diakses.
+
 | Variabel | Default | Keterangan |
 |---|---|---|
-| `SMTP_HOST` | opsional | Aktifkan fitur lupa-password storefront hanya jika diisi BERSAMA `SMTP_FROM`. |
-| `SMTP_PORT` | `587` | Port SMTP. |
-| `SMTP_USER` / `SMTP_PASS` | opsional | Kredensial SMTP. |
-| `SMTP_FROM` | opsional | Alamat pengirim (`"Toko Kamu <akun@gmail.com>"`). |
-| `SMTP_SECURE` | `false` (looseBool) | TLS implisit (port 465) vs STARTTLS. |
+| `SMTP_HOST` | opsional | Fitur lupa-password storefront aktif hanya jika host + from-address terisi (dari Setting atau env). Setting `smtp_host` menang. |
+| `SMTP_PORT` | `587` | Port SMTP. Setting `smtp_port` menang. |
+| `SMTP_USER` / `SMTP_PASS` | opsional | Kredensial SMTP. Setting `smtp_user` / `smtp_pass` menang. |
+| `SMTP_FROM` | opsional | Alamat pengirim (`"Toko Kamu <akun@gmail.com>"`). Setting `smtp_from` menang. |
+| `SMTP_SECURE` | `false` (looseBool) | TLS implisit (port 465) vs STARTTLS. Setting `smtp_secure` menang. |
 
 ## Hanya di Settings (TIDAK ada di `.env`)
 

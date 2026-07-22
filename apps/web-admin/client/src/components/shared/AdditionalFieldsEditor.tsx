@@ -1,3 +1,4 @@
+import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -131,7 +132,8 @@ export function AdditionalFieldsEditor({
       ))}
 
       <Button variant="outline" size="sm" onClick={addRow} className="self-start">
-        + Add Field
+        <Plus className="h-4 w-4" />
+        Add Field
       </Button>
     </div>
   );

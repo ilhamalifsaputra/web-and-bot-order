@@ -20,7 +20,10 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { CircleCheck, Ban } from "lucide-react";
+import { toast } from "sonner";
 import { apiPost } from "../api/client";
+import { describeError } from "../lib/errorMessages";
 
 interface UserDetail {
   user: { id: number; username: string | null; fullName: string | null; telegramId: string | null; role: string; banned: boolean; banReason: string | null; walletBalance: string; walletBalanceUsdt: string };
@@ -49,7 +52,6 @@ export function UserDetailPage() {
   const { data, isError } = useUserDetail(userId ?? "");
   const [walletForm, setWalletForm] = useState({ delta: "", note: "" });
   const [walletCurrency, setWalletCurrency] = useState<"IDR" | "USDT">("IDR");
-  const [walletError, setWalletError] = useState<string | null>(null);
   const [banReason, setBanReason] = useState("");
 
   const wallet = useMutation({
@@ -58,21 +60,28 @@ export function UserDetailPage() {
       void qc.invalidateQueries({ queryKey: ["user", userId] });
       setWalletForm({ delta: "", note: "" });
       setWalletCurrency("IDR");
-      setWalletError(null);
+      toast.success("Wallet adjusted.");
     },
-    onError: (e: Error) => setWalletError(e.message),
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   const setRole = useMutation({
     mutationFn: (role: string) => apiPost(`/api/users/${userId}/role`, { role }),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["user", userId] }); },
-    onError: (e: Error) => alert(e.message),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["user", userId] });
+      toast.success("Role updated.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   const ban = useMutation({
     mutationFn: (doBan: boolean) => apiPost(`/api/users/${userId}/ban`, { banned: doBan ? "1" : "0", reason: banReason }),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["user", userId] }); setBanReason(""); },
-    onError: (e: Error) => alert(e.message),
+    onSuccess: (_data, doBan) => {
+      void qc.invalidateQueries({ queryKey: ["user", userId] });
+      setBanReason("");
+      toast.success(doBan ? "User banned." : "User unbanned.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   if (isError) return <PageLayout title="Customer"><p className="text-sm text-rust">Failed to load user.</p></PageLayout>;
@@ -125,7 +134,6 @@ export function UserDetailPage() {
           <Card>
             <CardHeader><CardTitle>Wallet Adjustment</CardTitle></CardHeader>
             <CardContent className="flex flex-col gap-3">
-              {walletError && <p className="text-xs text-rust">{walletError}</p>}
               <div className="flex gap-2">
                 <Button type="button" size="sm" variant={walletCurrency === "IDR" ? "default" : "outline"} onClick={() => setWalletCurrency("IDR")}>IDR</Button>
                 <Button type="button" size="sm" variant={walletCurrency === "USDT" ? "default" : "outline"} onClick={() => setWalletCurrency("USDT")}>USDT</Button>
@@ -144,7 +152,7 @@ export function UserDetailPage() {
             <CardContent>
               {user.banned ? (
                 <ConfirmDialog
-                  trigger={<Button variant="outline">Unban user</Button>}
+                  trigger={<Button variant="outline"><CircleCheck className="h-4 w-4" />Unban user</Button>}
                   title="Unban this user?"
                   description="The user will be able to use the bot again."
                   confirmLabel="Unban"
@@ -155,7 +163,7 @@ export function UserDetailPage() {
                 <div className="flex gap-2">
                   <Input placeholder="Ban reason (optional)" value={banReason} onChange={e => setBanReason(e.target.value)} className="flex-1" />
                   <ConfirmDialog
-                    trigger={<Button variant="destructive">Ban user</Button>}
+                    trigger={<Button variant="destructive"><Ban className="h-4 w-4" />Ban user</Button>}
                     title="Ban this user?"
                     description="The user will be blocked from using the bot."
                     confirmLabel="Ban"

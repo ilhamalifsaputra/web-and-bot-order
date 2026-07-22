@@ -26,7 +26,7 @@ import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import { effectiveUnitPrice } from "@app/core/flash";
 import { ensureUtc } from "@app/core/datetime";
-import { formatIdr, formatPrice } from "@app/core/formatters";
+import { formatIdr, formatUsdt } from "@app/core/formatters";
 import {
   prisma,
   getCart,
@@ -59,7 +59,14 @@ import {
 } from "@app/db";
 import { type Customer } from "../plugins/auth";
 import { clientIp, webhookRateLimited } from "../rateLimit";
-import { createTransaction, verifyCallback, checkTransaction, type TokopayOrderInfo } from "@app/core/payments/tokopay";
+import {
+  createTransaction,
+  verifyCallback,
+  checkTransaction,
+  computeQrisAdminFee,
+  qrisChargeAmount,
+  type TokopayOrderInfo,
+} from "@app/core/payments/tokopay";
 import {
   createTransaction as createPaydisiniTransaction,
   verifyCallback as verifyPaydisiniCallback,
@@ -132,6 +139,11 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
     }
   }
   const total = Decimal.max(new Decimal(0), subtotal.minus(bulkDiscount).minus(voucherDiscount));
+  // QRIS admin fee preview (TokoPay only — @app/core/payments/tokopay is the
+  // one place this formula is computed) so the checkout page can show it
+  // before the buyer has even picked a payment method.
+  const qrisAdminFee = computeQrisAdminFee(subtotal);
+  const qrisGrandTotal = total.plus(qrisAdminFee);
   // `lines` (the already-joined CartItem rows, each with its Denomination via
   // `ci.product`) rides along so checkoutView can build its per-item array
   // without a second cart query.
@@ -145,6 +157,8 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
     voucherDiscount,
     voucherError,
     total,
+    qrisAdminFee,
+    qrisGrandTotal,
     lines,
     isReseller,
     pricedAt,
@@ -192,6 +206,8 @@ export async function checkoutView(
     bulk_discount: totals.bulkDiscount.toString(),
     voucher_discount: totals.voucherDiscount.toString(),
     total: totals.total.toString(),
+    qris_admin_fee: totals.qrisAdminFee.toString(),
+    qris_grand_total: totals.qrisGrandTotal.toString(),
     total_usdt: fxRate ? usdtFromIdr(totals.total, fxRate).toString() : null,
     voucher_code: voucherCode ?? "",
     error_key: errorKey ?? totals.voucherError,
@@ -492,6 +508,11 @@ export async function payView(order: OrderRow) {
   // that page refreshes don't create extra transactions in TokoPay. Tagged
   // with `gateway: "tokopay"` since PayDisini below caches into the SAME
   // column — see the CachedGateway doc comment above parseCachedGateway.
+  // QRIS admin fee — derived from immutable order fields, so it's always safe
+  // to recompute (see @app/core/payments/tokopay computeQrisAdminFee doc).
+  const qrisAdminFee = isQris ? computeQrisAdminFee(order.subtotalAmount) : null;
+  const qrisGrandTotal = isQris ? qrisChargeAmount(order.totalAmount, order.subtotalAmount) : null;
+
   let gateway: TokopayOrderInfo | null = null;
   let gatewayError = false;
   if (isQris && state === "waiting") {
@@ -511,7 +532,7 @@ export async function payView(order: OrderRow) {
           try {
             gateway = await createTransaction(creds, {
               refId: order.orderCode,
-              amountIdr: order.totalAmount,
+              amountIdr: qrisGrandTotal!,
             });
             const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "tokopay", ...gateway });
             if (!committed) {
@@ -633,7 +654,7 @@ export async function payView(order: OrderRow) {
   const minAmountDisplay = minAmount
     ? isQris || isPaydisini
       ? formatIdr(minAmount)
-      : formatPrice(minAmount, "USDT", 4)
+      : formatUsdt(minAmount)
     : null;
 
   return {
@@ -642,6 +663,8 @@ export async function payView(order: OrderRow) {
       status: order.status,
       currency: order.currency,
       total: order.totalAmount.toString(),
+      qris_admin_fee: qrisAdminFee ? qrisAdminFee.toString() : null,
+      qris_grand_total: qrisGrandTotal ? qrisGrandTotal.toString() : null,
       payment_ref: order.paymentRef,
       expires_at_iso: order.expiresAt ? ensureUtc(order.expiresAt).toISO() : null,
     },
@@ -703,9 +726,10 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       return reply.send({ status: "unmatched" });
     }
 
+    const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
     let live;
     try {
-      live = await checkTransaction(creds, { refId: cb.refId, amountIdr: order.totalAmount });
+      live = await checkTransaction(creds, { refId: cb.refId, amountIdr: expectedCharge });
     } catch (err) {
       logger.error({ err }, `Failed to check TokoPay's live transaction status for order ${order.orderCode} — the callback will be ignored until a retry confirms payment`);
       return reply.send({ status: "status check failed" });
@@ -718,9 +742,9 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     }
     // Amount sanity: never deliver on a short payment. Trust the LIVE amount
     // from checkTransaction, not the unsigned callback body field.
-    if (live.amount.lessThan(order.totalAmount)) {
+    if (live.amount.lessThan(expectedCharge)) {
       logger.warn(
-        `TokoPay callback for order ${order.orderCode} is short-paid — got ${live.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
+        `TokoPay callback for order ${order.orderCode} is short-paid — got ${live.amount.toString()}, expected ${expectedCharge.toString()} — recording it as unmatched instead of delivering`,
       );
       await recordUnmatchedTokopayTx(prisma, { trxId: live.trxId ?? cb.trxId, amount: live.amount });
       return reply.send({ status: "amount mismatch" });

@@ -18,6 +18,8 @@ const basePay: PayData = {
     status: "PENDING_PAYMENT",
     currency: "IDR",
     total: "158000",
+    qris_admin_fee: null,
+    qris_grand_total: null,
     payment_ref: null,
     expires_at_iso: null,
   },
@@ -88,6 +90,22 @@ describe("PayPage", () => {
     expect(screen.getByAltText("QRIS")).toHaveAttribute("src", "https://img.example/qr.png");
     expect(screen.getByText("Rp158.000")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Open payment page/ })).toHaveAttribute("href", "https://pay.example/trx1");
+  });
+
+  it("renders the QRIS admin fee breakdown and fee-inclusive grand total when present", async () => {
+    const pay: PayData = {
+      ...basePay,
+      state: "waiting",
+      is_qris: true,
+      order: { ...basePay.order, total: "158000", qris_admin_fee: "1206", qris_grand_total: "159206" },
+      gateway: { trxId: "TRX1", payUrl: "https://pay.example/trx1", qrLink: "https://img.example/qr.png", qrString: null, totalBayar: "159206" },
+    };
+    renderPay(respondFor(pay));
+    await screen.findByRole("heading", { name: "Payment" });
+    expect(screen.getByText("Rp158.000")).toBeInTheDocument(); // subtotal line
+    expect(screen.getByText("QRIS admin fee")).toBeInTheDocument();
+    expect(screen.getByText("Rp1.206")).toBeInTheDocument();
+    expect(screen.getByText("Rp159.206")).toBeInTheDocument(); // grand total
   });
 
   it("renders the Bybit waiting branch with the UID and the send amount", async () => {

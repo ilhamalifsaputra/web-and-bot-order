@@ -20,8 +20,6 @@
  *     token rides in the URL — same Storefront-1 guard as the HTML route).
  */
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { t } from "@app/core/i18n";
@@ -34,20 +32,13 @@ import {
   listActiveCategories,
   listNewestCatalogProducts,
   listCatalogProducts,
+  listFlashSaleProducts,
   stockStatusCounts,
   productRatingSummaries,
 } from "@app/db";
 import { optionalCustomer } from "../plugins/auth";
 import { requestLang } from "../shop";
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const STATIC_DIR = process.env.STOREFRONT_STATIC_DIR ?? join(HERE, "..", "..", "static");
-const SPA_INDEX_PATH = join(STATIC_DIR, "shop-app", "index.html");
-
-/** Minimal HTML-attribute escape for strings interpolated into meta tags. */
-function esc(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
+import { SPA_INDEX_PATH, esc } from "../lib/spaFallback";
 
 /** Public origin for absolute canonical URLs — same fallback chain used in
  * checkout.ts's shopPublicUrl() / seo.ts's baseUrl(). */
@@ -161,7 +152,7 @@ const TITLE_KEYS: Array<[RegExp, string]> = [
 /** Paths the SPA route table knows — anything else is a 404 shell. Keep in
  * sync with apps/storefront/client/src/App.tsx. */
 const KNOWN_PATHS = new RegExp(
-  "^(/|/search|/cart|/checkout|/login|/register|/forgot" +
+  "^(/|/search|/products|/categories|/flash|/cart|/checkout|/login|/register|/forgot" +
     "|/reset/[^/]+|/checkout/[^/]+/pay" +
     "|/account|/account/orders|/account/orders/[^/]+|/account/referral" +
     "|/account/reviews|/account/support|/account/support/\\d+|/account/settings" +
@@ -283,7 +274,7 @@ async function headInfo(
           `<ul>${[1, 2, 3, 4]
             .map((n) => `<li>${esc(t(`web.trust_${n}`, lang))}: ${esc(t(`web.trust_${n}_d`, lang))}</li>`)
             .join("")}</ul>` +
-          `<h2>${esc(t("web.categories_title", lang))}</h2>` +
+          `<h2>${esc(t("web.categories_page_title", lang))}</h2>` +
           linkList(categories.map((c) => ({ href: `/c/${c.slug}`, label: c.name }))) +
           `<h2>${esc(t("web.new_arrivals", lang))}</h2>` +
           linkList(newest.map((p) => ({ href: `/p/${p.slug}`, label: p.name }))),
@@ -294,7 +285,7 @@ async function headInfo(
   const productSlug = /^\/p\/([^/]+)$/.exec(path)?.[1];
   if (productSlug) {
     const product = await getCatalogProductBySlugWithDenominations(prisma, decodeURIComponent(productSlug));
-    if (!product || !product.isActive || product.denominations.length === 0) {
+    if (!product || !product.isActive || product.isArchived || product.denominations.length === 0) {
       return { title: `404 — ${shopName}`, meta: "", body: "", status: 404 };
     }
     // An empty meta description is itself an SEO finding, and plenty of
@@ -485,6 +476,43 @@ async function headInfo(
       title: `${heading} — ${shopName}`,
       meta: `<meta name="description" content="${esc(heading)} — ${esc(shopName)}">` + canonicalLink(path),
       body: seoShell(`<h1>${esc(heading)}</h1>`),
+      status: 200,
+    };
+  }
+  // The three browse-all shelves the nav drawer links to. Like /c/:slug these
+  // are public catalog surfaces that must be indexable, so each ships a real
+  // <h1> and a link list a crawler can follow into the catalog.
+  if (path === "/products" || path === "/categories" || path === "/flash") {
+    const key = path === "/products" ? "web.products_title" : path === "/categories" ? "web.categories_page_title" : "web.flash_title";
+    const heading = t(key, lang);
+    const description = t(
+      path === "/products"
+        ? "web.products_meta_description"
+        : path === "/categories"
+          ? "web.categories_meta_description"
+          : "web.flash_meta_description",
+      lang,
+      { shop: shopName },
+    );
+    const links =
+      path === "/categories"
+        ? (await listActiveCategories(prisma)).map((c) => ({ href: `/c/${c.slug}`, label: c.name }))
+        : (await (path === "/flash" ? listFlashSaleProducts(prisma) : listCatalogProducts(prisma))).map((p) => ({
+            href: `/p/${p.slug}`,
+            label: p.name,
+          }));
+    return {
+      title: `${heading} — ${shopName}`,
+      meta:
+        `<meta name="description" content="${esc(description)}">` +
+        canonicalLink(path) +
+        socialMeta({ title: heading, description, path, lang, shopName }),
+      body: seoShell(
+        `<nav><a href="/">${esc(shopName)}</a></nav>` +
+          `<h1>${esc(heading)}</h1>` +
+          `<p>${esc(description)}</p>` +
+          linkList(links),
+      ),
       status: 200,
     };
   }

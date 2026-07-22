@@ -21,6 +21,19 @@ const TONE: Record<string, Tone> = {
   OUT_OF_STOCK: "danger",
   DELIVERY_FAILED: "danger",
   REFUNDED: "neutral",
+  // Settings-page configuration status vocabulary (Settings refinement §4).
+  CONFIGURED: "success",
+  OPTIONAL: "neutral",
+  NOT_CONFIGURED: "warning",
+  ERROR: "danger",
+  // Flash Sale lifecycle (FlashSalesPage's Flash Status/Status columns).
+  LIVE: "success",
+  SCHEDULED: "warning",
+  ENDED: "neutral",
+  // NotificationStatus (OutboxPage) — align PENDING/SENDING with the same
+  // warning tone PENDING_PAYMENT already gets, instead of falling back to neutral.
+  PENDING: "warning",
+  SENDING: "warning",
 };
 
 const TONE_CLASS: Record<Tone, string> = {

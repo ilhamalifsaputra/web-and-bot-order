@@ -10,7 +10,7 @@ import type { Decimal } from "@app/core/money";
 import { ensureUtc } from "@app/core/datetime";
 import { DeliveryType, OrderStatus, PaymentMethod, StockStatus, TicketStatus } from "@app/core/enums";
 import { t as coreT } from "@app/core/i18n";
-import { formatPrice, formatIdr, truncLabel } from "../util/format";
+import { formatPrice, formatUsdtAmount, formatIdr, truncLabel } from "../util/format";
 
 export const CB_PREFIX = "v1";
 
@@ -547,7 +547,7 @@ export function walletCreditKb(
       useWalletUsdt
         ? { text: coreT("checkout.wallet_menu_usdt_active_btn", lang), data: cb("walletm", "usdt", productId, qty) }
         : {
-            text: coreT("checkout.wallet_menu_usdt_btn", lang, { amount: formatPrice(usdtBalance, "USDT", 4) }),
+            text: coreT("checkout.wallet_menu_usdt_btn", lang, { amount: formatUsdtAmount(usdtBalance) }),
             data: cb("walletm", "usdt", productId, qty),
           },
     ]);

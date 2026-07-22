@@ -7,7 +7,7 @@ import { FilterBar } from "../components/shared/FilterBar";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { Button } from "@/components/ui/button";
-import { Boxes } from "lucide-react";
+import { Boxes, Eye } from "lucide-react";
 import { SearchBar } from "../components/shared/SearchBar";
 import { ProgressBar } from "../components/shared/ProgressBar";
 import { StatusBadge } from "../components/shared/StatusBadge";
@@ -199,6 +199,7 @@ export function StockPage() {
                   navigate(`/stock/${row.id}`);
                 }}
               >
+                <Eye className="h-4 w-4" />
                 View
               </Button>
             ),
@@ -212,7 +213,8 @@ export function StockPage() {
           <EmptyState
             icon={Boxes}
             title="No denominations found"
-            description="Try adjusting your filter."
+            description={filter ? "Try adjusting your filter." : "Stock will appear here once denominations exist."}
+            secondaryAction={filter ? { label: "Clear Filters", onClick: () => setFilter("") } : undefined}
           />
         }
       />

@@ -69,6 +69,24 @@ describe("OrdersPage", () => {
     expect(screen.getByText("Delivered")).toBeInTheDocument();
   });
 
+  // The point of the card layout: on a phone this page used to be a
+  // five-column table behind a horizontal scroll. jsdom has no matchMedia, so
+  // useIsDesktop() reports false and the mobile branch is what renders here.
+  it("renders orders as cards, with no table, on a small viewport", async () => {
+    const data: AccountOrdersData = {
+      orders: [
+        { code: "ORD1", status: "delivered", total: "158000", created_at_display: "2026-07-01 10:00", items: "Netflix 1 month" },
+        { code: "ORD2", status: "pending", total: "20000", created_at_display: "2026-07-02 09:00", items: "Spotify" },
+      ],
+    };
+    renderOrders(() => data);
+    await screen.findByRole("link", { name: "ORD1" });
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    // Whole card is the tap target, one per order.
+    expect(screen.getAllByRole("link")).toHaveLength(2);
+    expect(screen.getByRole("link", { name: "ORD2" })).toHaveAttribute("href", "/account/orders/ORD2");
+  });
+
   // STO-016: the empty state used to be a dead end — it now offers a way
   // back to the catalog.
   it("renders the empty-state row with a Continue shopping CTA when there are no orders", async () => {

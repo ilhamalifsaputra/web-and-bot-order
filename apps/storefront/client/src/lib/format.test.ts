@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatIdr, formatUsdt, money4 } from "./format";
+import { formatIdr, formatUsdt, formatUsdtAmount, formatNativeUsdt } from "./format";
 
 describe("formatIdr", () => {
   it("formats with Rp prefix and dotted thousands (core formatIdr parity)", () => {
@@ -39,14 +39,34 @@ describe("formatUsdt", () => {
   });
 });
 
-describe("money4", () => {
-  it("formats native USDT amounts at 4dp", () => {
-    expect(money4("4.9")).toBe("4.9000");
-    expect(money4(0)).toBe("0.0000");
+describe("formatUsdtAmount / formatNativeUsdt", () => {
+  it("rounds to max 4dp and strips trailing zeros", () => {
+    expect(formatUsdtAmount(0)).toBe("0");
+    expect(formatUsdtAmount(1)).toBe("1");
+    expect(formatUsdtAmount(1.5)).toBe("1.5");
+    expect(formatUsdtAmount(12.34)).toBe("12.34");
+    expect(formatUsdtAmount(96.7)).toBe("96.7");
+    expect(formatUsdtAmount(123.456789)).toBe("123.4568");
+    expect(formatUsdtAmount("4.9")).toBe("4.9");
+  });
+
+  it("collapses a whole number to a bare integer", () => {
+    expect(formatUsdtAmount("20.0000")).toBe("20");
   });
 
   it("renders em-dash for null/empty", () => {
-    expect(money4(null)).toBe("—");
-    expect(money4("")).toBe("—");
+    expect(formatUsdtAmount(null)).toBe("—");
+    expect(formatUsdtAmount(undefined)).toBe("—");
+    expect(formatUsdtAmount("")).toBe("—");
+  });
+
+  it("passes through a NaN-producing value unchanged", () => {
+    expect(formatUsdtAmount("not-a-number")).toBe("not-a-number");
+  });
+
+  it("formatNativeUsdt appends the ' USDT' suffix, preserving the em-dash for null/empty", () => {
+    expect(formatNativeUsdt(0)).toBe("0 USDT");
+    expect(formatNativeUsdt(123.456789)).toBe("123.4568 USDT");
+    expect(formatNativeUsdt(null)).toBe("—");
   });
 });

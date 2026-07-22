@@ -4,6 +4,8 @@ import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { FilterBar } from "../components/shared/FilterBar";
 import { EmptyState } from "../components/shared/EmptyState";
+import { DataTable } from "../components/shared/DataTable";
+import { Pagination } from "../components/shared/Pagination";
 import { Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,7 +15,9 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
+import { toast } from "sonner";
 import { apiPost } from "../api/client";
+import { describeError } from "../lib/errorMessages";
 
 interface Review {
   id: number;
@@ -35,8 +39,13 @@ interface ReviewsResponse {
 
 function Stars({ n }: { n: number }) {
   return (
-    <span className="text-amberx">
-      {"★".repeat(n)}{"☆".repeat(5 - n)}
+    <span className="inline-flex items-center gap-0.5">
+      {[1, 2, 3, 4, 5].map((i) => (
+        <Star
+          key={i}
+          className={i <= n ? "h-4 w-4 fill-amberx text-amberx" : "h-4 w-4 text-ink-faint"}
+        />
+      ))}
     </span>
   );
 }
@@ -61,8 +70,11 @@ export function ReviewsPage() {
   const toggleHide = useMutation({
     mutationFn: ({ id, hide }: { id: number; hide: boolean }) =>
       apiPost<void>(`/api/reviews/${id}/hide`, { hidden: hide }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["reviews"] }),
-    onError: (e: Error) => alert(e.message),
+    onSuccess: (_data, { hide }) => {
+      void qc.invalidateQueries({ queryKey: ["reviews"] });
+      toast.success(hide ? "Review hidden." : "Review restored.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   function goPage(n: number) {
@@ -95,65 +107,62 @@ export function ReviewsPage() {
           </Select>
         </FilterBar>
 
-        {isLoading && <p className="text-sm text-ink-soft">Loading…</p>}
-        {isError && <p className="text-sm text-rust">Failed to load reviews.</p>}
-
-        {data && data.reviews.length === 0 && (
-          <EmptyState
-            icon={Star}
-            title="No reviews found."
-            description="Customer reviews will appear here."
+        {isError ? (
+          <p className="text-sm text-rust">Failed to load reviews.</p>
+        ) : (
+          <DataTable
+            columns={[
+              { key: "rating", header: "Rating", render: (r) => <Stars n={r.rating} /> },
+              {
+                key: "reviewer",
+                header: "Reviewer",
+                render: (r) => (
+                  <div className={r.hidden ? "opacity-50" : ""}>
+                    <div className="text-ink">{r.user?.fullName ?? "Unknown"}</div>
+                    <div className="text-xs text-ink-soft">{r.denomination?.name ?? "—"}</div>
+                  </div>
+                ),
+              },
+              {
+                key: "comment",
+                header: "Comment",
+                render: (r) => <span className={`text-sm ${r.hidden ? "text-ink-soft opacity-50" : "text-ink"}`}>{r.comment ?? "—"}</span>,
+              },
+              {
+                key: "date",
+                header: "Date",
+                render: (r) => <span className="text-xs text-ink-soft">{r.createdAtDisplay ?? "—"}</span>,
+              },
+              {
+                key: "actions",
+                header: "",
+                render: (r) => (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={toggleHide.isPending}
+                    onClick={() => toggleHide.mutate({ id: r.id, hide: !r.hidden })}
+                  >
+                    {r.hidden ? "Restore" : "Hide"}
+                  </Button>
+                ),
+              },
+            ]}
+            data={data?.reviews ?? []}
+            isLoading={isLoading}
+            keyExtractor={(r) => r.id}
+            empty={
+              <EmptyState
+                icon={Star}
+                title="No reviews found."
+                description="Customer reviews will appear here."
+              />
+            }
           />
         )}
 
-        {data && data.reviews.length > 0 && (
-          <div className="flex flex-col divide-y divide-line rounded-lg border border-line bg-card">
-            {data.reviews.map((r) => (
-              <div key={r.id} className={`flex items-start justify-between gap-4 p-4 ${r.hidden ? "opacity-50" : ""}`}>
-                <div className="flex flex-col gap-1">
-                  <div className="flex items-center gap-2">
-                    <Stars n={r.rating} />
-                    <span className="text-xs text-ink-soft">
-                      {r.user?.fullName ?? "Unknown"} · {r.denomination?.name ?? "—"}
-                    </span>
-                  </div>
-                  {r.comment && <p className="text-sm text-ink">{r.comment}</p>}
-                  <p className="text-xs text-ink-soft">{r.createdAtDisplay ?? "—"}</p>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={toggleHide.isPending}
-                  onClick={() => toggleHide.mutate({ id: r.id, hide: !r.hidden })}
-                  className="shrink-0"
-                >
-                  {r.hidden ? "Restore" : "Hide"}
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {data && (data.hasNext || page > 1) && (
-          <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={page <= 1}
-              onClick={() => goPage(page - 1)}
-            >
-              ← Prev
-            </Button>
-            <span className="text-sm text-ink-soft">Page {page}</span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!data.hasNext}
-              onClick={() => goPage(page + 1)}
-            >
-              Next →
-            </Button>
-          </div>
+        {data && (
+          <Pagination page={page} pageSize={50} total={data.total} onPageChange={goPage} />
         )}
       </div>
     </PageLayout>

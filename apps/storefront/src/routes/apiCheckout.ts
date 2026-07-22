@@ -17,6 +17,7 @@ import { ValidationError } from "@app/core/errors";
 import { prisma, getOrderByCode, cancelOrder } from "@app/db";
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { checkoutView, payView, payState } from "./checkout";
+import { constantTimeEqual } from "../auth";
 
 /** JSON-flavored auth gate: 401 body instead of the HTML routes' 303. */
 async function requireCustomer(req: FastifyRequest, reply: FastifyReply): Promise<Customer | null> {
@@ -31,7 +32,7 @@ async function requireCustomer(req: FastifyRequest, reply: FastifyReply): Promis
 /** x-csrf-token header check for signed-in JSON mutations. */
 function csrfHeaderOk(req: FastifyRequest, customer: Customer): boolean {
   const token = req.headers["x-csrf-token"];
-  return Boolean(token) && token === customer.csrf;
+  return typeof token === "string" && constantTimeEqual(token, customer.csrf);
 }
 
 const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {

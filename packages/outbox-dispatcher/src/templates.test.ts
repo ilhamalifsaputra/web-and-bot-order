@@ -294,6 +294,29 @@ describe("notifier templates.render", () => {
     expect(out).toContain("A &amp; B");
   });
 
+  it("renders BULK_PURCHASE_BROADCAST by substituting the admin's template tokens", () => {
+    const out = render("BULK_PURCHASE_BROADCAST", {
+      product_name: "CapCut Pro",
+      denomination_name: "1 Month",
+      qty: 10,
+      template: "Someone just purchased x{qty} of {product} - {denomination}!",
+    });
+    expect(out).toBe("Someone just purchased x10 of CapCut Pro - 1 Month!");
+  });
+
+  it("HTML-escapes BULK_PURCHASE_BROADCAST's derived values but not the admin's own template text", () => {
+    const out = render("BULK_PURCHASE_BROADCAST", {
+      product_name: "<script>alert(1)</script>",
+      denomination_name: "A & B",
+      qty: 5,
+      template: "<b>Hot!</b> x{qty} of {product} - {denomination}",
+    });
+    expect(out).not.toContain("<script>");
+    expect(out).toContain("&lt;script&gt;");
+    expect(out).toContain("A &amp; B");
+    expect(out).toContain("<b>Hot!</b>"); // the admin's own markup is trusted, not escaped
+  });
+
   it("renders ADMIN_MANUAL_ORDER_QUEUED with the order code, item, and total/currency, bilingually", () => {
     const out = render("ADMIN_MANUAL_ORDER_QUEUED", {
       order_code: "ORD-20260719-ABCD",

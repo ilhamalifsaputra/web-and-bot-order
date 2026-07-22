@@ -46,10 +46,21 @@ describe("PageHeader", () => {
       </MemoryRouter>,
     );
     const h1 = screen.getByText("Products");
-    const wrapper = h1.parentElement;
+    // h1 sits in its own title-group wrapper (grouped with an optional
+    // description); the flex-col/sm:flex-row row wrapper is one level up.
+    const wrapper = h1.parentElement?.parentElement;
     expect(wrapper).not.toBeNull();
     expect(wrapper?.className).toContain("flex-col");
     expect(wrapper?.className).toContain("sm:flex-row");
+  });
+
+  it("renders an optional description under the title", () => {
+    render(
+      <MemoryRouter>
+        <PageHeader title="Products" description="Manage products, variants and categories." />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("Manage products, variants and categories.")).toBeInTheDocument();
   });
 
   it("actions wrapper has flex-wrap class to allow wrapping on narrow viewports", () => {

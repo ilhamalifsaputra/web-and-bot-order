@@ -1,16 +1,16 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import TicketDetailPage from "./TicketDetailPage";
-import { apiGet, apiPost, apiPostForm } from "../api/client";
+import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
 import type { TicketDetailData } from "../api/types";
 
 vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
   apiPost: vi.fn(),
-  apiPostForm: vi.fn(),
+  apiPostFormWithProgress: vi.fn(),
 }));
 
 const openTicket: TicketDetailData = {
@@ -96,7 +96,7 @@ describe("TicketDetailPage", () => {
     expect(document.querySelector('video[src="/uploads/tickets/evidence-b.mp4"]')).toBeInTheDocument();
   });
 
-  it("attaches a file to a reply and submits via apiPostForm instead of apiPost", async () => {
+  it("attaches a file to a reply and submits via apiPostFormWithProgress instead of apiPost", async () => {
     renderTicket(() => openTicket);
     await screen.findByRole("heading", { name: "Ticket #7" });
     fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), {
@@ -104,13 +104,36 @@ describe("TicketDetailPage", () => {
     });
     const file = new File(["fake video bytes"], "evidence.mp4", { type: "video/mp4" });
     fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [file] } });
-    (apiPostForm as Mock).mockResolvedValue({ ok: true });
+    (apiPostFormWithProgress as Mock).mockResolvedValue({ ok: true });
     fireEvent.click(screen.getByRole("button", { name: "Reply" }));
-    await waitFor(() => expect(apiPostForm).toHaveBeenCalled());
+    await waitFor(() => expect(apiPostFormWithProgress).toHaveBeenCalled());
     expect(apiPost).not.toHaveBeenCalled();
-    const [path, form] = (apiPostForm as Mock).mock.calls[0] as [string, FormData];
+    const [path, form] = (apiPostFormWithProgress as Mock).mock.calls[0] as [string, FormData, unknown];
     expect(path).toBe("/api/v1/account/support/7/reply");
     expect(form.get("message")).toBe("Still broken");
     expect(form.get("attachments")).toBeInstanceOf(File);
+  });
+
+  it("shows a progress bar reflecting upload progress while a reply attachment is uploading", async () => {
+    renderTicket(() => openTicket);
+    await screen.findByRole("heading", { name: "Ticket #7" });
+    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), {
+      target: { value: "Still broken" },
+    });
+    const file = new File(["fake video bytes"], "evidence.mp4", { type: "video/mp4" });
+    fireEvent.change(document.querySelector('input[type="file"]')!, { target: { files: [file] } });
+
+    let capturedOnProgress: ((pct: number) => void) | undefined;
+    (apiPostFormWithProgress as Mock).mockImplementation(
+      (_path: string, _form: FormData, onProgress: (pct: number) => void) => {
+        capturedOnProgress = onProgress;
+        return new Promise(() => {});
+      },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(apiPostFormWithProgress).toHaveBeenCalled());
+
+    act(() => capturedOnProgress?.(77));
+    await waitFor(() => expect(screen.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "77"));
   });
 });

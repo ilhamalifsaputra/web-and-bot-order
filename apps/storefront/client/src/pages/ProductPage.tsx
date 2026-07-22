@@ -8,18 +8,41 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Bell, Share2, ShoppingCart, Zap } from "lucide-react";
+import { motion } from "framer-motion";
+import {
+  AlertTriangle,
+  Bell,
+  Package,
+  ScrollText,
+  Share2,
+  ShieldCheck,
+  ShoppingCart,
+  Star,
+  Zap,
+} from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { CartPageData, ProductPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { formatIdr } from "../lib/format";
+import { fadeUp } from "../lib/motion";
+import { useIsDesktop } from "../lib/useMediaQuery";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import Stars from "../components/shop/Stars";
 import DenominationCard from "../components/shop/DenominationCard";
 import FlashBadge, { FlashCountdown, FlashWasPrice } from "../components/shop/FlashBadge";
 import ProductCard from "../components/shop/ProductCard";
 import ErrorPage from "./ErrorPage";
+import Spinner from "../components/shop/Spinner";
+import Skeleton from "../components/shop/Skeleton";
+import EmptyState from "../components/shop/EmptyState";
+
+const revealProps = {
+  variants: fadeUp,
+  initial: "initial" as const,
+  whileInView: "animate" as const,
+  viewport: { once: true, margin: "-80px" },
+};
 
 /** Mirrors product.njk's inline script `select()` cls/txt branches for the
  * live summary's stock line — a `.chip` pill, NOT the shared `stock_badge`
@@ -32,15 +55,6 @@ function stockChip(available: number, lowThreshold: number, isAuto: boolean): { 
   if (available > lowThreshold) return { cls: "bg-grass-tint text-grass-dark", text: t("web.stock_available") };
   if (available > 0) return { cls: "bg-amberx-tint text-amberx", text: t("web.stock_left", { count: available }) };
   return { cls: "bg-rust-tint text-rust-dark", text: t("web.stock_out") };
-}
-
-/** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
- * submitting button while its mutation is pending (in addition to disabling
- * the button itself). */
-function Spinner() {
-  return (
-    <span className="inline-block w-3.5 h-3.5 mr-1.5 align-[-2px] rounded-full border-2 border-current border-r-transparent animate-spin" />
-  );
 }
 
 /** Qty input contract: 1..min(99, available) for an auto denomination — a
@@ -133,6 +147,15 @@ export default function ProductPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [qty, setQty] = useState(1);
   const [cartErrorKey, setCartErrorKey] = useState<string | null>(null);
+  const isDesktop = useIsDesktop();
+  // The live summary card is the sticky bar's sentinel: the bar exists only to
+  // stand in for the real buy controls once they've scrolled away, so it stays
+  // hidden while they're on screen rather than duplicating a button the shopper
+  // is already looking at. Held as state (not a ref) so attaching the node
+  // re-runs the observer effect — the node only exists after the query
+  // resolves, and hooks can't wait for that.
+  const [buyArea, setBuyArea] = useState<HTMLElement | null>(null);
+  const [buyAreaVisible, setBuyAreaVisible] = useState(true);
 
   // A different product slug means a different denomination set — start over,
   // same as a fresh page load would.
@@ -140,6 +163,19 @@ export default function ProductPage() {
     setSelectedId(null);
     setQty(1);
   }, [slug]);
+
+  useEffect(() => {
+    // Assume visible wherever IntersectionObserver is missing (jsdom, older
+    // hosts): erring towards "hidden bar" keeps a purchase path that can't be
+    // observed from covering content it can't prove is scrolled past.
+    if (!buyArea || typeof IntersectionObserver !== "function") return;
+    const observer = new IntersectionObserver((entries) => {
+      const entry = entries[entries.length - 1];
+      setBuyAreaVisible(entry ? entry.isIntersecting : true);
+    });
+    observer.observe(buyArea);
+    return () => observer.disconnect();
+  }, [buyArea]);
 
   const invalidateContext = () => queryClient.invalidateQueries({ queryKey: ["context"] });
 
@@ -174,7 +210,22 @@ export default function ProductPage() {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
     return null;
   }
-  if (!data) return null;
+  if (!data) {
+    return (
+      <div aria-busy="true" aria-label={t("web.loading")}>
+        <Skeleton className="mb-6 h-4 w-48" />
+        <div className="grid gap-8 lg:grid-cols-2">
+          <Skeleton className="aspect-square w-full" />
+          <div className="space-y-4">
+            <Skeleton className="h-8 w-3/4" />
+            <Skeleton className="h-4 w-1/2" />
+            <Skeleton className="h-24 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const { product, denominations, reviews, related_products, low_threshold } = data;
   const fx = ctx?.fx;
@@ -220,9 +271,18 @@ export default function ProductPage() {
                   sizes="(max-width: 768px) 100vw, 600px"
                 />
               )}
+              {/* Eager on purpose: this is the page's LCP element and the only
+                  image above the fold on a phone, so deferring it would trade a
+                  measurable delay for nothing. Everything below (the
+                  related-products shelf) lazy-loads via ProductCard. The
+                  width/height pair is what stops the text below from jumping
+                  while it decodes — object-cover ignores the numbers for
+                  painting, but the browser still uses their ratio to reserve
+                  the box. */}
               <img
                 src={product.image}
                 alt={product.name}
+                loading="eager"
                 decoding="async"
                 width={800}
                 height={600}
@@ -237,7 +297,9 @@ export default function ProductPage() {
           <h1 className="page-title text-2xl! sm:text-3xl!">{product.name}</h1>
 
           {product.description && (
-            <div className="mt-3 text-sm text-ink-soft whitespace-pre-line">{product.description}</div>
+            <div className="mt-3 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
+              {product.description}
+            </div>
           )}
 
           {/* Denomination cards — pick a plan (never a dropdown). The cheapest
@@ -259,8 +321,10 @@ export default function ProductPage() {
             </div>
           </div>
 
-          {/* Live summary — price/stock/warranty of the selected denomination. */}
-          <div className="card card-pad mt-5">
+          {/* Live summary — price/stock/warranty of the selected denomination.
+              Also the sentinel the sticky mobile purchase bar watches, hence
+              the id and the callback ref. */}
+          <div id="buy-summary" ref={setBuyArea} className="card card-pad mt-5">
             <div className="flex items-center justify-between gap-3 flex-wrap">
               <div className="flex items-baseline gap-2 flex-wrap">
                 {/* `selected.price` already carries the flash discount — the
@@ -297,9 +361,13 @@ export default function ProductPage() {
                   <label className="text-xs text-ink-soft" htmlFor="qty">
                     {t("web.qty")}
                   </label>
+                  {/* inputMode="numeric" so phones open the digit keypad
+                      instead of the full keyboard — type="number" alone
+                      doesn't guarantee it on iOS. */}
                   <input
                     id="qty"
                     type="number"
+                    inputMode="numeric"
                     name="qty"
                     value={qty}
                     min={1}
@@ -353,32 +421,45 @@ export default function ProductPage() {
           buy action off the first screen. Each block disappears when the
           admin left that field empty, so no headings dangle over nothing. */}
       {(product.what_you_get || product.terms || product.warranty_note) && (
-        <section className="mt-10 card card-pad space-y-5">
-          {product.what_you_get && (
-            <div>
-              <h2 className="font-display font-bold text-ink">{t("web.what_you_get")}</h2>
-              <p className="mt-1 text-sm text-ink-soft whitespace-pre-line">{product.what_you_get}</p>
-            </div>
-          )}
-          {product.terms && (
-            <div>
-              <h2 className="font-display font-bold text-ink">{t("web.product_terms")}</h2>
-              <p className="mt-1 text-sm text-ink-soft whitespace-pre-line">{product.terms}</p>
-            </div>
-          )}
-          {product.warranty_note && (
-            <div>
-              <h2 className="font-display font-bold text-ink">{t("web.warranty")}</h2>
-              <p className="mt-1 text-sm text-ink-soft whitespace-pre-line">{product.warranty_note}</p>
-            </div>
-          )}
-        </section>
+        <motion.section {...revealProps} className="mt-10 card card-pad">
+          {/* Deliberately not tabs or an accordion. All three blocks are short,
+              and each one answers a question a hesitant buyer asks before
+              paying — hiding two of them behind a tap costs a tap and hides
+              the reassurance that closes the sale. What the wall of text
+              actually lacked is landmarks, so each block now gets an icon,
+              a heading that outranks the body, and a rule + generous gap
+              separating it from the next: the eye can jump between the three
+              on a phone without reading a word. */}
+          {[
+            { key: "what_you_get", icon: Package, title: t("web.what_you_get"), body: product.what_you_get },
+            { key: "terms", icon: ScrollText, title: t("web.product_terms"), body: product.terms },
+            { key: "warranty", icon: ShieldCheck, title: t("web.warranty"), body: product.warranty_note },
+          ]
+            // An empty field means the admin left it blank — no dangling heading.
+            .filter((block) => Boolean(block.body))
+            .map((block, index) => (
+              <div
+                key={block.key}
+                className={index > 0 ? "mt-6 border-t border-line pt-6" : undefined}
+              >
+                <h2 className="flex items-center gap-2 font-display font-bold text-ink">
+                  {/* Decorative: the heading text already names the block, so
+                      announcing the icon too would just be noise. */}
+                  <block.icon className="w-4 h-4 text-pine shrink-0" aria-hidden="true" />
+                  {block.title}
+                </h2>
+                <p className="mt-2 text-sm leading-relaxed text-ink-soft whitespace-pre-line">
+                  {block.body}
+                </p>
+              </div>
+            ))}
+        </motion.section>
       )}
 
       <ShareRow productName={product.name} />
 
       {/* Reviews */}
-      <section className="mt-10">
+      <motion.section {...revealProps} className="mt-10">
         <h2 className="section-title mb-3">{t("web.reviews")}</h2>
         {reviews.length > 0 ? (
           <div className="grid sm:grid-cols-2 gap-4">
@@ -395,21 +476,92 @@ export default function ProductPage() {
             ))}
           </div>
         ) : (
-          <div className="card card-pad text-center text-ink-faint py-10">{t("web.no_reviews")}</div>
+          /* No CTA: the way to leave a review is to buy first, and the buy
+             control is already the loudest thing on this page. */
+          <EmptyState icon={Star} title={t("web.no_reviews")} description={t("web.no_reviews_desc")} />
         )}
-      </section>
+      </motion.section>
 
       {/* STO-011: same-category "You might also like" shelf — this product
           detail page had no cross-sell/discovery path back into the catalog. */}
       {related_products.length > 0 && (
-        <section className="mt-10">
+        <motion.section {...revealProps} className="mt-10">
           <h2 className="section-title mb-3">{t("web.related_products")}</h2>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
             {related_products.map((p) => (
               <ProductCard key={p.slug} p={p} fx={fx} lowThreshold={low_threshold} />
             ))}
           </div>
-        </section>
+        </motion.section>
+      )}
+
+      {/* Reserved runway for the sticky bar. It's `fixed`, so it overlays the
+          end of the page instead of pushing it — without this, the last shelf
+          of related products would sit under the bar with no way to scroll it
+          clear. Reserved for the whole mobile page rather than only while the
+          bar is up, so the page height never changes underneath a scrolling
+          thumb. */}
+      {!isDesktop && (
+        <div aria-hidden="true" style={{ height: "calc(4.75rem + env(safe-area-inset-bottom))" }} />
+      )}
+
+      {/* Sticky purchase bar — mobile only. This page is long (image, plan
+          picker, three detail blocks, share row, reviews, related products),
+          and everything below the fold is read *in order to decide to buy*;
+          before this, deciding meant scrolling all the way back up to act on
+          it. It reuses the same mutations and the same `selected` plan as the
+          in-page controls, so there is exactly one purchase path, and it only
+          appears once those controls have left the viewport. Desktop keeps the
+          buy card in view beside the image, so it needs none of this. */}
+      {!isDesktop && !buyAreaVisible && (
+        <div
+          role="region"
+          // Names the landmark for what it is. "Buy now" stood in here before
+          // the key existed, which announced the region as if it were the
+          // button inside it.
+          aria-label={t("web.purchase_bar")}
+          className="fixed inset-x-0 bottom-0 z-30 border-t border-line bg-card/95 px-4 py-3 backdrop-blur-sm"
+          // The home-indicator strip on a modern phone would otherwise eat the
+          // bottom of the button.
+          style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))" }}
+        >
+          <div className="mx-auto flex max-w-6xl items-center gap-3">
+            {/* min-w-0 + truncate: a long plan name has to give way to the
+                button, not push it off a 320px screen. */}
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-xs text-ink-soft">{selected.duration_label || selected.name}</div>
+              {/* Same `selected.price` the summary shows — already discounted
+                  by the server, never recomputed here. */}
+              <div className="font-display text-lg font-semibold leading-tight text-pine">
+                {formatIdr(selected.price)}
+              </div>
+            </div>
+            {purchasable(selected) ? (
+              <button
+                type="button"
+                className="btn btn-primary shrink-0"
+                disabled={buying}
+                onClick={() => buyMutation.mutate({ denomination_id: selected.id, qty })}
+              >
+                {buyMutation.isPending && <Spinner />}
+                <Zap className="w-4 h-4" /> {t("web.buy_now")}
+              </button>
+            ) : (
+              // Nothing to buy, but the bar still carries the one action that
+              // does exist — an empty or disabled bar would just be a strip of
+              // wasted screen on the shortest viewport we have.
+              <button
+                type="button"
+                className="btn btn-soft shrink-0"
+                disabled={restockMutation.isPending}
+                onClick={() => restockMutation.mutate(selected.id)}
+              >
+                {restockMutation.isPending && <Spinner />}
+                <Bell className="w-4 h-4" /> {t("web.notify_restock")}
+              </button>
+            )}
+          </div>
+        </div>
       )}
     </>
   );

@@ -49,7 +49,7 @@ import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/ban
 import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
-import { esc, formatPrice, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, orderAmount, mixedAmount, renderBybitBscTrackingScreen } from "../util/format";
+import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, orderAmount, mixedAmount, renderBybitBscTrackingScreen } from "../util/format";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
@@ -58,7 +58,7 @@ import { showFaq, showTerms } from "./static";
 const PAGE_SIZE = 10;
 // USDT-denominated figures only (wallet balance, commissions). Catalog prices
 // are central Rupiah — use priceIdr(v, rate); order totals — orderAmount(o).
-const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimals);
+const price = (v: Decimal.Value) => formatUsdtAmount(v);
 
 // Bybit BSC's in-flight pre-delivery states — viewOrder() routes these
 // through the live tracking screen instead of the generic order.detail path.
@@ -486,12 +486,15 @@ export async function browseProduct(ctx: MyContext, productId: number): Promise<
   );
   const sold = await soldCountForProduct(prisma, productId);
 
-  const text = t(ctx, "browse.choose_denomination", {
+  let text = t(ctx, "browse.choose_denomination", {
     name: esc(product.name),
     sold: t(ctx, "browse.sold_count", { count: sold }),
     plans: planLines.join("\n"),
     updated: localize(new Date(), "HH:mm:ss"),
   });
+  if (product.description) {
+    text += "\n\n" + t(ctx, "browse.description", { description: esc(product.description) });
+  }
   const photoArg = productPhotoArg(product);
   if (photoArg) {
     await renderMenu(
@@ -587,6 +590,9 @@ export async function browseDenomination(
         min_qty: bulkRule.minQuantity,
         percent: bulkRule.discountPercent,
       });
+  }
+  if (d.product.description) {
+    text += "\n\n" + t(ctx, "browse.description", { description: esc(d.product.description) });
   }
 
   if (opts?.noticePrefix) {

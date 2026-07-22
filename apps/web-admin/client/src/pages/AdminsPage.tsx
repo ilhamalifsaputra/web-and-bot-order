@@ -6,7 +6,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { FilterBar } from "../components/shared/FilterBar";
-import { Shield } from "lucide-react";
+import { Shield, Check, Plus, LogOut, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -17,7 +17,9 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { toast } from "sonner";
 import { apiPost } from "../api/client";
+import { describeError } from "../lib/errorMessages";
 import { useAdmins } from "../hooks/useAdmins";
 
 export function AdminsPage() {
@@ -34,21 +36,30 @@ export function AdminsPage() {
 
   const remove = useMutation({
     mutationFn: (tgId: number) => apiPost("/api/admins/remove", { telegram_id: String(tgId) }),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["admins"] }); },
-    onError: (e: Error) => alert(e.message),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admins"] });
+      toast.success("Admin removed.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   const setRole = useMutation({
     mutationFn: ({ tgId, role }: { tgId: number; role: string }) =>
       apiPost(`/api/admins/${tgId}/role`, { role }),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["admins"] }); },
-    onError: (e: Error) => alert(e.message),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admins"] });
+      toast.success("Admin role updated.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   const forceLogout = useMutation({
     mutationFn: (tgId: number) => apiPost(`/api/admins/${tgId}/logout`, {}),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["admins"] }); },
-    onError: (e: Error) => alert(e.message),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["admins"] });
+      toast.success("Admin logged out.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   if (isError) return <PageLayout title="Admins"><p className="text-sm text-rust">Failed to load admins.</p></PageLayout>;
@@ -76,7 +87,8 @@ export function AdminsPage() {
           />
         </div>
         <Button onClick={() => add.mutate()} disabled={!addId || add.isPending}>
-          + Add Admin
+          <Plus className="h-4 w-4" />
+          Add Admin
         </Button>
         {addError && <span className="text-sm text-rust">{addError}</span>}
       </FilterBar>
@@ -119,14 +131,14 @@ export function AdminsPage() {
             key: "pwd",
             header: "Password Set",
             render: a => a.passwordSet
-              ? <Badge variant="default">✓</Badge>
+              ? <Badge variant="default"><Check /></Badge>
               : <span className="text-ink-faint">—</span>,
           },
           {
             key: "twofa",
             header: "2FA",
             render: a => a.twoFa
-              ? <Badge variant="default">✓</Badge>
+              ? <Badge variant="default"><Check /></Badge>
               : <span className="text-ink-faint">—</span>,
           },
           {
@@ -139,6 +151,7 @@ export function AdminsPage() {
                 onClick={() => forceLogout.mutate(a.telegramId)}
                 disabled={a.isSelf}
               >
+                <LogOut className="h-4 w-4" />
                 Logout
               </Button>
             ) : "—",
@@ -148,7 +161,7 @@ export function AdminsPage() {
             header: "",
             render: a => !a.fromEnv && !a.isSelf ? (
               <ConfirmDialog
-                trigger={<Button variant="ghost" size="sm" className="text-rust">Remove</Button>}
+                trigger={<Button variant="ghost" size="sm" className="text-rust"><Trash2 className="h-4 w-4" />Remove</Button>}
                 title="Remove admin?"
                 description={`Remove admin ${a.telegramId} from the system.`}
                 confirmLabel="Remove"

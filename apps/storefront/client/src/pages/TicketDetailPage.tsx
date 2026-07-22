@@ -8,27 +8,24 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Send } from "lucide-react";
-import { apiGet, apiPost, apiPostForm } from "../api/client";
+import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
 import type { TicketDetailData } from "../api/types";
 import { t } from "../lib/i18n";
 import StatusBadge from "../components/shop/StatusBadge";
 import AttachmentPicker from "../components/shop/AttachmentPicker";
 import AttachmentGallery from "../components/shop/AttachmentGallery";
 import ErrorPage from "./ErrorPage";
-
-/** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
- * submitting button while its mutation is pending (in addition to disabling
- * the button itself). */
-function Spinner() {
-  return (
-    <span className="inline-block w-3.5 h-3.5 mr-1.5 align-[-2px] rounded-full border-2 border-current border-r-transparent animate-spin" />
-  );
-}
+import Spinner from "../components/shop/Spinner";
+import Skeleton from "../components/shop/Skeleton";
+import Toast from "../components/shop/Toast";
+import ProgressBar from "../components/shop/ProgressBar";
 
 export default function TicketDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
   const [message, setMessage] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [errorText, setErrorText] = useState<string | null>(null);
   const { data, error, refetch } = useQuery({
     queryKey: ["account-ticket", id],
     queryFn: () => apiGet<TicketDetailData>(`/api/v1/account/support/${id}`),
@@ -49,17 +46,26 @@ export default function TicketDetailPage() {
       const form = new FormData();
       form.append("message", vars.message);
       for (const file of vars.files) form.append("attachments", file);
-      return apiPostForm<{ ok: boolean }>(`/api/v1/account/support/${id}/reply`, form);
+      return apiPostFormWithProgress<{ ok: boolean }>(
+        `/api/v1/account/support/${id}/reply`,
+        form,
+        setUploadProgress,
+      );
     },
     onSuccess: () => {
       setMessage("");
       setFiles([]);
       refetch();
     },
+    onError: (err) => {
+      setErrorText(t(err instanceof Error ? err.message : "error.generic"));
+    },
   });
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setErrorText(null);
+    setUploadProgress(0);
     replyMutation.mutate({ message, files });
   }
 
@@ -67,12 +73,23 @@ export default function TicketDetailPage() {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
     return null;
   }
-  if (!data) return null;
+  if (!data) {
+    return (
+      <div aria-busy="true" aria-label={t("web.loading")}>
+        <Skeleton className="mb-6 h-8 w-40" />
+        <div className="space-y-3">
+          <Skeleton className="h-24 w-full" />
+          <Skeleton className="h-24 w-3/4" />
+        </div>
+      </div>
+    );
+  }
 
   const { ticket, messages } = data;
 
   return (
     <>
+      <Toast text={errorText} onDismiss={() => setErrorText(null)} kind="error" />
       <div className="mb-6 flex items-center justify-between gap-3 flex-wrap">
         <div>
           <div className="text-xs text-ink-faint mb-1">
@@ -120,6 +137,11 @@ export default function TicketDetailPage() {
             placeholder={t("web.support_placeholder")}
           />
           <AttachmentPicker files={files} onChange={setFiles} disabled={replyMutation.isPending} />
+          {replyMutation.isPending && files.length > 0 && (
+            <div className="mt-2">
+              <ProgressBar value={uploadProgress} />
+            </div>
+          )}
           <div className="mt-3 text-right">
             <button type="submit" className="btn btn-primary btn-sm" disabled={replyMutation.isPending}>
               {replyMutation.isPending && <Spinner />}

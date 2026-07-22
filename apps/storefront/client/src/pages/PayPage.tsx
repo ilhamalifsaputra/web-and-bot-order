@@ -41,15 +41,8 @@ import { t } from "../lib/i18n";
 import { formatIdr } from "../lib/format";
 import Stepper from "../components/shop/Stepper";
 import ErrorPage from "./ErrorPage";
-
-/** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
- * submitting button while its mutation is pending (in addition to disabling
- * the button itself). */
-function Spinner() {
-  return (
-    <span className="inline-block w-3.5 h-3.5 mr-1.5 align-[-2px] rounded-full border-2 border-current border-r-transparent animate-spin" />
-  );
-}
+import Spinner from "../components/shop/Spinner";
+import Skeleton from "../components/shop/Skeleton";
 
 /** TSX port of _pay_status.njk — the polled status chip. */
 function StatusStrip({ state }: { state: PayState }) {
@@ -200,7 +193,14 @@ export default function PayPage() {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
     return null;
   }
-  if (!data) return null;
+  if (!data) {
+    return (
+      <div aria-busy="true" aria-label={t("web.loading")}>
+        <Skeleton className="mb-6 h-8 w-56" />
+        <Skeleton className="mx-auto h-72 w-full max-w-md" />
+      </div>
+    );
+  }
 
   const { order, state } = data;
   const stripState = poll?.state ?? state;
@@ -271,7 +271,23 @@ export default function PayPage() {
             ) : data.is_qris ? (
               <>
                 <h2 className="section-title mb-3">{t("web.pay_idr_title")}</h2>
-                <div className="font-display font-semibold text-pine text-2xl">{formatIdr(order.total)}</div>
+                {order.qris_admin_fee != null ? (
+                  <>
+                    <div className="text-sm text-ink-soft flex justify-between">
+                      <span>{t("web.subtotal")}</span>
+                      <span>{formatIdr(order.total)}</span>
+                    </div>
+                    <div className="text-sm text-ink-soft flex justify-between">
+                      <span>{t("web.qris_admin_fee")}</span>
+                      <span>{formatIdr(order.qris_admin_fee)}</span>
+                    </div>
+                    <div className="font-display font-semibold text-pine text-2xl mt-1">
+                      {formatIdr(order.qris_grand_total)}
+                    </div>
+                  </>
+                ) : (
+                  <div className="font-display font-semibold text-pine text-2xl">{formatIdr(order.total)}</div>
+                )}
                 {data.gateway ? (
                   <>
                     {data.gateway.qrLink && (

@@ -14,6 +14,7 @@ import type { Api } from "grammy";
 import { OrderStatus, OrderCurrency } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { reconcileOrder, sweepDeliveredAwaitingEdit } from "../src/payments/tokopayReconcile";
+import { qrisChargeAmount } from "@app/core/payments/tokopay";
 
 let sample: SampleData;
 
@@ -59,11 +60,12 @@ async function makeTokopayOrder() {
 }
 
 describe("reconcileOrder (TokoPay poller safety net)", () => {
-  it("delivers a pending TOKOPAY order the gateway reports paid", async () => {
+  it("delivers a pending TOKOPAY order the gateway reports paid (fee-inclusive amount)", async () => {
     const created = await makeTokopayOrder();
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
     expect(pending).toBeDefined();
-    stubStatus({ status: "Paid", trx_id: "TRX-RC", total_bayar: pending!.totalAmount.toString() });
+    const charge = qrisChargeAmount(pending!.totalAmount, pending!.subtotalAmount);
+    stubStatus({ status: "Paid", trx_id: "TRX-RC", total_bayar: charge.toString() });
 
     await reconcileOrder(fakeApi(), CREDS, pending!);
 
@@ -71,6 +73,17 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     expect(after?.status).toBe(OrderStatus.DELIVERED);
     const tx = await prisma.processedTokopayTx.findFirst({ where: { orderId: created!.id } });
     expect(tx?.outcome).toBe("matched");
+  });
+
+  it("never delivers when the gateway reports only the bare order total (no admin fee)", async () => {
+    await makeTokopayOrder();
+    const [pending] = await listPendingTokopayOrders(prisma, new Date());
+    stubStatus({ status: "Paid", trx_id: "TRX-NOFEE", total_bayar: pending!.totalAmount.toString() });
+
+    await reconcileOrder(fakeApi(), CREDS, pending!);
+
+    const [stillPending] = await listPendingTokopayOrders(prisma, new Date());
+    expect(stillPending).toBeDefined();
   });
 
   it("leaves the order pending when the gateway reports unpaid", async () => {
@@ -99,7 +112,8 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     const created = await makeTokopayOrder();
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
     await setOrderPaymentMessage(prisma, created!.id, 555, 777);
-    stubStatus({ status: "Paid", trx_id: "TRX-FLIP", total_bayar: pending!.totalAmount.toString() });
+    const charge = qrisChargeAmount(pending!.totalAmount, pending!.subtotalAmount);
+    stubStatus({ status: "Paid", trx_id: "TRX-FLIP", total_bayar: charge.toString() });
 
     const api = fakeApi();
     await reconcileOrder(api, CREDS, pending!);

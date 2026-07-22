@@ -8,12 +8,29 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { SearchBar } from "../components/shared/SearchBar";
+import { StatTile } from "../components/shared/StatTile";
+import { UrgencyDot } from "../components/shared/UrgencyDot";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectTrigger,
+  SelectValue,
+  SelectContent,
+  SelectItem,
+} from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import {
   Dialog,
   DialogContent,
@@ -22,15 +39,20 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import {
-  Table,
-  TableHeader,
-  TableRow,
-  TableHead,
-  TableBody,
-  TableCell,
-} from "@/components/ui/table";
-import { AlertCircle, Package } from "lucide-react";
+  AlertCircle,
+  Archive,
+  ArchiveRestore,
+  Check,
+  MoreVertical,
+  Package,
+  Plus,
+  SquarePen,
+  Trash2,
+  X,
+} from "lucide-react";
+import { toast } from "sonner";
 import { apiGet, apiPost, apiPatch, apiDelete } from "../api/client";
+import { describeError } from "../lib/errorMessages";
 
 interface CategoryRow {
   id: number;
@@ -45,7 +67,10 @@ interface ProductRow {
   id: number;
   name: string;
   isActive: boolean;
-  category: { id: number; name: string } | null;
+  isArchived: boolean;
+  webImageUrl: string | null;
+  createdAt: string;
+  category: { id: number; name: string; emoji: string | null } | null;
   _count: { denominations: number };
 }
 
@@ -71,11 +96,28 @@ interface ImportPreview {
   csv: string;
 }
 
+type StatusFilter = "all" | "active" | "inactive" | "archived";
+type SortMode = "name" | "newest" | "category";
+
 function useCatalog() {
   return useQuery<CatalogData>({
     queryKey: ["catalog"],
     queryFn: async () => apiGet<CatalogData>("/api/catalog"),
   });
+}
+
+/** Order comparator for the Sort filter — "name" is the default/stable order. */
+function compareProducts(a: ProductRow, b: ProductRow, sortBy: SortMode): number {
+  if (sortBy === "newest") {
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+  }
+  if (sortBy === "category") {
+    return (
+      (a.category?.name ?? "").localeCompare(b.category?.name ?? "") ||
+      a.name.localeCompare(b.name)
+    );
+  }
+  return a.name.localeCompare(b.name);
 }
 
 function CategoryEditDialog({
@@ -153,6 +195,9 @@ export function CatalogPage() {
   const navigate = useNavigate();
   const { data, isLoading, isError, refetch } = useCatalog();
   const [filter, setFilter] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [sortBy, setSortBy] = useState<SortMode>("name");
   const [showCategories, setShowCategories] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [csv, setCsv] = useState("");
@@ -161,7 +206,9 @@ export function CatalogPage() {
   const [importError, setImportError] = useState<string | null>(null);
   const [togglingProduct, setTogglingProduct] = useState<Set<number>>(new Set());
   const [togglingCategory, setTogglingCategory] = useState<Set<number>>(new Set());
+  const [togglingArchive, setTogglingArchive] = useState<Set<number>>(new Set());
   const [editingCategory, setEditingCategory] = useState<CategoryRow | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<ProductRow | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkActing, setBulkActing] = useState(false);
   const queryClient = useQueryClient();
@@ -196,12 +243,27 @@ export function CatalogPage() {
     }
   }
 
+  async function toggleProductArchived(id: number, archived: boolean) {
+    setTogglingArchive((s) => new Set([...s, id]));
+    try {
+      await apiPost(`/api/catalog/products/${id}/archive`, { archived });
+      await invalidateCatalog();
+    } finally {
+      setTogglingArchive((s) => {
+        const n = new Set(s);
+        n.delete(id);
+        return n;
+      });
+    }
+  }
+
   async function deleteProduct(id: number) {
     try {
       await apiDelete(`/api/catalog/products/${id}`);
       await invalidateCatalog();
+      toast.success("Product deleted.");
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to delete product.");
+      toast.error(describeError(e instanceof Error ? e.message : "Failed to delete product."));
     }
   }
 
@@ -214,13 +276,30 @@ export function CatalogPage() {
   }
 
   async function bulkSetActive(active: boolean) {
+    const count = selected.size;
     setBulkActing(true);
     try {
       await apiPost("/api/catalog/products/bulk-active", { ids: Array.from(selected), active });
       setSelected(new Set());
       await invalidateCatalog();
+      toast.success(`${count} product(s) ${active ? "activated" : "deactivated"}.`);
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed to update products.");
+      toast.error(describeError(e instanceof Error ? e.message : "Failed to update products."));
+    } finally {
+      setBulkActing(false);
+    }
+  }
+
+  async function bulkSetArchived(archived: boolean) {
+    const count = selected.size;
+    setBulkActing(true);
+    try {
+      await apiPost("/api/catalog/products/bulk-archive", { ids: Array.from(selected), archived });
+      setSelected(new Set());
+      await invalidateCatalog();
+      toast.success(`${count} product(s) ${archived ? "archived" : "unarchived"}.`);
+    } catch (e) {
+      toast.error(describeError(e instanceof Error ? e.message : "Failed to update products."));
     } finally {
       setBulkActing(false);
     }
@@ -268,17 +347,49 @@ export function CatalogPage() {
     );
   }
 
-  const filtered = (data?.products ?? []).filter(
-    (p) =>
-      !filter ||
-      p.name.toLowerCase().includes(filter.toLowerCase()) ||
-      (p.category?.name ?? "").toLowerCase().includes(filter.toLowerCase()),
-  );
+  const products = data?.products ?? [];
+  const categories = data?.categories ?? [];
+  const nonArchived = products.filter((p) => !p.isArchived);
+
+  const stats = {
+    products: nonArchived.length,
+    categories: categories.length,
+    variants: nonArchived.reduce((sum, p) => sum + p._count.denominations, 0),
+    active: nonArchived.filter((p) => p.isActive).length,
+    inactive: nonArchived.filter((p) => !p.isActive).length,
+  };
+
+  const hasActiveFilter =
+    !!filter || categoryFilter !== "all" || statusFilter !== "all" || sortBy !== "name";
+  const clearFilters = () => {
+    setFilter("");
+    setCategoryFilter("all");
+    setStatusFilter("all");
+    setSortBy("name");
+  };
+
+  const filtered = products
+    .filter(
+      (p) =>
+        !filter ||
+        p.name.toLowerCase().includes(filter.toLowerCase()) ||
+        (p.category?.name ?? "").toLowerCase().includes(filter.toLowerCase()),
+    )
+    .filter((p) => categoryFilter === "all" || p.category?.id === Number(categoryFilter))
+    .filter((p) => {
+      if (statusFilter === "archived") return p.isArchived;
+      if (p.isArchived) return false; // archived only shows under the explicit "Archived" filter
+      if (statusFilter === "active") return p.isActive;
+      if (statusFilter === "inactive") return !p.isActive;
+      return true;
+    })
+    .sort((a, b) => compareProducts(a, b, sortBy));
 
   return (
     <PageLayout title="Catalog">
       <PageHeader
         title="Catalog"
+        description="Manage products, variants and categories."
         actions={
           <div className="flex items-center gap-2">
             <Button
@@ -300,37 +411,60 @@ export function CatalogPage() {
               Import CSV
             </Button>
             <Button size="sm" onClick={() => navigate("/catalog/new")}>
-              + Add Product
+              <Plus className="h-4 w-4" />
+              Add Product
             </Button>
           </div>
         }
       />
+
+      <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+        <StatTile label="Products" value={stats.products} />
+        <StatTile label="Categories" value={stats.categories} />
+        <StatTile label="Variants" value={stats.variants} />
+        <StatTile label="Active" value={stats.active} />
+        <StatTile label="Inactive" value={stats.inactive} />
+      </div>
 
       {showCategories && (
         <Card className="mb-6">
           <CardHeader>
             <CardTitle>Categories</CardTitle>
           </CardHeader>
-          <CardContent className="divide-y divide-line">
-            {(data?.categories ?? []).map((cat) => (
-              <div key={cat.id} className="flex items-center justify-between py-2">
-                <span className="text-sm text-ink">{cat.emoji ? `${cat.emoji} ` : ""}{cat.name}</span>
-                <div className="flex items-center gap-3">
-                  <Switch
-                    aria-label={`${cat.name} active`}
-                    checked={cat.isActive}
-                    onCheckedChange={(checked) => void toggleCategoryActive(cat.id, checked)}
-                    disabled={togglingCategory.has(cat.id)}
-                  />
-                  <Button variant="ghost" size="sm" onClick={() => setEditingCategory(cat)}>
-                    Edit category
-                  </Button>
-                </div>
-              </div>
-            ))}
-            {(data?.categories ?? []).length === 0 && (
-              <p className="text-sm text-ink-soft py-2">No categories yet.</p>
-            )}
+          <CardContent>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {categories.map((cat) => {
+                const count = nonArchived.filter((p) => p.category?.id === cat.id).length;
+                return (
+                  <div
+                    key={cat.id}
+                    className="flex shrink-0 items-center gap-2 rounded-4xl border border-line bg-sand px-3 py-1.5 text-sm"
+                  >
+                    <span className="whitespace-nowrap text-ink">
+                      {cat.emoji ? `${cat.emoji} ` : ""}
+                      {cat.name} <span className="text-ink-soft">({count})</span>
+                    </span>
+                    <Switch
+                      aria-label={`${cat.name} active`}
+                      checked={cat.isActive}
+                      onCheckedChange={(checked) => void toggleCategoryActive(cat.id, checked)}
+                      disabled={togglingCategory.has(cat.id)}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      aria-label="Edit category"
+                      onClick={() => setEditingCategory(cat)}
+                    >
+                      <SquarePen className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                );
+              })}
+              {categories.length === 0 && (
+                <p className="py-2 text-sm text-ink-soft">No categories yet.</p>
+              )}
+            </div>
           </CardContent>
         </Card>
       )}
@@ -343,15 +477,56 @@ export function CatalogPage() {
         />
       )}
 
-      <FilterBar
-        onClear={filter ? () => setFilter("") : undefined}
-        className="mb-4"
-      >
+      <FilterBar onClear={hasActiveFilter ? clearFilters : undefined} className="mb-4">
         <SearchBar
           value={filter}
           onChange={setFilter}
           placeholder="Filter by product or category…"
+          className="w-full sm:w-[380px]"
         />
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-soft">Category</label>
+          <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+            <SelectTrigger size="sm" className="w-40">
+              <SelectValue placeholder="All categories" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All categories</SelectItem>
+              {categories.map((c) => (
+                <SelectItem key={c.id} value={String(c.id)}>
+                  {c.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-soft">Status</label>
+          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
+            <SelectTrigger size="sm" className="w-36">
+              <SelectValue placeholder="All statuses" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All statuses</SelectItem>
+              <SelectItem value="active">Active</SelectItem>
+              <SelectItem value="inactive">Inactive</SelectItem>
+              <SelectItem value="archived">Archived</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-soft">Sort</label>
+          <Select value={sortBy} onValueChange={(v) => setSortBy(v as SortMode)}>
+            <SelectTrigger size="sm" className="w-36">
+              <SelectValue placeholder="Sort" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="name">Name A–Z</SelectItem>
+              <SelectItem value="newest">Newest</SelectItem>
+              <SelectItem value="category">Category</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </FilterBar>
 
       {showImport && (
@@ -407,37 +582,33 @@ export function CatalogPage() {
                     </span>
                   )}
                 </p>
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>#</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Category</TableHead>
-                        <TableHead>Product</TableHead>
-                        <TableHead>Denomination</TableHead>
-                        <TableHead>Price</TableHead>
-                        <TableHead>Error</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {preview.rows.map((row) => (
-                        <TableRow
-                          key={row.line}
-                          className={row.ok ? "" : "text-rust"}
-                        >
-                          <TableCell>{row.line}</TableCell>
-                          <TableCell>{row.ok ? "✓" : "✗"}</TableCell>
-                          <TableCell>{row.category ?? ""}</TableCell>
-                          <TableCell>{row.product ?? ""}</TableCell>
-                          <TableCell>{row.denomination ?? ""}</TableCell>
-                          <TableCell>{row.price ?? ""}</TableCell>
-                          <TableCell>{row.error ?? ""}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
+                <DataTable
+                  columns={[
+                    { key: "line", header: "#", render: (row) => row.line },
+                    {
+                      key: "status",
+                      header: "Status",
+                      render: (row) =>
+                        row.ok ? (
+                          <Check className="h-4 w-4 text-grass" />
+                        ) : (
+                          <X className="h-4 w-4 text-rust" />
+                        ),
+                    },
+                    { key: "category", header: "Category", render: (row) => row.category ?? "" },
+                    { key: "product", header: "Product", render: (row) => row.product ?? "" },
+                    { key: "denomination", header: "Denomination", render: (row) => row.denomination ?? "" },
+                    { key: "price", header: "Price", render: (row) => row.price ?? "" },
+                    {
+                      key: "error",
+                      header: "Error",
+                      render: (row) => <span className={row.ok ? "" : "text-rust"}>{row.error ?? ""}</span>,
+                    },
+                  ]}
+                  data={preview.rows}
+                  keyExtractor={(row) => row.line}
+                  empty={<EmptyState title="No rows to preview." />}
+                />
                 {preview.validCount > 0 && (
                   <Button
                     size="sm"
@@ -457,13 +628,16 @@ export function CatalogPage() {
       )}
 
       {selected.size > 0 && (
-        <div className="mb-3 flex items-center gap-3 rounded-md border border-line bg-card px-3 py-2 text-sm">
+        <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
           <span className="text-ink-soft">{selected.size} selected</span>
           <Button size="sm" variant="outline" disabled={bulkActing} onClick={() => void bulkSetActive(true)}>
             Activate
           </Button>
           <Button size="sm" variant="outline" disabled={bulkActing} onClick={() => void bulkSetActive(false)}>
             Deactivate
+          </Button>
+          <Button size="sm" variant="outline" disabled={bulkActing} onClick={() => void bulkSetArchived(true)}>
+            Archive
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
             Clear
@@ -477,10 +651,9 @@ export function CatalogPage() {
             key: "select",
             header: "",
             render: (row) => (
-              <input
-                type="checkbox"
+              <Checkbox
                 checked={selected.has(row.id)}
-                onChange={() => toggleSelected(row.id)}
+                onCheckedChange={() => toggleSelected(row.id)}
                 onClick={(e) => e.stopPropagation()}
                 aria-label={`Select ${row.name}`}
               />
@@ -489,11 +662,28 @@ export function CatalogPage() {
           {
             key: "name",
             header: "Product",
+            className: "py-3",
             render: (row) => (
-              <div>
-                <div className="font-medium text-sm text-ink">{row.name}</div>
-                <div className="text-xs text-ink-soft">
-                  {row.category?.name ?? "—"}
+              <div className="flex items-center gap-3">
+                {row.webImageUrl ? (
+                  <img
+                    src={row.webImageUrl}
+                    alt=""
+                    className="h-10 w-10 shrink-0 rounded-lg object-cover"
+                  />
+                ) : (
+                  <div
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-sand text-lg"
+                    aria-hidden="true"
+                  >
+                    {row.category?.emoji || <Package className="h-4 w-4 text-ink-faint" />}
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-ink">{row.name}</div>
+                  <div className="truncate text-xs text-ink-soft">
+                    {row.category?.name ?? "—"}
+                  </div>
                 </div>
               </div>
             ),
@@ -510,34 +700,63 @@ export function CatalogPage() {
           {
             key: "active",
             header: "Status",
+            className: "py-3",
             render: (row) => (
-              <Switch
-                checked={row.isActive}
-                onCheckedChange={(checked) => void toggleProductActive(row.id, checked)}
-                disabled={togglingProduct.has(row.id)}
-                onClick={(e) => e.stopPropagation()}
-              />
+              <div className="flex items-center gap-2">
+                <UrgencyDot level={row.isActive ? "ok" : "idle"} />
+                <span className="w-14 text-sm text-ink-soft">
+                  {row.isActive ? "Active" : "Inactive"}
+                </span>
+                <Switch
+                  checked={row.isActive}
+                  onCheckedChange={(checked) => void toggleProductActive(row.id, checked)}
+                  disabled={togglingProduct.has(row.id)}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </div>
             ),
           },
           {
             key: "actions",
             header: "",
             render: (row) => (
-              <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => navigate(`/catalog/${row.id}`)}
-                >
-                  Edit
-                </Button>
-                <ConfirmDialog
-                  trigger={<Button variant="ghost" size="sm" className="text-rust">Delete</Button>}
-                  title="Delete this product?"
-                  description={`Delete "${row.name}". This is refused if it still has denominations.`}
-                  confirmLabel="Delete"
-                  onConfirm={() => deleteProduct(row.id)}
-                />
+              <div onClick={(e) => e.stopPropagation()}>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.name}`}>
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => navigate(`/catalog/${row.id}`)}>
+                      <SquarePen className="h-4 w-4" />
+                      Edit
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      disabled={togglingArchive.has(row.id)}
+                      onSelect={() => void toggleProductArchived(row.id, !row.isArchived)}
+                    >
+                      {row.isArchived ? (
+                        <ArchiveRestore className="h-4 w-4" />
+                      ) : (
+                        <Archive className="h-4 w-4" />
+                      )}
+                      {row.isArchived ? "Unarchive" : "Archive"}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      variant="destructive"
+                      onSelect={(e) => {
+                        e.preventDefault();
+                        setPendingDelete(row);
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             ),
           },
@@ -547,13 +766,44 @@ export function CatalogPage() {
         keyExtractor={(row) => row.id}
         onRowClick={(row) => navigate(`/catalog/${row.id}`)}
         empty={
-          <EmptyState
-            icon={Package}
-            title="No products yet"
-            description="Add your first product to start selling."
-          />
+          hasActiveFilter ? (
+            <EmptyState
+              icon={Package}
+              title="No products match your filters"
+              description="Try adjusting or clearing your filters."
+              secondaryAction={{ label: "Clear Filters", onClick: clearFilters }}
+            />
+          ) : (
+            <EmptyState
+              icon={Package}
+              title="No products yet"
+              description="Add your first product to start selling."
+              action={{ label: "Add Product", onClick: () => navigate("/catalog/new") }}
+              secondaryAction={{
+                label: "Import CSV",
+                onClick: () => {
+                  setShowImport(true);
+                  setPreview(null);
+                  setCsv("");
+                },
+              }}
+            />
+          )
         }
       />
+
+      {pendingDelete && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setPendingDelete(null);
+          }}
+          title="Delete this product?"
+          description={`Delete "${pendingDelete.name}". This is refused if it still has denominations.`}
+          confirmLabel="Delete"
+          onConfirm={() => deleteProduct(pendingDelete.id)}
+        />
+      )}
     </PageLayout>
   );
 }

@@ -1,28 +1,37 @@
-import nodemailer, { type Transporter } from "nodemailer";
-import { config, isSmtpEnabled } from "./config";
+import nodemailer from "nodemailer";
 import { logger } from "./logger";
 
-let transporter: Transporter | null = null;
-
-function transport(): Transporter {
-  if (!isSmtpEnabled()) throw new Error("SMTP is not configured");
-  if (!transporter) {
-    transporter = nodemailer.createTransport({
-      host: config.SMTP_HOST,
-      port: config.SMTP_PORT,
-      secure: config.SMTP_SECURE,
-      auth: config.SMTP_USER ? { user: config.SMTP_USER, pass: config.SMTP_PASS } : undefined,
-    });
-  }
-  return transporter;
+export interface SmtpCreds {
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  pass: string;
+  from: string;
 }
 
-export async function sendMail(args: { to: string; subject: string; text: string }): Promise<void> {
-  await transport().sendMail({
-    from: config.SMTP_FROM,
+function transport(creds: SmtpCreds) {
+  return nodemailer.createTransport({
+    host: creds.host,
+    port: creds.port,
+    secure: creds.secure,
+    auth: creds.user ? { user: creds.user, pass: creds.pass } : undefined,
+  });
+}
+
+export async function sendMail(creds: SmtpCreds, args: { to: string; subject: string; text: string }): Promise<void> {
+  await transport(creds).sendMail({
+    from: creds.from,
     to: args.to,
     subject: args.subject,
     text: args.text,
   });
   logger.info(`Sent email to ${args.to} with subject "${args.subject}"`);
+}
+
+/** Checks the SMTP connection/auth without sending an email — backs the
+ * Settings page's "Test Connection" button. */
+export async function verifySmtp(creds: SmtpCreds): Promise<boolean> {
+  await transport(creds).verify();
+  return true;
 }

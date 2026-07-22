@@ -52,8 +52,16 @@ export default function DeliveryFieldInput({
           type={
             field.type === "email" ? "email" : field.type === "url" ? "url" : field.type === "number" ? "number" : "text"
           }
-          inputMode={field.type === "number" ? "numeric" : undefined}
+          // `type` alone gets the right keyboard on iOS Safari but not
+          // reliably on Android, whose keyboards key off inputMode — so both
+          // are declared rather than trusting the type to carry it.
+          inputMode={
+            field.type === "number" ? "numeric" : field.type === "email" ? "email" : field.type === "url" ? "url" : undefined
+          }
           pattern={field.type === "number" ? "[0-9]*" : undefined}
+          // A manual_with_info order routinely asks for the buyer's own email;
+          // without this they retype an address the browser already knows.
+          autoComplete={field.type === "email" ? "email" : undefined}
           className="field"
           value={value}
           placeholder={field.placeholder || undefined}

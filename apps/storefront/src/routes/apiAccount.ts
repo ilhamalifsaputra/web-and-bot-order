@@ -51,6 +51,7 @@ import {
 } from "../auth";
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { resolveBotUsername } from "../shop";
+import { constantTimeEqual } from "../auth";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -73,7 +74,7 @@ async function requireCustomer(req: FastifyRequest, reply: FastifyReply): Promis
 /** x-csrf-token header check for signed-in JSON mutations. */
 function csrfHeaderOk(req: FastifyRequest, customer: Customer): boolean {
   const token = req.headers["x-csrf-token"];
-  return Boolean(token) && token === customer.csrf;
+  return typeof token === "string" && constantTimeEqual(token, customer.csrf);
 }
 
 const apiAccountRoutes: FastifyPluginAsync = async (app) => {

@@ -19,6 +19,7 @@ import {
   deleteSetting,
   createCatalogProduct,
   createDenomination,
+  setFlashSale,
 } from "@app/db";
 import { buildApp } from "../src/server";
 import { verifyTelegramLoginResult } from "../src/auth";
@@ -209,6 +210,51 @@ describe("GET /api/v1/pages/category/:slug — product cards only", () => {
     const res = await app.inject({ method: "GET", url: `/api/v1/pages/category/${cat.slug}` });
     expect(res.statusCode).toBe(200);
     expect(res.json().products[0]).toMatchObject({ rating: 4.5, rating_count: 2 });
+  });
+});
+
+// The three browse-all shelves the mobile nav drawer links to. They share the
+// card shaper with home/category/search, so what's asserted here is the
+// selection each one makes — not the card shape, which is proven above.
+describe("GET /api/v1/pages/products, /categories and /flash", () => {
+  it("lists the whole catalog on /products, as product cards", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/products" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.products.some((p: { slug: string }) => p.slug === productSlug)).toBe(true);
+    expect(body).toHaveProperty("low_threshold");
+  });
+
+  it("lists the active categories on /categories", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/categories" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().categories.some((c: { slug: string }) => c.slug === categorySlug)).toBe(true);
+  });
+
+  it("returns only products on sale from /flash, and flags the context while one runs", async () => {
+    // No sale seeded yet: the shelf is empty and the drawer's entry stays hidden.
+    const before = await app.inject({ method: "GET", url: "/api/v1/pages/flash" });
+    expect(before.statusCode).toBe(200);
+    expect(before.json().products).toEqual([]);
+    expect((await app.inject({ method: "GET", url: "/api/v1/pages/context" })).json().flash_active).toBe(false);
+
+    const cat = await prisma.category.create({ data: { name: "FlashCat", slug: "flash-cat", sortOrder: 12 } });
+    const { product, members } = await seedProduct(cat.id, "Flash Product", [
+      { name: "1 Month", price: "50000", duration: "1 Month" },
+    ]);
+    await setFlashSale(prisma, {
+      denominationId: members[0]!.id,
+      discountPercent: "25",
+      startsAt: new Date(Date.now() - 3600_000),
+      endsAt: new Date(Date.now() + 3600_000),
+    });
+
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/flash" });
+    const slugs = res.json().products.map((p: { slug: string }) => p.slug);
+    expect(slugs).toEqual([product.slug]);
+    // Not everything in the catalog — only what's actually discounted.
+    expect(slugs).not.toContain(productSlug);
+    expect((await app.inject({ method: "GET", url: "/api/v1/pages/context" })).json().flash_active).toBe(true);
   });
 });
 
@@ -712,7 +758,7 @@ describe("forgot + reset password", () => {
     expect(fake.json()).toEqual({ sent: true, unavailable: false });
 
     expect(sendMail).toHaveBeenCalledTimes(1);
-    const text = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![0].text as string;
+    const text = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![1].text as string;
     expect(text).toMatch(/\/reset\/[A-Za-z0-9_-]{40,}/);
   });
 
@@ -862,7 +908,12 @@ describe("storefront setup gate", () => {
     try {
       const res = await app.inject({ method: "GET", url: "/" });
       expect(res.statusCode).toBe(503);
-      expect(res.body).toContain("belum aktif");
+      // The React SetupPendingPage renders client-side; the server response is the
+      // SPA shell with a `setup-pending` meta tag (main.tsx reads it to mount the
+      // page directly) plus a server-rendered seo-shell body for crawlers/no-JS —
+      // no `shop_lang` cookie is set here, so it's in the default (English) locale.
+      expect(res.body).toContain('<meta name="setup-pending" content="true">');
+      expect(res.body).toContain("Shop not active yet");
     } finally {
       await setSetting(prisma, "setup_completed", "true"); // restore for other tests
     }

@@ -6,15 +6,19 @@
  */
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
+import { PackageSearch } from "lucide-react";
+import { motion } from "framer-motion";
 import { apiGet } from "../api/client";
 import { SORT_KEYS, type CategoryPageData, type SortKey } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
+import { staggerContainer, staggerItem } from "../lib/motion";
 import ProductCard from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
 import SortSelect from "../components/shop/SortSelect";
 import ErrorPage from "./ErrorPage";
+import EmptyState from "../components/shop/EmptyState";
 
 const SKELETON_CARDS = Array.from({ length: 8 }, (_, i) => i);
 
@@ -103,14 +107,26 @@ export default function CategoryPage() {
           )}
           {/* STO-018: same fix as the homepage's "Latest products" grid — a
               single product left two-thirds of the row empty. */}
-          <div className={`grid gap-4 ${products.length === 1 ? "max-w-xs" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4"}`}>
+          <motion.div
+            className={`grid gap-4 ${products.length === 1 ? "max-w-xs" : "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4"}`}
+            variants={staggerContainer}
+            initial="initial"
+            animate="animate"
+          >
             {products.map((p) => (
-              <ProductCard key={p.slug} p={p} fx={fx} lowThreshold={low_threshold} />
+              <motion.div key={p.slug} variants={staggerItem} className="h-full">
+                <ProductCard p={p} fx={fx} lowThreshold={low_threshold} />
+              </motion.div>
             ))}
-          </div>
+          </motion.div>
         </>
       ) : (
-        <div className="card card-pad text-center text-ink-faint py-14">{t("web.catalog_empty")}</div>
+        <EmptyState
+          icon={PackageSearch}
+          title={t("web.catalog_empty")}
+          description={t("web.catalog_empty_desc")}
+          action={{ label: t("web.nav_products"), to: "/products" }}
+        />
       )}
     </>
   );

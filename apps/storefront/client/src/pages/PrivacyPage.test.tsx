@@ -10,6 +10,20 @@ import type { ShopContext } from "../api/types";
 
 vi.mock("../api/client", () => ({ apiGet: vi.fn() }));
 
+// jsdom has no IntersectionObserver (see HomePage.test.tsx's own note on this)
+// and StaticPage's blocks now mount with Framer Motion's `whileInView`, which
+// throws on mount without it — a no-op stub is enough since these tests
+// don't assert scroll-triggered reveal behavior.
+class NoOpIntersectionObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  takeRecords() {
+    return [];
+  }
+}
+vi.stubGlobal("IntersectionObserver", NoOpIntersectionObserver);
+
 function context(overrides: Partial<ShopContext> = {}): ShopContext {
   return {
     lang: "en",

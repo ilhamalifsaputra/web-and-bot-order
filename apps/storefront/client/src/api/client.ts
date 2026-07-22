@@ -56,22 +56,42 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-/** Same CSRF-header contract as apiPost, for a multipart `FormData` body (ticket
- * evidence uploads) — no Content-Type header, the browser sets the boundary. */
-export async function apiPostForm<T>(path: string, form: FormData): Promise<T> {
-  const res = await fetch(path, {
-    method: "POST",
-    credentials: "include",
-    headers: { "X-CSRF-Token": csrfToken() },
-    body: form,
+/** Same CSRF-header contract as `apiPost`, for a multipart `FormData` body
+ * (ticket evidence uploads), plus real upload-progress reporting for the
+ * (potentially several-MB) attachments — `fetch` has no reliable
+ * cross-browser way to report request-upload progress,
+ * `XMLHttpRequest.upload.onprogress` does. */
+export function apiPostFormWithProgress<T>(
+  path: string,
+  form: FormData,
+  onProgress: (pct: number) => void,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", path);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader("X-CSRF-Token", csrfToken());
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onload = () => {
+      let data: { error?: string } = {};
+      try {
+        data = xhr.responseText ? (JSON.parse(xhr.responseText) as { error?: string }) : {};
+      } catch {
+        // Not JSON — fall through to the generic message below.
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data as T);
+        return;
+      }
+      const err = new Error(data.error ?? `${path} responded ${xhr.status}`);
+      (err as Error & { status?: number }).status = xhr.status;
+      reject(err);
+    };
+    xhr.onerror = () => reject(new Error("Network error during upload."));
+    xhr.send(form);
   });
-  if (!res.ok) {
-    const data = (await res.json().catch(() => ({}))) as { error?: string };
-    const err = new Error(data.error ?? `${path} responded ${res.status}`);
-    (err as Error & { status?: number }).status = res.status;
-    throw err;
-  }
-  return res.json() as Promise<T>;
 }
 
 /** Same CSRF-header contract as apiPost — for account-scoped edits (e.g.

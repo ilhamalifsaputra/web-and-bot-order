@@ -6,7 +6,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { StatusBadge } from "../components/shared/StatusBadge";
-import { Megaphone } from "lucide-react";
+import { Megaphone, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -18,7 +18,9 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
+import { toast } from "sonner";
 import { apiPost } from "../api/client";
+import { describeError } from "../lib/errorMessages";
 import { ImageUploadField } from "../components/shared/ImageUploadField";
 
 interface BroadcastRow {
@@ -76,8 +78,11 @@ export function BroadcastPage() {
 
   const cancel = useMutation({
     mutationFn: (id: number) => apiPost(`/api/broadcast/${id}/cancel`, {}),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["broadcast"] }); },
-    onError: (e: Error) => alert(e.message),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["broadcast"] });
+      toast.success("Broadcast cancelled.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   if (isError) return <PageLayout title="Broadcast"><p className="text-sm text-rust">Failed to load broadcast.</p></PageLayout>;
@@ -107,6 +112,7 @@ export function BroadcastPage() {
             fieldName="photo"
             accept="image/jpeg,image/png,image/webp"
             dimensions="JPG/PNG/WebP, under 5MB"
+            maxBytes={5 * 1024 * 1024}
             onUploaded={url => setForm(f => ({ ...f, webImageUrl: url }))}
           />
           {form.webImageUrl && (
@@ -210,7 +216,7 @@ export function BroadcastPage() {
             header: "",
             render: b => b.status === "PENDING" ? (
               <ConfirmDialog
-                trigger={<Button variant="ghost" size="sm" className="text-rust">Cancel</Button>}
+                trigger={<Button variant="ghost" size="sm" className="text-rust"><X className="h-4 w-4" />Cancel</Button>}
                 title="Cancel broadcast?"
                 description="This will stop the scheduled broadcast."
                 confirmLabel="Cancel broadcast"

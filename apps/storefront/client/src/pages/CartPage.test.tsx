@@ -93,14 +93,54 @@ describe("CartPage", () => {
     expect(await screen.findAllByText("Rp237.000")).not.toHaveLength(0);
   });
 
+  // Removal now takes two taps: the trash icon only opens an inline
+  // confirmation, and the confirm button inside it is what posts.
   it("removing a line posts remove and empties the cart", async () => {
     renderCart(() => cartData);
     await screen.findByRole("heading", { name: "Cart (4)" });
     (apiPost as Mock).mockResolvedValue({ items: [], subtotal: "0" });
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Remove this item from your cart?");
+    expect(apiPost).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/v1/cart/remove", { key: 10 }));
     expect(await screen.findByText("Your cart is empty — browse the products.")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Browse products" })).toHaveAttribute("href", "/");
+    // Points at /products, not the homepage: a button labelled "Browse
+    // products" had nowhere better to go before that page existed.
+    expect(screen.getByRole("link", { name: "Browse products" })).toHaveAttribute("href", "/products");
+  });
+
+  it("cancelling the remove confirmation leaves the line and its controls alone", async () => {
+    renderCart(() => cartData);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(apiPost).not.toHaveBeenCalled();
+    expect(screen.getByText("Netflix Premium - 1 Month")).toBeInTheDocument();
+    // The confirmation replaces the quantity controls, so cancelling has to
+    // bring them back — otherwise the row is left unusable.
+    expect(screen.getByLabelText("Quantity")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Update" })).toBeInTheDocument();
+  });
+
+  // Phones show a QWERTY keyboard for type="number" unless inputMode says
+  // otherwise, which is a poor way to type a digit into a 64px field.
+  it("hints a numeric keypad on the quantity field", async () => {
+    renderCart(() => cartData);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    expect(screen.getByLabelText("Quantity")).toHaveAttribute("inputmode", "numeric");
+  });
+
+  // jsdom has no matchMedia, so useIsDesktop() reports mobile — this is the
+  // small-screen layout: checkout is reachable from the sticky bar, and the
+  // summary card drops its own copy of the link so there is only ever one.
+  it("puts the checkout call to action in a single reachable place on mobile", async () => {
+    renderCart(() => cartData);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    const checkoutLinks = screen.getAllByRole("link", { name: /Continue to payment/ });
+    expect(checkoutLinks).toHaveLength(1);
+    expect(checkoutLinks[0]).toHaveAttribute("href", "/checkout");
   });
 
   it("renders the empty-cart branch when the cart starts empty", async () => {

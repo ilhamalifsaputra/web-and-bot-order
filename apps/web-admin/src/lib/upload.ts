@@ -64,6 +64,14 @@ export async function handleUpload(
       mimetype = part.mimetype;
       const chunks: Buffer[] = [];
       for await (const chunk of part.file) chunks.push(chunk);
+      // busboy truncates the stream at maxBytes rather than erroring inline; if we
+      // don't catch it here, @fastify/multipart only surfaces the failure as an
+      // uncaught RequestFileTooLargeError on the *next* req.parts() iteration,
+      // which the app's blanket error handler turns into a bare 500.
+      if (part.file.truncated) {
+        const maxMb = (opts.maxBytes / (1024 * 1024)).toFixed(1).replace(/\.0$/, "");
+        return reply.code(400).type("text/plain").send(`That file is too large (max ${maxMb}MB).`);
+      }
       if (chunks.length > 0) fileBuffer = Buffer.concat(chunks);
     }
   }
@@ -95,10 +103,6 @@ export async function handleUpload(
   await deleteOldUpload(opts.urlPrefix, opts.destDir, oldValue, opts.webVariants);
   await mkdir(opts.destDir, { recursive: true });
   await writeFile(join(opts.destDir, filename), fileBuffer);
-  // After the original is safely on disk, and only for web-facing images.
-  if (opts.webVariants && isConvertible(filename)) {
-    await tryGenerateWebpVariants(opts.destDir, filename, opts.webVariants);
-  }
   if (opts.settingKey) await setSetting(prisma, opts.settingKey, url);
   if (opts.afterSave) await opts.afterSave(url);
   await logAdminAction(prisma, {
@@ -108,6 +112,12 @@ export async function handleUpload(
     targetId: opts.auditTarget?.id,
     details: opts.details(filename),
   });
+  // Best-effort and self-logging (tryGenerateWebpVariants never throws), and the
+  // original is already safely on disk — no reason to make the admin's Save
+  // button wait through up to 3 sequential sharp resize/encode passes.
+  if (opts.webVariants && isConvertible(filename)) {
+    void tryGenerateWebpVariants(opts.destDir, filename, opts.webVariants);
+  }
   return reply.code(200).send({ url });
 }
 

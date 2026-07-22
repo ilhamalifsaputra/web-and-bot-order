@@ -14,15 +14,8 @@ import { apiGet, apiPost } from "../api/client";
 import type { AccountReview, PendingReview, ReviewsData } from "../api/types";
 import { t } from "../lib/i18n";
 import Stars from "../components/shop/Stars";
-
-/** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
- * submitting button while its mutation is pending (in addition to disabling
- * the button itself). */
-function Spinner() {
-  return (
-    <span className="inline-block w-3.5 h-3.5 mr-1.5 align-[-2px] rounded-full border-2 border-current border-r-transparent animate-spin" />
-  );
-}
+import Spinner from "../components/shop/Spinner";
+import Skeleton from "../components/shop/Skeleton";
 
 interface ReviewSubmission {
   order_id: number;
@@ -118,7 +111,17 @@ export default function ReviewsPage() {
     onSuccess: () => refetch(),
   });
 
-  if (!data) return null;
+  if (!data) {
+    return (
+      <div aria-busy="true" aria-label={t("web.loading")}>
+        <Skeleton className="mb-6 h-8 w-48" />
+        <div className="space-y-3">
+          <Skeleton className="h-32 w-full" />
+          <Skeleton className="h-32 w-full" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>

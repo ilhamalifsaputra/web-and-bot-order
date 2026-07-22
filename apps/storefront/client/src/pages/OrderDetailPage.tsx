@@ -1,8 +1,11 @@
 /**
- * TSX port of apps/storefront/views/order_detail.njk. "Subtotal"/"Bulk"/
- * "Voucher" are literal English in the NJK (no `t()` call there — not every
- * label on this template is localized), ported as literal text rather than
- * i18n keys to stay 1:1. Copy-to-clipboard for a credential reads straight
+ * TSX port of apps/storefront/views/order_detail.njk. The summary's
+ * "Subtotal"/"Bulk"/"Voucher" labels were literal English in the NJK and were
+ * ported that way to stay 1:1; they now go through `t()` against the
+ * `web.subtotal` / `web.bulk_discount` / `web.voucher_discount` keys the
+ * checkout summary was already using, so an Indonesian visitor no longer meets
+ * three stray English words in the middle of a localized page.
+ * Copy-to-clipboard for a credential reads straight
  * from the item's own value instead of round-tripping through the DOM (the
  * NJK used `getElementById` only because it had no other handle on the
  * string). Markup/classes copied verbatim apart from the mechanical
@@ -44,23 +47,18 @@ import { useShopContext } from "../components/Layout";
 import { t, currentLang } from "../lib/i18n";
 import { formatIdr } from "../lib/format";
 import { allFieldsValid } from "../lib/deliveryFields";
+import { useIsDesktop } from "../lib/useMediaQuery";
 import Price from "../components/shop/Price";
+import Skeleton from "../components/shop/Skeleton";
 import StatusBadge from "../components/shop/StatusBadge";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
 import ErrorPage from "./ErrorPage";
-
-/** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
- * submitting button while its mutation is pending (in addition to disabling
- * the button itself). Same helper as CheckoutPage.tsx/PayPage.tsx. */
-function Spinner() {
-  return (
-    <span className="inline-block w-3.5 h-3.5 mr-1.5 align-[-2px] rounded-full border-2 border-current border-r-transparent animate-spin" />
-  );
-}
+import Spinner from "../components/shop/Spinner";
 
 export default function OrderDetailPage() {
   const { code = "" } = useParams<{ code: string }>();
   const { data: ctx } = useShopContext();
+  const isDesktop = useIsDesktop();
   const { data, error, refetch, isFetching } = useQuery({
     queryKey: ["account-order", code],
     queryFn: () => apiGet<OrderDetailData>(`/api/v1/account/orders/${code}`),
@@ -106,7 +104,19 @@ export default function OrderDetailPage() {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
     return null;
   }
-  if (!data) return null;
+  if (!data) {
+    return (
+      <div aria-busy="true" aria-label={t("web.loading")}>
+        <Skeleton className="mb-6 h-8 w-56" />
+        <div className="card mb-5 space-y-3 p-4">
+          <Skeleton className="h-4 w-2/3" />
+          <Skeleton className="h-4 w-1/3" />
+        </div>
+        <Skeleton className="mb-5 h-40 w-full" />
+        <Skeleton className="ml-auto h-32 w-full max-w-md" />
+      </div>
+    );
+  }
 
   const { order, delivered, pending_payment: pendingPayment, processing } = data;
   const showBulk = Boolean(order.bulk_discount) && order.bulk_discount !== "0";
@@ -179,44 +189,61 @@ export default function OrderDetailPage() {
         </div>
       )}
 
-      <div className="card overflow-x-auto mb-5">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>{t("web.order_items")}</th>
-              <th>{t("web.order_total")}</th>
-              <th>{t("web.warranty")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {order.items.map((i, idx) => (
-              <tr key={idx}>
-                <td>
-                  <div className="font-semibold text-sm">{i.name}</div>
-                  <div className="text-xs text-ink-faint">{i.duration}</div>
-                </td>
-                <td>
-                  <Price value={i.unit_price} fx={ctx?.fx} size="text-sm" />
-                </td>
-                <td className="text-xs text-ink-soft">{t("web.warranty_days", { days: i.warranty_days })}</td>
+      {/* Item lines: stacked on a phone, the three-column table from md up.
+          Only one of the two is ever in the DOM (lib/useMediaQuery.ts). */}
+      {isDesktop ? (
+        <div className="card mb-5">
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>{t("web.order_items")}</th>
+                <th>{t("web.order_total")}</th>
+                <th>{t("web.warranty")}</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {order.items.map((i, idx) => (
+                <tr key={idx}>
+                  <td>
+                    <div className="font-semibold text-sm">{i.name}</div>
+                    <div className="text-xs text-ink-faint">{i.duration}</div>
+                  </td>
+                  <td>
+                    <Price value={i.unit_price} fx={ctx?.fx} size="text-sm" />
+                  </td>
+                  <td className="text-xs text-ink-soft">{t("web.warranty_days", { days: i.warranty_days })}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <ul className="card mb-5 divide-y divide-line">
+          {order.items.map((i, idx) => (
+            <li key={idx} className="p-4">
+              <div className="text-sm font-semibold text-ink">{i.name}</div>
+              {i.duration && <div className="text-xs text-ink-faint">{i.duration}</div>}
+              <div className="mt-2 flex items-center justify-between gap-3">
+                <Price value={i.unit_price} fx={ctx?.fx} size="text-sm" />
+                <span className="text-xs text-ink-soft">{t("web.warranty_days", { days: i.warranty_days })}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
 
       <div className="card card-pad mb-5 max-w-md ml-auto text-sm">
         <div className="flex justify-between py-1">
-          <span className="text-ink-soft">Subtotal</span> <span>{formatIdr(order.subtotal)}</span>
+          <span className="text-ink-soft">{t("web.subtotal")}</span> <span>{formatIdr(order.subtotal)}</span>
         </div>
         {showBulk && (
           <div className="flex justify-between py-1 text-grass-dark">
-            <span>Bulk</span> <span>−{formatIdr(order.bulk_discount)}</span>
+            <span>{t("web.bulk_discount")}</span> <span>−{formatIdr(order.bulk_discount)}</span>
           </div>
         )}
         {showVoucher && (
           <div className="flex justify-between py-1 text-grass-dark">
-            <span>Voucher</span> <span>−{formatIdr(order.discount)}</span>
+            <span>{t("web.voucher_discount")}</span> <span>−{formatIdr(order.discount)}</span>
           </div>
         )}
         <div className="flex justify-between py-2 border-t border-line mt-1 font-semibold">

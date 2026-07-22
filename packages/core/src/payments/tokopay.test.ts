@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { verifyCallback, checkTransaction } from "./tokopay";
+import { verifyCallback, checkTransaction, computeQrisAdminFee, qrisChargeAmount } from "./tokopay";
 
 const CREDS = { merchantId: "MERCH", secret: "s3cr3t" };
 const FULL_CREDS = { merchantId: "MERCH", secret: "s3cr3t", channel: "QRIS" };
@@ -64,6 +64,28 @@ describe("verifyCallback", () => {
     const result = verifyCallback(body, CREDS);
     expect(result).not.toBeNull();
     expect(result?.paid).toBe(false);
+  });
+});
+
+describe("computeQrisAdminFee", () => {
+  it("is Rp100 flat on a zero subtotal", () => {
+    expect(computeQrisAdminFee(0).toFixed(0)).toBe("100");
+  });
+
+  it("adds 0.70% of the subtotal on top of the flat fee", () => {
+    expect(computeQrisAdminFee(10000).toFixed(0)).toBe("170"); // 100 + 70
+  });
+
+  it("rounds a .5 fraction half-up to the nearest Rupiah", () => {
+    // 500 * 0.007 = 3.5 -> 100 + 3.5 = 103.5 -> 104
+    expect(computeQrisAdminFee(500).toFixed(0)).toBe("104");
+  });
+});
+
+describe("qrisChargeAmount", () => {
+  it("adds the computed admin fee to the order total", () => {
+    // subtotal=500 -> fee=104 (see computeQrisAdminFee test above)
+    expect(qrisChargeAmount(1000, 500).toFixed(0)).toBe("1104");
   });
 });
 

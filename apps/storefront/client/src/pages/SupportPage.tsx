@@ -8,28 +8,31 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Send } from "lucide-react";
-import { apiGet, apiPost, apiPostForm } from "../api/client";
+import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
 import type { SupportData } from "../api/types";
 import { t } from "../lib/i18n";
+import { Inbox } from "lucide-react";
+import { useIsDesktop } from "../lib/useMediaQuery";
+import EmptyState from "../components/shop/EmptyState";
+import ErrorPage from "./ErrorPage";
+import Skeleton from "../components/shop/Skeleton";
+import Spinner from "../components/shop/Spinner";
 import StatusBadge from "../components/shop/StatusBadge";
 import Toast from "../components/shop/Toast";
 import AttachmentPicker from "../components/shop/AttachmentPicker";
+import ProgressBar from "../components/shop/ProgressBar";
 
-/** base.njk's `data-submit-once` double-submit guard, ported: prepended to a
- * submitting button while its mutation is pending (in addition to disabling
- * the button itself). */
-function Spinner() {
-  return (
-    <span className="inline-block w-3.5 h-3.5 mr-1.5 align-[-2px] rounded-full border-2 border-current border-r-transparent animate-spin" />
-  );
-}
+const SKELETON_ROWS = Array.from({ length: 3 }, (_, i) => i);
 
 export default function SupportPage() {
   // Pre-filled skeleton so customers know what info to include — they edit
   // it in place rather than starting from a blank box.
   const [message, setMessage] = useState(() => t("web.support_template"));
   const [files, setFiles] = useState<File[]>([]);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [toastText, setToastText] = useState<string | null>(null);
+  const [toastKind, setToastKind] = useState<"success" | "error">("success");
+  const isDesktop = useIsDesktop();
   const { data, error, refetch } = useQuery({
     queryKey: ["account-support"],
     queryFn: () => apiGet<SupportData>("/api/v1/account/support"),
@@ -54,7 +57,11 @@ export default function SupportPage() {
       const form = new FormData();
       form.append("message", vars.message);
       for (const file of vars.files) form.append("attachments", file);
-      return apiPostForm<{ ok: boolean; ticket_id: number | null }>("/api/v1/account/support", form);
+      return apiPostFormWithProgress<{ ok: boolean; ticket_id: number | null }>(
+        "/api/v1/account/support",
+        form,
+        setUploadProgress,
+      );
     },
     onSuccess: (resp) => {
       setMessage(t("web.support_template"));
@@ -62,18 +69,46 @@ export default function SupportPage() {
       refetch();
       if (resp.ticket_id != null) setToastText(t("web.support_ticket_created", { id: resp.ticket_id }));
     },
+    onError: (err) => {
+      setToastKind("error");
+      setToastText(t(err instanceof Error ? err.message : "error.generic"));
+    },
   });
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setToastKind("success");
+    setUploadProgress(0);
     createMutation.mutate({ message, files });
   }
 
-  if (!data) return null;
+  if (error) {
+    if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
+    return null;
+  }
+  if (!data) {
+    return (
+      <div aria-busy="true" aria-label={t("web.loading")}>
+        <Skeleton className="mb-6 h-8 w-48" />
+        <Skeleton className="mb-6 h-48 w-full" />
+        <div className="space-y-3">
+          {SKELETON_ROWS.map((i) => (
+            <div key={i} className="card space-y-3 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <Skeleton className="h-4 w-16" />
+                <Skeleton className="h-5 w-20" />
+              </div>
+              <Skeleton className="h-4 w-2/3" />
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>
-      <Toast text={toastText} onDismiss={() => setToastText(null)} kind="success" />
+      <Toast text={toastText} onDismiss={() => setToastText(null)} kind={toastKind} />
       <h1 className="page-title mb-6">{t("web.account_support")}</h1>
 
       <form onSubmit={onSubmit} className="card card-pad mb-6">
@@ -87,6 +122,11 @@ export default function SupportPage() {
           placeholder={t("web.support_placeholder")}
         />
         <AttachmentPicker files={files} onChange={setFiles} disabled={createMutation.isPending} />
+        {createMutation.isPending && files.length > 0 && (
+          <div className="mt-2">
+            <ProgressBar value={uploadProgress} />
+          </div>
+        )}
         <div className="mt-3 text-right">
           <button type="submit" className="btn btn-primary btn-sm" disabled={createMutation.isPending}>
             {createMutation.isPending && <Spinner />}
@@ -95,24 +135,23 @@ export default function SupportPage() {
         </div>
       </form>
 
-      <div className="card overflow-x-auto">
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>{t("web.ticket")}</th>
-              <th>{t("web.order_status")}</th>
-              <th>{t("web.order_date")}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.tickets.length === 0 ? (
+      {/* Same treatment as the orders list: cards on a phone, the table from md
+          up, one or the other. The ticket form above is already the forward
+          action, so the empty state doesn't repeat it as a button. */}
+      {data.tickets.length === 0 ? (
+        <EmptyState icon={Inbox} title={t("web.no_tickets")} description={t("web.no_tickets_desc")} />
+      ) : isDesktop ? (
+        <div className="card">
+          <table className="data-table">
+            <thead>
               <tr>
-                <td colSpan={3} className="px-4 py-10 text-center text-ink-faint">
-                  {t("web.no_tickets")}
-                </td>
+                <th>{t("web.ticket")}</th>
+                <th>{t("web.order_status")}</th>
+                <th>{t("web.order_date")}</th>
               </tr>
-            ) : (
-              data.tickets.map((tk) => (
+            </thead>
+            <tbody>
+              {data.tickets.map((tk) => (
                 <tr key={tk.id}>
                   <td>
                     <Link to={`/account/support/${tk.id}`} className="link">
@@ -125,11 +164,30 @@ export default function SupportPage() {
                   </td>
                   <td className="text-ink-soft text-xs">{tk.created_at_display}</td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <ul className="space-y-3">
+          {data.tickets.map((tk) => (
+            <li key={tk.id}>
+              <Link
+                to={`/account/support/${tk.id}`}
+                aria-label={`#${tk.id}`}
+                className="card block p-4 transition-colors hover:bg-sand/40"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-semibold text-pine">#{tk.id}</span>
+                  <StatusBadge value={tk.status} />
+                </div>
+                <p className="mt-2 line-clamp-2 text-sm text-ink-soft">{tk.message}</p>
+                <p className="mt-3 border-t border-line pt-3 text-xs text-ink-soft">{tk.created_at_display}</p>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
     </>
   );
 }

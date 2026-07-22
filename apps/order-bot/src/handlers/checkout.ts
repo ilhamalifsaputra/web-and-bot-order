@@ -45,7 +45,7 @@ import {
   completeOrderWithWalletCredit,
   enqueueNotification,
 } from "@app/db";
-import { createTransaction } from "@app/core/payments/tokopay";
+import { createTransaction, computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
 import { createInvoice as createNowpaymentsInvoice } from "@app/core/payments/nowpayments";
 import { pollOnce as tokopayPoll } from "../payments/tokopayReconcile";
@@ -60,7 +60,7 @@ import { smartEdit } from "../util/chat";
 import { sendAccountFile } from "../util/delivery";
 import { coreT, t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
-import { esc, formatPrice, formatIdr, priceIdr, usdtFromIdr } from "../util/format";
+import { esc, formatIdr, formatUsdtAmount, priceIdr, usdtFromIdr } from "../util/format";
 import { currentUsdtRate } from "../util/rate";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import * as ckb from "../keyboards/customer";
@@ -78,7 +78,7 @@ export { setActivePayment, clearActivePayment, cancelPaymentJobs };
 const MAX_PENDING_ORDERS = 10;
 // USDT figures only (the charged total of Binance orders). Catalog/confirmation
 // amounts are central Rupiah — use priceIdr(v, rate).
-const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimals);
+const price = (v: Decimal.Value) => formatUsdtAmount(v);
 
 /**
  * Per-method minimum-payment note, appended to a rail's instructions when an
@@ -87,7 +87,7 @@ const price = (v: Decimal.Value, decimals = 2) => formatPrice(v, "USDT", decimal
  */
 function minAmountNote(ctx: MyContext, minAmount: Decimal.Value | null, currency: "USDT" | "IDR"): string {
   if (!minAmount) return "";
-  const formatted = currency === "USDT" ? price(minAmount, 4) : formatIdr(minAmount);
+  const formatted = currency === "USDT" ? price(minAmount) : formatIdr(minAmount);
   return "\n\n" + t(ctx, "checkout.min_amount_note", { min: formatted });
 }
 
@@ -267,10 +267,10 @@ async function computeConfirmation(
     const usdtTotal = usdtFromIdr(subtotal, rate);
     if (usdtBalance.greaterThanOrEqualTo(usdtTotal)) {
       walletLine = coreT("checkout.confirm_wallet_usdt_line", lang, {
-        usdt_amount: formatPrice(usdtTotal, "USDT", 4),
+        usdt_amount: formatUsdtAmount(usdtTotal),
         idr_amount: formatIdr(subtotal),
       });
-      walletDeduction = { currency: "USDT", amount: formatPrice(usdtTotal, "USDT", 4) };
+      walletDeduction = { currency: "USDT", amount: formatUsdtAmount(usdtTotal) };
       subtotal = new Decimal(0);
     }
   }
@@ -650,7 +650,7 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     code: order.paymentRef,
     uid: esc(cfg.receiveUid),
     note: order.paymentRef,
-    amount: price(order.totalAmount, 4),
+    amount: price(order.totalAmount),
     idr_line: idrLine,
     expiry,
   }) + minAmountNote(ctx, cfg.minAmount, "USDT");
@@ -736,7 +736,7 @@ export async function buyNowBybit(ctx: MyContext, productId: number, quantity: n
   const text = t(ctx, "checkout.bybit_instructions", {
     code: order.orderCode,
     uid: esc(bybit.uid),
-    amount: price(order.totalAmount, 4),
+    amount: price(order.totalAmount),
     idr_line: idrLine,
     expiry,
   }) + minAmountNote(ctx, bybit.minAmount, "USDT");
@@ -825,7 +825,7 @@ export async function buyNowBybitBsc(ctx: MyContext, productId: number, quantity
     code: order.orderCode,
     address: esc(bybitBsc.depositAddress),
     chain: esc(bybitBsc.chain),
-    amount: price(order.totalAmount, 4),
+    amount: price(order.totalAmount),
     idr_line: idrLine,
     expiry,
   }) + minAmountNote(ctx, bybitBsc.minAmount, "USDT");
@@ -942,7 +942,7 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     : `${config.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES}m`;
   const text = t(ctx, "checkout.nowpayments_instructions", {
     code: order.orderCode,
-    amount: price(order.totalAmount, 4),
+    amount: price(order.totalAmount),
     expiry,
   }) + minAmountNote(ctx, creds.minAmount, "USDT");
 
@@ -1028,10 +1028,13 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
 
+  const adminFee = computeQrisAdminFee(order.subtotalAmount);
+  const chargeAmount = new Decimal(order.totalAmount).plus(adminFee);
+
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   let gateway;
   try {
-    gateway = await createTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
+    gateway = await createTransaction(creds, { refId: order.orderCode, amountIdr: chargeAmount });
     // Tagged `gateway: "tokopay"` to match the cache shape the storefront's own
     // cache-write sites produce (apps/storefront/src/routes/checkout.ts) — its
     // parseCachedGateway() requires this discriminator before trusting the cache.
@@ -1051,7 +1054,9 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
     : `${config.PAYMENT_WINDOW_MINUTES}m`;
   const caption = t(ctx, "checkout.qris_instructions", {
     code: order.orderCode,
-    amount: formatIdr(order.totalAmount),
+    subtotal: formatIdr(order.subtotalAmount),
+    fee: formatIdr(adminFee),
+    amount: formatIdr(chargeAmount),
     expiry,
   }) + minAmountNote(ctx, creds.minAmount, "IDR");
 

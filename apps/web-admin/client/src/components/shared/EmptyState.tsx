@@ -18,6 +18,11 @@ interface EmptyStateProps {
     label: string;
     onClick: () => void;
   };
+  /** Optional secondary, less-prominent action shown beside `action`. */
+  secondaryAction?: {
+    label: string;
+    onClick: () => void;
+  };
 }
 
 export function EmptyState({
@@ -26,6 +31,7 @@ export function EmptyState({
   message,
   description,
   action,
+  secondaryAction,
 }: EmptyStateProps): JSX.Element {
   const displayTitle = title ?? message ?? "";
 
@@ -36,10 +42,19 @@ export function EmptyState({
       {description && (
         <p className="text-sm text-ink-soft">{description}</p>
       )}
-      {action && (
-        <Button variant="default" onClick={action.onClick}>
-          {action.label}
-        </Button>
+      {(action || secondaryAction) && (
+        <div className="flex items-center gap-2">
+          {secondaryAction && (
+            <Button variant="outline" onClick={secondaryAction.onClick}>
+              {secondaryAction.label}
+            </Button>
+          )}
+          {action && (
+            <Button variant="default" onClick={action.onClick}>
+              {action.label}
+            </Button>
+          )}
+        </div>
       )}
     </div>
   )

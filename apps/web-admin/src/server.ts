@@ -34,8 +34,10 @@ import supportApiRoutes from "./routes/api/support";
 import settingsApiRoutes from "./routes/api/settings";
 import brandingApiRoutes from "./routes/api/branding";
 import catalogApiRoutes from "./routes/api/catalog";
+import flashSalesApiRoutes from "./routes/api/flashSales";
 import stockApiRoutes from "./routes/api/stock";
 import ordersApiRoutes from "./routes/api/orders";
+import storageApiRoutes from "./routes/api/storage";
 import catalogPhotoRoutes from "./routes/catalogPhoto";
 import brandingRoutes from "./routes/branding";
 import broadcastPhotoRoutes from "./routes/broadcastPhoto";
@@ -51,15 +53,35 @@ const STATIC_DIR = process.env.STATIC_DIR ?? join(HERE, "..", "static");
 export { UPLOADS_DIR } from "./paths";
 import { UPLOADS_DIR } from "./paths";
 
+// Scrubs a live, single-use password-reset code out of a request path before
+// it's logged (CLAUDE.md: "Never log secrets"). No admin route embeds the
+// reset code in a URL today (it travels via Telegram DM + POST body), but the
+// storefront had the identical bug in its error handler until this same
+// pattern was added there (security audit 2026-06-23) — kept in sync here so
+// a future route can't silently reintroduce it.
+export function redactPath(path: string): string {
+  return path.replace(/\/reset\/[^/]+/g, "/reset/[redacted]");
+}
+
 export async function buildApp(): Promise<FastifyInstance> {
-  const app = Fastify({ logger: false });
+  // trustProxy unset (default) → false: X-Forwarded-For is ignored entirely,
+  // req.ip is the real TCP peer. Only set TRUST_PROXY once an actual reverse
+  // proxy is in front — mirrors apps/storefront/src/server.ts (Storefront-4
+  // fix, security audit 2026-06-23); web-admin's own login/forgot/reset rate
+  // limiting previously trusted a raw, spoofable X-Forwarded-For header
+  // directly (see apps/web-admin/src/routes/auth.ts's former clientIp()).
+  const trustProxy = config.TRUST_PROXY
+    ? config.TRUST_PROXY.split(",").map((s) => s.trim()).filter(Boolean)
+    : false;
+  const app = Fastify({ logger: false, trustProxy });
 
   // L-01: lightweight access log for 502/4xx/5xx diagnosis. Method + path +
   // status + duration only — never the query string (may carry reset tokens),
   // body, or headers (never log secrets — CLAUDE.md).
   app.addHook("onResponse", (req, reply, done) => {
+    const path = redactPath(req.url.split("?", 1)[0]!);
     logger.info(
-      { method: req.method, path: req.url.split("?", 1)[0], status: reply.statusCode, ms: Math.round(reply.elapsedTime) },
+      { method: req.method, path, status: reply.statusCode, ms: Math.round(reply.elapsedTime) },
       "Handled web admin request",
     );
     done();
@@ -84,7 +106,7 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // Friendly error page; never log the request body (it may carry secrets).
   app.setErrorHandler((err, req, reply) => {
-    logger.error({ err, method: req.method, path: req.url }, "Unhandled error in a web admin request — serving the generic error page instead of crashing");
+    logger.error({ err, method: req.method, path: redactPath(req.url) }, "Unhandled error in a web admin request — serving the generic error page instead of crashing");
     if (!reply.sent) {
       const html =
         `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">` +
@@ -115,8 +137,10 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(settingsApiRoutes);
   await app.register(brandingApiRoutes);
   await app.register(catalogApiRoutes);
+  await app.register(flashSalesApiRoutes);
   await app.register(stockApiRoutes);
   await app.register(ordersApiRoutes);
+  await app.register(storageApiRoutes);
   await app.register(catalogPhotoRoutes);
   await app.register(brandingRoutes);
   await app.register(broadcastPhotoRoutes);

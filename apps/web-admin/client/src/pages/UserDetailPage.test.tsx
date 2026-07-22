@@ -4,6 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Toaster } from "@/components/ui/sonner";
 import { UserDetailPage } from "./UserDetailPage";
 import { apiPost } from "../api/client";
 
@@ -19,6 +20,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
         <Routes>
           <Route path="/users/:userId" element={children} />
         </Routes>
+        <Toaster />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -81,13 +83,12 @@ describe("UserDetailPage — role change", () => {
     expect(screen.getByText("Admin")).toBeInTheDocument();
   });
 
-  it("alerts on a failed role change", async () => {
+  it("shows a toast on a failed role change", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify(USER_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
     vi.mocked(apiPost).mockRejectedValueOnce(new Error("Invalid role."));
-    const alertSpy = vi.spyOn(globalThis, "alert").mockImplementation(() => {});
     render(<UserDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
 
@@ -95,7 +96,7 @@ describe("UserDetailPage — role change", () => {
     await waitFor(() => screen.getByRole("option", { name: "RESELLER" }));
     await user.click(screen.getByRole("option", { name: "RESELLER" }));
 
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith("Invalid role."));
+    expect(await screen.findByText("Invalid role.")).toBeInTheDocument();
   });
 });
 
@@ -107,7 +108,7 @@ describe("UserDetailPage — wallet display", () => {
     render(<UserDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
     expect(screen.getByText("Rp500.000")).toBeInTheDocument();
-    expect(screen.getByText("12.50 USDT")).toBeInTheDocument();
+    expect(screen.getByText("12.5 USDT")).toBeInTheDocument();
   });
 });
 

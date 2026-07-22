@@ -1,6 +1,7 @@
 import * as React from "react"
 import { useState, useEffect } from "react"
 import type { ReactNode } from "react"
+import { motion } from "framer-motion"
 import {
   Table,
   TableHeader,
@@ -10,8 +11,13 @@ import {
   TableCell,
 } from "@/components/ui/table"
 import { cn } from "@/lib/utils"
+import { staggerContainer, staggerItem } from "@/lib/motion"
 import { SkeletonRow } from "./SkeletonRow"
 import { EmptyState } from "./EmptyState"
+
+const MotionTableBody = motion.create(TableBody)
+const MotionTableRow = motion.create(TableRow)
+const MotionCardRow = motion.create("div")
 
 /** Returns true once mounted on a viewport narrower than `breakpoint` px.
  *  Defaults to false in SSR / test environments (no matchMedia). */
@@ -32,7 +38,12 @@ function useIsMobile(breakpoint = 768): boolean {
 
 interface Column<T> {
   key: string;
-  header: string;
+  /** Plain string for the common case; a ReactNode when a column needs an
+   *  inline icon next to its label (e.g. a "sensitive field" flag). The
+   *  `!== ""` / `=== ""` checks below only ever compare against the string
+   *  form used by empty-header action columns, so a ReactNode header always
+   *  reads as non-empty. */
+  header: ReactNode;
   render: (row: T) => ReactNode;
   /** Optional class applied to each `<td>` in this column. */
   className?: string;
@@ -50,6 +61,12 @@ interface DataTableProps<T> {
   keyExtractor: (row: T) => string | number;
   /** Makes rows clickable and applies hover styles. */
   onRowClick?: (row: T) => void;
+  /** Sticks the desktop `<TableHeader>` to the top of its scroll container
+   *  while scrolling a long table. Default false so existing callers
+   *  (CatalogPage, PaymentsPage, UsersPage, …) are unaffected. Only applies
+   *  to the desktop table branch — the mobile card-stack layout has no
+   *  table header to stick. */
+  stickyHeader?: boolean;
 }
 
 export function DataTable<T>({
@@ -60,6 +77,7 @@ export function DataTable<T>({
   empty,
   keyExtractor,
   onRowClick,
+  stickyHeader = false,
 }: DataTableProps<T>): JSX.Element {
   const isMobile = useIsMobile();
   const emptyNode = empty ?? <EmptyState title="No results found." />
@@ -83,37 +101,46 @@ export function DataTable<T>({
         ) : data.length === 0 ? (
           emptyNode
         ) : (
-          data.map((row) => (
-            <div
-              key={keyExtractor(row)}
-              className={cn(
-                "rounded-lg border border-line bg-card p-4",
-                onRowClick && "cursor-pointer active:bg-sand"
-              )}
-              onClick={onRowClick ? () => onRowClick(row) : undefined}
-            >
-              {dataColumns.map((col) => (
-                <div
-                  key={col.key}
-                  className="flex items-start justify-between gap-3 py-1.5 border-b border-line last:border-0"
-                >
-                  <span className="text-xs font-medium text-ink-soft shrink-0 pt-0.5">
-                    {col.header}
-                  </span>
-                  <div className="text-sm text-ink text-right min-w-0">
-                    {col.render(row)}
+          <motion.div
+            className="contents"
+            variants={staggerContainer}
+            initial="initial"
+            animate="animate"
+          >
+            {data.map((row) => (
+              <MotionCardRow
+                key={keyExtractor(row)}
+                variants={staggerItem}
+                whileTap={onRowClick ? { scale: 0.98 } : undefined}
+                className={cn(
+                  "rounded-lg border border-line bg-card p-4",
+                  onRowClick && "cursor-pointer active:bg-sand"
+                )}
+                onClick={onRowClick ? () => onRowClick(row) : undefined}
+              >
+                {dataColumns.map((col) => (
+                  <div
+                    key={col.key}
+                    className="flex items-start justify-between gap-3 py-1.5 border-b border-line last:border-0"
+                  >
+                    <span className="text-xs font-medium text-ink-soft shrink-0 pt-0.5">
+                      {col.header}
+                    </span>
+                    <div className="text-sm text-ink text-right min-w-0">
+                      {col.render(row)}
+                    </div>
                   </div>
-                </div>
-              ))}
-              {actionColumns.length > 0 && (
-                <div className="flex justify-end gap-2 pt-2">
-                  {actionColumns.map((col) => (
-                    <div key={col.key}>{col.render(row)}</div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))
+                ))}
+                {actionColumns.length > 0 && (
+                  <div className="flex justify-end gap-2 pt-2">
+                    {actionColumns.map((col) => (
+                      <div key={col.key}>{col.render(row)}</div>
+                    ))}
+                  </div>
+                )}
+              </MotionCardRow>
+            ))}
+          </motion.div>
         )}
       </div>
     );
@@ -123,28 +150,33 @@ export function DataTable<T>({
   return (
     <div className="w-full max-w-[1100px]">
       <Table>
-        <TableHeader>
+        <TableHeader className={cn(stickyHeader && "sticky top-0 z-10 bg-card")}>
           <TableRow>
             {columns.map((col) => (
               <TableHead key={col.key}>{col.header}</TableHead>
             ))}
           </TableRow>
         </TableHeader>
-        <TableBody>
-          {isLoading ? (
-            Array.from({ length: skeletonRows }).map((_, i) => (
+        {isLoading ? (
+          <TableBody>
+            {Array.from({ length: skeletonRows }).map((_, i) => (
               <SkeletonRow key={i} columns={columns.length} />
-            ))
-          ) : data.length === 0 ? (
+            ))}
+          </TableBody>
+        ) : data.length === 0 ? (
+          <TableBody>
             <TableRow>
               <TableCell colSpan={columns.length} className="p-0">
                 {emptyNode}
               </TableCell>
             </TableRow>
-          ) : (
-            data.map((row) => (
-              <TableRow
+          </TableBody>
+        ) : (
+          <MotionTableBody variants={staggerContainer} initial="initial" animate="animate">
+            {data.map((row) => (
+              <MotionTableRow
                 key={keyExtractor(row)}
+                variants={staggerItem}
                 className={cn(onRowClick && "cursor-pointer hover:bg-sand")}
                 onClick={onRowClick ? () => onRowClick(row) : undefined}
               >
@@ -153,10 +185,10 @@ export function DataTable<T>({
                     {col.render(row)}
                   </TableCell>
                 ))}
-              </TableRow>
-            ))
-          )}
-        </TableBody>
+              </MotionTableRow>
+            ))}
+          </MotionTableBody>
+        )}
       </Table>
     </div>
   );

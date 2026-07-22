@@ -259,6 +259,8 @@ export const Env = z.object({
   NOTIF_MAX_ATTEMPTS: z.coerce.number().default(5),
 
   // ---- SMTP (storefront forgot-password email) ----
+  // Env-fallback only — web-admin Settings (smtp_host/port/user/pass/from/
+  // secure) wins when set; see resolveSmtpConfig()/getSmtpCreds() in @app/db.
   SMTP_HOST: z.string().optional(),
   SMTP_PORT: z.coerce.number().default(587),
   SMTP_USER: z.string().optional(),
@@ -280,9 +282,7 @@ export const config: Config = Env.parse(process.env);
 // these BYBIT_* env vars as the fallback) — see resolveBybitConfig() in
 // @app/db, so the UID/keys can be managed in /settings without a restart.
 
-/**
- * SMTP is enabled for storefront password-reset emails only when the host and
- * from-address are configured. Otherwise, the mailer is disabled and the
- * password-reset feature is unavailable.
- */
-export const isSmtpEnabled = (): boolean => Boolean(config.SMTP_HOST && config.SMTP_FROM);
+// SMTP is resolved at runtime from web-admin Settings (with these SMTP_*
+// env vars as the fallback) — see getSmtpCreds() in @app/db, which returns
+// null when unconfigured (host or from-address blank), disabling the
+// storefront password-reset email feature.

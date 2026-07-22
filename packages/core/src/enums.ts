@@ -263,6 +263,16 @@ export const NotificationEvent = {
   // `chat_id` (the admin's telegram id) plus order_code/items/total/currency,
   // same fan-out-per-admin shape as ORDER_PIPELINE_FAILED.
   ADMIN_MANUAL_ORDER_QUEUED: "ADMIN_MANUAL_ORDER_QUEUED",
+  // Channel post (not a DM) — same PUBLIC_CHANNEL_ID as ORDER_DELIVERED: a
+  // single denomination's quantity within one order crossed the admin-set
+  // "bulk_purchase_broadcast_threshold". payload carries product_name +
+  // denomination_name + qty (escaped at render time, untrusted) plus the
+  // admin-authored `template` string read from Settings at enqueue time
+  // (trusted literal text, substituted with {qty}/{product}/{denomination}
+  // tokens by the dispatcher). Enqueued from finalizeDeliverySideEffects,
+  // gated the same way as ORDER_DELIVERED — skipped entirely when no channel
+  // is configured, rather than left as a dead PENDING row.
+  BULK_PURCHASE_BROADCAST: "BULK_PURCHASE_BROADCAST",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];

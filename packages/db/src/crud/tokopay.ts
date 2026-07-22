@@ -14,6 +14,7 @@ import {
   TOKOPAY_SECRET_KEY,
   TOKOPAY_ENABLED_KEY,
   TOKOPAY_CHANNEL_KEY,
+  qrisChargeAmount,
   type TokopayCreds,
 } from "@app/core/payments/tokopay";
 import { OrderStatus, PaymentMethod, NotificationEvent, langCode } from "@app/core/enums";
@@ -137,19 +138,20 @@ export async function deliverPaidTokopayOrder(
       // excess can be refunded/credited manually — never auto-refunded. This
       // stays unconditional — a buyer can overpay regardless of delivery type.
       const paidAmount = new Decimal(args.amount);
-      const excess = paidAmount.minus(order.totalAmount);
+      const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
+      const excess = paidAmount.minus(expectedCharge);
       if (excess.greaterThan(0)) {
         await tx.processedTokopayTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } });
         await enqueueAdminOverpaid(tx, {
           orderId: result.order.id,
           orderCode: result.order.orderCode,
           paid: paidAmount,
-          expected: order.totalAmount,
+          expected: expectedCharge,
           excess,
           currency: order.currency,
         });
         logger.warn(
-          `TokoPay order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
+          `TokoPay order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${expectedCharge.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
         );
       }
       if (result.kind === "delivered") {

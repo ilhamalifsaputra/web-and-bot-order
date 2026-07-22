@@ -13,33 +13,69 @@ import { useEffect } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
+  BadgeCheck,
   Box,
   CheckCircle,
   ChevronDown,
   ChevronRight,
   Clock,
+  Coins,
+  CreditCard,
   Gamepad2,
   Headphones,
+  KeyRound,
+  LifeBuoy,
   MessageCircle,
+  Package,
+  PackageCheck,
+  PackageSearch,
+  QrCode,
+  RotateCcw,
   Share2,
   Shield,
   ShieldCheck,
   ShoppingBag,
+  ShoppingCart,
+  Tag,
   Ticket,
+  Timer,
+  Wrench,
   Zap,
 } from "lucide-react";
 import { apiGet } from "../api/client";
 import type { HomePageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
+import Callout from "../components/shop/Callout";
 import ProductCard from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
+import StepTimeline from "../components/shop/StepTimeline";
 import Stars from "../components/shop/Stars";
+import EmptyState from "../components/shop/EmptyState";
 import "./HomePage.css";
 
 const FAQ_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+// One topic icon per question, for scanability — severity (if any) is
+// conveyed by the Callout an answer renders in, not by this icon.
+const FAQ_ICONS = [
+  Zap,
+  ShieldCheck,
+  CreditCard,
+  Timer,
+  LifeBuoy,
+  BadgeCheck,
+  KeyRound,
+  RotateCcw,
+  Wrench,
+  Tag,
+  Coins,
+];
+// Only these 3 answers already read as a warning/cross-reference worth
+// pulling out visually — every other answer stays plain text.
+const FAQ_CALLOUTS: Partial<Record<number, "info" | "warning">> = { 3: "info", 8: "warning", 11: "warning" };
 const HOW_STEPS = [1, 2, 3, 4];
+const HOW_STEP_ICONS = [Package, ShoppingCart, QrCode, PackageCheck];
 const TRUST_POINTS = [1, 2, 3, 4];
 const SKELETON_CARDS = Array.from({ length: 3 }, (_, i) => i);
 
@@ -236,32 +272,16 @@ export default function HomePage() {
         <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.how_title")}</h2>
         <p className="mx-auto mt-2 max-w-2xl text-center text-ink-soft">{t("web.how_sub")}</p>
 
-        {/* Below `lg` the numeral sits beside the text instead of above it —
-            stacked, four steps ran ~600px on a phone for very little content. */}
-        <ol className="mt-10 grid gap-x-8 gap-y-6 sm:grid-cols-2 lg:grid-cols-4 lg:gap-y-8">
-          {HOW_STEPS.map((n, idx) => (
-            <li key={n} className="relative flex gap-4 lg:block">
-              {idx < HOW_STEPS.length - 1 && (
-                <span
-                  aria-hidden="true"
-                  className="pointer-events-none absolute left-12 right-0 top-5 hidden h-px bg-line lg:block"
-                />
-              )}
-              {/* The <ol> already conveys order to a screen reader — the
-                  numeral is the visual half of that, so it's decorative. */}
-              <span
-                aria-hidden="true"
-                className="relative grid h-10 w-10 shrink-0 place-items-center rounded-full bg-pine font-display font-bold text-white"
-              >
-                {n}
-              </span>
-              <div className="min-w-0 lg:mt-4">
-                <h3 className="font-semibold text-ink">{t(`web.how_s${n}`)}</h3>
-                <p className="mt-1 text-sm text-ink-soft">{t(`web.how_s${n}_d`)}</p>
-              </div>
-            </li>
-          ))}
-        </ol>
+        <div className="mt-10">
+          <StepTimeline
+            layout="grid"
+            steps={HOW_STEPS.map((n, idx) => ({
+              icon: HOW_STEP_ICONS[idx]!,
+              title: t(`web.how_s${n}`),
+              description: t(`web.how_s${n}_d`),
+            }))}
+          />
+        </div>
       </section>
 
       {/* 3. Kategori */}
@@ -318,8 +338,13 @@ export default function HomePage() {
             ))}
           </div>
         ) : (
-          <div className="rounded-2xl border border-line bg-card p-10 text-center text-ink-faint mt-5">
-            {t("web.catalog_empty")}
+          <div className="mt-5">
+            <EmptyState
+              icon={PackageSearch}
+              title={t("web.catalog_empty")}
+              description={t("web.catalog_empty_desc")}
+              action={{ label: t("web.nav_categories"), to: "/categories" }}
+            />
           </div>
         )}
       </section>
@@ -466,20 +491,33 @@ export default function HomePage() {
         <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">{t("web.faq_kicker")}</p>
         <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.faq_title")}</h2>
         <p className="mt-2 text-center text-ink-soft">{t("web.faq_sub")}</p>
-        <div className="mx-auto mt-8 max-w-3xl space-y-3">
-          {FAQ_NUMBERS.map((n) => (
-            <details
-              key={n}
-              className="faq group rounded-2xl border border-line bg-card px-5 py-1"
-              open={n === 1}
-            >
-              <summary className="flex cursor-pointer items-center justify-between p-6 font-semibold text-ink">
-                {t(`web.faq_q${n}`)}
-                <ChevronDown className="h-5 w-5 text-ink-faint transition-transform group-open:rotate-180" />
-              </summary>
-              <div className="px-6 pb-6 text-sm text-ink-soft leading-relaxed">{t(`web.faq_a${n}`)}</div>
-            </details>
-          ))}
+        <div className="mx-auto mt-8 max-w-3xl space-y-4">
+          {FAQ_NUMBERS.map((n) => {
+            const Icon = FAQ_ICONS[n - 1]!;
+            const calloutVariant = FAQ_CALLOUTS[n];
+            return (
+              <details
+                key={n}
+                className="faq group rounded-2xl border border-line bg-card px-5 py-1"
+                open={n === 1}
+              >
+                <summary className="flex cursor-pointer items-center gap-3 p-6 font-semibold text-ink">
+                  <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-sand text-ink-soft">
+                    <Icon className="h-4 w-4" aria-hidden="true" />
+                  </span>
+                  <span className="flex-1">{t(`web.faq_q${n}`)}</span>
+                  <ChevronDown className="h-5 w-5 shrink-0 text-ink-faint transition-transform group-open:rotate-180" />
+                </summary>
+                <div className="px-6 pb-6">
+                  {calloutVariant ? (
+                    <Callout variant={calloutVariant}>{t(`web.faq_a${n}`)}</Callout>
+                  ) : (
+                    <p className="text-sm leading-relaxed text-ink-soft">{t(`web.faq_a${n}`)}</p>
+                  )}
+                </div>
+              </details>
+            );
+          })}
         </div>
       </section>
 

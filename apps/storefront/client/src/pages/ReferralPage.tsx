@@ -12,6 +12,7 @@ import { Copy } from "lucide-react";
 import { apiGet } from "../api/client";
 import type { ReferralData } from "../api/types";
 import { t } from "../lib/i18n";
+import Skeleton from "../components/shop/Skeleton";
 
 export default function ReferralPage() {
   const { data, error } = useQuery({
@@ -26,7 +27,14 @@ export default function ReferralPage() {
     }
   }, [error]);
 
-  if (!data) return null;
+  if (!data) {
+    return (
+      <div aria-busy="true" aria-label={t("web.loading")}>
+        <Skeleton className="mb-6 h-8 w-48" />
+        <Skeleton className="h-40 w-full" />
+      </div>
+    );
+  }
 
   const link = data.referral_link ?? "";
 

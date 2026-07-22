@@ -15,7 +15,9 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
+import { toast } from "sonner";
 import { apiPost } from "../api/client";
+import { describeError } from "../lib/errorMessages";
 
 interface Ticket {
   id: number;
@@ -83,8 +85,11 @@ export function SupportPage() {
   const assign = useMutation({
     mutationFn: ({ ticketId, adminId }: { ticketId: number; adminId: number | null }) =>
       apiPost(`/api/support/${ticketId}/assign`, { adminId }),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["support"] }); },
-    onError: (e: Error) => alert(e.message),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["support"] });
+      toast.success("Ticket assigned.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   if (isError) return <PageLayout title="Support"><p className="text-sm text-rust">Failed to load tickets.</p></PageLayout>;
@@ -117,7 +122,7 @@ export function SupportPage() {
         columns={[
           {
             key: "id",
-            header: "#",
+            header: "Ticket ID",
             render: t => <span className="font-mono text-sm">{t.id}</span>,
           },
           {

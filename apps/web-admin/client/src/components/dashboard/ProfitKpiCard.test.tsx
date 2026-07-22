@@ -32,7 +32,7 @@ describe("ProfitKpiCard", () => {
       usdt: { netProfit: "8", marginPct: "80", excludedItemCount: 0 },
     });
     await waitFor(() => expect(screen.getByText("Rp8.000")).toBeInTheDocument());
-    expect(screen.getByText("8.00 USDT")).toBeInTheDocument();
+    expect(screen.getByText("8 USDT")).toBeInTheDocument();
     expect(screen.getByText(/40% margin/)).toBeInTheDocument();
     expect(screen.getByText(/80% margin/)).toBeInTheDocument();
   });

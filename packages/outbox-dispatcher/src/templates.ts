@@ -169,6 +169,13 @@ interface ManualOrderQueuedPayload {
   currency?: unknown;
 }
 
+interface BulkPurchaseBroadcastPayload {
+  product_name?: unknown;
+  denomination_name?: unknown;
+  qty?: unknown;
+  template?: unknown;
+}
+
 /** Return the message body for an outbox event, or "" to skip. */
 export function render(
   event: string,
@@ -179,8 +186,27 @@ export function render(
     OrderProcessingPayload &
     RestockBroadcastPayload &
     FlashSaleBroadcastPayload &
-    ManualOrderQueuedPayload,
+    ManualOrderQueuedPayload &
+    BulkPurchaseBroadcastPayload,
 ): string {
+  if (event === NotificationEvent.BULK_PURCHASE_BROADCAST) {
+    // Channel post: qty/product_name/denomination_name are derived from the
+    // order and escaped like every other interpolated value, but `template`
+    // itself is the admin's own copy (authored in Settings), so it's used as
+    // literal text — the same trust level the hardcoded FLASH_SALE_BROADCAST/
+    // PRODUCT_RESTOCKED_BROADCAST copy gets below, just sourced from the DB
+    // instead of this file.
+    const product = escape(String(payload.product_name ?? ""));
+    const denomination = escape(String(payload.denomination_name ?? ""));
+    const qty = escape(String(payload.qty ?? "0"));
+    // Payload always carries `template` (orders.ts falls back to its own
+    // default before enqueueing) — this is just a defensive last resort.
+    const template = String(payload.template ?? "Someone just purchased x{qty} of {product} - {denomination}!");
+    return template
+      .replaceAll("{qty}", qty)
+      .replaceAll("{product}", product)
+      .replaceAll("{denomination}", denomination);
+  }
   if (event === NotificationEvent.FLASH_SALE_BROADCAST) {
     // Buyer DM broadcast to all customers when a scheduled flash sale goes
     // live. English only — same choice as PRODUCT_RESTOCKED_BROADCAST above

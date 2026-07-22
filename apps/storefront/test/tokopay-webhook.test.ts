@@ -32,6 +32,7 @@ import {
   createDenomination,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
+import { qrisChargeAmount } from "@app/core/payments/tokopay";
 import { buildApp } from "../src/server";
 
 const MERCHANT_ID = "m-test-tokopay";
@@ -160,10 +161,11 @@ describe("POST /pay/tokopay/callback", () => {
     expect(mockCheckTransaction).not.toHaveBeenCalled();
   });
 
-  it("happy path: delivers when the live status check confirms paid + matching amount", async () => {
+  it("happy path: delivers when the live status check confirms paid + matching amount (subtotal + QRIS admin fee)", async () => {
     const order = await createPendingTokopayOrder("ORD-TPHAPPY", "50000");
-    mockCheckTransaction.mockResolvedValue(liveAgrees({ amount: "50000", trxId: "TRX-HAPPY-1" }));
-    const payload = signedPayload({ refId: order.orderCode, amount: "50000", trxId: "TRX-HAPPY-1" });
+    const charge = qrisChargeAmount(order.totalAmount, order.subtotalAmount).toString();
+    mockCheckTransaction.mockResolvedValue(liveAgrees({ amount: charge, trxId: "TRX-HAPPY-1" }));
+    const payload = signedPayload({ refId: order.orderCode, amount: charge, trxId: "TRX-HAPPY-1" });
 
     const res = await app.inject({ method: "POST", url: "/pay/tokopay/callback", payload });
     expect(res.statusCode).toBe(200);
@@ -176,6 +178,19 @@ describe("POST /pay/tokopay/callback", () => {
     const ledger = await prisma.processedTokopayTx.findUnique({ where: { trxId: "TRX-HAPPY-1" } });
     expect(ledger).not.toBeNull();
     expect(ledger!.outcome).toBe("matched");
+  });
+
+  it("rejects a payment of the bare order total (no QRIS admin fee) as short-paid", async () => {
+    const order = await createPendingTokopayOrder("ORD-TPNOFEE", "50000");
+    mockCheckTransaction.mockResolvedValue(liveAgrees({ amount: "50000", trxId: "TRX-NOFEE-1" }));
+    const payload = signedPayload({ refId: order.orderCode, amount: "50000", trxId: "TRX-NOFEE-1" });
+
+    const res = await app.inject({ method: "POST", url: "/pay/tokopay/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "amount mismatch" });
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("PENDING_PAYMENT");
   });
 
   it("a forged callback body (paid=success, fake high amount) is rejected when the live check disagrees", async () => {
@@ -216,8 +231,9 @@ describe("POST /pay/tokopay/callback", () => {
 
   it("is idempotent: replaying the same trx id after delivery is a no-op (already_processed)", async () => {
     const order = await createPendingTokopayOrder("ORD-TPREPLAY", "50000");
-    mockCheckTransaction.mockResolvedValue(liveAgrees({ amount: "50000", trxId: "TRX-REPLAY-1" }));
-    const payload = signedPayload({ refId: order.orderCode, amount: "50000", trxId: "TRX-REPLAY-1" });
+    const charge = qrisChargeAmount(order.totalAmount, order.subtotalAmount).toString();
+    mockCheckTransaction.mockResolvedValue(liveAgrees({ amount: charge, trxId: "TRX-REPLAY-1" }));
+    const payload = signedPayload({ refId: order.orderCode, amount: charge, trxId: "TRX-REPLAY-1" });
 
     const first = await app.inject({ method: "POST", url: "/pay/tokopay/callback", payload });
     expect(first.json()).toEqual({ status: "delivered" });

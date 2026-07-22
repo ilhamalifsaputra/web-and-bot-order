@@ -8,6 +8,7 @@ import { DenominationCreatePage } from "./pages/DenominationCreatePage";
 import { DenominationEditPage } from "./pages/DenominationEditPage";
 import { StockPage } from "./pages/StockPage";
 import { StockProductPage } from "./pages/StockProductPage";
+import { FlashSalesPage } from "./pages/FlashSalesPage";
 import { OrdersPage } from "./pages/OrdersPage";
 import { OrderDetailPage } from "./pages/OrderDetailPage";
 import { AuditPage } from "./pages/AuditPage";
@@ -25,6 +26,7 @@ import { SupportPage } from "./pages/SupportPage";
 import { TicketDetailPage } from "./pages/TicketDetailPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { BrandingPage } from "./pages/BrandingPage";
+import { StoragePage } from "./pages/StoragePage";
 import { LoginPage } from "./pages/LoginPage";
 import { ForgotPage } from "./pages/ForgotPage";
 import { ResetPage } from "./pages/ResetPage";
@@ -57,6 +59,7 @@ export default function App() {
         <Route path="/catalog/:productId" element={<ProductDetailPage />} />
         <Route path="/stock" element={<StockPage />} />
         <Route path="/stock/:productId" element={<StockProductPage />} />
+        <Route path="/flash-sales" element={<FlashSalesPage />} />
         <Route path="/users" element={<UsersPage />} />
         <Route path="/users/:userId" element={<UserDetailPage />} />
         <Route path="/vouchers" element={<VouchersPage />} />
@@ -71,6 +74,7 @@ export default function App() {
         <Route path="/support/:ticketId" element={<TicketDetailPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/branding" element={<BrandingPage />} />
+        <Route path="/storage" element={<StoragePage />} />
         <Route path="/search" element={<SearchPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

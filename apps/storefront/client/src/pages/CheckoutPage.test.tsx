@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi, type Mock } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -32,6 +32,8 @@ const checkoutData: CheckoutData = {
   bulk_discount: "0",
   voucher_discount: "0",
   total: "158000",
+  qris_admin_fee: "1206", // 100 + 0.70% of 158000
+  qris_grand_total: "159206",
   total_usdt: "9.88",
   voucher_code: "",
   error_key: null,
@@ -85,6 +87,42 @@ describe("CheckoutPage", () => {
     expect(binanceRadio.checked).toBe(true);
     // QRIS (idr) is disabled in this fixture -> not rendered at all.
     expect(screen.queryByRole("radio", { name: /QRIS/ })).not.toBeInTheDocument();
+    // No QRIS admin fee line either — it's method-specific.
+    expect(screen.queryByText("QRIS admin fee")).not.toBeInTheDocument();
+  });
+
+  // QRIS admin fee (Rp100 + 0.70%): shown once QRIS is the selected method,
+  // both as a summary line and folded into the displayed grand total — not
+  // shown for any other payment method.
+  it("shows the QRIS admin fee breakdown and grand total when QRIS is selected", async () => {
+    renderCheckout(() => ({ ...checkoutData, idr_enabled: true }));
+    await screen.findByRole("heading", { name: "Checkout" });
+    // idr_enabled -> qris wins the default-selection cascade.
+    const qrisRadio = screen.getByRole("radio", { name: /QRIS/ }) as HTMLInputElement;
+    expect(qrisRadio.checked).toBe(true);
+    expect(screen.getAllByText("QRIS admin fee").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Rp1.206").length).toBeGreaterThan(0);
+    // Order total row now shows the fee-inclusive grand total, not the bare total.
+    expect(screen.getAllByText("Rp159.206").length).toBeGreaterThan(0);
+
+    // Switching to another method drops the fee line and reverts the total.
+    fireEvent.click(screen.getByRole("radio", { name: /BINANCE/ }));
+    expect(screen.queryByText("QRIS admin fee")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Rp158.000").length).toBeGreaterThan(0);
+  });
+
+  // Touch ergonomics: the whole method row is the tap target, not just the
+  // radio dot, and the selected row is styled as a whole so a thumb covering
+  // the dot doesn't hide which rail is armed.
+  it("selects a payment method by tapping anywhere on its row", async () => {
+    renderCheckout(() => ({ ...checkoutData, wallet_idr: "200000" }));
+    await screen.findByRole("heading", { name: "Checkout" });
+    const walletRadio = screen.getByRole("radio", { name: /Wallet Credit \(IDR\)/ }) as HTMLInputElement;
+    const row = walletRadio.closest("label")!;
+    expect(row.className).toContain("has-[:checked]:border-pine");
+
+    fireEvent.click(screen.getByText("Wallet Credit (IDR)"));
+    expect(walletRadio.checked).toBe(true);
   });
 
   it("voucher Apply posts a preview and updates only the totals area", async () => {
@@ -315,6 +353,90 @@ describe("CheckoutPage", () => {
       expect(select.tagName).toBe("SELECT");
       fireEvent.change(select, { target: { value: "EU" } });
       expect(select.value).toBe("EU");
+    });
+  });
+
+  // Mobile: the summary card stacks below the payment methods, so the total
+  // was off-screen exactly while the buyer chose a rail. A fixed bottom bar
+  // carries the live total plus the page's only submit control. jsdom has no
+  // matchMedia, and useMediaQuery is mobile-first without it, so every test
+  // above already exercises the mobile arm — these pin the behaviour down.
+  describe("sticky mobile total bar", () => {
+    /** Desktop arm: a matchMedia stand-in that matches the md breakpoint. */
+    function stubDesktop(): void {
+      vi.stubGlobal("matchMedia", (query: string) => ({
+        matches: true,
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }));
+    }
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("shows the live total in the bar and keeps exactly one Place order button on mobile", async () => {
+      renderCheckout(() => checkoutData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      const bar = document.querySelector(".fixed.bottom-0")!;
+      expect(bar).toBeInTheDocument();
+      expect(bar).toHaveTextContent("Total");
+      expect(bar).toHaveTextContent("Rp158.000");
+      // One submit control at a time — the in-card button is desktop-only.
+      expect(screen.getAllByRole("button", { name: /Place order/ })).toHaveLength(1);
+      expect(bar.contains(screen.getByRole("button", { name: /Place order/ }))).toBe(true);
+    });
+
+    it("re-prices the bar from the voucher preview response", async () => {
+      renderCheckout(() => checkoutData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      fireEvent.change(screen.getByPlaceholderText("Code"), { target: { value: "save10" } });
+      (apiPost as Mock).mockResolvedValue({ ...checkoutData, voucher_discount: "15800", total: "142200" });
+      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+      await waitFor(() => expect(document.querySelector(".fixed.bottom-0")).toHaveTextContent("Rp142.200"));
+    });
+
+    it("submits through the same handler and gating as the summary button", async () => {
+      renderCheckout(() => ({
+        ...checkoutData,
+        items: [
+          {
+            denomination_id: 5,
+            delivery_type: "manual_with_info",
+            additional_fields: [
+              { key: "game_id", label: { id: "ID Game", en: "Game ID" }, type: "text", required: true, options: [], placeholder: "" },
+            ],
+            qty: 1,
+          },
+        ],
+      }));
+      await screen.findByText("Order details");
+      const barButton = screen.getByRole("button", { name: /Place order/ });
+      expect(barButton).toBeDisabled();
+
+      fireEvent.change(screen.getByLabelText("Game ID"), { target: { value: "abc" } });
+      expect(barButton).not.toBeDisabled();
+
+      const response: PlaceOrderResponse = { order_code: "ORD321", pay_url: "/checkout/ORD321/pay" };
+      (apiPost as Mock).mockResolvedValue(response);
+      fireEvent.click(barButton);
+      await waitFor(() =>
+        expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout", {
+          method: "binance",
+          voucher_code: "",
+          customer_data: [{ game_id: "abc" }],
+        }),
+      );
+    });
+
+    it("is absent on desktop, where the summary card keeps the submit button", async () => {
+      stubDesktop();
+      renderCheckout(() => checkoutData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      await waitFor(() => expect(document.querySelector(".fixed.bottom-0")).toBeNull());
+      const placeOrder = screen.getByRole("button", { name: /Place order/ });
+      expect(placeOrder.closest("#checkout-summary")).not.toBeNull();
     });
   });
 

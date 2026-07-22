@@ -44,11 +44,25 @@ export function formatUsdt(
   return `≈ $${usdt.toFixed(2)}`;
 }
 
-/** Plain money: 4dp string, "—" for null/empty. Mirrors the `money` filter
- * (native USDT amounts, e.g. the USDT credit balance). */
-export function money4(value: string | number | null | undefined): string {
+function trimTrailingZeros(fixed: string): string {
+  return fixed.includes(".") ? fixed.replace(/0+$/, "").replace(/\.$/, "") : fixed;
+}
+
+/**
+ * Native USDT amount for display: up to 4dp, half-up, trailing zeros
+ * stripped, whole values with no decimal point at all — "0", "1", "1.5",
+ * "12.34", "96.7", "123.4568". "—" for null/empty. Mirrors
+ * packages/core/formatters.ts's formatUsdtAmount, byte-for-byte.
+ */
+export function formatUsdtAmount(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === "") return "—";
   const n = Number(value);
   if (Number.isNaN(n)) return String(value);
-  return n.toFixed(4);
+  return trimTrailingZeros(roundHalfUp(n, 4).toFixed(4));
+}
+
+/** formatUsdtAmount with the " USDT" suffix, e.g. "12.34 USDT". "—" for null/empty. */
+export function formatNativeUsdt(value: string | number | null | undefined): string {
+  const amount = formatUsdtAmount(value);
+  return amount === "—" ? amount : `${amount} USDT`;
 }

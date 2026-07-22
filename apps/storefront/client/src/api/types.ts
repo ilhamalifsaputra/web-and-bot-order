@@ -80,6 +80,22 @@ export interface SearchPageData {
   low_threshold: number;
 }
 
+/** GET /api/v1/pages/products and /api/v1/pages/flash — the two browse-all
+ * shelves the nav drawer links to. Same shape: one is the whole catalog, the
+ * other only what's on flash sale right now (server: shelfFrom() in
+ * apps/storefront/src/pageData.ts). An empty `products` on /flash means no sale
+ * is running, which is a normal state rather than an error. */
+export interface ShelfPageData {
+  products: ProductCardData[];
+  low_threshold: number;
+}
+
+/** GET /api/v1/pages/categories — the category index. `image` is resolved
+ * server-side exactly as the homepage tiles resolve it. */
+export interface CategoriesPageData {
+  categories: HomeCategory[];
+}
+
 /** One admin-defined custom field on a manual_with_info denomination — JSON
  * twin of AdditionalField (packages/core/src/deliveryFields.ts). Defined
  * locally rather than cross-imported: the client mirrors server-side shapes
@@ -217,6 +233,8 @@ export interface CheckoutData {
   bulk_discount: string;
   voucher_discount: string;
   total: string;
+  qris_admin_fee: string;
+  qris_grand_total: string;
   total_usdt: string | null;
   voucher_code: string;
   error_key: string | null;
@@ -270,6 +288,8 @@ export interface PayData {
     status: string;
     currency: string;
     total: string;
+    qris_admin_fee: string | null;
+    qris_grand_total: string | null;
     payment_ref: string | null;
     expires_at_iso: string | null;
   };
@@ -321,6 +341,11 @@ export interface ShopContext {
    * given shop doesn't do; optional so an older/mocked payload reads as
    * "no analytics", which is the safe direction to be wrong in. */
   analytics_enabled?: boolean;
+  /** True when any denomination is on flash sale right now — the nav drawer
+   * hides its "Flash sale" entry otherwise, rather than link to an empty
+   * shelf. Optional so an older/mocked payload reads as "no sale running",
+   * which is the safe direction to be wrong in. */
+  flash_active?: boolean;
 }
 
 /** GET /api/v1/account — account.njk's overview stats + logout button

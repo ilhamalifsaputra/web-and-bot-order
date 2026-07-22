@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { PartyPopper } from "lucide-react";
 import { publicPost } from "../api/client";
 import { Button } from "@/components/ui/button";
 
@@ -43,7 +44,7 @@ export function SetupDonePage() {
   return (
     <div className="flex min-h-screen items-center justify-center bg-paper p-4">
       <div className="w-full max-w-md rounded-xl border border-line bg-white p-8 shadow-sm text-center">
-        <div className="mb-2 text-4xl">🎉</div>
+        <PartyPopper className="mx-auto mb-2 h-10 w-10 text-amberx" />
         <h1 className="font-display text-2xl font-semibold tracking-tight text-ink">Setup complete!</h1>
         <p className="mt-2 text-sm text-ink-soft">
           You are now logged in as the owner. Your shop is ready to use.

@@ -168,7 +168,7 @@ describe("SettingsPage", () => {
     expect(screen.getByText("Min order amount")).toBeInTheDocument();
   });
 
-  it("shows a single 'Not set up' status for an enabled-but-unconfigured gateway, not contradictory 'Enabled' + 'not configured' text (F-013)", async () => {
+  it("shows a single 'Not Configured' status badge for an enabled-but-unconfigured gateway, not contradictory badge/toggle state (F-013)", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -190,14 +190,18 @@ describe("SettingsPage", () => {
     render(<SettingsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
 
-    expect(screen.getByText("Not set up")).toBeInTheDocument();
-    expect(screen.queryByText("not configured")).not.toBeInTheDocument();
-    // The Enabled/Disabled text next to the switch is gone (replaced by the
-    // one combined badge above), but the switch itself is untouched — same
-    // `enabled` value, same toggle mutation, just no separate text label.
+    // "configured" and "enabled" are now two separate, both-honest signals
+    // (a StatusBadge for configured-ness, the Switch for the raw toggle)
+    // rather than one combined text label — F-013's concern was a label that
+    // *overclaimed* (saying "Enabled" while unusable), not that two signals
+    // exist at all, so showing an accurate "Not Configured" badge next to a
+    // truthfully-on switch is not a regression of that fix.
+    const paydisiniHeader = document.getElementById("settings-pay-paydisini")!.querySelector('[data-slot="card-header"]') as HTMLElement;
+    expect(within(paydisiniHeader).getByText("Not Configured")).toBeInTheDocument();
     expect(screen.getByRole("switch", { name: /disable paydisini/i })).toBeChecked();
-    // The still-configured TokoPay section shows the normal "Enabled" badge.
-    expect(screen.getByText("Enabled")).toBeInTheDocument();
+    // The still-configured TokoPay section shows the "Configured" badge.
+    const tokopayHeader = document.getElementById("settings-pay-tokopay")!.querySelector('[data-slot="card-header"]') as HTMLElement;
+    expect(within(tokopayHeader).getByText("Configured")).toBeInTheDocument();
   });
 
   it("field Save opens a confirmation dialog and shows a checkmark on success", async () => {
@@ -344,5 +348,135 @@ describe("SettingsPage", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Disable two-factor authentication?")).toBeInTheDocument();
+  });
+
+  it("search filters visible fields to the matching query, without a page reload", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...SETTINGS_DATA,
+          fields: [
+            ...SETTINGS_DATA.fields,
+            { key: "shop_tagline", label: "Shop tagline", secret: false, hasValue: true, value: "Fast & reliable", needsRestart: false },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+    expect(screen.getByText("Shop tagline")).toBeInTheDocument();
+
+    const user = userEvent.setup();
+    await user.type(screen.getByRole("textbox", { name: /search settings/i }), "tagline");
+
+    // The matched substring is wrapped in <mark> (highlightMatch), so "Shop
+    // tagline" is now split across two text nodes — match the highlighted
+    // fragment itself rather than the old single-string label.
+    expect(screen.getByText("tagline", { selector: "mark" })).toBeInTheDocument();
+    expect(screen.queryByText("Shop name")).not.toBeInTheDocument();
+  });
+
+  it("Test Connection is disabled for an unconfigured gateway and enabled + wired for a configured one", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    const tokopayCard = document.getElementById("settings-pay-tokopay") as HTMLElement;
+    const testButton = within(tokopayCard).getByRole("button", { name: "Test Connection" });
+    expect(testButton).toBeEnabled();
+
+    const user = userEvent.setup();
+    await user.click(testButton);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Test the TokoPay connection?")).toBeInTheDocument();
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, detail: "Connected — merchant ID and secret are accepted." }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Test" }));
+
+    expect(await screen.findByText("Connected — merchant ID and secret are accepted.")).toBeInTheDocument();
+  });
+
+  it("shows a Restart Bot action after saving a needsRestart field, and clears it after restarting", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Restart Bot" })).not.toBeInTheDocument();
+
+    const user = userEvent.setup();
+    const telegramCard = document.getElementById("settings-telegram") as HTMLElement;
+    await user.click(within(telegramCard).getByRole("button", { name: "Edit" }));
+    // bot_token is a secret field (type="password"), which carries no
+    // implicit "textbox" ARIA role — match by its aria-label instead.
+    await user.type(screen.getByLabelText("Order Bot token"), "123:new-token");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    const saveDialog = await screen.findByRole("dialog");
+
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    await user.click(within(saveDialog).getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Restart Bot" })).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Restart Bot" }));
+    const restartDialog = await screen.findByRole("dialog");
+    expect(within(restartDialog).getByText("Restart the bot?")).toBeInTheDocument();
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ ok: true, restarted: true }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    await user.click(within(restartDialog).getByRole("button", { name: "Restart" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Restart Bot" })).not.toBeInTheDocument());
+  });
+
+  it("Export Configuration downloads the exported fields", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(SETTINGS_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    vi.stubGlobal("URL", { ...URL, createObjectURL: vi.fn(() => "blob:mock"), revokeObjectURL: vi.fn() });
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify({ exportedAt: "2026-01-01T00:00:00.000Z", fields: { shop_name: "Demo Shop" } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /settings quick actions/i }));
+    await user.click(await screen.findByText("Export Configuration"));
+
+    await waitFor(() => expect(clickSpy).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Exported 1 settings.")).toBeInTheDocument();
+    clickSpy.mockRestore();
+    vi.unstubAllGlobals();
   });
 });

@@ -17,6 +17,7 @@ import {
   webRoleKey,
   isWebRole,
   DEFAULT_WEB_ROLE,
+  constantTimeEqual,
   type AdminSession,
   type WebRole,
 } from "../auth";
@@ -96,7 +97,7 @@ const csrfCheck: preHandlerHookHandler = async (req, reply) => {
   const bodyToken = (req.body as Record<string, unknown> | undefined)?.csrf_token;
   const headerToken = req.headers["x-csrf-token"];
   const token = bodyToken ?? (typeof headerToken === "string" ? headerToken : undefined);
-  if (!token || token !== req.admin?.csrf) {
+  if (typeof token !== "string" || !req.admin || !constantTimeEqual(token, req.admin.csrf)) {
     return reply.code(403).type("text/plain").send("CSRF check failed");
   }
 };

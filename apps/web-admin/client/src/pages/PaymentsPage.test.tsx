@@ -1,8 +1,10 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Toaster } from "@/components/ui/sonner";
 import { PaymentsPage } from "./PaymentsPage";
 import { apiGet, apiPost } from "../api/client";
 
@@ -15,7 +17,10 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
     <MemoryRouter>
-      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+      <QueryClientProvider client={qc}>
+        {children}
+        <Toaster />
+      </QueryClientProvider>
     </MemoryRouter>
   );
 }
@@ -210,12 +215,16 @@ const PENDING_INTERNAL = {
 
 describe("PaymentsPage — underpaid order resolution", () => {
   it("lists underpaid orders and delivers one anyway", async () => {
+    const user = userEvent.setup();
     mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [UNDERPAID], pendingInternal: [] });
     vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: "Deliver anyway" }));
+    await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Deliver anyway"));
+
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
 
@@ -223,12 +232,16 @@ describe("PaymentsPage — underpaid order resolution", () => {
   });
 
   it("refunds an underpaid order to the buyer's wallet", async () => {
+    const user = userEvent.setup();
     mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [UNDERPAID], pendingInternal: [] });
     vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: "Refund" }));
+    await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Refund"));
+
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Refund" }));
 
@@ -236,12 +249,16 @@ describe("PaymentsPage — underpaid order resolution", () => {
   });
 
   it("cancels an underpaid order", async () => {
+    const user = userEvent.setup();
     mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [UNDERPAID], pendingInternal: [] });
     vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: "Cancel order" }));
+    await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Cancel order"));
+
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel order" }));
 
@@ -256,17 +273,20 @@ describe("PaymentsPage — underpaid order resolution", () => {
     expect(screen.getByText("2026-07-01 19:00")).toBeInTheDocument(); // expiresAtDisplay
   });
 
-  it("shows an alert when resolving an underpaid order fails", async () => {
+  it("shows a toast when resolving an underpaid order fails", async () => {
+    const user = userEvent.setup();
     mockPaymentsFetch({ enabled: true, ledger: [], total: 0, page: 1, hasNext: false, outcomes: [], counts: {}, underpaid: [UNDERPAID], pendingInternal: [] });
     vi.mocked(apiPost).mockRejectedValueOnce(new Error("Order is no longer underpaid."));
-    const alertSpy = vi.spyOn(globalThis, "alert").mockImplementation(() => {});
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("ORD-UP1")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: "Deliver anyway" }));
+    await user.click(screen.getByRole("button", { name: "Actions for order ORD-UP1" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Deliver anyway"));
+
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: "Deliver anyway" }));
 
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith("Order is no longer underpaid."));
+    expect(await screen.findByText("Order is no longer underpaid.")).toBeInTheDocument();
   });
 });

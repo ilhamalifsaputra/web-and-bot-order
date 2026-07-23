@@ -70,6 +70,17 @@ function parseDate(value: string | undefined): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/** Comma-separated numeric ticket ids → an array filter, or null when
+ * empty/malformed (mirrors orders.ts's parseIdsFilter). */
+function parseIdsFilter(raw: string | undefined): number[] | null {
+  if (!raw) return null;
+  const ids = raw
+    .split(",")
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isInteger(n) && n > 0);
+  return ids.length ? ids : null;
+}
+
 /** Shared by the list and export routes so their filters can't silently
  * diverge (orders.ts's buildOrderFilter comment applies here too). */
 function buildTicketFilter(q: Record<string, string | undefined>): TicketFilter {
@@ -79,6 +90,7 @@ function buildTicketFilter(q: Record<string, string | undefined>): TicketFilter 
     category: parseTicketCategory(q.category),
     assignedAdminId: parseAssignedAdminId(q.assignedAdminId),
     q: q.q || null,
+    ids: parseIdsFilter(q.ids),
     since: parseDate(q.since),
     until: parseDate(q.until),
   };

@@ -3328,6 +3328,17 @@ describe("support", () => {
       expect(lines[1]).not.toContain(`${openId},`);
     });
 
+    it("ids restricts the export to exactly the selected rows", async () => {
+      const ticketA = await makeTicket();
+      await makeTicket(); // not selected, must be excluded
+
+      const res = await get(`/api/support/export?ids=${ticketA}`, seed.cookie);
+      expect(res.statusCode).toBe(200);
+      const lines = res.body.trim().split("\r\n");
+      expect(lines.length - 1).toBe(1);
+      expect(lines[1]).toContain(`${ticketA},`);
+    });
+
     it("requires auth (anon → 303 /login)", async () => {
       const res = await get("/api/support/export", null);
       expect(res.statusCode).toBe(303);

@@ -80,6 +80,9 @@ export interface TicketFilter {
   until?: Date | null;
   /** Free-text search across the ticket message + customer identity fields. */
   q?: string | null;
+  /** Restrict to this exact set of ticket ids — the bulk-toolbar's
+   * "export only the selected rows" path. */
+  ids?: number[] | null;
 }
 
 function ticketWhere(f: TicketFilter): Prisma.SupportTicketWhereInput {
@@ -98,6 +101,7 @@ function ticketWhere(f: TicketFilter): Prisma.SupportTicketWhereInput {
   } else if (typeof f.assignedAdminId === "number") {
     where.adminId = f.assignedAdminId;
   }
+  if (f.ids != null) where.id = { in: f.ids };
   if (f.since != null || f.until != null) {
     where.createdAt = {};
     if (f.since != null) where.createdAt.gte = f.since;

@@ -217,6 +217,18 @@ describe("OrdersPage", () => {
     );
   });
 
+  it("pre-filters by the ?q= query param on load (Support's Order History row action)", async () => {
+    const fetchSpy = mockFetchRouter();
+    render(
+      <WrapperAt initialEntries={["/orders?q=someusername"]}>
+        <OrdersPage />
+      </WrapperAt>,
+    );
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/orders?q=someusername"),
+    );
+  });
+
   it("status tabs set the status filter and reset to page 1 (replaces the old Awaiting Fulfillment chip, F-001)", async () => {
     const user = userEvent.setup();
     const fetchSpy = mockFetchRouter();

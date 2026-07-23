@@ -9,6 +9,10 @@ import {
   finishBroadcast,
   cancelBroadcast,
   setBroadcastImageFileId,
+  queueDraftBroadcast,
+  deleteBroadcast,
+  reapStaleBroadcasts,
+  failBroadcast,
 } from "./broadcasts";
 
 let db: TestDb;
@@ -137,5 +141,81 @@ describe("broadcast queue lifecycle", () => {
     expect(done.status).toBe("SENT");
     expect(done.sentCount).toBe(3);
     expect(done.webImageUrl).toBe("/uploads/broadcasts/broadcast-abc123.jpg");
+  });
+});
+
+describe("broadcast draft/failed lifecycle", () => {
+  const make = (over: Record<string, unknown> = {}) =>
+    createBroadcast(prisma, { message: "hi", segment: "ALL", scheduledAt: null, createdById: null, total: 3, ...over });
+
+  it("a DRAFT is never auto-picked-up by claimNextDueBroadcast", async () => {
+    const bc = await make({ status: "DRAFT" });
+    expect(bc.status).toBe("DRAFT");
+    expect(await claimNextDueBroadcast(prisma, new Date())).toBeNull();
+  });
+
+  it("queueDraftBroadcast promotes a DRAFT to PENDING and clears its schedule", async () => {
+    const bc = await make({ status: "DRAFT", scheduledAt: new Date(Date.now() - 3600_000) });
+    expect(await queueDraftBroadcast(prisma, bc.id)).toBe(true);
+    const updated = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+    expect(updated.status).toBe("PENDING");
+    expect(updated.scheduledAt).toBeNull();
+  });
+
+  it("queueDraftBroadcast returns false on a non-draft", async () => {
+    const bc = await make();
+    expect(await queueDraftBroadcast(prisma, bc.id)).toBe(false);
+    expect((await prisma.broadcast.findUnique({ where: { id: bc.id } }))!.status).toBe("PENDING");
+  });
+
+  it("deleteBroadcast hard-deletes a DRAFT", async () => {
+    const bc = await make({ status: "DRAFT" });
+    expect(await deleteBroadcast(prisma, bc.id)).toBe(true);
+    expect(await prisma.broadcast.findUnique({ where: { id: bc.id } })).toBeNull();
+  });
+
+  it("deleteBroadcast returns false on a non-draft", async () => {
+    const bc = await make();
+    expect(await deleteBroadcast(prisma, bc.id)).toBe(false);
+    expect(await prisma.broadcast.findUnique({ where: { id: bc.id } })).not.toBeNull();
+  });
+
+  it("finishBroadcast no longer clobbers a non-SENDING row", async () => {
+    const bc = await make(); // stays PENDING, never claimed
+    await finishBroadcast(prisma, bc.id, { sent: 1, failed: 0, total: 1 });
+    expect((await prisma.broadcast.findUnique({ where: { id: bc.id } }))!.status).toBe("PENDING");
+  });
+
+  it("reapStaleBroadcasts flips only abandoned SENDING rows to FAILED", async () => {
+    const bc1 = await make();
+    const bc2 = await make();
+    await claimNextDueBroadcast(prisma, new Date());
+    await claimNextDueBroadcast(prisma, new Date());
+    await prisma.broadcast.update({
+      where: { id: bc1.id },
+      data: { claimedAt: new Date(Date.now() - 20 * 60_000) },
+    });
+    const reaped = await reapStaleBroadcasts(prisma, new Date());
+    expect(reaped).toBe(1);
+    const stale = (await prisma.broadcast.findUnique({ where: { id: bc1.id } }))!;
+    expect(stale.status).toBe("FAILED");
+    expect(stale.failureReason).toBeTruthy();
+    const fresh = (await prisma.broadcast.findUnique({ where: { id: bc2.id } }))!;
+    expect(fresh.status).toBe("SENDING");
+  });
+
+  it("failBroadcast marks a SENDING row FAILED but cannot clobber an already-finished row", async () => {
+    const bc = await make();
+    await claimNextDueBroadcast(prisma, new Date());
+    await failBroadcast(prisma, bc.id, "unknown segment");
+    const failed = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+    expect(failed.status).toBe("FAILED");
+    expect(failed.failureReason).toBe("unknown segment");
+
+    const bc2 = await make();
+    await claimNextDueBroadcast(prisma, new Date());
+    await finishBroadcast(prisma, bc2.id, { sent: 3, failed: 0, total: 3 });
+    await failBroadcast(prisma, bc2.id, "should not apply");
+    expect((await prisma.broadcast.findUnique({ where: { id: bc2.id } }))!.status).toBe("SENT");
   });
 });

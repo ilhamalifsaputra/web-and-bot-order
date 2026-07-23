@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
@@ -7,8 +7,9 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { StatusBadge } from "../components/shared/StatusBadge";
+import { StatCard } from "../components/shared/StatCard";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
-import { CreditCard, ChevronLeft, ChevronRight, PackageCheck, Undo2, X, MoreVertical } from "lucide-react";
+import { CreditCard, ChevronLeft, ChevronRight, PackageCheck, Undo2, X, MoreVertical, Clock, Hourglass, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -67,6 +68,7 @@ interface PaymentsData {
   enabled: boolean;
   ledger: TxRow[];
   total: number;
+  todayCount: number;
   page: number;
   hasNext: boolean;
   outcomes: readonly string[];
@@ -82,16 +84,6 @@ interface PaymentsData {
 interface OrderCodeSearchResult {
   q: string;
   exactOrderId: number | null;
-}
-
-/** Outcomes a "pending"/"failed" stat card maps to — matches the lowercase
- * values written by packages/db/src/crud/binance_internal.ts (compared
- * case-insensitively since the field is a free-form string column). */
-const PENDING_OUTCOMES = new Set(["unmatched"]);
-const FAILED_OUTCOMES = new Set(["delivery_failed"]);
-
-function isSameLocalDay(a: Date, b: Date): boolean {
-  return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
 
 function usePayments(outcome: string, page: number) {
@@ -156,19 +148,6 @@ export function PaymentsPage() {
   const underpaid = data?.underpaid ?? [];
   const pendingInternal = data?.pendingInternal ?? [];
 
-  const stats = useMemo(() => {
-    const ledger = data?.ledger ?? [];
-    const today = new Date();
-    let todayTotal = 0, pending = 0, failed = 0;
-    for (const tx of ledger) {
-      const outcomeLower = tx.outcome.toLowerCase();
-      if (isSameLocalDay(new Date(tx.processedAt), today)) todayTotal += 1;
-      if (PENDING_OUTCOMES.has(outcomeLower)) pending += 1;
-      if (FAILED_OUTCOMES.has(outcomeLower)) failed += 1;
-    }
-    return { todayTotal, pending, failed };
-  }, [data?.ledger]);
-
   const match = useMutation({
     mutationFn: () => apiPost("/api/payments/match", matchForm),
     onSuccess: () => {
@@ -222,31 +201,29 @@ export function PaymentsPage() {
 
   return (
     <PageLayout title="Payments">
-      <PageHeader title="Payments" />
+      <PageHeader title="Payments" description="Match transfers to orders and resolve payment issues." />
 
-      {/* Summary stats — computed client-side from the already-fetched (current page of) transactions */}
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <Card>
-          <CardHeader><CardTitle>Today&apos;s Transactions</CardTitle></CardHeader>
-          <CardContent>
-            <p className="font-display text-3xl font-semibold text-ink">{stats.todayTotal}</p>
-            <p className="mt-1 text-xs text-ink-soft">Processed today, this page</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader><CardTitle>Pending</CardTitle></CardHeader>
-          <CardContent>
-            <p className="font-display text-3xl font-semibold text-ink">{stats.pending}</p>
-            <p className="mt-1 text-xs text-ink-soft">Unmatched transfers</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader><CardTitle>Failed</CardTitle></CardHeader>
-          <CardContent>
-            <p className="font-display text-3xl font-semibold text-ink">{stats.failed}</p>
-            <p className="mt-1 text-xs text-ink-soft">Delivery failures</p>
-          </CardContent>
-        </Card>
+        <StatCard
+          label="Today's Transactions"
+          value={data?.todayCount ?? 0}
+          icon={Clock}
+          isLoading={!data}
+        />
+        <StatCard
+          label="Pending"
+          value={data?.counts["unmatched"] ?? 0}
+          icon={Hourglass}
+          tone="warning"
+          isLoading={!data}
+        />
+        <StatCard
+          label="Failed"
+          value={data?.counts["delivery_failed"] ?? 0}
+          icon={XCircle}
+          tone="danger"
+          isLoading={!data}
+        />
       </div>
 
       {/* Manual match form */}

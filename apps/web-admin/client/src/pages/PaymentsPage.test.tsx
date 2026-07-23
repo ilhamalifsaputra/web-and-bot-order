@@ -75,26 +75,54 @@ describe("PaymentsPage", () => {
     await waitFor(() => expect(screen.getByText(/failed to load/i)).toBeInTheDocument());
   });
 
-  it("computes today's total / pending / failed stat cards from the fetched ledger", async () => {
-    const today = new Date().toISOString();
-    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  it("shows today's total / pending / failed stat cards from server-provided fields", async () => {
     const ledger = [
-      { id: 1, binanceTxId: "TX1", amount: "1", currency: "IDR", outcome: "matched", memo: null, processedAt: today },
-      { id: 2, binanceTxId: "TX2", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: today },
-      { id: 3, binanceTxId: "TX3", amount: "1", currency: "IDR", outcome: "delivery_failed", memo: null, processedAt: yesterday },
+      { id: 1, binanceTxId: "TX1", amount: "1", currency: "IDR", outcome: "matched", memo: null, processedAt: "2026-06-26T10:00:00.000Z" },
     ];
-    mockPaymentsFetch({ enabled: true, ledger, total: 3, page: 1, hasNext: false, outcomes: ["matched", "unmatched", "delivery_failed"], counts: {} });
+    mockPaymentsFetch({
+      enabled: true,
+      ledger,
+      total: 1,
+      todayCount: 7,
+      page: 1,
+      hasNext: false,
+      outcomes: ["matched", "unmatched", "delivery_failed"],
+      counts: { unmatched: 3, delivery_failed: 2 },
+    });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("TX1")).toBeInTheDocument());
 
     const todayCard = screen.getByText("Today's Transactions").closest('[data-slot="card"]') as HTMLElement;
-    expect(within(todayCard).getByText("2")).toBeInTheDocument(); // TX1 + TX2 processed today
+    expect(within(todayCard).getByText("7")).toBeInTheDocument();
 
     const pendingCard = screen.getByText("Pending").closest('[data-slot="card"]') as HTMLElement;
-    expect(within(pendingCard).getByText("1")).toBeInTheDocument(); // TX2 (unmatched)
+    expect(within(pendingCard).getByText("3")).toBeInTheDocument();
 
     const failedCard = screen.getByText("Failed").closest('[data-slot="card"]') as HTMLElement;
-    expect(within(failedCard).getByText("1")).toBeInTheDocument(); // TX3 (delivery_failed)
+    expect(within(failedCard).getByText("2")).toBeInTheDocument();
+  });
+
+  it("shows a page-2 KPI value that differs from what the current page alone would suggest", async () => {
+    // Regression guard for the bug this task fixes: with the old client-side
+    // computation, a KPI on page 2 could only ever reflect page 2's rows.
+    const ledger = [
+      { id: 99, binanceTxId: "PAGE2-TX", amount: "1", currency: "IDR", outcome: "matched", memo: null, processedAt: "2026-06-01T10:00:00.000Z" },
+    ];
+    mockPaymentsFetch({
+      enabled: true,
+      ledger,
+      total: 60,
+      todayCount: 12,
+      page: 2,
+      hasNext: false,
+      outcomes: ["matched"],
+      counts: { unmatched: 5 },
+    });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("PAGE2-TX")).toBeInTheDocument());
+
+    const todayCard = screen.getByText("Today's Transactions").closest('[data-slot="card"]') as HTMLElement;
+    expect(within(todayCard).getByText("12")).toBeInTheDocument(); // not 0, not derived from the 1 row on this page
   });
 
   it("debounces order-code lookups via /api/search and fills the input on selecting a suggestion", async () => {

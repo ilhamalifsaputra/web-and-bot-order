@@ -3537,6 +3537,33 @@ describe("support", () => {
       expect(audit.length).toBe(1);
     });
 
+    it("bulk close: a ticket owned by a telegramId-less (web-only) customer still counts as succeeded", async () => {
+      // closeTicket returns null both when a ticket was already CLOSED and
+      // when it DID close but the owner has no telegramId to notify — the
+      // route must not conflate the two (regression for that ambiguity).
+      const web = await createWebUser(prisma, {
+        loginUsername: "webonlybuyer",
+        email: "webonly@shop.test",
+        passwordHash: "x",
+      });
+      const webTicket = await createTicket(prisma, web.id, "help me");
+      const normal = await makeTicket();
+
+      const res = await postJson("/api/support/bulk-action", seed.cookie, seed.csrf, {
+        ids: [webTicket.id, normal],
+        action: "close",
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as { succeeded: number[]; failed: { id: number; error: string }[] };
+      expect(body.succeeded.slice().sort((a, b) => a - b)).toEqual([webTicket.id, normal].sort((a, b) => a - b));
+      expect(body.failed).toEqual([]);
+      expect((await prisma.supportTicket.findUnique({ where: { id: webTicket.id } }))!.status).toBe("CLOSED");
+
+      const audit = await prisma.auditLog.findMany({ where: { action: "ticket_bulk_close" } });
+      expect(audit.length).toBe(1);
+      expect(audit[0]!.details).toBe("Bulk close: 2 succeeded, 0 failed (of 2 selected).");
+    });
+
     it("an unknown ticket id lands in failed with error.ticket_not_found, not a hard error for the whole batch", async () => {
       const res = await postJson("/api/support/bulk-action", seed.cookie, seed.csrf, {
         ids: [999999],

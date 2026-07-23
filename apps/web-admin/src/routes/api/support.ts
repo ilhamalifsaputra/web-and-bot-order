@@ -383,12 +383,16 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
             continue;
           }
         } else {
-          // "close"
-          const telegramId = await closeTicket(prisma, ticketId);
-          if (telegramId === null) {
+          // "close" — closeTicket returns null both when the ticket was
+          // already CLOSED (no transition) and when it DID close but the
+          // owner has no telegramId (web-only buyer, nothing to notify).
+          // Disambiguate with the prior status already fetched above: only
+          // "already CLOSED" is a real failure.
+          if (ticket.status === TicketStatus.CLOSED) {
             failed.push({ id: ticketId, error: "error.not_eligible" });
             continue;
           }
+          await closeTicket(prisma, ticketId);
         }
         succeeded.push(ticketId);
       } catch {

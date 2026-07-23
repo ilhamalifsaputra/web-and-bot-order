@@ -51,6 +51,7 @@ interface TicketUser {
   fullName: string | null;
   username: string | null;
   telegramId: string | null;
+  loginUsername: string | null;
 }
 
 interface TicketAdmin {
@@ -113,6 +114,17 @@ function titleCase(value: string): string {
 function initialFor(user: TicketUser): string {
   const source = user.fullName ?? user.username;
   return source && source.length > 0 ? source[0]!.toUpperCase() : "?";
+}
+
+/** Best identifier to search the Orders page by for this ticket's customer —
+ * prefers the Telegram username, then the web login handle, then the
+ * Telegram id. A web-only customer (no username, no telegramId) has none of
+ * these, so this returns null rather than falling back to
+ * `String(user.telegramId)`, which for `telegramId === null` used to produce
+ * the literal string "null" and send the admin to a dead `/orders?q=null`
+ * search. */
+function orderSearchTermFor(user: TicketUser): string | null {
+  return user.username ?? user.loginUsername ?? user.telegramId ?? null;
 }
 
 const OPEN_STATUSES = new Set(["OPEN", "REPLIED"]);
@@ -647,9 +659,12 @@ export function SupportPage() {
                       Customer Profile
                     </DropdownMenuItem>
                     <DropdownMenuItem
-                      onSelect={() =>
-                        navigate(`/orders?q=${encodeURIComponent(row.user.username ?? String(row.user.telegramId))}`)
-                      }
+                      disabled={orderSearchTermFor(row.user) === null}
+                      onSelect={() => {
+                        const term = orderSearchTermFor(row.user);
+                        if (term === null) return;
+                        navigate(`/orders?q=${encodeURIComponent(term)}`);
+                      }}
                     >
                       <ShoppingCart className="h-4 w-4" />
                       Order History

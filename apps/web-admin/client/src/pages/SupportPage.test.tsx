@@ -2,7 +2,7 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
 import { SupportPage } from "./SupportPage";
@@ -13,6 +13,27 @@ function Wrapper({ children }: { children: React.ReactNode }) {
     <MemoryRouter>
       <QueryClientProvider client={qc}>
         {children}
+        <Toaster />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+/** Exposes the router's current path + query string so tests can assert on a
+ *  `navigate(...)` target without a matching `<Routes>` tree (mirrors
+ *  Sidebar.test.tsx / TopBar.test.tsx's LocationDisplay). */
+function LocationDisplay() {
+  const location = useLocation();
+  return <span data-testid="location">{location.pathname + location.search}</span>;
+}
+
+function WrapperWithLocation({ children }: { children: React.ReactNode }) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return (
+    <MemoryRouter>
+      <QueryClientProvider client={qc}>
+        {children}
+        <LocationDisplay />
         <Toaster />
       </QueryClientProvider>
     </MemoryRouter>
@@ -61,6 +82,24 @@ const TICKET_CLOSED = {
   waitingSince: null,
   isOverdue: false,
   user: { id: 12, fullName: null, username: "citra", telegramId: "888" },
+  admin: null,
+};
+
+// Web-only customer: signed up via the storefront, never touched the bot —
+// no username, no telegramId. Regression fixture for the "Order History"
+// row action, which used to fall back to the literal string "null" here.
+const TICKET_WEB_ONLY_CUSTOMER = {
+  id: 4,
+  userId: 20,
+  subject: "Payment not reflecting",
+  status: "OPEN",
+  priority: "MEDIUM",
+  category: "PAYMENT",
+  adminId: null,
+  createdAtDisplay: "2026-06-27",
+  waitingSince: "2026-06-27 08:00",
+  isOverdue: false,
+  user: { id: 20, fullName: "Web Buyer", username: null, telegramId: null, loginUsername: null },
   admin: null,
 };
 
@@ -373,5 +412,38 @@ describe("SupportPage", () => {
 
     const exportLink = screen.getByRole("link", { name: /export/i });
     expect(exportLink).toHaveAttribute("href", "/api/support/export?ids=1,2");
+  });
+
+  describe("row action: Order History", () => {
+    it("navigates to /orders?q=<identifier> for a customer with an identifiable field", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      mockFetchRouter();
+      render(<SupportPage />, { wrapper: WrapperWithLocation });
+      await waitFor(() => expect(screen.getByText("Order tidak sampai")).toBeInTheDocument());
+
+      await user.click(screen.getByRole("button", { name: "Actions for ticket #1" }));
+      const menu = await screen.findByRole("menu");
+      // Ticket #1's customer has no username but does have a telegramId ("555").
+      await user.click(within(menu).getByText("Order History"));
+
+      await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/orders?q=555"));
+    });
+
+    it("is disabled — and does not navigate to a dead /orders?q=null search — for a web-only customer with no username or telegramId", async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      mockFetchRouter({ tickets: { ...TICKETS_DATA, tickets: [TICKET_WEB_ONLY_CUSTOMER], total: 1 } });
+      render(<SupportPage />, { wrapper: WrapperWithLocation });
+      await waitFor(() => expect(screen.getByText("Payment not reflecting")).toBeInTheDocument());
+
+      await user.click(screen.getByRole("button", { name: "Actions for ticket #4" }));
+      const menu = await screen.findByRole("menu");
+      const orderHistoryItem = within(menu).getByText("Order History").closest('[role="menuitem"]')!;
+      expect(orderHistoryItem).toHaveAttribute("data-disabled");
+
+      await user.click(within(menu).getByText("Order History"));
+      // Disabled Radix menu items don't fire onSelect — location must stay put.
+      expect(screen.getByTestId("location")).toHaveTextContent("/");
+      expect(screen.queryByTestId("location")).not.toHaveTextContent("/orders");
+    });
   });
 });

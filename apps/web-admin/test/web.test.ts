@@ -29,6 +29,7 @@ import {
   attachPaymentProof,
   settlePaidOrder,
   createTicket,
+  assignTicket,
   listTicketMessages,
   setSetting,
   getSetting,
@@ -3113,6 +3114,57 @@ describe("support", () => {
     expect(data.ticket.subject.endsWith("…")).toBe(true);
     expect(data.ticket.subject.length).toBeLessThanOrEqual(61);
     expect(longMessage.startsWith(data.ticket.subject.slice(0, -1))).toBe(true);
+  });
+
+  // Final whole-branch review finding: listTickets/getTicket used to
+  // `include: { user: true, admin: true }` with no field selection, and this
+  // route used to spread a raw `getUser(...)` result — both leaked every
+  // User column (passwordHash, email, wallet balances, bannedReason, …) into
+  // the admin's browser. Regression: assert those never appear in the list
+  // or detail JSON for either the ticket owner or the assigned admin.
+  it("never leaks passwordHash or email off the ticket's user/admin in the list or detail JSON", async () => {
+    const buyer = await createWebUser(prisma, {
+      loginUsername: "leakcheckbuyer",
+      email: "buyer-secret@shop.test",
+      passwordHash: "buyer-hash-should-not-leak",
+    });
+    const assignee = await createWebUser(prisma, {
+      loginUsername: "leakcheckadmin",
+      email: "admin-secret@shop.test",
+      passwordHash: "admin-hash-should-not-leak",
+    });
+    const ticket = await createTicket(prisma, buyer.id, "help me");
+    await assignTicket(prisma, ticket.id, assignee.id);
+
+    const listRes = await get("/api/support", seed.cookie);
+    expect(listRes.statusCode).toBe(200);
+    for (const needle of [
+      "buyer-hash-should-not-leak",
+      "admin-hash-should-not-leak",
+      "buyer-secret@shop.test",
+      "admin-secret@shop.test",
+      "passwordHash",
+      "walletBalance",
+      "bannedReason",
+      '"email"',
+    ]) {
+      expect(listRes.body, `GET /api/support body must not contain "${needle}"`).not.toContain(needle);
+    }
+
+    const detailRes = await get(`/api/support/${ticket.id}`, seed.cookie);
+    expect(detailRes.statusCode).toBe(200);
+    for (const needle of [
+      "buyer-hash-should-not-leak",
+      "admin-hash-should-not-leak",
+      "buyer-secret@shop.test",
+      "admin-secret@shop.test",
+      "passwordHash",
+      "walletBalance",
+      "bannedReason",
+      '"email"',
+    ]) {
+      expect(detailRes.body, `GET /api/support/:ticketId body must not contain "${needle}"`).not.toContain(needle);
+    }
   });
 
   it("ticket detail requires auth (anon → 303 /login)", async () => {

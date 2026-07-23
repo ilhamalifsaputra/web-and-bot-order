@@ -114,6 +114,22 @@ function titleCase(value: string): string {
   return value.charAt(0) + value.slice(1).toLowerCase();
 }
 
+/** Only the fields the ticket-detail JSON needs off a linked user — mirrors
+ * `TICKET_USER_SELECT` in packages/db/src/crud/support.ts. `getUser` returns
+ * the full User row (password hash, email, wallet balances, banned reason,
+ * …), so this route must always project it down before it reaches the
+ * admin's browser; never spread a raw `getUser(...)` result into a response. */
+function ticketPartyUser(user: Awaited<ReturnType<typeof getUser>>) {
+  if (!user) return null;
+  return {
+    id: user.id,
+    fullName: user.fullName,
+    username: user.username,
+    telegramId: user.telegramId,
+    loginUsername: user.loginUsername,
+  };
+}
+
 function classifyDetails(args: { priority?: string; category?: string | null }): string {
   const clauses: string[] = [];
   if (args.priority !== undefined) clauses.push(`priority to ${titleCase(args.priority)}`);
@@ -205,7 +221,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
         resolvedAtDisplay: displayDateTime(ticket.resolvedAt),
       },
       messages: messages.map((m) => ({ ...m, createdAtDisplay: displayDateTime(m.createdAt) })),
-      user: ticketUser,
+      user: ticketPartyUser(ticketUser),
     });
   });
 

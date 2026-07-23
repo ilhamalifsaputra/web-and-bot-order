@@ -17,8 +17,33 @@ export function createTicket(
   return db.supportTicket.create({ data: { userId, message, photoFileIds, attachmentUrls, orderId } });
 }
 
+/** Fields of the linked customer surfaced in ticket JSON responses (web-admin
+ * list/detail/CSV export) — NEVER `include: { user: true }` on a ticket
+ * query: that pulls every User column (passwordHash, email, wallet
+ * balances, bannedReason, …) into the response body the admin's browser
+ * receives. Keep in sync with what SupportPage.tsx/TicketDetailPage.tsx
+ * actually read off `ticket.user`. */
+const TICKET_USER_SELECT = {
+  id: true,
+  fullName: true,
+  username: true,
+  telegramId: true,
+  loginUsername: true,
+} as const;
+
+/** Same leak guard as `TICKET_USER_SELECT`, scoped to the smaller set of
+ * fields the UI reads off `ticket.admin` (the assigned admin). */
+const TICKET_ADMIN_SELECT = {
+  id: true,
+  fullName: true,
+  username: true,
+} as const;
+
 export function getTicket(db: Db, ticketId: number) {
-  return db.supportTicket.findUnique({ where: { id: ticketId }, include: { user: true, admin: true } });
+  return db.supportTicket.findUnique({
+    where: { id: ticketId },
+    include: { user: { select: TICKET_USER_SELECT }, admin: { select: TICKET_ADMIN_SELECT } },
+  });
 }
 
 /** Ticket + its linked order (items with denomination, voucher) when one is
@@ -123,7 +148,7 @@ function ticketWhere(f: TicketFilter): Prisma.SupportTicketWhereInput {
 export function listTickets(db: Db, opts: TicketFilter & { limit?: number; offset?: number } = {}) {
   return db.supportTicket.findMany({
     where: ticketWhere(opts),
-    include: { user: true, admin: true },
+    include: { user: { select: TICKET_USER_SELECT }, admin: { select: TICKET_ADMIN_SELECT } },
     orderBy: { createdAt: "desc" },
     skip: opts.offset ?? 0,
     take: opts.limit ?? 50,

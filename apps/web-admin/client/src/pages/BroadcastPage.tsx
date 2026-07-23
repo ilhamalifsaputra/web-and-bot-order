@@ -166,7 +166,7 @@ export function BroadcastPage() {
     <PageLayout title="Broadcast">
       <PageHeader
         title="Broadcast"
-        description="Send announcements, promotions, product updates, and promotions to selected customer segments."
+        description="Send announcements, promotions, product updates, and offers to selected customer segments."
       />
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-[3fr_2fr]">
@@ -237,6 +237,9 @@ export function BroadcastPage() {
                   onChange={e => setForm(f => ({ ...f, scheduled_at: e.target.value }))}
                 />
                 <p className="text-xs text-ink-soft">Leave empty to send immediately.</p>
+                {form.scheduled_at && (
+                  <p className="text-xs text-ink-soft">Note: schedule is ignored if you Save Draft instead — drafts send immediately once queued.</p>
+                )}
               </div>
             </div>
 

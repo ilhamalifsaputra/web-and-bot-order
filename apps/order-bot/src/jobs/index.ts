@@ -33,6 +33,8 @@ import {
   resolveSegmentRecipients,
   finishBroadcast,
   isBroadcastSegment,
+  reapStaleBroadcasts,
+  failBroadcast,
   refreshUsdIdrRate,
   listUnannouncedStartedFlashSales,
   enqueueFlashSaleBroadcast,
@@ -326,11 +328,16 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * Telegram. One broadcast per tick; the SENDING status guards against overlap.
  */
 export async function drainBroadcasts(api: Api): Promise<void> {
+  const reaped = await reapStaleBroadcasts(prisma, new Date());
+  if (reaped > 0) {
+    logger.warn(`drainBroadcasts: reaped ${reaped} stale SENDING broadcast(s) as FAILED (drainer crash recovery)`);
+  }
+
   const bc = await claimNextDueBroadcast(prisma, new Date());
   if (!bc) return;
   if (!isBroadcastSegment(bc.segment)) {
-    logger.error(`Broadcast #${bc.id} has an unknown recipient segment "${bc.segment}" — skipping it and recording 0 sent/0 failed`);
-    await finishBroadcast(prisma, bc.id, { sent: 0, failed: 0, total: 0 });
+    logger.error(`Broadcast #${bc.id} has an unknown recipient segment "${bc.segment}" — marking it FAILED`);
+    await failBroadcast(prisma, bc.id, `Unknown recipient segment "${bc.segment}".`);
     return;
   }
 

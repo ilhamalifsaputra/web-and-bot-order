@@ -618,7 +618,7 @@ model Broadcast {
   id          Int       @id @default(autoincrement())
   message     String
   segment     String // ALL | RESELLERS | RECENT_BUYERS
-  status      String    @default("PENDING") // PENDING | SENDING | SENT | CANCELLED
+  status      String    @default("PENDING") // DRAFT | PENDING | SENDING | SENT | CANCELLED | FAILED
   scheduledAt DateTime? @map("scheduled_at") // null = send asap
   createdById Int?      @map("created_by_id") // acting web admin (user id)
   totalCount  Int       @default(0) @map("total_count") // recipients at enqueue (display)
@@ -626,6 +626,8 @@ model Broadcast {
   failedCount Int       @default(0) @map("failed_count")
   webImageUrl String?   @map("web_image_url") // optional attached image, /uploads/broadcasts/... path
   imageFileId String?   @map("image_file_id") // cached Telegram file_id, resolved on first sendPhoto
+  claimedAt     DateTime? @map("claimed_at")      // NEW — set when claimNextDueBroadcast flips PENDING→SENDING
+  failureReason String?   @map("failure_reason")  // NEW — set when a row is marked FAILED
   createdAt   DateTime  @default(now()) @map("created_at")
   sentAt      DateTime? @map("sent_at")
 

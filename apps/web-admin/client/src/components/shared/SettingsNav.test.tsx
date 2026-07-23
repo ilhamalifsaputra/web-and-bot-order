@@ -1,9 +1,10 @@
 import "@testing-library/jest-dom";
-import { describe, it, expect, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { render, screen, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Settings as SettingsIcon, CreditCard, KeyRound } from "lucide-react";
 import { SettingsNav } from "./SettingsNav";
+import { computeNavScrollLeft } from "./settingsNavScroll";
 
 // This project's jsdom test environment doesn't provide `window.localStorage`
 // (confirmed: SettingsNav's own defensive try/catch around it exists for
@@ -72,5 +73,59 @@ describe("SettingsNav", () => {
 
     render(<SettingsNav topLinks={TOP} group={GROUP} bottomLinks={BOTTOM} />);
     expect(screen.getByRole("button", { name: /payment gateways/i })).toHaveAttribute("aria-expanded", "false");
+  });
+});
+
+describe("computeNavScrollLeft", () => {
+  it("returns null when the link is already fully visible", () => {
+    const link = { offsetLeft: 50, offsetWidth: 80 };
+    const nav = { scrollLeft: 0, clientWidth: 300 };
+    expect(computeNavScrollLeft(link, nav)).toBeNull();
+  });
+
+  it("scrolls right when the link is clipped on the right edge", () => {
+    const link = { offsetLeft: 250, offsetWidth: 80 };
+    const nav = { scrollLeft: 0, clientWidth: 300 };
+    // link right edge (330) exceeds the visible right edge (300) by 30
+    expect(computeNavScrollLeft(link, nav)).toBe(30);
+  });
+
+  it("scrolls left when the link is clipped on the left edge", () => {
+    const link = { offsetLeft: 20, offsetWidth: 80 };
+    const nav = { scrollLeft: 100, clientWidth: 300 };
+    // link left edge (20) is left of the visible left edge (scrollLeft 100)
+    expect(computeNavScrollLeft(link, nav)).toBe(20);
+  });
+});
+
+describe("SettingsNav scrollspy (mobile snap-to-top regression)", () => {
+  // jsdom has no IntersectionObserver; stub one that lets the test manually
+  // fire the same callback the component would receive from a real browser.
+  let ioCallback: ((entries: Array<{ isIntersecting: boolean; target: Element; boundingClientRect: { top: number } }>) => void) | null;
+
+  beforeEach(() => {
+    ioCallback = null;
+    (globalThis as any).IntersectionObserver = class {
+      constructor(cb: typeof ioCallback) {
+        ioCallback = cb;
+      }
+      observe() {}
+      disconnect() {}
+    };
+  });
+
+  it("never calls scrollIntoView when the active section changes", () => {
+    const scrollIntoViewSpy = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoViewSpy;
+
+    render(<SettingsNav topLinks={TOP} group={GROUP} bottomLinks={BOTTOM} />);
+
+    const target = document.createElement("div");
+    target.id = "settings-general";
+    act(() => {
+      ioCallback?.([{ isIntersecting: true, target, boundingClientRect: { top: 10 } }]);
+    });
+
+    expect(scrollIntoViewSpy).not.toHaveBeenCalled();
   });
 });

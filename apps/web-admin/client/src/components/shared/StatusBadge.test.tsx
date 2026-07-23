@@ -34,6 +34,11 @@ describe("StatusBadge", () => {
     expect(container.querySelector(".bg-amberx-tint")).not.toBeNull();
   });
 
+  it("uses the green tone for in-stock", () => {
+    const { container } = render(<StatusBadge status="IN_STOCK" />);
+    expect(container.querySelector(".bg-grass-tint")).not.toBeNull();
+  });
+
   it("uses the amber tone for a voucher expiring soon", () => {
     const { container } = render(<StatusBadge status="EXPIRING_SOON" />);
     expect(container.querySelector(".bg-amberx-tint")).not.toBeNull();

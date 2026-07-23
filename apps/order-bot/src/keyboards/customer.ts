@@ -58,10 +58,13 @@ interface TicketLike {
 // ---------------------------------------------------------------------------
 
 /**
- * Home (main menu) — a PERSISTENT reply keyboard pinned to the bottom of the
- * chat from `/start`, so the primary navigation is always one tap away while the
- * user types product/quantity numbers. Each label is routed back to its action
- * by the typed-text guard (`matchPersistentLabel` + the switch in
+ * Home (main menu) — a reply keyboard pinned to the bottom of the chat from
+ * `/start`, so the primary navigation is one tap away while the user types
+ * product/quantity numbers. Left non-`is_persistent` on purpose: Telegram
+ * then leaves a grid icon in the text-input row, so a user who swipes/hides
+ * the keyboard (native Android back gesture included) can still reopen it on
+ * demand instead of it being forced back open. Each label is routed back to
+ * its action by the typed-text guard (`matchPersistentLabel` + the switch in
  * `handleProductNumber`). The Saldo label is intentionally static (no balance)
  * — a reply keyboard is set once and can't auto-update, and the live balance is
  * shown in the dashboard text; a static label also keeps typed-text matching
@@ -77,22 +80,22 @@ export function mainPersistentKb(lang: string): Keyboard {
     .row()
     .text(coreT("menu.popular", lang))
     .text(coreT("menu.help_center", lang))
-    .resized()
-    .persistent();
+    .resized();
 }
 
 /**
- * Persistent reply keyboard shown while browsing the product list: digits
- * 1..count (rows of 5) so a customer can tap a number instead of typing it,
- * plus a Menu button back to `mainPersistentKb`. `count` is the number of
- * products on the entry page (always page 0 — see `browseProductsFlat`), so
- * a small catalog gets exactly that many buttons instead of a padded grid of
- * dead ones. A reply keyboard can only be set via a fresh message, never an
- * edit, so this only fires once per Browse entry; Prev/Next stay on the
- * existing inline `productsNavKb` (edits in place) and never resend it, so a
- * later page with a different count won't resize this keyboard — an
- * out-of-range tap there already resolves to "browse.invalid_number" in
- * `handleProductNumber`.
+ * Reply keyboard shown while browsing the product list: digits 1..count
+ * (rows of 5) so a customer can tap a number instead of typing it, plus a
+ * Menu button back to `mainPersistentKb`. `count` is the number of products
+ * on the entry page (always page 0 — see `browseProductsFlat`), so a small
+ * catalog gets exactly that many buttons instead of a padded grid of dead
+ * ones. Left non-`is_persistent` (see `mainPersistentKb`) so it can be
+ * swiped/hidden and reopened from the text-input grid icon. A reply keyboard
+ * can only be set via a fresh message, never an edit, so this only fires
+ * once per Browse entry; Prev/Next stay on the existing inline
+ * `productsNavKb` (edits in place) and never resend it, so a later page with
+ * a different count won't resize this keyboard — an out-of-range tap there
+ * already resolves to "browse.invalid_number" in `handleProductNumber`.
  */
 export function productsPersistentKb(count: number, lang: string): Keyboard {
   const kb = new Keyboard();
@@ -106,7 +109,7 @@ export function productsPersistentKb(count: number, lang: string): Keyboard {
   }
   if (inRow > 0) kb.row();
   kb.text(persistentLabel("main", lang));
-  return kb.resized().persistent();
+  return kb.resized();
 }
 
 export function backToMain(lang: string): InlineKeyboard {

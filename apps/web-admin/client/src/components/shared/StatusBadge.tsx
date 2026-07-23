@@ -12,6 +12,7 @@ const TONE: Record<string, Tone> = {
   PENDING_VERIFICATION: "warning",
   UNDERPAID: "warning",
   LOW_STOCK: "warning",
+  IN_STOCK: "success",
   EXPIRING_SOON: "warning",
   UNMATCHED: "warning",
   CANCELLED: "danger",
@@ -27,10 +28,11 @@ const TONE: Record<string, Tone> = {
   OPTIONAL: "neutral",
   NOT_CONFIGURED: "warning",
   ERROR: "danger",
-  // Flash Sale lifecycle (FlashSalesPage's Flash Status/Status columns).
-  LIVE: "success",
+  // Flash Sale lifecycle (FlashSalesPage's Flash Status column).
+  RUNNING: "success",
   SCHEDULED: "warning",
-  ENDED: "neutral",
+  EXPIRED: "neutral",
+  INACTIVE: "neutral",
   // NotificationStatus (OutboxPage) — align PENDING/SENDING with the same
   // warning tone PENDING_PAYMENT already gets, instead of falling back to neutral.
   PENDING: "warning",

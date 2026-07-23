@@ -9,6 +9,22 @@ systematic-debugging, test-driven-development, writing-plans, etc.) apply,
 and must be checked before exploring files, asking clarifying questions, or
 writing code. Skip only when explicitly told to.
 
+**Always execute work via `superpowers:subagent-driven-development`.** Once a
+task's approach is settled (after brainstorming/planning as needed), dispatch
+the actual implementation work through the `superpowers:subagent-driven-development`
+skill rather than writing/editing code directly in the main session. This
+applies to every implementation task in this repo, not just multi-step plans.
+Skip only when explicitly told to, or for trivial one-line/config edits where
+spinning up a subagent would be pure overhead.
+
+## Task tracking
+
+**Use the native CLI todo list (`TodoWrite`) for every non-trivial task in this
+repo.** Create the todo list before starting work, keep exactly one item
+`in_progress` at a time, and mark items `completed` immediately after finishing
+them — don't batch updates. Skip only for a single trivial one-line/config
+edit where a todo list would be pure overhead.
+
 Workspaces (pnpm: `apps/*` + `packages/*`): `apps/order-bot` (grammY),
 `apps/web-admin` (Fastify JSON API + built React SPA admin panel), `apps/storefront`
 (Fastify JSON API + built React SPA customer shop), `apps/server` (**composition root** — one
@@ -168,3 +184,39 @@ When implementing any frontend UI, the following precedence MUST be respected.
 Never skip this order.
 
 If an existing component can satisfy the requirement with small modifications, reuse it instead of creating a new implementation.
+
+## Functional-First Admin UX
+
+Admin pages are operational tools, not marketing pages.
+
+Every new UI element must answer at least one of these questions:
+
+- Does it reduce the number of clicks?
+- Does it improve scanning speed?
+- Does it help admins make decisions faster?
+- Does it reduce operational mistakes?
+
+If the answer is "no", do not add the element.
+
+Prefer information density over decorative UI while preserving readability.
+
+Consistency with the Design System is more important than visual novelty.
+
+## Progressive Disclosure
+
+Admin interfaces should expose only the information required for the current task.
+
+Do not add filters, KPI cards, statistics, actions, or widgets simply because there is available space.
+
+Additional information should only appear when it:
+
+- Improves decision making.
+- Reduces clicks.
+- Reduces operational errors.
+- Is frequently used by administrators.
+
+Empty space is preferable to unnecessary UI.
+
+Prefer progressive disclosure (menus, drawers, dialogs, expandable sections) over permanently visible controls.
+
+The admin should feel calm, focused, and efficient—not crowded.

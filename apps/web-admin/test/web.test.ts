@@ -2759,6 +2759,27 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect(res.headers.location).toBe("/login");
     });
   });
+
+  describe("GET /api/stock/export", () => {
+    it("returns a CSV attachment with a header row and the seeded denomination", async () => {
+      const denom = await getDenomination(prisma, seed.productId);
+      const res = await get("/api/stock/export", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toContain("text/csv");
+      expect(res.headers["content-disposition"]).toContain("attachment");
+      expect(res.headers["content-disposition"]).toContain("stock.csv");
+      expect(res.body.split("\r\n")[0]).toBe(
+        "Denomination,Product,Category,Available,Reserved,Sold,Waiting,Status",
+      );
+      expect(res.body).toContain(denom!.name);
+    });
+
+    it("rejects missing auth (anon -> 303 /login)", async () => {
+      const res = await get("/api/stock/export", null);
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+  });
 });
 
 // ---- users (acceptance #5) ------------------------------------------------

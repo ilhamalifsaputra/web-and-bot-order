@@ -681,12 +681,12 @@ describe("Home screen (persistent keyboard)", () => {
     expect(calls(sink, "editMessageText").length).toBe(0);
   });
 
-  it("Home's keyboard is a persistent reply keyboard carrying all five buttons", async () => {
+  it("Home's keyboard is a non-persistent reply keyboard (hideable via the grid icon) carrying all five buttons", async () => {
     const { ctx, sink } = customerCtx({ callbackData: "v1:menu:main" });
     await customer.showMainMenu(ctx);
     const markup = lastMarkup(sink) as { keyboard?: Array<Array<{ text: string }>>; is_persistent?: boolean };
     expect(markup?.keyboard).toBeDefined();
-    expect(markup?.is_persistent).toBe(true);
+    expect(markup?.is_persistent).toBeFalsy();
     const labels = (markup!.keyboard ?? []).flat().map((b) => b.text);
     expect(labels).toContain(persistentLabel("browse", "en"));
     expect(labels).toContain(persistentLabel("wallet", "en"));

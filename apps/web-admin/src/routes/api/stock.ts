@@ -23,6 +23,30 @@ import {
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { displayDate } from "../../dateDisplay";
 
+/** Quotes a CSV field per RFC 4180: wrap in double quotes if it contains a
+ * comma, quote, or newline, doubling any embedded quotes. Mirrors
+ * apps/web-admin/src/routes/api/orders.ts's identical helper — not shared,
+ * per that file's own per-route-file convention. */
+function csvField(value: string): string {
+  if (/[",\r\n]/.test(value)) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
+function csvRow(fields: string[]): string {
+  return fields.map(csvField).join(",") + "\r\n";
+}
+
+/** Same `<5`/`===0` thresholds the client's Status column and KPI tiles use
+ * (StockPage.tsx's `stockTier`) — kept in sync manually since this is a
+ * tiny, stable threshold and the two sides don't share a module. */
+function stockStatusLabel(available: number): string {
+  if (available === 0) return "Out of Stock";
+  if (available < 5) return "Low Stock";
+  return "In Stock";
+}
+
 export default async function stockApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/stock", { preHandler: currentAdmin }, async (req, reply) => {
     const [denominations, counts, waiting] = await Promise.all([
@@ -31,6 +55,39 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
       restockSubscriberCounts(prisma),
     ]);
     return reply.send({ denominations, counts, waiting });
+  });
+
+  // Full, unfiltered inventory export — mirrors GET /api/stock's own data
+  // source exactly, formatted as CSV. Read-only, so currentAdmin (not
+  // csrfProtect), same as /download below.
+  app.get("/api/stock/export", { preHandler: currentAdmin }, async (req, reply) => {
+    const [denominations, counts, waiting] = await Promise.all([
+      listAllDenominations(prisma),
+      stockStatusCounts(prisma),
+      restockSubscriberCounts(prisma),
+    ]);
+
+    const header = ["Denomination", "Product", "Category", "Available", "Reserved", "Sold", "Waiting", "Status"];
+    let csv = csvRow(header);
+    for (const d of denominations) {
+      const cnt = counts[d.id];
+      const available = cnt?.available ?? 0;
+      csv += csvRow([
+        d.name,
+        d.product?.name ?? "",
+        d.product?.category?.name ?? "",
+        String(available),
+        String(cnt?.reserved ?? 0),
+        String(cnt?.sold ?? 0),
+        String(waiting[d.id] ?? 0),
+        stockStatusLabel(available),
+      ]);
+    }
+
+    reply.header("Content-Type", "text/csv; charset=utf-8");
+    reply.header("Content-Disposition", 'attachment; filename="stock.csv"');
+    reply.header("Cache-Control", "no-store");
+    return reply.send(csv);
   });
 
   app.get("/api/stock/:productId", { preHandler: currentAdmin }, async (req, reply) => {

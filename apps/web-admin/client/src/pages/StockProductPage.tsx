@@ -138,6 +138,19 @@ export function StockProductPage() {
     });
   }
 
+  function toggleSelectAllInTab(items: StockItem[]) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      const allSelected = items.length > 0 && items.every((i) => next.has(i.id));
+      if (allSelected) {
+        items.forEach((i) => next.delete(i.id));
+      } else {
+        items.forEach((i) => next.add(i.id));
+      }
+      return next;
+    });
+  }
+
   async function bulkMarkDead() {
     const count = selected.size;
     setBulkActing(true);
@@ -193,13 +206,17 @@ export function StockProductPage() {
     return (
       <>
         {selected.size > 0 && (
-          <div className="mb-3 flex items-center gap-3 rounded-md border border-line bg-card px-3 py-2 text-sm">
+          <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
             <span className="text-ink-soft">{selected.size} selected</span>
-            <Button size="sm" variant="outline" disabled={bulkActing} onClick={() => void bulkMarkDead()}>
-              Mark selected dead
-            </Button>
             <ConfirmDialog
-              trigger={<Button size="sm" variant="outline" disabled={bulkActing} className="text-rust">Delete</Button>}
+              trigger={<Button size="sm" variant="destructive" disabled={bulkActing}>Mark selected dead</Button>}
+              title="Mark selected stock items dead?"
+              description={`Mark ${selected.size} stock item(s) dead. This removes them from availability.`}
+              confirmLabel="Mark Dead"
+              onConfirm={() => bulkMarkDead()}
+            />
+            <ConfirmDialog
+              trigger={<Button size="sm" variant="destructive" disabled={bulkActing}>Delete</Button>}
               title="Delete selected stock items?"
               description={`Delete ${selected.size} stock item(s). Sold items or items tied to an order are skipped.`}
               confirmLabel="Delete"
@@ -215,7 +232,13 @@ export function StockProductPage() {
           columns={[
             {
               key: "select",
-              header: "",
+              header: (
+                <Checkbox
+                  checked={tabItems.length > 0 && tabItems.every((i) => selected.has(i.id))}
+                  onCheckedChange={() => toggleSelectAllInTab(tabItems)}
+                  aria-label="Select all stock items on this page"
+                />
+              ),
               render: item => (
                 <Checkbox
                   checked={selected.has(item.id)}
@@ -379,6 +402,7 @@ export function StockProductPage() {
           {bulkMsg && <p className="text-sm text-grass">{bulkMsg}</p>}
           {bulkError && <p className="text-sm text-rust">{bulkError}</p>}
           <Textarea
+            aria-label="Credentials, one per line"
             value={credentials}
             onChange={e => setCredentials(e.target.value)}
             placeholder="One credential per line…"

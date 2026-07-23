@@ -71,6 +71,7 @@ describe("StockProductPage", () => {
   });
 
   it("selects an item and bulk marks it dead", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify(STOCK_PRODUCT_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),
@@ -81,6 +82,9 @@ describe("StockProductPage", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /select stock item 101/i }));
     expect(screen.getByText("1 selected")).toBeInTheDocument();
 
+    await user.click(screen.getByRole("button", { name: "Mark selected dead" }));
+    const dialog = await screen.findByRole("dialog");
+
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify({ ok: true, count: 1 }), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
@@ -90,7 +94,7 @@ describe("StockProductPage", () => {
         headers: { "Content-Type": "application/json" },
       }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Mark selected dead" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Mark Dead" }));
 
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith(
@@ -98,6 +102,30 @@ describe("StockProductPage", () => {
         expect.objectContaining({ method: "POST", body: JSON.stringify({ ids: [101] }) }),
       ),
     );
+  });
+
+  it("selects all items on the page via the header checkbox", async () => {
+    const mixedData = {
+      ...STOCK_PRODUCT_DATA,
+      items: [
+        { id: 101, status: "AVAILABLE", note: null, credentials: "a@mail.com:Pw1", createdAt: "2026-01-01T00:00:00.000Z", createdAtDisplay: "2026-01-01" },
+        { id: 102, status: "AVAILABLE", note: null, credentials: "b@mail.com:Pw2", createdAt: "2026-01-02T00:00:00.000Z", createdAtDisplay: "2026-01-02" },
+      ],
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(mixedData), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<StockProductPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Available (2)" })).toBeInTheDocument());
+
+    const selectAll = screen.getByRole("checkbox", { name: "Select all stock items on this page" });
+    fireEvent.click(selectAll);
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /select stock item 101/i })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: /select stock item 102/i })).toBeChecked();
+
+    fireEvent.click(selectAll);
+    expect(screen.queryByText(/selected/)).not.toBeInTheDocument();
   });
 
   it("marks a single item dead after confirming", async () => {

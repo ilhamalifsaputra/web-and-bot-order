@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronDown, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { DURATION } from "@/lib/motion";
+import { computeNavScrollLeft } from "./settingsNavScroll";
 
 export interface SettingsNavLink {
   id: string;
@@ -104,11 +105,14 @@ export function SettingsNav({ topLinks, group, bottomLinks }: SettingsNavProps):
   useEffect(() => {
     if (!activeId) return;
     const el = linkRefs.current.get(activeId);
-    el?.scrollIntoView({
-      behavior: prefersReducedMotion() ? "auto" : "smooth",
-      block: "nearest",
-      inline: "nearest",
-    });
+    const nav = el?.parentElement;
+    if (!el || !nav) return;
+    // Horizontal-only reveal of the active pill in the mobile tab bar — see
+    // settingsNavScroll.ts for why this can't be `el.scrollIntoView(...)`.
+    const left = computeNavScrollLeft(el, nav);
+    if (left !== null) {
+      nav.scrollTo({ left, behavior: prefersReducedMotion() ? "auto" : "smooth" });
+    }
   }, [activeId]);
 
   function toggleExpanded() {

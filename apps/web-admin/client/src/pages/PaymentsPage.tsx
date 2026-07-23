@@ -331,7 +331,12 @@ export function PaymentsPage() {
 
       {underpaid.length > 0 && (
         <Card className="mb-6">
-          <CardHeader><CardTitle>Underpaid Orders ({underpaid.length})</CardTitle></CardHeader>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-1.5 text-sm font-semibold text-ink-soft">
+              Underpaid Orders
+              <span className="rounded-full bg-amberx-tint px-1.5 py-0.5 text-xs font-semibold text-amberx">{underpaid.length}</span>
+            </CardTitle>
+          </CardHeader>
           <CardContent>
           <DataTable
             columns={[
@@ -396,7 +401,12 @@ export function PaymentsPage() {
 
       {pendingInternal.length > 0 && (
         <Card className="mb-6">
-          <CardHeader><CardTitle>Pending Internal Transfers ({pendingInternal.length})</CardTitle></CardHeader>
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-1.5 text-sm font-semibold text-ink-soft">
+              Pending Internal Transfers
+              <span className="rounded-full bg-sand px-1.5 py-0.5 text-xs font-semibold text-ink-soft">{pendingInternal.length}</span>
+            </CardTitle>
+          </CardHeader>
           <CardContent>
           <DataTable
             columns={[

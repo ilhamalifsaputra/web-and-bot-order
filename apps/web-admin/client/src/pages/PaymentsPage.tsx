@@ -8,6 +8,7 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { StatCard } from "../components/shared/StatCard";
+import { UrgencyDot } from "../components/shared/UrgencyDot";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { CreditCard, ChevronLeft, ChevronRight, PackageCheck, Undo2, X, MoreVertical, Clock, Hourglass, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -64,6 +65,16 @@ interface PendingInternalOrderRow {
   expiresAtDisplay: string | null;
   user: OrderPartyRow | null;
 }
+interface PaymentsHealth {
+  lastRun: string | null;
+  lastSuccessAt: string | null;
+  lastTxCount: number | null;
+  backoffUntil: string | null;
+  consecutiveRateLimitHits: number | null;
+  lastRateLimitAt: string | null;
+  consecutiveFailures: number | null;
+  lastError: string | null;
+}
 interface PaymentsData {
   enabled: boolean;
   ledger: TxRow[];
@@ -73,6 +84,7 @@ interface PaymentsData {
   hasNext: boolean;
   outcomes: readonly string[];
   counts: Record<string, number>;
+  health: PaymentsHealth;
   underpaid: UnderpaidOrderRow[];
   pendingInternal: PendingInternalOrderRow[];
 }
@@ -131,6 +143,29 @@ function useOrderCodeSuggest(orderCode: string) {
   }, [orderCode]);
 
   return { suggestion, searched, loading };
+}
+
+function relativeTime(iso: string): string {
+  const ms = new Date(iso).getTime();
+  const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (seconds < 60) return "just now";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  return `${hours}h ago`;
+}
+
+function healthPill(health: PaymentsHealth): { level: "ok" | "warn" | "critical" | "idle"; text: string } {
+  if ((health.consecutiveFailures ?? 0) > 0) {
+    return { level: "critical", text: `${health.consecutiveFailures} consecutive failures` };
+  }
+  if (health.backoffUntil && new Date(health.backoffUntil).getTime() > Date.now()) {
+    return { level: "warn", text: `Rate-limited, retrying at ${new Date(health.backoffUntil).toLocaleTimeString()}` };
+  }
+  if (!health.lastRun) {
+    return { level: "idle", text: "Not yet synced" };
+  }
+  return { level: "ok", text: `Synced ${relativeTime(health.lastRun)}` };
 }
 
 export function PaymentsPage() {
@@ -202,6 +237,16 @@ export function PaymentsPage() {
   return (
     <PageLayout title="Payments">
       <PageHeader title="Payments" description="Match transfers to orders and resolve payment issues." />
+
+      {data?.enabled && data?.health && (() => {
+        const pill = healthPill(data.health);
+        return (
+          <div className="mb-4 flex items-center gap-2 text-xs text-ink-soft">
+            <UrgencyDot level={pill.level} />
+            {pill.text}
+          </div>
+        );
+      })()}
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard

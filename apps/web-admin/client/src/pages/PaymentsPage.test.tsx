@@ -219,6 +219,57 @@ describe("PaymentsPage", () => {
 
     expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument();
   });
+
+  it("shows a health pill with consecutive failures when the poller is unhealthy", async () => {
+    mockPaymentsFetch({
+      enabled: true,
+      ledger: [],
+      total: 0,
+      todayCount: 0,
+      page: 1,
+      hasNext: false,
+      outcomes: [],
+      counts: {},
+      health: { lastRun: "2026-07-24T09:00:00.000Z", lastSuccessAt: null, lastTxCount: null, backoffUntil: null, consecutiveRateLimitHits: null, lastRateLimitAt: null, consecutiveFailures: 4, lastError: "timeout" },
+    });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
+    expect(screen.getByText(/4 consecutive failures/i)).toBeInTheDocument();
+  });
+
+  it("shows a synced-recently health pill on a healthy poller", async () => {
+    mockPaymentsFetch({
+      enabled: true,
+      ledger: [],
+      total: 0,
+      todayCount: 0,
+      page: 1,
+      hasNext: false,
+      outcomes: [],
+      counts: {},
+      health: { lastRun: new Date().toISOString(), lastSuccessAt: new Date().toISOString(), lastTxCount: 3, backoffUntil: null, consecutiveRateLimitHits: null, lastRateLimitAt: null, consecutiveFailures: 0, lastError: null },
+    });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
+    expect(screen.getByText(/synced/i)).toBeInTheDocument();
+  });
+
+  it("shows no health pill when Binance internal is disabled", async () => {
+    mockPaymentsFetch({
+      enabled: false,
+      ledger: [],
+      total: 0,
+      todayCount: 0,
+      page: 1,
+      hasNext: false,
+      outcomes: [],
+      counts: {},
+      health: { lastRun: null, lastSuccessAt: null, lastTxCount: null, backoffUntil: null, consecutiveRateLimitHits: null, lastRateLimitAt: null, consecutiveFailures: null, lastError: null },
+    });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
+    expect(screen.queryByText(/synced|consecutive failures|not yet synced|retrying/i)).not.toBeInTheDocument();
+  });
 });
 
 const UNDERPAID = {

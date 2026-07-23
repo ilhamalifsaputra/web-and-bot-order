@@ -63,4 +63,9 @@ describe("StatusBadge", () => {
     const { container } = render(<StatusBadge status="SENT" />);
     expect(container.querySelector(".bg-grass-tint")).not.toBeNull();
   });
+
+  it("uses the success tone for credited to balance", () => {
+    const { container } = render(<StatusBadge status="CREDITED_TO_BALANCE" />);
+    expect(container.querySelector(".bg-grass-tint")).not.toBeNull();
+  });
 });

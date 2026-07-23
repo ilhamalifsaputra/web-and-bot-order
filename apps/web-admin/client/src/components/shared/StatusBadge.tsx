@@ -37,6 +37,9 @@ const TONE: Record<string, Tone> = {
   // warning tone PENDING_PAYMENT already gets, instead of falling back to neutral.
   PENDING: "warning",
   SENDING: "warning",
+  // Binance ledger outcome (PaymentsPage) — money successfully resolved to
+  // the buyer's credit balance, per docs/superpowers/specs/2026-06-16-dual-credit-balance-design.md.
+  CREDITED_TO_BALANCE: "success",
 };
 
 const TONE_CLASS: Record<Tone, string> = {

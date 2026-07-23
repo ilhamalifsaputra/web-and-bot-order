@@ -11,7 +11,7 @@ import { StatusBadge } from "../components/shared/StatusBadge";
 import { StatCard } from "../components/shared/StatCard";
 import { UrgencyDot } from "../components/shared/UrgencyDot";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
-import { CreditCard, ChevronLeft, ChevronRight, PackageCheck, Undo2, X, MoreVertical, Clock, Hourglass, XCircle } from "lucide-react";
+import { CreditCard, ChevronLeft, ChevronRight, PackageCheck, Undo2, X, MoreVertical, Clock, Hourglass, XCircle, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -30,6 +30,13 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
@@ -183,6 +190,9 @@ export function PaymentsPage() {
   const [pendingDeliver, setPendingDeliver] = useState<UnderpaidOrderRow | null>(null);
   const [pendingRefund, setPendingRefund] = useState<UnderpaidOrderRow | null>(null);
   const [pendingCancel, setPendingCancel] = useState<UnderpaidOrderRow | null>(null);
+  const [pendingDismiss, setPendingDismiss] = useState<TxRow | null>(null);
+  const [pendingCredit, setPendingCredit] = useState<TxRow | null>(null);
+  const [creditOrderCode, setCreditOrderCode] = useState("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   useEffect(() => {
     const timer = setTimeout(() => { setQ(qDraft); setPage(1); }, 300);
@@ -191,6 +201,7 @@ export function PaymentsPage() {
   useEffect(() => { setSelected(new Set()); }, [outcome, q, page]);
   const { data, isError } = usePayments(outcome, q, page);
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
+  const { suggestion: creditSuggestion, loading: creditSuggestLoading } = useOrderCodeSuggest(creditOrderCode);
   const underpaid = data?.underpaid ?? [];
   const pendingInternal = data?.pendingInternal ?? [];
 
@@ -209,6 +220,18 @@ export function PaymentsPage() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
       toast.success("Transfer dismissed.");
+      setPendingDismiss(null);
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
+  });
+
+  const creditToBalance = useMutation({
+    mutationFn: () => apiPost("/api/payments/credit", { binance_tx_id: pendingCredit!.binanceTxId, order_code: creditOrderCode.trim() }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["payments"] });
+      toast.success("Added to the buyer's credit balance.");
+      setPendingCredit(null);
+      setCreditOrderCode("");
     },
     onError: (e: Error) => toast.error(describeError(e.message)),
   });
@@ -575,13 +598,25 @@ export function PaymentsPage() {
             key: "actions",
             header: "",
             render: tx => tx.outcome === "unmatched" ? (
-              <ConfirmDialog
-                trigger={<Button variant="ghost" size="sm"><X className="h-4 w-4" />Dismiss</Button>}
-                title="Dismiss transfer?"
-                description={`Mark transfer ${tx.binanceTxId} as dismissed.`}
-                confirmLabel="Dismiss"
-                onConfirm={() => dismiss.mutate(tx.binanceTxId)}
-              />
+              <div onClick={(e) => e.stopPropagation()}>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for transfer ${tx.binanceTxId}`}>
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => { setPendingCredit(tx); setCreditOrderCode(""); }}>
+                      <Wallet className="h-4 w-4" />
+                      Add to buyer&apos;s credit balance
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setPendingDismiss(tx)}>
+                      <X className="h-4 w-4" />
+                      Dismiss
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             ) : null,
           },
         ]}
@@ -643,6 +678,49 @@ export function PaymentsPage() {
           confirmLabel="Cancel order"
           onConfirm={() => cancelUnderpaid.mutate(pendingCancel.id)}
         />
+      )}
+      {pendingDismiss && (
+        <ConfirmDialog
+          open
+          onOpenChange={(open) => { if (!open) setPendingDismiss(null); }}
+          title="Dismiss transfer?"
+          description={`Mark transfer ${pendingDismiss.binanceTxId} as dismissed.`}
+          confirmLabel="Dismiss"
+          onConfirm={() => dismiss.mutate(pendingDismiss.binanceTxId)}
+        />
+      )}
+      {pendingCredit && (
+        <Dialog open onOpenChange={(open) => { if (!open) { setPendingCredit(null); setCreditOrderCode(""); } }}>
+          <DialogContent showCloseButton={false}>
+            <DialogHeader>
+              <DialogTitle>Add to buyer&apos;s credit balance</DialogTitle>
+            </DialogHeader>
+            <div className="flex flex-col gap-2">
+              <p className="text-sm text-ink-soft">
+                Adds transfer {pendingCredit.binanceTxId}&apos;s amount to the matching order&apos;s buyer credit balance and cancels the order. Enter the order code this transfer belongs to.
+              </p>
+              <Input
+                placeholder="Order code"
+                value={creditOrderCode}
+                onChange={e => setCreditOrderCode(e.target.value)}
+                autoComplete="off"
+              />
+              {creditSuggestLoading && <p className="text-xs text-ink-faint">Searching…</p>}
+              {!creditSuggestLoading && creditOrderCode.trim() && !creditSuggestion && (
+                <p className="text-xs text-ink-faint">No matching order code</p>
+              )}
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setPendingCredit(null); setCreditOrderCode(""); }}>Back</Button>
+              <Button
+                disabled={!creditSuggestion || creditToBalance.isPending}
+                onClick={() => creditToBalance.mutate()}
+              >
+                Add to credit balance
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </PageLayout>
   );

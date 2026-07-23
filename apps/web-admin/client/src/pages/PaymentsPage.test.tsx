@@ -196,15 +196,19 @@ describe("PaymentsPage", () => {
   });
 
   it("shows a Dismiss action for an unmatched transfer and dismisses it after confirming", async () => {
+    const user = userEvent.setup();
     const ledger = [
       { id: 1, binanceTxId: "TX1", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
     ];
-    mockPaymentsFetch({ enabled: true, ledger, total: 1, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    mockPaymentsFetch({ enabled: true, ledger, total: 1, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
     vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("TX1")).toBeInTheDocument());
 
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    await user.click(screen.getByRole("button", { name: "Actions for transfer TX1" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Dismiss"));
+
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText(/TX1/)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole("button", { name: "Dismiss" }));
@@ -212,12 +216,39 @@ describe("PaymentsPage", () => {
     await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "TX1" }));
   });
 
-  it("does not show a Dismiss action for a matched transfer", async () => {
-    mockPaymentsFetch({ enabled: true, ledger: [TX], total: 1, page: 1, hasNext: false, outcomes: ["MATCHED", "UNMATCHED"], counts: { MATCHED: 1 } });
+  it("does not show an actions menu for a matched transfer", async () => {
+    mockPaymentsFetch({ enabled: true, ledger: [TX], total: 1, todayCount: 0, page: 1, hasNext: false, outcomes: ["MATCHED", "UNMATCHED"], counts: { MATCHED: 1 } });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("TX123")).toBeInTheDocument());
 
-    expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /actions for transfer/i })).not.toBeInTheDocument();
+  });
+
+  it("adds an unmatched transfer's amount to the buyer's credit balance via order code", async () => {
+    const user = userEvent.setup();
+    const ledger = [
+      { id: 1, binanceTxId: "CREDIT1", amount: "5", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger, total: 1, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    vi.mocked(apiGet).mockResolvedValue({ q: "order-9", exactOrderId: 9 });
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CREDIT1")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for transfer CREDIT1" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Add to buyer's credit balance"));
+
+    const dialog = await screen.findByRole("dialog");
+    const orderInput = within(dialog).getByPlaceholderText("Order code");
+    fireEvent.change(orderInput, { target: { value: "order-9" } });
+
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "Add to credit balance" })).not.toBeDisabled());
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add to credit balance" }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/credit", { binance_tx_id: "CREDIT1", order_code: "order-9" }),
+    );
   });
 
   it("shows a health pill with consecutive failures when the poller is unhealthy", async () => {

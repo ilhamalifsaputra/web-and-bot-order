@@ -188,7 +188,7 @@ export default function HomePage() {
         <div aria-hidden="true" className="dot-grid pointer-events-none absolute inset-0"></div>
         <div
           aria-hidden="true"
-          className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_45%,rgba(0,0,0,0.18)_100%)]"
+          className="pointer-events-none absolute inset-0 opacity-20 bg-[radial-gradient(ellipse_at_center,transparent_45%,var(--color-ink)_100%)]"
         ></div>
         <div className={`relative max-w-2xl ${heroProducts.length >= 2 ? "lg:max-w-xl" : ""}`}>
           <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-medium uppercase tracking-wide text-grass">

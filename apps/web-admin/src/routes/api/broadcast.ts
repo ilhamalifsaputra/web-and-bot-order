@@ -9,6 +9,8 @@ import {
   createBroadcast,
   listBroadcasts,
   cancelBroadcast,
+  queueDraftBroadcast,
+  deleteBroadcast,
   logAdminAction,
 } from "@app/db";
 import { localize } from "@app/core/datetime";
@@ -30,11 +32,12 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
   });
 
   app.post("/api/broadcast", { preHandler: csrfProtect }, async (req, reply) => {
-    const body = (req.body ?? {}) as Record<string, string>;
-    const message = (body.message ?? "").trim();
-    const segment = (body.segment ?? "").toUpperCase();
-    const scheduleRaw = (body.scheduled_at ?? "").trim();
-    const imageUrlRaw = (body.image_url ?? "").trim();
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const message = String(body.message ?? "").trim();
+    const segment = String(body.segment ?? "").toUpperCase();
+    const scheduleRaw = String(body.scheduled_at ?? "").trim();
+    const imageUrlRaw = String(body.image_url ?? "").trim();
+    const isDraft = body.draft === true;
 
     let webImageUrl: string | null = null;
     if (imageUrlRaw) {
@@ -73,13 +76,16 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
       createdById: req.admin!.userId,
       total,
       webImageUrl,
+      status: isDraft ? "DRAFT" : "PENDING",
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
-      action: "broadcast_enqueue",
+      action: isDraft ? "broadcast_draft_save" : "broadcast_enqueue",
       targetType: "broadcast",
       targetId: bc.id,
-      details: `${scheduledAt ? "Scheduled" : "Queued"} a broadcast to ${total} recipient(s) in segment "${segment}"${webImageUrl ? " with an attached image" : ""}${scheduledAt ? ` for ${localize(scheduledAt)}` : ""}.`,
+      details: isDraft
+        ? `Saved a draft broadcast to ${total} recipient(s) in segment "${segment}"${webImageUrl ? " with an attached image" : ""}.`
+        : `${scheduledAt ? "Scheduled" : "Queued"} a broadcast to ${total} recipient(s) in segment "${segment}"${webImageUrl ? " with an attached image" : ""}${scheduledAt ? ` for ${localize(scheduledAt)}` : ""}.`,
     });
     return reply.code(201).send({ broadcast: bc, total });
   });
@@ -91,6 +97,32 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "broadcast_cancel",
+      targetType: "broadcast",
+      targetId: id,
+    });
+    return reply.send({ ok: true });
+  });
+
+  app.post("/api/broadcast/:id/queue", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const ok = await queueDraftBroadcast(prisma, id);
+    if (!ok) return reply.code(409).send({ error: "Only a draft can be queued to send." });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "broadcast_queue_draft",
+      targetType: "broadcast",
+      targetId: id,
+    });
+    return reply.send({ ok: true });
+  });
+
+  app.post("/api/broadcast/:id/delete", { preHandler: csrfProtect }, async (req, reply) => {
+    const id = Number((req.params as { id: string }).id);
+    const ok = await deleteBroadcast(prisma, id);
+    if (!ok) return reply.code(409).send({ error: "Only a draft can be deleted." });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "broadcast_delete_draft",
       targetType: "broadcast",
       targetId: id,
     });

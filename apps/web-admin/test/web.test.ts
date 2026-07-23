@@ -3084,8 +3084,42 @@ describe("support", () => {
     const tid = await makeTicket();
     const res = await get(`/api/support/${tid}`, seed.cookie);
     expect(res.statusCode).toBe(200);
-    const data = JSON.parse(res.body) as { ticket: { id: number } };
+    const data = JSON.parse(res.body) as {
+      ticket: {
+        id: number;
+        subject: string;
+        waitingSince: string | null;
+        isOverdue: boolean;
+        firstResponseAtDisplay: string | null;
+        resolvedAtDisplay: string | null;
+      };
+    };
     expect(data.ticket.id).toBe(tid);
+    // "help me" (makeTicket's fixed message) is short enough to pass through unchanged.
+    expect(data.ticket.subject).toBe("help me");
+    expect(data.ticket.waitingSince).toBeTruthy();
+    expect(data.ticket.isOverdue).toBe(false);
+    expect(data.ticket.firstResponseAtDisplay).toBeNull();
+    expect(data.ticket.resolvedAtDisplay).toBeNull();
+  });
+
+  it("ticket detail: subject is truncated to the last full word past ~60 chars, with an ellipsis", async () => {
+    const longMessage =
+      "This is a very long support message that definitely exceeds sixty characters in total length easily";
+    const t = await createTicket(prisma, seed.customerId, longMessage);
+    const res = await get(`/api/support/${t.id}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { ticket: { subject: string } };
+    expect(data.ticket.subject.endsWith("…")).toBe(true);
+    expect(data.ticket.subject.length).toBeLessThanOrEqual(61);
+    expect(longMessage.startsWith(data.ticket.subject.slice(0, -1))).toBe(true);
+  });
+
+  it("ticket detail requires auth (anon → 303 /login)", async () => {
+    const tid = await makeTicket();
+    const res = await get(`/api/support/${tid}`, null);
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
   });
 
   it("reply records a message (never sent to Telegram)", async () => {
@@ -3193,6 +3227,349 @@ describe("support", () => {
     it("rejects bad CSRF with 403", async () => {
       const tid = await makeTicket();
       const res = await postJson(`/api/support/${tid}/assign`, seed.cookie, "bad-token", { adminId: null });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("GET /api/support — operational queue list", () => {
+    it("happy path: returns pagination/enum shape plus per-ticket subject/waitingSince/isOverdue", async () => {
+      const tid = await makeTicket();
+      const res = await get("/api/support", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as {
+        tickets: Array<{ id: number; subject: string; createdAtDisplay: string | null; waitingSince: string | null; isOverdue: boolean }>;
+        total: number;
+        page: number;
+        pageSize: number;
+        hasNext: boolean;
+        statuses: string[];
+        priorities: string[];
+        categories: string[];
+      };
+      expect(body.page).toBe(1);
+      expect(body.pageSize).toBe(20);
+      expect(body.hasNext).toBe(false);
+      expect(body.statuses).toEqual(["OPEN", "REPLIED", "RESOLVED", "CLOSED"]);
+      expect(body.priorities).toEqual(["LOW", "MEDIUM", "HIGH", "URGENT"]);
+      expect(body.categories).toEqual(["ORDER", "PAYMENT", "ACCOUNT", "PRODUCT", "OTHER"]);
+      const found = body.tickets.find((t) => t.id === tid);
+      expect(found).toBeTruthy();
+      expect(found!.subject).toBe("help me");
+      expect(found!.waitingSince).toBeTruthy();
+      expect(found!.isOverdue).toBe(false);
+    });
+
+    it("filters by status", async () => {
+      const openId = await makeTicket();
+      const resolvedId = await makeTicket();
+      const resolveRes = await postJson(`/api/support/${resolvedId}/resolve`, seed.cookie, seed.csrf, {});
+      expect(resolveRes.statusCode).toBe(200);
+
+      const res = await get("/api/support?status=RESOLVED", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as { tickets: Array<{ id: number }>; total: number };
+      expect(body.tickets.map((t) => t.id)).toEqual([resolvedId]);
+      expect(body.tickets.some((t) => t.id === openId)).toBe(false);
+    });
+
+    it("requires auth (anon → 303 /login)", async () => {
+      const res = await get("/api/support", null);
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+  });
+
+  describe("GET /api/support/kpis", () => {
+    it("returns the whole-queue KPI snapshot shape, ignoring any list filters", async () => {
+      await makeTicket();
+      const res = await get("/api/support/kpis", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body);
+      expect(body).toMatchObject({
+        open: expect.any(Number),
+        waitingCustomer: expect.any(Number),
+        resolved: expect.any(Number),
+        unassigned: expect.any(Number),
+        closedToday: expect.any(Number),
+        overdue: expect.any(Number),
+      });
+      expect(body.open).toBeGreaterThanOrEqual(1);
+    });
+
+    it("requires auth (anon → 303 /login)", async () => {
+      const res = await get("/api/support/kpis", null);
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+  });
+
+  describe("GET /api/support/export", () => {
+    it("returns CSV headers, Content-Disposition, and the matching row", async () => {
+      await makeTicket();
+      const res = await get("/api/support/export", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toContain("text/csv");
+      expect(res.headers["content-disposition"]).toBe('attachment; filename="support-tickets.csv"');
+      const lines = res.body.trim().split("\r\n");
+      expect(lines[0]).toBe("Ticket ID,Subject,Customer,Status,Priority,Category,Assigned To,Created At");
+      expect(lines.length).toBe(2); // header + the one seeded ticket
+    });
+
+    it("respects the status filter", async () => {
+      const openId = await makeTicket();
+      const resolvedId = await makeTicket();
+      await postJson(`/api/support/${resolvedId}/resolve`, seed.cookie, seed.csrf, {});
+
+      const res = await get("/api/support/export?status=RESOLVED", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      const lines = res.body.trim().split("\r\n");
+      expect(lines.length - 1).toBe(1);
+      expect(lines[1]).toContain(`${resolvedId},`);
+      expect(lines[1]).not.toContain(`${openId},`);
+    });
+
+    it("requires auth (anon → 303 /login)", async () => {
+      const res = await get("/api/support/export", null);
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+  });
+
+  describe("POST /api/support/:ticketId/resolve", () => {
+    it("happy path: marks a ticket RESOLVED and audits", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/resolve`, seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(200);
+      expect((await prisma.supportTicket.findUnique({ where: { id: tid } }))!.status).toBe("RESOLVED");
+      const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_resolve", targetId: tid } });
+      expect(audit).toBeTruthy();
+      expect(audit?.details).toBe(`Marked ticket #${tid} resolved.`);
+    });
+
+    it("422s when the ticket is already resolved", async () => {
+      const tid = await makeTicket();
+      await postJson(`/api/support/${tid}/resolve`, seed.cookie, seed.csrf, {});
+      const res = await postJson(`/api/support/${tid}/resolve`, seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(422);
+    });
+
+    it("404s for a non-existent ticket", async () => {
+      const res = await postJson("/api/support/999999/resolve", seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("requires auth (anon → 303 /login)", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/resolve`, null, "x", {});
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/resolve`, seed.cookie, "bad-token", {});
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("POST /api/support/:ticketId/reopen", () => {
+    it("happy path: reopens a CLOSED ticket back to OPEN and audits", async () => {
+      const tid = await makeTicket();
+      await postJson(`/api/support/${tid}/close`, seed.cookie, seed.csrf, {});
+      const res = await postJson(`/api/support/${tid}/reopen`, seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(200);
+      expect((await prisma.supportTicket.findUnique({ where: { id: tid } }))!.status).toBe("OPEN");
+      const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_reopen", targetId: tid } });
+      expect(audit).toBeTruthy();
+      expect(audit?.details).toBe(`Reopened ticket #${tid}.`);
+    });
+
+    it("422s when the ticket isn't closed", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/reopen`, seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(422);
+    });
+
+    it("404s for a non-existent ticket", async () => {
+      const res = await postJson("/api/support/999999/reopen", seed.cookie, seed.csrf, {});
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("requires auth (anon → 303 /login)", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/reopen`, null, "x", {});
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/reopen`, seed.cookie, "bad-token", {});
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("POST /api/support/:ticketId/classify", () => {
+    it("happy path: sets priority and category and audits with a natural-language sentence", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/classify`, seed.cookie, seed.csrf, {
+        priority: "HIGH",
+        category: "PAYMENT",
+      });
+      expect(res.statusCode).toBe(200);
+      const ticket = await prisma.supportTicket.findUnique({ where: { id: tid } });
+      expect(ticket?.priority).toBe("HIGH");
+      expect(ticket?.category).toBe("PAYMENT");
+      const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_classify", targetId: tid } });
+      expect(audit?.details).toBe("Set priority to High and category to Payment.");
+    });
+
+    it("applies only the field present in the body, leaving the other untouched", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/classify`, seed.cookie, seed.csrf, { priority: "URGENT" });
+      expect(res.statusCode).toBe(200);
+      const ticket = await prisma.supportTicket.findUnique({ where: { id: tid } });
+      expect(ticket?.priority).toBe("URGENT");
+      expect(ticket?.category).toBeNull();
+      const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_classify", targetId: tid } });
+      expect(audit?.details).toBe("Set priority to Urgent.");
+    });
+
+    it("rejects an invalid priority with 400", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/classify`, seed.cookie, seed.csrf, { priority: "SUPER_URGENT" });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects an invalid category with 400", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/classify`, seed.cookie, seed.csrf, { category: "SPAM" });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("404s for a non-existent ticket", async () => {
+      const res = await postJson("/api/support/999999/classify", seed.cookie, seed.csrf, { priority: "LOW" });
+      expect(res.statusCode).toBe(404);
+    });
+
+    it("requires auth (anon → 303 /login)", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/classify`, null, "x", { priority: "LOW" });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const tid = await makeTicket();
+      const res = await postJson(`/api/support/${tid}/classify`, seed.cookie, "bad-token", { priority: "LOW" });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe("POST /api/support/bulk-action", () => {
+    async function makeSecondAdmin() {
+      return upsertUser(prisma, { telegramId: 1000, username: "second", fullName: "Second Admin" });
+    }
+
+    it("bulk assign: assigns every selected ticket to the given admin and audits once", async () => {
+      const tid1 = await makeTicket();
+      const tid2 = await makeTicket();
+      const second = await makeSecondAdmin();
+
+      const res = await postJson("/api/support/bulk-action", seed.cookie, seed.csrf, {
+        ids: [tid1, tid2],
+        action: "assign",
+        adminId: second.id,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as { succeeded: number[]; failed: { id: number; error: string }[] };
+      expect(body.succeeded.slice().sort((a, b) => a - b)).toEqual([tid1, tid2].sort((a, b) => a - b));
+      expect(body.failed).toEqual([]);
+      expect((await prisma.supportTicket.findUnique({ where: { id: tid1 } }))!.adminId).toBe(second.id);
+      expect((await prisma.supportTicket.findUnique({ where: { id: tid2 } }))!.adminId).toBe(second.id);
+
+      const audit = await prisma.auditLog.findMany({ where: { action: "ticket_bulk_assign" } });
+      expect(audit.length).toBe(1);
+      expect(audit[0]!.details).toBe("Bulk assign: 2 succeeded, 0 failed (of 2 selected).");
+    });
+
+    it("bulk assign requires adminId (400)", async () => {
+      const tid = await makeTicket();
+      const res = await postJson("/api/support/bulk-action", seed.cookie, seed.csrf, {
+        ids: [tid],
+        action: "assign",
+      });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("bulk resolve: resolves eligible tickets, skips an already-closed one", async () => {
+      const resolvable = await makeTicket();
+      const closed = await makeTicket();
+      await postJson(`/api/support/${closed}/close`, seed.cookie, seed.csrf, {});
+
+      const res = await postJson("/api/support/bulk-action", seed.cookie, seed.csrf, {
+        ids: [resolvable, closed],
+        action: "resolve",
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as { succeeded: number[]; failed: { id: number; error: string }[] };
+      expect(body.succeeded).toEqual([resolvable]);
+      expect(body.failed).toEqual([{ id: closed, error: "error.not_eligible" }]);
+      expect((await prisma.supportTicket.findUnique({ where: { id: resolvable } }))!.status).toBe("RESOLVED");
+
+      const audit = await prisma.auditLog.findMany({ where: { action: "ticket_bulk_resolve" } });
+      expect(audit.length).toBe(1);
+      expect(audit[0]!.details).toBe("Bulk resolve: 1 succeeded, 1 failed (of 2 selected).");
+    });
+
+    it("bulk close: closes eligible tickets", async () => {
+      const tid = await makeTicket();
+      const res = await postJson("/api/support/bulk-action", seed.cookie, seed.csrf, {
+        ids: [tid],
+        action: "close",
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as { succeeded: number[]; failed: { id: number; error: string }[] };
+      expect(body.succeeded).toEqual([tid]);
+      expect((await prisma.supportTicket.findUnique({ where: { id: tid } }))!.status).toBe("CLOSED");
+
+      const audit = await prisma.auditLog.findMany({ where: { action: "ticket_bulk_close" } });
+      expect(audit.length).toBe(1);
+    });
+
+    it("an unknown ticket id lands in failed with error.ticket_not_found, not a hard error for the whole batch", async () => {
+      const res = await postJson("/api/support/bulk-action", seed.cookie, seed.csrf, {
+        ids: [999999],
+        action: "close",
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as { succeeded: number[]; failed: { id: number; error: string }[] };
+      expect(body.succeeded).toEqual([]);
+      expect(body.failed).toEqual([{ id: 999999, error: "error.ticket_not_found" }]);
+    });
+
+    it("caps a batch at 50 ids (400)", async () => {
+      const ids = Array.from({ length: 51 }, (_, i) => i + 1);
+      const res = await postJson("/api/support/bulk-action", seed.cookie, seed.csrf, { ids, action: "close" });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("rejects an unknown action (400)", async () => {
+      const tid = await makeTicket();
+      const res = await postJson("/api/support/bulk-action", seed.cookie, seed.csrf, { ids: [tid], action: "explode" });
+      expect(res.statusCode).toBe(400);
+    });
+
+    it("requires auth (anon → 303 /login)", async () => {
+      const tid = await makeTicket();
+      const res = await postJson("/api/support/bulk-action", null, "x", { ids: [tid], action: "close" });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+    });
+
+    it("rejects bad CSRF with 403", async () => {
+      const tid = await makeTicket();
+      const res = await postJson("/api/support/bulk-action", seed.cookie, "wrong-token", { ids: [tid], action: "close" });
       expect(res.statusCode).toBe(403);
     });
   });

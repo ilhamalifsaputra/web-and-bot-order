@@ -149,3 +149,33 @@ describe("ImageUploadField", () => {
     expect(screen.queryByText("Saved")).not.toBeInTheDocument();
   });
 });
+
+describe("dropzone variant", () => {
+  it("renders the dashed drop-zone with 'Browse image' in the empty state, not the row variant's 'Choose file…'", () => {
+    renderField({ variant: "dropzone" });
+    expect(screen.getByText("Browse image")).toBeInTheDocument();
+    expect(screen.queryByText("Choose file…")).not.toBeInTheDocument();
+  });
+
+  it("picking a file still stages a preview and Save uploads it, unaffected by the variant", async () => {
+    const { onUploaded } = renderField({ variant: "dropzone" });
+    const user = await pickFile();
+    const xhr = await saveAndGetXhr(user);
+    xhr.respond(200, JSON.stringify({ url: "/uploads/products/product-abc123.png" }));
+    await waitFor(() => expect(onUploaded).toHaveBeenCalledWith("/uploads/products/product-abc123.png"));
+  });
+
+  it("shows a Remove image button over a saved image when onRemove is provided, and calls it on click", async () => {
+    const onRemove = vi.fn();
+    const user = userEvent.setup();
+    renderField({ variant: "dropzone", imageUrl: "/uploads/x.png", onRemove });
+    const removeButton = screen.getByRole("button", { name: "Remove image" });
+    await user.click(removeButton);
+    expect(onRemove).toHaveBeenCalledOnce();
+  });
+
+  it("does not render a Remove image button when onRemove is not provided", () => {
+    renderField({ variant: "dropzone", imageUrl: "/uploads/x.png" });
+    expect(screen.queryByRole("button", { name: "Remove image" })).not.toBeInTheDocument();
+  });
+});

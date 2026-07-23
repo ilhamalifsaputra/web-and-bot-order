@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CircleCheckIcon } from "lucide-react";
+import { CircleCheckIcon, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ProgressBar } from "@/components/shared/ProgressBar";
 
@@ -71,6 +71,8 @@ export function ImageUploadField({
   dimensions,
   showSuccessCheckmark = false,
   maxBytes,
+  variant = "row",
+  onRemove,
 }: {
   label: string;
   imageUrl: string;
@@ -87,6 +89,17 @@ export function ImageUploadField({
    * call) — checked client-side too so an oversized/wrong-type pick is
    * rejected instantly instead of only after a full upload round-trip. */
   maxBytes?: number;
+  /** Visual layout: `"row"` (default) is the original compact
+   * label+thumbnail+"Choose file…" row used by Branding/Catalog.
+   * `"dropzone"` is an opt-in dashed-border drop-zone look used by
+   * Broadcast; Branding/Catalog never pass this and keep rendering the
+   * `row` branch unchanged. */
+  variant?: "row" | "dropzone";
+  /** Only meaningful in the `dropzone` variant: clears the parent's
+   * persisted `imageUrl` when the user removes an already-saved image.
+   * `cancelPending()` can't do this itself since it only clears an
+   * unsaved local pick, not the parent-owned `imageUrl` prop. */
+  onRemove?: () => void;
 }) {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -167,6 +180,59 @@ export function ImageUploadField({
   }
 
   const displayUrl = previewUrl ?? imageUrl;
+
+  if (variant === "dropzone") {
+    return (
+      <div>
+        {dimensions && <p className="text-xs text-ink-soft mb-2">Recommended: {dimensions}</p>}
+        {displayUrl && !pendingFile ? (
+          <div className="relative inline-block">
+            <img src={displayUrl} alt={label} className="max-h-40 max-w-full block rounded-lg border border-line" />
+            {onRemove && (
+              <button
+                type="button"
+                aria-label="Remove image"
+                onClick={onRemove}
+                className="absolute -right-2 -top-2 rounded-full bg-card border border-line p-1 shadow-soft hover:bg-sand"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        ) : (
+          <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-line bg-sand/40 px-6 py-8 text-center hover:bg-sand">
+            <input type="file" accept={accept} onChange={handleFile} disabled={uploading} className="hidden" />
+            <Upload className="h-5 w-5 text-ink-faint" />
+            <span className="text-sm text-ink">Browse image</span>
+            <span className="text-xs text-ink-soft">PNG/JPG/WebP • Max 5MB</span>
+          </label>
+        )}
+        {justSaved ? (
+          <div className="flex items-center gap-1.5 mt-2 text-sm text-grass-dark">
+            <CircleCheckIcon className="size-4 motion-safe:animate-checkmark-pop" /> Saved
+          </div>
+        ) : (
+          pendingFile && (
+            <div className="mt-2">
+              <div className="flex gap-2">
+                <Button size="sm" disabled={uploading} onClick={() => void confirmUpload()}>
+                  {uploading ? `Saving…${uploadProgress > 0 ? ` ${uploadProgress}%` : ""}` : "Save"}
+                </Button>
+                <Button size="sm" variant="ghost" disabled={uploading} onClick={cancelPending}>Cancel</Button>
+              </div>
+              {uploading && <ProgressBar value={uploadProgress} tone="grass" className="mt-2" />}
+            </div>
+          )
+        )}
+        {uploadError && (
+          <div className="mt-1 flex items-center gap-2">
+            <p className="text-xs text-rust">{uploadError}</p>
+            {staleSession && <Button size="sm" variant="ghost" onClick={() => window.location.reload()}>Reload page</Button>}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="py-3 border-b border-line last:border-b-0">

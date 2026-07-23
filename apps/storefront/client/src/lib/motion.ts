@@ -35,6 +35,10 @@ export const pressable = {
   whileTap: { scale: 0.97 },
 };
 
+export const hoverLift = {
+  whileHover: { y: -2, transition: { duration: DURATION.fast, ease: EASE } },
+};
+
 /** Full-screen scrim behind a drawer/modal. Timed to fade in lockstep with
  * `slideInLeft`'s 280ms ease-out slide (mobile nav drawer). */
 export const scrim: Variants = {

@@ -68,4 +68,41 @@ describe("StatusBadge", () => {
     const { container } = render(<StatusBadge status="CREDITED_TO_BALANCE" />);
     expect(container.querySelector(".bg-grass-tint")).not.toBeNull();
   });
+
+  it("uses the amber tone for an open ticket", () => {
+    const { container } = render(<StatusBadge status="OPEN" />);
+    expect(container.querySelector(".bg-amberx-tint")).not.toBeNull();
+  });
+
+  it("uses the neutral tone for a replied ticket", () => {
+    const { container } = render(<StatusBadge status="REPLIED" />);
+    expect(container.querySelector(".bg-sand")).not.toBeNull();
+  });
+
+  it("uses the green tone for a resolved ticket", () => {
+    const { container } = render(<StatusBadge status="RESOLVED" />);
+    expect(container.querySelector(".bg-grass-tint")).not.toBeNull();
+  });
+
+  it("uses the neutral tone for a closed ticket", () => {
+    const { container } = render(<StatusBadge status="CLOSED" />);
+    expect(container.querySelector(".bg-sand")).not.toBeNull();
+  });
+
+  it("uses the neutral tone for low/medium ticket priority", () => {
+    const low = render(<StatusBadge status="LOW" />);
+    expect(low.container.querySelector(".bg-sand")).not.toBeNull();
+    const medium = render(<StatusBadge status="MEDIUM" />);
+    expect(medium.container.querySelector(".bg-sand")).not.toBeNull();
+  });
+
+  it("uses the amber tone for high ticket priority", () => {
+    const { container } = render(<StatusBadge status="HIGH" />);
+    expect(container.querySelector(".bg-amberx-tint")).not.toBeNull();
+  });
+
+  it("uses the red tone for urgent ticket priority", () => {
+    const { container } = render(<StatusBadge status="URGENT" />);
+    expect(container.querySelector(".bg-rust-tint")).not.toBeNull();
+  });
 });

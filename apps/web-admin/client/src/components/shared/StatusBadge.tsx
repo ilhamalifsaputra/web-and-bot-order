@@ -40,6 +40,17 @@ const TONE: Record<string, Tone> = {
   // Binance ledger outcome (PaymentsPage) — money successfully resolved to
   // the buyer's credit balance, per docs/superpowers/specs/2026-06-16-dual-credit-balance-design.md.
   CREDITED_TO_BALANCE: "success",
+  // TicketStatus (Tickets page) — OPEN/REPLIED need attention, RESOLVED is done,
+  // CLOSED already falls back to neutral but is listed explicitly for clarity.
+  OPEN: "warning",
+  REPLIED: "neutral",
+  RESOLVED: "success",
+  CLOSED: "neutral",
+  // TicketPriority (Tickets page) — only HIGH/URGENT are visually flagged.
+  LOW: "neutral",
+  MEDIUM: "neutral",
+  HIGH: "warning",
+  URGENT: "danger",
 };
 
 const TONE_CLASS: Record<Tone, string> = {

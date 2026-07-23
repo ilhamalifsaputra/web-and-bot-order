@@ -43,6 +43,8 @@ import {
   Zap,
 } from "lucide-react";
 import { apiGet } from "../api/client";
+import { motion } from "framer-motion";
+import { hoverLift } from "../lib/motion";
 import type { HomePageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
@@ -152,6 +154,7 @@ export default function HomePage() {
   }
 
   const { hero_image, categories, products, testimonials, low_threshold, bot_username, wa_number } = data;
+  const heroProducts: typeof products = [];
   const fx = ctx?.fx;
 
   const contactCount = 1 + (wa_number ? 1 : 0) + (bot_username ? 1 : 0);
@@ -173,13 +176,21 @@ export default function HomePage() {
               height={600}
               className="absolute inset-0 h-full w-full object-cover"
             />
-            <div className="absolute inset-0 bg-linear-to-br from-ink/95 via-ink/85 to-pine-dark/80"></div>
+            <div className="absolute inset-0 bg-linear-to-br from-ink/95 via-ink/90 to-pine-dark/80"></div>
           </>
         ) : (
-          <div className="absolute inset-0 bg-linear-to-br from-ink via-pine-dark to-pine"></div>
+          <div className="absolute inset-0 bg-linear-to-br from-ink via-ink to-pine-dark"></div>
         )}
-        <div className="absolute -right-16 -top-16 h-64 w-64 rounded-full bg-pine/20 blur-3xl"></div>
-        <div className="relative max-w-2xl">
+        {/* Layered depth: two low-opacity glows -> reused .dot-grid texture -> soft vignette.
+            All decorative, aria-hidden, and never intercept clicks. */}
+        <div aria-hidden="true" className="pointer-events-none absolute -right-16 -top-16 h-64 w-64 rounded-full bg-pine/20 blur-3xl"></div>
+        <div aria-hidden="true" className="pointer-events-none absolute -left-10 bottom-0 h-56 w-56 rounded-full bg-grass/10 blur-3xl"></div>
+        <div aria-hidden="true" className="dot-grid pointer-events-none absolute inset-0"></div>
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_45%,rgba(0,0,0,0.18)_100%)]"
+        ></div>
+        <div className={`relative max-w-2xl ${heroProducts.length >= 2 ? "lg:max-w-xl" : ""}`}>
           <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-medium uppercase tracking-wide text-grass">
             <ShieldCheck className="h-3.5 w-3.5" />
             {t("web.hero_badge")}
@@ -189,16 +200,17 @@ export default function HomePage() {
           </h1>
           <p className="mt-4 text-lg text-ink-faint">{t("web.hero_sub")}</p>
           <div className="mt-7 flex flex-wrap gap-3">
-            <a
+            <motion.a
               href="#produk"
-              className="focus-on-dark inline-flex items-center gap-2 rounded-xl bg-pine px-5 py-3 font-semibold text-white hover:bg-pine-dark transition-colors shadow-soft"
+              {...hoverLift}
+              className="focus-on-dark inline-flex items-center gap-2 rounded-xl bg-pine px-5 py-3 font-semibold text-white hover:bg-pine-dark transition-colors shadow-soft hover:shadow-lift"
             >
               <ShoppingBag className="h-5 w-5" />
               {t("web.hero_cta")}
-            </a>
+            </motion.a>
             <a
               href="#kontak"
-              className="focus-on-dark inline-flex items-center gap-2 rounded-xl border border-white/20 px-5 py-3 font-semibold text-white hover:bg-white/10 transition-colors"
+              className="focus-on-dark inline-flex items-center gap-2 rounded-xl border border-white/20 px-5 py-3 font-semibold text-white hover:bg-white/15 transition-colors"
             >
               <MessageCircle className="h-5 w-5" />
               {t("web.hero_cta2")}

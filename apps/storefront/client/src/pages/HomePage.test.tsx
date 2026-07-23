@@ -180,6 +180,27 @@ describe("HomePage", () => {
     expect(screen.queryByAltText("")).not.toBeInTheDocument();
   });
 
+  it("layers the hero background with two decorative glows, a texture overlay, and a vignette", async () => {
+    const { container } = renderHome(homeFixture());
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const hero = container.querySelector("section.bg-ink");
+    expect(hero).not.toBeNull();
+    const decorative = hero!.querySelectorAll('[aria-hidden="true"]');
+    // 1 top-right glow + 1 bottom-left glow + 1 dot-grid texture + 1 vignette = 4,
+    // on top of whichever base gradient div (image or plain) also renders aria-hidden.
+    expect(decorative.length).toBeGreaterThanOrEqual(4);
+    expect(hero!.querySelector(".dot-grid")).not.toBeNull();
+    expect(hero!.querySelector(".bg-grass\\/10")).not.toBeNull();
+  });
+
+  it("gives the primary hero CTA a stronger shadow on hover and the secondary CTA a more visible hover fill", async () => {
+    renderHome(homeFixture());
+    const primary = await screen.findByRole("link", { name: /Browse products/ });
+    expect(primary.className).toContain("hover:shadow-lift");
+    const secondary = screen.getByRole("link", { name: /Contact support/ });
+    expect(secondary.className).toContain("hover:bg-white/15");
+  });
+
   // STO-018: a single product in the 3-column grid used to leave two-thirds
   // of the row empty — clamp to a capped-width single column instead.
   it("clamps the Latest products grid to one column when there's only one product", async () => {

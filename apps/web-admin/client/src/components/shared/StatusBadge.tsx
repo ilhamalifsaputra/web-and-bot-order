@@ -21,6 +21,7 @@ const TONE: Record<string, Tone> = {
   OUT_OF_STOCK: "danger",
   DELIVERY_FAILED: "danger",
   REFUNDED: "neutral",
+  DRAFT: "neutral",
   // Settings-page configuration status vocabulary (Settings refinement §4).
   CONFIGURED: "success",
   OPTIONAL: "neutral",

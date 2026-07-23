@@ -9,6 +9,16 @@ systematic-debugging, test-driven-development, writing-plans, etc.) apply,
 and must be checked before exploring files, asking clarifying questions, or
 writing code. Skip only when explicitly told to.
 
+## Session workflow — task tracking
+- **Always use the native `TodoWrite` tool to track multi-step work**,
+  especially right after exiting plan mode into execution — it renders the
+  CLI's built-in checklist widget so the user sees live progress, instead of
+  a plain-text list restated in prose. Keep it updated as tasks start/finish.
+- If `TodoWrite` isn't in the session's available tool list (e.g. some
+  background-job session types don't expose it), fall back to a plain
+  markdown checklist and say so — don't silently substitute one for the
+  other without noting the tool wasn't available.
+
 Workspaces (pnpm: `apps/*` + `packages/*`): `apps/order-bot` (grammY),
 `apps/web-admin` (Fastify JSON API + built React SPA admin panel), `apps/storefront`
 (Fastify JSON API + built React SPA customer shop), `apps/server` (**composition root** — one

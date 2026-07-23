@@ -44,7 +44,7 @@ import {
 } from "lucide-react";
 import { apiGet } from "../api/client";
 import { motion } from "framer-motion";
-import { hoverLift } from "../lib/motion";
+import { hoverLift, staggerContainer, staggerItem } from "../lib/motion";
 import type { HomePageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
@@ -55,6 +55,7 @@ import Skeleton from "../components/shop/Skeleton";
 import StepTimeline from "../components/shop/StepTimeline";
 import Stars from "../components/shop/Stars";
 import EmptyState from "../components/shop/EmptyState";
+import Price from "../components/shop/Price";
 import "./HomePage.css";
 
 const FAQ_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
@@ -80,6 +81,15 @@ const HOW_STEPS = [1, 2, 3, 4];
 const HOW_STEP_ICONS = [Package, ShoppingCart, QrCode, PackageCheck];
 const TRUST_POINTS = [1, 2, 3, 4];
 const SKELETON_CARDS = Array.from({ length: 3 }, (_, i) => i);
+// Loose stagger positions for up to 3 hero product-preview cards — plain
+// numbers/strings, not CSS transform strings, so framer-motion's own
+// whileHover translateY composes correctly with this static rotation
+// instead of one overwriting the other.
+const HERO_CARD_STYLES: Array<{ top: string; right: string; rotate: number }> = [
+  { top: "6%", right: "4%", rotate: -4 },
+  { top: "40%", right: "20%", rotate: 3 },
+  { top: "72%", right: "0%", rotate: -2 },
+];
 
 export default function HomePage() {
   const { data: ctx } = useShopContext();
@@ -154,7 +164,9 @@ export default function HomePage() {
   }
 
   const { hero_image, categories, products, testimonials, low_threshold, bot_username, wa_number } = data;
-  const heroProducts: typeof products = [];
+  // Real inventory only — never a fabricated/placeholder product. Fewer than
+  // 2 available products means no composition at all (see homepage design spec).
+  const heroProducts = products.length >= 2 ? products.slice(0, 3) : [];
   const fx = ctx?.fx;
 
   const contactCount = 1 + (wa_number ? 1 : 0) + (bot_username ? 1 : 0);
@@ -232,6 +244,52 @@ export default function HomePage() {
             </span>
           </div>
         </div>
+
+        {heroProducts.length > 0 && (
+          <div
+            data-testid="hero-product-preview"
+            className="pointer-events-none absolute inset-y-0 right-0 hidden w-[36%] lg:block"
+          >
+            <motion.div
+              className="relative h-full"
+              variants={staggerContainer}
+              initial="initial"
+              animate="animate"
+            >
+              {heroProducts.map((p, i) => (
+                <motion.div
+                  key={p.slug}
+                  variants={staggerItem}
+                  {...hoverLift}
+                  className="pointer-events-auto absolute w-48 rounded-2xl border border-white/15 bg-white/10 p-3 shadow-lift backdrop-blur-md"
+                  style={{ top: HERO_CARD_STYLES[i]!.top, right: HERO_CARD_STYLES[i]!.right, rotate: HERO_CARD_STYLES[i]!.rotate }}
+                >
+                  <Link to={`/p/${p.slug}`} className="focus-on-dark flex items-center gap-3">
+                    <span className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-xl bg-white/10">
+                      {p.image ? (
+                        <img
+                          src={p.image}
+                          alt=""
+                          aria-hidden="true"
+                          loading="lazy"
+                          width={44}
+                          height={44}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <Package className="h-5 w-5 text-white/70" aria-hidden="true" />
+                      )}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-white">{p.name}</span>
+                      <Price value={p.from_price} fx={fx} size="text-xs" />
+                    </span>
+                  </Link>
+                </motion.div>
+              ))}
+            </motion.div>
+          </div>
+        )}
       </section>
 
       {/* 2. Fitur / keunggulan */}

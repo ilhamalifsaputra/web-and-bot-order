@@ -201,6 +201,39 @@ describe("HomePage", () => {
     expect(secondary.className).toContain("hover:bg-white/15");
   });
 
+  it("shows a hero product-preview composition when at least two products are available, linking each card to its product", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
+    const { container } = renderHome(homeFixture({ products: [product, second] }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const preview = container.querySelector('[data-testid="hero-product-preview"]');
+    expect(preview).not.toBeNull();
+    const cardLinks = preview!.querySelectorAll("a");
+    expect(cardLinks.length).toBe(2);
+    expect(cardLinks[0]).toHaveAttribute("href", "/p/netflix-premium");
+    expect(cardLinks[1]).toHaveAttribute("href", "/p/spotify-premium");
+    expect(preview!.textContent).toContain("Netflix Premium");
+    expect(preview!.textContent).toContain("Spotify Premium");
+  });
+
+  it("caps the hero product-preview composition at three cards", async () => {
+    const products = [
+      product,
+      { ...product, slug: "spotify-premium", name: "Spotify Premium" },
+      { ...product, slug: "canva-pro", name: "Canva Pro" },
+      { ...product, slug: "capcut-pro", name: "CapCut Pro" },
+    ];
+    const { container } = renderHome(homeFixture({ products }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const preview = container.querySelector('[data-testid="hero-product-preview"]');
+    expect(preview!.querySelectorAll("a").length).toBe(3);
+  });
+
+  it("hides the hero product-preview composition when fewer than two products are available", async () => {
+    const { container } = renderHome(homeFixture({ products: [product] }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(container.querySelector('[data-testid="hero-product-preview"]')).toBeNull();
+  });
+
   // STO-018: a single product in the 3-column grid used to leave two-thirds
   // of the row empty — clamp to a capped-width single column instead.
   it("clamps the Latest products grid to one column when there's only one product", async () => {

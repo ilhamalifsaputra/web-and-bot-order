@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { FilterBar } from "../components/shared/FilterBar";
+import { SearchBar } from "../components/shared/SearchBar";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
@@ -98,12 +99,13 @@ interface OrderCodeSearchResult {
   exactOrderId: number | null;
 }
 
-function usePayments(outcome: string, page: number) {
+function usePayments(outcome: string, q: string, page: number) {
   return useQuery<PaymentsData>({
-    queryKey: ["payments", outcome, page],
+    queryKey: ["payments", outcome, q, page],
     queryFn: async () => {
       const params = new URLSearchParams({ page: String(page) });
       if (outcome) params.set("outcome", outcome);
+      if (q) params.set("q", q);
       const res = await fetch(`/api/payments?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to load");
       return res.json() as Promise<PaymentsData>;
@@ -172,13 +174,19 @@ export function PaymentsPage() {
   const qc = useQueryClient();
   const [outcome, setOutcome] = useState("");
   const [page, setPage] = useState(1);
+  const [qDraft, setQDraft] = useState("");
+  const [q, setQ] = useState("");
   const [matchForm, setMatchForm] = useState({ binance_tx_id: "", order_code: "" });
   const [matchError, setMatchError] = useState<string | null>(null);
   const [orderCodeFocused, setOrderCodeFocused] = useState(false);
   const [pendingDeliver, setPendingDeliver] = useState<UnderpaidOrderRow | null>(null);
   const [pendingRefund, setPendingRefund] = useState<UnderpaidOrderRow | null>(null);
   const [pendingCancel, setPendingCancel] = useState<UnderpaidOrderRow | null>(null);
-  const { data, isError } = usePayments(outcome, page);
+  useEffect(() => {
+    const timer = setTimeout(() => { setQ(qDraft); setPage(1); }, 300);
+    return () => clearTimeout(timer);
+  }, [qDraft]);
+  const { data, isError } = usePayments(outcome, q, page);
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
   const underpaid = data?.underpaid ?? [];
   const pendingInternal = data?.pendingInternal ?? [];
@@ -424,8 +432,14 @@ export function PaymentsPage() {
         </Card>
       )}
 
-      {/* Outcome filter */}
+      {/* Ledger search + outcome filter */}
       <FilterBar className="mb-4">
+        <SearchBar
+          value={qDraft}
+          onChange={setQDraft}
+          placeholder="Search Transfer ID..."
+          className="w-full sm:w-64"
+        />
         <div className="flex flex-col gap-1">
           <label className="text-xs text-ink-soft">Outcome</label>
           <Select

@@ -270,6 +270,25 @@ describe("PaymentsPage", () => {
     await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
     expect(screen.queryByText(/synced|consecutive failures|not yet synced|retrying/i)).not.toBeInTheDocument();
   });
+
+  it("debounces Ledger search into the query params", async () => {
+    vi.useFakeTimers();
+    mockPaymentsFetch({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: [], counts: {} });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await vi.waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: [], counts: {} }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+
+    const search = screen.getByPlaceholderText(/search transfer id/i);
+    fireEvent.change(search, { target: { value: "ABC" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(300);
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("q=ABC")));
+    vi.useRealTimers();
+  });
 });
 
 const UNDERPAID = {

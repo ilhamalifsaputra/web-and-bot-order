@@ -13,6 +13,7 @@ import { UrgencyDot } from "../components/shared/UrgencyDot";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { CreditCard, ChevronLeft, ChevronRight, PackageCheck, Undo2, X, MoreVertical, Clock, Hourglass, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -182,10 +183,12 @@ export function PaymentsPage() {
   const [pendingDeliver, setPendingDeliver] = useState<UnderpaidOrderRow | null>(null);
   const [pendingRefund, setPendingRefund] = useState<UnderpaidOrderRow | null>(null);
   const [pendingCancel, setPendingCancel] = useState<UnderpaidOrderRow | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
   useEffect(() => {
     const timer = setTimeout(() => { setQ(qDraft); setPage(1); }, 300);
     return () => clearTimeout(timer);
   }, [qDraft]);
+  useEffect(() => { setSelected(new Set()); }, [outcome, q]);
   const { data, isError } = usePayments(outcome, q, page);
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
   const underpaid = data?.underpaid ?? [];
@@ -235,6 +238,43 @@ export function PaymentsPage() {
       toast.success("Order cancelled.");
     },
     onError: (e: Error) => toast.error(describeError(e.message)),
+  });
+
+  const ledgerRows = data?.ledger ?? [];
+  const eligibleRows = ledgerRows.filter(tx => tx.outcome === "unmatched");
+  const allEligibleSelected = eligibleRows.length > 0 && eligibleRows.every(tx => selected.has(tx.id));
+
+  function toggleSelected(id: number) {
+    setSelected(s => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+  function toggleSelectAllEligible() {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (allEligibleSelected) {
+        eligibleRows.forEach(tx => next.delete(tx.id));
+      } else {
+        eligibleRows.forEach(tx => next.add(tx.id));
+      }
+      return next;
+    });
+  }
+
+  const bulkDismiss = useMutation({
+    mutationFn: async (ids: number[]) => {
+      const rows = ledgerRows.filter(tx => ids.includes(tx.id));
+      const results = await Promise.allSettled(rows.map(tx => apiPost("/api/payments/dismiss", { binance_tx_id: tx.binanceTxId })));
+      const failed = results.filter(r => r.status === "rejected").length;
+      return { succeeded: results.length - failed, failed };
+    },
+    onSuccess: ({ succeeded, failed }) => {
+      void qc.invalidateQueries({ queryKey: ["payments"] });
+      setSelected(new Set());
+      toast.success(failed > 0 ? `Dismissed ${succeeded} of ${succeeded + failed} transfers — ${failed} failed.` : `Dismissed ${succeeded} transfer${succeeded === 1 ? "" : "s"}.`);
+    },
   });
 
   if (isError) return <PageLayout title="Payments"><p className="text-sm text-rust">Failed to load payments.</p></PageLayout>;
@@ -458,8 +498,42 @@ export function PaymentsPage() {
         {data && <span className="text-sm text-ink-soft self-end">{data.total} transactions</span>}
       </FilterBar>
 
+      {selected.size > 0 && (
+        <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
+          <span className="text-ink-soft">{selected.size} selected</span>
+          <Button
+            size="sm"
+            variant="destructive"
+            disabled={bulkDismiss.isPending}
+            onClick={() => bulkDismiss.mutate(Array.from(selected))}
+          >
+            Dismiss {selected.size} transfer{selected.size === 1 ? "" : "s"}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
+        </div>
+      )}
+
       <DataTable
         columns={[
+          {
+            key: "select",
+            header: (
+              <Checkbox
+                checked={allEligibleSelected}
+                onCheckedChange={toggleSelectAllEligible}
+                disabled={eligibleRows.length === 0}
+                aria-label="Select all eligible transfers"
+              />
+            ),
+            render: tx => tx.outcome === "unmatched" ? (
+              <Checkbox
+                checked={selected.has(tx.id)}
+                onCheckedChange={() => toggleSelected(tx.id)}
+                onClick={e => e.stopPropagation()}
+                aria-label={`Select transfer ${tx.binanceTxId}`}
+              />
+            ) : null,
+          },
           {
             key: "txid",
             header: "Transfer ID",

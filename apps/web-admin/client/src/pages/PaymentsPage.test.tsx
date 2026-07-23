@@ -289,6 +289,44 @@ describe("PaymentsPage", () => {
     await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("q=ABC")));
     vi.useRealTimers();
   });
+
+  it("bulk-dismisses selected unmatched transfers", async () => {
+    const user = userEvent.setup();
+    const ledger = [
+      { id: 1, binanceTxId: "BULK1", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 2, binanceTxId: "BULK2", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 3, binanceTxId: "MATCHED1", amount: "1", currency: "IDR", outcome: "matched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger, total: 3, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched", "matched"], counts: {} });
+    vi.mocked(apiPost).mockResolvedValue({ ok: true });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("BULK1")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("checkbox", { name: /select transfer bulk1/i }));
+    await user.click(screen.getByRole("checkbox", { name: /select transfer bulk2/i }));
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /dismiss 2 transfers/i }));
+
+    await waitFor(() => {
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "BULK1" });
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "BULK2" });
+    });
+  });
+
+  it("only offers a select-all checkbox that selects eligible (unmatched) rows", async () => {
+    const user = userEvent.setup();
+    const ledger = [
+      { id: 1, binanceTxId: "ELIG1", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 2, binanceTxId: "MATCHED2", amount: "1", currency: "IDR", outcome: "matched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger, total: 2, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched", "matched"], counts: {} });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ELIG1")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("checkbox", { name: /select all eligible transfers/i }));
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+  });
 });
 
 const UNDERPAID = {

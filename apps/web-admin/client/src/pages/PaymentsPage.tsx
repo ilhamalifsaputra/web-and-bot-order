@@ -606,11 +606,11 @@ export function PaymentsPage() {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end">
-                    <DropdownMenuItem onSelect={() => { setPendingCredit(tx); setCreditOrderCode(""); }}>
+                    <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingCredit(tx); setCreditOrderCode(""); }}>
                       <Wallet className="h-4 w-4" />
                       Add to buyer&apos;s credit balance
                     </DropdownMenuItem>
-                    <DropdownMenuItem onSelect={() => setPendingDismiss(tx)}>
+                    <DropdownMenuItem onSelect={(e) => { e.preventDefault(); setPendingDismiss(tx); }}>
                       <X className="h-4 w-4" />
                       Dismiss
                     </DropdownMenuItem>

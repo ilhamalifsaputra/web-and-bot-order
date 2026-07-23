@@ -293,7 +293,7 @@ export async function listWalletLedger(
 export type UserSort = "newest" | "oldest" | "lastSeen" | "spend";
 
 export interface UserFilter {
-  role?: UserRole | null; // CUSTOMER or RESELLER only; null/omitted = both (never ADMIN)
+  role?: Exclude<UserRole, "ADMIN"> | null; // CUSTOMER or RESELLER only; null/omitted = both (never ADMIN)
   banned?: boolean | null; // true=banned only, false=active only, null/omitted=both
   q?: string | null; // same OR-contains shape as searchUsers
   since?: Date | null; // createdAt >=
@@ -304,8 +304,11 @@ export interface UserFilter {
 }
 
 function userWhere(f: UserFilter): Prisma.UserWhereInput {
+  // Runtime guard: ensure ADMIN is never included, even if someone casts around
+  // the type. Only permit f.role if it's actually in NON_ADMIN_ROLES.
+  const allowedRoles = f.role && NON_ADMIN_ROLES.includes(f.role) ? [f.role] : NON_ADMIN_ROLES;
   const where: Prisma.UserWhereInput = {
-    role: f.role ?? { in: NON_ADMIN_ROLES },
+    role: { in: allowedRoles },
   };
   if (f.banned != null) where.banned = f.banned;
   if (f.ids != null) where.id = { in: f.ids };

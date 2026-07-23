@@ -209,6 +209,26 @@ describe("listUsers / countUsers", () => {
     expect(count).toBeLessThan(totalRow + 1);
   });
 
+  it("excludes ADMIN-role users even when role: ADMIN is explicitly passed (defense in depth)", async () => {
+    const admin = await upsertUser(prisma, { telegramId: 9310, username: "admin_explicit", fullName: null });
+    await setUserRole(prisma, admin.id, UserRole.ADMIN);
+    const customer = await upsertUser(prisma, { telegramId: 9311, username: "cust_explicit", fullName: null });
+
+    // Explicitly pass role: ADMIN via type cast to simulate a caller attempting to bypass the type guard.
+    // The runtime guard should reject ADMIN and fall back to NON_ADMIN_ROLES, returning non-admin users.
+    // Crucially, the ADMIN user must NOT be in the results.
+    const rows = await listUsers(prisma, { role: UserRole.ADMIN as any, limit: 200 });
+    const ids = rows.map((u) => u.id);
+    expect(ids).not.toContain(admin.id); // Admin must never leak through
+    expect(ids).toContain(customer.id); // Non-admin users are returned (safe fallback behavior)
+
+    const count = await countUsers(prisma, { role: UserRole.ADMIN as any });
+    expect(count).toBeGreaterThan(0); // Non-admin users are counted
+    // Verify the admin is not counted
+    const totalNonAdminCount = await prisma.user.count({ where: { role: { in: ["CUSTOMER", "RESELLER"] } } });
+    expect(count).toBeLessThanOrEqual(totalNonAdminCount);
+  });
+
   it("role: RESELLER filter returns only RESELLER rows", async () => {
     const reseller = await upsertUser(prisma, { telegramId: 9303, username: "reseller_a", fullName: null });
     await setUserRole(prisma, reseller.id, UserRole.RESELLER);

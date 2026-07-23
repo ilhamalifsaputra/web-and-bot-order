@@ -3625,6 +3625,20 @@ describe("payments", () => {
     expect(data.ledger.some((tx) => tx.binanceTxId === "RENDTX")).toBe(true);
   });
 
+  it("GET /api/payments returns todayCount and honors the q search param", async () => {
+    await recordUnmatchedTx(prisma, { binanceTxId: "SEARCHABLE-1", amount: "1.00" });
+    await recordUnmatchedTx(prisma, { binanceTxId: "OTHER-2", amount: "1.00" });
+
+    const res = await get("/api/payments", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { todayCount: number };
+    expect(data.todayCount).toBeGreaterThanOrEqual(2);
+
+    const filtered = await get("/api/payments?q=SEARCHABLE", seed.cookie);
+    const filteredData = JSON.parse(filtered.body) as { ledger: Array<{ binanceTxId: string }> };
+    expect(filteredData.ledger.map((tx) => tx.binanceTxId)).toEqual(["SEARCHABLE-1"]);
+  });
+
   it("dismiss unmatched tx → outcome dismissed + audit", async () => {
     await recordUnmatchedTx(prisma, { binanceTxId: "DTX1", amount: "1.00" });
     const res = await post("/api/payments/dismiss", seed.cookie, { csrf_token: seed.csrf, binance_tx_id: "DTX1" });

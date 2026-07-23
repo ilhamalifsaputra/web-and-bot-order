@@ -7,6 +7,7 @@ import {
   resolveBinanceInternalConfig,
   listProcessedBinanceTx,
   countProcessedBinanceTx,
+  countProcessedBinanceTxToday,
   processedTxOutcomeCounts,
   getBinancePollHealth,
   TX_OUTCOMES,
@@ -32,12 +33,14 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
   app.get("/api/payments", { preHandler: currentAdmin }, async (req, reply) => {
     const q = req.query as Record<string, string | undefined>;
     const outcome = q.outcome && (TX_OUTCOMES as readonly string[]).includes(q.outcome) ? q.outcome : null;
+    const search = q.q?.trim() || null;
     const page = Math.max(Number(q.page) || 1, 1);
     const offset = (page - 1) * PAGE_SIZE;
 
-    const [ledger, total, counts, health, underpaid, pendingInternal] = await Promise.all([
-      listProcessedBinanceTx(prisma, { outcome, limit: PAGE_SIZE, offset }),
-      countProcessedBinanceTx(prisma, { outcome }),
+    const [ledger, total, todayCount, counts, health, underpaid, pendingInternal] = await Promise.all([
+      listProcessedBinanceTx(prisma, { outcome, q: search, limit: PAGE_SIZE, offset }),
+      countProcessedBinanceTx(prisma, { outcome, q: search }),
+      countProcessedBinanceTxToday(prisma),
       processedTxOutcomeCounts(prisma),
       getBinancePollHealth(prisma),
       listOrders(prisma, { status: OrderStatus.UNDERPAID, limit: 50 }),
@@ -62,6 +65,7 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       enabled: binanceEnabled,
       ledger: ledgerWithDisplay,
       total,
+      todayCount,
       page,
       pageSize: PAGE_SIZE,
       hasNext: offset + ledger.length < total,

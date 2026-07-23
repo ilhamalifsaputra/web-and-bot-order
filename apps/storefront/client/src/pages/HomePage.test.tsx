@@ -158,6 +158,13 @@ describe("HomePage", () => {
     expect(screen.getByText("Telegram")).toBeInTheDocument();
   });
 
+  it("gives the two 'coming soon' teaser cards a dashed border so they read as non-interactive", async () => {
+    const { container } = renderHome(homeFixture());
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const teasers = container.querySelectorAll(".border-dashed");
+    expect(teasers.length).toBe(2);
+  });
+
   // Pins the "dead Telegram link" fix (fe9869a) now ported to React: never
   // render a https://t.me/ link with no username, and don't leave the
   // contact grid at a multi-column width sized for a card that isn't there.

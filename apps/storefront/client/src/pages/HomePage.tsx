@@ -425,8 +425,8 @@ export default function HomePage() {
         <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.upcoming_title")}</h2>
         <p className="mt-2 text-ink-soft">{t("web.upcoming_sub")}</p>
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
-          <div className="flex items-start gap-4 rounded-2xl border border-line bg-card p-6 shadow-xs">
-            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-violet-50 text-violet-600">
+          <div className="flex items-start gap-4 rounded-2xl border border-dashed border-line bg-card p-6 shadow-xs">
+            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-violet-50 text-violet-600 opacity-70">
               <Share2 className="h-6 w-6" />
             </span>
             <div className="min-w-0">
@@ -439,8 +439,8 @@ export default function HomePage() {
               <p className="mt-1 text-sm text-ink-soft">{t("web.sosmed_desc")}</p>
             </div>
           </div>
-          <div className="flex items-start gap-4 rounded-2xl border border-line bg-card p-6 shadow-xs">
-            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-pine-tint text-pine">
+          <div className="flex items-start gap-4 rounded-2xl border border-dashed border-line bg-card p-6 shadow-xs">
+            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-pine-tint text-pine opacity-70">
               <Gamepad2 className="h-6 w-6" />
             </span>
             <div className="min-w-0">

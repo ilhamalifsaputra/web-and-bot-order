@@ -365,7 +365,7 @@ export default function HomePage() {
               <Link
                 key={c.slug}
                 to={`/c/${c.slug}`}
-                className="group flex items-center gap-4 rounded-2xl border border-line bg-card p-5 shadow-xs transition hover:border-pine-tint hover:shadow"
+                className="group flex items-center gap-4 rounded-2xl border border-line bg-card p-5 shadow-xs transition hover:-translate-y-0.5 hover:border-pine-tint hover:shadow-lift"
               >
                 <span className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-pine-tint text-2xl group-hover:scale-105 transition-transform">
                   {c.emoji ? c.emoji : <Box className="w-6 h-6 text-pine" />}
@@ -603,7 +603,7 @@ export default function HomePage() {
               href={`https://wa.me/${wa_number}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:shadow-md"
+              className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:-translate-y-0.5 hover:shadow-lift"
             >
               <div className="grid h-12 w-12 place-items-center rounded-2xl bg-grass-tint">
                 <svg className="h-6 w-6 text-grass-dark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -622,7 +622,7 @@ export default function HomePage() {
               href={`https://t.me/${bot_username}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:shadow-md"
+              className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:-translate-y-0.5 hover:shadow-lift"
             >
               <div className="grid h-12 w-12 place-items-center rounded-2xl bg-[#eff6ff]">
                 <svg className="h-6 w-6 text-[#2563eb]" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -638,7 +638,7 @@ export default function HomePage() {
 
           <Link
             to="/account/support"
-            className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:shadow-md"
+            className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:-translate-y-0.5 hover:shadow-lift"
           >
             <div className="grid h-12 w-12 place-items-center rounded-2xl bg-pine-tint">
               <Ticket className="h-6 w-6 text-pine" />

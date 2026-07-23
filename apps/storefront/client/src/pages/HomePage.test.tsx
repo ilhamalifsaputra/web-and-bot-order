@@ -85,6 +85,18 @@ describe("HomePage", () => {
     expect(screen.getByRole("link", { name: /View products/ })).toHaveAttribute("href", "/c/streaming");
   });
 
+  it("gives category and contact cards a consistent lift-and-shadow hover treatment", async () => {
+    renderHome(homeFixture());
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const categoryLink = screen.getByRole("link", { name: /View products/ });
+    expect(categoryLink.className).toContain("hover:-translate-y-0.5");
+    expect(categoryLink.className).toContain("hover:shadow-lift");
+
+    const ticketLink = screen.getByRole("link", { name: /Support ticket/ });
+    expect(ticketLink.className).toContain("hover:-translate-y-0.5");
+    expect(ticketLink.className).toContain("hover:shadow-lift");
+  });
+
   it("renders the static Our Promise section regardless of stats.has_data (home.njk no longer has a data-driven stats band)", async () => {
     renderHome(homeFixture({ stats: { has_data: true, customers: 120, orders: 340, satisfaction: 96 } }));
     expect(await screen.findByText("What every order comes with")).toBeInTheDocument();

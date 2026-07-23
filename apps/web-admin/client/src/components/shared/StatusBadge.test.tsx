@@ -58,4 +58,9 @@ describe("StatusBadge", () => {
     const { container } = render(<StatusBadge status="SENT" />);
     expect(container.querySelector(".bg-grass-tint")).not.toBeNull();
   });
+
+  it("uses the green tone for returning customers", () => {
+    const { container } = render(<StatusBadge status="RETURNING" />);
+    expect(container.querySelector(".bg-grass-tint")).not.toBeNull();
+  });
 });

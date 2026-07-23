@@ -5,6 +5,7 @@ const TONE: Record<string, Tone> = {
   PAID: "success",
   MATCHED: "success",
   SENT: "success",
+  RETURNING: "success",
   PENDING_PAYMENT: "warning",
   PAYMENT_DETECTED: "warning",
   CONFIRMING: "warning",

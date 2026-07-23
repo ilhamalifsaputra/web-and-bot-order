@@ -2,7 +2,7 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -18,6 +18,43 @@ function Wrapper({ children }: { children: React.ReactNode }) {
       </QueryClientProvider>
     </MemoryRouter>
   );
+}
+
+function LocationSearchDisplay() {
+  const location = useLocation();
+  return <div data-testid="url-search">{location.search}</div>;
+}
+
+/** Same as Wrapper, but also exposes the current URL's search string via a
+ * `data-testid="url-search"` element — for asserting the debounced search
+ * value round-trips into the URL. */
+function WrapperWithLocation({ children }: { children: React.ReactNode }) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return (
+    <MemoryRouter initialEntries={["/users"]}>
+      <QueryClientProvider client={qc}>
+        <TooltipProvider>{children}</TooltipProvider>
+        <Toaster />
+      </QueryClientProvider>
+      <LocationSearchDisplay />
+    </MemoryRouter>
+  );
+}
+
+/** Wrapper seeded with a `?q=...` URL — for asserting the search box
+ * pre-fills from the URL on load. */
+function wrapperWithInitialQuery(q: string) {
+  return function InitialQueryWrapper({ children }: { children: React.ReactNode }) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return (
+      <MemoryRouter initialEntries={[`/users?q=${q}`]}>
+        <QueryClientProvider client={qc}>
+          <TooltipProvider>{children}</TooltipProvider>
+          <Toaster />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  };
 }
 
 const KPIS_DATA = {
@@ -152,16 +189,12 @@ describe("UsersPage", () => {
     expect(citraCells[7]).toHaveTextContent("—");
   });
 
-  it("only sends filters to the server after Apply is clicked, not on every keystroke/selection", async () => {
+  it("only sends structured filters (Role, Status, dates, Sort) to the server after Apply is clicked, not on every selection", async () => {
     const user = userEvent.setup();
     const fetchSpy = mockFetchRouter();
     render(<UsersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
     fetchSpy.mockClear();
-
-    const search = screen.getByPlaceholderText("Search by name, username, Telegram ID…");
-    await user.type(search, "andi");
-    expect(fetchSpy).not.toHaveBeenCalled();
 
     const roleSelect = screen.getByRole("combobox", { name: "Role" });
     await user.click(roleSelect);
@@ -171,8 +204,95 @@ describe("UsersPage", () => {
     await user.click(screen.getByRole("button", { name: /^apply$/i }));
 
     await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith("/api/users?role=RESELLER", { credentials: "include" }),
+    );
+  });
+
+  it("commits search live after a short debounce, with no Apply click needed", async () => {
+    // Explicit timeout: this test guarantees a ~300ms debounce wait plus
+    // several userEvent interactions afterward, which can exceed vitest's
+    // default 5000ms test timeout on a loaded machine even though each
+    // individual step is fast.
+    const user = userEvent.setup();
+    const fetchSpy = mockFetchRouter();
+    render(<UsersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+    fetchSpy.mockClear();
+
+    const search = screen.getByPlaceholderText("Search by name, username, Telegram ID…");
+    await user.type(search, "andi");
+
+    // Debounced, not immediate — but no Apply click is involved at all.
+    await waitFor(
+      () => expect(fetchSpy).toHaveBeenCalledWith("/api/users?q=andi", { credentials: "include" }),
+      { timeout: 2000 },
+    );
+
+    // A structured filter selected afterwards still requires Apply, and the
+    // live search value already committed is preserved alongside it.
+    fetchSpy.mockClear();
+    const roleSelect = screen.getByRole("combobox", { name: "Role" });
+    await user.click(roleSelect);
+    await user.click(await screen.findByRole("option", { name: "Reseller" }));
+    expect(fetchSpy).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /^apply$/i }));
+    await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith("/api/users?q=andi&role=RESELLER", { credentials: "include" }),
     );
+  }, 10000);
+
+  it("syncs the debounced search value to the URL as ?q=..., and clears it (input + URL) on Clear Filters", async () => {
+    const user = userEvent.setup();
+    mockFetchRouter();
+    render(<UsersPage />, { wrapper: WrapperWithLocation });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+    expect(screen.getByTestId("url-search")).toHaveTextContent("");
+
+    const search = screen.getByPlaceholderText("Search by name, username, Telegram ID…");
+    await user.type(search, "andi");
+
+    await waitFor(
+      () => expect(screen.getByTestId("url-search")).toHaveTextContent("?q=andi"),
+      { timeout: 2000 },
+    );
+
+    await user.click(screen.getByRole("button", { name: /^clear$/i }));
+    await waitFor(() => expect(screen.getByTestId("url-search")).toHaveTextContent(""));
+    expect(search).toHaveValue("");
+  }, 10000);
+
+  it("pre-fills the search box (and the query sent to the server) from a ?q= URL param on load", async () => {
+    const fetchSpy = mockFetchRouter();
+    render(<UsersPage />, { wrapper: wrapperWithInitialQuery("andi") });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+
+    expect(screen.getByPlaceholderText("Search by name, username, Telegram ID…")).toHaveValue("andi");
+    expect(fetchSpy).toHaveBeenCalledWith("/api/users?q=andi", { credentials: "include" });
+  });
+
+  it("shows a meaningful fallback for missing customer identity, never a bare dash", async () => {
+    const noNameNoUsername = { ...USER_BUDI };
+    const usernameOnly = { ...USER_ANDI, id: 4, fullName: null, username: "onlyhandle" };
+    mockFetchRouter({
+      users: {
+        users: [noNameNoUsername, usernameOnly],
+        total: 2,
+        page: 1,
+        pageSize: 20,
+        hasNext: false,
+        roles: ["CUSTOMER", "RESELLER"],
+      },
+    });
+    render(<UsersPage />, { wrapper: Wrapper });
+
+    await waitFor(() => expect(screen.getByText("Unknown Customer")).toBeInTheDocument());
+    // Username stands in as the primary line when there's no full name — not
+    // duplicated as a secondary line too.
+    expect(screen.getByText("@onlyhandle")).toBeInTheDocument();
+
+    const unknownRow = screen.getByText("Unknown Customer").closest("tr")!;
+    const customerCell = within(unknownRow).getAllByRole("cell")[1]!;
+    expect(customerCell).not.toHaveTextContent("—");
   });
 
   it("wires the Sort select through to the sort query param, using the exact 'Highest Spender (IDR)' label", async () => {
@@ -267,9 +387,11 @@ describe("UsersPage", () => {
 
     const search = screen.getByPlaceholderText("Search by name, username, Telegram ID…");
     await user.type(search, "zzz");
-    await user.click(screen.getByRole("button", { name: /^apply$/i }));
 
-    await waitFor(() => expect(screen.getByText("No customers match these filters.")).toBeInTheDocument());
+    await waitFor(
+      () => expect(screen.getByText("No customers match these filters.")).toBeInTheDocument(),
+      { timeout: 2000 },
+    );
     const clearFiltersButton = screen.getByRole("button", { name: /clear filters/i });
 
     fetchSpy.mockClear();

@@ -126,6 +126,11 @@ interface SearchBarProps {
   onChange: (value: string) => void;
   placeholder?: string;
   className?: string;
+  /** Swaps the leading Search icon for a spinning Loader2 — for callers using
+   * the search-live pattern (04_CRUD_TEMPLATE.md §Toolbar/Search) that want to
+   * show a debounced background refetch in flight. Omit for the default
+   * Apply-button flow. */
+  loading?: boolean;
 }
 ```
 
@@ -133,7 +138,11 @@ interface SearchBarProps {
 `left-2.5`, input padded `pl-8`.
 
 **Interaction:** no built-in debounce — the caller decides commit-on-keystroke
-(simple pages) vs. commit-on-Apply (`FilterBar`'s draft mode, see below).
+(simple pages), commit-on-Apply (`FilterBar`'s draft mode, see below), or a
+debounced live commit (the "search-live" `FilterBar` sub-mode,
+`04_CRUD_TEMPLATE.md` §Toolbar/Search) via the shared `useDebouncedValue` hook
+(`hooks/useDebouncedValue.ts`) — `SearchBar` itself stays a plain controlled
+input either way.
 
 **Use `SearchBar` only when search is the single freestanding filter.** When search
 is one of several structured filter fields in a form (e.g. Orders' filter form), use

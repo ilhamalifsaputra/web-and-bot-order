@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
@@ -22,6 +22,7 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { Users, MoreVertical, Eye, ShoppingBag, Wallet, LifeBuoy, Copy } from "lucide-react";
 import { formatRelativeTime } from "../lib/relativeTime";
 import { apiGet } from "../api/client";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
 
 interface CustomerRow {
   id: number;
@@ -68,6 +69,20 @@ interface Filters {
 function initialFor(row: CustomerRow): string {
   const source = row.fullName ?? row.username;
   return source && source.length > 0 ? source[0]!.toUpperCase() : "?";
+}
+
+/** Primary identity line — real name, else the Telegram handle standing in
+ * for it, else a plain-English fallback (never a bare "—"). */
+function primaryIdentity(row: CustomerRow): string {
+  if (row.fullName) return row.fullName;
+  if (row.username) return `@${row.username}`;
+  return "Unknown Customer";
+}
+
+/** Secondary line — only shown when it adds information beyond the primary
+ * line (i.e. the username wasn't already promoted into it above). */
+function secondaryIdentity(row: CustomerRow): string {
+  return row.fullName && row.username ? `@${row.username}` : "";
 }
 
 /** The identifier used to jump to this customer's filtered order list —
@@ -131,8 +146,9 @@ function nonZeroAmounts(spent: { idr: string; usdt: string }): CurrencyAmount[] 
 
 export function UsersPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialQ = searchParams.get("q") ?? "";
   const [draft, setDraft] = useState({
-    q: "",
     role: "",
     status: "",
     since: "",
@@ -141,10 +157,23 @@ export function UsersPage() {
     lastSeenUntil: "",
     sort: "newest",
   });
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+  const [filters, setFilters] = useState<Filters>({ ...EMPTY_FILTERS, q: initialQ });
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
-  const { data, isLoading, isError, refetch } = useCustomers(filters);
+  // Search is live/debounced rather than Apply-gated (unlike the other
+  // filters below) — its own immediate-typing state, separate from `draft`.
+  const [searchInput, setSearchInput] = useState(initialQ);
+  const debouncedQ = useDebouncedValue(searchInput, 300);
+
+  useEffect(() => {
+    setFilters((f) => (f.q === debouncedQ ? f : { ...f, q: debouncedQ, page: 1 }));
+  }, [debouncedQ]);
+
+  useEffect(() => {
+    setSearchParams(debouncedQ ? { q: debouncedQ } : {}, { replace: true });
+  }, [debouncedQ, setSearchParams]);
+
+  const { data, isLoading, isFetching, isError, refetch } = useCustomers(filters);
 
   // A stale selection surviving a new page/filter result set would let the
   // Export bulk action silently apply to rows no longer on screen — clear it
@@ -167,7 +196,6 @@ export function UsersPage() {
   function applyFilters() {
     setFilters((f) => ({
       ...f,
-      q: draft.q,
       role: draft.role,
       status: draft.status,
       since: draft.since,
@@ -180,8 +208,10 @@ export function UsersPage() {
   }
 
   function clearFilters() {
-    setDraft({ q: "", role: "", status: "", since: "", until: "", lastSeenSince: "", lastSeenUntil: "", sort: "newest" });
+    setDraft({ role: "", status: "", since: "", until: "", lastSeenSince: "", lastSeenUntil: "", sort: "newest" });
+    setSearchInput("");
     setFilters(EMPTY_FILTERS);
+    setSearchParams({}, { replace: true });
   }
 
   const hasActiveFilter = Boolean(
@@ -246,8 +276,9 @@ export function UsersPage() {
 
       <FilterBar onApply={applyFilters} onClear={clearFilters} className="mb-4">
         <SearchBar
-          value={draft.q}
-          onChange={(v) => setDraft((f) => ({ ...f, q: v }))}
+          value={searchInput}
+          onChange={setSearchInput}
+          loading={isFetching && searchInput !== ""}
           placeholder="Search by name, username, Telegram ID…"
           className="w-full sm:w-[420px]"
         />
@@ -387,8 +418,8 @@ export function UsersPage() {
                   <AvatarFallback>{initialFor(row)}</AvatarFallback>
                 </Avatar>
                 <div>
-                  <div className="text-sm font-medium text-ink">{row.fullName ?? "—"}</div>
-                  <div className="text-xs text-ink-soft">{row.username ? `@${row.username}` : ""}</div>
+                  <div className="text-sm font-medium text-ink">{primaryIdentity(row)}</div>
+                  <div className="text-xs text-ink-soft">{secondaryIdentity(row)}</div>
                 </div>
               </div>
             ),

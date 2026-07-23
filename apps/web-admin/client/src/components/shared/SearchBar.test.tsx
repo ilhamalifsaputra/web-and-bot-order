@@ -15,4 +15,15 @@ describe("SearchBar", () => {
     fireEvent.change(screen.getByPlaceholderText("Search…"), { target: { value: "hi" } });
     expect(onChange).toHaveBeenCalledWith("hi");
   });
+
+  it("swaps the Search icon for a spinning Loader2 when loading is true", () => {
+    const { container, rerender } = render(<SearchBar value="" onChange={() => {}} />);
+    expect(container.querySelector(".lucide-search")).toBeInTheDocument();
+    expect(container.querySelector(".lucide-loader-circle")).not.toBeInTheDocument();
+
+    rerender(<SearchBar value="" onChange={() => {}} loading />);
+    expect(container.querySelector(".lucide-loader-circle")).toBeInTheDocument();
+    expect(container.querySelector(".lucide-loader-circle")).toHaveClass("animate-spin");
+    expect(container.querySelector(".lucide-search")).not.toBeInTheDocument();
+  });
 });

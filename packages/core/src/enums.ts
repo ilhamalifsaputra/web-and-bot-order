@@ -289,3 +289,23 @@ export const NotificationStatus = {
 export type NotificationStatus =
   (typeof NotificationStatus)[keyof typeof NotificationStatus];
 export const zNotificationStatus = z.nativeEnum(NotificationStatus);
+
+export const BroadcastStatus = {
+  /** Composed and saved, but not yet queued — never picked up by
+   *  claimNextDueBroadcast (which only matches PENDING). */
+  DRAFT: "DRAFT",
+  PENDING: "PENDING",
+  /** Atomically claimed by drainBroadcasts right before it starts sending —
+   *  same crash-window guard as NotificationStatus.SENDING. Reclaimable/
+   *  reapable once claimedAt is older than BROADCAST_STALE_CLAIM_MS. */
+  SENDING: "SENDING",
+  SENT: "SENT",
+  CANCELLED: "CANCELLED",
+  /** Either the drainer crashed mid-send (reaped by reapStaleBroadcasts) or
+   *  the row referenced an unknown segment (failBroadcast). No automatic
+   *  retry — see failureReason for why. */
+  FAILED: "FAILED",
+} as const;
+export type BroadcastStatus =
+  (typeof BroadcastStatus)[keyof typeof BroadcastStatus];
+export const zBroadcastStatus = z.nativeEnum(BroadcastStatus);

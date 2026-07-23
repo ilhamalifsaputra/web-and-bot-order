@@ -102,22 +102,33 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
 
   // ---- Register ----
   app.post<{
-    Body: { username?: string; email?: string; password?: string; password2?: string; ref?: string; next?: string };
+    Body: {
+      username?: string;
+      email?: string;
+      password?: string;
+      password2?: string;
+      fullName?: string;
+      ref?: string;
+      next?: string;
+    };
   }>("/auth/register", async (req, reply) => {
     const username = (req.body?.username ?? "").trim().toLowerCase();
     const email = (req.body?.email ?? "").trim().toLowerCase();
     const password = req.body?.password ?? "";
+    const fullName = (req.body?.fullName ?? "").trim();
 
     if (!LOGIN_USERNAME_RE.test(username)) return reply.code(400).send({ error: "web.register_username_invalid" });
     if (!EMAIL_RE.test(email)) return reply.code(400).send({ error: "web.register_email_invalid" });
     if (password.length < 8) return reply.code(400).send({ error: "web.register_password_short" });
     if (password !== (req.body?.password2 ?? "")) return reply.code(400).send({ error: "web.register_password_mismatch" });
+    if (fullName.length < 2) return reply.code(400).send({ error: "web.register_fullname_invalid" });
 
     try {
       const user = await createWebUser(prisma, {
         loginUsername: username,
         email,
         passwordHash: hashPassword(password),
+        fullName,
         referredByCode: req.body?.ref ? req.body.ref.toUpperCase() : null,
       });
       await establishSession(req, reply, user);

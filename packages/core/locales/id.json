@@ -358,6 +358,8 @@
   "web.register_email": "Email",
   "web.register_email_invalid": "Masukkan alamat email yang valid.",
   "web.register_email_taken": "Email itu sudah terdaftar.",
+  "web.register_fullname": "Nama Lengkap",
+  "web.register_fullname_invalid": "Mohon masukkan nama lengkap Anda.",
   "web.register_have_account": "Sudah punya akun? Masuk",
   "web.register_password2": "Ulangi kata sandi",
   "web.register_password_mismatch": "Kata sandi tidak sama.",

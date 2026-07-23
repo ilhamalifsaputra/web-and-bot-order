@@ -24,6 +24,7 @@ function renderRegister(initialEntry = "/register") {
 }
 
 function fillForm() {
+  fireEvent.change(screen.getByLabelText("Full Name"), { target: { value: "Alice Wonderland" } });
   fireEvent.change(screen.getByLabelText("Username"), { target: { value: "alice" } });
   fireEvent.change(screen.getByLabelText("Email"), { target: { value: "alice@example.com" } });
   fireEvent.change(screen.getByLabelText("Password"), { target: { value: "supersecret" } });
@@ -36,12 +37,28 @@ describe("RegisterPage", () => {
     vi.clearAllMocks();
   });
 
-  it("renders username/email/password/password2 fields", () => {
+  it("renders fullName/username/email/password/password2 fields", () => {
     renderRegister();
+    expect(screen.getByLabelText("Full Name")).toBeInTheDocument();
     expect(screen.getByLabelText("Username")).toBeInTheDocument();
     expect(screen.getByLabelText("Email")).toBeInTheDocument();
     expect(screen.getByLabelText("Password")).toBeInTheDocument();
     expect(screen.getByLabelText("Repeat password")).toBeInTheDocument();
+  });
+
+  it("requires the fullName field — the form won't submit without it", () => {
+    renderRegister();
+    const fullNameInput = screen.getByLabelText("Full Name") as HTMLInputElement;
+    expect(fullNameInput.required).toBe(true);
+    expect(fullNameInput.minLength).toBe(2);
+    fireEvent.change(screen.getByLabelText("Username"), { target: { value: "alice" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "alice@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "supersecret" } });
+    fireEvent.change(screen.getByLabelText("Repeat password"), { target: { value: "supersecret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    // jsdom enforces the `required` attribute: an invalid form blocks submit,
+    // so the mutation never fires.
+    expect(publicPost).not.toHaveBeenCalled();
   });
 
   it("renders the 400 error key from the API via Flash", async () => {
@@ -75,6 +92,7 @@ describe("RegisterPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create account" }));
     await waitFor(() =>
       expect(publicPost).toHaveBeenCalledWith("/api/v1/auth/register", {
+        fullName: "Alice Wonderland",
         username: "alice",
         email: "alice@example.com",
         password: "supersecret",

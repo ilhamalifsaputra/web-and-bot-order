@@ -358,6 +358,8 @@
   "web.register_email": "Email",
   "web.register_email_invalid": "Enter a valid email address.",
   "web.register_email_taken": "That email is already registered.",
+  "web.register_fullname": "Full Name",
+  "web.register_fullname_invalid": "Please enter your full name.",
   "web.register_have_account": "Already have an account? Sign in",
   "web.register_password2": "Repeat password",
   "web.register_password_mismatch": "Passwords don't match.",

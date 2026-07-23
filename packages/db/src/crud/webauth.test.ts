@@ -33,12 +33,25 @@ describe("createWebUser", () => {
       loginUsername: "budi_99",
       email: "Budi@Mail.com",
       passwordHash: "$2b$12$hash",
+      fullName: "Budi Santoso",
     });
     expect(u.telegramId).toBeNull();
     expect(u.loginUsername).toBe("budi_99");
     expect(u.email).toBe("budi@mail.com"); // stored lowercase
     expect(u.role).toBe("CUSTOMER");
     expect(u.referralCode).toMatch(/\w+/);
+  });
+
+  it("stores the given fullName rather than leaving it null", async () => {
+    const u = await createWebUser(prisma, {
+      loginUsername: "namedone",
+      email: "namedone@mail.com",
+      passwordHash: "x",
+      fullName: "Jane Doe",
+    });
+    expect(u.fullName).toBe("Jane Doe");
+    const row = await prisma.user.findUnique({ where: { id: u.id } });
+    expect(row!.fullName).toBe("Jane Doe");
   });
 
   it("attributes a referrer by code, excluding unknown codes", async () => {
@@ -49,6 +62,7 @@ describe("createWebUser", () => {
       loginUsername: "sari",
       email: "sari@mail.com",
       passwordHash: "x",
+      fullName: "Sari Dewi",
       referredByCode: "refaaa",
     });
     expect(u.referredById).toBe(referrer.id);
@@ -56,25 +70,26 @@ describe("createWebUser", () => {
       loginUsername: "tono",
       email: "tono@mail.com",
       passwordHash: "x",
+      fullName: "Tono Wijaya",
       referredByCode: "NOPE",
     });
     expect(v.referredById).toBeNull();
   });
 
   it("rejects duplicate loginUsername / email with field-specific errors", async () => {
-    await createWebUser(prisma, { loginUsername: "dupe", email: "a@b.c", passwordHash: "x" });
+    await createWebUser(prisma, { loginUsername: "dupe", email: "a@b.c", passwordHash: "x", fullName: "Dupe One" });
     await expect(
-      createWebUser(prisma, { loginUsername: "dupe", email: "z@z.z", passwordHash: "x" }),
+      createWebUser(prisma, { loginUsername: "dupe", email: "z@z.z", passwordHash: "x", fullName: "Dupe Two" }),
     ).rejects.toThrowError(/web.register_username_taken/);
     await expect(
-      createWebUser(prisma, { loginUsername: "fresh", email: "a@b.c", passwordHash: "x" }),
+      createWebUser(prisma, { loginUsername: "fresh", email: "a@b.c", passwordHash: "x", fullName: "Fresh Name" }),
     ).rejects.toThrowError(/web.register_email_taken/);
   });
 });
 
 describe("findUserByLoginIdentifier", () => {
   it("finds by login username or email, case-insensitively", async () => {
-    await createWebUser(prisma, { loginUsername: "casey", email: "casey@mail.com", passwordHash: "x" });
+    await createWebUser(prisma, { loginUsername: "casey", email: "casey@mail.com", passwordHash: "x", fullName: "Casey Lee" });
     expect((await findUserByLoginIdentifier(prisma, "CASEY"))?.loginUsername).toBe("casey");
     expect((await findUserByLoginIdentifier(prisma, "Casey@Mail.com"))?.email).toBe("casey@mail.com");
     expect(await findUserByLoginIdentifier(prisma, "nobody")).toBeNull();
@@ -83,8 +98,8 @@ describe("findUserByLoginIdentifier", () => {
 
 describe("setLoginCredentials", () => {
   it("updates fields selectively and maps unique violations", async () => {
-    const a = await createWebUser(prisma, { loginUsername: "alpha", email: "a@a.a", passwordHash: "x" });
-    await createWebUser(prisma, { loginUsername: "beta", email: "b@b.b", passwordHash: "x" });
+    const a = await createWebUser(prisma, { loginUsername: "alpha", email: "a@a.a", passwordHash: "x", fullName: "Alpha One" });
+    await createWebUser(prisma, { loginUsername: "beta", email: "b@b.b", passwordHash: "x", fullName: "Beta Two" });
     await setLoginCredentials(prisma, a.id, { email: "NEW@a.a" });
     expect((await prisma.user.findUnique({ where: { id: a.id } }))!.email).toBe("new@a.a");
     await expect(
@@ -95,7 +110,7 @@ describe("setLoginCredentials", () => {
 
 describe("linkTelegram", () => {
   it("attaches a telegramId and refreshes tg identity fields", async () => {
-    const u = await createWebUser(prisma, { loginUsername: "linkme", email: "l@l.l", passwordHash: "x" });
+    const u = await createWebUser(prisma, { loginUsername: "linkme", email: "l@l.l", passwordHash: "x", fullName: "Link Me" });
     const res = await linkTelegram(prisma, u.id, 555, "tguser", "Tg Name");
     expect(res.ok).toBe(true);
     const row = await prisma.user.findUnique({ where: { id: u.id } });
@@ -106,7 +121,7 @@ describe("linkTelegram", () => {
 
   it("refuses a telegramId already on another account", async () => {
     await prisma.user.create({ data: { telegramId: 777n, referralCode: "RC777" } });
-    const u = await createWebUser(prisma, { loginUsername: "second", email: "s@s.s", passwordHash: "x" });
+    const u = await createWebUser(prisma, { loginUsername: "second", email: "s@s.s", passwordHash: "x", fullName: "Second User" });
     const res = await linkTelegram(prisma, u.id, 777, null, null);
     expect(res).toEqual({ ok: false, reason: "taken" });
     expect((await prisma.user.findUnique({ where: { id: u.id } }))!.telegramId).toBeNull();
@@ -115,7 +130,7 @@ describe("linkTelegram", () => {
 
 describe("password reset tokens", () => {
   it("issues a token and consumes it exactly once", async () => {
-    const u = await createWebUser(prisma, { loginUsername: "reset", email: "r@r.r", passwordHash: "x" });
+    const u = await createWebUser(prisma, { loginUsername: "reset", email: "r@r.r", passwordHash: "x", fullName: "Reset User" });
     const { token } = await createPasswordResetToken(prisma, u.id);
     expect(token.length).toBeGreaterThanOrEqual(32);
     // raw token is NOT in the DB
@@ -126,7 +141,7 @@ describe("password reset tokens", () => {
   });
 
   it("rejects expired and unknown tokens", async () => {
-    const u = await createWebUser(prisma, { loginUsername: "exp", email: "e@e.e", passwordHash: "x" });
+    const u = await createWebUser(prisma, { loginUsername: "exp", email: "e@e.e", passwordHash: "x", fullName: "Exp User" });
     const { token } = await createPasswordResetToken(prisma, u.id, -1); // already expired
     expect(await consumePasswordResetToken(prisma, token)).toBeNull();
     expect(await consumePasswordResetToken(prisma, "bogus-token")).toBeNull();

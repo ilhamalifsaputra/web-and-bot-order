@@ -580,13 +580,17 @@ describe("orders", () => {
   });
 
   it("list shows a web buyer's login handle, not a dash", async () => {
-    // Web-store buyers have no Telegram fullName/username — only loginUsername /
-    // email. The API must expose loginUsername so the client can show it.
+    // Simulates a pre-existing web buyer registered before fullName became a
+    // required registration field (Customers module upgrade Task 7) — such
+    // accounts are intentionally left with a null fullName, never backfilled.
+    // The API must expose loginUsername so the client can show it instead.
     const web = await createWebUser(prisma, {
       loginUsername: "weshopper",
       email: "we@shop.test",
       passwordHash: "x",
+      fullName: "placeholder",
     });
+    await prisma.user.update({ where: { id: web.id }, data: { fullName: null } });
     await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 });
 
     const res = await get("/api/orders", seed.cookie);
@@ -853,11 +857,15 @@ describe("orders API — approve/resend enqueue the buyer's account DM", () => {
   }
 
   async function makeWebOnlyDeliveredOrder(loginUsername: string): Promise<number> {
+    // Simulates a pre-existing web buyer registered before fullName became a
+    // required field (Customers module upgrade Task 7) — left null, never backfilled.
     const web = await createWebUser(prisma, {
       loginUsername,
       email: `${loginUsername}@shop.test`,
       passwordHash: "x",
+      fullName: "placeholder",
     });
+    await prisma.user.update({ where: { id: web.id }, data: { fullName: null } });
     const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
     await attachPaymentProof(prisma, order.id, { fileId: "proof", txid: `TX${loginUsername.toUpperCase()}` });
     return order.id;

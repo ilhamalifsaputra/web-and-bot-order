@@ -679,7 +679,13 @@ describe("/api/v1/auth", () => {
     const ok = await app.inject({
       method: "POST",
       url: "/api/v1/auth/register",
-      payload: { username: "reguser1", email: "reguser1@u.test", password: "register-pw-1", password2: "register-pw-1" },
+      payload: {
+        username: "reguser1",
+        email: "reguser1@u.test",
+        password: "register-pw-1",
+        password2: "register-pw-1",
+        fullName: "Reg User",
+      },
     });
     expect(ok.statusCode).toBe(200);
     expect(ok.headers["set-cookie"]).toBeDefined();

@@ -678,6 +678,7 @@ describe("register", () => {
         email: "new@user.test",
         password: "longenough",
         password2: "longenough",
+        fullName: "Newbie One",
         ref: "refreg",
         next: "/account",
       },
@@ -688,6 +689,7 @@ describe("register", () => {
     expect(row).not.toBeNull();
     expect(row!.telegramId).toBeNull();
     expect(row!.email).toBe("new@user.test");
+    expect(row!.fullName).toBe("Newbie One");
     const referrer = await prisma.user.findUnique({ where: { referralCode: "REFREG" } });
     expect(row!.referredById).toBe(referrer!.id);
   });
@@ -720,6 +722,10 @@ describe("register", () => {
       { username: "okname", email: "a@b.c", password: "longenough", password2: "different1" },
       "web.register_password_mismatch",
     );
+    await bad(
+      { username: "okname", email: "a@b.c", password: "longenough", password2: "longenough" },
+      "web.register_fullname_invalid",
+    );
   });
 
   // Unique: the ValidationError → field-error mapping (mapUniqueViolation in
@@ -728,7 +734,13 @@ describe("register", () => {
     const res = await app.inject({
       method: "POST",
       url: "/api/v1/auth/register",
-      payload: { username: "newbie_1", email: "other@user.test", password: "longenough", password2: "longenough" },
+      payload: {
+        username: "newbie_1",
+        email: "other@user.test",
+        password: "longenough",
+        password2: "longenough",
+        fullName: "Other Person",
+      },
     });
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ error: "web.register_username_taken" });

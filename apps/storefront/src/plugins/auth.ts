@@ -7,7 +7,7 @@
  */
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync, FastifyRequest, preHandlerHookHandler } from "fastify";
-import { prisma, getSetting, getUser } from "@app/db";
+import { prisma, getSetting, getUser, touchLastSeen } from "@app/db";
 import {
   readCustomerSession,
   shopSessionJtiKey,
@@ -35,6 +35,7 @@ export async function optionalCustomer(req: FastifyRequest): Promise<Customer | 
   if (!storedJti || storedJti !== data.jti) return null;
   const user = await getUser(prisma, data.userId);
   if (!user || user.banned) return null;
+  void touchLastSeen(prisma, user.id);
   return { ...data, user };
 }
 

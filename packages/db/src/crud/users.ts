@@ -472,3 +472,25 @@ export async function orderStatsByUserIds(db: Db, userIds: number[]): Promise<Ma
   }
   return result;
 }
+
+/** In-memory throttle for touchLastSeen — same TTL/pattern as
+ * warmUserCache.ts's cache, so a busy storefront session doesn't take a
+ * lastSeenAt write on every single page view (SQLite is single-writer). */
+const LAST_SEEN_TOUCH_TTL_MS = 5 * 60 * 1000;
+const lastSeenTouchedAt = new Map<number, number>();
+
+/**
+ * Refresh a user's lastSeenAt from web activity, throttled to at most once
+ * per LAST_SEEN_TOUCH_TTL_MS per user. The bot already keeps lastSeenAt
+ * fresh on every message via upsertUser; the storefront never touched it at
+ * all before this, so web-only customers looked permanently inactive after
+ * registration. Called from the storefront's per-request customer
+ * resolution — fire-and-forget, not awaited by the caller.
+ */
+export async function touchLastSeen(db: Db, userId: number): Promise<void> {
+  const lastTouch = lastSeenTouchedAt.get(userId);
+  const now = Date.now();
+  if (lastTouch != null && now - lastTouch < LAST_SEEN_TOUCH_TTL_MS) return;
+  lastSeenTouchedAt.set(userId, now);
+  await db.user.update({ where: { id: userId }, data: { lastSeenAt: new Date(now) } });
+}

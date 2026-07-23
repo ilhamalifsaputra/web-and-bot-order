@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import {
   upsertUser,
+  getUser,
   searchUsers,
   listRecentUsers,
   totalSpentByUserIds,
@@ -15,6 +16,7 @@ import {
   countUsers,
   customersKpis,
   orderStatsByUserIds,
+  touchLastSeen,
 } from "./users";
 import { primeWarmUser, peekWarmUser } from "./warmUserCache";
 import { UserRole } from "@app/core/enums";
@@ -506,5 +508,54 @@ describe("orderStatsByUserIds", () => {
     const user = await upsertUser(prisma, { telegramId: 9701, username: "stats_zero_orders", fullName: null });
     const stats = await orderStatsByUserIds(prisma, [user.id]);
     expect(stats.has(user.id)).toBe(false);
+  });
+});
+
+describe("touchLastSeen", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("writes lastSeenAt when the user has no prior throttle entry", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9800, username: "touch_fresh", fullName: null });
+    const before = await getUser(prisma, user.id);
+
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+    await touchLastSeen(prisma, user.id);
+
+    const after = await getUser(prisma, user.id);
+    expect(after!.lastSeenAt!.getTime()).toBe(1_000_000);
+    expect(after!.lastSeenAt!.getTime()).not.toBe(before!.lastSeenAt!.getTime());
+  });
+
+  it("does not write again on a call made immediately after a real write", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9801, username: "touch_throttled", fullName: null });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000_000);
+    await touchLastSeen(prisma, user.id);
+    const afterFirst = await getUser(prisma, user.id);
+    expect(afterFirst!.lastSeenAt!.getTime()).toBe(2_000_000);
+
+    // Still well inside the 5-minute throttle window — must be a no-op.
+    vi.setSystemTime(2_000_000 + 60 * 1000);
+    await touchLastSeen(prisma, user.id);
+    const afterSecond = await getUser(prisma, user.id);
+    expect(afterSecond!.lastSeenAt!.getTime()).toBe(2_000_000);
+  });
+
+  it("writes again once the throttle window has elapsed", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9802, username: "touch_expired", fullName: null });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(3_000_000);
+    await touchLastSeen(prisma, user.id);
+
+    vi.setSystemTime(3_000_000 + 6 * 60 * 1000); // past the 5-minute TTL
+    await touchLastSeen(prisma, user.id);
+
+    const after = await getUser(prisma, user.id);
+    expect(after!.lastSeenAt!.getTime()).toBe(3_000_000 + 6 * 60 * 1000);
   });
 });

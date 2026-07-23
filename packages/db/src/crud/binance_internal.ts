@@ -12,6 +12,7 @@ import { OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { ValidationError } from "@app/core/errors";
+import { startOfDayUtc } from "@app/core/datetime";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
@@ -322,6 +323,13 @@ export async function processedTxOutcomeCounts(db: Db): Promise<Record<string, n
   const counts: Record<string, number> = {};
   for (const g of grouped) counts[g.outcome] = g._count._all;
   return counts;
+}
+
+/** Count of ledger rows created today (shop's configured TIMEZONE), for the
+ *  Payments page's "Today's Transactions" KPI — always accurate regardless
+ *  of ledger pagination, unlike counting rows on the current page. */
+export function countProcessedBinanceTxToday(db: Db, now: Date = new Date()): Promise<number> {
+  return db.processedBinanceTx.count({ where: { createdAt: { gte: startOfDayUtc(now) } } });
 }
 
 /** The amount actually received for an UNDERPAID order, from its ledger row. */

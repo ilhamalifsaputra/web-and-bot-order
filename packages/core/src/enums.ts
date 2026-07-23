@@ -201,10 +201,30 @@ export const zVoucherType = z.nativeEnum(VoucherType);
 export const TicketStatus = {
   OPEN: "OPEN",
   REPLIED: "REPLIED",
+  RESOLVED: "RESOLVED",
   CLOSED: "CLOSED",
 } as const;
 export type TicketStatus = (typeof TicketStatus)[keyof typeof TicketStatus];
 export const zTicketStatus = z.nativeEnum(TicketStatus);
+
+export const TicketPriority = {
+  LOW: "LOW",
+  MEDIUM: "MEDIUM",
+  HIGH: "HIGH",
+  URGENT: "URGENT",
+} as const;
+export type TicketPriority = (typeof TicketPriority)[keyof typeof TicketPriority];
+export const zTicketPriority = z.nativeEnum(TicketPriority);
+
+export const TicketCategory = {
+  ORDER: "ORDER",
+  PAYMENT: "PAYMENT",
+  ACCOUNT: "ACCOUNT",
+  PRODUCT: "PRODUCT",
+  OTHER: "OTHER",
+} as const;
+export type TicketCategory = (typeof TicketCategory)[keyof typeof TicketCategory];
+export const zTicketCategory = z.nativeEnum(TicketCategory);
 
 export const SenderType = {
   USER: "USER",

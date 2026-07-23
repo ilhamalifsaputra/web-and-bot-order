@@ -471,10 +471,19 @@ model SupportTicket {
   photoFileIds   String?   @map("photo_file_ids")
   attachmentUrls String?   @map("attachment_urls")
   status         String    @default("OPEN")
+  /// LOW | MEDIUM | HIGH | URGENT — admin-set triage field, defaults MEDIUM.
+  priority       String    @default("MEDIUM") @map("priority")
+  /// ORDER | PAYMENT | ACCOUNT | PRODUCT | OTHER — admin-set triage field, null until classified.
+  category       String?   @map("category")
   adminReply     String?   @map("admin_reply")
   adminId        Int?      @map("admin_id")
   createdAt      DateTime  @default(now()) @map("created_at")
   repliedAt      DateTime? @map("replied_at")
+  /// Set once, the first time an admin message lands on the ticket — true
+  /// first-response time, unlike repliedAt which is overwritten on every reply.
+  firstResponseAt DateTime? @map("first_response_at")
+  /// Set once, when an admin marks the ticket RESOLVED (distinct from CLOSED).
+  resolvedAt     DateTime? @map("resolved_at")
   /// Set once, when `closeTicket` flips status -> CLOSED. Drives the storage
   /// cleanup job's "delete evidence N days after close" eligibility check.
   closedAt       DateTime? @map("closed_at")
@@ -483,6 +492,10 @@ model SupportTicket {
   /// pre-purchase questions). Unlocks the storefront ticket page's Order/
   /// Product Summary sidebar and warranty/credential context.
   orderId        Int?      @map("order_id")
+  /// Bumped on every status transition (open/replied/resolved/closed/reopened)
+  /// — the operational queue's "waiting time" and overdue calc read this, not
+  /// createdAt, so a reopened ticket's wait clock resets correctly.
+  lastStatusChangeAt DateTime @default(now()) @map("last_status_change_at")
 
   user     User            @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   admin    User?           @relation("TicketAdmin", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -492,6 +505,8 @@ model SupportTicket {
   @@index([userId], map: "ix_support_tickets_user_id")
   @@index([closedAt], map: "ix_support_tickets_closed_at")
   @@index([orderId], map: "ix_support_tickets_order_id")
+  @@index([status], map: "ix_support_tickets_status")
+  @@index([priority], map: "ix_support_tickets_priority")
   @@map("support_tickets")
 }
 

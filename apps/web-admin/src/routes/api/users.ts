@@ -83,12 +83,18 @@ function buildUserFilter(q: Record<string, string | undefined>): UserFilter {
 }
 
 /** Quotes a CSV field per RFC 4180: wrap in double quotes if it contains a
- * comma, quote, or newline, doubling any embedded quotes. */
+ * comma, quote, or newline, doubling any embedded quotes. Also neutralizes
+ * CSV formula injection: a leading `=`, `+`, `-`, or `@` is interpreted by
+ * Excel/Google Sheets as the start of a formula, so this field can carry
+ * attacker-controlled free text (e.g. the storefront's public, unauthenticated
+ * registration `fullName`) — prefixing with a single quote forces the cell to
+ * render as literal text instead of evaluating. */
 function csvField(value: string): string {
-  if (/[",\r\n]/.test(value)) {
-    return `"${value.replace(/"/g, '""')}"`;
+  const escaped = /^[=+\-@]/.test(value) ? `'${value}` : value;
+  if (/[",\r\n]/.test(escaped)) {
+    return `"${escaped.replace(/"/g, '""')}"`;
   }
-  return value;
+  return escaped;
 }
 
 function csvRow(fields: string[]): string {

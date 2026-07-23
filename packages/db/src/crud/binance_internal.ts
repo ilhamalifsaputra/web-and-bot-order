@@ -293,9 +293,11 @@ type LinkedOrder = { id: number; orderCode: string; status: string; totalAmount:
 /** Ledger rows (newest first), each enriched with its linked order (if any). */
 export async function listProcessedBinanceTx(
   db: Db,
-  opts: { outcome?: string | null; limit?: number; offset?: number } = {},
+  opts: { outcome?: string | null; limit?: number; offset?: number; q?: string | null } = {},
 ) {
-  const where = opts.outcome ? { outcome: opts.outcome } : {};
+  const where: Record<string, unknown> = {};
+  if (opts.outcome) where.outcome = opts.outcome;
+  if (opts.q && opts.q.trim()) where.binanceTxId = { contains: opts.q.trim() };
   const rows = await db.processedBinanceTx.findMany({
     where,
     orderBy: { createdAt: "desc" },
@@ -313,8 +315,11 @@ export async function listProcessedBinanceTx(
   return rows.map((r) => ({ ...r, order: r.orderId != null ? byId.get(r.orderId) ?? null : null }));
 }
 
-export function countProcessedBinanceTx(db: Db, opts: { outcome?: string | null } = {}) {
-  return db.processedBinanceTx.count({ where: opts.outcome ? { outcome: opts.outcome } : {} });
+export function countProcessedBinanceTx(db: Db, opts: { outcome?: string | null; q?: string | null } = {}) {
+  const where: Record<string, unknown> = {};
+  if (opts.outcome) where.outcome = opts.outcome;
+  if (opts.q && opts.q.trim()) where.binanceTxId = { contains: opts.q.trim() };
+  return db.processedBinanceTx.count({ where });
 }
 
 /** Count of ledger rows per outcome — drives the summary cards. */

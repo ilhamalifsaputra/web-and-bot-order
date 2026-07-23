@@ -29,13 +29,7 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from "@/components/ui/dialog";
+import { AssignTicketDialog } from "../components/shared/AssignTicketDialog";
 import {
   MessageCircle,
   MoreVertical,
@@ -109,8 +103,6 @@ interface Filters {
   pageSize: number;
 }
 
-const UNASSIGNED = "_unassigned_";
-
 /** "PAYMENT" -> "Payment", "HIGH" -> "High" — for filter/select option labels. */
 function titleCase(value: string): string {
   return value.charAt(0) + value.slice(1).toLowerCase();
@@ -178,7 +170,7 @@ export function SupportPage() {
   });
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [assignTarget, setAssignTarget] = useState<{ ids: number[] } | null>(null);
-  const [assignAdminId, setAssignAdminId] = useState(UNASSIGNED);
+  const [assignAdminId, setAssignAdminId] = useState<number | null>(null);
 
   const { data, isLoading, isError, refetch } = useTickets(filters);
   const { data: adminsData } = useAdmins();
@@ -190,11 +182,10 @@ export function SupportPage() {
     () => (adminsData?.admins ?? []).filter((a): a is AdminRow & { id: number } => a.id !== null),
     [adminsData],
   );
-  const adminNameById = useMemo(() => {
-    const map = new Map<number, string>();
-    for (const a of assignableAdmins) map.set(a.id, a.name ?? `Telegram ID ${a.telegramId}`);
-    return map;
-  }, [assignableAdmins]);
+  const assignableAdminOptions = useMemo(
+    () => assignableAdmins.map((a) => ({ id: a.id, name: a.name ?? `Telegram ID ${a.telegramId}` })),
+    [assignableAdmins],
+  );
 
   // A stale selection surviving a new page/filter result set would let a
   // bulk action silently apply to rows no longer on screen — clear it
@@ -365,13 +356,12 @@ export function SupportPage() {
 
   function openAssignDialog(ids: number[], currentAdminId: number | null = null) {
     setAssignTarget({ ids });
-    setAssignAdminId(currentAdminId !== null ? String(currentAdminId) : UNASSIGNED);
+    setAssignAdminId(currentAdminId);
   }
 
   function confirmAssign() {
     if (!assignTarget) return;
-    const adminId = assignAdminId === UNASSIGNED ? null : Number(assignAdminId);
-    assignMutation.mutate({ ids: assignTarget.ids, adminId });
+    assignMutation.mutate({ ids: assignTarget.ids, adminId: assignAdminId });
   }
 
   return (
@@ -707,41 +697,16 @@ export function SupportPage() {
       )}
 
       {assignTarget && (
-        <Dialog open onOpenChange={(open) => { if (!open) setAssignTarget(null); }}>
-          <DialogContent showCloseButton={false}>
-            <DialogHeader>
-              <DialogTitle>
-                {assignTarget.ids.length > 1 ? `Assign ${assignTarget.ids.length} tickets?` : "Assign this ticket?"}
-              </DialogTitle>
-            </DialogHeader>
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-ink-soft">Admin</label>
-              <Select value={assignAdminId} onValueChange={setAssignAdminId}>
-                <SelectTrigger aria-label="Assignee">
-                  <SelectValue>
-                    {assignAdminId !== UNASSIGNED
-                      ? (adminNameById.get(Number(assignAdminId)) ?? `Admin #${assignAdminId}`)
-                      : "Unassigned"}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
-                  {assignableAdmins.map((a) => (
-                    <SelectItem key={a.id} value={String(a.id)}>
-                      {a.name ?? `Telegram ID ${a.telegramId}`}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setAssignTarget(null)}>Back</Button>
-              <Button disabled={assignMutation.isPending} onClick={confirmAssign}>
-                {assignMutation.isPending ? "Assigning…" : "Confirm"}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <AssignTicketDialog
+          open
+          onOpenChange={(open) => { if (!open) setAssignTarget(null); }}
+          ticketCount={assignTarget.ids.length}
+          admins={assignableAdminOptions}
+          value={assignAdminId}
+          onValueChange={setAssignAdminId}
+          onConfirm={confirmAssign}
+          isPending={assignMutation.isPending}
+        />
       )}
     </PageLayout>
   );

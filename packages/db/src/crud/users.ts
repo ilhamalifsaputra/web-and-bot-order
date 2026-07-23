@@ -486,11 +486,19 @@ const lastSeenTouchedAt = new Map<number, number>();
  * all before this, so web-only customers looked permanently inactive after
  * registration. Called from the storefront's per-request customer
  * resolution — fire-and-forget, not awaited by the caller.
+ *
+ * Best-effort and self-logging (touchLastSeen never throws) — a DB failure
+ * here must never crash the app. The update is idempotent and only affects
+ * the 'Active Today' KPI, not the customer's session.
  */
 export async function touchLastSeen(db: Db, userId: number): Promise<void> {
   const lastTouch = lastSeenTouchedAt.get(userId);
   const now = Date.now();
   if (lastTouch != null && now - lastTouch < LAST_SEEN_TOUCH_TTL_MS) return;
   lastSeenTouchedAt.set(userId, now);
-  await db.user.update({ where: { id: userId }, data: { lastSeenAt: new Date(now) } });
+  try {
+    await db.user.update({ where: { id: userId }, data: { lastSeenAt: new Date(now) } });
+  } catch (err) {
+    logger.error({ err, userId }, "Failed to update a customer's last-seen timestamp from storefront activity — this only affects the 'Active Today' admin KPI, not the customer's session.");
+  }
 }

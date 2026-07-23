@@ -558,4 +558,21 @@ describe("touchLastSeen", () => {
     const after = await getUser(prisma, user.id);
     expect(after!.lastSeenAt!.getTime()).toBe(3_000_000 + 6 * 60 * 1000);
   });
+
+  it("does not reject when db.user.update fails — best-effort behavior", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9803, username: "touch_error", fullName: null });
+
+    vi.useFakeTimers();
+    vi.setSystemTime(4_000_000);
+
+    // Mock db.user.update to throw an error, simulating a transient DB failure.
+    const updateSpy = vi.spyOn(prisma.user, "update").mockRejectedValueOnce(
+      new Error("Simulated DB write-lock timeout")
+    );
+
+    // touchLastSeen must NOT throw/reject despite the underlying update failure.
+    await expect(touchLastSeen(prisma, user.id)).resolves.toBeUndefined();
+
+    updateSpy.mockRestore();
+  });
 });

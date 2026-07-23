@@ -1023,6 +1023,7 @@ export async function viewMyTicket(ctx: MyContext, ticketId: number): Promise<vo
   const statusLabels: Record<string, string> = {
     [TicketStatus.OPEN]: "Open",
     [TicketStatus.REPLIED]: "Replied",
+    [TicketStatus.RESOLVED]: "Resolved",
     [TicketStatus.CLOSED]: "Closed",
   };
   const header = t(ctx, "ticket.view_title", {

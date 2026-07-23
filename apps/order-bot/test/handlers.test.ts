@@ -535,6 +535,17 @@ describe("customer handlers", () => {
     await customer.viewMyTicket(ctx, ticket.id);
     expect(sentIncludes(sink, "v1:ticket:reopen")).toBe(false);
   });
+
+  it("viewMyTicket renders a real label for a RESOLVED ticket, not a leaked enum", async () => {
+    const ticket = await prisma.supportTicket.create({
+      data: { userId: sample.user.id, message: "help", status: TicketStatus.RESOLVED },
+    });
+    const { ctx, sink } = customerCtx();
+    await customer.viewMyTicket(ctx, ticket.id);
+    const body = JSON.stringify(sink);
+    expect(body).toContain("Resolved");
+    expect(body).not.toContain("RESOLVED");
+  });
 });
 
 // ===========================================================================

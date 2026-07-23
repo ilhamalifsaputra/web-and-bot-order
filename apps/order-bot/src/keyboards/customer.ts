@@ -620,6 +620,7 @@ export function ticketResolvedKb(ticketId: number, lang = "en"): InlineKeyboard 
 const TICKET_ICONS: Record<string, string> = {
   [TicketStatus.OPEN]: "🔴",
   [TicketStatus.REPLIED]: "🟡",
+  [TicketStatus.RESOLVED]: "🟢",
   [TicketStatus.CLOSED]: "⚫",
 };
 

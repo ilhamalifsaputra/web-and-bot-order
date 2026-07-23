@@ -77,6 +77,8 @@ function buildUserFilter(q: Record<string, string | undefined>): UserFilter {
     ids: parseIdsFilter(q.ids),
     since: parseDate(q.since),
     until: parseDate(q.until),
+    lastSeenSince: parseDate(q.lastSeenSince),
+    lastSeenUntil: parseDate(q.lastSeenUntil),
   };
 }
 

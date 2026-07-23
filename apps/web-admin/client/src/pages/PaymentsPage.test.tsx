@@ -327,6 +327,28 @@ describe("PaymentsPage", () => {
     await user.click(screen.getByRole("checkbox", { name: /select all eligible transfers/i }));
     expect(screen.getByText("1 selected")).toBeInTheDocument();
   });
+
+  it("clears the bulk selection when navigating to the next page", async () => {
+    const user = userEvent.setup();
+    const pageOneLedger = [
+      { id: 1, binanceTxId: "PAGE1-TX", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger: pageOneLedger, total: 2, todayCount: 0, page: 1, hasNext: true, outcomes: ["unmatched"], counts: {} });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("PAGE1-TX")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("checkbox", { name: /select transfer page1-tx/i }));
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+
+    const pageTwoLedger = [
+      { id: 2, binanceTxId: "PAGE2-TX", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger: pageTwoLedger, total: 2, todayCount: 0, page: 2, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    await user.click(screen.getByRole("button", { name: /next/i }));
+
+    await waitFor(() => expect(screen.getByText("PAGE2-TX")).toBeInTheDocument());
+    expect(screen.queryByText(/\d+ selected/)).not.toBeInTheDocument();
+  });
 });
 
 const UNDERPAID = {

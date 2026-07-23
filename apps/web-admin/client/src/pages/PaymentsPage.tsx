@@ -188,7 +188,7 @@ export function PaymentsPage() {
     const timer = setTimeout(() => { setQ(qDraft); setPage(1); }, 300);
     return () => clearTimeout(timer);
   }, [qDraft]);
-  useEffect(() => { setSelected(new Set()); }, [outcome, q]);
+  useEffect(() => { setSelected(new Set()); }, [outcome, q, page]);
   const { data, isError } = usePayments(outcome, q, page);
   const { suggestion, searched, loading: suggestLoading } = useOrderCodeSuggest(matchForm.order_code);
   const underpaid = data?.underpaid ?? [];

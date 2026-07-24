@@ -15,8 +15,8 @@
  */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
-import { localize } from "@app/core/datetime";
-import { SenderType, OrderStatus, TicketStatus } from "@app/core/enums";
+import { localize, addDays } from "@app/core/datetime";
+import { SenderType, OrderStatus, TicketStatus, customerStatusLabel } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { Decimal } from "@app/core/money";
@@ -33,8 +33,12 @@ import {
   listUserTickets,
   listTicketMessages,
   getTicket,
+  getTicketWithOrder,
   createTicket,
   addTicketMessage,
+  closeTicketByUser,
+  reopenTicket,
+  TICKET_REOPEN_WINDOW_DAYS,
   createReview,
   listReviews,
   subscribeToRestock,
@@ -263,25 +267,35 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
-  app.post<{ Body: { message?: string } }>("/account/support", async (req, reply) => {
+  app.post<{ Body: { message?: string; order_code?: string } }>("/account/support", async (req, reply) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
     let message: string;
     let attachmentUrls: string | null = null;
+    let orderCodeInput: string | null = null;
     if (req.isMultipart()) {
       try {
-        ({ message, attachmentUrls } = await parseTicketMultipart(req));
+        ({ message, attachmentUrls, orderCode: orderCodeInput } = await parseTicketMultipart(req));
       } catch (e) {
         if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
         throw e;
       }
     } else {
       message = (req.body?.message ?? "").trim().slice(0, 2000);
+      orderCodeInput = (req.body?.order_code ?? "").trim() || null;
+    }
+    let orderId: number | null = null;
+    if (orderCodeInput) {
+      const order = await getOrderByCodeFull(prisma, orderCodeInput);
+      if (!order || order.userId !== customer.userId) {
+        return reply.code(400).send({ error: "error.order_not_found" });
+      }
+      orderId = order.id;
     }
     let ticketId: number | null = null;
     if (message) {
-      const ticket = await createTicket(prisma, customer.userId, message, null, attachmentUrls);
+      const ticket = await createTicket(prisma, customer.userId, message, null, attachmentUrls, orderId);
       ticketId = ticket.id;
     }
     // STO-020: the client shows a "Ticket #N created" success toast — needs
@@ -324,11 +338,16 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
   app.get<{ Params: { id: string } }>("/account/support/:id", async (req, reply) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
-    const ticket = await getTicket(prisma, Number(req.params.id));
+    const ticket = await getTicketWithOrder(prisma, Number(req.params.id));
     if (!ticket || ticket.userId !== customer.userId) {
       return reply.code(404).send({ error: "not_found" });
     }
     const messages = await listTicketMessages(prisma, ticket.id, 30);
+    const order = ticket.order;
+    const reopenable =
+      ticket.status === TicketStatus.CLOSED && ticket.closedAt != null
+        ? addDays(ticket.closedAt, TICKET_REOPEN_WINDOW_DAYS).getTime() >= Date.now()
+        : false;
     return reply.send({
       ticket: {
         id: ticket.id,
@@ -336,7 +355,10 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         status: ticket.status,
         created_at_display: dt(ticket.createdAt),
         admin_reply: ticket.adminReply,
+        replied_at_display: ticket.repliedAt ? dt(ticket.repliedAt) : null,
         closed: ticket.status === TicketStatus.CLOSED,
+        closed_at_display: ticket.closedAt ? dt(ticket.closedAt) : null,
+        reopenable,
         attachments: splitAttachments(ticket.attachmentUrls),
       },
       messages: messages.map((m) => ({
@@ -345,7 +367,60 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         created_at_display: dt(m.createdAt),
         attachments: splitAttachments(m.attachmentUrls),
       })),
+      order: order
+        ? {
+            code: order.orderCode,
+            status: order.status,
+            status_label: customerStatusLabel(order.status),
+            created_at_display: dt(order.createdAt),
+            paid_at_display: order.paidAt ? dt(order.paidAt) : null,
+            payment_method: order.paymentMethod,
+            total: order.totalAmount.toString(),
+            voucher_code: order.voucher?.code ?? null,
+            delivered: order.status === OrderStatus.DELIVERED,
+            items: order.items.map((i) => ({
+              name: i.product.name,
+              duration: i.product.durationLabel,
+              warranty_days: i.warrantyDaysSnapshot,
+              warranty_expires_at_display: order.deliveredAt
+                ? dt(addDays(order.deliveredAt, i.warrantyDaysSnapshot))
+                : null,
+              warranty_active: order.deliveredAt
+                ? addDays(order.deliveredAt, i.warrantyDaysSnapshot).getTime() > Date.now()
+                : false,
+            })),
+          }
+        : null,
     });
+  });
+
+  app.post<{ Params: { id: string } }>("/account/support/:id/close", async (req, reply) => {
+    const customer = await requireCustomer(req, reply);
+    if (!customer) return;
+    if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
+    const ticket = await getTicket(prisma, Number(req.params.id));
+    if (!ticket || ticket.userId !== customer.userId) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    const closed = await closeTicketByUser(prisma, ticket.id);
+    if (!closed) return reply.code(409).send({ error: "error.ticket_already_closed" });
+    return reply.send({ ok: true });
+  });
+
+  app.post<{ Params: { id: string } }>("/account/support/:id/reopen", async (req, reply) => {
+    const customer = await requireCustomer(req, reply);
+    if (!customer) return;
+    if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
+    const ticket = await getTicket(prisma, Number(req.params.id));
+    if (!ticket || ticket.userId !== customer.userId) {
+      return reply.code(404).send({ error: "not_found" });
+    }
+    const result = await reopenTicket(prisma, ticket.id);
+    if (!result.ok) {
+      const key = result.reason === "window_expired" ? "error.ticket_reopen_expired" : "error.ticket_not_closed";
+      return reply.code(400).send({ error: key });
+    }
+    return reply.send({ ok: true });
   });
 
   // ---- Restock subscription (from product page; works only when logged in) ----

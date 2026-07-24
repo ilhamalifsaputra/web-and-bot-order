@@ -45,6 +45,7 @@ const MAX_MESSAGE_LENGTH = 2000;
 export interface TicketSubmission {
   message: string;
   attachmentUrls: string | null;
+  orderCode: string | null;
 }
 
 /**
@@ -55,11 +56,16 @@ export interface TicketSubmission {
  */
 export async function parseTicketMultipart(req: FastifyRequest): Promise<TicketSubmission> {
   let message = "";
+  let orderCode = "";
   const urls: string[] = [];
   let fileCount = 0;
   for await (const part of req.parts({ limits: { fileSize: MAX_VIDEO_BYTES } })) {
     if (part.type === "field" && part.fieldname === "message") {
       message = String(part.value ?? "");
+      continue;
+    }
+    if (part.type === "field" && part.fieldname === "order_code") {
+      orderCode = String(part.value ?? "");
       continue;
     }
     if (part.type !== "file") continue;
@@ -83,6 +89,7 @@ export async function parseTicketMultipart(req: FastifyRequest): Promise<TicketS
   return {
     message: message.trim().slice(0, MAX_MESSAGE_LENGTH),
     attachmentUrls: urls.length ? urls.join(",") : null,
+    orderCode: orderCode.trim() || null,
   };
 }
 

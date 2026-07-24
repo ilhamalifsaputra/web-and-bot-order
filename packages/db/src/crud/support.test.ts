@@ -31,6 +31,16 @@ afterAll(async () => {
 beforeEach(async () => {
   await prisma.ticketMessage.deleteMany();
   await prisma.supportTicket.deleteMany();
+  // The order-linkage tests below create Order/OrderItem/Denomination/
+  // Product/Category/Voucher rows — clean them up in FK-dependency order
+  // (children before parents) so a leftover Order referencing a User
+  // doesn't block the next test's user.deleteMany() with an FK violation.
+  await prisma.orderItem.deleteMany();
+  await prisma.order.deleteMany();
+  await prisma.denomination.deleteMany();
+  await prisma.product.deleteMany();
+  await prisma.category.deleteMany();
+  await prisma.voucher.deleteMany();
   await prisma.user.deleteMany();
 });
 

@@ -230,6 +230,8 @@ describe("PaymentsPage", () => {
       { id: 1, binanceTxId: "CREDIT1", amount: "5", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
     ];
     mockPaymentsFetch({ enabled: true, ledger, total: 1, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    // Search resolves case-insensitively and reports the canonical (uppercased)
+    // code — the admin types lowercase, the API's fallback still finds it.
     vi.mocked(apiGet).mockResolvedValue({ q: "order-9", exactOrderId: 9 });
     vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
     render(<PaymentsPage />, { wrapper: Wrapper });
@@ -246,8 +248,11 @@ describe("PaymentsPage", () => {
     await waitFor(() => expect(within(dialog).getByRole("button", { name: "Add to credit balance" })).not.toBeDisabled());
     fireEvent.click(within(dialog).getByRole("button", { name: "Add to credit balance" }));
 
+    // Must submit the canonical uppercased code from the suggestion, not the
+    // raw lowercase text the admin typed — the backend's lookup is
+    // case-sensitive and would 404 on "order-9".
     await waitFor(() =>
-      expect(apiPost).toHaveBeenCalledWith("/api/payments/credit", { binance_tx_id: "CREDIT1", order_code: "order-9" }),
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/credit", { binance_tx_id: "CREDIT1", order_code: "ORDER-9" }),
     );
   });
 

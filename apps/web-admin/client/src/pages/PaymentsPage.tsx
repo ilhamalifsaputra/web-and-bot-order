@@ -227,7 +227,7 @@ export function PaymentsPage() {
   });
 
   const creditToBalance = useMutation({
-    mutationFn: () => apiPost("/api/payments/credit", { binance_tx_id: pendingCredit!.binanceTxId, order_code: creditOrderCode.trim() }),
+    mutationFn: () => apiPost("/api/payments/credit", { binance_tx_id: pendingCredit!.binanceTxId, order_code: creditSuggestion!.code }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
       toast.success("Added to the buyer's credit balance.");

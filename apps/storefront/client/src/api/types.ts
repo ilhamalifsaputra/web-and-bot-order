@@ -462,7 +462,7 @@ export interface SupportData {
   tickets: SupportTicketSummary[];
 }
 
-/** A single message on ticket_detail.njk's thread (either side). */
+/** A single message on the ticket thread (either side). */
 export interface TicketMessage {
   from_user: boolean;
   content: string;
@@ -470,7 +470,32 @@ export interface TicketMessage {
   attachments: string[];
 }
 
-/** GET /api/v1/account/support/:id — ticket_detail.njk. */
+/** One line item on a ticket's linked order — JSON twin of the shape
+ * apiAccount.ts's GET /account/support/:id builds from getTicketWithOrder(). */
+export interface TicketOrderItem {
+  name: string;
+  duration: string | null;
+  warranty_days: number;
+  warranty_expires_at_display: string | null;
+  warranty_active: boolean;
+}
+
+/** The linked order's summary shown in the ticket page's sidebar — null when
+ * the ticket isn't linked to an order. */
+export interface TicketOrderSummary {
+  code: string;
+  status: string;
+  status_label: string;
+  created_at_display: string;
+  paid_at_display: string | null;
+  payment_method: string;
+  total: string;
+  voucher_code: string | null;
+  delivered: boolean;
+  items: TicketOrderItem[];
+}
+
+/** GET /api/v1/account/support/:id. */
 export interface TicketDetailData {
   ticket: {
     id: number;
@@ -478,10 +503,18 @@ export interface TicketDetailData {
     status: string;
     created_at_display: string;
     admin_reply: string | null;
+    /** Timestamp of the legacy single admin_reply field, if set — null when
+     * admin_reply is null. Used to place that bubble correctly in the merged
+     * timeline (see ticketTimeline.ts). */
+    replied_at_display: string | null;
     closed: boolean;
+    closed_at_display: string | null;
+    /** True while a closed ticket is still within the self-reopen window. */
+    reopenable: boolean;
     attachments: string[];
   };
   messages: TicketMessage[];
+  order: TicketOrderSummary | null;
 }
 
 /** GET /api/v1/account/settings — settings.njk. */

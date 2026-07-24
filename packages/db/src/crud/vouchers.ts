@@ -170,3 +170,34 @@ export async function listVouchersPaged(
   const limit = opts.limit ?? filtered.length;
   return { rows: filtered.slice(offset, offset + limit), total: filtered.length };
 }
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** Global voucher health counts for the admin page's KPI row — always
+ *  computed over the WHOLE table, never scoped to the current search/status
+ *  filter or page (mirrors PaymentsPage's KPI cards, which read
+ *  server-wide aggregates rather than the currently-filtered/paginated set). */
+export async function getVoucherStats(
+  db: Db,
+  now: Date = new Date(),
+): Promise<{ total: number; active: number; expiringSoon: number; usedUp: number }> {
+  const all = await db.voucher.findMany({
+    select: { isActive: true, expiresAt: true, usageLimit: true, usedCount: true },
+  });
+  let active = 0;
+  let expiringSoon = 0;
+  let usedUp = 0;
+  for (const v of all) {
+    const status = deriveVoucherStatus(v, now);
+    if (status === "active") {
+      active++;
+      if (v.expiresAt) {
+        const daysLeft = (v.expiresAt.getTime() - now.getTime()) / MS_PER_DAY;
+        if (daysLeft >= 0 && daysLeft <= 7) expiringSoon++;
+      }
+    } else if (status === "usedUp") {
+      usedUp++;
+    }
+  }
+  return { total: all.length, active, expiringSoon, usedUp };
+}

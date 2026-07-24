@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { resetDb } from "../../../../tests/helpers/sampleData";
-import { createVoucher, listVouchersPaged, deriveVoucherStatus } from "@app/db";
+import { createVoucher, listVouchersPaged, deriveVoucherStatus, getVoucherStats } from "@app/db";
 import { VoucherType } from "@app/core/enums";
 
 let db: TestDb;
@@ -108,5 +108,32 @@ describe("listVouchersPaged", () => {
     const result = await listVouchersPaged(prisma, { limit: 2, offset: 0 });
     expect(result.rows).toHaveLength(2);
     expect(result.total).toBe(5);
+  });
+});
+
+describe("getVoucherStats", () => {
+  it("counts total/active/expiringSoon/usedUp as GLOBAL aggregates, unaffected by pagination", async () => {
+    const now = new Date("2026-07-24T00:00:00.000Z");
+    const past = new Date("2026-07-01T00:00:00.000Z");
+    const in3Days = new Date("2026-07-27T00:00:00.000Z");
+    const in30Days = new Date("2026-08-23T00:00:00.000Z");
+
+    await createVoucher(prisma, { code: "ACTIVE1", type: VoucherType.PERCENT, value: "1" }); // active, no expiry
+    await createVoucher(prisma, { code: "EXPIRING1", type: VoucherType.PERCENT, value: "1", expiresAt: in3Days }); // active + expiring soon
+    await createVoucher(prisma, { code: "FAR1", type: VoucherType.PERCENT, value: "1", expiresAt: in30Days }); // active, not expiring soon
+    await createVoucher(prisma, { code: "EXPIRED1", type: VoucherType.PERCENT, value: "1", expiresAt: past }); // expired
+    const usedUpV = await createVoucher(prisma, { code: "USEDUP1", type: VoucherType.PERCENT, value: "1", usageLimit: 1 });
+    await prisma.voucher.update({ where: { id: usedUpV.id }, data: { usedCount: 1 } }); // used up
+
+    const stats = await getVoucherStats(prisma, now);
+    expect(stats.total).toBe(5);
+    expect(stats.active).toBe(3); // ACTIVE1, EXPIRING1, FAR1
+    expect(stats.expiringSoon).toBe(1); // EXPIRING1 only
+    expect(stats.usedUp).toBe(1); // USEDUP1
+  });
+
+  it("returns all zeros when there are no vouchers", async () => {
+    const stats = await getVoucherStats(prisma);
+    expect(stats).toEqual({ total: 0, active: 0, expiringSoon: 0, usedUp: 0 });
   });
 });

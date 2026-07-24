@@ -2001,6 +2001,7 @@ describe("callback router", () => {
 
     const toasts = calls(sink, "answerCallbackQuery");
     const body = JSON.stringify(toasts);
+    expect(body).toContain("Ticket not found");
     expect(body).not.toContain("Order not found");
   });
 
@@ -2035,10 +2036,12 @@ describe("callback router", () => {
     const ticket = await prisma.supportTicket.create({
       data: { userId: otherUser.id, message: "not yours", status: TicketStatus.CLOSED, closedAt: new Date() },
     });
-    const { ctx } = customerCtx({ callbackData: `v1:ticket:reopen:${ticket.id}` });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:ticket:reopen:${ticket.id}` });
     await routeCallback(ctx);
 
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
     expect(fresh!.status).toBe(TicketStatus.CLOSED);
+    const body = JSON.stringify(calls(sink, "answerCallbackQuery"));
+    expect(body).toContain("Ticket not found");
   });
 });

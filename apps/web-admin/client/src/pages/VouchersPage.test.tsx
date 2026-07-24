@@ -324,4 +324,13 @@ describe("VouchersPage", () => {
 
     expect(screen.queryByText(/selected/)).not.toBeInTheDocument();
   });
+
+  it("shows result-count text via the shared Pagination component", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ vouchers: [VOUCHER], types: ["PERCENT", "FIXED"], total: 120, page: 1, pageSize: 50, stats: { total: 120, active: 120, expiringSoon: 0, usedUp: 0 } }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("SAVE10")).toBeInTheDocument());
+    expect(screen.getByText(/showing 1–50 of 120/i)).toBeInTheDocument();
+  });
 });

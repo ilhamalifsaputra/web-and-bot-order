@@ -9,6 +9,7 @@ import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { FilterBar } from "../components/shared/FilterBar";
 import { SearchBar } from "../components/shared/SearchBar";
 import { StatCard } from "../components/shared/StatCard";
+import { Pagination } from "../components/shared/Pagination";
 import { Button } from "@/components/ui/button";
 import { DateInput } from "../components/shared/DateInput";
 import { Input } from "@/components/ui/input";
@@ -447,6 +448,17 @@ export function VouchersPage() {
             : <EmptyState icon={Tag} title="No vouchers found" description="Create your first voucher to offer discounts." />
         }
       />
+
+      {data && (
+        <div className="mt-4">
+          <Pagination
+            page={page}
+            pageSize={data.pageSize}
+            total={data.total}
+            onPageChange={setPage}
+          />
+        </div>
+      )}
     </PageLayout>
   );
 }

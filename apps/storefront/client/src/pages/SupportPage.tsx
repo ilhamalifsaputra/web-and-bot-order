@@ -9,7 +9,7 @@ import { Link } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Send } from "lucide-react";
 import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
-import type { SupportData } from "../api/types";
+import type { AccountOrdersData, SupportData } from "../api/types";
 import { t } from "../lib/i18n";
 import { Inbox } from "lucide-react";
 import { useIsDesktop } from "../lib/useMediaQuery";
@@ -38,6 +38,12 @@ export default function SupportPage() {
     queryFn: () => apiGet<SupportData>("/api/v1/account/support"),
     retry: false,
   });
+  const [orderCode, setOrderCode] = useState("");
+  const { data: ordersData } = useQuery({
+    queryKey: ["account-orders"],
+    queryFn: () => apiGet<AccountOrdersData>("/api/v1/account/orders"),
+    retry: false,
+  });
 
   useEffect(() => {
     if ((error as (Error & { status?: number }) | null)?.status === 401) {
@@ -48,14 +54,16 @@ export default function SupportPage() {
   // STO-020: submitting a ticket used to just clear the textbox and silently
   // add a table row, with no confirmation at all.
   const createMutation = useMutation({
-    mutationFn: (vars: { message: string; files: File[] }) => {
+    mutationFn: (vars: { message: string; files: File[]; orderCode: string }) => {
       if (vars.files.length === 0) {
         return apiPost<{ ok: boolean; ticket_id: number | null }>("/api/v1/account/support", {
           message: vars.message,
+          ...(vars.orderCode ? { order_code: vars.orderCode } : {}),
         });
       }
       const form = new FormData();
       form.append("message", vars.message);
+      if (vars.orderCode) form.append("order_code", vars.orderCode);
       for (const file of vars.files) form.append("attachments", file);
       return apiPostFormWithProgress<{ ok: boolean; ticket_id: number | null }>(
         "/api/v1/account/support",
@@ -66,6 +74,7 @@ export default function SupportPage() {
     onSuccess: (resp) => {
       setMessage(t("web.support_template"));
       setFiles([]);
+      setOrderCode("");
       refetch();
       if (resp.ticket_id != null) setToastText(t("web.support_ticket_created", { id: resp.ticket_id }));
     },
@@ -79,7 +88,7 @@ export default function SupportPage() {
     event.preventDefault();
     setToastKind("success");
     setUploadProgress(0);
-    createMutation.mutate({ message, files });
+    createMutation.mutate({ message, files, orderCode });
   }
 
   if (error) {
@@ -121,6 +130,23 @@ export default function SupportPage() {
           className="field"
           placeholder={t("web.support_placeholder")}
         />
+        <label className="field-label mt-3" htmlFor="ticket-order-picker">
+          {t("web.ticket_order_picker_label")}
+        </label>
+        <select
+          id="ticket-order-picker"
+          value={orderCode}
+          onChange={(e) => setOrderCode(e.target.value)}
+          className="field"
+          disabled={createMutation.isPending}
+        >
+          <option value="">{t("web.ticket_order_picker_none")}</option>
+          {ordersData?.orders.map((o) => (
+            <option key={o.code} value={o.code}>
+              {o.code} — {o.items}
+            </option>
+          ))}
+        </select>
         <AttachmentPicker files={files} onChange={setFiles} disabled={createMutation.isPending} />
         {createMutation.isPending && files.length > 0 && (
           <div className="mt-2">

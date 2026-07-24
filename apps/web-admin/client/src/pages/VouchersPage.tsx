@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Copy, Check, Tag, Plus, X, Trash2, Ticket, CheckCircle2, Clock, Ban } from "lucide-react";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -7,6 +7,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { FilterBar } from "../components/shared/FilterBar";
+import { SearchBar } from "../components/shared/SearchBar";
 import { StatCard } from "../components/shared/StatCard";
 import { Button } from "@/components/ui/button";
 import { DateInput } from "../components/shared/DateInput";
@@ -38,31 +39,21 @@ interface Voucher {
   expiresAtDisplay: string | null;
 }
 
-type VoucherStatus = "active" | "expired" | "usedUp";
-
-/** Precedence: an expired code is "expired" even if never used; a fully-used
- *  code is "usedUp" even if not yet expired; otherwise it's "active" only
- *  when the admin hasn't manually disabled it — a manually-disabled voucher
- *  that's neither expired nor used up matches none of the three status
- *  filters (it's still visible via the existing Active column). */
-function getVoucherStatus(v: Voucher, now: Date): VoucherStatus | null {
-  if (v.expiresAt && new Date(v.expiresAt).getTime() < now.getTime()) return "expired";
-  if (v.usageLimit != null && v.usedCount >= v.usageLimit) return "usedUp";
-  return v.isActive ? "active" : null;
-}
-
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/** True when the voucher is still genuinely usable (active status) and its
- *  expiry falls within the next 7 days. */
+/** Per-row "Expiring Soon" badge — a display annotation on already-fetched
+ *  rows, not a filter/aggregate, so no pagination-correctness concern here
+ *  (unlike the status Select, which now goes server-side — see useVouchers). */
 function isExpiringSoon(v: Voucher, now: Date): boolean {
   if (!v.expiresAt) return false;
-  if (getVoucherStatus(v, now) !== "active") return false;
+  if (!v.isActive) return false;
+  if (new Date(v.expiresAt).getTime() < now.getTime()) return false; // already expired
+  if (v.usageLimit != null && v.usedCount >= v.usageLimit) return false; // already used up
   const daysLeft = (new Date(v.expiresAt).getTime() - now.getTime()) / MS_PER_DAY;
   return daysLeft >= 0 && daysLeft <= 7;
 }
 
-function useVouchers() {
+function useVouchers(q: string, status: string, page: number) {
   return useQuery<{
     vouchers: Voucher[];
     types: string[];
@@ -71,9 +62,12 @@ function useVouchers() {
     pageSize: number;
     stats: { total: number; active: number; expiringSoon: number; usedUp: number };
   }>({
-    queryKey: ["vouchers"],
+    queryKey: ["vouchers", q, status, page],
     queryFn: async () => {
-      const res = await fetch("/api/vouchers");
+      const params = new URLSearchParams({ page: String(page) });
+      if (q) params.set("q", q);
+      if (status) params.set("status", status);
+      const res = await fetch(`/api/vouchers?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to load");
       return res.json();
     },
@@ -82,12 +76,19 @@ function useVouchers() {
 
 export function VouchersPage() {
   const qc = useQueryClient();
-  const { data, isError } = useVouchers();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ code: "", type: "PERCENT", value: "", min_purchase: "", usage_limit: "", expires_at: "" });
   const [formError, setFormError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<VoucherStatus | "_all_">("_all_");
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [qDraft, setQDraft] = useState("");
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState("");
+  const [page, setPage] = useState(1);
+  useEffect(() => {
+    const timer = setTimeout(() => { setQ(qDraft); setPage(1); }, 300);
+    return () => clearTimeout(timer);
+  }, [qDraft]);
+  const { data, isError } = useVouchers(q, status, page);
 
   function handleCopy(v: Voucher) {
     if (!navigator.clipboard) return;
@@ -128,10 +129,6 @@ export function VouchersPage() {
   if (isError) return <PageLayout title="Vouchers"><p className="text-sm text-rust">Failed to load vouchers.</p></PageLayout>;
 
   const now = new Date();
-  const vouchers = data?.vouchers ?? [];
-  const filteredVouchers = statusFilter === "_all_"
-    ? vouchers
-    : vouchers.filter(v => getVoucherStatus(v, now) === statusFilter);
 
   return (
     <PageLayout title="Vouchers">
@@ -253,11 +250,17 @@ export function VouchersPage() {
       )}
 
       <FilterBar className="mb-4">
+        <SearchBar
+          value={qDraft}
+          onChange={setQDraft}
+          placeholder="Search voucher code..."
+          className="w-full sm:w-64"
+        />
         <div className="flex flex-col gap-1">
           <label className="text-xs text-ink-soft">Status</label>
           <Select
-            value={statusFilter}
-            onValueChange={v => setStatusFilter(v as VoucherStatus | "_all_")}
+            value={status || "_all_"}
+            onValueChange={v => { setStatus(v === "_all_" ? "" : v); setPage(1); }}
           >
             <SelectTrigger className="w-40"><SelectValue placeholder="All statuses" /></SelectTrigger>
             <SelectContent>
@@ -340,13 +343,13 @@ export function VouchersPage() {
             ),
           },
         ]}
-        data={filteredVouchers}
+        data={data?.vouchers ?? []}
         isLoading={!data}
         keyExtractor={v => v.id}
         empty={
-          statusFilter === "_all_"
-            ? <EmptyState icon={Tag} title="No vouchers found" description="Create your first voucher to offer discounts." />
-            : <EmptyState icon={Tag} title="No matching vouchers" description="Try a different status filter." />
+          status || q
+            ? <EmptyState icon={Tag} title="No matching vouchers" description="Try a different search or status filter." />
+            : <EmptyState icon={Tag} title="No vouchers found" description="Create your first voucher to offer discounts." />
         }
       />
     </PageLayout>

@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -206,49 +206,42 @@ describe("VouchersPage", () => {
     expect(within(rowFor("ALLGONE")!).queryByText(/expiring soon/i)).not.toBeInTheDocument();
   });
 
-  it("filters vouchers by status", async () => {
-    const user = userEvent.setup({ pointerEventsCheck: 0 });
+  it("debounces a code search into the query params", async () => {
+    vi.useFakeTimers();
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          vouchers: [FAR_FUTURE_VOUCHER, EXPIRED_VOUCHER, USED_UP_VOUCHER],
-          types: ["PERCENT", "FIXED"],
-          total: 3,
-          page: 1,
-          pageSize: 50,
-          stats: { total: 3, active: 1, expiringSoon: 0, usedUp: 1 },
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
+      new Response(JSON.stringify({ vouchers: [], types: [], total: 0, page: 1, pageSize: 50, stats: { total: 0, active: 0, expiringSoon: 0, usedUp: 0 } }), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
     render(<VouchersPage />, { wrapper: Wrapper });
-    await waitFor(() => expect(screen.getByText("FARAWAY")).toBeInTheDocument());
-    expect(screen.getByText("OLDCODE")).toBeInTheDocument();
-    expect(screen.getByText("ALLGONE")).toBeInTheDocument();
+    await vi.waitFor(() => expect(screen.getByText(/no vouchers/i)).toBeInTheDocument());
 
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ vouchers: [], types: [], total: 0, page: 1, pageSize: 50, stats: { total: 0, active: 0, expiringSoon: 0, usedUp: 0 } }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    const search = screen.getByPlaceholderText(/search voucher code/i);
+    fireEvent.change(search, { target: { value: "SAVE" } });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(300);
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("q=SAVE")));
+    vi.useRealTimers();
+  });
+
+  it("sends the status filter as a server query param instead of filtering client-side", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ vouchers: [VOUCHER], types: ["PERCENT", "FIXED"], total: 1, page: 1, pageSize: 50, stats: { total: 1, active: 1, expiringSoon: 0, usedUp: 0 } }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("SAVE10")).toBeInTheDocument());
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ vouchers: [], types: [], total: 0, page: 1, pageSize: 50, stats: { total: 1, active: 0, expiringSoon: 0, usedUp: 0 } }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
     await user.click(screen.getByRole("combobox"));
     await waitFor(() => screen.getByRole("option", { name: "Expired" }));
     await user.click(screen.getByRole("option", { name: "Expired" }));
 
-    expect(screen.getByText("OLDCODE")).toBeInTheDocument();
-    expect(screen.queryByText("FARAWAY")).not.toBeInTheDocument();
-    expect(screen.queryByText("ALLGONE")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("combobox"));
-    await waitFor(() => screen.getByRole("option", { name: "Used up" }));
-    await user.click(screen.getByRole("option", { name: "Used up" }));
-
-    expect(screen.getByText("ALLGONE")).toBeInTheDocument();
-    expect(screen.queryByText("OLDCODE")).not.toBeInTheDocument();
-    expect(screen.queryByText("FARAWAY")).not.toBeInTheDocument();
-
-    await user.click(screen.getByRole("combobox"));
-    await waitFor(() => screen.getByRole("option", { name: "Active" }));
-    await user.click(screen.getByRole("option", { name: "Active" }));
-
-    expect(screen.getByText("FARAWAY")).toBeInTheDocument();
-    expect(screen.queryByText("OLDCODE")).not.toBeInTheDocument();
-    expect(screen.queryByText("ALLGONE")).not.toBeInTheDocument();
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("status=expired")));
   });
 
   it("gives every inline 'New Voucher' field a persistent visible label, including the Type combobox (F-014)", async () => {

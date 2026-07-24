@@ -1710,10 +1710,28 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import TicketComposer from "./TicketComposer";
 import { loadTicketDraft } from "../../lib/ticketDraft";
 
+// jsdom under this repo's Vitest config exposes no `window.localStorage` at
+// all (see apps/storefront/client/src/pages/SearchPage.test.tsx's own
+// installStorage helper for the same quirk) — install a minimal in-memory
+// one so ticketDraft.ts's real localStorage calls have something to hit.
+function installStorage(): void {
+  const entries = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => (entries.has(key) ? entries.get(key)! : null),
+    setItem: (key: string, value: string) => {
+      entries.set(key, value);
+    },
+    removeItem: (key: string) => {
+      entries.delete(key);
+    },
+  };
+  Object.defineProperty(window, "localStorage", { value: storage, configurable: true });
+}
+
 describe("TicketComposer", () => {
   beforeEach(() => {
     document.documentElement.lang = "en";
-    localStorage.clear();
+    installStorage();
     vi.useFakeTimers();
     URL.createObjectURL = vi.fn(() => "blob:mock-preview");
     URL.revokeObjectURL = vi.fn();
@@ -2419,11 +2437,29 @@ function renderTicket(respond: (path: string) => unknown, id = "7") {
   );
 }
 
+// jsdom under this repo's Vitest config exposes no `window.localStorage` at
+// all (see apps/storefront/client/src/pages/SearchPage.test.tsx's own
+// installStorage helper for the same quirk) — install a minimal in-memory
+// one so ticketDraft.ts's real localStorage calls have something to hit.
+function installStorage(): void {
+  const entries = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => (entries.has(key) ? entries.get(key)! : null),
+    setItem: (key: string, value: string) => {
+      entries.set(key, value);
+    },
+    removeItem: (key: string) => {
+      entries.delete(key);
+    },
+  };
+  Object.defineProperty(window, "localStorage", { value: storage, configurable: true });
+}
+
 describe("TicketDetailPage", () => {
   beforeEach(() => {
     document.documentElement.lang = "en";
     vi.clearAllMocks();
-    localStorage.clear();
+    installStorage();
     URL.createObjectURL = vi.fn(() => "blob:mock-preview");
     URL.revokeObjectURL = vi.fn();
   });

@@ -634,19 +634,42 @@ export function myTicketsKb(tickets: TicketLike[], lang: string): InlineKeyboard
   return ik(rows);
 }
 
-/** Ticket detail view keyboard: Reply, Close (if open), Back. */
-export function ticketViewKb(ticketId: number, statusValue: string, lang: string): InlineKeyboard {
+/** Ticket detail view keyboard: Reply/Close if open, Reopen if closed-and-still-in-window, always Back/Main. */
+export function ticketViewKb(ticketId: number, statusValue: string, lang: string, reopenable = false): InlineKeyboard {
   const rows: Btn[][] = [];
   if (statusValue !== TicketStatus.CLOSED) {
     rows.push([
       { text: coreT("support.btn_reply", lang), data: cb("ticket", "reply", ticketId) },
       { text: coreT("support.btn_close", lang), data: cb("ticket", "close", ticketId) },
     ]);
+  } else if (reopenable) {
+    rows.push([{ text: coreT("ticket.btn_reopen", lang), data: cb("ticket", "reopen", ticketId) }]);
   }
   rows.push([
     { text: coreT("menu.back", lang), data: cb("ticket", "list") },
     { text: coreT("menu.main", lang), data: cb("menu", "main") },
   ]);
+  return ik(rows);
+}
+
+interface OrderPickerLike {
+  id: number;
+  orderCode: string;
+  items?: Array<{ product: { name: string } }>;
+}
+
+/** One button per recent order (+ a skip/general-question row) for the
+ * /support conversation's optional order-linking step. Deliberately a
+ * separate function from ordersListKb — that one only makes PENDING_PAYMENT
+ * rows tappable (order details render as plain text there); this needs
+ * EVERY order tappable regardless of status, for a "pick which order"
+ * wizard step, not a status list. */
+export function orderPickerKb(orders: OrderPickerLike[], lang: string): InlineKeyboard {
+  const rows: Btn[][] = orders.map((o) => {
+    const productName = o.items?.[0]?.product.name ?? "";
+    return [{ text: truncLabel(`#${o.orderCode} — ${productName}`, 30), data: cb("support", "order", o.id) }];
+  });
+  rows.push([{ text: coreT("support.order_picker_skip", lang), data: cb("support", "order", "skip") }]);
   return ik(rows);
 }
 

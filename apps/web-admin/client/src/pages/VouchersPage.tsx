@@ -20,6 +20,7 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { toast } from "sonner";
@@ -90,6 +91,31 @@ export function VouchersPage() {
   }, [qDraft]);
   const { data, isError } = useVouchers(q, status, page);
 
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  useEffect(() => { setSelected(new Set()); }, [q, status, page]);
+
+  const vouchers = data?.vouchers ?? [];
+  const allSelected = vouchers.length > 0 && vouchers.every(v => selected.has(v.id));
+
+  function toggleSelected(id: number) {
+    setSelected(s => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+  function toggleSelectAll() {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (allSelected) {
+        vouchers.forEach(v => next.delete(v.id));
+      } else {
+        vouchers.forEach(v => next.add(v.id));
+      }
+      return next;
+    });
+  }
+
   function handleCopy(v: Voucher) {
     if (!navigator.clipboard) return;
     navigator.clipboard.writeText(v.code).then(() => {
@@ -122,6 +148,22 @@ export function VouchersPage() {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["vouchers"] });
       toast.success("Voucher deleted.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
+  });
+
+  const bulkAction = useMutation({
+    mutationFn: (vars: { ids: number[]; action: "activate" | "deactivate" | "delete" }) =>
+      apiPost<{ succeeded: number[]; failed: { id: number; error: string }[] }>("/api/vouchers/bulk-action", vars),
+    onSuccess: (result, vars) => {
+      void qc.invalidateQueries({ queryKey: ["vouchers"] });
+      setSelected(new Set());
+      const verb = vars.action === "activate" ? "Activated" : vars.action === "deactivate" ? "Deactivated" : "Deleted";
+      toast.success(
+        result.failed.length > 0
+          ? `${verb} ${result.succeeded.length} of ${vars.ids.length} vouchers — ${result.failed.length} skipped.`
+          : `${verb} ${result.succeeded.length} voucher${result.succeeded.length === 1 ? "" : "s"}.`,
+      );
     },
     onError: (e: Error) => toast.error(describeError(e.message)),
   });
@@ -273,8 +315,61 @@ export function VouchersPage() {
         </div>
       </FilterBar>
 
+      {selected.size > 0 && (
+        <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
+          <span className="text-ink-soft">{selected.size} selected</span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={bulkAction.isPending}
+            onClick={() => bulkAction.mutate({ ids: Array.from(selected), action: "activate" })}
+          >
+            Activate {selected.size} voucher{selected.size === 1 ? "" : "s"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={bulkAction.isPending}
+            onClick={() => bulkAction.mutate({ ids: Array.from(selected), action: "deactivate" })}
+          >
+            Deactivate {selected.size} voucher{selected.size === 1 ? "" : "s"}
+          </Button>
+          <ConfirmDialog
+            trigger={
+              <Button size="sm" variant="destructive" disabled={bulkAction.isPending}>
+                Delete {selected.size} voucher{selected.size === 1 ? "" : "s"}
+              </Button>
+            }
+            title={`Delete ${selected.size} voucher${selected.size === 1 ? "" : "s"}?`}
+            description="Vouchers that have already been used are skipped, not deleted."
+            confirmLabel="Delete"
+            onConfirm={() => bulkAction.mutate({ ids: Array.from(selected), action: "delete" })}
+          />
+          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
+        </div>
+      )}
+
       <DataTable
         columns={[
+          {
+            key: "select",
+            header: (
+              <Checkbox
+                checked={allSelected}
+                onCheckedChange={toggleSelectAll}
+                disabled={vouchers.length === 0}
+                aria-label="Select all vouchers"
+              />
+            ),
+            render: v => (
+              <Checkbox
+                checked={selected.has(v.id)}
+                onCheckedChange={() => toggleSelected(v.id)}
+                onClick={e => e.stopPropagation()}
+                aria-label={`Select voucher ${v.code}`}
+              />
+            ),
+          },
           {
             key: "code",
             header: "Code",

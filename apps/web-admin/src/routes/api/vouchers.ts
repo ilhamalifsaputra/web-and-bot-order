@@ -10,6 +10,8 @@ import {
   createVoucher,
   setVoucherActive,
   deleteVoucher,
+  bulkSetVouchersActive,
+  bulkDeleteVouchers,
   logAdminAction,
   type VoucherStatus,
 } from "@app/db";
@@ -136,5 +138,53 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       targetId: voucherId,
     });
     return reply.send({ ok: true });
+  });
+
+  // Bulk row-selection actions from the Vouchers page toolbar. One endpoint
+  // with an action discriminator (mirrors POST /api/orders/bulk-action,
+  // apps/web-admin/src/routes/api/orders.ts:455-465) — same 50-id cap and
+  // ids-validation shape. activate/deactivate can't fail per-id (a plain
+  // updateMany), so every id is reported succeeded; delete can fail per-id
+  // (a used voucher can't be deleted), so it returns bulkDeleteVouchers's
+  // succeeded/failed shape directly.
+  app.post("/api/vouchers/bulk-action", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as { ids?: unknown; action?: unknown };
+    const ids = Array.isArray(body.ids)
+      ? body.ids.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)
+      : [];
+    if (ids.length === 0) {
+      return reply.code(400).send({ error: "Select at least one voucher." });
+    }
+    if (ids.length > 50) {
+      return reply.code(400).send({ error: "Select 50 vouchers or fewer per bulk action." });
+    }
+    const action = body.action;
+    if (action !== "activate" && action !== "deactivate" && action !== "delete") {
+      return reply.code(400).send({ error: "Unknown bulk action." });
+    }
+
+    if (action === "delete") {
+      const result = await bulkDeleteVouchers(prisma, ids);
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "voucher_bulk_delete",
+        targetType: "voucher",
+        details:
+          result.failed.length > 0
+            ? `Deleted ${result.succeeded.length} vouchers; skipped ${result.failed.length} already-used.`
+            : `Deleted ${result.succeeded.length} vouchers.`,
+      });
+      return reply.send(result);
+    }
+
+    const isActive = action === "activate";
+    const count = await bulkSetVouchersActive(prisma, ids, isActive);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: isActive ? "voucher_bulk_activate" : "voucher_bulk_deactivate",
+      targetType: "voucher",
+      details: `${isActive ? "Activated" : "Deactivated"} ${count} vouchers.`,
+    });
+    return reply.send({ succeeded: ids, failed: [] });
   });
 }

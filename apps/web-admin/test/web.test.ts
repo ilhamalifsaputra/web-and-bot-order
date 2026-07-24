@@ -2983,6 +2983,93 @@ describe("vouchers", () => {
     expect(typeof data.pageSize).toBe("number");
     expect(data.stats.total).toBeGreaterThanOrEqual(2);
   });
+
+  it("POST /api/vouchers/bulk-action deactivates a batch and audit-logs once (not per id)", async () => {
+    const r1 = await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "BULKA1", type: "PERCENT", value: "10" });
+    const r2 = await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "BULKA2", type: "PERCENT", value: "10" });
+    const id1 = (JSON.parse(r1.body) as { voucher: { id: number } }).voucher.id;
+    const id2 = (JSON.parse(r2.body) as { voucher: { id: number } }).voucher.id;
+
+    const res = await postJsonOrders("/api/vouchers/bulk-action", seed.cookie, seed.csrf, {
+      ids: [id1, id2],
+      action: "deactivate",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as { succeeded: number[]; failed: unknown[] };
+    expect(body.succeeded.slice().sort((a, b) => a - b)).toEqual([id1, id2].sort((a, b) => a - b));
+    expect(body.failed).toEqual([]);
+
+    expect((await prisma.voucher.findUnique({ where: { id: id1 } }))!.isActive).toBe(false);
+    expect((await prisma.voucher.findUnique({ where: { id: id2 } }))!.isActive).toBe(false);
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "voucher_bulk_deactivate" } });
+    expect(audit.length).toBe(1);
+  });
+
+  it("POST /api/vouchers/bulk-action rejects an empty id list", async () => {
+    const res = await postJsonOrders("/api/vouchers/bulk-action", seed.cookie, seed.csrf, {
+      ids: [],
+      action: "deactivate",
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("POST /api/vouchers/bulk-action caps a batch at 50 ids (400)", async () => {
+    const ids = Array.from({ length: 51 }, (_, i) => i + 1);
+    const res = await postJsonOrders("/api/vouchers/bulk-action", seed.cookie, seed.csrf, {
+      ids,
+      action: "deactivate",
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("POST /api/vouchers/bulk-action rejects an unknown action", async () => {
+    const res = await postJsonOrders("/api/vouchers/bulk-action", seed.cookie, seed.csrf, {
+      ids: [1],
+      action: "nonsense",
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("POST /api/vouchers/bulk-action delete reports per-id failures for used vouchers", async () => {
+    const r1 = await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "BULKDEL1", type: "PERCENT", value: "10" });
+    const r2 = await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "BULKDEL2", type: "PERCENT", value: "10" });
+    const id1 = (JSON.parse(r1.body) as { voucher: { id: number } }).voucher.id;
+    const id2 = (JSON.parse(r2.body) as { voucher: { id: number } }).voucher.id;
+    await prisma.voucher.update({ where: { id: id2 }, data: { usedCount: 1 } });
+
+    const res = await postJsonOrders("/api/vouchers/bulk-action", seed.cookie, seed.csrf, {
+      ids: [id1, id2],
+      action: "delete",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as { succeeded: number[]; failed: { id: number; error: string }[] };
+    expect(body.succeeded).toEqual([id1]);
+    expect(body.failed).toEqual([{ id: id2, error: "cannot delete a voucher that has been used" }]);
+
+    expect(await prisma.voucher.findUnique({ where: { id: id1 } })).toBeNull();
+    expect(await prisma.voucher.findUnique({ where: { id: id2 } })).not.toBeNull();
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "voucher_bulk_delete" } });
+    expect(audit.length).toBe(1);
+  });
+
+  it("POST /api/vouchers/bulk-action requires auth (anon -> 303 /login)", async () => {
+    const res = await postJsonOrders("/api/vouchers/bulk-action", null, null, {
+      ids: [1],
+      action: "deactivate",
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("POST /api/vouchers/bulk-action rejects bad CSRF (403)", async () => {
+    const res = await postJsonOrders("/api/vouchers/bulk-action", seed.cookie, "wrong-token", {
+      ids: [1],
+      action: "deactivate",
+    });
+    expect(res.statusCode).toBe(403);
+  });
 });
 
 // ---- support (acceptance #5) ----------------------------------------------

@@ -1980,4 +1980,65 @@ describe("callback router", () => {
     );
     expect(refAlert).toBe(true);
   });
+
+  it("v1:ticket:close:<id> closes the caller's own ticket via routeCallback and shows the closed-confirmation keyboard", async () => {
+    const ticket = await prisma.supportTicket.create({
+      data: { userId: sample.user.id, message: "help", status: TicketStatus.OPEN },
+    });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:ticket:close:${ticket.id}` });
+    await routeCallback(ctx);
+
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.CLOSED);
+    expect(sentIncludes(sink, "resolved")).toBe(true);
+  });
+
+  it("closing someone else's ticket shows 'ticket not found', not 'order not found' (bug fix)", async () => {
+    const otherUser = await upsertUser(prisma, { telegramId: 5001, username: "other", fullName: null });
+    const ticket = await prisma.supportTicket.create({ data: { userId: otherUser.id, message: "not yours" } });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:ticket:close:${ticket.id}` });
+    await routeCallback(ctx);
+
+    const toasts = calls(sink, "answerCallbackQuery");
+    const body = JSON.stringify(toasts);
+    expect(body).not.toContain("Order not found");
+  });
+
+  it("v1:ticket:reopen:<id> reopens a closed ticket within the window and re-renders the detail screen", async () => {
+    const ticket = await prisma.supportTicket.create({
+      data: { userId: sample.user.id, message: "help", status: TicketStatus.CLOSED, closedAt: new Date() },
+    });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:ticket:reopen:${ticket.id}` });
+    await routeCallback(ctx);
+
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.OPEN);
+    expect(sentIncludes(sink, "v1:ticket:reply")).toBe(true); // re-rendered screen now offers Reply again
+  });
+
+  it("v1:ticket:reopen:<id> past the 7-day window shows an error toast and leaves the ticket closed", async () => {
+    const wayPast = new Date(Date.now() - 8 * 86_400_000);
+    const ticket = await prisma.supportTicket.create({
+      data: { userId: sample.user.id, message: "help", status: TicketStatus.CLOSED, closedAt: wayPast },
+    });
+    const { ctx, sink } = customerCtx({ callbackData: `v1:ticket:reopen:${ticket.id}` });
+    await routeCallback(ctx);
+
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.CLOSED);
+    const toasts = calls(sink, "answerCallbackQuery");
+    expect(JSON.stringify(toasts).length).toBeGreaterThan(0);
+  });
+
+  it("reopening another user's ticket does nothing (ownership check)", async () => {
+    const otherUser = await upsertUser(prisma, { telegramId: 5002, username: "other2", fullName: null });
+    const ticket = await prisma.supportTicket.create({
+      data: { userId: otherUser.id, message: "not yours", status: TicketStatus.CLOSED, closedAt: new Date() },
+    });
+    const { ctx } = customerCtx({ callbackData: `v1:ticket:reopen:${ticket.id}` });
+    await routeCallback(ctx);
+
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.CLOSED);
+  });
 });

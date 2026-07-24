@@ -9,12 +9,12 @@
  */
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
-import { TicketStatus } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import {
   prisma,
   getTicket,
-  closeTicket,
+  closeTicketByUser,
+  reopenTicket,
 } from "@app/db";
 import type { MyContext } from "../context";
 import { smartEdit } from "../util/chat";
@@ -185,6 +185,7 @@ const dispatchTicket: DomainDispatcher = async (ctx, parts) => {
   if (action === "list") await customer.listMyTickets(ctx);
   else if (action === "view") await customer.viewMyTicket(ctx, parseInt(parts[3]!, 10));
   else if (action === "close") await closeTicketUser(ctx, parseInt(parts[3]!, 10));
+  else if (action === "reopen") await reopenTicketUser(ctx, parseInt(parts[3]!, 10));
 };
 
 const dispatchRestock: DomainDispatcher = async (ctx, parts) => {
@@ -307,14 +308,14 @@ async function closeTicketUser(ctx: MyContext, ticketId: number): Promise<void> 
   const info = ctx.session.dbUser!;
   const ticket = await getTicket(prisma, ticketId);
   if (ticket === null || ticket.userId !== info.id) {
-    await ctx.answerCallbackQuery({ text: t(ctx, "error.order_not_found"), show_alert: true });
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.ticket_not_found"), show_alert: true });
     return;
   }
-  if (ticket.status === TicketStatus.CLOSED) {
+  const closed = await closeTicketByUser(prisma, ticketId);
+  if (!closed) {
     await ctx.answerCallbackQuery({ text: t(ctx, "support.already_closed"), show_alert: true });
     return;
   }
-  await closeTicket(prisma, ticketId);
 
   await ctx.answerCallbackQuery({ text: t(ctx, "support.ticket_closed_user") });
   // Edit the ticket bubble into a closed-confirmation (with navigation) rather
@@ -334,4 +335,26 @@ async function closeTicketUser(ctx: MyContext, ticketId: number): Promise<void> 
       logger.error({ err }, `Failed to notify admin chat ${chatId} that user ${ctx.from!.id} closed support ticket #${ticketId} — admins relying on that chat won't see the resolution`);
     }
   }
+}
+
+/** Customer self-reopen (Reopen button on a CLOSED ticket's detail view).
+ * Re-validates atomically at tap-time via reopenTicket — authoritative,
+ * independent of whatever `reopenable` the screen was rendered with (which
+ * can go stale between render and tap as the 7-day window elapses). */
+async function reopenTicketUser(ctx: MyContext, ticketId: number): Promise<void> {
+  const info = ctx.session.dbUser!;
+  const ticket = await getTicket(prisma, ticketId);
+  if (ticket === null || ticket.userId !== info.id) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.ticket_not_found"), show_alert: true });
+    return;
+  }
+  const result = await reopenTicket(prisma, ticketId);
+  if (!result.ok) {
+    const key = result.reason === "window_expired" ? "error.ticket_reopen_expired" : "error.ticket_not_closed";
+    await ctx.answerCallbackQuery({ text: t(ctx, key), show_alert: true });
+    await customer.viewMyTicket(ctx, ticketId); // re-render so a now-stale Reopen button disappears
+    return;
+  }
+  await ctx.answerCallbackQuery({ text: t(ctx, "ticket.reopened_toast") });
+  await customer.viewMyTicket(ctx, ticketId);
 }

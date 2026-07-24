@@ -124,3 +124,49 @@ export async function assertVoucherNotRedeemedByUser(db: Db, voucherId: number, 
   });
   if (existing) throw new ValidationError("error.voucher_already_redeemed");
 }
+
+export type VoucherStatus = "active" | "expired" | "usedUp";
+
+/** Precedence: expired > usedUp > active — a voucher's status can't depend
+ *  on which page it's on, so this is the single source of truth used by both
+ *  server-side status filtering (listVouchersPaged) and the KPI aggregate
+ *  (getVoucherStats). Kept in sync with the client's per-row display logic
+ *  in VouchersPage.tsx (which annotates already-fetched rows, not filters —
+ *  no pagination-correctness risk there). */
+export function deriveVoucherStatus(
+  v: { isActive: boolean; expiresAt: Date | null; usageLimit: number | null; usedCount: number },
+  now: Date = new Date(),
+): VoucherStatus | null {
+  if (v.expiresAt && v.expiresAt.getTime() < now.getTime()) return "expired";
+  if (v.usageLimit != null && v.usedCount >= v.usageLimit) return "usedUp";
+  return v.isActive ? "active" : null;
+}
+
+/**
+ * Paginated + filterable voucher listing for the admin Vouchers page.
+ * Distinct from `listVouchers` (used unmodified by the Telegram bot's admin
+ * panel, apps/order-bot/src/handlers/admin.ts) — that function keeps its
+ * existing plain-array signature untouched.
+ *
+ * `status` depends on a cross-column comparison (usedCount vs usageLimit)
+ * that isn't expressible in a single Prisma `where` clause. Rather than drop
+ * to raw SQL (disallowed, CLAUDE.md), this fetches the `q`-narrowed set (a
+ * single shop's voucher table — small), derives status in JS, then filters
+ * and paginates in JS. This stays correct regardless of page (never scoped
+ * to just the requested page), unlike a client-side-only filter would be.
+ */
+export async function listVouchersPaged(
+  db: Db,
+  opts: { q?: string | null; status?: VoucherStatus | null; limit?: number; offset?: number } = {},
+) {
+  const where: Record<string, unknown> = {};
+  if (opts.q?.trim()) where.code = { contains: opts.q.trim().toUpperCase() };
+
+  const all = await db.voucher.findMany({ where, orderBy: { createdAt: "desc" } });
+  const now = new Date();
+  const filtered = opts.status ? all.filter((v) => deriveVoucherStatus(v, now) === opts.status) : all;
+
+  const offset = opts.offset ?? 0;
+  const limit = opts.limit ?? filtered.length;
+  return { rows: filtered.slice(offset, offset + limit), total: filtered.length };
+}

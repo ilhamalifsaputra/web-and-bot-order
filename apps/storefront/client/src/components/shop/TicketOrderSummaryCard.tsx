@@ -8,7 +8,7 @@
  * into expandable sections" on tablet/mobile) without a dedicated accordion
  * component — `open` by default keeps desktop looking exactly like a normal
  * always-expanded card. */
-import { Copy, ExternalLink, ShieldCheck, ShieldAlert } from "lucide-react";
+import { Copy, ExternalLink, ShieldCheck, ShieldAlert, Clock } from "lucide-react";
 import { Link } from "react-router-dom";
 import { t } from "../../lib/i18n";
 import { formatIdr } from "../../lib/format";
@@ -36,6 +36,10 @@ export default function TicketOrderSummaryCard({ order }: { order: TicketOrderSu
                 <span className="inline-flex items-center gap-1 text-grass-dark">
                   <ShieldCheck className="w-3.5 h-3.5" />
                   {t("web.ticket_warranty_until", { date: item.warranty_expires_at_display ?? "" })}
+                </span>
+              ) : !order.delivered ? (
+                <span className="inline-flex items-center gap-1 text-ink-faint">
+                  <Clock className="w-3.5 h-3.5" /> {t("web.ticket_warranty_pending")}
                 </span>
               ) : (
                 <span className="inline-flex items-center gap-1 text-ink-faint">

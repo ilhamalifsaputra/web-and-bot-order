@@ -438,6 +438,7 @@
   "web.ticket_no_order_linked": "Tiket ini tidak terkait dengan pesanan tertentu.",
   "web.ticket_warranty_until": "Garansi sampai {date}",
   "web.ticket_warranty_expired": "Garansi berakhir",
+  "web.ticket_warranty_pending": "Menunggu pengiriman",
   "web.ticket_payment_method": "Metode pembayaran",
   "web.ticket_voucher_used": "Voucher dipakai",
   "web.ticket_view_order": "Lihat pesanan",

@@ -1646,7 +1646,6 @@ describe("/api/v1/account twins", () => {
       expect(body.order.items).toHaveLength(1);
       expect(body.order.items[0].warranty_days).toBe(30);
       expect(body.order.items[0].warranty_active).toBe(true);
-      expect(typeof body.order.status_label).toBe("string");
     });
 
     it("support ticket: create with an order_code belonging to someone else is rejected", async () => {

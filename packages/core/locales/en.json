@@ -438,6 +438,7 @@
   "web.ticket_no_order_linked": "This ticket isn't linked to a specific order.",
   "web.ticket_warranty_until": "Warranty until {date}",
   "web.ticket_warranty_expired": "Warranty expired",
+  "web.ticket_warranty_pending": "Awaiting delivery",
   "web.ticket_payment_method": "Payment method",
   "web.ticket_voucher_used": "Voucher used",
   "web.ticket_view_order": "View order",

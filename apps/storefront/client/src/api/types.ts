@@ -485,7 +485,6 @@ export interface TicketOrderItem {
 export interface TicketOrderSummary {
   code: string;
   status: string;
-  status_label: string;
   created_at_display: string;
   paid_at_display: string | null;
   payment_method: string;

@@ -16,7 +16,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 import { localize, addDays } from "@app/core/datetime";
-import { SenderType, OrderStatus, TicketStatus, customerStatusLabel } from "@app/core/enums";
+import { SenderType, OrderStatus, TicketStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { Decimal } from "@app/core/money";
@@ -371,7 +371,6 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
         ? {
             code: order.orderCode,
             status: order.status,
-            status_label: customerStatusLabel(order.status),
             created_at_display: dt(order.createdAt),
             paid_at_display: order.paidAt ? dt(order.paidAt) : null,
             payment_method: order.paymentMethod,

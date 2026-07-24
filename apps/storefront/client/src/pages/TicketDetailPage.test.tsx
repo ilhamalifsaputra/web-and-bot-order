@@ -158,7 +158,6 @@ describe("TicketDetailPage", () => {
       order: {
         code: "ORD-TICK-1",
         status: "delivered",
-        status_label: "status.label.delivered",
         created_at_display: "2026-07-01 10:00",
         paid_at_display: "2026-07-01 10:01",
         payment_method: "BINANCE_PAY",

@@ -119,6 +119,7 @@ describe("TicketComposer", () => {
         uploadProgress={0}
       />,
     );
+    expect(loadTicketDraft(7)).toBe("");
     vi.advanceTimersByTime(600);
     expect(loadTicketDraft(7)).toBe("in-progress reply");
   });

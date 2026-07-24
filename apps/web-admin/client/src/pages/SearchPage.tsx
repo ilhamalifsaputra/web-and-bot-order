@@ -1,6 +1,7 @@
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
+import { Users, PackageSearch, SearchX } from "lucide-react";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { DataTable } from "../components/shared/DataTable";
@@ -80,63 +81,67 @@ export function SearchPage() {
 
       {data && !isFetching && (
         <>
-          {data.users.length === 0 && data.products.length === 0 && (
-            <EmptyState title={`No results for "${data.q}"`} />
-          )}
+          {data.users.length === 0 && data.products.length === 0 ? (
+            <EmptyState
+              icon={SearchX}
+              title={`No results for "${data.q}"`}
+              description="Try an order code, username, or product name."
+            />
+          ) : (
+            <>
+              <section className="mb-6">
+                <h2 className="text-sm font-semibold text-ink mb-3">
+                  Customers ({data.users.length})
+                </h2>
+                <DataTable
+                  columns={[
+                    {
+                      key: "name",
+                      header: "Name",
+                      render: u => u.fullName ?? "—",
+                    },
+                    {
+                      key: "username",
+                      header: "Username",
+                      render: u => u.username ? `@${u.username}` : "—",
+                    },
+                    {
+                      key: "tid",
+                      header: "Telegram ID",
+                      render: u => <span className="font-mono text-xs">{u.telegramId}</span>,
+                    },
+                  ]}
+                  data={data.users}
+                  keyExtractor={u => u.id}
+                  onRowClick={u => navigate(`/users/${u.id}`)}
+                  empty={<EmptyState icon={Users} title="No matching customers." description="Try a different search term." />}
+                />
+              </section>
 
-          {data.users.length > 0 && (
-            <section className="mb-6">
-              <h2 className="text-sm font-semibold text-ink mb-3">
-                Customers ({data.users.length})
-              </h2>
-              <DataTable
-                columns={[
-                  {
-                    key: "name",
-                    header: "Name",
-                    render: u => u.fullName ?? "—",
-                  },
-                  {
-                    key: "username",
-                    header: "Username",
-                    render: u => u.username ? `@${u.username}` : "—",
-                  },
-                  {
-                    key: "tid",
-                    header: "Telegram ID",
-                    render: u => <span className="font-mono text-xs">{u.telegramId}</span>,
-                  },
-                ]}
-                data={data.users}
-                keyExtractor={u => u.id}
-                onRowClick={u => navigate(`/users/${u.id}`)}
-              />
-            </section>
-          )}
-
-          {data.products.length > 0 && (
-            <section>
-              <h2 className="text-sm font-semibold text-ink mb-3">
-                Products ({data.products.length})
-              </h2>
-              <DataTable
-                columns={[
-                  {
-                    key: "denom",
-                    header: "Denomination",
-                    render: p => p.name,
-                  },
-                  {
-                    key: "product",
-                    header: "Product",
-                    render: p => p.product?.name ?? "—",
-                  },
-                ]}
-                data={data.products}
-                keyExtractor={p => p.id}
-                onRowClick={p => navigate(`/catalog/${p.id}`)}
-              />
-            </section>
+              <section>
+                <h2 className="text-sm font-semibold text-ink mb-3">
+                  Products ({data.products.length})
+                </h2>
+                <DataTable
+                  columns={[
+                    {
+                      key: "denom",
+                      header: "Denomination",
+                      render: p => p.name,
+                    },
+                    {
+                      key: "product",
+                      header: "Product",
+                      render: p => p.product?.name ?? "—",
+                    },
+                  ]}
+                  data={data.products}
+                  keyExtractor={p => p.id}
+                  onRowClick={p => navigate(`/catalog/${p.id}`)}
+                  empty={<EmptyState icon={PackageSearch} title="No matching products." description="Try a different search term." />}
+                />
+              </section>
+            </>
           )}
         </>
       )}

@@ -88,4 +88,53 @@ describe("SearchPage", () => {
     await waitFor(() => expect(screen.getByText(/no results/i)).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: "Search" })).not.toBeInTheDocument();
   });
+
+  it("shows a per-table empty state for the category with no matches, while the other category still renders", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          q: "netflix",
+          exactOrderId: null,
+          users: [],
+          products: [{ id: 10, name: "Netflix 1mo", product: { name: "Netflix" } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SearchPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Netflix 1mo")).toBeInTheDocument());
+
+    expect(screen.getByText(/no matching customers/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no results for/i)).not.toBeInTheDocument();
+  });
+
+  it("shows a per-table empty state for products when only users match", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          q: "andi",
+          exactOrderId: null,
+          users: [{ id: 1, username: "andi", fullName: "Andi Santoso", telegramId: "111" }],
+          products: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SearchPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+
+    expect(screen.getByText(/no matching products/i)).toBeInTheDocument();
+  });
+
+  it("shows an icon and description on the all-empty state, not just a title", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ q: "xyz", exactOrderId: null, users: [], products: [] }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SearchPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/no results for/i)).toBeInTheDocument());
+    expect(screen.getByText(/try an order code, username, or product name/i)).toBeInTheDocument();
+  });
 });

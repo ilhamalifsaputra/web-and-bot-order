@@ -11,7 +11,7 @@ import { InputFile } from "grammy";
 import { config } from "@app/core/config";
 import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
-import { ensureUtc, localize } from "@app/core/datetime";
+import { ensureUtc, localize, addDays } from "@app/core/datetime";
 import { UserRole, OrderStatus, PaymentMethod, TicketStatus, SenderType, DeliveryType, customerStatusLabel } from "@app/core/enums";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
@@ -40,7 +40,8 @@ import {
   setSetting,
   searchCatalog,
   listUserTickets,
-  getTicket,
+  getTicketWithOrder,
+  TICKET_REOPEN_WINDOW_DAYS,
   listTicketMessages,
 } from "@app/db";
 import { BotState, type MyContext } from "../context";
@@ -49,7 +50,7 @@ import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/ban
 import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
 import { logErrorRef } from "../util/errors";
-import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, orderAmount, mixedAmount, renderBybitBscTrackingScreen } from "../util/format";
+import { esc, formatUsdtAmount, formatIdr, statusBadge, groupOrderItems, formatCountdown, formatFlashRemaining, priceIdr, orderAmount, mixedAmount, renderBybitBscTrackingScreen, summarizeTicketOrder } from "../util/format";
 import { effectiveUnitPrice, flashPrice, activeFlashPercent } from "@app/core/flash";
 import { currentUsdtRate } from "../util/rate";
 import * as ckb from "../keyboards/customer";
@@ -1012,7 +1013,7 @@ export async function viewMyTicket(ctx: MyContext, ticketId: number): Promise<vo
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
 
-  const ticket = await getTicket(prisma, ticketId);
+  const ticket = await getTicketWithOrder(prisma, ticketId);
   if (ticket === null || ticket.userId !== info.id) {
     await smartEdit(ctx, t(ctx, "error.ticket_not_found"), ckb.backToMain(lang));
     return;
@@ -1030,7 +1031,25 @@ export async function viewMyTicket(ctx: MyContext, ticketId: number): Promise<vo
     date: ensureUtc(ticket.createdAt).toFormat("yyyy-LL-dd HH:mm"),
   });
 
-  const parts = [header, ""];
+  const parts = [header];
+  if (ticket.order) {
+    const s = summarizeTicketOrder(ticket.order);
+    const warrantyLine = s.warranty
+      ? s.warranty.active
+        ? `\n${t(ctx, "ticket.order_warranty_until", { date: s.warranty.untilDisplay })}`
+        : `\n${t(ctx, "ticket.order_warranty_expired")}`
+      : "";
+    parts.push(
+      t(ctx, "ticket.order_summary", {
+        code: ticket.order.orderCode,
+        status: s.statusBadge,
+        product: s.productLine,
+        warranty: warrantyLine,
+      }),
+    );
+  }
+  parts.push("");
+
   if (messages.length) {
     for (const msg of messages) {
       const timeStr = ensureUtc(msg.createdAt).toFormat("HH:mm dd/LL");
@@ -1050,7 +1069,12 @@ export async function viewMyTicket(ctx: MyContext, ticketId: number): Promise<vo
     }
   }
 
-  await smartEdit(ctx, parts.join("\n\n"), ckb.ticketViewKb(ticketId, ticket.status, lang));
+  const reopenable =
+    ticket.status === TicketStatus.CLOSED && ticket.closedAt != null
+      ? addDays(ticket.closedAt, TICKET_REOPEN_WINDOW_DAYS).getTime() >= Date.now()
+      : false;
+
+  await smartEdit(ctx, parts.join("\n\n"), ckb.ticketViewKb(ticketId, ticket.status, lang, reopenable));
 }
 
 // ---------------------------------------------------------------------------

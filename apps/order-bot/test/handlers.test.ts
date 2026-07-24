@@ -479,6 +479,62 @@ describe("customer handlers", () => {
     await customer.viewMyTicket(ctx, 999999);
     expect(offersForwardAction(sink)).toBe(true);
   });
+
+  it("viewMyTicket shows the linked order's summary (product, status, warranty) when the ticket has one", async () => {
+    const stock = await prisma.stockItem.create({
+      data: { productId: sample.product.id, credentials: "tick@mail.com:pw", status: "SOLD" },
+    });
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-TICKVIEW-${Math.random()}`,
+        userId: sample.user.id,
+        subtotalAmount: "45000",
+        totalAmount: "45000",
+        status: OrderStatus.DELIVERED,
+        deliveredAt: new Date(),
+      },
+    });
+    await prisma.orderItem.create({
+      data: { orderId: order.id, productId: sample.product.id, stockItemId: stock.id, unitPrice: "45000", warrantyDaysSnapshot: 30 },
+    });
+    const ticket = await prisma.supportTicket.create({
+      data: { userId: sample.user.id, message: "help", orderId: order.id },
+    });
+
+    const { ctx, sink } = customerCtx();
+    await customer.viewMyTicket(ctx, ticket.id);
+
+    const body = JSON.stringify(sink);
+    expect(body).toContain(order.orderCode);
+    expect(body).toContain(sample.product.name);
+  });
+
+  it("viewMyTicket renders no order block when the ticket has no linked order", async () => {
+    const ticket = await prisma.supportTicket.create({ data: { userId: sample.user.id, message: "general question" } });
+    const { ctx, sink } = customerCtx();
+    await customer.viewMyTicket(ctx, ticket.id);
+    const body = JSON.stringify(sink);
+    expect(body).not.toContain("Related order");
+  });
+
+  it("viewMyTicket shows a Reopen button only for a CLOSED ticket still within the 7-day window", async () => {
+    const ticket = await prisma.supportTicket.create({
+      data: { userId: sample.user.id, message: "help", status: TicketStatus.CLOSED, closedAt: new Date() },
+    });
+    const { ctx, sink } = customerCtx();
+    await customer.viewMyTicket(ctx, ticket.id);
+    expect(sentIncludes(sink, "v1:ticket:reopen")).toBe(true);
+  });
+
+  it("viewMyTicket shows no Reopen button once the 7-day window has passed", async () => {
+    const wayPast = new Date(Date.now() - 8 * 86_400_000);
+    const ticket = await prisma.supportTicket.create({
+      data: { userId: sample.user.id, message: "help", status: TicketStatus.CLOSED, closedAt: wayPast },
+    });
+    const { ctx, sink } = customerCtx();
+    await customer.viewMyTicket(ctx, ticket.id);
+    expect(sentIncludes(sink, "v1:ticket:reopen")).toBe(false);
+  });
 });
 
 // ===========================================================================

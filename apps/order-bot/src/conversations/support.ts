@@ -9,7 +9,7 @@ import { adminIds } from "@app/core/runtime";
 import { SenderType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
-import { prisma, getSetting, createTicket, addTicketMessage } from "@app/db";
+import { prisma, getSetting, createTicket, addTicketMessage, listUserOrders } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { smartEdit } from "../util/chat";
 import { t } from "../util/i18n";
@@ -59,6 +59,43 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
     }
   }
 
+  // --- AWAITING_ORDER (optional): link a past order, or skip ---
+  // listUserOrders is a DB read that happens BEFORE the photo step's wait()
+  // calls below — it must be wrapped in conversation.external() (same reason
+  // getSetting is, above line 34) so a replay triggered by a later wait()
+  // doesn't re-run it.
+  const orders = await conversation.external(() => listUserOrders(prisma, info.id, 5, 0));
+  let orderId: number | null = null;
+  if (orders.length) {
+    await ctx.api.sendMessage(ctx.chat!.id, t(ctx, "support.ask_order"), {
+      parse_mode: "HTML",
+      reply_markup: ckb.orderPickerKb(orders, lang),
+    });
+    for (;;) {
+      const u = await conversation.wait();
+      if (isCmd(u, "start")) return void (await startCommand(u));
+      if (isCmd(u, "cancel")) return void (await smartEdit(u, t(u, "menu.main"), ckb.backToMain(lang)));
+      const labelText = u.message?.text;
+      if (labelText && ckb.isPersistentLabel(labelText)) return void (await handleProductNumber(u));
+      const data = u.callbackQuery?.data ?? "";
+      if (data === "v1:support:order:skip") {
+        await u.answerCallbackQuery();
+        break;
+      }
+      const m = /^v1:support:order:(\d+)$/.exec(data);
+      if (m) {
+        const picked = parseInt(m[1]!, 10);
+        const match = orders.find((o) => o.id === picked);
+        if (match) {
+          orderId = picked;
+          await u.answerCallbackQuery({ text: t(u, "support.order_linked_toast", { code: match.orderCode }) });
+          break;
+        }
+      }
+      // Anything else (stray text, unrecognized tap) — ignore and keep waiting.
+    }
+  }
+
   await ctx.api.sendMessage(ctx.chat!.id, t(ctx, "support.ask_photos"), {
     parse_mode: "HTML",
     reply_markup: ckb.supportPhotoPromptKb(0, lang),
@@ -90,7 +127,7 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
 
   // --- Submit (terminal) ---
   const photoFileIds = photos.length ? photos.join(",") : null;
-  const ticket = await createTicket(prisma, info.id, body, photoFileIds);
+  const ticket = await createTicket(prisma, info.id, body, photoFileIds, null, orderId);
   await addTicketMessage(prisma, {
     ticketId: ticket.id,
     senderType: SenderType.USER,

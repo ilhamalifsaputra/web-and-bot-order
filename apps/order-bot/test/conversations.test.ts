@@ -166,6 +166,61 @@ describe("support + reject conversations", () => {
     expect(calls(sink, "sendMessage").some((c) => c.args[0] === 999)).toBe(true); // forwarded
   });
 
+  it("support: with an existing order, picking it from the order picker links orderId on the ticket", async () => {
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-SUPPORTPICK-${Math.random()}`,
+        userId: sample.user.id,
+        subtotalAmount: "45000",
+        totalAmount: "45000",
+        status: OrderStatus.DELIVERED,
+      },
+    });
+    await prisma.orderItem.create({
+      data: { orderId: order.id, productId: sample.product.id, unitPrice: "45000", warrantyDaysSnapshot: 30 },
+    });
+
+    const sink: SentCall[] = [];
+    const entry = entryCust(sink, "v1:support:open");
+    const conv = new FakeConversation([
+      msg(sink, { text: "My account stopped working yesterday" }),
+      msg(sink, { callbackData: `v1:support:order:${order.id}` }),
+      msg(sink, { callbackData: "v1:support:photos:done" }),
+    ]);
+    await supportConversation(conv.asMyConversation(), entry);
+
+    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
+    expect(ticket).toBeTruthy();
+    expect(ticket!.orderId).toBe(order.id);
+  });
+
+  it("support: skipping the order picker still creates a ticket with orderId: null", async () => {
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-SUPPORTSKIP-${Math.random()}`,
+        userId: sample.user.id,
+        subtotalAmount: "45000",
+        totalAmount: "45000",
+        status: OrderStatus.DELIVERED,
+      },
+    });
+    await prisma.orderItem.create({
+      data: { orderId: order.id, productId: sample.product.id, unitPrice: "45000", warrantyDaysSnapshot: 30 },
+    });
+
+    const sink: SentCall[] = [];
+    const entry = entryCust(sink, "v1:support:open");
+    const conv = new FakeConversation([
+      msg(sink, { text: "General question, not order-specific" }),
+      msg(sink, { callbackData: "v1:support:order:skip" }),
+      msg(sink, { callbackData: "v1:support:photos:done" }),
+    ]);
+    await supportConversation(conv.asMyConversation(), entry);
+
+    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
+    expect(ticket!.orderId).toBeNull();
+  });
+
   it("reject: admin reason rejects the order, audits, and DMs the buyer", async () => {
     const order = await pendingVerificationOrder();
     const sink: SentCall[] = [];

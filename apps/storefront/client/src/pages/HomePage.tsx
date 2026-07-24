@@ -43,6 +43,8 @@ import {
   Zap,
 } from "lucide-react";
 import { apiGet } from "../api/client";
+import { motion } from "framer-motion";
+import { hoverLift, staggerContainer, staggerItem } from "../lib/motion";
 import type { HomePageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
@@ -53,6 +55,7 @@ import Skeleton from "../components/shop/Skeleton";
 import StepTimeline from "../components/shop/StepTimeline";
 import Stars from "../components/shop/Stars";
 import EmptyState from "../components/shop/EmptyState";
+import Price from "../components/shop/Price";
 import "./HomePage.css";
 
 const FAQ_NUMBERS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
@@ -78,6 +81,15 @@ const HOW_STEPS = [1, 2, 3, 4];
 const HOW_STEP_ICONS = [Package, ShoppingCart, QrCode, PackageCheck];
 const TRUST_POINTS = [1, 2, 3, 4];
 const SKELETON_CARDS = Array.from({ length: 3 }, (_, i) => i);
+// Loose stagger positions for up to 3 hero product-preview cards — plain
+// numbers/strings, not CSS transform strings, so framer-motion's own
+// whileHover translateY composes correctly with this static rotation
+// instead of one overwriting the other.
+const HERO_CARD_STYLES: Array<{ top: string; right: string; rotate: number }> = [
+  { top: "6%", right: "4%", rotate: -4 },
+  { top: "40%", right: "20%", rotate: 3 },
+  { top: "72%", right: "0%", rotate: -2 },
+];
 
 export default function HomePage() {
   const { data: ctx } = useShopContext();
@@ -152,6 +164,9 @@ export default function HomePage() {
   }
 
   const { hero_image, categories, products, testimonials, low_threshold, bot_username, wa_number } = data;
+  // Real inventory only — never a fabricated/placeholder product. Fewer than
+  // 2 available products means no composition at all (see homepage design spec).
+  const heroProducts = products.length >= 2 ? products.slice(0, 3) : [];
   const fx = ctx?.fx;
 
   const contactCount = 1 + (wa_number ? 1 : 0) + (bot_username ? 1 : 0);
@@ -173,13 +188,21 @@ export default function HomePage() {
               height={600}
               className="absolute inset-0 h-full w-full object-cover"
             />
-            <div className="absolute inset-0 bg-linear-to-br from-ink/95 via-ink/85 to-pine-dark/80"></div>
+            <div className="absolute inset-0 bg-linear-to-br from-ink/95 via-ink/90 to-pine-dark/80"></div>
           </>
         ) : (
-          <div className="absolute inset-0 bg-linear-to-br from-ink via-pine-dark to-pine"></div>
+          <div className="absolute inset-0 bg-linear-to-br from-ink via-ink to-pine-dark"></div>
         )}
-        <div className="absolute -right-16 -top-16 h-64 w-64 rounded-full bg-pine/20 blur-3xl"></div>
-        <div className="relative max-w-2xl">
+        {/* Layered depth: two low-opacity glows -> reused .dot-grid texture -> soft vignette.
+            All decorative, aria-hidden, and never intercept clicks. */}
+        <div aria-hidden="true" className="pointer-events-none absolute -right-16 -top-16 h-64 w-64 rounded-full bg-pine/20 blur-3xl"></div>
+        <div aria-hidden="true" className="pointer-events-none absolute -left-10 bottom-0 h-56 w-56 rounded-full bg-grass/10 blur-3xl"></div>
+        <div aria-hidden="true" className="dot-grid pointer-events-none absolute inset-0"></div>
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 opacity-20 bg-[radial-gradient(ellipse_at_center,transparent_45%,var(--color-ink)_100%)]"
+        ></div>
+        <div className={`relative max-w-2xl ${heroProducts.length >= 2 ? "lg:max-w-xl" : ""}`}>
           <span className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-medium uppercase tracking-wide text-grass">
             <ShieldCheck className="h-3.5 w-3.5" />
             {t("web.hero_badge")}
@@ -189,16 +212,17 @@ export default function HomePage() {
           </h1>
           <p className="mt-4 text-lg text-ink-faint">{t("web.hero_sub")}</p>
           <div className="mt-7 flex flex-wrap gap-3">
-            <a
+            <motion.a
               href="#produk"
-              className="focus-on-dark inline-flex items-center gap-2 rounded-xl bg-pine px-5 py-3 font-semibold text-white hover:bg-pine-dark transition-colors shadow-soft"
+              {...hoverLift}
+              className="focus-on-dark inline-flex items-center gap-2 rounded-xl bg-pine px-5 py-3 font-semibold text-white hover:bg-pine-dark transition-colors shadow-soft hover:shadow-lift"
             >
               <ShoppingBag className="h-5 w-5" />
               {t("web.hero_cta")}
-            </a>
+            </motion.a>
             <a
               href="#kontak"
-              className="focus-on-dark inline-flex items-center gap-2 rounded-xl border border-white/20 px-5 py-3 font-semibold text-white hover:bg-white/10 transition-colors"
+              className="focus-on-dark inline-flex items-center gap-2 rounded-xl border border-white/20 px-5 py-3 font-semibold text-white hover:bg-white/15 transition-colors"
             >
               <MessageCircle className="h-5 w-5" />
               {t("web.hero_cta2")}
@@ -220,6 +244,52 @@ export default function HomePage() {
             </span>
           </div>
         </div>
+
+        {heroProducts.length > 0 && (
+          <div
+            data-testid="hero-product-preview"
+            className="pointer-events-none absolute inset-y-0 right-0 hidden w-[36%] lg:block"
+          >
+            <motion.div
+              className="relative h-full"
+              variants={staggerContainer}
+              initial="initial"
+              animate="animate"
+            >
+              {heroProducts.map((p, i) => (
+                <motion.div
+                  key={p.slug}
+                  variants={staggerItem}
+                  {...hoverLift}
+                  className="pointer-events-auto absolute w-48 rounded-2xl border border-white/15 bg-white/10 p-3 shadow-lift backdrop-blur-md"
+                  style={{ top: HERO_CARD_STYLES[i]!.top, right: HERO_CARD_STYLES[i]!.right, rotate: HERO_CARD_STYLES[i]!.rotate }}
+                >
+                  <Link to={`/p/${p.slug}`} className="focus-on-dark flex items-center gap-3">
+                    <span className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-xl bg-white/10">
+                      {p.image ? (
+                        <img
+                          src={p.image}
+                          alt=""
+                          aria-hidden="true"
+                          loading="lazy"
+                          width={44}
+                          height={44}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <Package className="h-5 w-5 text-white/70" aria-hidden="true" />
+                      )}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-white">{p.name}</span>
+                      <Price value={p.from_price} fx={fx} size="text-xs" tone="light" />
+                    </span>
+                  </Link>
+                </motion.div>
+              ))}
+            </motion.div>
+          </div>
+        )}
       </section>
 
       {/* 2. Fitur / keunggulan */}
@@ -295,7 +365,7 @@ export default function HomePage() {
               <Link
                 key={c.slug}
                 to={`/c/${c.slug}`}
-                className="group flex items-center gap-4 rounded-2xl border border-line bg-card p-5 shadow-xs transition hover:border-pine-tint hover:shadow"
+                className="group flex items-center gap-4 rounded-2xl border border-line bg-card p-5 shadow-xs transition hover:-translate-y-0.5 hover:border-pine-tint hover:shadow-lift"
               >
                 <span className="grid h-14 w-14 shrink-0 place-items-center rounded-xl bg-pine-tint text-2xl group-hover:scale-105 transition-transform">
                   {c.emoji ? c.emoji : <Box className="w-6 h-6 text-pine" />}
@@ -355,8 +425,8 @@ export default function HomePage() {
         <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.upcoming_title")}</h2>
         <p className="mt-2 text-ink-soft">{t("web.upcoming_sub")}</p>
         <div className="mt-5 grid gap-4 sm:grid-cols-2">
-          <div className="flex items-start gap-4 rounded-2xl border border-line bg-card p-6 shadow-xs">
-            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-violet-50 text-violet-600">
+          <div className="flex items-start gap-4 rounded-2xl border border-dashed border-line bg-card p-6 shadow-xs">
+            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-violet-50 text-violet-600 opacity-70">
               <Share2 className="h-6 w-6" />
             </span>
             <div className="min-w-0">
@@ -369,8 +439,8 @@ export default function HomePage() {
               <p className="mt-1 text-sm text-ink-soft">{t("web.sosmed_desc")}</p>
             </div>
           </div>
-          <div className="flex items-start gap-4 rounded-2xl border border-line bg-card p-6 shadow-xs">
-            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-pine-tint text-pine">
+          <div className="flex items-start gap-4 rounded-2xl border border-dashed border-line bg-card p-6 shadow-xs">
+            <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-pine-tint text-pine opacity-70">
               <Gamepad2 className="h-6 w-6" />
             </span>
             <div className="min-w-0">
@@ -533,7 +603,7 @@ export default function HomePage() {
               href={`https://wa.me/${wa_number}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:shadow-md"
+              className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:-translate-y-0.5 hover:shadow-lift"
             >
               <div className="grid h-12 w-12 place-items-center rounded-2xl bg-grass-tint">
                 <svg className="h-6 w-6 text-grass-dark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -552,7 +622,7 @@ export default function HomePage() {
               href={`https://t.me/${bot_username}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:shadow-md"
+              className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:-translate-y-0.5 hover:shadow-lift"
             >
               <div className="grid h-12 w-12 place-items-center rounded-2xl bg-[#eff6ff]">
                 <svg className="h-6 w-6 text-[#2563eb]" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
@@ -568,7 +638,7 @@ export default function HomePage() {
 
           <Link
             to="/account/support"
-            className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:shadow-md"
+            className="flex flex-col items-center gap-3 rounded-2xl border border-line bg-card p-6 text-center shadow-xs transition hover:-translate-y-0.5 hover:shadow-lift"
           >
             <div className="grid h-12 w-12 place-items-center rounded-2xl bg-pine-tint">
               <Ticket className="h-6 w-6 text-pine" />

@@ -85,6 +85,18 @@ describe("HomePage", () => {
     expect(screen.getByRole("link", { name: /View products/ })).toHaveAttribute("href", "/c/streaming");
   });
 
+  it("gives category and contact cards a consistent lift-and-shadow hover treatment", async () => {
+    renderHome(homeFixture());
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const categoryLink = screen.getByRole("link", { name: /View products/ });
+    expect(categoryLink.className).toContain("hover:-translate-y-0.5");
+    expect(categoryLink.className).toContain("hover:shadow-lift");
+
+    const ticketLink = screen.getByRole("link", { name: /Support ticket/ });
+    expect(ticketLink.className).toContain("hover:-translate-y-0.5");
+    expect(ticketLink.className).toContain("hover:shadow-lift");
+  });
+
   it("renders the static Our Promise section regardless of stats.has_data (home.njk no longer has a data-driven stats band)", async () => {
     renderHome(homeFixture({ stats: { has_data: true, customers: 120, orders: 340, satisfaction: 96 } }));
     expect(await screen.findByText("What every order comes with")).toBeInTheDocument();
@@ -146,6 +158,13 @@ describe("HomePage", () => {
     expect(screen.getByText("Telegram")).toBeInTheDocument();
   });
 
+  it("gives the two 'coming soon' teaser cards a dashed border so they read as non-interactive", async () => {
+    const { container } = renderHome(homeFixture());
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const teasers = container.querySelectorAll(".border-dashed");
+    expect(teasers.length).toBe(2);
+  });
+
   // Pins the "dead Telegram link" fix (fe9869a) now ported to React: never
   // render a https://t.me/ link with no username, and don't leave the
   // contact grid at a multi-column width sized for a card that isn't there.
@@ -178,6 +197,71 @@ describe("HomePage", () => {
     renderHome(homeFixture({ hero_image: null }));
     await screen.findByRole("heading", { name: "Netflix Premium" });
     expect(screen.queryByAltText("")).not.toBeInTheDocument();
+  });
+
+  it("layers the hero background with two decorative glows, a texture overlay, and a vignette", async () => {
+    const { container } = renderHome(homeFixture());
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const hero = container.querySelector("section.bg-ink");
+    expect(hero).not.toBeNull();
+    const decorative = hero!.querySelectorAll('[aria-hidden="true"]');
+    // 1 top-right glow + 1 bottom-left glow + 1 dot-grid texture + 1 vignette = 4,
+    // on top of whichever base gradient div (image or plain) also renders aria-hidden.
+    expect(decorative.length).toBeGreaterThanOrEqual(4);
+    expect(hero!.querySelector(".dot-grid")).not.toBeNull();
+    expect(hero!.querySelector(".bg-grass\\/10")).not.toBeNull();
+  });
+
+  it("gives the primary hero CTA a stronger shadow on hover and the secondary CTA a more visible hover fill", async () => {
+    renderHome(homeFixture());
+    const primary = await screen.findByRole("link", { name: /Browse products/ });
+    expect(primary.className).toContain("hover:shadow-lift");
+    const secondary = screen.getByRole("link", { name: /Contact support/ });
+    expect(secondary.className).toContain("hover:bg-white/15");
+  });
+
+  it("shows a hero product-preview composition when at least two products are available, linking each card to its product", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium" };
+    const { container } = renderHome(homeFixture({ products: [product, second] }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const preview = container.querySelector('[data-testid="hero-product-preview"]');
+    expect(preview).not.toBeNull();
+    const cardLinks = preview!.querySelectorAll("a");
+    expect(cardLinks.length).toBe(2);
+    expect(cardLinks[0]).toHaveAttribute("href", "/p/netflix-premium");
+    expect(cardLinks[1]).toHaveAttribute("href", "/p/spotify-premium");
+    expect(preview!.textContent).toContain("Netflix Premium");
+    expect(preview!.textContent).toContain("Spotify Premium");
+  });
+
+  it("renders an <img> with the product's image inside the hero product-preview card when one is set", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium", image: "https://x/netflix.png" };
+    const { container } = renderHome(homeFixture({ products: [product, second] }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const preview = container.querySelector('[data-testid="hero-product-preview"]');
+    expect(preview).not.toBeNull();
+    const img = preview!.querySelector("img");
+    expect(img).not.toBeNull();
+    expect(img).toHaveAttribute("src", "https://x/netflix.png");
+  });
+
+  it("caps the hero product-preview composition at three cards", async () => {
+    const products = [
+      product,
+      { ...product, slug: "spotify-premium", name: "Spotify Premium" },
+      { ...product, slug: "canva-pro", name: "Canva Pro" },
+      { ...product, slug: "capcut-pro", name: "CapCut Pro" },
+    ];
+    const { container } = renderHome(homeFixture({ products }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const preview = container.querySelector('[data-testid="hero-product-preview"]');
+    expect(preview!.querySelectorAll("a").length).toBe(3);
+  });
+
+  it("hides the hero product-preview composition when fewer than two products are available", async () => {
+    const { container } = renderHome(homeFixture({ products: [product] }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(container.querySelector('[data-testid="hero-product-preview"]')).toBeNull();
   });
 
   // STO-018: a single product in the 3-column grid used to leave two-thirds

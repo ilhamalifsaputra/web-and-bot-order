@@ -4,8 +4,9 @@
  * re-exported here for a single import site.
  */
 import { Decimal } from "@app/core/money";
-import { ensureUtc } from "@app/core/datetime";
+import { ensureUtc, addDays } from "@app/core/datetime";
 import { formatIdr, formatPrice, formatUsdt, usdtFromIdr } from "@app/core/formatters";
+import { esc } from "@app/core/formatters";
 import { OrderStatus } from "@app/core/enums";
 import { coreT } from "./i18n";
 export {
@@ -156,6 +157,41 @@ export function groupOrderItems(items: OrderItemLike[]): OrderItemGroup[] {
     if (item.stockItem) g.stockItems.push(item.stockItem);
   }
   return [...groups.values()];
+}
+
+export interface TicketOrderLike {
+  orderCode: string;
+  status: string;
+  deliveredAt: Date | null;
+  items: (OrderItemLike & { warrantyDaysSnapshot: number })[];
+}
+
+export interface TicketOrderSummary {
+  orderCode: string;
+  statusBadge: string;
+  productLine: string;
+  warranty: { active: boolean; untilDisplay: string } | null;
+}
+
+/**
+ * Condensed order facts for a ticket's linked order — a few lines for a chat
+ * bubble, not the full viewOrder() card (which branches on payment
+ * countdowns, credentials, manual-fields — none relevant inside a ticket).
+ * Warranty is computed from the FIRST item's warrantyDaysSnapshot only: a
+ * ticket's linked order is normally single-product, and a multi-product
+ * order with divergent per-item warranty windows is a rare edge this
+ * condensed line doesn't attempt to fully resolve.
+ */
+export function summarizeTicketOrder(order: TicketOrderLike): TicketOrderSummary {
+  const groups = groupOrderItems(order.items);
+  const g = groups[0];
+  const productLine = g ? `${esc(g.product.name)} × ${g.quantity}` : "-";
+  let warranty: TicketOrderSummary["warranty"] = null;
+  if (order.status === OrderStatus.DELIVERED && order.deliveredAt && order.items[0]) {
+    const until = addDays(order.deliveredAt, order.items[0].warrantyDaysSnapshot);
+    warranty = { active: until.getTime() > Date.now(), untilDisplay: ensureUtc(until).toFormat("dd/LL/yyyy") };
+  }
+  return { orderCode: order.orderCode, statusBadge: statusBadge(order.status), productLine, warranty };
 }
 
 // ---------------------------------------------------------------------------

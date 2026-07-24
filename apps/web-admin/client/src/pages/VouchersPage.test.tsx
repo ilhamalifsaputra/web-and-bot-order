@@ -47,16 +47,59 @@ beforeEach(() => {
 describe("VouchersPage", () => {
   it("renders voucher rows", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ vouchers: [VOUCHER], types: ["PERCENT", "FIXED"] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      new Response(
+        JSON.stringify({
+          vouchers: [VOUCHER],
+          types: ["PERCENT", "FIXED"],
+          total: 1,
+          page: 1,
+          pageSize: 50,
+          stats: { total: 1, active: 1, expiringSoon: 0, usedUp: 0 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
     );
     render(<VouchersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("SAVE10")).toBeInTheDocument());
     expect(screen.getByText("Percent")).toBeInTheDocument();
   });
 
+  it("shows a KPI row sourced from the server-wide stats field", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          vouchers: [VOUCHER],
+          types: ["PERCENT", "FIXED"],
+          total: 1,
+          page: 1,
+          pageSize: 50,
+          stats: { total: 42, active: 30, expiringSoon: 3, usedUp: 5 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("SAVE10")).toBeInTheDocument());
+
+    expect(screen.getByText("42")).toBeInTheDocument();
+    expect(screen.getByText("30")).toBeInTheDocument();
+    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(screen.getByText("5")).toBeInTheDocument();
+  });
+
   it("shows empty state when no vouchers", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ vouchers: [], types: [] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      new Response(
+        JSON.stringify({
+          vouchers: [],
+          types: [],
+          total: 0,
+          page: 1,
+          pageSize: 50,
+          stats: { total: 0, active: 0, expiringSoon: 0, usedUp: 0 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
     );
     render(<VouchersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/no vouchers/i)).toBeInTheDocument());
@@ -86,7 +129,17 @@ describe("VouchersPage", () => {
       expiresAtDisplay: "2026-07-01",
     };
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ vouchers: [voucherWithExpiry], types: ["PERCENT", "FIXED"] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      new Response(
+        JSON.stringify({
+          vouchers: [voucherWithExpiry],
+          types: ["PERCENT", "FIXED"],
+          total: 1,
+          page: 1,
+          pageSize: 50,
+          stats: { total: 1, active: 1, expiringSoon: 0, usedUp: 0 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
     );
     render(<VouchersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("MIDNIGHT")).toBeInTheDocument());
@@ -101,7 +154,17 @@ describe("VouchersPage", () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const writeText = vi.spyOn(navigator.clipboard, "writeText");
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ vouchers: [VOUCHER], types: ["PERCENT", "FIXED"] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      new Response(
+        JSON.stringify({
+          vouchers: [VOUCHER],
+          types: ["PERCENT", "FIXED"],
+          total: 1,
+          page: 1,
+          pageSize: 50,
+          stats: { total: 1, active: 1, expiringSoon: 0, usedUp: 0 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
     );
     render(<VouchersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("SAVE10")).toBeInTheDocument());
@@ -123,6 +186,10 @@ describe("VouchersPage", () => {
         JSON.stringify({
           vouchers: [FAR_FUTURE_VOUCHER, EXPIRING_SOON_VOUCHER, EXPIRED_VOUCHER, USED_UP_VOUCHER],
           types: ["PERCENT", "FIXED"],
+          total: 4,
+          page: 1,
+          pageSize: 50,
+          stats: { total: 4, active: 1, expiringSoon: 1, usedUp: 1 },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
@@ -146,6 +213,10 @@ describe("VouchersPage", () => {
         JSON.stringify({
           vouchers: [FAR_FUTURE_VOUCHER, EXPIRED_VOUCHER, USED_UP_VOUCHER],
           types: ["PERCENT", "FIXED"],
+          total: 3,
+          page: 1,
+          pageSize: 50,
+          stats: { total: 3, active: 1, expiringSoon: 0, usedUp: 1 },
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
@@ -183,7 +254,17 @@ describe("VouchersPage", () => {
   it("gives every inline 'New Voucher' field a persistent visible label, including the Type combobox (F-014)", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
-      new Response(JSON.stringify({ vouchers: [], types: ["PERCENT", "FIXED"] }), { status: 200, headers: { "Content-Type": "application/json" } }),
+      new Response(
+        JSON.stringify({
+          vouchers: [],
+          types: ["PERCENT", "FIXED"],
+          total: 0,
+          page: 1,
+          pageSize: 50,
+          stats: { total: 0, active: 0, expiringSoon: 0, usedUp: 0 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
     );
     render(<VouchersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/no vouchers/i)).toBeInTheDocument());

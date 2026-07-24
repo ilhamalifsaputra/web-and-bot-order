@@ -1,12 +1,13 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Copy, Check, Tag, Plus, X, Trash2 } from "lucide-react";
+import { Copy, Check, Tag, Plus, X, Trash2, Ticket, CheckCircle2, Clock, Ban } from "lucide-react";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { FilterBar } from "../components/shared/FilterBar";
+import { StatCard } from "../components/shared/StatCard";
 import { Button } from "@/components/ui/button";
 import { DateInput } from "../components/shared/DateInput";
 import { Input } from "@/components/ui/input";
@@ -62,12 +63,19 @@ function isExpiringSoon(v: Voucher, now: Date): boolean {
 }
 
 function useVouchers() {
-  return useQuery<{ vouchers: Voucher[]; types: string[] }>({
+  return useQuery<{
+    vouchers: Voucher[];
+    types: string[];
+    total: number;
+    page: number;
+    pageSize: number;
+    stats: { total: number; active: number; expiringSoon: number; usedUp: number };
+  }>({
     queryKey: ["vouchers"],
     queryFn: async () => {
       const res = await fetch("/api/vouchers");
       if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<{ vouchers: Voucher[]; types: string[] }>;
+      return res.json();
     },
   });
 }
@@ -129,6 +137,7 @@ export function VouchersPage() {
     <PageLayout title="Vouchers">
       <PageHeader
         title="Vouchers"
+        description="Create and manage discount codes."
         actions={
           <Button onClick={() => setShowForm(v => !v)}>
             {showForm ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
@@ -136,6 +145,13 @@ export function VouchersPage() {
           </Button>
         }
       />
+
+      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="Total Vouchers" value={data?.stats.total ?? 0} icon={Ticket} isLoading={!data} />
+        <StatCard label="Active" value={data?.stats.active ?? 0} icon={CheckCircle2} tone="success" isLoading={!data} />
+        <StatCard label="Expiring Soon" value={data?.stats.expiringSoon ?? 0} icon={Clock} tone="warning" isLoading={!data} />
+        <StatCard label="Used Up" value={data?.stats.usedUp ?? 0} icon={Ban} isLoading={!data} />
+      </div>
 
       {showForm && (
         <Card className="mb-6">

@@ -5,8 +5,8 @@ import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { FilterBar } from "../components/shared/FilterBar";
+import { SearchBar } from "../components/shared/SearchBar";
 
 interface UserHit {
   id: number;
@@ -42,10 +42,19 @@ export function SearchPage() {
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const q = params.get("q") ?? "";
-  const [input, setInput] = useState(q);
+  const [draft, setDraft] = useState(q);
   const { data, isError, isFetching } = useSearch(q);
 
-  useEffect(() => { setInput(q); }, [q]);
+  useEffect(() => { setDraft(q); }, [q]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const trimmed = draft.trim();
+      if (trimmed) setParams({ q: trimmed });
+      else setParams({});
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [draft]);
 
   useEffect(() => {
     if (data?.exactOrderId) {
@@ -53,24 +62,18 @@ export function SearchPage() {
     }
   }, [data?.exactOrderId, navigate]);
 
-  function submit(e: React.FormEvent) {
-    e.preventDefault();
-    if (input.trim()) setParams({ q: input.trim() });
-  }
-
   return (
     <PageLayout title="Search">
       <PageHeader title="Search" />
 
-      <form onSubmit={submit} className="flex gap-2 mb-6">
-        <Input
-          value={input}
-          onChange={e => setInput(e.target.value)}
+      <FilterBar className="mb-6">
+        <SearchBar
+          value={draft}
+          onChange={setDraft}
           placeholder="Order code, username, or product…"
-          className="flex-1"
+          className="w-full sm:w-96"
         />
-        <Button type="submit">Search</Button>
-      </form>
+      </FilterBar>
 
       {isError && <p className="text-sm text-rust">Failed to load results.</p>}
       {isFetching && <p className="text-sm text-ink-soft">Searching…</p>}

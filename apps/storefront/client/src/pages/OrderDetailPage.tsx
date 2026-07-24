@@ -100,6 +100,12 @@ export default function OrderDetailPage() {
     }
   }, [error, code]);
 
+  useEffect(() => {
+    if (data && window.location.hash === "#credentials") {
+      document.getElementById("credentials")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }, [data]);
+
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
     return null;
@@ -337,7 +343,7 @@ export default function OrderDetailPage() {
       )}
 
       {delivered && (
-        <section className="card card-pad border-grass/40 mb-5">
+        <section id="credentials" className="card card-pad border-grass/40 mb-5">
           <h2 className="section-title flex items-center gap-2">
             <BadgeCheck className="w-5 h-5 text-grass" /> {t("web.credentials")}
           </h2>

@@ -26,8 +26,11 @@ const supportData: SupportData = {
   ],
 };
 
-function renderSupport(respond: () => unknown = () => supportData) {
-  (apiGet as Mock).mockImplementation(async () => respond());
+function renderSupport(respond: () => unknown = () => supportData, ordersRespond: () => unknown = () => ({ orders: [] })) {
+  (apiGet as Mock).mockImplementation(async (path: string) => {
+    if (path === "/api/v1/account/orders") return ordersRespond();
+    return respond();
+  });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
@@ -67,7 +70,25 @@ describe("SupportPage", () => {
     await waitFor(() =>
       expect(apiPost).toHaveBeenCalledWith("/api/v1/account/support", { message: "New issue" }),
     );
-    await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(2));
+    // 3 = initial support fetch + initial account-orders fetch (order picker) + refetch after submit.
+    await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(3));
+  });
+
+  it("includes the picked order_code when creating a ticket", async () => {
+    renderSupport(() => supportData, () => ({
+      orders: [{ code: "ORD-PICK-1", status: "delivered", total: "10000", created_at_display: "2026-07-01 09:00", items: "Netflix" }],
+    }));
+    await screen.findByRole("link", { name: "#1" });
+    fireEvent.change(screen.getByLabelText("Which order is this about? (optional)"), { target: { value: "ORD-PICK-1" } });
+    fireEvent.change(screen.getByPlaceholderText("Tell us what's wrong…"), { target: { value: "help with this order" } });
+    (apiPost as Mock).mockResolvedValue({ ok: true, ticket_id: 42 });
+    fireEvent.click(screen.getByRole("button", { name: /Send/ }));
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/v1/account/support", {
+        message: "help with this order",
+        order_code: "ORD-PICK-1",
+      }),
+    );
   });
 
   // STO-020: submitting used to only clear the textbox and silently add a

@@ -1,34 +1,54 @@
 /**
- * TSX port of apps/storefront/views/ticket_detail.njk. The reply form is
- * gated on `!ticket.closed`, same as the template. Markup/classes copied
- * verbatim apart from the mechanical Tailwind v3→v4 rename
- * (docs/REACT_STOREFRONT_MIGRATION.md): `!text-2xl` → `text-2xl!`.
+ * Two-column support workspace: conversation thread (merged via
+ * lib/ticketTimeline.ts) + composer on the left, order/trust/recent-tickets/
+ * help sidebar on the right. Collapses to a single column at <1024px via the
+ * grid's own responsive class — no separate mobile layout branch needed
+ * (unlike OrderDetailPage's item table, nothing here needs a structurally
+ * different mobile markup, just a narrower column).
  */
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Send } from "lucide-react";
+import { CheckCircle2, Clock, RotateCcw } from "lucide-react";
 import { apiGet, apiPost, apiPostFormWithProgress } from "../api/client";
-import type { TicketDetailData } from "../api/types";
+import type { SupportData, TicketDetailData } from "../api/types";
 import { t } from "../lib/i18n";
-import StatusBadge from "../components/shop/StatusBadge";
-import AttachmentPicker from "../components/shop/AttachmentPicker";
-import AttachmentGallery from "../components/shop/AttachmentGallery";
+import { useShopContext } from "../components/Layout";
+import { buildTicketTimeline } from "../lib/ticketTimeline";
+import { loadTicketDraft, clearTicketDraft } from "../lib/ticketDraft";
+import TicketStatusBadge from "../components/shop/TicketStatusBadge";
+import TicketMessageThread from "../components/shop/TicketMessageThread";
+import TicketComposer from "../components/shop/TicketComposer";
+import TicketSidebar from "../components/shop/TicketSidebar";
+import EmptyState from "../components/shop/EmptyState";
 import ErrorPage from "./ErrorPage";
 import Spinner from "../components/shop/Spinner";
 import Skeleton from "../components/shop/Skeleton";
 import Toast from "../components/shop/Toast";
-import ProgressBar from "../components/shop/ProgressBar";
+
+const QUICK_REPLY_TEMPLATES: Array<{ key: string; labelKey: string; templateKey: string }> = [
+  { key: "still_not_working", labelKey: "web.ticket_quick_still_not_working", templateKey: "web.ticket_template_still_not_working" },
+  { key: "request_refund", labelKey: "web.ticket_quick_request_refund", templateKey: "web.ticket_template_request_refund" },
+  { key: "replace_credentials", labelKey: "web.ticket_quick_replace_credentials", templateKey: "web.ticket_template_replace_credentials" },
+];
 
 export default function TicketDetailPage() {
   const { id = "" } = useParams<{ id: string }>();
-  const [message, setMessage] = useState("");
+  const ticketId = Number(id);
+  const { data: ctx } = useShopContext();
+  const [message, setMessage] = useState(() => loadTicketDraft(ticketId));
   const [files, setFiles] = useState<File[]>([]);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [errorText, setErrorText] = useState<string | null>(null);
+
   const { data, error, refetch } = useQuery({
     queryKey: ["account-ticket", id],
     queryFn: () => apiGet<TicketDetailData>(`/api/v1/account/support/${id}`),
+    retry: false,
+  });
+  const { data: ticketList } = useQuery({
+    queryKey: ["account-support"],
+    queryFn: () => apiGet<SupportData>("/api/v1/account/support"),
     retry: false,
   });
 
@@ -46,28 +66,47 @@ export default function TicketDetailPage() {
       const form = new FormData();
       form.append("message", vars.message);
       for (const file of vars.files) form.append("attachments", file);
-      return apiPostFormWithProgress<{ ok: boolean }>(
-        `/api/v1/account/support/${id}/reply`,
-        form,
-        setUploadProgress,
-      );
+      return apiPostFormWithProgress<{ ok: boolean }>(`/api/v1/account/support/${id}/reply`, form, setUploadProgress);
     },
     onSuccess: () => {
       setMessage("");
       setFiles([]);
+      clearTicketDraft(ticketId);
       refetch();
     },
+    onError: (err) => setErrorText(t(err instanceof Error ? err.message : "error.generic")),
+  });
+
+  const closeMutation = useMutation({
+    mutationFn: () => apiPost<{ ok: boolean }>(`/api/v1/account/support/${id}/close`, {}),
+    onSuccess: () => refetch(),
     onError: (err) => {
       setErrorText(t(err instanceof Error ? err.message : "error.generic"));
+      // A 409 here means the ticket was already closed out from under this
+      // tap (double-click, or an admin closed it concurrently) — refetch so
+      // the page re-renders into the real (closed) state instead of leaving
+      // a stale "not yet closed" view up next to the error toast.
+      refetch();
     },
   });
 
-  function onSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  const reopenMutation = useMutation({
+    mutationFn: () => apiPost<{ ok: boolean }>(`/api/v1/account/support/${id}/reopen`, {}),
+    onSuccess: () => refetch(),
+    onError: (err) => setErrorText(t(err instanceof Error ? err.message : "error.generic")),
+  });
+
+  function submitReply() {
     setErrorText(null);
     setUploadProgress(0);
     replyMutation.mutate({ message, files });
   }
+
+  function applyTemplate(templateKey: string) {
+    setMessage((prev) => prev || t(templateKey));
+  }
+
+  const timeline = useMemo(() => (data ? buildTicketTimeline(data.ticket, data.messages) : []), [data]);
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
@@ -76,80 +115,122 @@ export default function TicketDetailPage() {
   if (!data) {
     return (
       <div aria-busy="true" aria-label={t("web.loading")}>
-        <Skeleton className="mb-6 h-8 w-40" />
-        <div className="space-y-3">
-          <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-24 w-3/4" />
+        <Skeleton className="mb-6 h-16 w-full" />
+        <div className="grid gap-5 lg:grid-cols-[1fr_320px]">
+          <div className="space-y-3">
+            <Skeleton className="h-24 w-full" />
+            <Skeleton className="h-24 w-3/4" />
+          </div>
+          <Skeleton className="h-64 w-full" />
         </div>
       </div>
     );
   }
 
-  const { ticket, messages } = data;
+  const { ticket, order } = data;
+  const telegramSupportUrl = ctx?.bot_username ? `https://t.me/${ctx.bot_username}` : null;
+  const hasSupportReplied = data.messages.some((m) => !m.from_user) || Boolean(ticket.admin_reply);
 
   return (
     <>
       <Toast text={errorText} onDismiss={() => setErrorText(null)} kind="error" />
-      <div className="mb-6 flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <div className="text-xs text-ink-faint mb-1">
-            <Link to="/account/support" className="hover:text-pine">
-              {t("web.account_support")}
-            </Link>
-            <span className="mx-1">/</span> #{ticket.id}
-          </div>
+
+      <div className="mb-6">
+        <div className="text-xs text-ink-faint mb-1">
+          <Link to="/account/support" className="hover:text-pine">
+            {t("web.account_support")}
+          </Link>
+          <span className="mx-1">/</span> #{ticket.id}
+        </div>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <h1 className="page-title text-2xl!">
             {t("web.ticket")} #{ticket.id}
           </h1>
+          <TicketStatusBadge value={ticket.status} />
         </div>
-        <StatusBadge value={ticket.status} />
-      </div>
-
-      <div className="space-y-3 max-w-2xl">
-        <div className="card card-pad">
-          <div className="text-xs text-ink-faint mb-1">{ticket.created_at_display}</div>
-          <p className="text-sm whitespace-pre-line">{ticket.message}</p>
-          <AttachmentGallery urls={ticket.attachments} />
-        </div>
-        {ticket.admin_reply && (
-          <div className="card card-pad bg-pine-tint/40 ml-6">
-            <div className="text-xs text-pine-dark font-semibold mb-1">{t("web.account_support")}</div>
-            <p className="text-sm whitespace-pre-line">{ticket.admin_reply}</p>
-          </div>
+        {order && (
+          <p className="mt-1 text-sm text-ink-soft">
+            {t("web.ticket_re_order")}{" "}
+            <Link to={`/account/orders/${order.code}`} className="link font-mono">
+              #{order.code}
+            </Link>
+          </p>
         )}
-        {messages.map((m, idx) => (
-          <div key={idx} className={`card card-pad ${!m.from_user ? "bg-pine-tint/40 ml-6" : "mr-6"}`}>
-            <div className="text-xs text-ink-faint mb-1">{m.created_at_display}</div>
-            <p className="text-sm whitespace-pre-line">{m.content}</p>
-            <AttachmentGallery urls={m.attachments} />
-          </div>
-        ))}
+        <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-ink-faint">
+          <span>{t("web.ticket_created_at", { date: ticket.created_at_display })}</span>
+          {!hasSupportReplied && <span>{t("web.ticket_estimated_reply")}</span>}
+        </div>
       </div>
 
-      {!ticket.closed && (
-        <form onSubmit={onSubmit} className="card card-pad mt-5 max-w-2xl">
-          <textarea
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            rows={2}
-            required
-            className="field"
-            placeholder={t("web.support_placeholder")}
-          />
-          <AttachmentPicker files={files} onChange={setFiles} disabled={replyMutation.isPending} />
-          {replyMutation.isPending && files.length > 0 && (
-            <div className="mt-2">
-              <ProgressBar value={uploadProgress} />
-            </div>
-          )}
-          <div className="mt-3 text-right">
-            <button type="submit" className="btn btn-primary btn-sm" disabled={replyMutation.isPending}>
-              {replyMutation.isPending && <Spinner />}
-              <Send className="w-3.5 h-3.5" /> {t("web.support_reply")}
-            </button>
+      <div className="grid gap-5 lg:grid-cols-[1fr_320px]">
+        <div>
+          <div className="card card-pad mb-4">
+            <TicketMessageThread entries={timeline} />
+            {!hasSupportReplied && (
+              <div className="mt-4">
+                <EmptyState icon={Clock} title={t("web.ticket_waiting_title")} description={t("web.ticket_waiting_desc")} />
+              </div>
+            )}
           </div>
-        </form>
-      )}
+
+          {ticket.closed ? (
+            <div className="card card-pad flex items-center justify-between gap-3 flex-wrap bg-sand">
+              <div className="flex items-center gap-2 text-sm text-ink-soft">
+                <CheckCircle2 className="w-4 h-4 text-grass" />
+                {ticket.reopenable ? t("web.ticket_closed_reopenable") : t("web.ticket_closed_expired")}
+              </div>
+              {ticket.reopenable && (
+                <button
+                  type="button"
+                  className="btn btn-soft btn-sm"
+                  disabled={reopenMutation.isPending}
+                  onClick={() => reopenMutation.mutate()}
+                >
+                  {reopenMutation.isPending && <Spinner />}
+                  <RotateCcw className="w-3.5 h-3.5" /> {t("web.ticket_reopen_btn")}
+                </button>
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {hasSupportReplied && (
+                  <button
+                    type="button"
+                    className="btn btn-soft btn-sm"
+                    disabled={closeMutation.isPending}
+                    onClick={() => closeMutation.mutate()}
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" /> {t("web.ticket_quick_issue_solved")}
+                  </button>
+                )}
+                {QUICK_REPLY_TEMPLATES.map((qr) => (
+                  <button key={qr.key} type="button" className="btn btn-soft btn-sm" onClick={() => applyTemplate(qr.templateKey)}>
+                    {t(qr.labelKey)}
+                  </button>
+                ))}
+              </div>
+              <TicketComposer
+                ticketId={ticketId}
+                message={message}
+                onMessageChange={setMessage}
+                files={files}
+                onFilesChange={setFiles}
+                onSubmit={submitReply}
+                pending={replyMutation.isPending}
+                uploadProgress={uploadProgress}
+              />
+            </>
+          )}
+        </div>
+
+        <TicketSidebar
+          order={order}
+          recentTickets={ticketList?.tickets ?? []}
+          currentTicketId={ticket.id}
+          telegramSupportUrl={telegramSupportUrl}
+        />
+      </div>
     </>
   );
 }

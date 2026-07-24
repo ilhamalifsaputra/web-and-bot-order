@@ -1610,6 +1610,178 @@ describe("/api/v1/account twins", () => {
       expect(probe.statusCode).toBe(404);
     });
 
+    it("support ticket: create with an order_code links it; GET :id returns the order summary", async () => {
+      const stock = await prisma.stockItem.create({
+        data: { productId: denomId, credentials: "tick-order@mail.com:pw", status: "SOLD" },
+      });
+      const order = await prisma.order.create({
+        data: {
+          orderCode: `ORD-TICKORD-${Math.random()}`,
+          userId: buyerId,
+          subtotalAmount: "40000",
+          totalAmount: "40000",
+          status: OrderStatus.DELIVERED,
+          paidAt: new Date(),
+          deliveredAt: new Date(),
+        },
+      });
+      await prisma.orderItem.create({
+        data: { orderId: order.id, productId: denomId, stockItemId: stock.id, unitPrice: "40000", warrantyDaysSnapshot: 30 },
+      });
+
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { message: "issue with this order", order_code: order.orderCode },
+      });
+      expect(create.statusCode).toBe(200);
+      const ticketId = create.json().ticket_id as number;
+
+      const detail = await app.inject({ method: "GET", url: `/api/v1/account/support/${ticketId}`, headers: { cookie } });
+      expect(detail.statusCode).toBe(200);
+      const body = detail.json();
+      expect(body.order.code).toBe(order.orderCode);
+      expect(body.order.delivered).toBe(true);
+      expect(body.order.items).toHaveLength(1);
+      expect(body.order.items[0].warranty_days).toBe(30);
+      expect(body.order.items[0].warranty_active).toBe(true);
+    });
+
+    it("support ticket: create with an order_code belonging to someone else is rejected", async () => {
+      await makeUser("ticketorderthief", "thief-pw-1234", "TICKTHIEF");
+      const other = await loginAs("ticketorderthief", "thief-pw-1234");
+      const otherOrder = await prisma.order.create({
+        data: {
+          orderCode: `ORD-NOTMINE-${Math.random()}`,
+          userId: buyerId, // belongs to buyerId, not the "other" session below
+          subtotalAmount: "1000",
+          totalAmount: "1000",
+          status: OrderStatus.DELIVERED,
+        },
+      });
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie: other.cookie, "x-csrf-token": other.csrf },
+        payload: { message: "not my order", order_code: otherOrder.orderCode },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: "error.order_not_found" });
+    });
+
+    it("support ticket without an order_code still creates fine, GET :id returns order: null", async () => {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { message: "general question, no order" },
+      });
+      expect(create.statusCode).toBe(200);
+      const ticketId = create.json().ticket_id as number;
+      const detail = await app.inject({ method: "GET", url: `/api/v1/account/support/${ticketId}`, headers: { cookie } });
+      expect(detail.json().order).toBeNull();
+    });
+
+    it("close (trio) then GET :id shows closed + reopenable; reopen (trio) flips it back to open", async () => {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { message: "will self-close this one" },
+      });
+      const ticketId = create.json().ticket_id as number;
+
+      const anonClose = await app.inject({ method: "POST", url: `/api/v1/account/support/${ticketId}/close` });
+      expect(anonClose.statusCode).toBe(401);
+      const badClose = await app.inject({
+        method: "POST",
+        url: `/api/v1/account/support/${ticketId}/close`,
+        headers: { cookie, "x-csrf-token": "bad" },
+      });
+      expect(badClose.statusCode).toBe(403);
+      const okClose = await app.inject({
+        method: "POST",
+        url: `/api/v1/account/support/${ticketId}/close`,
+        headers: { cookie, "x-csrf-token": csrf },
+      });
+      expect(okClose.statusCode).toBe(200);
+
+      const afterClose = await app.inject({ method: "GET", url: `/api/v1/account/support/${ticketId}`, headers: { cookie } });
+      expect(afterClose.json().ticket.closed).toBe(true);
+      expect(afterClose.json().ticket.reopenable).toBe(true);
+
+      const secondClose = await app.inject({
+        method: "POST",
+        url: `/api/v1/account/support/${ticketId}/close`,
+        headers: { cookie, "x-csrf-token": csrf },
+      });
+      expect(secondClose.statusCode).toBe(409);
+
+      const anonReopen = await app.inject({ method: "POST", url: `/api/v1/account/support/${ticketId}/reopen` });
+      expect(anonReopen.statusCode).toBe(401);
+      const badReopen = await app.inject({
+        method: "POST",
+        url: `/api/v1/account/support/${ticketId}/reopen`,
+        headers: { cookie, "x-csrf-token": "bad" },
+      });
+      expect(badReopen.statusCode).toBe(403);
+      const okReopen = await app.inject({
+        method: "POST",
+        url: `/api/v1/account/support/${ticketId}/reopen`,
+        headers: { cookie, "x-csrf-token": csrf },
+      });
+      expect(okReopen.statusCode).toBe(200);
+
+      const afterReopen = await app.inject({ method: "GET", url: `/api/v1/account/support/${ticketId}`, headers: { cookie } });
+      expect(afterReopen.json().ticket.status.toLowerCase()).toBe("open");
+      expect(afterReopen.json().ticket.closed).toBe(false);
+    });
+
+    it("reopen past the window returns 400 error.ticket_reopen_expired", async () => {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { message: "will expire" },
+      });
+      const ticketId = create.json().ticket_id as number;
+      await app.inject({
+        method: "POST",
+        url: `/api/v1/account/support/${ticketId}/close`,
+        headers: { cookie, "x-csrf-token": csrf },
+      });
+      await prisma.supportTicket.update({
+        where: { id: ticketId },
+        data: { closedAt: new Date(Date.now() - 8 * 86_400_000) },
+      });
+      const reopen = await app.inject({
+        method: "POST",
+        url: `/api/v1/account/support/${ticketId}/reopen`,
+        headers: { cookie, "x-csrf-token": csrf },
+      });
+      expect(reopen.statusCode).toBe(400);
+      expect(reopen.json()).toEqual({ error: "error.ticket_reopen_expired" });
+    });
+
+    it("close/reopen on another user's ticket 404s (never 403)", async () => {
+      const create = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { message: "mine" },
+      });
+      const ticketId = create.json().ticket_id as number;
+      await makeUser("ticketclosethief", "closethief-pw1", "TICKCLOSE1");
+      const other = await loginAs("ticketclosethief", "closethief-pw1");
+      const probe = await app.inject({
+        method: "POST",
+        url: `/api/v1/account/support/${ticketId}/close`,
+        headers: { cookie: other.cookie, "x-csrf-token": other.csrf },
+      });
+      expect(probe.statusCode).toBe(404);
+    });
+
     it("restock subscribe returns the product redirect (trio-lite)", async () => {
       const anon = await app.inject({ method: "POST", url: `/api/v1/restock/${denomId}` });
       expect(anon.statusCode).toBe(401);

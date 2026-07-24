@@ -255,4 +255,19 @@ describe("OrderDetailPage", () => {
     // newline in the fixture to a single space.
     expect(screen.getByText("user: acc1 pass: hunter2")).toBeInTheDocument();
   });
+
+  it("scrolls the credentials section into view when loaded with a #credentials hash", async () => {
+    window.history.pushState({}, "", "/account/orders/ORD1#credentials");
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    renderDetail((path) => {
+      if (path === "/api/v1/account/orders/ORD1") {
+        return { order: { ...baseOrder, items: [{ ...baseOrder.items[0]!, credentials: "acc@mail.com:pw" }] }, delivered: true, pending_payment: false, processing: false };
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    await screen.findByText("Your credentials"); // web.credentials, en.json
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+    window.history.pushState({}, "", "/account/orders/ORD1"); // reset for other tests
+  });
 });

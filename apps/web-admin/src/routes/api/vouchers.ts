@@ -3,24 +3,44 @@ import { VoucherType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import {
   prisma,
-  listVouchers,
+  listVouchersPaged,
+  getVoucherStats,
   getVoucherByCode,
   getVoucher,
   createVoucher,
   setVoucherActive,
   deleteVoucher,
   logAdminAction,
+  type VoucherStatus,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { displayDate } from "../../dateDisplay";
 
 const VOUCHER_TYPES = Object.values(VoucherType) as string[];
+const PAGE_SIZE = 50;
+const VOUCHER_STATUSES: readonly VoucherStatus[] = ["active", "expired", "usedUp"];
 
 export default async function vouchersApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/vouchers", { preHandler: currentAdmin }, async (req, reply) => {
-    const vouchers = await listVouchers(prisma);
-    const vouchersWithDisplay = vouchers.map((v) => ({ ...v, expiresAtDisplay: displayDate(v.expiresAt) }));
-    return reply.send({ vouchers: vouchersWithDisplay, types: VOUCHER_TYPES });
+    const q = req.query as Record<string, string | undefined>;
+    const search = q.q?.trim() || null;
+    const status = q.status && (VOUCHER_STATUSES as readonly string[]).includes(q.status) ? (q.status as VoucherStatus) : null;
+    const page = Math.max(Number(q.page) || 1, 1);
+    const offset = (page - 1) * PAGE_SIZE;
+
+    const [{ rows, total }, stats] = await Promise.all([
+      listVouchersPaged(prisma, { q: search, status, limit: PAGE_SIZE, offset }),
+      getVoucherStats(prisma),
+    ]);
+    const vouchersWithDisplay = rows.map((v) => ({ ...v, expiresAtDisplay: displayDate(v.expiresAt) }));
+    return reply.send({
+      vouchers: vouchersWithDisplay,
+      types: VOUCHER_TYPES,
+      total,
+      page,
+      pageSize: PAGE_SIZE,
+      stats,
+    });
   });
 
   app.post("/api/vouchers", { preHandler: csrfProtect }, async (req, reply) => {

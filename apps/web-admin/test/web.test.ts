@@ -2963,6 +2963,26 @@ describe("vouchers", () => {
     const res = await post("/api/vouchers/99999/delete", seed.cookie, { csrf_token: "bad" });
     expect(res.statusCode).toBe(403);
   });
+
+  it("GET /api/vouchers supports q, status, and page params, and returns stats + total", async () => {
+    await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "SEARCHABLE1", type: "PERCENT", value: "10" });
+    await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "OTHER2", type: "PERCENT", value: "5" });
+
+    const res = await get("/api/vouchers?q=searchable", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as {
+      vouchers: Array<{ code: string }>;
+      total: number;
+      page: number;
+      pageSize: number;
+      stats: { total: number; active: number; expiringSoon: number; usedUp: number };
+    };
+    expect(data.vouchers.map((v) => v.code)).toEqual(["SEARCHABLE1"]);
+    expect(data.total).toBe(1);
+    expect(data.page).toBe(1);
+    expect(typeof data.pageSize).toBe("number");
+    expect(data.stats.total).toBeGreaterThanOrEqual(2);
+  });
 });
 
 // ---- support (acceptance #5) ----------------------------------------------

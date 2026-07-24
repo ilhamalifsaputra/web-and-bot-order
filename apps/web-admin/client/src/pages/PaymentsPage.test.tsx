@@ -364,7 +364,7 @@ describe("PaymentsPage", () => {
     const pageOneLedger = [
       { id: 1, binanceTxId: "PAGE1-TX", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
     ];
-    mockPaymentsFetch({ enabled: true, ledger: pageOneLedger, total: 2, todayCount: 0, page: 1, hasNext: true, outcomes: ["unmatched"], counts: {} });
+    mockPaymentsFetch({ enabled: true, ledger: pageOneLedger, total: 51, todayCount: 0, page: 1, hasNext: true, outcomes: ["unmatched"], counts: {} });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("PAGE1-TX")).toBeInTheDocument());
 
@@ -374,11 +374,26 @@ describe("PaymentsPage", () => {
     const pageTwoLedger = [
       { id: 2, binanceTxId: "PAGE2-TX", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
     ];
-    mockPaymentsFetch({ enabled: true, ledger: pageTwoLedger, total: 2, todayCount: 0, page: 2, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    mockPaymentsFetch({ enabled: true, ledger: pageTwoLedger, total: 51, todayCount: 0, page: 2, hasNext: false, outcomes: ["unmatched"], counts: {} });
     await user.click(screen.getByRole("button", { name: /next/i }));
 
     await waitFor(() => expect(screen.getByText("PAGE2-TX")).toBeInTheDocument());
     expect(screen.queryByText(/\d+ selected/)).not.toBeInTheDocument();
+  });
+
+  it("shows result-count text and moves to the next page via the shared Pagination control", async () => {
+    const user = userEvent.setup();
+    mockPaymentsFetch({ enabled: true, ledger: [TX], total: 120, todayCount: 0, page: 1, hasNext: true, outcomes: ["MATCHED"], counts: {} });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("TX123")).toBeInTheDocument());
+
+    expect(screen.getByText(/showing 1–50 of 120/i)).toBeInTheDocument();
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ enabled: true, ledger: [], total: 120, todayCount: 0, page: 2, hasNext: true, outcomes: [], counts: {} }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    await user.click(screen.getByRole("button", { name: /next/i }));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("page=2")));
   });
 });
 

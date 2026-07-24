@@ -10,8 +10,9 @@ import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { StatCard } from "../components/shared/StatCard";
 import { UrgencyDot } from "../components/shared/UrgencyDot";
+import { Pagination } from "../components/shared/Pagination";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
-import { CreditCard, ChevronLeft, ChevronRight, PackageCheck, Undo2, X, MoreVertical, Clock, Hourglass, XCircle, Wallet } from "lucide-react";
+import { CreditCard, PackageCheck, Undo2, X, MoreVertical, Clock, Hourglass, XCircle, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -633,17 +634,14 @@ export function PaymentsPage() {
         }
       />
 
-      {data && (data.hasNext || page > 1) && (
-        <div className="mt-4 flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => setPage(p => p - 1)} disabled={page === 1}>
-            <ChevronLeft className="h-4 w-4" />
-            Prev
-          </Button>
-          <span className="text-sm text-ink-soft">Page {page}</span>
-          <Button variant="outline" size="sm" onClick={() => setPage(p => p + 1)} disabled={!data.hasNext}>
-            Next
-            <ChevronRight className="h-4 w-4" />
-          </Button>
+      {data && (
+        <div className="mt-4">
+          <Pagination
+            page={page}
+            pageSize={50}
+            total={data.total}
+            onPageChange={setPage}
+          />
         </div>
       )}
 

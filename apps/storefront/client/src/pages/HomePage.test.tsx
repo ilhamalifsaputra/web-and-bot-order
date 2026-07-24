@@ -234,6 +234,17 @@ describe("HomePage", () => {
     expect(preview!.textContent).toContain("Spotify Premium");
   });
 
+  it("renders an <img> with the product's image inside the hero product-preview card when one is set", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium", image: "https://x/netflix.png" };
+    const { container } = renderHome(homeFixture({ products: [product, second] }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const preview = container.querySelector('[data-testid="hero-product-preview"]');
+    expect(preview).not.toBeNull();
+    const img = preview!.querySelector("img");
+    expect(img).not.toBeNull();
+    expect(img).toHaveAttribute("src", "https://x/netflix.png");
+  });
+
   it("caps the hero product-preview composition at three cards", async () => {
     const products = [
       product,

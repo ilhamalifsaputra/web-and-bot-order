@@ -282,7 +282,7 @@ export default function HomePage() {
                     </span>
                     <span className="min-w-0">
                       <span className="block truncate text-sm font-semibold text-white">{p.name}</span>
-                      <Price value={p.from_price} fx={fx} size="text-xs" />
+                      <Price value={p.from_price} fx={fx} size="text-xs" tone="light" />
                     </span>
                   </Link>
                 </motion.div>

@@ -201,3 +201,37 @@ export async function getVoucherStats(
   }
   return { total: all.length, active, expiringSoon, usedUp };
 }
+
+/** Toggle-only bulk action — can't fail per-item, so a simple updateMany
+ *  suffices (mirrors bulkSetCatalogProductsActive, packages/db/src/crud/catalog.ts:212-216). */
+export async function bulkSetVouchersActive(db: Db, ids: number[], isActive: boolean): Promise<number> {
+  if (!ids.length) return 0;
+  const res = await db.voucher.updateMany({ where: { id: { in: ids } }, data: { isActive } });
+  return res.count;
+}
+
+/** Delete can fail per-item (a used voucher can't be deleted — same guard as
+ *  the existing single-id deleteVoucher), so this needs the richer
+ *  succeeded/failed shape — mirrors POST /api/orders/bulk-action's
+ *  loop-and-collect pattern (apps/web-admin/src/routes/api/orders.ts:455-485). */
+export async function bulkDeleteVouchers(
+  db: Db,
+  ids: number[],
+): Promise<{ succeeded: number[]; failed: { id: number; error: string }[] }> {
+  const succeeded: number[] = [];
+  const failed: { id: number; error: string }[] = [];
+  for (const id of ids) {
+    const voucher = await db.voucher.findUnique({ where: { id } });
+    if (!voucher) {
+      failed.push({ id, error: "voucher not found" });
+      continue;
+    }
+    if (voucher.usedCount > 0) {
+      failed.push({ id, error: "cannot delete a voucher that has been used" });
+      continue;
+    }
+    await db.voucher.delete({ where: { id } });
+    succeeded.push(id);
+  }
+  return { succeeded, failed };
+}

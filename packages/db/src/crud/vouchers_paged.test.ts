@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { resetDb } from "../../../../tests/helpers/sampleData";
-import { createVoucher, listVouchersPaged, deriveVoucherStatus, getVoucherStats } from "@app/db";
+import { createVoucher, listVouchersPaged, deriveVoucherStatus, getVoucherStats, bulkSetVouchersActive, bulkDeleteVouchers } from "@app/db";
 import { VoucherType } from "@app/core/enums";
 
 let db: TestDb;
@@ -135,5 +135,46 @@ describe("getVoucherStats", () => {
   it("returns all zeros when there are no vouchers", async () => {
     const stats = await getVoucherStats(prisma);
     expect(stats).toEqual({ total: 0, active: 0, expiringSoon: 0, usedUp: 0 });
+  });
+});
+
+describe("bulkSetVouchersActive", () => {
+  it("activates/deactivates the given ids and returns the updated count", async () => {
+    const v1 = await createVoucher(prisma, { code: "BULK1", type: VoucherType.PERCENT, value: "1" });
+    const v2 = await createVoucher(prisma, { code: "BULK2", type: VoucherType.PERCENT, value: "1" });
+    await createVoucher(prisma, { code: "UNTOUCHED", type: VoucherType.PERCENT, value: "1" });
+
+    const count = await bulkSetVouchersActive(prisma, [v1.id, v2.id], false);
+    expect(count).toBe(2);
+
+    const reloaded1 = await prisma.voucher.findUnique({ where: { id: v1.id } });
+    const untouched = await prisma.voucher.findUnique({ where: { code: "UNTOUCHED" } });
+    expect(reloaded1!.isActive).toBe(false);
+    expect(untouched!.isActive).toBe(true);
+  });
+
+  it("returns 0 for an empty id list", async () => {
+    expect(await bulkSetVouchersActive(prisma, [], true)).toBe(0);
+  });
+});
+
+describe("bulkDeleteVouchers", () => {
+  it("deletes eligible vouchers and skips used ones with an error entry", async () => {
+    const v1 = await createVoucher(prisma, { code: "DEL1", type: VoucherType.PERCENT, value: "1" });
+    const used = await createVoucher(prisma, { code: "USEDDEL", type: VoucherType.PERCENT, value: "1" });
+    await prisma.voucher.update({ where: { id: used.id }, data: { usedCount: 1 } });
+
+    const result = await bulkDeleteVouchers(prisma, [v1.id, used.id]);
+    expect(result.succeeded).toEqual([v1.id]);
+    expect(result.failed).toEqual([{ id: used.id, error: "cannot delete a voucher that has been used" }]);
+
+    expect(await prisma.voucher.findUnique({ where: { id: v1.id } })).toBeNull();
+    expect(await prisma.voucher.findUnique({ where: { id: used.id } })).not.toBeNull();
+  });
+
+  it("reports a not-found error for a nonexistent id", async () => {
+    const result = await bulkDeleteVouchers(prisma, [999999]);
+    expect(result.succeeded).toEqual([]);
+    expect(result.failed).toEqual([{ id: 999999, error: "voucher not found" }]);
   });
 });

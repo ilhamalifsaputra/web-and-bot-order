@@ -1,0 +1,180 @@
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import type { PrismaClient } from "@prisma/client";
+import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
+import { resetDb } from "../../../../tests/helpers/sampleData";
+import { createVoucher, listVouchersPaged, deriveVoucherStatus, getVoucherStats, bulkSetVouchersActive, bulkDeleteVouchers } from "@app/db";
+import { VoucherType } from "@app/core/enums";
+
+let db: TestDb;
+let prisma: PrismaClient;
+
+beforeAll(async () => {
+  db = await makeTestDb();
+  prisma = db.prisma;
+});
+afterAll(async () => {
+  await db.cleanup();
+});
+beforeEach(async () => {
+  await resetDb(prisma);
+});
+
+describe("deriveVoucherStatus", () => {
+  const now = new Date("2026-07-24T00:00:00.000Z");
+
+  it("returns expired when expiresAt is in the past, regardless of isActive", () => {
+    expect(deriveVoucherStatus({ isActive: true, expiresAt: new Date("2026-07-01"), usageLimit: null, usedCount: 0 }, now)).toBe("expired");
+    expect(deriveVoucherStatus({ isActive: false, expiresAt: new Date("2026-07-01"), usageLimit: null, usedCount: 0 }, now)).toBe("expired");
+  });
+
+  it("returns usedUp when usedCount >= usageLimit and not expired", () => {
+    expect(deriveVoucherStatus({ isActive: true, expiresAt: null, usageLimit: 10, usedCount: 10 }, now)).toBe("usedUp");
+    expect(deriveVoucherStatus({ isActive: true, expiresAt: new Date("2026-08-01"), usageLimit: 5, usedCount: 7 }, now)).toBe("usedUp");
+  });
+
+  it("returns active when isActive, not expired, not used up", () => {
+    expect(deriveVoucherStatus({ isActive: true, expiresAt: null, usageLimit: null, usedCount: 0 }, now)).toBe("active");
+  });
+
+  it("returns null when inactive, not expired, not used up", () => {
+    expect(deriveVoucherStatus({ isActive: false, expiresAt: null, usageLimit: null, usedCount: 0 }, now)).toBeNull();
+  });
+
+  it("prioritizes expired over usedUp", () => {
+    expect(deriveVoucherStatus({ isActive: true, expiresAt: new Date("2026-07-01"), usageLimit: 5, usedCount: 5 }, now)).toBe("expired");
+  });
+});
+
+describe("listVouchersPaged", () => {
+  it("filters by q (code substring, case-insensitive-in-practice via uppercase storage)", async () => {
+    await createVoucher(prisma, { code: "SAVE10", type: VoucherType.PERCENT, value: "10" });
+    await createVoucher(prisma, { code: "WELCOME5", type: VoucherType.FIXED, value: "5" });
+
+    const result = await listVouchersPaged(prisma, { q: "save" });
+    expect(result.rows.map((v) => v.code)).toEqual(["SAVE10"]);
+    expect(result.total).toBe(1);
+  });
+
+  it("returns everything when q is empty or omitted", async () => {
+    await createVoucher(prisma, { code: "A1", type: VoucherType.PERCENT, value: "1" });
+    await createVoucher(prisma, { code: "B2", type: VoucherType.PERCENT, value: "1" });
+
+    expect((await listVouchersPaged(prisma, {})).total).toBe(2);
+    expect((await listVouchersPaged(prisma, { q: "" })).total).toBe(2);
+  });
+
+  it("filters by status across the WHOLE dataset, not just the requested page", async () => {
+    // 3 expired vouchers total; request page 1 with limit 2 and status=expired —
+    // total must reflect all 3, not just what's on this page (the exact class
+    // of bug the Payments plan fixed for KPI cards).
+    const past = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    for (const code of ["EXP1", "EXP2", "EXP3"]) {
+      await createVoucher(prisma, { code, type: VoucherType.PERCENT, value: "1", expiresAt: past });
+    }
+    await createVoucher(prisma, { code: "ACTIVE1", type: VoucherType.PERCENT, value: "1" });
+
+    const page1 = await listVouchersPaged(prisma, { status: "expired", limit: 2, offset: 0 });
+    expect(page1.rows).toHaveLength(2);
+    expect(page1.total).toBe(3);
+
+    const page2 = await listVouchersPaged(prisma, { status: "expired", limit: 2, offset: 2 });
+    expect(page2.rows).toHaveLength(1);
+    expect(page2.total).toBe(3);
+  });
+
+  it("filters by usedUp status (cross-column usedCount >= usageLimit)", async () => {
+    const v = await createVoucher(prisma, { code: "USEDUP1", type: VoucherType.PERCENT, value: "1", usageLimit: 2 });
+    await prisma.voucher.update({ where: { id: v.id }, data: { usedCount: 2 } });
+    await createVoucher(prisma, { code: "NOTUSED", type: VoucherType.PERCENT, value: "1", usageLimit: 5 });
+
+    const result = await listVouchersPaged(prisma, { status: "usedUp" });
+    expect(result.rows.map((r) => r.code)).toEqual(["USEDUP1"]);
+    expect(result.total).toBe(1);
+  });
+
+  it("combines q and status filters", async () => {
+    const past = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    await createVoucher(prisma, { code: "COMBOEXP", type: VoucherType.PERCENT, value: "1", expiresAt: past });
+    await createVoucher(prisma, { code: "COMBOACTIVE", type: VoucherType.PERCENT, value: "1" });
+
+    const result = await listVouchersPaged(prisma, { q: "combo", status: "expired" });
+    expect(result.rows.map((r) => r.code)).toEqual(["COMBOEXP"]);
+  });
+
+  it("respects limit/offset when no status filter is given (plain DB pagination path)", async () => {
+    for (let i = 0; i < 5; i++) {
+      await createVoucher(prisma, { code: `PLAIN${i}`, type: VoucherType.PERCENT, value: "1" });
+    }
+    const result = await listVouchersPaged(prisma, { limit: 2, offset: 0 });
+    expect(result.rows).toHaveLength(2);
+    expect(result.total).toBe(5);
+  });
+});
+
+describe("getVoucherStats", () => {
+  it("counts total/active/expiringSoon/usedUp as GLOBAL aggregates, unaffected by pagination", async () => {
+    const now = new Date("2026-07-24T00:00:00.000Z");
+    const past = new Date("2026-07-01T00:00:00.000Z");
+    const in3Days = new Date("2026-07-27T00:00:00.000Z");
+    const in30Days = new Date("2026-08-23T00:00:00.000Z");
+
+    await createVoucher(prisma, { code: "ACTIVE1", type: VoucherType.PERCENT, value: "1" }); // active, no expiry
+    await createVoucher(prisma, { code: "EXPIRING1", type: VoucherType.PERCENT, value: "1", expiresAt: in3Days }); // active + expiring soon
+    await createVoucher(prisma, { code: "FAR1", type: VoucherType.PERCENT, value: "1", expiresAt: in30Days }); // active, not expiring soon
+    await createVoucher(prisma, { code: "EXPIRED1", type: VoucherType.PERCENT, value: "1", expiresAt: past }); // expired
+    const usedUpV = await createVoucher(prisma, { code: "USEDUP1", type: VoucherType.PERCENT, value: "1", usageLimit: 1 });
+    await prisma.voucher.update({ where: { id: usedUpV.id }, data: { usedCount: 1 } }); // used up
+
+    const stats = await getVoucherStats(prisma, now);
+    expect(stats.total).toBe(5);
+    expect(stats.active).toBe(3); // ACTIVE1, EXPIRING1, FAR1
+    expect(stats.expiringSoon).toBe(1); // EXPIRING1 only
+    expect(stats.usedUp).toBe(1); // USEDUP1
+  });
+
+  it("returns all zeros when there are no vouchers", async () => {
+    const stats = await getVoucherStats(prisma);
+    expect(stats).toEqual({ total: 0, active: 0, expiringSoon: 0, usedUp: 0 });
+  });
+});
+
+describe("bulkSetVouchersActive", () => {
+  it("activates/deactivates the given ids and returns the updated count", async () => {
+    const v1 = await createVoucher(prisma, { code: "BULK1", type: VoucherType.PERCENT, value: "1" });
+    const v2 = await createVoucher(prisma, { code: "BULK2", type: VoucherType.PERCENT, value: "1" });
+    await createVoucher(prisma, { code: "UNTOUCHED", type: VoucherType.PERCENT, value: "1" });
+
+    const count = await bulkSetVouchersActive(prisma, [v1.id, v2.id], false);
+    expect(count).toBe(2);
+
+    const reloaded1 = await prisma.voucher.findUnique({ where: { id: v1.id } });
+    const untouched = await prisma.voucher.findUnique({ where: { code: "UNTOUCHED" } });
+    expect(reloaded1!.isActive).toBe(false);
+    expect(untouched!.isActive).toBe(true);
+  });
+
+  it("returns 0 for an empty id list", async () => {
+    expect(await bulkSetVouchersActive(prisma, [], true)).toBe(0);
+  });
+});
+
+describe("bulkDeleteVouchers", () => {
+  it("deletes eligible vouchers and skips used ones with an error entry", async () => {
+    const v1 = await createVoucher(prisma, { code: "DEL1", type: VoucherType.PERCENT, value: "1" });
+    const used = await createVoucher(prisma, { code: "USEDDEL", type: VoucherType.PERCENT, value: "1" });
+    await prisma.voucher.update({ where: { id: used.id }, data: { usedCount: 1 } });
+
+    const result = await bulkDeleteVouchers(prisma, [v1.id, used.id]);
+    expect(result.succeeded).toEqual([v1.id]);
+    expect(result.failed).toEqual([{ id: used.id, error: "cannot delete a voucher that has been used" }]);
+
+    expect(await prisma.voucher.findUnique({ where: { id: v1.id } })).toBeNull();
+    expect(await prisma.voucher.findUnique({ where: { id: used.id } })).not.toBeNull();
+  });
+
+  it("reports a not-found error for a nonexistent id", async () => {
+    const result = await bulkDeleteVouchers(prisma, [999999]);
+    expect(result.succeeded).toEqual([]);
+    expect(result.failed).toEqual([{ id: 999999, error: "voucher not found" }]);
+  });
+});

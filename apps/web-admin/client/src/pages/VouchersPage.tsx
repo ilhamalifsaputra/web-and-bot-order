@@ -1,12 +1,15 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Copy, Check, Tag, Plus, X, Trash2 } from "lucide-react";
+import { Copy, Check, Tag, Plus, X, Trash2, Ticket, CheckCircle2, Clock, Ban } from "lucide-react";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { FilterBar } from "../components/shared/FilterBar";
+import { SearchBar } from "../components/shared/SearchBar";
+import { StatCard } from "../components/shared/StatCard";
+import { Pagination } from "../components/shared/Pagination";
 import { Button } from "@/components/ui/button";
 import { DateInput } from "../components/shared/DateInput";
 import { Input } from "@/components/ui/input";
@@ -18,6 +21,7 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { toast } from "sonner";
@@ -37,49 +41,81 @@ interface Voucher {
   expiresAtDisplay: string | null;
 }
 
-type VoucherStatus = "active" | "expired" | "usedUp";
-
-/** Precedence: an expired code is "expired" even if never used; a fully-used
- *  code is "usedUp" even if not yet expired; otherwise it's "active" only
- *  when the admin hasn't manually disabled it — a manually-disabled voucher
- *  that's neither expired nor used up matches none of the three status
- *  filters (it's still visible via the existing Active column). */
-function getVoucherStatus(v: Voucher, now: Date): VoucherStatus | null {
-  if (v.expiresAt && new Date(v.expiresAt).getTime() < now.getTime()) return "expired";
-  if (v.usageLimit != null && v.usedCount >= v.usageLimit) return "usedUp";
-  return v.isActive ? "active" : null;
-}
-
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-/** True when the voucher is still genuinely usable (active status) and its
- *  expiry falls within the next 7 days. */
+/** Per-row "Expiring Soon" badge — a display annotation on already-fetched
+ *  rows, not a filter/aggregate, so no pagination-correctness concern here
+ *  (unlike the status Select, which now goes server-side — see useVouchers). */
 function isExpiringSoon(v: Voucher, now: Date): boolean {
   if (!v.expiresAt) return false;
-  if (getVoucherStatus(v, now) !== "active") return false;
+  if (!v.isActive) return false;
+  if (new Date(v.expiresAt).getTime() < now.getTime()) return false; // already expired
+  if (v.usageLimit != null && v.usedCount >= v.usageLimit) return false; // already used up
   const daysLeft = (new Date(v.expiresAt).getTime() - now.getTime()) / MS_PER_DAY;
   return daysLeft >= 0 && daysLeft <= 7;
 }
 
-function useVouchers() {
-  return useQuery<{ vouchers: Voucher[]; types: string[] }>({
-    queryKey: ["vouchers"],
+function useVouchers(q: string, status: string, page: number) {
+  return useQuery<{
+    vouchers: Voucher[];
+    types: string[];
+    total: number;
+    page: number;
+    pageSize: number;
+    stats: { total: number; active: number; expiringSoon: number; usedUp: number };
+  }>({
+    queryKey: ["vouchers", q, status, page],
     queryFn: async () => {
-      const res = await fetch("/api/vouchers");
+      const params = new URLSearchParams({ page: String(page) });
+      if (q) params.set("q", q);
+      if (status) params.set("status", status);
+      const res = await fetch(`/api/vouchers?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to load");
-      return res.json() as Promise<{ vouchers: Voucher[]; types: string[] }>;
+      return res.json();
     },
   });
 }
 
 export function VouchersPage() {
   const qc = useQueryClient();
-  const { data, isError } = useVouchers();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ code: "", type: "PERCENT", value: "", min_purchase: "", usage_limit: "", expires_at: "" });
   const [formError, setFormError] = useState<string | null>(null);
-  const [statusFilter, setStatusFilter] = useState<VoucherStatus | "_all_">("_all_");
   const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [qDraft, setQDraft] = useState("");
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState("");
+  const [page, setPage] = useState(1);
+  useEffect(() => {
+    const timer = setTimeout(() => { setQ(qDraft); setPage(1); }, 300);
+    return () => clearTimeout(timer);
+  }, [qDraft]);
+  const { data, isError } = useVouchers(q, status, page);
+
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  useEffect(() => { setSelected(new Set()); }, [q, status, page]);
+
+  const vouchers = data?.vouchers ?? [];
+  const allSelected = vouchers.length > 0 && vouchers.every(v => selected.has(v.id));
+
+  function toggleSelected(id: number) {
+    setSelected(s => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+  function toggleSelectAll() {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (allSelected) {
+        vouchers.forEach(v => next.delete(v.id));
+      } else {
+        vouchers.forEach(v => next.add(v.id));
+      }
+      return next;
+    });
+  }
 
   function handleCopy(v: Voucher) {
     if (!navigator.clipboard) return;
@@ -117,18 +153,31 @@ export function VouchersPage() {
     onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
+  const bulkAction = useMutation({
+    mutationFn: (vars: { ids: number[]; action: "activate" | "deactivate" | "delete" }) =>
+      apiPost<{ succeeded: number[]; failed: { id: number; error: string }[] }>("/api/vouchers/bulk-action", vars),
+    onSuccess: (result, vars) => {
+      void qc.invalidateQueries({ queryKey: ["vouchers"] });
+      setSelected(new Set());
+      const verb = vars.action === "activate" ? "Activated" : vars.action === "deactivate" ? "Deactivated" : "Deleted";
+      toast.success(
+        result.failed.length > 0
+          ? `${verb} ${result.succeeded.length} of ${vars.ids.length} vouchers — ${result.failed.length} skipped.`
+          : `${verb} ${result.succeeded.length} voucher${result.succeeded.length === 1 ? "" : "s"}.`,
+      );
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
+  });
+
   if (isError) return <PageLayout title="Vouchers"><p className="text-sm text-rust">Failed to load vouchers.</p></PageLayout>;
 
   const now = new Date();
-  const vouchers = data?.vouchers ?? [];
-  const filteredVouchers = statusFilter === "_all_"
-    ? vouchers
-    : vouchers.filter(v => getVoucherStatus(v, now) === statusFilter);
 
   return (
     <PageLayout title="Vouchers">
       <PageHeader
         title="Vouchers"
+        description="Create and manage discount codes."
         actions={
           <Button onClick={() => setShowForm(v => !v)}>
             {showForm ? <X className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
@@ -136,6 +185,13 @@ export function VouchersPage() {
           </Button>
         }
       />
+
+      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="Total Vouchers" value={data?.stats.total ?? 0} icon={Ticket} isLoading={!data} />
+        <StatCard label="Active" value={data?.stats.active ?? 0} icon={CheckCircle2} tone="success" isLoading={!data} />
+        <StatCard label="Expiring Soon" value={data?.stats.expiringSoon ?? 0} icon={Clock} tone="warning" isLoading={!data} />
+        <StatCard label="Used Up" value={data?.stats.usedUp ?? 0} icon={Ban} isLoading={!data} />
+      </div>
 
       {showForm && (
         <Card className="mb-6">
@@ -237,11 +293,17 @@ export function VouchersPage() {
       )}
 
       <FilterBar className="mb-4">
+        <SearchBar
+          value={qDraft}
+          onChange={setQDraft}
+          placeholder="Search voucher code..."
+          className="w-full sm:w-64"
+        />
         <div className="flex flex-col gap-1">
           <label className="text-xs text-ink-soft">Status</label>
           <Select
-            value={statusFilter}
-            onValueChange={v => setStatusFilter(v as VoucherStatus | "_all_")}
+            value={status || "_all_"}
+            onValueChange={v => { setStatus(v === "_all_" ? "" : v); setPage(1); }}
           >
             <SelectTrigger className="w-40"><SelectValue placeholder="All statuses" /></SelectTrigger>
             <SelectContent>
@@ -254,8 +316,61 @@ export function VouchersPage() {
         </div>
       </FilterBar>
 
+      {selected.size > 0 && (
+        <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
+          <span className="text-ink-soft">{selected.size} selected</span>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={bulkAction.isPending}
+            onClick={() => bulkAction.mutate({ ids: Array.from(selected), action: "activate" })}
+          >
+            Activate {selected.size} voucher{selected.size === 1 ? "" : "s"}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={bulkAction.isPending}
+            onClick={() => bulkAction.mutate({ ids: Array.from(selected), action: "deactivate" })}
+          >
+            Deactivate {selected.size} voucher{selected.size === 1 ? "" : "s"}
+          </Button>
+          <ConfirmDialog
+            trigger={
+              <Button size="sm" variant="destructive" disabled={bulkAction.isPending}>
+                Delete {selected.size} voucher{selected.size === 1 ? "" : "s"}
+              </Button>
+            }
+            title={`Delete ${selected.size} voucher${selected.size === 1 ? "" : "s"}?`}
+            description="Vouchers that have already been used are skipped, not deleted."
+            confirmLabel="Delete"
+            onConfirm={() => bulkAction.mutate({ ids: Array.from(selected), action: "delete" })}
+          />
+          <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
+        </div>
+      )}
+
       <DataTable
         columns={[
+          {
+            key: "select",
+            header: (
+              <Checkbox
+                checked={allSelected}
+                onCheckedChange={toggleSelectAll}
+                disabled={vouchers.length === 0}
+                aria-label="Select all vouchers"
+              />
+            ),
+            render: v => (
+              <Checkbox
+                checked={selected.has(v.id)}
+                onCheckedChange={() => toggleSelected(v.id)}
+                onClick={e => e.stopPropagation()}
+                aria-label={`Select voucher ${v.code}`}
+              />
+            ),
+          },
           {
             key: "code",
             header: "Code",
@@ -324,15 +439,26 @@ export function VouchersPage() {
             ),
           },
         ]}
-        data={filteredVouchers}
+        data={data?.vouchers ?? []}
         isLoading={!data}
         keyExtractor={v => v.id}
         empty={
-          statusFilter === "_all_"
-            ? <EmptyState icon={Tag} title="No vouchers found" description="Create your first voucher to offer discounts." />
-            : <EmptyState icon={Tag} title="No matching vouchers" description="Try a different status filter." />
+          status || q
+            ? <EmptyState icon={Tag} title="No matching vouchers" description="Try a different search or status filter." />
+            : <EmptyState icon={Tag} title="No vouchers found" description="Create your first voucher to offer discounts." />
         }
       />
+
+      {data && (
+        <div className="mt-4">
+          <Pagination
+            page={page}
+            pageSize={data.pageSize}
+            total={data.total}
+            onPageChange={setPage}
+          />
+        </div>
+      )}
     </PageLayout>
   );
 }

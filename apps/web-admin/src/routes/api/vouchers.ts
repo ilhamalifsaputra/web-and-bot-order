@@ -3,24 +3,46 @@ import { VoucherType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import {
   prisma,
-  listVouchers,
+  listVouchersPaged,
+  getVoucherStats,
   getVoucherByCode,
   getVoucher,
   createVoucher,
   setVoucherActive,
   deleteVoucher,
+  bulkSetVouchersActive,
+  bulkDeleteVouchers,
   logAdminAction,
+  type VoucherStatus,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { displayDate } from "../../dateDisplay";
 
 const VOUCHER_TYPES = Object.values(VoucherType) as string[];
+const PAGE_SIZE = 50;
+const VOUCHER_STATUSES: readonly VoucherStatus[] = ["active", "expired", "usedUp"];
 
 export default async function vouchersApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/vouchers", { preHandler: currentAdmin }, async (req, reply) => {
-    const vouchers = await listVouchers(prisma);
-    const vouchersWithDisplay = vouchers.map((v) => ({ ...v, expiresAtDisplay: displayDate(v.expiresAt) }));
-    return reply.send({ vouchers: vouchersWithDisplay, types: VOUCHER_TYPES });
+    const q = req.query as Record<string, string | undefined>;
+    const search = q.q?.trim() || null;
+    const status = q.status && (VOUCHER_STATUSES as readonly string[]).includes(q.status) ? (q.status as VoucherStatus) : null;
+    const page = Math.max(Number(q.page) || 1, 1);
+    const offset = (page - 1) * PAGE_SIZE;
+
+    const [{ rows, total }, stats] = await Promise.all([
+      listVouchersPaged(prisma, { q: search, status, limit: PAGE_SIZE, offset }),
+      getVoucherStats(prisma),
+    ]);
+    const vouchersWithDisplay = rows.map((v) => ({ ...v, expiresAtDisplay: displayDate(v.expiresAt) }));
+    return reply.send({
+      vouchers: vouchersWithDisplay,
+      types: VOUCHER_TYPES,
+      total,
+      page,
+      pageSize: PAGE_SIZE,
+      stats,
+    });
   });
 
   app.post("/api/vouchers", { preHandler: csrfProtect }, async (req, reply) => {
@@ -116,5 +138,53 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       targetId: voucherId,
     });
     return reply.send({ ok: true });
+  });
+
+  // Bulk row-selection actions from the Vouchers page toolbar. One endpoint
+  // with an action discriminator (mirrors POST /api/orders/bulk-action,
+  // apps/web-admin/src/routes/api/orders.ts:455-465) — same 50-id cap and
+  // ids-validation shape. activate/deactivate can't fail per-id (a plain
+  // updateMany), so every id is reported succeeded; delete can fail per-id
+  // (a used voucher can't be deleted), so it returns bulkDeleteVouchers's
+  // succeeded/failed shape directly.
+  app.post("/api/vouchers/bulk-action", { preHandler: csrfProtect }, async (req, reply) => {
+    const body = (req.body ?? {}) as { ids?: unknown; action?: unknown };
+    const ids = Array.isArray(body.ids)
+      ? body.ids.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)
+      : [];
+    if (ids.length === 0) {
+      return reply.code(400).send({ error: "Select at least one voucher." });
+    }
+    if (ids.length > 50) {
+      return reply.code(400).send({ error: "Select 50 vouchers or fewer per bulk action." });
+    }
+    const action = body.action;
+    if (action !== "activate" && action !== "deactivate" && action !== "delete") {
+      return reply.code(400).send({ error: "Unknown bulk action." });
+    }
+
+    if (action === "delete") {
+      const result = await bulkDeleteVouchers(prisma, ids);
+      await logAdminAction(prisma, {
+        adminId: req.admin!.userId,
+        action: "voucher_bulk_delete",
+        targetType: "voucher",
+        details:
+          result.failed.length > 0
+            ? `Deleted ${result.succeeded.length} vouchers; skipped ${result.failed.length} already-used.`
+            : `Deleted ${result.succeeded.length} vouchers.`,
+      });
+      return reply.send(result);
+    }
+
+    const isActive = action === "activate";
+    const count = await bulkSetVouchersActive(prisma, ids, isActive);
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: isActive ? "voucher_bulk_activate" : "voucher_bulk_deactivate",
+      targetType: "voucher",
+      details: `${isActive ? "Activated" : "Deactivated"} ${count} vouchers.`,
+    });
+    return reply.send({ succeeded: ids, failed: [] });
   });
 }

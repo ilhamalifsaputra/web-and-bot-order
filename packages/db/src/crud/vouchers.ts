@@ -124,3 +124,114 @@ export async function assertVoucherNotRedeemedByUser(db: Db, voucherId: number, 
   });
   if (existing) throw new ValidationError("error.voucher_already_redeemed");
 }
+
+export type VoucherStatus = "active" | "expired" | "usedUp";
+
+/** Precedence: expired > usedUp > active — a voucher's status can't depend
+ *  on which page it's on, so this is the single source of truth used by both
+ *  server-side status filtering (listVouchersPaged) and the KPI aggregate
+ *  (getVoucherStats). Kept in sync with the client's per-row display logic
+ *  in VouchersPage.tsx (which annotates already-fetched rows, not filters —
+ *  no pagination-correctness risk there). */
+export function deriveVoucherStatus(
+  v: { isActive: boolean; expiresAt: Date | null; usageLimit: number | null; usedCount: number },
+  now: Date = new Date(),
+): VoucherStatus | null {
+  if (v.expiresAt && v.expiresAt.getTime() < now.getTime()) return "expired";
+  if (v.usageLimit != null && v.usedCount >= v.usageLimit) return "usedUp";
+  return v.isActive ? "active" : null;
+}
+
+/**
+ * Paginated + filterable voucher listing for the admin Vouchers page.
+ * Distinct from `listVouchers` (used unmodified by the Telegram bot's admin
+ * panel, apps/order-bot/src/handlers/admin.ts) — that function keeps its
+ * existing plain-array signature untouched.
+ *
+ * `status` depends on a cross-column comparison (usedCount vs usageLimit)
+ * that isn't expressible in a single Prisma `where` clause. Rather than drop
+ * to raw SQL (disallowed, CLAUDE.md), this fetches the `q`-narrowed set (a
+ * single shop's voucher table — small), derives status in JS, then filters
+ * and paginates in JS. This stays correct regardless of page (never scoped
+ * to just the requested page), unlike a client-side-only filter would be.
+ */
+export async function listVouchersPaged(
+  db: Db,
+  opts: { q?: string | null; status?: VoucherStatus | null; limit?: number; offset?: number } = {},
+) {
+  const where: Record<string, unknown> = {};
+  if (opts.q?.trim()) where.code = { contains: opts.q.trim().toUpperCase() };
+
+  const all = await db.voucher.findMany({ where, orderBy: { createdAt: "desc" } });
+  const now = new Date();
+  const filtered = opts.status ? all.filter((v) => deriveVoucherStatus(v, now) === opts.status) : all;
+
+  const offset = opts.offset ?? 0;
+  const limit = opts.limit ?? filtered.length;
+  return { rows: filtered.slice(offset, offset + limit), total: filtered.length };
+}
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/** Global voucher health counts for the admin page's KPI row — always
+ *  computed over the WHOLE table, never scoped to the current search/status
+ *  filter or page (mirrors PaymentsPage's KPI cards, which read
+ *  server-wide aggregates rather than the currently-filtered/paginated set). */
+export async function getVoucherStats(
+  db: Db,
+  now: Date = new Date(),
+): Promise<{ total: number; active: number; expiringSoon: number; usedUp: number }> {
+  const all = await db.voucher.findMany({
+    select: { isActive: true, expiresAt: true, usageLimit: true, usedCount: true },
+  });
+  let active = 0;
+  let expiringSoon = 0;
+  let usedUp = 0;
+  for (const v of all) {
+    const status = deriveVoucherStatus(v, now);
+    if (status === "active") {
+      active++;
+      if (v.expiresAt) {
+        const daysLeft = (v.expiresAt.getTime() - now.getTime()) / MS_PER_DAY;
+        if (daysLeft >= 0 && daysLeft <= 7) expiringSoon++;
+      }
+    } else if (status === "usedUp") {
+      usedUp++;
+    }
+  }
+  return { total: all.length, active, expiringSoon, usedUp };
+}
+
+/** Toggle-only bulk action — can't fail per-item, so a simple updateMany
+ *  suffices (mirrors bulkSetCatalogProductsActive, packages/db/src/crud/catalog.ts:212-216). */
+export async function bulkSetVouchersActive(db: Db, ids: number[], isActive: boolean): Promise<number> {
+  if (!ids.length) return 0;
+  const res = await db.voucher.updateMany({ where: { id: { in: ids } }, data: { isActive } });
+  return res.count;
+}
+
+/** Delete can fail per-item (a used voucher can't be deleted — same guard as
+ *  the existing single-id deleteVoucher), so this needs the richer
+ *  succeeded/failed shape — mirrors POST /api/orders/bulk-action's
+ *  loop-and-collect pattern (apps/web-admin/src/routes/api/orders.ts:455-485). */
+export async function bulkDeleteVouchers(
+  db: Db,
+  ids: number[],
+): Promise<{ succeeded: number[]; failed: { id: number; error: string }[] }> {
+  const succeeded: number[] = [];
+  const failed: { id: number; error: string }[] = [];
+  for (const id of ids) {
+    const voucher = await db.voucher.findUnique({ where: { id } });
+    if (!voucher) {
+      failed.push({ id, error: "voucher not found" });
+      continue;
+    }
+    if (voucher.usedCount > 0) {
+      failed.push({ id, error: "cannot delete a voucher that has been used" });
+      continue;
+    }
+    await db.voucher.delete({ where: { id } });
+    succeeded.push(id);
+  }
+  return { succeeded, failed };
+}

@@ -17,6 +17,7 @@
 - Never send Telegram from the web app directly (not applicable here — no new outbox writes in this plan).
 - All new customer-facing strings go through `t()` against `packages/core/locales/{en,id}.json`, both keysets kept identical.
 - `pnpm typecheck` and `pnpm test` must stay green after every task.
+- **Test commands run from the repo root as `pnpm test -- <file-or-pattern>`.** There is one shared `vitest.config.ts` at the repo root (`environmentMatchGlobs` gives client packages jsdom automatically) — no package has its own `test` script. `pnpm --filter <pkg> test` silently no-ops (empty output, exit 0) instead of erroring, which produces false "all passing" confidence — this bit Task 2's own review once already (packages/db/src/crud/support.test.ts commit `9f59fb5`) before this line was added; do not repeat it.
 
 ---
 
@@ -289,7 +290,7 @@ describe("reopenTicket", () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pnpm --filter @app/db test -- support.test.ts`
+Run: `pnpm test -- support.test.ts`
 Expected: FAIL — `getTicketWithOrder`, `closeTicketByUser`, `reopenTicket`, `TICKET_REOPEN_WINDOW_DAYS` are not exported yet.
 
 - [ ] **Step 3: Implement**
@@ -383,7 +384,7 @@ export async function reopenTicket(
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pnpm --filter @app/db test -- support.test.ts`
+Run: `pnpm test -- support.test.ts`
 Expected: PASS, all tests including the pre-existing `closeTicket atomic guard` / `attachmentUrls` ones.
 
 - [ ] **Step 5: Typecheck**
@@ -661,7 +662,7 @@ In `apps/storefront/test/spa-api.test.ts`, add `OrderStatus` is already imported
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pnpm --filter @app/storefront test -- spa-api.test.ts`
+Run: `pnpm test -- spa-api.test.ts`
 Expected: FAIL — `order_code` is ignored, `/close` and `/reopen` routes don't exist (404 for wrong reason / route-not-found), `order` field missing from the GET response.
 
 - [ ] **Step 3: Implement**
@@ -847,7 +848,7 @@ Add two new routes right after it (still inside `// ---- Support ----`):
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pnpm --filter @app/storefront test -- spa-api.test.ts`
+Run: `pnpm test -- spa-api.test.ts`
 Expected: PASS, all tests including the pre-existing support-ticket ones.
 
 - [ ] **Step 5: Typecheck**
@@ -999,7 +1000,7 @@ In `packages/core/locales/id.json`, insert this block in the same position (righ
 
 - [ ] **Step 2: Verify the two locale files still have identical key sets**
 
-Run: `pnpm --filter @app/storefront test -- ../../client/src/lib/i18n.test.ts` (or wherever the i18n key-parity test lives — if there is a repo-wide key-parity check, run it instead: search for it with `pnpm test -- i18n` first)
+Run: `pnpm test -- i18n` (finds and runs `apps/storefront/client/src/lib/i18n.test.ts`, and any other i18n-named test file in the repo — the single root `vitest.config.ts` covers every package, there is no per-package `test` script)
 Expected: PASS — same key count/set in both files.
 
 - [ ] **Step 3: Commit**
@@ -1175,7 +1176,7 @@ describe("buildTicketTimeline", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @app/storefront-client test -- ticketTimeline.test.ts`
+Run: `pnpm test -- ticketTimeline.test.ts`
 Expected: FAIL — module doesn't exist.
 
 - [ ] **Step 3: Implement**
@@ -1265,7 +1266,7 @@ export function buildTicketTimeline(ticket: TicketTimelineInput, messages: Ticke
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @app/storefront-client test -- ticketTimeline.test.ts`
+Run: `pnpm test -- ticketTimeline.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1329,7 +1330,7 @@ describe("ticketDraft", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @app/storefront-client test -- ticketDraft.test.ts`
+Run: `pnpm test -- ticketDraft.test.ts`
 Expected: FAIL — module doesn't exist.
 
 - [ ] **Step 3: Implement**
@@ -1371,7 +1372,7 @@ export function clearTicketDraft(ticketId: number): void {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @app/storefront-client test -- ticketDraft.test.ts`
+Run: `pnpm test -- ticketDraft.test.ts`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1432,7 +1433,7 @@ describe("TicketStatusBadge", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @app/storefront-client test -- TicketStatusBadge.test.tsx`
+Run: `pnpm test -- TicketStatusBadge.test.tsx`
 Expected: FAIL — module doesn't exist.
 
 - [ ] **Step 3: Implement**
@@ -1478,7 +1479,7 @@ export default function TicketStatusBadge({ value }: { value: string }) {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @app/storefront-client test -- TicketStatusBadge.test.tsx`
+Run: `pnpm test -- TicketStatusBadge.test.tsx`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1573,7 +1574,7 @@ describe("TicketMessageThread", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @app/storefront-client test -- TicketMessageThread.test.tsx`
+Run: `pnpm test -- TicketMessageThread.test.tsx`
 Expected: FAIL — module doesn't exist.
 
 - [ ] **Step 3: Implement**
@@ -1676,7 +1677,7 @@ function MessageBubble({
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @app/storefront-client test -- TicketMessageThread.test.tsx`
+Run: `pnpm test -- TicketMessageThread.test.tsx`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -1819,7 +1820,7 @@ describe("TicketComposer", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @app/storefront-client test -- TicketComposer.test.tsx`
+Run: `pnpm test -- TicketComposer.test.tsx`
 Expected: FAIL — module doesn't exist.
 
 - [ ] **Step 3: Implement**
@@ -1925,7 +1926,7 @@ export default function TicketComposer({
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @app/storefront-client test -- TicketComposer.test.tsx`
+Run: `pnpm test -- TicketComposer.test.tsx`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -2027,7 +2028,7 @@ describe("TicketOrderSummaryCard", () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @app/storefront-client test -- TicketOrderSummaryCard.test.tsx`
+Run: `pnpm test -- TicketOrderSummaryCard.test.tsx`
 Expected: FAIL — module doesn't exist.
 
 - [ ] **Step 3: Implement**
@@ -2117,7 +2118,7 @@ export default function TicketOrderSummaryCard({ order }: { order: TicketOrderSu
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @app/storefront-client test -- TicketOrderSummaryCard.test.tsx`
+Run: `pnpm test -- TicketOrderSummaryCard.test.tsx`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -2163,7 +2164,7 @@ No new import is needed — the test asserts on the literal English copy, matchi
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pnpm --filter @app/storefront-client test -- OrderDetailPage.test.tsx`
+Run: `pnpm test -- OrderDetailPage.test.tsx`
 Expected: FAIL — `scrollIntoView` never called (no `id="credentials"`/no effect yet).
 
 - [ ] **Step 3: Implement**
@@ -2195,7 +2196,7 @@ Add a new `useEffect` right after the existing `useEffect` that handles the 401 
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pnpm --filter @app/storefront-client test -- OrderDetailPage.test.tsx`
+Run: `pnpm test -- OrderDetailPage.test.tsx`
 Expected: PASS, all tests including pre-existing ones.
 
 - [ ] **Step 5: Typecheck**
@@ -2584,7 +2585,7 @@ describe("TicketDetailPage", () => {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `pnpm --filter @app/storefront-client test -- TicketDetailPage.test.tsx`
+Run: `pnpm test -- TicketDetailPage.test.tsx`
 Expected: FAIL — the current page doesn't render a sidebar, quick-reply buttons, or reopen/close flows yet, and `TicketDetailData` mocks include fields the old page ignores.
 
 - [ ] **Step 3: Rewrite the page**
@@ -2832,7 +2833,7 @@ export default function TicketDetailPage() {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `pnpm --filter @app/storefront-client test -- TicketDetailPage.test.tsx`
+Run: `pnpm test -- TicketDetailPage.test.tsx`
 Expected: PASS, all tests.
 
 - [ ] **Step 5: Typecheck**
@@ -2912,7 +2913,7 @@ Add this test to `apps/storefront/client/src/pages/SupportPage.test.tsx`, inside
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `pnpm --filter @app/storefront-client test -- SupportPage.test.tsx`
+Run: `pnpm test -- SupportPage.test.tsx`
 Expected: FAIL — no order picker exists yet, `apiPost` is called without `order_code`.
 
 - [ ] **Step 4: Implement**
@@ -3006,7 +3007,7 @@ Add the picker to the form markup, right before the `<AttachmentPicker ... />` l
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `pnpm --filter @app/storefront-client test -- SupportPage.test.tsx`
+Run: `pnpm test -- SupportPage.test.tsx`
 Expected: PASS, all tests including pre-existing ones.
 
 - [ ] **Step 6: Typecheck**

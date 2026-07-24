@@ -13,7 +13,7 @@ import {
   closeTicket,
   assignTicket,
   resolveTicket,
-  reopenTicket,
+  reopenTicketAdmin,
   classifyTicket,
   isTicketOverdue,
   logAdminAction,
@@ -310,7 +310,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
   app.post("/api/support/:ticketId/reopen", { preHandler: csrfProtect }, async (req, reply) => {
     const ticketId = Number((req.params as { ticketId: string }).ticketId);
     if (!(await getTicket(prisma, ticketId))) return reply.code(404).send({ error: "Ticket not found." });
-    const reopened = await reopenTicket(prisma, ticketId);
+    const reopened = await reopenTicketAdmin(prisma, ticketId);
     if (!reopened) return reply.code(422).send({ error: "Only a closed ticket can be reopened." });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,

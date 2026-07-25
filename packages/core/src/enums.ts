@@ -198,6 +198,13 @@ export const VoucherType = {
 export type VoucherType = (typeof VoucherType)[keyof typeof VoucherType];
 export const zVoucherType = z.nativeEnum(VoucherType);
 
+export const VoucherScope = {
+  ALL: "ALL",
+  SELECTED: "SELECTED",
+} as const;
+export type VoucherScope = (typeof VoucherScope)[keyof typeof VoucherScope];
+export const zVoucherScope = z.nativeEnum(VoucherScope);
+
 export const TicketStatus = {
   OPEN: "OPEN",
   REPLIED: "REPLIED",

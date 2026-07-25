@@ -660,6 +660,7 @@ export function listDenominationsWithFlashInfo(db: Db) {
       id: true,
       name: true,
       price: true,
+      resellerPrice: true,
       isActive: true,
       productId: true,
       deliveryType: true,

@@ -64,6 +64,13 @@ async function resolveAssigneeName(
   return { ok: true, name: assignee.fullName ?? assignee.username ?? `Telegram ID ${assignee.telegramId}` };
 }
 
+/** "ticket" for a count of 1, else "tickets" — the bulk-action audit
+ * summaries read as natural sentences (docs/LOGGING.md's convention), so
+ * "Assigned 1 tickets" isn't acceptable. */
+function pluralTicket(count: number): string {
+  return count === 1 ? "ticket" : "tickets";
+}
+
 /** Shared by the list route (and, once it needs it, an export route) so the
  * filter can't drift between call sites — mirrors `orders.ts`'s
  * `buildOrderFilter`. */
@@ -72,6 +79,7 @@ function buildTicketFilter(q: Record<string, string | undefined>): TicketFilter 
     status: parseCsvFilter(q.status, STATUS_VALUES) as TicketStatus[] | null,
     priority: parseCsvFilter(q.priority, PRIORITY_VALUES) as TicketPriority[] | null,
     assigned: q.assigned === "assigned" || q.assigned === "unassigned" ? q.assigned : null,
+    overdue: q.overdue === "true" ? true : null,
     q: q.q?.trim() || null,
   };
 }
@@ -107,6 +115,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
 
   app.get("/api/support/:ticketId", { preHandler: currentAdmin }, async (req, reply) => {
     const ticketId = Number((req.params as { ticketId: string }).ticketId);
+    if (!Number.isInteger(ticketId)) return reply.code(400).send({ error: "Invalid ticket id." });
     const ticket = await getTicketWithOrder(prisma, ticketId);
     if (!ticket) return reply.code(404).send({ error: "Ticket not found." });
 
@@ -128,8 +137,18 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
         : Promise.resolve([]),
     ]);
 
+    // Every date field the detail page renders gets its own server-computed
+    // `*Display` string here — same "UTC in DB, TIMEZONE on display" rule the
+    // rest of this route already follows for `messages`/`recentOrders`. The
+    // page must never call `new Date(x).toLocaleString()` itself (that
+    // renders in the *browser's* timezone, so two admins in different
+    // timezones would see different times for the same event).
     return reply.send({
-      ticket,
+      ticket: {
+        ...ticket,
+        createdAtDisplay: displayDateTime(ticket.createdAt),
+        order: ticket.order ? { ...ticket.order, createdAtDisplay: displayDate(ticket.order.createdAt) } : null,
+      },
       messages: messages.map((m) => ({ ...m, createdAtDisplay: displayDateTime(m.createdAt) })),
       user: ticketUser,
       customer: {
@@ -138,7 +157,10 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
         recentOrders: recentOrders.map((o) => ({ ...o, createdAtDisplay: displayDate(o.createdAt) })),
         openTicketCount,
       },
-      timeline: { ticket: ticketTimeline, order: orderTimeline },
+      timeline: {
+        ticket: ticketTimeline.map((row) => ({ ...row, createdAtDisplay: displayDateTime(row.createdAt) })),
+        order: orderTimeline.map((row) => ({ ...row, createdAtDisplay: displayDateTime(row.createdAt) })),
+      },
     });
   });
 
@@ -205,6 +227,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
 
   app.post("/api/support/:ticketId/priority", { preHandler: csrfProtect }, async (req, reply) => {
     const ticketId = Number((req.params as { ticketId: string }).ticketId);
+    if (!Number.isInteger(ticketId)) return reply.code(400).send({ error: "Invalid ticket id." });
     const priority = ((req.body as Record<string, string>).priority ?? "").toUpperCase();
     if (!PRIORITY_VALUES.includes(priority)) return reply.code(400).send({ error: "Invalid priority." });
     if (!(await getTicket(prisma, ticketId))) return reply.code(404).send({ error: "Ticket not found." });
@@ -249,16 +272,32 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       if (!resolved.ok) return reply.code(400).send({ error: "Admin not found." });
       const adminName = resolved.name;
       const result = await bulkAssignTickets(prisma, ids, adminId);
+      const summary =
+        adminId !== null
+          ? `Assigned ${result.succeeded.length} ${pluralTicket(result.succeeded.length)} to "${adminName}"`
+          : `Unassigned ${result.succeeded.length} ${pluralTicket(result.succeeded.length)}`;
       await logAdminAction(prisma, {
         adminId: req.admin!.userId,
         action: "ticket_bulk_assign",
         targetType: "ticket",
-        details:
-          (adminId !== null
-            ? `Assigned ${result.succeeded.length} tickets to "${adminName}".`
-            : `Unassigned ${result.succeeded.length} tickets.`) +
-          (result.failed.length > 0 ? ` Skipped ${result.failed.length} not found.` : ""),
+        details: summary + (result.failed.length > 0 ? `; skipped ${result.failed.length} not found.` : "."),
       });
+      // One per-ticket row too (in addition to the summary above) — so a
+      // bulk-assigned ticket's OWN timeline (GET /:ticketId reads
+      // listAuditLogs({ targetType: "ticket", targetId })) isn't empty, the
+      // same as if it had been assigned one at a time via POST /:ticketId/assign.
+      await Promise.all(
+        result.succeeded.map((id) =>
+          logAdminAction(prisma, {
+            adminId: req.admin!.userId,
+            action: "ticket_bulk_assign",
+            targetType: "ticket",
+            targetId: id,
+            details:
+              adminId !== null ? `Assigned ticket #${id} to "${adminName}".` : `Unassigned ticket #${id}.`,
+          }),
+        ),
+      );
       return reply.send(result);
     }
 
@@ -268,14 +307,30 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
         return reply.code(400).send({ error: "Invalid priority." });
       }
       const result = await bulkSetTicketPriority(prisma, ids, priority as TicketPriority);
+      // Possessive: "1 ticket's" vs "2 tickets'" — the plural noun already
+      // ends in "s", so only the singular form needs the extra "s" before
+      // the apostrophe.
+      const possessive = result.succeeded.length === 1 ? "ticket's" : "tickets'";
       await logAdminAction(prisma, {
         adminId: req.admin!.userId,
         action: "ticket_bulk_priority",
         targetType: "ticket",
         details:
-          `Set ${result.succeeded.length} tickets' priority to ${priority}.` +
-          (result.failed.length > 0 ? ` Skipped ${result.failed.length} not found.` : ""),
+          `Set ${result.succeeded.length} ${possessive} priority to ${priority}` +
+          (result.failed.length > 0 ? `; skipped ${result.failed.length} not found.` : "."),
       });
+      // Per-ticket rows — same reasoning as the assign branch above.
+      await Promise.all(
+        result.succeeded.map((id) =>
+          logAdminAction(prisma, {
+            adminId: req.admin!.userId,
+            action: "ticket_bulk_priority",
+            targetType: "ticket",
+            targetId: id,
+            details: `Set ticket #${id}'s priority to ${priority}.`,
+          }),
+        ),
+      );
       return reply.send(result);
     }
 
@@ -286,17 +341,33 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       action: "ticket_bulk_close",
       targetType: "ticket",
       details:
-        result.failed.length > 0
-          ? `Closed ${result.succeeded.length} tickets; skipped ${result.failed.length} not found.`
-          : `Closed ${result.succeeded.length} tickets.`,
+        `Closed ${result.succeeded.length} ${pluralTicket(result.succeeded.length)}` +
+        (result.failed.length > 0 ? `; skipped ${result.failed.length} not found.` : "."),
     });
+    // Per-ticket rows — same reasoning as the other two branches above.
+    await Promise.all(
+      result.succeeded.map((id) =>
+        logAdminAction(prisma, {
+          adminId: req.admin!.userId,
+          action: "ticket_bulk_close",
+          targetType: "ticket",
+          targetId: id,
+          details: `Closed ticket #${id}.`,
+        }),
+      ),
+    );
     return reply.send(result);
   });
 
   // Photo preview for a ticket's attached screenshot: proxies Telegram's
-  // getFile → file redirect so the admin panel never needs the bot token
-  // client-side. Admin-gated (GET, no CSRF needed) since a ticket's
-  // photoFileIds could otherwise be used to fish for Telegram file_ids.
+  // getFile → file *bytes* (not a redirect) so the admin panel — and the
+  // admin's own browser network log / HTTP cache — never sees the bot token.
+  // A redirect to the Telegram file URL would put the token straight into the
+  // `Location` header sent to the browser; `bot_token` is a super-admin-only
+  // SECRET_KEY everywhere else in this app (settings.ts), so this route must
+  // not leak it to any admin who can merely view a ticket. Admin-gated (GET,
+  // no CSRF needed) since a ticket's photoFileIds could otherwise be used to
+  // fish for Telegram file_ids.
   app.get("/api/support/photo/:fileId", { preHandler: currentAdmin }, async (req, reply) => {
     const fileId = (req.params as { fileId: string }).fileId;
     const creds = await resolveBotCredentials(prisma);
@@ -307,6 +378,17 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
     if (!result.ok) {
       return reply.code(502).send({ error: "Could not retrieve the photo from Telegram." });
     }
-    return reply.redirect(`https://api.telegram.org/file/bot${creds.botToken}/${result.filePath}`);
+    let upstream: Response;
+    try {
+      upstream = await fetch(`https://api.telegram.org/file/bot${creds.botToken}/${result.filePath}`);
+    } catch {
+      // Never interpolate the token into a log/error — even on a network failure.
+      return reply.code(502).send({ error: "Could not retrieve the photo from Telegram." });
+    }
+    if (!upstream.ok) {
+      return reply.code(502).send({ error: "Could not retrieve the photo from Telegram." });
+    }
+    reply.header("content-type", upstream.headers.get("content-type") ?? "image/jpeg");
+    return reply.send(Buffer.from(await upstream.arrayBuffer()));
   });
 }

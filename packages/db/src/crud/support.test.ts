@@ -394,6 +394,33 @@ describe("listTicketsPaged / countTickets — filtering + pagination", () => {
     expect(sorted.map((t) => t.id)).toEqual([urgent.id, medium.id, low.id]);
   });
 
+  it("sort:priority is a TRUE global ORDER BY — surfaces an URGENT ticket that is NOT among the newest page's rows (not the old fetch-page-then-sort-in-memory shortcut)", async () => {
+    const user = await makeUser(1050n);
+    const pageSize = 20;
+
+    // The very first ticket created (so it's the OLDEST — dead last in any
+    // newest-first fetch) is URGENT. Everything created after it is MEDIUM,
+    // and there are more than `pageSize` of them, so a "fetch page 1
+    // newest-first, then sort just that page" implementation would never
+    // even see this ticket on page 1 — it fixes the exact regression this
+    // test guards against.
+    const urgent = await createTicket(prisma, user.id, "urgent but ancient");
+    await prisma.supportTicket.update({ where: { id: urgent.id }, data: { priority: TicketPriority.URGENT } });
+    for (let i = 0; i < pageSize + 5; i++) {
+      await createTicket(prisma, user.id, `newer medium ${i}`);
+    }
+
+    // Sanity check: confirm the urgent ticket genuinely is NOT among the
+    // newest `pageSize` rows by creation time — otherwise this test would
+    // pass even against the old buggy implementation.
+    const newestPage = await listTicketsPaged(prisma, { sort: "newest", limit: pageSize, offset: 0 });
+    expect(newestPage.map((t) => t.id)).not.toContain(urgent.id);
+
+    const page1ByPriority = await listTicketsPaged(prisma, { sort: "priority", limit: pageSize, offset: 0 });
+    expect(page1ByPriority[0]!.id).toBe(urgent.id);
+    expect(page1ByPriority.map((t) => t.id)).toContain(urgent.id);
+  });
+
   it("populates the related user (the bug fix listOpenTickets doesn't have)", async () => {
     const user = await makeUser(1010n, { fullName: "Populated User" });
     await createTicket(prisma, user.id, "hi");

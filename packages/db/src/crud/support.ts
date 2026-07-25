@@ -1,7 +1,7 @@
 /**
  * Support tickets + ticket messages — port of those sections of Python crud.py.
  */
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { TicketStatus, TicketPriority, SenderType } from "@app/core/enums";
 import { addDays, addMinutes, startOfDayUtc } from "@app/core/datetime";
 import type { Db } from "./_types";
@@ -285,38 +285,104 @@ function ticketWhere(f: TicketFilter, cutoff: Date): Prisma.SupportTicketWhereIn
   return where;
 }
 
+/** Same predicate as `ticketWhere`, translated into a parameterized raw-SQL
+ * `WHERE` clause (no leading `WHERE` keyword) — used only by `sort:
+ * "priority"` below, which needs a real `ORDER BY` across every matching row,
+ * not just the current page (Prisma/SQLite can't express a custom enum-rank
+ * `orderBy` directly, so there's no way to do this through the query builder
+ * alone). Every value that can come from request input (`q`, the CSV
+ * status/priority filters) is passed through Prisma's tagged-template
+ * parameter binding — never string-interpolated — so this can't become a
+ * SQL-injection vector. Column names are the raw `support_tickets`/`users`
+ * table columns (see the `@map`s on `SupportTicket`/`User` in schema.prisma),
+ * not the Prisma field names. */
+function ticketWhereRaw(f: TicketFilter, cutoff: Date): Prisma.Sql {
+  const conditions: Prisma.Sql[] = [];
+  if (f.status != null) {
+    conditions.push(
+      Array.isArray(f.status)
+        ? Prisma.sql`status IN (${Prisma.join(f.status)})`
+        : Prisma.sql`status = ${f.status}`,
+    );
+  }
+  if (f.priority != null) {
+    conditions.push(
+      Array.isArray(f.priority)
+        ? Prisma.sql`priority IN (${Prisma.join(f.priority)})`
+        : Prisma.sql`priority = ${f.priority}`,
+    );
+  }
+  if (f.assigned === "assigned") conditions.push(Prisma.sql`admin_id IS NOT NULL`);
+  else if (f.assigned === "unassigned") conditions.push(Prisma.sql`admin_id IS NULL`);
+  if (f.adminId != null) conditions.push(Prisma.sql`admin_id = ${f.adminId}`);
+  if (f.overdue) {
+    conditions.push(Prisma.sql`status = ${TicketStatus.OPEN}`);
+    conditions.push(Prisma.sql`replied_at IS NULL`);
+    conditions.push(Prisma.sql`created_at < ${cutoff}`);
+  }
+  if (f.q) {
+    const term = `%${f.q.trim()}%`;
+    conditions.push(
+      Prisma.sql`(message LIKE ${term} OR user_id IN (SELECT id FROM users WHERE full_name LIKE ${term} OR username LIKE ${term}))`,
+    );
+  }
+  return conditions.length > 0 ? Prisma.join(conditions, " AND ") : Prisma.sql`1=1`;
+}
+
+/** Ordered ticket ids for `sort: "priority"`, ranked URGENT→HIGH→MEDIUM→LOW
+ * (ties broken newest-first) across ALL matching rows via a real `ORDER BY`
+ * — not just the current page. Returns ids only; the caller re-fetches the
+ * full rows (with the `user` relation) via a normal Prisma `findMany` and
+ * re-sorts in memory to match this order, rather than hand-writing the
+ * `user` join here — simpler and safer for the same result. */
+async function listTicketIdsByPriorityRank(
+  db: Db,
+  opts: TicketFilter,
+  cutoff: Date,
+  limit: number,
+  offset: number,
+): Promise<number[]> {
+  const whereSql = ticketWhereRaw(opts, cutoff);
+  const rows = await db.$queryRaw<{ id: number }[]>`
+    SELECT id FROM support_tickets
+    WHERE ${whereSql}
+    ORDER BY
+      CASE priority
+        WHEN 'URGENT' THEN 0
+        WHEN 'HIGH' THEN 1
+        WHEN 'MEDIUM' THEN 2
+        WHEN 'LOW' THEN 3
+        ELSE 4
+      END,
+      created_at DESC
+    LIMIT ${limit} OFFSET ${offset}
+  `;
+  return rows.map((r) => r.id);
+}
+
 /** Paged, filtered, sorted ticket list for the admin Support/Tickets page —
  * unlike `listOpenTickets`, this actually populates `user` (the bug fix). */
 export async function listTicketsPaged(
   db: Db,
   opts: TicketFilter & { limit?: number; offset?: number; sort?: "newest" | "oldest" | "priority" } = {},
 ) {
-  const where = ticketWhere(opts, overdueCutoff());
+  const cutoff = overdueCutoff();
   const limit = opts.limit ?? 50;
   const offset = opts.offset ?? 0;
 
   if (opts.sort === "priority") {
-    // Prisma/SQLite can't express "custom enum order" in `orderBy` directly.
-    // Fetch newest-first, then stable-sort the page by priority rank —
-    // callers never see the difference from a "real" ORDER BY.
-    const rank: Record<string, number> = {
-      [TicketPriority.URGENT]: 0,
-      [TicketPriority.HIGH]: 1,
-      [TicketPriority.MEDIUM]: 2,
-      [TicketPriority.LOW]: 3,
-    };
-    const rows = await db.supportTicket.findMany({
-      where,
-      include: { user: true },
-      orderBy: { createdAt: "desc" },
-      skip: offset,
-      take: limit,
-    });
-    return [...rows].sort((a, b) => (rank[a.priority] ?? 99) - (rank[b.priority] ?? 99));
+    // A real global ORDER BY (via raw SQL — see ticketWhereRaw), not a
+    // fetch-then-sort-within-the-page shortcut: an URGENT ticket on "page 2"
+    // of newest-first must still surface here.
+    const ids = await listTicketIdsByPriorityRank(db, opts, cutoff, limit, offset);
+    if (ids.length === 0) return [];
+    const rows = await db.supportTicket.findMany({ where: { id: { in: ids } }, include: { user: true } });
+    const rowById = new Map(rows.map((r) => [r.id, r]));
+    return ids.map((id) => rowById.get(id)).filter((r): r is (typeof rows)[number] => r !== undefined);
   }
 
   return db.supportTicket.findMany({
-    where,
+    where: ticketWhere(opts, cutoff),
     include: { user: true },
     orderBy: { createdAt: opts.sort === "oldest" ? "asc" : "desc" },
     skip: offset,

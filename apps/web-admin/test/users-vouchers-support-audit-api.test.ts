@@ -336,6 +336,21 @@ describe("GET /api/support", () => {
     expect(freshItem?.isOverdue).toBe(false);
   });
 
+  it("filters by overdue=true — only OPEN, never-replied tickets older than the 4h cutoff", async () => {
+    const overdue = await createTicket(prisma, customerId, "Old open ticket");
+    await prisma.supportTicket.update({
+      where: { id: overdue.id },
+      data: { createdAt: addMinutes(new Date(), -300) },
+    });
+    const fresh = await createTicket(prisma, customerId, "Fresh open ticket");
+
+    const res = await get("/api/support?overdue=true", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { items: { id: number }[] };
+    expect(body.items.map((t) => t.id)).toEqual([overdue.id]);
+    expect(body.items.map((t) => t.id)).not.toContain(fresh.id);
+  });
+
   it("requires auth (anon → 303 /login)", async () => {
     const res = await get("/api/support", null);
     expect(res.statusCode).toBe(303);
@@ -378,6 +393,30 @@ describe("GET /api/support/:ticketId", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json() as { timeline: { ticket: unknown[]; order: unknown[] } };
     expect(body.timeline.order.length).toBeGreaterThan(0);
+  });
+
+  it("stamps server-side *Display timestamps on the ticket, its order, and every timeline row — never leaves it to the browser's local timezone", async () => {
+    const order = await prisma.order.create({
+      data: { orderCode: "ORD-t2", userId: customerId, subtotalAmount: "1", totalAmount: "1" },
+    });
+    await prisma.auditLog.create({
+      data: { adminId, action: "approve_order", targetType: "order", targetId: order.id, details: "test" },
+    });
+    const ticket = await createTicket(prisma, customerId, "Order issue", null, null, order.id);
+    await postJson(`/api/support/${ticket.id}/reply`, cookie, csrf, { content: "On it" });
+
+    const res = await get(`/api/support/${ticket.id}`, cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      ticket: { createdAtDisplay: string | null; order: { createdAtDisplay: string | null } | null };
+      timeline: { ticket: { createdAtDisplay: string | null }[]; order: { createdAtDisplay: string | null }[] };
+    };
+    expect(typeof body.ticket.createdAtDisplay).toBe("string");
+    expect(body.ticket.order?.createdAtDisplay).toEqual(expect.any(String));
+    expect(body.timeline.ticket.length).toBeGreaterThan(0);
+    for (const row of body.timeline.ticket) expect(typeof row.createdAtDisplay).toBe("string");
+    expect(body.timeline.order.length).toBeGreaterThan(0);
+    for (const row of body.timeline.order) expect(typeof row.createdAtDisplay).toBe("string");
   });
 
   it("404s for a non-existent ticket", async () => {
@@ -429,7 +468,7 @@ describe("POST /api/support/:ticketId/priority", () => {
 });
 
 describe("POST /api/support/bulk-action", () => {
-  it("assign: happy path assigns all ids and audits a single summary row", async () => {
+  it("assign: happy path assigns all ids, audits one summary row plus one per-ticket row each", async () => {
     const t1 = await createTicket(prisma, customerId, "One");
     const t2 = await createTicket(prisma, customerId, "Two");
     const res = await postJson("/api/support/bulk-action", cookie, csrf, {
@@ -442,8 +481,17 @@ describe("POST /api/support/bulk-action", () => {
     expect(body.succeeded.sort()).toEqual([t1.id, t2.id].sort());
     expect(body.failed).toEqual([]);
     expect((await prisma.supportTicket.findUniqueOrThrow({ where: { id: t1.id } })).adminId).toBe(adminId);
-    const audits = await prisma.auditLog.findMany({ where: { action: "ticket_bulk_assign" } });
-    expect(audits).toHaveLength(1);
+    const summaryRows = await prisma.auditLog.findMany({
+      where: { action: "ticket_bulk_assign", targetId: null },
+    });
+    expect(summaryRows).toHaveLength(1);
+    // Each affected ticket ALSO gets its own row (targetId set) — so its own
+    // detail-page timeline (which reads listAuditLogs({targetType, targetId}))
+    // isn't empty, the same as a single-ticket /assign call would produce.
+    const t1Row = await prisma.auditLog.findFirst({ where: { action: "ticket_bulk_assign", targetId: t1.id } });
+    const t2Row = await prisma.auditLog.findFirst({ where: { action: "ticket_bulk_assign", targetId: t2.id } });
+    expect(t1Row?.details).toBe(`Assigned ticket #${t1.id} to "Admin".`);
+    expect(t2Row?.details).toBe(`Assigned ticket #${t2.id} to "Admin".`);
   });
 
   it("assign: a non-existent id in the batch is reported as failed, not falsely echoed as succeeded", async () => {
@@ -461,11 +509,12 @@ describe("POST /api/support/bulk-action", () => {
     expect(body.succeeded).toEqual([t1.id]);
     expect(body.failed).toEqual([{ id: 999999, error: "ticket not found" }]);
     expect((await prisma.supportTicket.findUniqueOrThrow({ where: { id: t1.id } })).adminId).toBe(adminId);
-    const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_bulk_assign" } });
-    expect(audit!.details).toContain("Assigned 1 tickets");
+    const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_bulk_assign", targetId: null } });
+    expect(audit!.details).toContain("Assigned 1 ticket");
+    expect(audit!.details).not.toContain("Assigned 1 tickets");
   });
 
-  it("priority: happy path bulk-sets priority and audits", async () => {
+  it("priority: happy path bulk-sets priority and audits both a summary row and a per-ticket row", async () => {
     const t1 = await createTicket(prisma, customerId, "One");
     const res = await postJson("/api/support/bulk-action", cookie, csrf, {
       ids: [t1.id],
@@ -474,8 +523,13 @@ describe("POST /api/support/bulk-action", () => {
     });
     expect(res.statusCode).toBe(200);
     expect((await prisma.supportTicket.findUniqueOrThrow({ where: { id: t1.id } })).priority).toBe("LOW");
-    const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_bulk_priority" } });
-    expect(audit).toBeTruthy();
+    const summary = await prisma.auditLog.findFirst({
+      where: { action: "ticket_bulk_priority", targetId: null },
+    });
+    expect(summary).toBeTruthy();
+    expect(summary!.details).toBe("Set 1 ticket's priority to LOW.");
+    const t1Row = await prisma.auditLog.findFirst({ where: { action: "ticket_bulk_priority", targetId: t1.id } });
+    expect(t1Row?.details).toBe(`Set ticket #${t1.id}'s priority to LOW.`);
   });
 
   it("priority: a non-existent id in the batch is reported as failed, not falsely echoed as succeeded", async () => {
@@ -502,13 +556,31 @@ describe("POST /api/support/bulk-action", () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it("close: happy path closes all ids and audits a single summary row", async () => {
+  it("close: happy path closes all ids, audits one summary row plus one per-ticket row", async () => {
     const t1 = await createTicket(prisma, customerId, "One");
     const res = await postJson("/api/support/bulk-action", cookie, csrf, { ids: [t1.id], action: "close" });
     expect(res.statusCode).toBe(200);
     expect((await prisma.supportTicket.findUniqueOrThrow({ where: { id: t1.id } })).status).toBe("CLOSED");
-    const audits = await prisma.auditLog.findMany({ where: { action: "ticket_bulk_close" } });
-    expect(audits).toHaveLength(1);
+    const summaryRows = await prisma.auditLog.findMany({ where: { action: "ticket_bulk_close", targetId: null } });
+    expect(summaryRows).toHaveLength(1);
+    expect(summaryRows[0]!.details).toBe("Closed 1 ticket.");
+    const t1Row = await prisma.auditLog.findFirst({ where: { action: "ticket_bulk_close", targetId: t1.id } });
+    expect(t1Row?.details).toBe(`Closed ticket #${t1.id}.`);
+  });
+
+  it("close: a bulk-closed ticket's own detail-page timeline shows the per-ticket audit row, not just the bulk summary", async () => {
+    const t1 = await createTicket(prisma, customerId, "One");
+    const res = await postJson("/api/support/bulk-action", cookie, csrf, { ids: [t1.id], action: "close" });
+    expect(res.statusCode).toBe(200);
+
+    const detail = await get(`/api/support/${t1.id}`, cookie);
+    expect(detail.statusCode).toBe(200);
+    const body = detail.json() as { timeline: { ticket: { action: string; details: string | null }[] } };
+    expect(
+      body.timeline.ticket.some(
+        (row) => row.action === "ticket_bulk_close" && row.details === `Closed ticket #${t1.id}.`,
+      ),
+    ).toBe(true);
   });
 
   it("rejects more than 50 ids with 400", async () => {
@@ -548,15 +620,47 @@ describe("GET /api/support/photo/:fileId", () => {
     setFileResolver(realResolver);
   });
 
-  it("happy path: redirects to the resolved Telegram file URL (stubbed, never hits the real network)", async () => {
+  it("happy path: proxies the photo bytes (never redirects the browser to a URL containing the bot token)", async () => {
+    const originalFetch = global.fetch;
     setFileResolver(async (botToken, fileId) => {
       expect(botToken).toBeTruthy();
       expect(fileId).toBe("FAKE_FILE_ID");
       return { ok: true, filePath: "photos/fake.jpg" };
     });
-    const res = await get("/api/support/photo/FAKE_FILE_ID", cookie);
-    expect(res.statusCode).toBe(302);
-    expect(res.headers.location).toMatch(/^https:\/\/api\.telegram\.org\/file\/bot.+\/photos\/fake\.jpg$/);
+    const fakeBytes = Buffer.from("fake-jpeg-bytes");
+    global.fetch = (async (url: string) => {
+      // The bot token DOES appear in this server-to-Telegram fetch URL — that's
+      // expected (it's a direct backend call, never sent to the browser). What
+      // must NOT happen is the token reaching the client via a redirect.
+      expect(url).toMatch(/^https:\/\/api\.telegram\.org\/file\/bot.+\/photos\/fake\.jpg$/);
+      return {
+        ok: true,
+        headers: new Map([["content-type", "image/jpeg"]]) as unknown as Headers,
+        arrayBuffer: async () => fakeBytes.buffer.slice(fakeBytes.byteOffset, fakeBytes.byteOffset + fakeBytes.byteLength),
+      } as unknown as Response;
+    }) as typeof fetch;
+    try {
+      const res = await get("/api/support/photo/FAKE_FILE_ID", cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toBe("image/jpeg");
+      expect(res.headers.location).toBeUndefined();
+      expect(res.rawPayload.toString()).toBe("fake-jpeg-bytes");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("returns 502 when the upstream Telegram file fetch itself fails (never leaks the token in the response)", async () => {
+    const originalFetch = global.fetch;
+    setFileResolver(async () => ({ ok: true, filePath: "photos/fake.jpg" }));
+    global.fetch = (async () => ({ ok: false, headers: new Map(), arrayBuffer: async () => new ArrayBuffer(0) })) as unknown as typeof fetch;
+    try {
+      const res = await get("/api/support/photo/FAKE_FILE_ID", cookie);
+      expect(res.statusCode).toBe(502);
+      expect(JSON.stringify(res.json())).not.toContain(config.BOT_TOKEN);
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 
   it("returns 503 when no bot token is configured", async () => {

@@ -55,14 +55,10 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
       },
       totalSpent,
       orders: orders.map((o) => ({ ...o, createdAtDisplay: displayDate(o.createdAt) })),
-      // `subject` was never a real column (SupportTicket has no such field) —
-      // derive a short display excerpt from `message` instead, same root
-      // cause/fix as the ticket-list route's identical bug.
-      tickets: tickets.map((t) => ({
-        ...t,
-        subject: t.message.length > 60 ? `${t.message.slice(0, 60)}…` : t.message,
-        createdAtDisplay: displayDateTime(t.createdAt),
-      })),
+      // No `subject` field — SupportTicket has no such column, and nothing on
+      // the frontend (UserDetailPage.tsx) reads it; `message` (already on
+      // each ticket via the spread below) is the ticket's own short text.
+      tickets: tickets.map((t) => ({ ...t, createdAtDisplay: displayDateTime(t.createdAt) })),
       ledger: ledger.map((l) => ({ ...l, createdAtDisplay: displayDate(l.createdAt) })),
       roles: ROLES,
     });

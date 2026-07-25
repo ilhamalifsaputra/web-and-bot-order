@@ -207,6 +207,8 @@
   "error.voucher_inactive": "This voucher is no longer active.",
   "error.voucher_min_purchase": "This voucher requires a minimum purchase of {min}.",
   "error.voucher_not_found": "Voucher code not found.",
+  "error.voucher_not_applicable": "This voucher doesn't apply to any items in your cart.",
+  "error.voucher_not_yet_active": "This voucher isn't active yet.",
   "error.voucher_used_up": "This voucher has reached its usage limit.",
   "faq.content": "<b>FAQ</b>\n\n<b>Q: How long does delivery take?</b>\nA: After payment verification, delivery is automatic — usually under 30 minutes during business hours.\n\n<b>Q: What about warranty?</b>\nA: Most accounts include a 30-day replacement warranty. Contact support if anything stops working.\n\n<b>Q: Can I get a refund?</b>\nA: Refunds are considered case by case. We always attempt a replacement first.\n\n<b>Q: Why does the payment amount have odd decimals?</b>\nA: A unique identifier is added to each order for payment matching. Do not round the amount.",
   "help.faq_btn": "❓ FAQ",

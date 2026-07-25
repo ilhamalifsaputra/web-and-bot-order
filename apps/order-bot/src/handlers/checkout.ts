@@ -15,7 +15,7 @@ import { effectiveUnitPrice } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { quantizeMoney } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
-import { DeliveryType, NotificationEvent, OrderCurrency, OrderStatus, PaymentMethod, UserRole } from "@app/core/enums";
+import { DeliveryType, NotificationEvent, OrderCurrency, OrderStatus, PaymentMethod, UserRole, VoucherScope } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import {
@@ -26,6 +26,7 @@ import {
   getBulkPricingForDenomination,
   getVoucherByCode,
   applyVoucherToSubtotal,
+  getVoucherProductIds,
   getUser,
   countUserPendingOrders,
   createOrderDirect,
@@ -200,7 +201,16 @@ async function computeConfirmation(
     try {
       const voucherObj = await getVoucherByCode(prisma, voucherCode);
       if (voucherObj) {
-        const discount = applyVoucherToSubtotal(voucherObj, subtotal);
+        // Single-SKU screen (mirrors createOrderDirect): a SELECTED-scope
+        // voucher either matches this one product entirely or not at all.
+        // ALL-scope (the default) is always eligible, byte-identical to the
+        // pre-scope confirmation screen.
+        let eligibleSubtotal = subtotal;
+        if (voucherObj.scope === VoucherScope.SELECTED) {
+          const scopedProductIds = await getVoucherProductIds(prisma, voucherObj.id);
+          eligibleSubtotal = scopedProductIds.includes(product.productId) ? subtotal : new Decimal(0);
+        }
+        const discount = applyVoucherToSubtotal(voucherObj, subtotal, eligibleSubtotal);
         voucherLine = coreT("checkout.confirm_voucher_line", lang, {
           code: voucherCode,
           discount: formatIdr(discount),

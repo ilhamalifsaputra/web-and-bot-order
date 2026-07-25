@@ -19,7 +19,7 @@
  */
 import type { FastifyPluginAsync } from "fastify";
 import { config } from "@app/core/config";
-import { DeliveryType, OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
+import { DeliveryType, OrderCurrency, OrderStatus, PaymentMethod, VoucherScope } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
@@ -33,6 +33,7 @@ import {
   getBulkPricingForDenomination,
   getVoucherByCode,
   applyVoucherToSubtotal,
+  getVoucherProductIds,
   computeBulkDiscountForCart,
   createOrderFromCart,
   completeCartOrderWithWalletCredit,
@@ -124,6 +125,31 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
       voucherError = "error.voucher_not_found";
     } else {
       try {
+        // Mirrors createOrderFromCart's own scope-eligibility computation
+        // (packages/db/src/crud/orders.ts) — a SELECTED-scope voucher must
+        // quote the SAME discount here as checkout will actually charge, or
+        // this preview would show a bigger discount than the buyer gets (or
+        // let a voucher look valid here only to be rejected at order
+        // creation). ALL-scope (the default) skips straight to
+        // eligibleSubtotal = subtotal, byte-identical to the pre-scope preview.
+        let eligibleSubtotal = subtotal;
+        let eligibleBulkDiscount = bulkDiscount;
+        if (voucher.scope === VoucherScope.SELECTED) {
+          const scopedProductIds = new Set(await getVoucherProductIds(prisma, voucher.id));
+          const eligibleLines = lines.filter((ci) => scopedProductIds.has(ci.product.productId));
+          let eSub = new Decimal(0);
+          for (const ci of eligibleLines) {
+            const unit = effectiveUnitPrice(ci.product, isReseller, pricedAt);
+            eSub = eSub.plus(unit.times(ci.quantity));
+          }
+          eligibleSubtotal = eSub;
+          eligibleBulkDiscount = computeBulkDiscountForCart(
+            eligibleLines as Parameters<typeof computeBulkDiscountForCart>[0],
+            bulkRules,
+            isReseller,
+            pricedAt,
+          );
+        }
         // Cap against the subtotal NET of the bulk discount — the exact input
         // createOrderFromCart uses (packages/db/src/crud/orders.ts, the Money-2
         // fix). Capping against the gross subtotal here made this preview quote
@@ -131,7 +157,12 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
         // charged whenever a cart carried both a bulk rule and a percent
         // voucher, and let a voucher pass its minPurchase check on screen only
         // to be rejected at order creation.
-        voucherDiscount = applyVoucherToSubtotal(voucher, subtotal.minus(bulkDiscount));
+        voucherDiscount = applyVoucherToSubtotal(
+          voucher,
+          subtotal.minus(bulkDiscount),
+          eligibleSubtotal.minus(eligibleBulkDiscount),
+          pricedAt,
+        );
       } catch (e) {
         if (e instanceof ValidationError) voucherError = e.key;
         else throw e;

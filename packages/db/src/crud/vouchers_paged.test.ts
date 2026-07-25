@@ -23,25 +23,40 @@ describe("deriveVoucherStatus", () => {
   const now = new Date("2026-07-24T00:00:00.000Z");
 
   it("returns expired when expiresAt is in the past, regardless of isActive", () => {
-    expect(deriveVoucherStatus({ isActive: true, expiresAt: new Date("2026-07-01"), usageLimit: null, usedCount: 0 }, now)).toBe("expired");
-    expect(deriveVoucherStatus({ isActive: false, expiresAt: new Date("2026-07-01"), usageLimit: null, usedCount: 0 }, now)).toBe("expired");
+    expect(deriveVoucherStatus({ isActive: true, expiresAt: new Date("2026-07-01"), usageLimit: null, usedCount: 0, startAt: null }, now)).toBe("expired");
+    expect(deriveVoucherStatus({ isActive: false, expiresAt: new Date("2026-07-01"), usageLimit: null, usedCount: 0, startAt: null }, now)).toBe("expired");
   });
 
   it("returns usedUp when usedCount >= usageLimit and not expired", () => {
-    expect(deriveVoucherStatus({ isActive: true, expiresAt: null, usageLimit: 10, usedCount: 10 }, now)).toBe("usedUp");
-    expect(deriveVoucherStatus({ isActive: true, expiresAt: new Date("2026-08-01"), usageLimit: 5, usedCount: 7 }, now)).toBe("usedUp");
+    expect(deriveVoucherStatus({ isActive: true, expiresAt: null, usageLimit: 10, usedCount: 10, startAt: null }, now)).toBe("usedUp");
+    expect(deriveVoucherStatus({ isActive: true, expiresAt: new Date("2026-08-01"), usageLimit: 5, usedCount: 7, startAt: null }, now)).toBe("usedUp");
   });
 
-  it("returns active when isActive, not expired, not used up", () => {
-    expect(deriveVoucherStatus({ isActive: true, expiresAt: null, usageLimit: null, usedCount: 0 }, now)).toBe("active");
+  it("returns active when isActive, not expired, not used up, not scheduled", () => {
+    expect(deriveVoucherStatus({ isActive: true, expiresAt: null, usageLimit: null, usedCount: 0, startAt: null }, now)).toBe("active");
   });
 
-  it("returns null when inactive, not expired, not used up", () => {
-    expect(deriveVoucherStatus({ isActive: false, expiresAt: null, usageLimit: null, usedCount: 0 }, now)).toBeNull();
+  // Precedence changed (Task 2, voucher scope refactor): an admin-disabled
+  // voucher used to have no bucket at all (null); it now lands in its own
+  // "disabled" bucket, distinct from both "active" and "scheduled".
+  it("returns disabled when inactive, not expired, not used up, not scheduled", () => {
+    expect(deriveVoucherStatus({ isActive: false, expiresAt: null, usageLimit: null, usedCount: 0, startAt: null }, now)).toBe("disabled");
+  });
+
+  it("returns scheduled when startAt is in the future and otherwise active", () => {
+    expect(
+      deriveVoucherStatus({ isActive: true, expiresAt: null, usageLimit: null, usedCount: 0, startAt: new Date("2026-08-01") }, now),
+    ).toBe("scheduled");
+  });
+
+  it("disabled outranks scheduled", () => {
+    expect(
+      deriveVoucherStatus({ isActive: false, expiresAt: null, usageLimit: null, usedCount: 0, startAt: new Date("2026-08-01") }, now),
+    ).toBe("disabled");
   });
 
   it("prioritizes expired over usedUp", () => {
-    expect(deriveVoucherStatus({ isActive: true, expiresAt: new Date("2026-07-01"), usageLimit: 5, usedCount: 5 }, now)).toBe("expired");
+    expect(deriveVoucherStatus({ isActive: true, expiresAt: new Date("2026-07-01"), usageLimit: 5, usedCount: 5, startAt: null }, now)).toBe("expired");
   });
 });
 
@@ -112,29 +127,27 @@ describe("listVouchersPaged", () => {
 });
 
 describe("getVoucherStats", () => {
-  it("counts total/active/expiringSoon/usedUp as GLOBAL aggregates, unaffected by pagination", async () => {
+  it("counts active/scheduled/expired as GLOBAL aggregates, unaffected by pagination", async () => {
     const now = new Date("2026-07-24T00:00:00.000Z");
     const past = new Date("2026-07-01T00:00:00.000Z");
-    const in3Days = new Date("2026-07-27T00:00:00.000Z");
-    const in30Days = new Date("2026-08-23T00:00:00.000Z");
+    const future = new Date("2026-08-23T00:00:00.000Z");
 
     await createVoucher(prisma, { code: "ACTIVE1", type: VoucherType.PERCENT, value: "1" }); // active, no expiry
-    await createVoucher(prisma, { code: "EXPIRING1", type: VoucherType.PERCENT, value: "1", expiresAt: in3Days }); // active + expiring soon
-    await createVoucher(prisma, { code: "FAR1", type: VoucherType.PERCENT, value: "1", expiresAt: in30Days }); // active, not expiring soon
+    await createVoucher(prisma, { code: "FAR1", type: VoucherType.PERCENT, value: "1", expiresAt: future }); // active, not expired
     await createVoucher(prisma, { code: "EXPIRED1", type: VoucherType.PERCENT, value: "1", expiresAt: past }); // expired
+    await createVoucher(prisma, { code: "SCHEDULED1", type: VoucherType.PERCENT, value: "1", startAt: future }); // scheduled
     const usedUpV = await createVoucher(prisma, { code: "USEDUP1", type: VoucherType.PERCENT, value: "1", usageLimit: 1 });
-    await prisma.voucher.update({ where: { id: usedUpV.id }, data: { usedCount: 1 } }); // used up
+    await prisma.voucher.update({ where: { id: usedUpV.id }, data: { usedCount: 1 } }); // used up (neither active/scheduled/expired)
 
     const stats = await getVoucherStats(prisma, now);
-    expect(stats.total).toBe(5);
-    expect(stats.active).toBe(3); // ACTIVE1, EXPIRING1, FAR1
-    expect(stats.expiringSoon).toBe(1); // EXPIRING1 only
-    expect(stats.usedUp).toBe(1); // USEDUP1
+    expect(stats.active).toBe(2); // ACTIVE1, FAR1
+    expect(stats.scheduled).toBe(1); // SCHEDULED1
+    expect(stats.expired).toBe(1); // EXPIRED1
   });
 
-  it("returns all zeros when there are no vouchers", async () => {
+  it("totalRedemptions counts VoucherRedemption rows, not sum(usedCount)", async () => {
     const stats = await getVoucherStats(prisma);
-    expect(stats).toEqual({ total: 0, active: 0, expiringSoon: 0, usedUp: 0 });
+    expect(stats).toEqual({ active: 0, scheduled: 0, expired: 0, totalRedemptions: 0 });
   });
 });
 

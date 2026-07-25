@@ -29,7 +29,11 @@ interface UserDetail {
   user: { id: number; username: string | null; fullName: string | null; telegramId: string | null; role: string; banned: boolean; banReason: string | null; walletBalance: string; walletBalanceUsdt: string };
   totalSpent: { idr: string; usdt: string };
   orders: { id: number; orderCode: string; status: string; totalIdr: string; createdAt: string; createdAtDisplay: string | null }[];
-  tickets: { id: number; subject: string; status: string; createdAt: string; createdAtDisplay: string | null }[];
+  // No `subject` field — SupportTicket has no such column (Task 3 fixed the
+  // matching backend bug in users.ts). `message` is the ticket's own text;
+  // this block isn't rendered today (dead field since the original scaffold)
+  // but the type is kept accurate to what the route actually returns.
+  tickets: { id: number; message: string; status: string; createdAt: string; createdAtDisplay: string | null }[];
   ledger: { delta: string; balanceAfter: string; currency: string; reason: string; note: string | null; createdAt: string; createdAtDisplay: string | null }[];
   roles: string[];
 }

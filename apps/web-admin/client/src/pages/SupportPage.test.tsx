@@ -2,7 +2,7 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
 import { SupportPage } from "./SupportPage";
@@ -23,6 +23,24 @@ function makeWrapper(qc: QueryClient) {
 function Wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return makeWrapper(qc)({ children });
+}
+
+/** Renders SupportPage at /support with a real sibling route at
+ *  /support/:ticketId, so a test can assert that clicking "View" actually
+ *  navigates there (not just that the menu item exists). */
+function WrapperWithDetailRoute({ children }: { children: React.ReactNode }) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return (
+    <MemoryRouter initialEntries={["/support"]}>
+      <QueryClientProvider client={qc}>
+        <Routes>
+          <Route path="/support" element={children} />
+          <Route path="/support/:ticketId" element={<div>ticket-detail-page</div>} />
+        </Routes>
+        <Toaster />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
 }
 
 const STATS = { open: 3, waitingCustomer: 2, overdue: 1, unassigned: 4, resolvedToday: 5 };
@@ -365,7 +383,27 @@ describe("SupportPage", () => {
     expect(within(menu).queryByText(/merge/i)).not.toBeInTheDocument();
   });
 
-  it("row-actions dropdown: View doesn't call the API, Close opens a confirm dialog that posts to /:id/close", async () => {
+  it("row-actions dropdown: View navigates to the ticket detail page without calling the API", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = mockFetchRouter({ support: supportData([TICKET_OPEN]) });
+    render(<SupportPage />, { wrapper: WrapperWithDetailRoute });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for ticket #1" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByText("Assign")).toBeInTheDocument();
+    await user.click(within(menu).getByText("View"));
+
+    await waitFor(() => expect(screen.getByText("ticket-detail-page")).toBeInTheDocument());
+    // Navigating is a pure client-side route change — it must never have
+    // POSTed to a per-ticket action endpoint.
+    expect(fetchSpy).not.toHaveBeenCalledWith(
+      expect.stringMatching(/^\/api\/support\/1\//),
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("row-actions dropdown: Close opens a confirm dialog that posts to /:id/close", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     let closedUrl: string | null = null;
     mockFetchRouter({
@@ -381,13 +419,89 @@ describe("SupportPage", () => {
     await user.click(screen.getByRole("button", { name: "Actions for ticket #1" }));
     const menu = await screen.findByRole("menu");
     expect(within(menu).getByText("View")).toBeInTheDocument();
-    expect(within(menu).getByText("Assign")).toBeInTheDocument();
 
     await user.click(within(menu).getByText("Close"));
     const dialog = await screen.findByRole("dialog");
     await user.click(within(dialog).getByRole("button", { name: /^close$/i }));
 
     await waitFor(() => expect(closedUrl).toBe("/api/support/1/close"));
+  });
+
+  it("doesn't double-toast when the admin's own Close action causes the next refetch to see the ticket as CLOSED", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let closed = false;
+    let supportGetCount = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (method === "POST") {
+        if (url === "/api/support/1/close") closed = true;
+        return jsonResponse({ ok: true });
+      }
+      if (url.startsWith("/api/admins")) return jsonResponse({ admins: [ADMIN_ROW] });
+      supportGetCount += 1;
+      // Once closed, the invalidated refetch (triggered by the mutation
+      // itself) genuinely reports status: CLOSED — this must not ALSO
+      // produce a diff-toast on top of the mutation's own success toast.
+      return jsonResponse(supportData([{ ...TICKET_OPEN, status: closed ? "CLOSED" : "OPEN" }]));
+    });
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+    const getCountAfterMount = supportGetCount;
+
+    await user.click(screen.getByRole("button", { name: "Actions for ticket #1" }));
+    const menu = await screen.findByRole("menu");
+    await user.click(within(menu).getByText("Close"));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: /^close$/i }));
+
+    await waitFor(() => expect(screen.getByText("Ticket closed.")).toBeInTheDocument());
+    // Wait for the invalidated refetch (triggered by the mutation itself) to
+    // actually land — that's the fetch whose CLOSED status could wrongly
+    // trigger a second diff-toast — before asserting it didn't.
+    await waitFor(() => expect(supportGetCount).toBeGreaterThan(getCountAfterMount));
+
+    expect(screen.queryByText(/status changed to Closed/i)).not.toBeInTheDocument();
+    expect(screen.getAllByText("Ticket closed.")).toHaveLength(1);
+  });
+
+  it("bulk-closes selected tickets without a duplicate diff-toast on the next refetch", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let closedIds: number[] = [];
+    let supportGetCount = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (method === "POST") {
+        if (url === "/api/support/bulk-action") {
+          closedIds = [1, 2];
+          return jsonResponse({ succeeded: [1, 2], failed: [] });
+        }
+        return jsonResponse({ ok: true });
+      }
+      if (url.startsWith("/api/admins")) return jsonResponse({ admins: [ADMIN_ROW] });
+      supportGetCount += 1;
+      return jsonResponse(
+        supportData([
+          { ...TICKET_OPEN, status: closedIds.includes(1) ? "CLOSED" : "OPEN" },
+          { ...TICKET_REPLIED, status: closedIds.includes(2) ? "CLOSED" : "REPLIED" },
+        ]),
+      );
+    });
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+    const getCountAfterMount = supportGetCount;
+
+    await user.click(screen.getByRole("checkbox", { name: "Select ticket #1" }));
+    await user.click(screen.getByRole("checkbox", { name: "Select ticket #2" }));
+    await user.click(screen.getByRole("button", { name: /close 2 tickets/i }));
+    const dialog = await screen.findByRole("dialog");
+    await user.click(within(dialog).getByRole("button", { name: /^close$/i }));
+
+    await waitFor(() => expect(screen.getByText(/Closed 2 tickets/)).toBeInTheDocument());
+    await waitFor(() => expect(supportGetCount).toBeGreaterThan(getCountAfterMount));
+
+    expect(screen.queryByText(/status changed to Closed/i)).not.toBeInTheDocument();
   });
 
   it("paginates via the shared Pagination component and resets to page 1 on a page-size change", async () => {

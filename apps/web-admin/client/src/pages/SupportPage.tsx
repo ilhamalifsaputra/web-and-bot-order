@@ -247,6 +247,20 @@ export function SupportPage() {
     void qc.invalidateQueries({ queryKey: ["support"] });
   }
 
+  /** Pre-seed the diffing ref for ids this page itself just closed, so the
+   *  refetch that `invalidateAll()` triggers doesn't ALSO read as a status
+   *  change and fire a duplicate "Ticket #N status changed to Closed" toast
+   *  on top of the mutation's own "Ticket closed."/"Closed N tickets."
+   *  success toast. Only closing needs this: assign/priority mutations don't
+   *  touch `status`, so they can never trigger the diffing effect's status
+   *  branch in the first place. A ticket genuinely closed by a *different*
+   *  admin (not seeded here) still surfaces its diff-toast normally. */
+  function markClosedInRef(ids: number[]) {
+    const ref = previousStatusesRef.current;
+    if (!ref) return;
+    for (const id of ids) ref.set(id, "CLOSED");
+  }
+
   const assign = useMutation({
     mutationFn: ({ ticketId, adminId }: { ticketId: number; adminId: number | null }) =>
       apiPost(`/api/support/${ticketId}/assign`, { adminId }),
@@ -259,7 +273,8 @@ export function SupportPage() {
 
   const close = useMutation({
     mutationFn: (ticketId: number) => apiPost(`/api/support/${ticketId}/close`, {}),
-    onSuccess: () => {
+    onSuccess: (_result, ticketId) => {
+      markClosedInRef([ticketId]);
       invalidateAll();
       toast.success("Ticket closed.");
     },
@@ -274,6 +289,7 @@ export function SupportPage() {
       priority?: string;
     }) => apiPost<BulkActionResult>("/api/support/bulk-action", vars),
     onSuccess: (result, vars) => {
+      if (vars.action === "close") markClosedInRef(result.succeeded);
       invalidateAll();
       setSelected(new Set());
       const verb =

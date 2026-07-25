@@ -10,6 +10,7 @@ import { FilterBar } from "../components/shared/FilterBar";
 import { SearchBar } from "../components/shared/SearchBar";
 import { StatCard } from "../components/shared/StatCard";
 import { Pagination } from "../components/shared/Pagination";
+import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { Button } from "@/components/ui/button";
 import { DateInput } from "../components/shared/DateInput";
 import { Input } from "@/components/ui/input";
@@ -398,7 +399,7 @@ export function VouchersPage() {
           {
             key: "value",
             header: "Value",
-            render: v => v.value,
+            render: v => v.type === "PERCENT" ? `${v.value}%` : formatCurrencyDisplay(v.value, "IDR"),
           },
           {
             key: "used",

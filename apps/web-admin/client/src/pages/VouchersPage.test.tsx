@@ -62,6 +62,27 @@ describe("VouchersPage", () => {
     render(<VouchersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("SAVE10")).toBeInTheDocument());
     expect(screen.getByText("Percent")).toBeInTheDocument();
+    expect(screen.getByText("10%")).toBeInTheDocument();
+  });
+
+  it("formats FIXED-type vouchers as IDR currency", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          vouchers: [FAR_FUTURE_VOUCHER],
+          types: ["PERCENT", "FIXED"],
+          total: 1,
+          page: 1,
+          pageSize: 50,
+          stats: { total: 1, active: 1, expiringSoon: 0, usedUp: 0 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("FARAWAY")).toBeInTheDocument());
+    expect(screen.getByText("Fixed")).toBeInTheDocument();
+    expect(screen.getByText("Rp5")).toBeInTheDocument();
   });
 
   it("shows a KPI row sourced from the server-wide stats field", async () => {

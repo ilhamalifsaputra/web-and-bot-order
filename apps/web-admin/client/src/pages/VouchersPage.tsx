@@ -399,7 +399,11 @@ export function VouchersPage() {
           {
             key: "value",
             header: "Value",
-            render: v => v.type === "PERCENT" ? `${v.value}%` : formatCurrencyDisplay(v.value, "IDR"),
+            render: v => (
+              <span className="font-mono text-sm">
+                {v.type === "PERCENT" ? `${v.value}%` : formatCurrencyDisplay(v.value, "IDR")}
+              </span>
+            ),
           },
           {
             key: "used",

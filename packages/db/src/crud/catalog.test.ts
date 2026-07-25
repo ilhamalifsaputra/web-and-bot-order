@@ -27,6 +27,7 @@ import {
   listFlashSaleProducts,
   hasActiveFlashSale,
   searchCatalog,
+  searchDenominations,
   lowStockDenominations,
   setFlashSale,
   clearFlashSale,
@@ -372,6 +373,22 @@ describe("searchCatalog", () => {
     // a query that only matches the denomination name should NOT surface the product
     expect((await searchCatalog(prisma, "Basic Plan", 24)).some((x) => x.id === p.id)).toBe(false);
     expect(await searchCatalog(prisma, "   ", 24)).toEqual([]);
+  });
+});
+
+describe("searchDenominations", () => {
+  it("includes the parent product so callers can render a product sublabel", async () => {
+    const cat = await makeCategory();
+    const p = await makeProduct(cat.id, "Steam Wallet");
+    const denom = await makeDenom(p.id, "50k", "50000");
+    const hits = await searchDenominations(prisma, "50k", 20);
+    const hit = hits.find((x) => x.id === denom.id);
+    expect(hit).toBeDefined();
+    expect(hit!.product?.name).toBe("Steam Wallet");
+  });
+
+  it("returns [] for a blank query", async () => {
+    expect(await searchDenominations(prisma, "   ", 20)).toEqual([]);
   });
 });
 

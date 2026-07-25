@@ -46,6 +46,26 @@ describe("SearchModal", () => {
     expect(screen.getByText("Steam Wallet")).toBeInTheDocument();
   });
 
+  it("falls back through loginUsername/email and finally Customer #id when a storefront-only user has no fullName, username, or telegramId", async () => {
+    mockSearchResponse({
+      q: "cust",
+      exactOrderId: null,
+      users: [
+        // Has a loginUsername to fall back on.
+        { id: 7, username: null, fullName: null, telegramId: null, loginUsername: "shopper7", email: "shopper7@example.com" },
+        // No identifying field at all — must still render a non-blank label.
+        { id: 8, username: null, fullName: null, telegramId: null, loginUsername: null, email: null },
+      ],
+      products: [],
+    });
+    renderModal();
+    typeQuery("cust");
+
+    await waitFor(() => expect(screen.getByText("shopper7")).toBeInTheDocument());
+    expect(screen.getByText("shopper7@example.com")).toBeInTheDocument();
+    expect(screen.getByText("Customer #8")).toBeInTheDocument();
+  });
+
   it("shows the exact order-code match grouped under Orders", async () => {
     mockSearchResponse({ q: "ORD-42", exactOrderId: 42, users: [], products: [] });
     renderModal();

@@ -346,6 +346,7 @@ export function searchDenominations(db: Db, query: string, limit = 20) {
   if (!q) return Promise.resolve([]);
   return db.denomination.findMany({
     where: { isActive: true, OR: [{ name: { contains: q } }, { description: { contains: q } }] },
+    include: { product: true },
     take: limit,
   });
 }

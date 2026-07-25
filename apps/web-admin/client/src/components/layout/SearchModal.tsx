@@ -19,7 +19,14 @@ interface SearchModalProps {
 interface SearchApiResponse {
   q: string;
   exactOrderId: number | null;
-  users: { id: number; username: string | null; fullName: string | null; telegramId: string }[];
+  users: {
+    id: number;
+    username: string | null;
+    fullName: string | null;
+    telegramId: string | null;
+    loginUsername: string | null;
+    email: string | null;
+  }[];
   products: { id: number; name: string; product?: { name: string } | null }[];
 }
 
@@ -34,6 +41,24 @@ const TYPE_LABELS: Record<SearchResult["type"], string> = {
   product: "Products",
   user: "Users",
 };
+
+/**
+ * A user hit's label/sublabel, falling back through every identifying field
+ * `searchUsers` can return (fullName → username → loginUsername → email →
+ * telegramId) so a storefront-only customer with no Telegram link (a normal,
+ * legitimate `searchUsers` result — see packages/db/src/crud/users.ts) never
+ * renders a blank, still-clickable row. `Customer #{id}` is the guaranteed
+ * non-null last resort.
+ */
+function userLabel(u: SearchApiResponse["users"][number]): { label: string; sublabel?: string } {
+  const username = u.username ? `@${u.username}` : null;
+  if (u.fullName) return { label: u.fullName, sublabel: username ?? u.loginUsername ?? u.email ?? u.telegramId ?? undefined };
+  if (username) return { label: username, sublabel: u.loginUsername ?? u.email ?? u.telegramId ?? undefined };
+  if (u.loginUsername) return { label: u.loginUsername, sublabel: u.email ?? u.telegramId ?? undefined };
+  if (u.email) return { label: u.email, sublabel: u.telegramId ?? undefined };
+  if (u.telegramId) return { label: u.telegramId };
+  return { label: `Customer #${u.id}` };
+}
 
 export function SearchModal({ open, onClose }: SearchModalProps): JSX.Element {
   const [query, setQuery] = useState("");
@@ -64,17 +89,12 @@ export function SearchModal({ open, onClose }: SearchModalProps): JSX.Element {
         .then(data => {
           if (cancelled) return;
           const mapped: SearchResult[] = [];
-          if (data.exactOrderId) {
+          if (data.exactOrderId != null) {
             mapped.push({ type: "order", id: data.exactOrderId, label: `Order ${data.q}`, href: `/orders/${data.exactOrderId}` });
           }
           for (const u of data.users) {
-            mapped.push({
-              type: "user",
-              id: u.id,
-              label: u.fullName ?? (u.username ? `@${u.username}` : u.telegramId),
-              sublabel: u.username ? `@${u.username}` : u.telegramId,
-              href: `/users/${u.id}`,
-            });
+            const { label, sublabel } = userLabel(u);
+            mapped.push({ type: "user", id: u.id, label, sublabel, href: `/users/${u.id}` });
           }
           for (const p of data.products) {
             mapped.push({ type: "product", id: p.id, label: p.name, sublabel: p.product?.name, href: `/catalog/${p.id}` });

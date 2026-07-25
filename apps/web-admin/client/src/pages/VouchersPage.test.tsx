@@ -22,7 +22,9 @@ function daysFromNow(n: number): string {
 const VOUCHER = { id: 1, code: "SAVE10", type: "PERCENT", value: "10", isActive: true, usageLimit: 100, usedCount: 5, minPurchase: "0", expiresAt: null, expiresAtDisplay: null };
 
 // Active, no expiry set within the next 7 days -> should NOT be flagged as expiring soon.
-const FAR_FUTURE_VOUCHER = { id: 2, code: "FARAWAY", type: "FIXED", value: "5", isActive: true, usageLimit: null, usedCount: 0, minPurchase: "0", expiresAt: daysFromNow(30) };
+// value has 5 digits (not just "5") so the IDR-formatting test actually exercises
+// thousands-grouping (formatCurrencyDisplay turning 50000 into "Rp50.000").
+const FAR_FUTURE_VOUCHER = { id: 2, code: "FARAWAY", type: "FIXED", value: "50000", isActive: true, usageLimit: null, usedCount: 0, minPurchase: "0", expiresAt: daysFromNow(30) };
 
 // Active, expires in 3 days -> should be flagged as expiring soon.
 const EXPIRING_SOON_VOUCHER = { id: 3, code: "SOONISH", type: "PERCENT", value: "15", isActive: true, usageLimit: null, usedCount: 0, minPurchase: "0", expiresAt: daysFromNow(3) };
@@ -82,7 +84,7 @@ describe("VouchersPage", () => {
     render(<VouchersPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("FARAWAY")).toBeInTheDocument());
     expect(screen.getByText("Fixed")).toBeInTheDocument();
-    expect(screen.getByText("Rp5")).toBeInTheDocument();
+    expect(screen.getByText("Rp50.000")).toBeInTheDocument();
   });
 
   it("shows a KPI row sourced from the server-wide stats field", async () => {

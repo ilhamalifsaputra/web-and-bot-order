@@ -471,6 +471,7 @@ model SupportTicket {
   photoFileIds   String?   @map("photo_file_ids")
   attachmentUrls String?   @map("attachment_urls")
   status         String    @default("OPEN")
+  priority       String    @default("MEDIUM") @map("priority")
   adminReply     String?   @map("admin_reply")
   adminId        Int?      @map("admin_id")
   createdAt      DateTime  @default(now()) @map("created_at")
@@ -492,6 +493,7 @@ model SupportTicket {
   @@index([userId], map: "ix_support_tickets_user_id")
   @@index([closedAt], map: "ix_support_tickets_closed_at")
   @@index([orderId], map: "ix_support_tickets_order_id")
+  @@index([priority], map: "ix_support_tickets_priority")
   @@map("support_tickets")
 }
 

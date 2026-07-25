@@ -206,6 +206,15 @@ export const TicketStatus = {
 export type TicketStatus = (typeof TicketStatus)[keyof typeof TicketStatus];
 export const zTicketStatus = z.nativeEnum(TicketStatus);
 
+export const TicketPriority = {
+  LOW: "LOW",
+  MEDIUM: "MEDIUM",
+  HIGH: "HIGH",
+  URGENT: "URGENT",
+} as const;
+export type TicketPriority = (typeof TicketPriority)[keyof typeof TicketPriority];
+export const zTicketPriority = z.nativeEnum(TicketPriority);
+
 export const SenderType = {
   USER: "USER",
   ADMIN: "ADMIN",

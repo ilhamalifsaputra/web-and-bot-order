@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
@@ -9,7 +10,8 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { StatusBadge } from "../components/shared/StatusBadge";
-import { StatTile } from "../components/shared/StatTile";
+import { StatCard } from "../components/shared/StatCard";
+import { ProgressBar } from "../components/shared/ProgressBar";
 import { formatCurrencyDisplay } from "../components/shared/CurrencyAmount";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,15 +26,34 @@ import {
   DialogFooter,
   DialogClose,
 } from "@/components/ui/dialog";
-import { Zap, Plus } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
+import { Zap, Plus, Clock, Ban, Tag, MoreVertical, Eye, Pencil, XCircle } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 
 type FlashStatus = "live" | "scheduled" | "ended";
 
 interface FlashInfo {
   discountPercent: string;
-  windowDisplay: string;
+  startsAtDisplay: string;
+  endsAtDisplay: string;
+  // Additive raw instants (Task 3 scope extension, see task-3-report.md) used
+  // ONLY for timezone-independent UTC millisecond countdown math below — never
+  // for reconstructing a shop-local datetime-local string (that needs the
+  // server's TIMEZONE config, which isn't in this payload).
+  startsAtIso: string;
+  endsAtIso: string;
   status: FlashStatus;
+  salePrice: string;
+  sold: number;
+  revenue: string;
+  orders: number;
+  availableStock: number | null;
 }
 
 interface DenominationRow {
@@ -40,6 +61,7 @@ interface DenominationRow {
   name: string;
   price: string;
   isActive: boolean;
+  productId: number;
   productName: string;
   categoryName: string | null;
   flash: FlashInfo | null;
@@ -63,18 +85,43 @@ function useFlashSaleDenominations() {
   });
 }
 
-/** Display-only derivation of the already-final server price + discount —
- *  mirrors formatCurrencyDisplay's own Number()-based formatting, not a new
- *  money computation and nothing here is ever persisted. */
-function flashPriceOf(row: DenominationRow): string {
-  const price = Number(row.price);
-  const percent = Number(row.flash!.discountPercent);
-  return ((price * (100 - percent)) / 100).toFixed(0);
+/** Compact "Xd Yh" / "Yh Zm" / "Zm" duration label. Floors to whole minutes;
+ *  a non-positive input (clock skew, or the instant just passed between the
+ *  server computing `status` and this render) reads as "<1m" rather than a
+ *  confusing negative duration. */
+function formatRemaining(ms: number): string {
+  if (ms <= 0) return "<1m";
+  const totalMinutes = Math.floor(ms / 60_000);
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
+/** Status-badge subtext: "Ends in …" while live, "Starts in …" while
+ *  scheduled, nothing once ended (there's no "remaining" time to show).
+ *  Pure UTC-millisecond subtraction on the raw ISO instants — deliberately
+ *  NOT re-deriving `status` itself here (that stays server-computed). */
+function flashSubtext(flash: FlashInfo, now: Date): string | null {
+  if (flash.status === "live") {
+    return `Ends in ${formatRemaining(new Date(flash.endsAtIso).getTime() - now.getTime())}`;
+  }
+  if (flash.status === "scheduled") {
+    return `Starts in ${formatRemaining(new Date(flash.startsAtIso).getTime() - now.getTime())}`;
+  }
+  return null;
 }
 
 export function FlashSalesPage() {
+  const navigate = useNavigate();
   const qc = useQueryClient();
   const { data, isLoading, isError } = useFlashSaleDenominations();
+  // Computed once per render (not a ticking clock) — same convention as
+  // VouchersPage's own `isExpiringSoon` "now", good enough for a countdown
+  // that only needs to be roughly right between refetches.
+  const now = new Date();
   const [filter, setFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -173,6 +220,24 @@ export function FlashSalesPage() {
     setDialogOpen(true);
   }
 
+  /** Row-action "Edit Schedule" — reuses the same bulk dialog, scoped down to
+   *  just this one row. Deliberately does NOT pre-fill discount/start/end
+   *  from `row.flash` even when a schedule already exists: doing so would
+   *  need to render `startsAtIso`/`endsAtIso` back into a shop-local
+   *  `datetime-local` wall-clock string, which requires the server's
+   *  TIMEZONE config — not available client-side. Guessing via the browser's
+   *  own local timezone would silently submit the wrong instant whenever an
+   *  admin's browser timezone differs from the shop's configured one, so the
+   *  fields start blank and the admin retypes them (see task-3-report.md). */
+  function openEditSchedule(row: DenominationRow) {
+    setSelected(new Set([row.id]));
+    setDiscountPercent("");
+    setStartsAt("");
+    setEndsAt("");
+    setFormError(null);
+    setDialogOpen(true);
+  }
+
   const bulkApply = useMutation({
     mutationFn: () =>
       apiPost<{ ok: boolean; applied: number; overwritten: number; failed: number }>("/api/flash-sales/bulk-apply", {
@@ -198,10 +263,15 @@ export function FlashSalesPage() {
     onError: (e: Error) => setFormError(e.message),
   });
 
+  // Takes an explicit `ids` argument (Task 3, req #9) rather than reading
+  // `selected` from closure: a row's "End Sale Now" action must end just that
+  // row's schedule regardless of whatever else is multi-selected in the bulk
+  // toolbar at the time. The bulk toolbar call site below now passes
+  // `Array.from(selected)` explicitly to preserve its existing behavior.
   const bulkEnd = useMutation({
-    mutationFn: () =>
+    mutationFn: (ids: number[]) =>
       apiPost<{ ok: boolean; cleared: number; skipped: number }>("/api/flash-sales/bulk-end", {
-        denominationIds: Array.from(selected),
+        denominationIds: ids,
       }),
     onSuccess: (result) => {
       setSelected(new Set());
@@ -281,11 +351,11 @@ export function FlashSalesPage() {
         }
       />
 
-      <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <StatTile label="Scheduled" value={scheduledCount} />
-        <StatTile label="Running" value={runningCount} />
-        <StatTile label="Expired" value={expiredCount} />
-        <StatTile label="Discounted SKU" value={discountedCount} />
+      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="Scheduled" value={scheduledCount} icon={Clock} isLoading={isLoading} />
+        <StatCard label="Running" value={runningCount} icon={Zap} tone="success" isLoading={isLoading} />
+        <StatCard label="Expired" value={expiredCount} icon={Ban} isLoading={isLoading} />
+        <StatCard label="Discounted SKU" value={discountedCount} icon={Tag} isLoading={isLoading} />
       </div>
 
       <FilterBar onClear={hasActiveFilter ? clearFilters : undefined} className="mb-4">
@@ -358,7 +428,7 @@ export function FlashSalesPage() {
             title="End the flash sale on the selected SKUs?"
             description={`Cancel the flash sale on ${selected.size} SKU(s). They'll revert to their base price immediately. SKUs with no active schedule are skipped.`}
             confirmLabel="End now"
-            onConfirm={() => bulkEnd.mutate()}
+            onConfirm={() => bulkEnd.mutate(Array.from(selected))}
           />
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
             Clear
@@ -387,19 +457,16 @@ export function FlashSalesPage() {
             ),
           },
           {
-            key: "sku",
-            header: "SKU",
+            key: "product",
+            header: "Product",
             render: (row) => (
               <div>
                 <div className="font-medium text-sm text-ink">{row.name}</div>
-                <div className="text-xs text-ink-soft">{row.categoryName ?? "—"}</div>
+                <div className="text-xs text-ink-soft">
+                  {row.productName}{row.categoryName ? ` · ${row.categoryName}` : ""}
+                </div>
               </div>
             ),
-          },
-          {
-            key: "product",
-            header: "Product",
-            render: (row) => <span className="text-sm text-ink-soft">{row.productName}</span>,
           },
           {
             key: "price",
@@ -411,7 +478,7 @@ export function FlashSalesPage() {
                     {formatCurrencyDisplay(row.price, "IDR")}
                   </span>
                   <span className="font-mono text-sm font-medium text-ink">
-                    {formatCurrencyDisplay(flashPriceOf(row), "IDR")}
+                    {formatCurrencyDisplay(row.flash.salePrice, "IDR")}
                   </span>
                   <span className="text-xs font-medium text-grass-dark">-{row.flash.discountPercent}%</span>
                 </div>
@@ -422,15 +489,105 @@ export function FlashSalesPage() {
           {
             key: "window",
             header: "Window",
-            render: (row) => (
-              <span className="text-sm text-ink-soft">{row.flash?.windowDisplay ?? "—"}</span>
-            ),
+            render: (row) =>
+              row.flash ? (
+                <div className="flex flex-col gap-0.5 text-sm text-ink-soft">
+                  <span>Starts {row.flash.startsAtDisplay}</span>
+                  <span>Ends {row.flash.endsAtDisplay}</span>
+                </div>
+              ) : (
+                <span className="text-sm text-ink-soft">—</span>
+              ),
           },
           {
             key: "status",
             header: "Flash Status",
+            render: (row) => {
+              const subtext = row.flash ? flashSubtext(row.flash, now) : null;
+              return (
+                <div className="flex flex-col items-start gap-1">
+                  <StatusBadge status={row.flash ? STATUS_BADGE[row.flash.status] : STATUS_BADGE.inactive} />
+                  {subtext && <span className="text-xs text-ink-soft">{subtext}</span>}
+                </div>
+              );
+            },
+          },
+          {
+            key: "performance",
+            header: "Performance",
+            render: (row) =>
+              row.flash ? (
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-sm text-ink">Sold {row.flash.sold}</span>
+                  <span className="text-xs text-ink-soft">{formatCurrencyDisplay(row.flash.revenue, "IDR")}</span>
+                </div>
+              ) : (
+                <span className="text-sm text-ink-soft">—</span>
+              ),
+          },
+          {
+            key: "progress",
+            header: "Progress",
+            render: (row) => {
+              if (!row.flash || row.flash.availableStock === null) {
+                return <span className="text-sm text-ink-soft">—</span>;
+              }
+              const { sold, availableStock } = row.flash;
+              const total = sold + availableStock;
+              const pct = total > 0 ? Math.round((sold / total) * 100) : 0;
+              // Deliberately inverted from the usual stock-health convention
+              // (grass=healthy/low-risk, rust=danger): for a flash sale, a
+              // HIGH sold-percentage is the good outcome ("almost sold out"),
+              // not a low-stock warning, so rust marks high % here, not low %.
+              const tone = pct >= 80 ? "rust" : pct >= 50 ? "amberx" : "grass";
+              return (
+                <div className="flex flex-col gap-1 w-28">
+                  <span className="text-xs text-ink-soft">{sold} / {total} sold</span>
+                  <ProgressBar value={pct} tone={tone} />
+                </div>
+              );
+            },
+          },
+          {
+            key: "actions",
+            header: "",
             render: (row) => (
-              <StatusBadge status={row.flash ? STATUS_BADGE[row.flash.status] : STATUS_BADGE.inactive} />
+              <div onClick={(e) => e.stopPropagation()}>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for ${row.name}`}>
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => navigate(`/catalog/${row.productId}/denominations/${row.id}/edit`)}>
+                      <Eye className="h-4 w-4" />
+                      View SKU
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => openEditSchedule(row)}>
+                      <Pencil className="h-4 w-4" />
+                      Edit Schedule
+                    </DropdownMenuItem>
+                    {row.flash && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <ConfirmDialog
+                          trigger={
+                            <DropdownMenuItem onSelect={(e) => e.preventDefault()} variant="destructive">
+                              <XCircle className="h-4 w-4" />
+                              End Sale Now
+                            </DropdownMenuItem>
+                          }
+                          title="End this flash sale?"
+                          description={`Cancel the flash sale on "${row.name}". It reverts to its base price immediately.`}
+                          confirmLabel="End now"
+                          onConfirm={() => bulkEnd.mutate([row.id])}
+                        />
+                      </>
+                    )}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             ),
           },
         ]}

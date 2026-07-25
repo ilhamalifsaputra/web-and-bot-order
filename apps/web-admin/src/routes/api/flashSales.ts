@@ -80,6 +80,15 @@ export default async function flashSalesApiRoutes(app: FastifyInstance): Promise
                 // so an admin's own browser timezone never enters the display.
                 startsAtDisplay: localize(d.flashStartsAt!, "dd LLL yyyy HH:mm"),
                 endsAtDisplay: localize(d.flashEndsAt!, "dd LLL yyyy HH:mm"),
+                // Additive raw instants (Task 3 scope extension — see
+                // apps/web-admin/client/src/pages/FlashSalesPage.tsx) purely so
+                // the client can do timezone-independent UTC millisecond math
+                // for a "starts in / ends in" countdown, WITHOUT re-deriving a
+                // shop-local wall-clock string from them (that still requires
+                // the server's TIMEZONE config, which the client doesn't have —
+                // these are not used for pre-filling the datetime-local edit form).
+                startsAtIso: d.flashStartsAt!.toISOString(),
+                endsAtIso: d.flashEndsAt!.toISOString(),
                 // Computed here (not on the client) so no date math or timezone
                 // handling has to travel to the browser at all.
                 status: isFlashActive(d, now) ? "live" : d.flashStartsAt! > now ? "scheduled" : "ended",

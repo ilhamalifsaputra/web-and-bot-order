@@ -243,6 +243,21 @@ export async function totalSpentByUserIds(
   return result;
 }
 
+/** Lifetime order count per user (any status), batched for a page of users —
+ * same batching shape as totalSpentByUserIds. Users with zero orders are
+ * absent from the returned Map. */
+export async function orderCountByUserIds(db: Db, userIds: number[]): Promise<Map<number, number>> {
+  const result = new Map<number, number>();
+  if (userIds.length === 0) return result;
+  const groups = await db.order.groupBy({
+    by: ["userId"],
+    where: { userId: { in: userIds } },
+    _count: { _all: true },
+  });
+  for (const g of groups) result.set(g.userId, g._count._all);
+  return result;
+}
+
 export interface WalletLedgerEntry {
   createdAt: Date;
   delta: string;

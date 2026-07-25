@@ -150,4 +150,63 @@ describe("GET /api/flash-sales/denominations", () => {
     const row = body.denominations.find((d: { id: number }) => d.id === denom.id);
     expect(row.flash.availableStock).toBeNull();
   });
+
+  // Regression test: flashPrice() (checkout's shared pricing function) is
+  // time-gated and returns null outside [flashStartsAt, flashEndsAt) — i.e.
+  // for exactly the "scheduled" and "ended" statuses computed a line above
+  // it in the handler. Calling it here must not 500 the whole response for
+  // these two entirely normal, unvalidated-against admin states.
+  it("computes salePrice as plain percent-off (not null, not a 500) for a scheduled (future) row", async () => {
+    const category = await createCategory(prisma, "Cat");
+    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: "Parent", description: "x" });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Future flash item",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10000",
+    });
+    await prisma.denomination.update({
+      where: { id: denom.id },
+      data: {
+        flashDiscountPercent: "10",
+        flashStartsAt: new Date(Date.now() + 60 * 60_000),
+        flashEndsAt: new Date(Date.now() + 2 * 60 * 60_000),
+      },
+    });
+
+    const res = await get("/api/flash-sales/denominations", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    const row = body.denominations.find((d: { id: number }) => d.id === denom.id);
+    expect(row.flash.status).toBe("scheduled");
+    expect(row.flash.salePrice).toBe("9000");
+  });
+
+  it("computes salePrice as plain percent-off (not null, not a 500) for an ended (past) row", async () => {
+    const category = await createCategory(prisma, "Cat");
+    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: "Parent", description: "x" });
+    const denom = await createDenomination(prisma, {
+      productId: product.id,
+      name: "Past flash item",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "20000",
+    });
+    await prisma.denomination.update({
+      where: { id: denom.id },
+      data: {
+        flashDiscountPercent: "25",
+        flashStartsAt: new Date(Date.now() - 2 * 60 * 60_000),
+        flashEndsAt: new Date(Date.now() - 60 * 60_000),
+      },
+    });
+
+    const res = await get("/api/flash-sales/denominations", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    const row = body.denominations.find((d: { id: number }) => d.id === denom.id);
+    expect(row.flash.status).toBe("ended");
+    expect(row.flash.salePrice).toBe("15000");
+  });
 });

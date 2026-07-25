@@ -18,7 +18,8 @@ import {
 } from "@app/db";
 import { Decimal } from "@app/core/money";
 import { localize, parseShopLocal } from "@app/core/datetime";
-import { isFlashActive, flashPrice } from "@app/core/flash";
+import { isFlashActive } from "@app/core/flash";
+import { quantizeMoney } from "@app/core/formatters";
 import { DeliveryType } from "@app/core/enums";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 
@@ -82,9 +83,18 @@ export default async function flashSalesApiRoutes(app: FastifyInstance): Promise
                 // Computed here (not on the client) so no date math or timezone
                 // handling has to travel to the browser at all.
                 status: isFlashActive(d, now) ? "live" : d.flashStartsAt! > now ? "scheduled" : "ended",
-                // Same shared pricing function the storefront/checkout use, so
-                // the client doesn't have to re-derive the discounted price.
-                salePrice: flashPrice(d, now)!.toString(),
+                // Plain percent-off arithmetic, deliberately NOT gated by the
+                // schedule window: unlike checkout's `flashPrice()` (which
+                // must only ever charge the discount while the window is open),
+                // this "Sale Price" column needs to show what the price IS
+                // (live), WILL BE (scheduled), or WAS (ended) — hasSchedule
+                // already guarantees discountPercent/startsAt/endsAt are all
+                // non-null here. Same rounding convention flashPrice() itself
+                // uses (packages/core/src/flash.ts): whole rupiah, not 2dp.
+                salePrice: quantizeMoney(
+                  new Decimal(d.price).times(new Decimal(100).minus(d.flashDiscountPercent!)).div(100),
+                  0,
+                ).toString(),
                 sold: performance.get(d.id)?.sold ?? 0,
                 revenue: (performance.get(d.id)?.revenue ?? new Decimal(0)).toString(),
                 orders: performance.get(d.id)?.orders ?? 0,

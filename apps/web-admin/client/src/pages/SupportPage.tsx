@@ -577,11 +577,14 @@ export function SupportPage() {
               >
                 <PopoverTrigger asChild>
                   <div
-                    className="flex max-w-[240px] cursor-default flex-col items-start gap-0.5"
+                    className="flex max-w-[240px] cursor-default flex-col gap-0.5"
                     onMouseEnter={() => setHoveredMessageId(row.id)}
                     onMouseLeave={() => setHoveredMessageId((id) => (id === row.id ? null : id))}
                   >
                     <span className="font-mono text-xs text-ink-soft">#{row.id}</span>
+                    {/* `items-start` (no cross-axis stretch) would let this span grow to its
+                        unwrapped content width and overflow past 240px into neighboring
+                        columns — line-clamp can only truncate a width-CONSTRAINED box. */}
                     <span className="line-clamp-1 text-sm text-ink">{row.message}</span>
                   </div>
                 </PopoverTrigger>

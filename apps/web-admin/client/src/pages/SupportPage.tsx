@@ -106,6 +106,7 @@ interface Filters {
   priority: string;
   assigned: string;
   sort: string;
+  overdue: boolean;
   page: number;
   pageSize: number;
 }
@@ -128,6 +129,7 @@ function useTickets(q: string, filters: Filters) {
       if (filters.priority) params.set("priority", filters.priority);
       if (filters.assigned) params.set("assigned", filters.assigned);
       if (filters.sort) params.set("sort", filters.sort);
+      if (filters.overdue) params.set("overdue", "true");
       if (filters.page > 1) params.set("page", String(filters.page));
       if (filters.pageSize !== 20) params.set("pageSize", String(filters.pageSize));
       const res = await fetch(`/api/support?${params.toString()}`);
@@ -165,6 +167,7 @@ export function SupportPage() {
     priority: "",
     assigned: "",
     sort: DEFAULT_SORT,
+    overdue: false,
     page: 1,
     pageSize: 20,
   });
@@ -346,11 +349,31 @@ export function SupportPage() {
     setDraft({ status: "", priority: "", assigned: "", sort: DEFAULT_SORT });
     setQDraft("");
     setQ("");
-    setFilters({ status: "", priority: "", assigned: "", sort: DEFAULT_SORT, page: 1, pageSize: 20 });
+    setFilters({ status: "", priority: "", assigned: "", sort: DEFAULT_SORT, overdue: false, page: 1, pageSize: 20 });
+  }
+
+  /** The Overdue KPI doubles as a quick-filter (the lowest-effort way to
+   * actually reach the tickets `TicketFilter.overdue` already knows how to
+   * select, per StatCard's existing `onClick` prop) — clicking it clears
+   * every other filter/search/sort so the count on the card and the rows on
+   * screen never disagree, and clicking it again toggles back to no filter. */
+  function toggleOverdueFilter() {
+    setDraft({ status: "", priority: "", assigned: "", sort: DEFAULT_SORT });
+    setQDraft("");
+    setQ("");
+    setFilters((f) => ({
+      status: "",
+      priority: "",
+      assigned: "",
+      sort: DEFAULT_SORT,
+      overdue: !f.overdue,
+      page: 1,
+      pageSize: f.pageSize,
+    }));
   }
 
   const hasActiveFilter = Boolean(
-    filters.status || filters.priority || filters.assigned || filters.sort !== DEFAULT_SORT || q,
+    filters.status || filters.priority || filters.assigned || filters.sort !== DEFAULT_SORT || filters.overdue || q,
   );
 
   return (
@@ -369,6 +392,7 @@ export function SupportPage() {
           icon={AlertTriangle}
           tone="danger"
           isLoading={!data}
+          onClick={toggleOverdueFilter}
         />
         <StatCard label="Unassigned" value={data?.stats.unassigned ?? 0} icon={UserX} isLoading={!data} />
         <StatCard
@@ -561,7 +585,12 @@ export function SupportPage() {
                     <span className="line-clamp-1 text-sm text-ink">{row.message}</span>
                   </div>
                 </PopoverTrigger>
-                <PopoverContent className="max-w-sm text-sm whitespace-pre-wrap">{row.message}</PopoverContent>
+                <PopoverContent
+                  className="max-w-sm text-sm whitespace-pre-wrap"
+                  onOpenAutoFocus={(e) => e.preventDefault()}
+                >
+                  {row.message}
+                </PopoverContent>
               </Popover>
             ),
           },

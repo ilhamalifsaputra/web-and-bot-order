@@ -39,6 +39,7 @@ const BASE_TICKET = {
   priority: "HIGH",
   adminId: null,
   createdAt: "2026-06-26T10:00:00.000Z",
+  createdAtDisplay: "2026-06-26 10:00",
   orderId: null,
   order: null,
 };
@@ -52,7 +53,14 @@ const BASE_DETAIL = {
   customer: { totalSpent: { idr: "500000", usdt: "0" }, orderCount: 3, openTicketCount: 1 },
   timeline: {
     ticket: [
-      { id: 100, adminId: 7, action: "ticket_reply", details: 'Replied to ticket #1.', createdAt: "2026-06-26T11:00:00.000Z" },
+      {
+        id: 100,
+        adminId: 7,
+        action: "ticket_reply",
+        details: 'Replied to ticket #1.',
+        createdAt: "2026-06-26T11:00:00.000Z",
+        createdAtDisplay: "2026-06-26 11:00",
+      },
     ],
     order: [],
   },
@@ -98,6 +106,7 @@ describe("TicketDetailPage — order context panel", () => {
           id: 55,
           orderCode: "ORD-055",
           createdAt: "2026-06-01T08:00:00.000Z",
+          createdAtDisplay: "2026-06-01",
           items: [{ id: 1, quantity: 2, unitPrice: "50000", product: { id: 9, name: "Netflix 1 Bulan" } }],
           voucher: { code: "DISKON10", type: "percent" },
         },
@@ -105,7 +114,14 @@ describe("TicketDetailPage — order context panel", () => {
       timeline: {
         ...BASE_DETAIL.timeline,
         order: [
-          { id: 200, adminId: 7, action: "order_approve", details: "Approved order #55.", createdAt: "2026-06-01T09:00:00.000Z" },
+          {
+            id: 200,
+            adminId: 7,
+            action: "order_approve",
+            details: "Approved order #55.",
+            createdAt: "2026-06-01T09:00:00.000Z",
+            createdAtDisplay: "2026-06-01 09:00",
+          },
         ],
       },
     };
@@ -148,8 +164,22 @@ describe("TicketDetailPage — ticket timeline", () => {
       timeline: {
         ...BASE_DETAIL.timeline,
         ticket: [
-          { id: 101, adminId: 7, action: "ticket_reply", details: "Replied to ticket #1.", createdAt: "2026-06-26T11:00:00.000Z" },
-          { id: 100, adminId: 7, action: "ticket_assign", details: 'Assigned ticket #1 to "Rina".', createdAt: "2026-06-26T10:30:00.000Z" },
+          {
+            id: 101,
+            adminId: 7,
+            action: "ticket_reply",
+            details: "Replied to ticket #1.",
+            createdAt: "2026-06-26T11:00:00.000Z",
+            createdAtDisplay: "2026-06-26 11:00",
+          },
+          {
+            id: 100,
+            adminId: 7,
+            action: "ticket_assign",
+            details: 'Assigned ticket #1 to "Rina".',
+            createdAt: "2026-06-26T10:30:00.000Z",
+            createdAtDisplay: "2026-06-26 10:30",
+          },
         ],
       },
     };

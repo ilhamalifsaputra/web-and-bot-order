@@ -38,6 +38,7 @@ interface TicketOrder {
   id: number;
   orderCode: string;
   createdAt: string;
+  createdAtDisplay: string | null;
   items: TicketOrderItem[];
   voucher: { code: string; type: string } | null;
 }
@@ -54,6 +55,7 @@ interface Ticket {
   priority: string;
   adminId: number | null;
   createdAt: string;
+  createdAtDisplay: string | null;
   orderId: number | null;
   order: TicketOrder | null;
 }
@@ -79,6 +81,7 @@ interface AuditLogRow {
   action: string;
   details: string | null;
   createdAt: string;
+  createdAtDisplay: string | null;
 }
 
 interface TicketDetail {
@@ -120,11 +123,6 @@ function useAdmins() {
       return res.json() as Promise<{ admins: AdminOption[] }>;
     },
   });
-}
-
-function formatTimestamp(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
 }
 
 /** Up to `max` Telegram photo `file_id`s parsed from a CSV column — shared by
@@ -246,7 +244,7 @@ export function TicketDetailPage() {
                   </Link>
                 }
               />
-              <CardRow label="Purchased" value={<span className="text-xs text-ink-soft">{formatTimestamp(ticket.order.createdAt)}</span>} />
+              <CardRow label="Purchased" value={<span className="text-xs text-ink-soft">{ticket.order.createdAtDisplay ?? "—"}</span>} />
               {ticket.order.voucher && (
                 <CardRow
                   label="Voucher"
@@ -271,7 +269,7 @@ export function TicketDetailPage() {
                 timeline.order.map((row) => (
                   <div key={row.id} className="rounded-lg border-l-2 border-line bg-sand px-3 py-2">
                     <div className="mb-0.5 text-xs text-ink-soft">
-                      {formatTimestamp(row.createdAt)} — {adminLabel(row.adminId)}
+                      {row.createdAtDisplay ?? "—"} — {adminLabel(row.adminId)}
                     </div>
                     <div className="text-sm text-ink">{row.details ?? row.action}</div>
                   </div>
@@ -305,13 +303,13 @@ export function TicketDetailPage() {
         <CardHeader><CardTitle>Timeline</CardTitle></CardHeader>
         <CardContent className="flex flex-col gap-2">
           <div data-testid="timeline-row" className="rounded-lg border-l-2 border-pine bg-pine-tint px-4 py-3">
-            <div className="mb-1 text-xs text-ink-soft">{formatTimestamp(ticket.createdAt)}</div>
+            <div className="mb-1 text-xs text-ink-soft">{ticket.createdAtDisplay ?? "—"}</div>
             <div className="text-sm text-ink">Created</div>
           </div>
           {ticketTimeline.map((row) => (
             <div key={row.id} data-testid="timeline-row" className="rounded-lg border-l-2 border-line bg-sand px-4 py-3">
               <div className="mb-1 text-xs text-ink-soft">
-                {formatTimestamp(row.createdAt)} — {adminLabel(row.adminId)}
+                {row.createdAtDisplay ?? "—"} — {adminLabel(row.adminId)}
               </div>
               <div className="text-sm text-ink">{row.details ?? row.action}</div>
             </div>

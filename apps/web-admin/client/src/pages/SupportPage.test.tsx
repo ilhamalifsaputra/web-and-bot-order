@@ -162,6 +162,47 @@ describe("SupportPage", () => {
     expect(within(statCard("Resolved Today")).getByText("9")).toBeInTheDocument();
   });
 
+  it("clicking the Overdue KPI card applies overdue=true as a quick-filter and clears other filters", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = mockFetchRouter();
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+
+    // The KPI label "Overdue" also appears as a per-row Badge on an overdue
+    // ticket — scope to the StatCard itself (the only "Overdue" text inside
+    // an element with role="button", since it's rendered clickable).
+    const overdueCard = screen
+      .getAllByText("Overdue")
+      .map((el) => el.closest('[role="button"]'))
+      .find((el): el is HTMLElement => el !== null);
+    expect(overdueCard).toBeTruthy();
+
+    fetchSpy.mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (method === "POST") return jsonResponse({ ok: true });
+      if (url.startsWith("/api/admins")) return jsonResponse({ admins: [ADMIN_ROW] });
+      return jsonResponse(supportData([TICKET_OPEN]));
+    });
+
+    await user.click(overdueCard!);
+
+    // `sort` is always sent (DEFAULT_SORT is a non-empty string), so the
+    // quick-filter's request is "the default sort plus overdue=true".
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/support?sort=newest&overdue=true"));
+
+    // Clicking a second time toggles the quick-filter back off.
+    fetchSpy.mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      const method = init?.method ?? "GET";
+      if (method === "POST") return jsonResponse({ ok: true });
+      if (url.startsWith("/api/admins")) return jsonResponse({ admins: [ADMIN_ROW] });
+      return jsonResponse(supportData([TICKET_OPEN, TICKET_REPLIED]));
+    });
+    await user.click(overdueCard!);
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/support?sort=newest"));
+  });
+
   it("shows an Overdue chip only for rows flagged isOverdue", async () => {
     mockFetchRouter();
     render(<SupportPage />, { wrapper: Wrapper });

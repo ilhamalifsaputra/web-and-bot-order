@@ -2,15 +2,35 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Routes, Route, useParams } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { FlashSalesPage } from "./FlashSalesPage";
 
+// The destination route renders the *received* :productId/:denomId params
+// (not a fixed string) so a test asserting on this text proves the exact
+// values were threaded through, not just that some numeric id matched the
+// route pattern.
+function DenominationEditSentinel() {
+  const { productId, denomId } = useParams();
+  return <div>denomination-edit-page:{productId}:{denomId}</div>;
+}
+
+// Real Routes (not a mocked useNavigate — no such mock exists elsewhere in
+// this codebase; mirrors DenominationEditPage.test.tsx's own convention for
+// asserting a `navigate(...)` call landed on the exact expected path): the
+// destination route renders a sentinel string, so a test can prove
+// navigation actually happened by asserting that sentinel appears, rather
+// than just asserting the DropdownMenuItem exists in the document.
 function Wrapper({ children }: { children: React.ReactNode }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return (
-    <MemoryRouter>
-      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    <MemoryRouter initialEntries={["/flash-sales"]}>
+      <QueryClientProvider client={qc}>
+        <Routes>
+          <Route path="/flash-sales" element={children} />
+          <Route path="/catalog/:productId/denominations/:denomId/edit" element={<DenominationEditSentinel />} />
+        </Routes>
+      </QueryClientProvider>
     </MemoryRouter>
   );
 }
@@ -159,6 +179,16 @@ describe("FlashSalesPage", () => {
     expect(within(menu).getByText("View SKU")).toBeInTheDocument();
     expect(within(menu).getByText("Edit Schedule")).toBeInTheDocument();
     expect(within(menu).getByText("End Sale Now")).toBeInTheDocument();
+
+    // AUTO_FLASH_ROW has productId: 10, id: 1 — clicking "View SKU" must
+    // navigate to /catalog/10/denominations/1/edit. The Wrapper's Routes
+    // renders the *received* :productId/:denomId as text (not a fixed
+    // sentinel), so asserting the exact "10:1" values proves the
+    // `navigate(...)` call fired with the right path — not just that some
+    // numeric id matched the route pattern (same convention as
+    // DenominationEditPage.test.tsx's own navigation assertion).
+    await user.click(within(menu).getByText("View SKU"));
+    await waitFor(() => expect(screen.getByText("denomination-edit-page:10:1")).toBeInTheDocument());
   });
 
   it('"End Sale Now" is only offered when row.flash is present, and only appears for flash rows', async () => {

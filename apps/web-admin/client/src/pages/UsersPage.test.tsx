@@ -172,6 +172,11 @@ describe("UsersPage", () => {
 
     await user.click(screen.getByRole("button", { name: "Actions for Andi Santoso" }));
     const menu = await screen.findByRole("menu");
+    // Suspend is the destructive action in this menu — it must carry
+    // variant="destructive" (drives the red text styling), unlike the
+    // reversing Unban action.
+    expect(within(menu).getByText("Suspend").closest('[data-slot="dropdown-menu-item"]'))
+      .toHaveAttribute("data-variant", "destructive");
     await user.click(within(menu).getByText("Suspend"));
 
     const dialog = await screen.findByRole("dialog");
@@ -197,6 +202,9 @@ describe("UsersPage", () => {
 
     await user.click(screen.getByRole("button", { name: "Actions for Budi Santoso" }));
     const menu = await screen.findByRole("menu");
+    // Unban is the reversing, non-destructive action — default variant, not red.
+    expect(within(menu).getByText("Unban").closest('[data-slot="dropdown-menu-item"]'))
+      .toHaveAttribute("data-variant", "default");
     await user.click(within(menu).getByText("Unban"));
 
     const dialog = await screen.findByRole("dialog");

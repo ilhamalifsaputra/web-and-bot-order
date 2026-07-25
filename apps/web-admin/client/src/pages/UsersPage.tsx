@@ -247,6 +247,7 @@ export function UsersPage() {
                       </DropdownMenuItem>
                     ) : (
                       <DropdownMenuItem
+                        variant="destructive"
                         onSelect={(e) => {
                           e.preventDefault();
                           setBanTargetId(row.id);

@@ -19,6 +19,7 @@ const TONE: Record<string, Tone> = {
   REJECTED: "danger",
   FAILED: "danger",
   BANNED: "danger",
+  NEW_CUSTOMER: "success",
   OUT_OF_STOCK: "danger",
   DELIVERY_FAILED: "danger",
   REFUNDED: "neutral",

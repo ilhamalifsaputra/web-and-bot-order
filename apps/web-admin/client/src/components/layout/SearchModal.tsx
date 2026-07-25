@@ -16,6 +16,13 @@ interface SearchModalProps {
   onClose: () => void;
 }
 
+interface SearchApiResponse {
+  q: string;
+  exactOrderId: number | null;
+  users: { id: number; username: string | null; fullName: string | null; telegramId: string }[];
+  products: { id: number; name: string; product?: { name: string } | null }[];
+}
+
 const TYPE_ICONS = {
   order: ShoppingCart,
   product: Package,
@@ -53,8 +60,27 @@ export function SearchModal({ open, onClose }: SearchModalProps): JSX.Element {
     setLoading(true);
     let cancelled = false;
     const timer = setTimeout(() => {
-      apiGet<SearchResult[]>(`/api/search?q=${encodeURIComponent(query.trim())}`)
-        .then(data => { if (!cancelled) setResults(Array.isArray(data) ? data : []); })
+      apiGet<SearchApiResponse>(`/api/search?q=${encodeURIComponent(query.trim())}`)
+        .then(data => {
+          if (cancelled) return;
+          const mapped: SearchResult[] = [];
+          if (data.exactOrderId) {
+            mapped.push({ type: "order", id: data.exactOrderId, label: `Order ${data.q}`, href: `/orders/${data.exactOrderId}` });
+          }
+          for (const u of data.users) {
+            mapped.push({
+              type: "user",
+              id: u.id,
+              label: u.fullName ?? (u.username ? `@${u.username}` : u.telegramId),
+              sublabel: u.username ? `@${u.username}` : u.telegramId,
+              href: `/users/${u.id}`,
+            });
+          }
+          for (const p of data.products) {
+            mapped.push({ type: "product", id: p.id, label: p.name, sublabel: p.product?.name, href: `/catalog/${p.id}` });
+          }
+          setResults(mapped);
+        })
         .catch(() => { if (!cancelled) setResults([]); })
         .finally(() => { if (!cancelled) setLoading(false); });
     }, 300);

@@ -146,6 +146,7 @@ describe("FlashSalesPage", () => {
 
     expect(screen.getByText("Sold 8")).toBeInTheDocument();
     expect(screen.getByText("Rp320.000")).toBeInTheDocument();
+    expect(screen.getByText("8 orders")).toBeInTheDocument();
 
     const rows = screen.getAllByRole("row");
     const rowFor = (name: string) => rows.find((r) => within(r).queryByText(name));

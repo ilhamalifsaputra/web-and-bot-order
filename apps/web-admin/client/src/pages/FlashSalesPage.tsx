@@ -42,10 +42,10 @@ interface FlashInfo {
   discountPercent: string;
   startsAtDisplay: string;
   endsAtDisplay: string;
-  // Additive raw instants (Task 3 scope extension, see task-3-report.md) used
-  // ONLY for timezone-independent UTC millisecond countdown math below — never
-  // for reconstructing a shop-local datetime-local string (that needs the
-  // server's TIMEZONE config, which isn't in this payload).
+  // Additive raw instants used ONLY for timezone-independent UTC millisecond
+  // countdown math below — never for reconstructing a shop-local
+  // datetime-local string (that needs the server's TIMEZONE config, which
+  // isn't in this payload).
   startsAtIso: string;
   endsAtIso: string;
   status: FlashStatus;
@@ -228,7 +228,7 @@ export function FlashSalesPage() {
    *  TIMEZONE config — not available client-side. Guessing via the browser's
    *  own local timezone would silently submit the wrong instant whenever an
    *  admin's browser timezone differs from the shop's configured one, so the
-   *  fields start blank and the admin retypes them (see task-3-report.md). */
+   *  fields start blank and the admin retypes them. */
   function openEditSchedule(row: DenominationRow) {
     setSelected(new Set([row.id]));
     setDiscountPercent("");
@@ -520,6 +520,9 @@ export function FlashSalesPage() {
                 <div className="flex flex-col gap-0.5">
                   <span className="text-sm text-ink">Sold {row.flash.sold}</span>
                   <span className="text-xs text-ink-soft">{formatCurrencyDisplay(row.flash.revenue, "IDR")}</span>
+                  <span className="text-xs text-ink-soft">
+                    {row.flash.orders} order{row.flash.orders === 1 ? "" : "s"}
+                  </span>
                 </div>
               ) : (
                 <span className="text-sm text-ink-soft">—</span>

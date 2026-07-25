@@ -832,6 +832,16 @@ describe("flash sales", () => {
         createdAt: new Date(t0.getTime() + 1 * hour),
         status: "PENDING_PAYMENT",
       });
+      // Created at exactly entry1.endsAt — the flash window is half-open
+      // [startsAt, endsAt), same convention as `isFlashActive`, so the sale is
+      // already over at this exact instant. Must be excluded; if it leaked in,
+      // d1's sold/revenue/orders assertions below would all shift.
+      await makeOrder({
+        denominationId: d1.id,
+        quantity: 9,
+        unitPrice: "9999",
+        createdAt: entry1.endsAt,
+      });
 
       const result = await flashSalePerformance(prisma, [entry1, entry2]);
 

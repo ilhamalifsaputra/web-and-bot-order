@@ -660,7 +660,6 @@ export function listDenominationsWithFlashInfo(db: Db) {
       id: true,
       name: true,
       price: true,
-      resellerPrice: true,
       isActive: true,
       productId: true,
       deliveryType: true,
@@ -675,12 +674,16 @@ export function listDenominationsWithFlashInfo(db: Db) {
 
 /**
  * Per-denomination sales aggregates (units sold, revenue, distinct orders)
- * scoped to each entry's own flash-sale window, for the Flash Sales admin
- * page's "performance" column. One `orderItem.findMany` bounded to the union
- * of every entry's `[startsAt, endsAt]` range backs all entries — cheaper
- * than a per-entry query — then each entry's rows are filtered down to its
- * own window in memory (an order inside the union range can still fall
- * outside any single entry's narrower window).
+ * scoped to each entry's own half-open flash-sale window `[startsAt, endsAt)`
+ * — same convention as `isFlashActive` (@app/core/flash): an order placed at
+ * the exact instant a window ends is already past the sale. Backs the Flash
+ * Sales admin page's "performance" column. One `orderItem.findMany` bounded
+ * to the union of every entry's range fetches all candidate rows in one
+ * query — cheaper than a per-entry query — then the rows are bucketed by
+ * denomination id in a single pass so each entry only re-filters its own
+ * bucket's date window (an order inside the union range can still fall
+ * outside any single entry's narrower window), never the whole fetched
+ * result set.
  */
 export async function flashSalePerformance(
   db: Db,
@@ -695,17 +698,22 @@ export async function flashSalePerformance(
   const rows = await db.orderItem.findMany({
     where: {
       productId: { in: entries.map((e) => e.denominationId) },
-      order: { status: OrderStatus.DELIVERED, createdAt: { gte: minStartsAt, lte: maxEndsAt } },
+      order: { status: OrderStatus.DELIVERED, createdAt: { gte: minStartsAt, lt: maxEndsAt } },
     },
     select: { productId: true, quantity: true, unitPrice: true, orderId: true, order: { select: { createdAt: true } } },
   });
 
+  const byDenomination = new Map<number, typeof rows>();
+  for (const r of rows) {
+    const bucket = byDenomination.get(r.productId);
+    if (bucket) bucket.push(r);
+    else byDenomination.set(r.productId, [r]);
+  }
+
   for (const entry of entries) {
-    const matching = rows.filter(
-      (r) =>
-        r.productId === entry.denominationId &&
-        r.order.createdAt >= entry.startsAt &&
-        r.order.createdAt <= entry.endsAt,
+    const candidates = byDenomination.get(entry.denominationId) ?? [];
+    const matching = candidates.filter(
+      (r) => r.order.createdAt >= entry.startsAt && r.order.createdAt < entry.endsAt,
     );
     const sold = matching.reduce((acc, r) => acc + r.quantity, 0);
     const revenue = matching.reduce(

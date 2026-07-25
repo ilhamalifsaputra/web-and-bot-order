@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -137,10 +137,32 @@ describe("TicketDetailPage — customer context panel", () => {
 
 describe("TicketDetailPage — ticket timeline", () => {
   it("renders a synthetic Created row before the audit-log rows, oldest first", async () => {
-    mockFetches(BASE_DETAIL);
-    render(<TicketDetailPage />, { wrapper: Wrapper });
+    // Two audit-log rows, deliberately supplied newest-first (as the real
+    // /api/support/:ticketId route returns them, per listAuditLogs' `orderBy:
+    // { createdAt: "desc" }`) — this is the only way to actually exercise
+    // TicketDetailPage.tsx's `[...timeline.ticket].reverse()` chronological
+    // ordering; a single-row fixture can't tell a correct reverse from a
+    // no-op or a double-reverse.
+    const detail = {
+      ...BASE_DETAIL,
+      timeline: {
+        ...BASE_DETAIL.timeline,
+        ticket: [
+          { id: 101, adminId: 7, action: "ticket_reply", details: "Replied to ticket #1.", createdAt: "2026-06-26T11:00:00.000Z" },
+          { id: 100, adminId: 7, action: "ticket_assign", details: 'Assigned ticket #1 to "Rina".', createdAt: "2026-06-26T10:30:00.000Z" },
+        ],
+      },
+    };
+    mockFetches(detail);
+    const { container } = render(<TicketDetailPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Created")).toBeInTheDocument());
-    expect(screen.getByText("Replied to ticket #1.")).toBeInTheDocument();
+
+    const rows = within(container).getAllByTestId("timeline-row");
+    expect(rows.map((row) => row.textContent)).toEqual([
+      expect.stringContaining("Created"),
+      expect.stringContaining('Assigned ticket #1 to "Rina".'),
+      expect.stringContaining("Replied to ticket #1."),
+    ]);
   });
 });
 

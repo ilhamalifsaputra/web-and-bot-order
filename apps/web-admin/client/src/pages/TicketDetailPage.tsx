@@ -304,12 +304,12 @@ export function TicketDetailPage() {
       <Card className="mb-6">
         <CardHeader><CardTitle>Timeline</CardTitle></CardHeader>
         <CardContent className="flex flex-col gap-2">
-          <div className="rounded-lg border-l-2 border-pine bg-pine-tint px-4 py-3">
+          <div data-testid="timeline-row" className="rounded-lg border-l-2 border-pine bg-pine-tint px-4 py-3">
             <div className="mb-1 text-xs text-ink-soft">{formatTimestamp(ticket.createdAt)}</div>
             <div className="text-sm text-ink">Created</div>
           </div>
           {ticketTimeline.map((row) => (
-            <div key={row.id} className="rounded-lg border-l-2 border-line bg-sand px-4 py-3">
+            <div key={row.id} data-testid="timeline-row" className="rounded-lg border-l-2 border-line bg-sand px-4 py-3">
               <div className="mb-1 text-xs text-ink-soft">
                 {formatTimestamp(row.createdAt)} — {adminLabel(row.adminId)}
               </div>

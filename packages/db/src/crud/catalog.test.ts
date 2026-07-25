@@ -35,9 +35,11 @@ import {
   listDenominationsWithFlashInfo,
   bulkSetFlashSale,
   bulkClearFlashSale,
+  flashSalePerformance,
   CategoryMismatchError,
 } from "./catalog";
 import { ValidationError } from "@app/core/errors";
+import { Decimal } from "@app/core/money";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -735,6 +737,113 @@ describe("flash sales", () => {
       expect(result).toEqual({ cleared: 1, skipped: 1 });
       const row = await prisma.denomination.findUnique({ where: { id: withSale.id } });
       expect(row!.flashDiscountPercent).toBeNull();
+    });
+  });
+
+  describe("flashSalePerformance", () => {
+    let orderSeq = 0;
+    async function makeOrder(args: {
+      denominationId: number;
+      quantity: number;
+      unitPrice: string;
+      createdAt: Date;
+      status?: string;
+    }) {
+      orderSeq++;
+      const user = await upsertUser(prisma, {
+        telegramId: Math.floor(Math.random() * 1_000_000_000),
+        username: null,
+        fullName: null,
+      });
+      const order = await prisma.order.create({
+        data: {
+          orderCode: `FSP-${orderSeq}-${Math.random()}`,
+          userId: user.id,
+          subtotalAmount: args.unitPrice,
+          totalAmount: args.unitPrice,
+          status: args.status ?? "DELIVERED",
+          createdAt: args.createdAt,
+        },
+      });
+      await prisma.orderItem.create({
+        data: {
+          orderId: order.id,
+          productId: args.denominationId,
+          quantity: args.quantity,
+          unitPrice: args.unitPrice,
+          warrantyDaysSnapshot: 0,
+        },
+      });
+      return order;
+    }
+
+    it("returns an empty Map immediately for an empty entries array", async () => {
+      const result = await flashSalePerformance(prisma, []);
+      expect(result).toEqual(new Map());
+    });
+
+    it("aggregates sold/revenue/orders per entry, filtering out-of-window and non-DELIVERED rows", async () => {
+      const cat = await makeCategory();
+      const p = await makeProduct(cat.id, "Perf Product");
+      const d1 = await makeDenom(p.id, "D1", "10000");
+      const d2 = await makeDenom(p.id, "D2", "10000");
+
+      const t0 = new Date();
+      const hour = 3_600_000;
+      const entry1 = { denominationId: d1.id, startsAt: t0, endsAt: new Date(t0.getTime() + 2 * hour) };
+      // entry2's window is far later, but its presence widens the single
+      // over-fetch query's [min startsAt, max endsAt] range to cover t0..+12h.
+      const entry2 = {
+        denominationId: d2.id,
+        startsAt: new Date(t0.getTime() + 10 * hour),
+        endsAt: new Date(t0.getTime() + 12 * hour),
+      };
+
+      // Inside entry1's own window — counted (quantity=3 to catch a missing
+      // unitPrice*quantity multiplication).
+      await makeOrder({
+        denominationId: d1.id,
+        quantity: 3,
+        unitPrice: "1000",
+        createdAt: new Date(t0.getTime() + 1 * hour),
+      });
+      // A second DELIVERED order for d1 inside the window — should bump
+      // `orders` to 2 without double-counting as the same order.
+      await makeOrder({
+        denominationId: d1.id,
+        quantity: 1,
+        unitPrice: "500",
+        createdAt: new Date(t0.getTime() + 1.5 * hour),
+      });
+      // Same product (d1), createdAt inside the overall fetch range
+      // (t0..+12h) but OUTSIDE entry1's own [t0, t0+2h] window — must be
+      // excluded from entry1's aggregate despite being fetched.
+      await makeOrder({
+        denominationId: d1.id,
+        quantity: 5,
+        unitPrice: "9999",
+        createdAt: new Date(t0.getTime() + 11 * hour),
+      });
+      // Inside entry1's window, but not DELIVERED — excluded.
+      await makeOrder({
+        denominationId: d1.id,
+        quantity: 7,
+        unitPrice: "9999",
+        createdAt: new Date(t0.getTime() + 1 * hour),
+        status: "PENDING_PAYMENT",
+      });
+
+      const result = await flashSalePerformance(prisma, [entry1, entry2]);
+
+      const d1Result = result.get(d1.id)!;
+      expect(d1Result.sold).toBe(4); // 3 + 1
+      expect(d1Result.revenue.equals(new Decimal("3500"))).toBe(true); // 1000*3 + 500*1
+      expect(d1Result.orders).toBe(2);
+
+      const d2Result = result.get(d2.id)!;
+      expect(d2Result.sold).toBe(0);
+      expect(d2Result.revenue.equals(new Decimal(0))).toBe(true);
+      expect(d2Result.orders).toBe(0);
     });
   });
 });

@@ -9,7 +9,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { bulkAddStock } from "./stock";
+import { bulkAddStock, availableStockCountsByDenomination } from "./stock";
 import { createDenomination } from "./catalog";
 import { StockStatus } from "@app/core/enums";
 
@@ -133,5 +133,46 @@ describe("bulkAddStock dedup", () => {
   it("empty input returns added=0, skipped=0 without querying", async () => {
     const { product } = sample;
     expect(await bulkAddStock(prisma, product.id, [])).toEqual({ added: 0, skipped: 0 });
+  });
+});
+
+describe("availableStockCountsByDenomination", () => {
+  it("returns an empty Map for an empty id array", async () => {
+    expect(await availableStockCountsByDenomination(prisma, [])).toEqual(new Map());
+  });
+
+  it("counts only AVAILABLE rows, grouped per denomination, omitting ids with none", async () => {
+    const { product, parentProduct } = sample; // `product` already has 5 AVAILABLE rows from buildSampleData
+
+    const otherDenom = await createDenomination(prisma, {
+      productId: parentProduct.id,
+      name: "No stock left",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+    // Give otherDenom stock, but mark it all SOLD/DEAD — no AVAILABLE rows.
+    await bulkAddStock(prisma, otherDenom.id, ["sold-one@x.com:pw", "dead-one@x.com:pw"]);
+    const otherRows = await prisma.stockItem.findMany({ where: { productId: otherDenom.id } });
+    await prisma.stockItem.update({ where: { id: otherRows[0]!.id }, data: { status: StockStatus.SOLD } });
+    await prisma.stockItem.update({ where: { id: otherRows[1]!.id }, data: { status: StockStatus.DEAD } });
+
+    const untouchedDenom = await createDenomination(prisma, {
+      productId: parentProduct.id,
+      name: "Never had stock",
+      type: "SHARED",
+      durationLabel: "1 month",
+      price: "5.00",
+    });
+
+    const result = await availableStockCountsByDenomination(prisma, [
+      product.id,
+      otherDenom.id,
+      untouchedDenom.id,
+    ]);
+
+    expect(result.get(product.id)).toBe(5);
+    expect(result.has(otherDenom.id)).toBe(false);
+    expect(result.has(untouchedDenom.id)).toBe(false);
   });
 });

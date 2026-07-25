@@ -661,6 +661,8 @@ export function listDenominationsWithFlashInfo(db: Db) {
       name: true,
       price: true,
       isActive: true,
+      productId: true,
+      deliveryType: true,
       flashDiscountPercent: true,
       flashStartsAt: true,
       flashEndsAt: true,
@@ -668,6 +670,52 @@ export function listDenominationsWithFlashInfo(db: Db) {
     },
     orderBy: [{ product: { name: "asc" } }, { name: "asc" }],
   });
+}
+
+/**
+ * Per-denomination sales aggregates (units sold, revenue, distinct orders)
+ * scoped to each entry's own flash-sale window, for the Flash Sales admin
+ * page's "performance" column. One `orderItem.findMany` bounded to the union
+ * of every entry's `[startsAt, endsAt]` range backs all entries — cheaper
+ * than a per-entry query — then each entry's rows are filtered down to its
+ * own window in memory (an order inside the union range can still fall
+ * outside any single entry's narrower window).
+ */
+export async function flashSalePerformance(
+  db: Db,
+  entries: { denominationId: number; startsAt: Date; endsAt: Date }[],
+): Promise<Map<number, { sold: number; revenue: Decimal; orders: number }>> {
+  const map = new Map<number, { sold: number; revenue: Decimal; orders: number }>();
+  if (!entries.length) return map;
+
+  const minStartsAt = new Date(Math.min(...entries.map((e) => e.startsAt.getTime())));
+  const maxEndsAt = new Date(Math.max(...entries.map((e) => e.endsAt.getTime())));
+
+  const rows = await db.orderItem.findMany({
+    where: {
+      productId: { in: entries.map((e) => e.denominationId) },
+      order: { status: OrderStatus.DELIVERED, createdAt: { gte: minStartsAt, lte: maxEndsAt } },
+    },
+    select: { productId: true, quantity: true, unitPrice: true, orderId: true, order: { select: { createdAt: true } } },
+  });
+
+  for (const entry of entries) {
+    const matching = rows.filter(
+      (r) =>
+        r.productId === entry.denominationId &&
+        r.order.createdAt >= entry.startsAt &&
+        r.order.createdAt <= entry.endsAt,
+    );
+    const sold = matching.reduce((acc, r) => acc + r.quantity, 0);
+    const revenue = matching.reduce(
+      (acc, r) => acc.plus(new Decimal(r.unitPrice).times(r.quantity)),
+      new Decimal(0),
+    );
+    const orders = new Set(matching.map((r) => r.orderId)).size;
+    map.set(entry.denominationId, { sold, revenue, orders });
+  }
+
+  return map;
 }
 
 /**

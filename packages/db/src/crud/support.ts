@@ -355,22 +355,52 @@ export async function getTicketStats(
   return { open, waitingCustomer, overdue, unassigned, resolvedToday };
 }
 
-/** Bulk (re)assign — or, with `adminId: null`, unassign — a batch of tickets. */
-export async function bulkAssignTickets(db: Db, ids: number[], adminId: number | null): Promise<number> {
-  const res = await db.supportTicket.updateMany({
-    where: { id: { in: ids } },
-    data: { adminId },
-  });
-  return res.count;
+/** Which of the requested ids actually exist, split succeeded/failed — shared
+ * by bulkAssignTickets/bulkSetTicketPriority so a nonexistent id in the batch
+ * (which `updateMany` would otherwise silently no-op on) is reported back
+ * honestly instead of echoed as succeeded. Mirrors bulkCloseTickets' shape
+ * and failure wording exactly. */
+async function splitExistingTicketIds(
+  db: Db,
+  ids: number[],
+): Promise<{ succeeded: number[]; failed: { id: number; error: string }[] }> {
+  const existing = await db.supportTicket.findMany({ where: { id: { in: ids } }, select: { id: true } });
+  const existingIds = new Set(existing.map((t) => t.id));
+  const succeeded = ids.filter((id) => existingIds.has(id));
+  const failed = ids
+    .filter((id) => !existingIds.has(id))
+    .map((id) => ({ id, error: "ticket not found" }));
+  return { succeeded, failed };
 }
 
-/** Bulk-set priority on a batch of tickets. */
-export async function bulkSetTicketPriority(db: Db, ids: number[], priority: TicketPriority): Promise<number> {
-  const res = await db.supportTicket.updateMany({
-    where: { id: { in: ids } },
-    data: { priority },
-  });
-  return res.count;
+/** Bulk (re)assign — or, with `adminId: null`, unassign — a batch of tickets.
+ * Returns which ids actually existed (succeeded) vs didn't (failed) rather
+ * than just an affected count, so a caller that echoes this back to an admin
+ * (the bulk-action route) can't misreport a nonexistent id as a success. */
+export async function bulkAssignTickets(
+  db: Db,
+  ids: number[],
+  adminId: number | null,
+): Promise<{ succeeded: number[]; failed: { id: number; error: string }[] }> {
+  const { succeeded, failed } = await splitExistingTicketIds(db, ids);
+  if (succeeded.length > 0) {
+    await db.supportTicket.updateMany({ where: { id: { in: succeeded } }, data: { adminId } });
+  }
+  return { succeeded, failed };
+}
+
+/** Bulk-set priority on a batch of tickets. Same succeeded/failed honesty as
+ * bulkAssignTickets, for the same reason. */
+export async function bulkSetTicketPriority(
+  db: Db,
+  ids: number[],
+  priority: TicketPriority,
+): Promise<{ succeeded: number[]; failed: { id: number; error: string }[] }> {
+  const { succeeded, failed } = await splitExistingTicketIds(db, ids);
+  if (succeeded.length > 0) {
+    await db.supportTicket.updateMany({ where: { id: { in: succeeded } }, data: { priority } });
+  }
+  return { succeeded, failed };
 }
 
 /** Bulk-close a batch of tickets, reusing `closeTicket`'s atomic

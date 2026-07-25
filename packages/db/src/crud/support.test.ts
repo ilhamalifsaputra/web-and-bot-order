@@ -480,32 +480,56 @@ describe("getTicketStats", () => {
 });
 
 describe("bulk ticket operations", () => {
-  it("bulkAssignTickets assigns/unassigns a batch and returns the affected count", async () => {
+  it("bulkAssignTickets assigns/unassigns a batch and reports the succeeded ids", async () => {
     const user = await makeUser(1201n);
     const admin = await makeAdmin();
     const t1 = await createTicket(prisma, user.id, "a");
     const t2 = await createTicket(prisma, user.id, "b");
 
-    const assignedCount = await bulkAssignTickets(prisma, [t1.id, t2.id], admin.id);
-    expect(assignedCount).toBe(2);
+    const assigned = await bulkAssignTickets(prisma, [t1.id, t2.id], admin.id);
+    expect(new Set(assigned.succeeded)).toEqual(new Set([t1.id, t2.id]));
+    expect(assigned.failed).toEqual([]);
     const rows = await prisma.supportTicket.findMany({ where: { id: { in: [t1.id, t2.id] } } });
     expect(rows.every((r) => r.adminId === admin.id)).toBe(true);
 
-    const unassignedCount = await bulkAssignTickets(prisma, [t1.id], null);
-    expect(unassignedCount).toBe(1);
+    const unassigned = await bulkAssignTickets(prisma, [t1.id], null);
+    expect(unassigned.succeeded).toEqual([t1.id]);
+    expect(unassigned.failed).toEqual([]);
     const fresh = await prisma.supportTicket.findUnique({ where: { id: t1.id } });
     expect(fresh!.adminId).toBeNull();
   });
 
-  it("bulkSetTicketPriority sets priority on a batch and returns the affected count", async () => {
+  it("bulkAssignTickets reports a non-existent id as failed rather than silently dropping it", async () => {
+    const user = await makeUser(1206n);
+    const admin = await makeAdmin();
+    const t1 = await createTicket(prisma, user.id, "a");
+
+    const result = await bulkAssignTickets(prisma, [t1.id, 999999], admin.id);
+    expect(result.succeeded).toEqual([t1.id]);
+    expect(result.failed).toEqual([{ id: 999999, error: "ticket not found" }]);
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: t1.id } });
+    expect(fresh!.adminId).toBe(admin.id);
+  });
+
+  it("bulkSetTicketPriority sets priority on a batch and reports the succeeded ids", async () => {
     const user = await makeUser(1202n);
     const t1 = await createTicket(prisma, user.id, "a");
     const t2 = await createTicket(prisma, user.id, "b");
 
-    const count = await bulkSetTicketPriority(prisma, [t1.id, t2.id], TicketPriority.URGENT);
-    expect(count).toBe(2);
+    const result = await bulkSetTicketPriority(prisma, [t1.id, t2.id], TicketPriority.URGENT);
+    expect(new Set(result.succeeded)).toEqual(new Set([t1.id, t2.id]));
+    expect(result.failed).toEqual([]);
     const rows = await prisma.supportTicket.findMany({ where: { id: { in: [t1.id, t2.id] } } });
     expect(rows.every((r) => r.priority === TicketPriority.URGENT)).toBe(true);
+  });
+
+  it("bulkSetTicketPriority reports a non-existent id as failed rather than silently dropping it", async () => {
+    const user = await makeUser(1207n);
+    const t1 = await createTicket(prisma, user.id, "a");
+
+    const result = await bulkSetTicketPriority(prisma, [t1.id, 999999], TicketPriority.URGENT);
+    expect(result.succeeded).toEqual([t1.id]);
+    expect(result.failed).toEqual([{ id: 999999, error: "ticket not found" }]);
   });
 
   describe("bulkCloseTickets", () => {

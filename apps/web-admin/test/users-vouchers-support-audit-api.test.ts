@@ -2,6 +2,7 @@ import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
+import { addMinutes } from "@app/core/datetime";
 import { prisma, initDb, upsertUser, setSetting, createTicket, assignTicket } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
@@ -318,6 +319,23 @@ describe("GET /api/support", () => {
     expect(body.items.map((t) => t.id)).toEqual([assigned.id]);
   });
 
+  it("stamps isOverdue: true on an OPEN, never-replied ticket older than the 4h cutoff", async () => {
+    const overdue = await createTicket(prisma, customerId, "Old open ticket");
+    await prisma.supportTicket.update({
+      where: { id: overdue.id },
+      data: { createdAt: addMinutes(new Date(), -300) }, // 5h old — past the 4h overdue cutoff
+    });
+    const fresh = await createTicket(prisma, customerId, "Fresh open ticket"); // just created
+
+    const res = await get("/api/support", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { items: { id: number; isOverdue: boolean }[] };
+    const overdueItem = body.items.find((t) => t.id === overdue.id);
+    const freshItem = body.items.find((t) => t.id === fresh.id);
+    expect(overdueItem?.isOverdue).toBe(true);
+    expect(freshItem?.isOverdue).toBe(false);
+  });
+
   it("requires auth (anon → 303 /login)", async () => {
     const res = await get("/api/support", null);
     expect(res.statusCode).toBe(303);
@@ -345,6 +363,21 @@ describe("GET /api/support/:ticketId", () => {
     // ticket_reply above wrote an audit row targeting this ticket.
     expect(body.timeline.ticket.length).toBeGreaterThan(0);
     expect(body.timeline.order).toEqual([]);
+  });
+
+  it("includes the order timeline block when the ticket is linked to an order", async () => {
+    const order = await prisma.order.create({
+      data: { orderCode: "ORD-t1", userId: customerId, subtotalAmount: "1", totalAmount: "1" },
+    });
+    await prisma.auditLog.create({
+      data: { adminId, action: "approve_order", targetType: "order", targetId: order.id, details: "test" },
+    });
+    const ticket = await createTicket(prisma, customerId, "Order issue", null, null, order.id);
+
+    const res = await get(`/api/support/${ticket.id}`, cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { timeline: { ticket: unknown[]; order: unknown[] } };
+    expect(body.timeline.order.length).toBeGreaterThan(0);
   });
 
   it("404s for a non-existent ticket", async () => {
@@ -413,6 +446,25 @@ describe("POST /api/support/bulk-action", () => {
     expect(audits).toHaveLength(1);
   });
 
+  it("assign: a non-existent id in the batch is reported as failed, not falsely echoed as succeeded", async () => {
+    const t1 = await createTicket(prisma, customerId, "One");
+    const res = await postJson("/api/support/bulk-action", cookie, csrf, {
+      ids: [t1.id, 999999],
+      action: "assign",
+      adminId,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { succeeded: number[]; failed: { id: number; error: string }[] };
+    // The concrete regression this guards: updateMany silently no-ops on the
+    // nonexistent id, so the response must NOT just echo back both requested
+    // ids as succeeded — it must match what actually changed in the DB.
+    expect(body.succeeded).toEqual([t1.id]);
+    expect(body.failed).toEqual([{ id: 999999, error: "ticket not found" }]);
+    expect((await prisma.supportTicket.findUniqueOrThrow({ where: { id: t1.id } })).adminId).toBe(adminId);
+    const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_bulk_assign" } });
+    expect(audit!.details).toContain("Assigned 1 tickets");
+  });
+
   it("priority: happy path bulk-sets priority and audits", async () => {
     const t1 = await createTicket(prisma, customerId, "One");
     const res = await postJson("/api/support/bulk-action", cookie, csrf, {
@@ -424,6 +476,20 @@ describe("POST /api/support/bulk-action", () => {
     expect((await prisma.supportTicket.findUniqueOrThrow({ where: { id: t1.id } })).priority).toBe("LOW");
     const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_bulk_priority" } });
     expect(audit).toBeTruthy();
+  });
+
+  it("priority: a non-existent id in the batch is reported as failed, not falsely echoed as succeeded", async () => {
+    const t1 = await createTicket(prisma, customerId, "One");
+    const res = await postJson("/api/support/bulk-action", cookie, csrf, {
+      ids: [t1.id, 999999],
+      action: "priority",
+      priority: "high",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { succeeded: number[]; failed: { id: number; error: string }[] };
+    expect(body.succeeded).toEqual([t1.id]);
+    expect(body.failed).toEqual([{ id: 999999, error: "ticket not found" }]);
+    expect((await prisma.supportTicket.findUniqueOrThrow({ where: { id: t1.id } })).priority).toBe("HIGH");
   });
 
   it("priority: rejects an invalid priority with 400", async () => {

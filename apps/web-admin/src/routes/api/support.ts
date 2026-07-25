@@ -50,6 +50,20 @@ function parseCsvFilter(raw: string | undefined, allowed: string[]): string[] | 
   return values.length ? values : null;
 }
 
+/** Resolve an assignee id to its display name, shared by the single-ticket
+ * `/assign` route and the bulk-action `assign` branch so the "look up the
+ * admin, build a display name, 400 if it doesn't exist" logic can't drift
+ * between the two copies. `adminId: null` (unassign) always resolves ok with
+ * a null name. */
+async function resolveAssigneeName(
+  adminId: number | null,
+): Promise<{ ok: true; name: string | null } | { ok: false }> {
+  if (adminId === null) return { ok: true, name: null };
+  const assignee = await getUser(prisma, adminId);
+  if (!assignee) return { ok: false };
+  return { ok: true, name: assignee.fullName ?? assignee.username ?? `Telegram ID ${assignee.telegramId}` };
+}
+
 /** Shared by the list route (and, once it needs it, an export route) so the
  * filter can't drift between call sites — mirrors `orders.ts`'s
  * `buildOrderFilter`. */
@@ -172,12 +186,9 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
 
     if (!(await getTicket(prisma, ticketId))) return reply.code(404).send({ error: "Ticket not found." });
 
-    let adminName: string | null = null;
-    if (adminId !== null) {
-      const assignee = await getUser(prisma, adminId);
-      if (!assignee) return reply.code(400).send({ error: "Admin not found." });
-      adminName = assignee.fullName ?? assignee.username ?? `Telegram ID ${assignee.telegramId}`;
-    }
+    const resolved = await resolveAssigneeName(adminId);
+    if (!resolved.ok) return reply.code(400).send({ error: "Admin not found." });
+    const adminName = resolved.name;
 
     await assignTicket(prisma, ticketId, adminId);
     await logAdminAction(prisma, {
@@ -234,22 +245,21 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
         return reply.code(400).send({ error: "adminId must be a number or null." });
       }
       const adminId = body.adminId as number | null;
-      let adminName: string | null = null;
-      if (adminId !== null) {
-        const assignee = await getUser(prisma, adminId);
-        if (!assignee) return reply.code(400).send({ error: "Admin not found." });
-        adminName = assignee.fullName ?? assignee.username ?? `Telegram ID ${assignee.telegramId}`;
-      }
-      const count = await bulkAssignTickets(prisma, ids, adminId);
+      const resolved = await resolveAssigneeName(adminId);
+      if (!resolved.ok) return reply.code(400).send({ error: "Admin not found." });
+      const adminName = resolved.name;
+      const result = await bulkAssignTickets(prisma, ids, adminId);
       await logAdminAction(prisma, {
         adminId: req.admin!.userId,
         action: "ticket_bulk_assign",
         targetType: "ticket",
-        details: adminId !== null
-          ? `Assigned ${count} tickets to "${adminName}".`
-          : `Unassigned ${count} tickets.`,
+        details:
+          (adminId !== null
+            ? `Assigned ${result.succeeded.length} tickets to "${adminName}".`
+            : `Unassigned ${result.succeeded.length} tickets.`) +
+          (result.failed.length > 0 ? ` Skipped ${result.failed.length} not found.` : ""),
       });
-      return reply.send({ succeeded: ids, failed: [] });
+      return reply.send(result);
     }
 
     if (action === "priority") {
@@ -257,14 +267,16 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       if (!PRIORITY_VALUES.includes(priority)) {
         return reply.code(400).send({ error: "Invalid priority." });
       }
-      const count = await bulkSetTicketPriority(prisma, ids, priority as TicketPriority);
+      const result = await bulkSetTicketPriority(prisma, ids, priority as TicketPriority);
       await logAdminAction(prisma, {
         adminId: req.admin!.userId,
         action: "ticket_bulk_priority",
         targetType: "ticket",
-        details: `Set ${count} tickets' priority to ${priority}.`,
+        details:
+          `Set ${result.succeeded.length} tickets' priority to ${priority}.` +
+          (result.failed.length > 0 ? ` Skipped ${result.failed.length} not found.` : ""),
       });
-      return reply.send({ succeeded: ids, failed: [] });
+      return reply.send(result);
     }
 
     // "close"

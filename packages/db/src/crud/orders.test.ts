@@ -23,8 +23,8 @@ import {
   countOrders,
   computeOrderEligibility,
 } from "./orders";
-import { addToCart, upsertBulkPricing, createVoucher, setFlashSale } from "@app/db";
-import { VoucherType } from "@app/core/enums";
+import { addToCart, upsertBulkPricing, createVoucher, setFlashSale, bulkAddStock } from "@app/db";
+import { VoucherType, VoucherScope } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
@@ -732,5 +732,125 @@ describe("createOrderFromCart / createOrderDirect — flash sale pricing", () =>
     expect(new Decimal(order!.subtotalAmount).equals("12.0000")).toBe(true);
     expect(new Decimal(order!.bulkDiscountAmount).equals("6.0000")).toBe(true); // 50% of 12.00
     expect(new Decimal(order!.discountAmount).equals("0.6000")).toBe(true); // 10% of the net 6.00
+  });
+});
+
+// Task 2 (voucher scope + discount-cap refactor): both order-creation call
+// sites must derive eligibleSubtotal from the voucher's scoped product set
+// and pass it through to applyVoucherToSubtotal, so a SELECTED-scope voucher
+// only ever discounts the matching line(s) — never the whole cart.
+describe("createOrderFromCart / createOrderDirect — voucher scope (SELECTED)", () => {
+  let sample: SampleData;
+
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  it("a SELECTED-scope voucher only discounts the matching line in a multi-line cart", async () => {
+    const { user, product, parentProduct } = sample; // product price 5.00
+    const otherCategory = await createCategory(prisma, `OtherCat${Math.random()}`);
+    const otherCatalogProduct = await createCatalogProduct(prisma, { categoryId: otherCategory.id, name: "Other" });
+    const otherDenom = await createDenomination(prisma, {
+      productId: otherCatalogProduct.id,
+      name: "Other Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10.00",
+    });
+    await bulkAddStock(prisma, otherDenom.id, ["cred1"]);
+
+    await addToCart(prisma, user.id, product.id, 1); // scoped line: 5.00
+    await addToCart(prisma, user.id, otherDenom.id, 1); // non-scoped line: 10.00
+
+    await createVoucher(prisma, {
+      code: "SCOPED1",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [parentProduct.id],
+    });
+
+    const order = await createOrderFromCart(prisma, { user, voucherCode: "SCOPED1" });
+
+    expect(new Decimal(order!.subtotalAmount).equals("15.0000")).toBe(true);
+    // 10% of the scoped 5.00 line only, not the full 15.00 subtotal.
+    expect(new Decimal(order!.discountAmount).equals("0.5000")).toBe(true);
+  });
+
+  it("a SELECTED-scope voucher with no matching cart lines rejects with error.voucher_not_applicable", async () => {
+    const { user, product } = sample;
+    const otherCategory = await createCategory(prisma, `OtherCat2${Math.random()}`);
+    const otherCatalogProduct = await createCatalogProduct(prisma, { categoryId: otherCategory.id, name: "Unrelated Product" });
+
+    await addToCart(prisma, user.id, product.id, 1);
+    await createVoucher(prisma, {
+      code: "SCOPEDMISS",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [otherCatalogProduct.id],
+    });
+
+    await expect(
+      createOrderFromCart(prisma, { user, voucherCode: "SCOPEDMISS" }),
+    ).rejects.toMatchObject({ key: "error.voucher_not_applicable" });
+  });
+
+  it("createOrderDirect with an out-of-scope single SKU rejects with error.voucher_not_applicable", async () => {
+    const { user, product } = sample;
+    const otherCategory = await createCategory(prisma, `OtherCat3${Math.random()}`);
+    const otherCatalogProduct = await createCatalogProduct(prisma, { categoryId: otherCategory.id, name: "Unrelated Product 2" });
+
+    await createVoucher(prisma, {
+      code: "SCOPEDDIRECT",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [otherCatalogProduct.id],
+    });
+
+    await expect(
+      createOrderDirect(prisma, { user, productId: product.id, quantity: 1, voucherCode: "SCOPEDDIRECT" }),
+    ).rejects.toMatchObject({ key: "error.voucher_not_applicable" });
+  });
+
+  it("createOrderDirect with an in-scope single SKU discounts normally", async () => {
+    const { user, product, parentProduct } = sample;
+    await createVoucher(prisma, {
+      code: "SCOPEDDIRECTOK",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [parentProduct.id],
+    });
+
+    const order = await createOrderDirect(prisma, { user, productId: product.id, quantity: 1, voucherCode: "SCOPEDDIRECTOK" });
+    expect(new Decimal(order!.discountAmount).equals("0.5000")).toBe(true); // 10% of 5.00
+  });
+
+  it("a scheduled voucher (startAt in the future) rejects before its start date and succeeds after", async () => {
+    const { user, product } = sample;
+    await addToCart(prisma, user.id, product.id, 1);
+    await createVoucher(prisma, {
+      code: "SCHEDVOUCH",
+      type: VoucherType.PERCENT,
+      value: "10",
+      startAt: new Date(Date.now() + 3_600_000), // 1 hour from now
+    });
+
+    await expect(
+      createOrderFromCart(prisma, { user, voucherCode: "SCHEDVOUCH" }),
+    ).rejects.toMatchObject({ key: "error.voucher_not_yet_active" });
+
+    // Move the start date into the past — same voucher now applies. The
+    // rejected attempt above never reached clearCart, so the cart still
+    // holds exactly the 1 unit added above — no second addToCart needed
+    // (which would otherwise double the quantity via addToCart's upsert).
+    const v = await prisma.voucher.findUnique({ where: { code: "SCHEDVOUCH" } });
+    await prisma.voucher.update({ where: { id: v!.id }, data: { startAt: new Date(Date.now() - 60_000) } });
+
+    const order = await createOrderFromCart(prisma, { user, voucherCode: "SCHEDVOUCH" });
+    expect(new Decimal(order!.discountAmount).equals("0.5000")).toBe(true); // 10% of 5.00
   });
 });

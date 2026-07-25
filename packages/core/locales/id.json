@@ -207,6 +207,8 @@
   "error.voucher_inactive": "Voucher sudah tidak aktif.",
   "error.voucher_min_purchase": "Voucher memerlukan minimum pembelian {min}.",
   "error.voucher_not_found": "Kode voucher tidak ditemukan.",
+  "error.voucher_not_applicable": "Voucher ini tidak berlaku untuk barang di keranjangmu.",
+  "error.voucher_not_yet_active": "Voucher ini belum aktif.",
   "error.voucher_used_up": "Voucher sudah mencapai batas penggunaan.",
   "faq.content": "<b>FAQ</b>\n\n<b>T: Berapa lama pengiriman?</b>\nJ: Setelah pembayaran diverifikasi, pengiriman otomatis — biasanya di bawah 30 menit pada jam kerja.\n\n<b>T: Bagaimana garansi?</b>\nJ: Sebagian besar akun bergaransi replacement 30 hari. Hubungi support jika ada masalah.\n\n<b>T: Bisa refund?</b>\nJ: Refund dipertimbangkan kasus per kasus. Kami selalu coba replacement terlebih dahulu.\n\n<b>T: Kenapa jumlah pembayaran ada desimal aneh?</b>\nJ: Angka unik ditambahkan agar sistem dapat mengidentifikasi pembayaran. Jangan dibulatkan.",
   "help.faq_btn": "❓ FAQ",

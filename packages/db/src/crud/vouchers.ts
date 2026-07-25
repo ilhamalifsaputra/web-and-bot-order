@@ -2,11 +2,14 @@
  * Vouchers domain — port of the "Vouchers" section of Python crud.py.
  * applyVoucherToSubtotal is a pure function (no DB, no mutation).
  */
-import { VoucherType } from "@app/core/enums";
+import { VoucherType, VoucherScope, OrderStatus } from "@app/core/enums";
 import { quantizeMoney } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
+import type { PrismaClient } from "../client";
 import type { Db } from "./_types";
+
+const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
 
 export function getVoucherByCode(db: Db, code: string) {
   return db.voucher.findUnique({ where: { code: code.toUpperCase() } });
@@ -29,6 +32,12 @@ export async function createVoucher(
     usageLimit?: number | null;
     minPurchase?: Decimal.Value;
     expiresAt?: Date | null;
+    maxDiscount?: Decimal.Value | null;
+    startAt?: Date | null;
+    scope?: VoucherScope;
+    /** Scoped product ids (real catalog Product, not Denomination) — only
+     *  written when scope === SELECTED. Ignored (never persisted) for ALL. */
+    productIds?: number[];
   },
 ) {
   // The only thing standing between a misconfigured PERCENT voucher and a
@@ -41,7 +50,8 @@ export async function createVoucher(
       throw new ValidationError("error.invalid_discount_percent");
     }
   }
-  return db.voucher.create({
+  const scope = args.scope ?? VoucherScope.ALL;
+  const voucher = await db.voucher.create({
     data: {
       code: args.code.toUpperCase(),
       type: args.type,
@@ -49,8 +59,87 @@ export async function createVoucher(
       usageLimit: args.usageLimit ?? null,
       minPurchase: new Decimal(args.minPurchase ?? 0),
       expiresAt: args.expiresAt ?? null,
+      maxDiscount: args.maxDiscount != null ? new Decimal(args.maxDiscount) : null,
+      startAt: args.startAt ?? null,
+      scope,
     },
   });
+  if (scope === VoucherScope.SELECTED && args.productIds && args.productIds.length > 0) {
+    await db.voucherProduct.createMany({
+      data: args.productIds.map((productId) => ({ voucherId: voucher.id, productId })),
+    });
+  }
+  return voucher;
+}
+
+/**
+ * Editable fields for an existing voucher (admin Vouchers page's Edit
+ * action). `code` is refused once `usedCount > 0` — mirrors deleteVoucher's
+ * "refuses once used" guard exactly, since a code rename after real
+ * redemptions would desync what buyers typed from what's on record. Every
+ * other field stays editable regardless of usedCount: Order.discountAmount
+ * is a snapshot taken at order-creation time and is never recomputed, so
+ * fixing a typo'd value or extending an expiry can never retroactively
+ * change an already-completed order.
+ *
+ * The voucher-row update and the VoucherProduct set replacement run in one
+ * short `db.$transaction` so a crash mid-edit can never leave the row and
+ * its scoped-product set disagreeing. The product set is always replaced
+ * (delete-then-recreate) rather than diffed — simplest correct behavior for
+ * a small per-voucher set, and it naturally clears any stale SELECTED rows
+ * when an admin flips scope back to ALL.
+ */
+export async function updateVoucher(
+  db: PrismaClient,
+  voucherId: number,
+  args: {
+    code?: string;
+    type?: VoucherType;
+    value?: Decimal.Value;
+    usageLimit?: number | null;
+    minPurchase?: Decimal.Value;
+    expiresAt?: Date | null;
+    maxDiscount?: Decimal.Value | null;
+    startAt?: Date | null;
+    isActive?: boolean;
+    scope?: VoucherScope;
+    productIds?: number[];
+  },
+) {
+  const existing = await db.voucher.findUnique({ where: { id: voucherId } });
+  if (!existing) throw new Error("voucher not found");
+
+  const nextCode = args.code !== undefined ? args.code.toUpperCase() : existing.code;
+  if (nextCode !== existing.code && existing.usedCount > 0) {
+    throw new Error("cannot change the code of a voucher that has been used");
+  }
+
+  const data: Record<string, unknown> = {};
+  if (args.code !== undefined) data.code = nextCode;
+  if (args.type !== undefined) data.type = args.type;
+  if (args.value !== undefined) data.value = new Decimal(args.value);
+  if (args.usageLimit !== undefined) data.usageLimit = args.usageLimit;
+  if (args.minPurchase !== undefined) data.minPurchase = new Decimal(args.minPurchase);
+  if (args.expiresAt !== undefined) data.expiresAt = args.expiresAt;
+  if (args.maxDiscount !== undefined) {
+    data.maxDiscount = args.maxDiscount != null ? new Decimal(args.maxDiscount) : null;
+  }
+  if (args.startAt !== undefined) data.startAt = args.startAt;
+  if (args.isActive !== undefined) data.isActive = args.isActive;
+  if (args.scope !== undefined) data.scope = args.scope;
+
+  const finalScope = args.scope ?? existing.scope;
+  const productIds = args.productIds ?? [];
+
+  await db.$transaction([
+    db.voucher.update({ where: { id: voucherId }, data }),
+    db.voucherProduct.deleteMany({ where: { voucherId } }),
+    ...(finalScope === VoucherScope.SELECTED && productIds.length > 0
+      ? [db.voucherProduct.createMany({ data: productIds.map((productId) => ({ voucherId, productId })) })]
+      : []),
+  ]);
+
+  return db.voucher.findUnique({ where: { id: voucherId } });
 }
 
 export async function setVoucherActive(db: Db, voucherId: number, isActive: boolean) {
@@ -75,21 +164,46 @@ export interface VoucherLike {
   minPurchase: Decimal.Value;
   type: string;
   value: Decimal.Value;
+  /** "ALL" | "SELECTED" (VoucherScope) — which cart lines the discount applies to. */
+  scope: string;
+  /** Absolute cap on the computed discount, applied after the eligibleSubtotal
+   *  cap. Null = uncapped (today's behavior). */
+  maxDiscount: Decimal.Value | null;
+  /** Voucher isn't usable before this instant. Null = no schedule (usable
+   *  immediately, subject to the other checks). */
+  startAt: Date | null;
 }
 
 /**
- * Compute the discount for `subtotal` given a voucher, without mutating
- * anything. Throws ValidationError (i18n key) when the voucher is invalid.
- * Returns the discount as a positive Decimal (caller subtracts it).
+ * Compute the discount given a voucher, without mutating anything. Throws
+ * ValidationError (i18n key) when the voucher is invalid. Returns the
+ * discount as a positive Decimal (caller subtracts it).
+ *
+ * Two subtotals, deliberately kept separate:
+ * - `subtotal` — the full cart subtotal (net of bulk discount). Used ONLY for
+ *   the `minPurchase` gate: minPurchase answers "does this buyer qualify at
+ *   all by total spend", which must not be conflated with scope ("what
+ *   actually gets discounted") — a buyer who clearly qualifies by total
+ *   spend shouldn't be rejected just because most of their cart isn't the
+ *   scoped item.
+ * - `eligibleSubtotal` — the scope-matching lines only (net of their own
+ *   bulk discount). Used as the discount base AND its cap. For an ALL-scope
+ *   voucher the caller always passes `eligibleSubtotal === subtotal`, which
+ *   makes every branch below a no-op change from the pre-scope behavior.
  */
 export function applyVoucherToSubtotal(
   voucher: VoucherLike,
   subtotal: Decimal.Value,
+  eligibleSubtotal: Decimal.Value,
   now: Date = new Date(),
 ): Decimal {
   const sub = new Decimal(subtotal);
+  const eligibleSub = new Decimal(eligibleSubtotal);
 
   if (!voucher.isActive) throw new ValidationError("error.voucher_inactive");
+  if (voucher.startAt && voucher.startAt.getTime() > now.getTime()) {
+    throw new ValidationError("error.voucher_not_yet_active");
+  }
   if (voucher.expiresAt && voucher.expiresAt.getTime() < now.getTime()) {
     throw new ValidationError("error.voucher_expired");
   }
@@ -101,13 +215,22 @@ export function applyVoucherToSubtotal(
       min: new Decimal(voucher.minPurchase).toString(),
     });
   }
+  if (voucher.scope === VoucherScope.SELECTED && eligibleSub.lessThanOrEqualTo(0)) {
+    // Explicit rejection rather than silently computing a Rp0 discount when
+    // nothing in the cart matches the voucher's scope.
+    throw new ValidationError("error.voucher_not_applicable");
+  }
 
   let discount =
     voucher.type === VoucherType.PERCENT
-      ? sub.times(voucher.value).div(100)
+      ? eligibleSub.times(voucher.value).div(100)
       : new Decimal(voucher.value);
 
-  if (discount.greaterThan(sub)) discount = sub; // cap at subtotal
+  if (discount.greaterThan(eligibleSub)) discount = eligibleSub; // cap at the eligible slice, not the whole cart
+  if (voucher.maxDiscount != null) {
+    const maxDiscount = new Decimal(voucher.maxDiscount);
+    if (discount.greaterThan(maxDiscount)) discount = maxDiscount; // the smaller of the two caps wins
+  }
   return quantizeMoney(discount, 4);
 }
 
@@ -125,21 +248,33 @@ export async function assertVoucherNotRedeemedByUser(db: Db, voucherId: number, 
   if (existing) throw new ValidationError("error.voucher_already_redeemed");
 }
 
-export type VoucherStatus = "active" | "expired" | "usedUp";
+/** Plain array of the real catalog Product ids a SELECTED-scope voucher
+ *  applies to. Empty for an ALL-scope voucher (no VoucherProduct rows). */
+export async function getVoucherProductIds(db: Db, voucherId: number): Promise<number[]> {
+  const rows = await db.voucherProduct.findMany({ where: { voucherId }, select: { productId: true } });
+  return rows.map((r) => r.productId);
+}
 
-/** Precedence: expired > usedUp > active — a voucher's status can't depend
- *  on which page it's on, so this is the single source of truth used by both
- *  server-side status filtering (listVouchersPaged) and the KPI aggregate
- *  (getVoucherStats). Kept in sync with the client's per-row display logic
- *  in VouchersPage.tsx (which annotates already-fetched rows, not filters —
- *  no pagination-correctness risk there). */
+export type VoucherStatus = "active" | "expired" | "usedUp" | "disabled" | "scheduled";
+
+/** Precedence: expired > usedUp > disabled > scheduled > active — a
+ *  voucher's status can't depend on which page it's on, so this is the
+ *  single source of truth used by both server-side status filtering
+ *  (listVouchersPaged) and the KPI aggregate (getVoucherStats).
+ *  expired/usedUp stay on top (objective, irreversible-without-an-edit
+ *  facts). `disabled` (isActive === false) outranks `scheduled`: an admin
+ *  who explicitly turned a voucher off shouldn't see it reported as "on
+ *  track to start". Every voucher lands in exactly one bucket — there is no
+ *  longer a `null` case. */
 export function deriveVoucherStatus(
-  v: { isActive: boolean; expiresAt: Date | null; usageLimit: number | null; usedCount: number },
+  v: { isActive: boolean; expiresAt: Date | null; usageLimit: number | null; usedCount: number; startAt: Date | null },
   now: Date = new Date(),
-): VoucherStatus | null {
+): VoucherStatus {
   if (v.expiresAt && v.expiresAt.getTime() < now.getTime()) return "expired";
   if (v.usageLimit != null && v.usedCount >= v.usageLimit) return "usedUp";
-  return v.isActive ? "active" : null;
+  if (!v.isActive) return "disabled";
+  if (v.startAt && v.startAt.getTime() > now.getTime()) return "scheduled";
+  return "active";
 }
 
 /**
@@ -171,35 +306,78 @@ export async function listVouchersPaged(
   return { rows: filtered.slice(offset, offset + limit), total: filtered.length };
 }
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
 /** Global voucher health counts for the admin page's KPI row — always
  *  computed over the WHOLE table, never scoped to the current search/status
  *  filter or page (mirrors PaymentsPage's KPI cards, which read
- *  server-wide aggregates rather than the currently-filtered/paginated set). */
+ *  server-wide aggregates rather than the currently-filtered/paginated set).
+ *  `totalRedemptions` counts `VoucherRedemption` rows, not `sum(usedCount)`:
+ *  `usedCount` decrements on order cancellation (releaseOrderHolds,
+ *  orders.ts) while VoucherRedemption rows are never deleted, so the
+ *  redemption count is the true all-time metric a "Total Redemptions" KPI
+ *  should report. */
 export async function getVoucherStats(
   db: Db,
   now: Date = new Date(),
-): Promise<{ total: number; active: number; expiringSoon: number; usedUp: number }> {
+): Promise<{ active: number; scheduled: number; expired: number; totalRedemptions: number }> {
   const all = await db.voucher.findMany({
-    select: { isActive: true, expiresAt: true, usageLimit: true, usedCount: true },
+    select: { isActive: true, expiresAt: true, usageLimit: true, usedCount: true, startAt: true },
   });
   let active = 0;
-  let expiringSoon = 0;
-  let usedUp = 0;
+  let scheduled = 0;
+  let expired = 0;
   for (const v of all) {
     const status = deriveVoucherStatus(v, now);
-    if (status === "active") {
-      active++;
-      if (v.expiresAt) {
-        const daysLeft = (v.expiresAt.getTime() - now.getTime()) / MS_PER_DAY;
-        if (daysLeft >= 0 && daysLeft <= 7) expiringSoon++;
-      }
-    } else if (status === "usedUp") {
-      usedUp++;
-    }
+    if (status === "active") active++;
+    else if (status === "scheduled") scheduled++;
+    else if (status === "expired") expired++;
   }
-  return { total: all.length, active, expiringSoon, usedUp };
+  const totalRedemptions = await db.voucherRedemption.count();
+  return { active, scheduled, expired, totalRedemptions };
+}
+
+/**
+ * Per-voucher performance for the admin Vouchers page: orders/revenue/
+ * customers, aggregated in one query and reduced in JS. DELIVERED-only
+ * (mirrors revenue.ts's deliveredRevenueByCurrency — only a completed,
+ * fulfilled order counts as "earned" performance). Revenue is a single
+ * IDR-equivalent Decimal per voucher: IDR orders pass through unconverted,
+ * USDT orders convert via THAT order's own fxRate snapshot (never a live
+ * rate) before summing — the same blend-to-IDR convention revenue.ts's
+ * combinedRevenueByDay uses for its one intentionally-blended figure, so a
+ * voucher's reported revenue is never a mix of raw IDR and raw USDT amounts.
+ * Returns an empty Map immediately for an empty `voucherIds` input, without
+ * querying.
+ */
+export async function getVoucherPerformance(
+  db: Db,
+  voucherIds: number[],
+): Promise<Map<number, { ordersCount: number; revenue: Decimal; customers: number }>> {
+  if (voucherIds.length === 0) return new Map();
+
+  const orders = await db.order.findMany({
+    where: { voucherId: { in: voucherIds }, status: OrderStatus.DELIVERED },
+    select: { voucherId: true, userId: true, totalAmount: true, currency: true, fxRate: true },
+  });
+
+  const acc = new Map<number, { ordersCount: number; revenue: Decimal; customerIds: Set<number> }>();
+  for (const o of orders) {
+    if (o.voucherId == null) continue;
+    const bucket = acc.get(o.voucherId) ?? { ordersCount: 0, revenue: new Decimal(0), customerIds: new Set<number>() };
+    bucket.ordersCount += 1;
+    const amountIdr =
+      o.currency === "USDT" && o.fxRate != null
+        ? new Decimal(o.totalAmount).times(o.fxRate)
+        : new Decimal(o.totalAmount);
+    bucket.revenue = bucket.revenue.plus(amountIdr);
+    bucket.customerIds.add(o.userId);
+    acc.set(o.voucherId, bucket);
+  }
+
+  const result = new Map<number, { ordersCount: number; revenue: Decimal; customers: number }>();
+  for (const [voucherId, b] of acc) {
+    result.set(voucherId, { ordersCount: b.ordersCount, revenue: q4(b.revenue), customers: b.customerIds.size });
+  }
+  return result;
 }
 
 /** Toggle-only bulk action — can't fail per-item, so a simple updateMany

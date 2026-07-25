@@ -34,7 +34,7 @@ beforeEach(async () => {
 
 describe("applyVoucherToSubtotal (pure)", () => {
   it("percent voucher: 10% off 20 = 2", () => {
-    const discount = applyVoucherToSubtotal(sample.voucher, "20.00");
+    const discount = applyVoucherToSubtotal(sample.voucher, "20.00", "20.00");
     expect(discount.equals("2.0000")).toBe(true);
   });
 
@@ -44,7 +44,7 @@ describe("applyVoucherToSubtotal (pure)", () => {
       type: VoucherType.FIXED,
       value: "50.00",
     });
-    const discount = applyVoucherToSubtotal(v, "10.00");
+    const discount = applyVoucherToSubtotal(v, "10.00", "10.00");
     expect(discount.equals("10.0000")).toBe(true);
   });
 
@@ -55,7 +55,7 @@ describe("applyVoucherToSubtotal (pure)", () => {
       value: "10",
       expiresAt: new Date(Date.now() - 24 * 3600 * 1000),
     });
-    expect(() => applyVoucherToSubtotal(v, "10.00")).toThrowError(
+    expect(() => applyVoucherToSubtotal(v, "10.00", "10.00")).toThrowError(
       expect.objectContaining({ key: "error.voucher_expired" }),
     );
   });
@@ -69,14 +69,14 @@ describe("applyVoucherToSubtotal (pure)", () => {
     });
     // Simulate already used.
     const used = { ...v, usedCount: 1 };
-    expect(() => applyVoucherToSubtotal(used, "10.00")).toThrowError(
+    expect(() => applyVoucherToSubtotal(used, "10.00", "10.00")).toThrowError(
       expect.objectContaining({ key: "error.voucher_used_up" }),
     );
   });
 
   it("below min purchase raises error.voucher_min_purchase", () => {
     // SAVE10 has min_purchase = 3; subtotal 2 is rejected.
-    expect(() => applyVoucherToSubtotal(sample.voucher, "2.00")).toThrowError(
+    expect(() => applyVoucherToSubtotal(sample.voucher, "2.00", "2.00")).toThrowError(
       expect.objectContaining({ key: "error.voucher_min_purchase" }),
     );
   });
@@ -91,7 +91,7 @@ describe("applyVoucherToSubtotal (pure)", () => {
       usageLimit: 2,
     });
     const almost = { ...v, usedCount: 1 }; // one redemption remaining
-    expect(applyVoucherToSubtotal(almost, "20.00").equals("2.0000")).toBe(true);
+    expect(applyVoucherToSubtotal(almost, "20.00", "20.00").equals("2.0000")).toBe(true);
   });
 
   it("a voucher expiring in the near future still applies", async () => {
@@ -101,7 +101,7 @@ describe("applyVoucherToSubtotal (pure)", () => {
       value: "10",
       expiresAt: new Date(Date.now() + 60_000), // 1 min ahead → still valid
     });
-    expect(applyVoucherToSubtotal(v, "20.00").equals("2.0000")).toBe(true);
+    expect(applyVoucherToSubtotal(v, "20.00", "20.00").equals("2.0000")).toBe(true);
   });
 });
 

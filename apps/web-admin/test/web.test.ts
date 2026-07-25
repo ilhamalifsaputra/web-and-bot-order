@@ -2977,13 +2977,16 @@ describe("vouchers", () => {
       total: number;
       page: number;
       pageSize: number;
-      stats: { total: number; active: number; expiringSoon: number; usedUp: number };
+      // getVoucherStats' shape (Task 2, voucher scope refactor):
+      // { active, scheduled, expired, totalRedemptions } — "total" (all
+      // vouchers) was dropped in favor of these more actionable buckets.
+      stats: { active: number; scheduled: number; expired: number; totalRedemptions: number };
     };
     expect(data.vouchers.map((v) => v.code)).toEqual(["SEARCHABLE1"]);
     expect(data.total).toBe(1);
     expect(data.page).toBe(1);
     expect(typeof data.pageSize).toBe("number");
-    expect(data.stats.total).toBeGreaterThanOrEqual(2);
+    expect(data.stats.active).toBeGreaterThanOrEqual(2);
   });
 
   it("POST /api/vouchers/bulk-action deactivates a batch and audit-logs once (not per id)", async () => {

@@ -76,8 +76,15 @@ export async function voucherConversation(conversation: MyConversation, ctx: MyC
       continue;
     }
     try {
-      // Sanity-check validity with a large subtotal so min_purchase doesn't trip.
-      applyVoucherToSubtotal(voucher, new Decimal("999999"));
+      // Sanity-check validity with a large subtotal so min_purchase doesn't
+      // trip — and the same large value for eligibleSubtotal, so a
+      // SELECTED-scope voucher's not-applicable check doesn't trip here
+      // either. This is a coarse "is the code fundamentally live" gate only;
+      // the authoritative per-product scope check happens moments later in
+      // renderOrderConfirmation -> computeConfirmation, which knows the real
+      // product and will surface error.voucher_not_applicable there if it
+      // doesn't match.
+      applyVoucherToSubtotal(voucher, new Decimal("999999"), new Decimal("999999"));
     } catch (e) {
       if (e instanceof ValidationError) {
         await menuAnchor(u, promptAgain(e.key, e.formatArgs), ckb.voucherCancelKb(productId, qty, lang));

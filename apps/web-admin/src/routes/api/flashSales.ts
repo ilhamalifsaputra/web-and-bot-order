@@ -10,6 +10,8 @@ import type { FastifyInstance } from "fastify";
 import {
   prisma,
   listDenominationsWithFlashInfo,
+  flashSalePerformance,
+  availableStockCountsByDenomination,
   bulkSetFlashSale,
   bulkClearFlashSale,
   logAdminAction,
@@ -17,6 +19,8 @@ import {
 import { Decimal } from "@app/core/money";
 import { localize, parseShopLocal } from "@app/core/datetime";
 import { isFlashActive } from "@app/core/flash";
+import { quantizeMoney } from "@app/core/formatters";
+import { DeliveryType } from "@app/core/enums";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 
 /** Parse a possibly-blank string into a Decimal, or null if blank/invalid. */
@@ -41,6 +45,22 @@ export default async function flashSalesApiRoutes(app: FastifyInstance): Promise
   app.get("/api/flash-sales/denominations", { preHandler: currentAdmin }, async (req, reply) => {
     const rows = await listDenominationsWithFlashInfo(prisma);
     const now = new Date();
+
+    // Bulk-compute both aggregates once up front (not per-row, which would be
+    // N+1 queries): performance is scoped to each scheduled SKU's own flash
+    // window, and available-stock only makes sense for auto-delivery SKUs.
+    const scheduled = rows.filter(
+      (d) => d.flashDiscountPercent != null && d.flashStartsAt != null && d.flashEndsAt != null,
+    );
+    const entries = scheduled.map((d) => ({
+      denominationId: d.id,
+      startsAt: d.flashStartsAt!,
+      endsAt: d.flashEndsAt!,
+    }));
+    const performance = await flashSalePerformance(prisma, entries);
+    const autoDeliveryIds = scheduled.filter((d) => d.deliveryType === DeliveryType.AUTO).map((d) => d.id);
+    const availableStock = await availableStockCountsByDenomination(prisma, autoDeliveryIds);
+
     return reply.send({
       denominations: rows.map((d) => {
         const hasSchedule = d.flashDiscountPercent != null && d.flashStartsAt != null && d.flashEndsAt != null;
@@ -49,6 +69,7 @@ export default async function flashSalesApiRoutes(app: FastifyInstance): Promise
           name: d.name,
           price: d.price.toString(),
           isActive: d.isActive,
+          productId: d.productId,
           productName: d.product.name,
           categoryName: d.product.category?.name ?? null,
           flash: hasSchedule
@@ -57,10 +78,40 @@ export default async function flashSalesApiRoutes(app: FastifyInstance): Promise
                 // Pre-rendered shop-local wall clock — same convention as the
                 // single-SKU edit form (apps/web-admin/src/routes/api/catalog.ts),
                 // so an admin's own browser timezone never enters the display.
-                windowDisplay: `${localize(d.flashStartsAt!, "dd LLL yyyy HH:mm")} – ${localize(d.flashEndsAt!, "dd LLL yyyy HH:mm")}`,
+                startsAtDisplay: localize(d.flashStartsAt!, "dd LLL yyyy HH:mm"),
+                endsAtDisplay: localize(d.flashEndsAt!, "dd LLL yyyy HH:mm"),
+                // Additive raw instants (Task 3 scope extension — see
+                // apps/web-admin/client/src/pages/FlashSalesPage.tsx) purely so
+                // the client can do timezone-independent UTC millisecond math
+                // for a "starts in / ends in" countdown, WITHOUT re-deriving a
+                // shop-local wall-clock string from them (that still requires
+                // the server's TIMEZONE config, which the client doesn't have —
+                // these are not used for pre-filling the datetime-local edit form).
+                startsAtIso: d.flashStartsAt!.toISOString(),
+                endsAtIso: d.flashEndsAt!.toISOString(),
                 // Computed here (not on the client) so no date math or timezone
                 // handling has to travel to the browser at all.
                 status: isFlashActive(d, now) ? "live" : d.flashStartsAt! > now ? "scheduled" : "ended",
+                // Plain percent-off arithmetic, deliberately NOT gated by the
+                // schedule window: unlike checkout's `flashPrice()` (which
+                // must only ever charge the discount while the window is open),
+                // this "Sale Price" column needs to show what the price IS
+                // (live), WILL BE (scheduled), or WAS (ended) — hasSchedule
+                // already guarantees discountPercent/startsAt/endsAt are all
+                // non-null here. Same rounding convention flashPrice() itself
+                // uses (packages/core/src/flash.ts): whole rupiah, not 2dp.
+                salePrice: quantizeMoney(
+                  new Decimal(d.price).times(new Decimal(100).minus(d.flashDiscountPercent!)).div(100),
+                  0,
+                ).toString(),
+                sold: performance.get(d.id)?.sold ?? 0,
+                revenue: (performance.get(d.id)?.revenue ?? new Decimal(0)).toString(),
+                orders: performance.get(d.id)?.orders ?? 0,
+                // null = no inventory concept for this SKU (manual delivery);
+                // 0 = auto-delivery but currently out of stock. The client
+                // needs to tell these apart to decide whether to render a
+                // stock progress bar at all.
+                availableStock: d.deliveryType === DeliveryType.AUTO ? (availableStock.get(d.id) ?? 0) : null,
               }
             : null,
         };

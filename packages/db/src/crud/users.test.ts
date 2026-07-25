@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
-import { upsertUser, searchUsers, listRecentUsers, totalSpentByUserIds, setUserRole, setUserBanned, setUserLanguage, adjustWallet } from "./users";
+import { upsertUser, searchUsers, listRecentUsers, totalSpentByUserIds, orderCountByUserIds, setUserRole, setUserBanned, setUserLanguage, adjustWallet } from "./users";
 import { primeWarmUser, peekWarmUser } from "./warmUserCache";
 import { UserRole } from "@app/core/enums";
 
@@ -93,6 +93,59 @@ describe("totalSpentByUserIds", () => {
   it("returns an empty Map for an empty input array without querying", async () => {
     const result = await totalSpentByUserIds(prisma, []);
     expect(result.size).toBe(0);
+  });
+});
+
+describe("orderCountByUserIds", () => {
+  it("counts orders per user (any status) and omits users with zero orders", async () => {
+    const userA = await upsertUser(prisma, { telegramId: 9104, username: "counter_a", fullName: null });
+    const userB = await upsertUser(prisma, { telegramId: 9105, username: "counter_b", fullName: null });
+    const userC = await upsertUser(prisma, { telegramId: 9106, username: "counter_zero", fullName: null });
+
+    // User A: three orders (various statuses).
+    await prisma.order.create({
+      data: { orderCode: `ORD-c1-${Math.random()}`, userId: userA.id, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status: "DELIVERED" },
+    });
+    await prisma.order.create({
+      data: { orderCode: `ORD-c2-${Math.random()}`, userId: userA.id, subtotalAmount: "5000", totalAmount: "5000", currency: "IDR", status: "PENDING_PAYMENT" },
+    });
+    await prisma.order.create({
+      data: { orderCode: `ORD-c3-${Math.random()}`, userId: userA.id, subtotalAmount: "3", totalAmount: "3.5", currency: "USDT", status: "CANCELLED" },
+    });
+
+    // User B: one order.
+    await prisma.order.create({
+      data: { orderCode: `ORD-d1-${Math.random()}`, userId: userB.id, subtotalAmount: "10", totalAmount: "10", currency: "USDT", status: "DELIVERED" },
+    });
+
+    // User C: no orders at all.
+
+    const result = await orderCountByUserIds(prisma, [userA.id, userB.id, userC.id]);
+
+    expect(result.get(userA.id)).toBe(3);
+    expect(result.get(userB.id)).toBe(1);
+    expect(result.has(userC.id)).toBe(false);
+  });
+
+  it("returns an empty Map for an empty input array without querying", async () => {
+    const result = await orderCountByUserIds(prisma, []);
+    expect(result.size).toBe(0);
+  });
+
+  it("includes non-DELIVERED orders in the count", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9107, username: "pending_orders", fullName: null });
+
+    // Create orders with different statuses.
+    await prisma.order.create({
+      data: { orderCode: `ORD-e1-${Math.random()}`, userId: user.id, subtotalAmount: "100", totalAmount: "100", currency: "IDR", status: "PENDING_PAYMENT" },
+    });
+    await prisma.order.create({
+      data: { orderCode: `ORD-e2-${Math.random()}`, userId: user.id, subtotalAmount: "200", totalAmount: "200", currency: "IDR", status: "CANCELLED" },
+    });
+
+    const result = await orderCountByUserIds(prisma, [user.id]);
+
+    expect(result.get(user.id)).toBe(2);
   });
 });
 

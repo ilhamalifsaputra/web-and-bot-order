@@ -158,8 +158,9 @@ model Product {
   isArchived  Boolean  @default(false) @map("is_archived")
   createdAt   DateTime @default(now()) @map("created_at")
 
-  category      Category       @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
-  denominations Denomination[]
+  category        Category       @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
+  denominations   Denomination[]
+  voucherProducts VoucherProduct[]
 
   @@index([categoryId], map: "ix_products_category_id")
   @@map("products")
@@ -390,10 +391,14 @@ model Voucher {
   minPurchase Decimal   @default(0) @map("min_purchase")
   expiresAt   DateTime? @map("expires_at")
   isActive    Boolean   @default(true) @map("is_active")
+  scope       String    @default("ALL") @map("scope")
+  maxDiscount Decimal?  @map("max_discount")
+  startAt     DateTime? @map("start_at")
   createdAt   DateTime  @default(now()) @map("created_at")
 
-  orders      Order[]
-  redemptions VoucherRedemption[]
+  orders           Order[]
+  redemptions      VoucherRedemption[]
+  voucherProducts  VoucherProduct[]
 
   @@map("vouchers")
 }
@@ -416,6 +421,19 @@ model VoucherRedemption {
   @@unique([voucherId, userId], map: "ix_voucher_redemptions_voucher_user")
   @@index([orderId], map: "ix_voucher_redemptions_order_id")
   @@map("voucher_redemptions")
+}
+
+model VoucherProduct {
+  id        Int @id @default(autoincrement())
+  voucherId Int @map("voucher_id")
+  productId Int @map("product_id")
+
+  voucher Voucher @relation(fields: [voucherId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([voucherId, productId], map: "ix_voucher_products_voucher_product")
+  @@index([productId], map: "ix_voucher_products_product_id")
+  @@map("voucher_products")
 }
 
 model Review {

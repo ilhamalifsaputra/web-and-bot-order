@@ -2788,8 +2788,10 @@ describe("users", () => {
   it("GET /api/users with no query returns the recent-customers list", async () => {
     const res = await get("/api/users", seed.cookie);
     expect(res.statusCode).toBe(200);
-    const data = JSON.parse(res.body) as { users: Array<{ username?: string }> };
-    expect(data.users.some((u) => u.username === "cust")).toBe(true);
+    const data = JSON.parse(res.body) as { users: Array<{ username?: string; orderCount?: unknown }> };
+    const cust = data.users.find((u) => u.username === "cust");
+    expect(cust).toBeTruthy();
+    expect(typeof cust!.orderCount).toBe("number");
   });
 
   it("GET /api/users?q= finds a customer by username substring", async () => {

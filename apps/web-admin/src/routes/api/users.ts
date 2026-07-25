@@ -9,6 +9,7 @@ import {
   getUser,
   userTotalSpent,
   totalSpentByUserIds,
+  orderCountByUserIds,
   listUserOrders,
   listUserTickets,
   listWalletLedger,
@@ -27,12 +28,16 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
   app.get("/api/users", { preHandler: currentAdmin }, async (req, reply) => {
     const q = ((req.query as Record<string, string | undefined>).q ?? "").trim();
     const results = q ? await searchUsers(prisma, q, 50) : await listRecentUsers(prisma, 20);
-    const spentByUser = await totalSpentByUserIds(prisma, results.map((u) => u.id));
+    const [spentByUser, orderCountByUser] = await Promise.all([
+      totalSpentByUserIds(prisma, results.map((u) => u.id)),
+      orderCountByUserIds(prisma, results.map((u) => u.id)),
+    ]);
     const users = results.map((u) => ({
       ...u,
       createdAtDisplay: displayDate(u.createdAt),
       lastSeenAtDisplay: displayDateTime(u.lastSeenAt),
       totalSpent: spentByUser.get(u.id) ?? { idr: new Decimal(0), usdt: new Decimal(0) },
+      orderCount: orderCountByUser.get(u.id) ?? 0,
     }));
     return reply.send({ users, q });
   });

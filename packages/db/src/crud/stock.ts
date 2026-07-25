@@ -120,6 +120,31 @@ export async function countAvailableStock(db: Db, productId: number): Promise<nu
 }
 
 /**
+ * Batched sibling of `countAvailableStock` — AVAILABLE stock counts for many
+ * denominations in one grouped query (e.g. the Flash Sales admin table,
+ * which needs a count per row without one query per row). A denomination
+ * with zero AVAILABLE rows is simply absent from the Map; callers treat a
+ * missing key as 0.
+ */
+export async function availableStockCountsByDenomination(
+  db: Db,
+  denominationIds: number[],
+): Promise<Map<number, number>> {
+  const map = new Map<number, number>();
+  if (!denominationIds.length) return map;
+
+  const rows = await db.stockItem.groupBy({
+    by: ["productId"],
+    where: { productId: { in: denominationIds }, status: StockStatus.AVAILABLE },
+    _count: true,
+  });
+  for (const r of rows) {
+    map.set(r.productId, r._count);
+  }
+  return map;
+}
+
+/**
  * Grab one AVAILABLE row, flip to RESERVED, link to the order. Returns the
  * reserved row or null if none available.
  *

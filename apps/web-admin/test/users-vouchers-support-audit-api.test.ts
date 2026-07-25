@@ -2,7 +2,7 @@ import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
-import { prisma, initDb, upsertUser, setSetting, createTicket } from "@app/db";
+import { prisma, initDb, upsertUser, setSetting, createTicket, createCategory, createCatalogProduct, createDenomination, bulkAddStock, createOrderDirect } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
 import { buildApp } from "../src/server";
@@ -252,6 +252,57 @@ describe("GET /api/audit", () => {
 
   it("requires auth (anon → 303 /login)", async () => {
     const res = await get("/api/audit", null);
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+});
+
+describe("GET /api/users", () => {
+  it("returns users with correct orderCount in response", async () => {
+    // Create a product/denomination with stock
+    const category = await createCategory(prisma, "TestCategory");
+    const catalogProduct = await createCatalogProduct(prisma, { categoryId: category.id, name: "TestProduct" });
+    const denomination = await createDenomination(prisma, {
+      productId: catalogProduct.id,
+      name: "Test Denom",
+      type: "SHARED",
+      durationLabel: "Test",
+      price: "100",
+    });
+    await bulkAddStock(prisma, denomination.id, ["test@example.com:code1", "test@example.com:code2"]);
+
+    // Create an order for customerId
+    const customer = await prisma.user.findUniqueOrThrow({ where: { id: customerId } });
+    await createOrderDirect(prisma, {
+      user: { id: customer.id, role: customer.role },
+      productId: denomination.id,
+      quantity: 1,
+    });
+
+    // Create a second user with no orders
+    const userWithoutOrders = await upsertUser(prisma, { telegramId: 99, username: "noorders", fullName: "No Orders" });
+
+    // Call GET /api/users
+    const res = await get("/api/users", cookie);
+    expect(res.statusCode).toBe(200);
+
+    const body = res.json() as { users: Array<{ id: number; orderCount: number }> };
+    expect(Array.isArray(body.users)).toBe(true);
+
+    // Find the users in the response
+    const userWithOrder = body.users.find((u) => u.id === customerId);
+    const userWithoutOrder = body.users.find((u) => u.id === userWithoutOrders.id);
+
+    // Assert orderCount values
+    expect(userWithOrder).toBeDefined();
+    expect(userWithOrder!.orderCount).toBe(1);
+
+    expect(userWithoutOrder).toBeDefined();
+    expect(userWithoutOrder!.orderCount).toBe(0);
+  });
+
+  it("requires auth (anon → 303 /login)", async () => {
+    const res = await get("/api/users", null);
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe("/login");
   });

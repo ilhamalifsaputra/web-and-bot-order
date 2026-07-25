@@ -446,6 +446,37 @@ describe("getTicketStats", () => {
     expect(stats.unassigned).toBe(2); // fresh open + stale open (repliedTicket is assigned, closed ones excluded)
     expect(stats.resolvedToday).toBe(1); // closedToday only
   });
+
+  it("overdue count agrees with countTickets({overdue:true}) on the same data — proves the KPI and the filter share one predicate, not two copies that happen to match", async () => {
+    const user = await makeUser(1102n);
+    const now = new Date();
+
+    // OPEN + never replied + old enough → overdue by both routes.
+    const overdueTicket = await createTicket(prisma, user.id, "stale");
+    await prisma.supportTicket.update({
+      where: { id: overdueTicket.id },
+      data: { createdAt: addMinutes(now, -241) }, // 1 minute past the 240-minute cutoff
+    });
+    // OPEN but just inside the window — NOT overdue by either route.
+    const freshTicket = await createTicket(prisma, user.id, "fresh");
+    await prisma.supportTicket.update({
+      where: { id: freshTicket.id },
+      data: { createdAt: addMinutes(now, -239) },
+    });
+    // Old but REPLIED — excluded from overdue by the "never replied" clause.
+    const repliedOld = await createTicket(prisma, user.id, "old but replied");
+    await prisma.supportTicket.update({
+      where: { id: repliedOld.id },
+      data: { createdAt: addMinutes(now, -300), status: TicketStatus.REPLIED, repliedAt: now },
+    });
+
+    const viaFilter = await countTickets(prisma, { overdue: true });
+    const viaStats = (await getTicketStats(prisma, now)).overdue;
+
+    expect(viaFilter).toBe(1);
+    expect(viaStats).toBe(1);
+    expect(viaStats).toBe(viaFilter);
+  });
 });
 
 describe("bulk ticket operations", () => {
@@ -494,15 +525,26 @@ describe("bulk ticket operations", () => {
       const user = await makeUser(1204n);
       const alreadyClosed = await createTicket(prisma, user.id, "already closed");
       await closeTicket(prisma, alreadyClosed.id);
+      const firstClosedAt = (await prisma.supportTicket.findUnique({ where: { id: alreadyClosed.id } }))!
+        .closedAt;
       const stillOpen = await createTicket(prisma, user.id, "still open");
+
+      // A real clock tick between the first close and the bulk call below,
+      // so an unconditional re-close (i.e. the guard NOT firing) would be
+      // caught by the closedAt comparison — same tick margin as the
+      // "SECOND close call" test in the closeTicket describe block above.
+      await new Promise((r) => setTimeout(r, 5));
 
       const result = await bulkCloseTickets(prisma, [alreadyClosed.id, stillOpen.id]);
       expect(new Set(result.succeeded)).toEqual(new Set([alreadyClosed.id, stillOpen.id]));
       expect(result.failed).toEqual([]);
-      // Confirm the double-tap guard: closedAt on the already-closed ticket
-      // did not get bumped to a new timestamp by the second close attempt.
-      const before = await prisma.supportTicket.findUnique({ where: { id: alreadyClosed.id } });
-      expect(before!.status).toBe(TicketStatus.CLOSED);
+      // Confirm the double-tap guard actually fired (not just that the final
+      // status happens to be CLOSED, which an unconditional re-close would
+      // also produce): closedAt on the already-closed ticket is untouched by
+      // bulkCloseTickets' pass over it.
+      const after = await prisma.supportTicket.findUnique({ where: { id: alreadyClosed.id } });
+      expect(after!.status).toBe(TicketStatus.CLOSED);
+      expect(after!.closedAt?.getTime()).toBe(firstClosedAt?.getTime());
     });
 
     it("reports a non-existent id as failed", async () => {

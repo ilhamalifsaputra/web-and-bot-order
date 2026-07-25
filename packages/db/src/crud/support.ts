@@ -217,10 +217,26 @@ export interface TicketFilter {
   q?: string | null;
 }
 
-/** Overdue rule (single source of truth for the KPI/filter/badge alike):
- * OPEN, never replied, and older than the cutoff (now - 4h, computed by the
- * caller via `addMinutes(now, -240)` and passed in as `overdueCutoff`). */
-function ticketWhere(f: TicketFilter, overdueCutoff: Date): Prisma.SupportTicketWhereInput {
+/** How long after creation a still-OPEN, never-replied ticket counts as
+ * overdue. The one knob behind the overdue rule below — change it here, not
+ * at any call site. */
+const OVERDUE_MINUTES = 240;
+
+/** Cutoff `Date` for the overdue rule: a ticket created before this instant
+ * (and still OPEN + never replied) is overdue. Callers pass this into
+ * `ticketWhere`/`getTicketStats` rather than each computing their own
+ * `addMinutes(now, -240)`, so the 4h figure lives in exactly one place. */
+export function overdueCutoff(now: Date = new Date()): Date {
+  return addMinutes(now, -OVERDUE_MINUTES);
+}
+
+/** Overdue rule (single source of truth for the KPI/filter/badge alike) —
+ * structurally enforced: `getTicketStats`'s `overdue` count calls this same
+ * function (via `f.overdue`) rather than repeating the predicate inline, so
+ * there is exactly one place that defines "overdue," not two copies that
+ * happen to match. OPEN, never replied, and older than `cutoff` (see
+ * `overdueCutoff`). */
+function ticketWhere(f: TicketFilter, cutoff: Date): Prisma.SupportTicketWhereInput {
   const where: Prisma.SupportTicketWhereInput = {};
   if (f.status != null) {
     where.status = Array.isArray(f.status) ? { in: f.status } : f.status;
@@ -234,7 +250,7 @@ function ticketWhere(f: TicketFilter, overdueCutoff: Date): Prisma.SupportTicket
   if (f.overdue) {
     where.status = TicketStatus.OPEN;
     where.repliedAt = null;
-    where.createdAt = { lt: overdueCutoff };
+    where.createdAt = { lt: cutoff };
   }
   if (f.q) {
     const term = f.q.trim();
@@ -253,8 +269,7 @@ export async function listTicketsPaged(
   db: Db,
   opts: TicketFilter & { limit?: number; offset?: number; sort?: "newest" | "oldest" | "priority" } = {},
 ) {
-  const overdueCutoff = addMinutes(new Date(), -240);
-  const where = ticketWhere(opts, overdueCutoff);
+  const where = ticketWhere(opts, overdueCutoff());
   const limit = opts.limit ?? 50;
   const offset = opts.offset ?? 0;
 
@@ -288,8 +303,7 @@ export async function listTicketsPaged(
 }
 
 export function countTickets(db: Db, opts: TicketFilter = {}) {
-  const overdueCutoff = addMinutes(new Date(), -240);
-  return db.supportTicket.count({ where: ticketWhere(opts, overdueCutoff) });
+  return db.supportTicket.count({ where: ticketWhere(opts, overdueCutoff()) });
 }
 
 /** Five KPI counts for the Support/Tickets page header — each a real
@@ -298,16 +312,18 @@ export async function getTicketStats(
   db: Db,
   now: Date = new Date(),
 ): Promise<{ open: number; waitingCustomer: number; overdue: number; unassigned: number; resolvedToday: number }> {
-  const overdueCutoff = addMinutes(now, -240);
+  const cutoff = overdueCutoff(now);
   const todayStart = startOfDayUtc(now);
   const todayEnd = startOfDayUtc(addDays(now, 1));
 
   const [open, waitingCustomer, overdue, unassigned, resolvedToday] = await Promise.all([
     db.supportTicket.count({ where: { status: TicketStatus.OPEN } }),
     db.supportTicket.count({ where: { status: TicketStatus.REPLIED } }),
-    db.supportTicket.count({
-      where: { status: TicketStatus.OPEN, repliedAt: null, createdAt: { lt: overdueCutoff } },
-    }),
+    // Routed through ticketWhere (the same function the {overdue:true} filter
+    // path uses) rather than repeating the predicate inline — this is what
+    // makes "overdue" an actual single source of truth instead of two copies
+    // that happen to agree today.
+    db.supportTicket.count({ where: ticketWhere({ overdue: true }, cutoff) }),
     db.supportTicket.count({ where: { status: { not: TicketStatus.CLOSED }, adminId: null } }),
     db.supportTicket.count({
       where: { status: TicketStatus.CLOSED, closedAt: { gte: todayStart, lt: todayEnd } },

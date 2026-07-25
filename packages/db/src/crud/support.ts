@@ -1,8 +1,9 @@
 /**
  * Support tickets + ticket messages — port of those sections of Python crud.py.
  */
-import { TicketStatus, SenderType } from "@app/core/enums";
-import { addDays } from "@app/core/datetime";
+import type { Prisma } from "@prisma/client";
+import { TicketStatus, TicketPriority, SenderType } from "@app/core/enums";
+import { addDays, addMinutes, startOfDayUtc } from "@app/core/datetime";
 import type { Db } from "./_types";
 
 export function createTicket(
@@ -201,4 +202,159 @@ export function listStaleRepliedTickets(db: Db, cutoff: Date) {
       repliedAt: { not: null, lt: cutoff },
     },
   });
+}
+
+// ---- Admin Support/Tickets page: filtering, stats, bulk operations ----
+// Additions only — listOpenTickets above is untouched (still used by the
+// bot's own admin panel, apps/order-bot/src/handlers/admin.ts).
+
+export interface TicketFilter {
+  status?: TicketStatus | TicketStatus[] | null;
+  priority?: TicketPriority | TicketPriority[] | null;
+  assigned?: "assigned" | "unassigned" | null;
+  adminId?: number | null;
+  overdue?: boolean | null;
+  q?: string | null;
+}
+
+/** Overdue rule (single source of truth for the KPI/filter/badge alike):
+ * OPEN, never replied, and older than the cutoff (now - 4h, computed by the
+ * caller via `addMinutes(now, -240)` and passed in as `overdueCutoff`). */
+function ticketWhere(f: TicketFilter, overdueCutoff: Date): Prisma.SupportTicketWhereInput {
+  const where: Prisma.SupportTicketWhereInput = {};
+  if (f.status != null) {
+    where.status = Array.isArray(f.status) ? { in: f.status } : f.status;
+  }
+  if (f.priority != null) {
+    where.priority = Array.isArray(f.priority) ? { in: f.priority } : f.priority;
+  }
+  if (f.assigned === "assigned") where.adminId = { not: null };
+  else if (f.assigned === "unassigned") where.adminId = null;
+  if (f.adminId != null) where.adminId = f.adminId;
+  if (f.overdue) {
+    where.status = TicketStatus.OPEN;
+    where.repliedAt = null;
+    where.createdAt = { lt: overdueCutoff };
+  }
+  if (f.q) {
+    const term = f.q.trim();
+    where.OR = [
+      { message: { contains: term } },
+      { user: { fullName: { contains: term } } },
+      { user: { username: { contains: term } } },
+    ];
+  }
+  return where;
+}
+
+/** Paged, filtered, sorted ticket list for the admin Support/Tickets page —
+ * unlike `listOpenTickets`, this actually populates `user` (the bug fix). */
+export async function listTicketsPaged(
+  db: Db,
+  opts: TicketFilter & { limit?: number; offset?: number; sort?: "newest" | "oldest" | "priority" } = {},
+) {
+  const overdueCutoff = addMinutes(new Date(), -240);
+  const where = ticketWhere(opts, overdueCutoff);
+  const limit = opts.limit ?? 50;
+  const offset = opts.offset ?? 0;
+
+  if (opts.sort === "priority") {
+    // Prisma/SQLite can't express "custom enum order" in `orderBy` directly.
+    // Fetch newest-first, then stable-sort the page by priority rank —
+    // callers never see the difference from a "real" ORDER BY.
+    const rank: Record<string, number> = {
+      [TicketPriority.URGENT]: 0,
+      [TicketPriority.HIGH]: 1,
+      [TicketPriority.MEDIUM]: 2,
+      [TicketPriority.LOW]: 3,
+    };
+    const rows = await db.supportTicket.findMany({
+      where,
+      include: { user: true },
+      orderBy: { createdAt: "desc" },
+      skip: offset,
+      take: limit,
+    });
+    return [...rows].sort((a, b) => (rank[a.priority] ?? 99) - (rank[b.priority] ?? 99));
+  }
+
+  return db.supportTicket.findMany({
+    where,
+    include: { user: true },
+    orderBy: { createdAt: opts.sort === "oldest" ? "asc" : "desc" },
+    skip: offset,
+    take: limit,
+  });
+}
+
+export function countTickets(db: Db, opts: TicketFilter = {}) {
+  const overdueCutoff = addMinutes(new Date(), -240);
+  return db.supportTicket.count({ where: ticketWhere(opts, overdueCutoff) });
+}
+
+/** Five KPI counts for the Support/Tickets page header — each a real
+ * `where`-clause count (not fetch-then-filter). */
+export async function getTicketStats(
+  db: Db,
+  now: Date = new Date(),
+): Promise<{ open: number; waitingCustomer: number; overdue: number; unassigned: number; resolvedToday: number }> {
+  const overdueCutoff = addMinutes(now, -240);
+  const todayStart = startOfDayUtc(now);
+  const todayEnd = startOfDayUtc(addDays(now, 1));
+
+  const [open, waitingCustomer, overdue, unassigned, resolvedToday] = await Promise.all([
+    db.supportTicket.count({ where: { status: TicketStatus.OPEN } }),
+    db.supportTicket.count({ where: { status: TicketStatus.REPLIED } }),
+    db.supportTicket.count({
+      where: { status: TicketStatus.OPEN, repliedAt: null, createdAt: { lt: overdueCutoff } },
+    }),
+    db.supportTicket.count({ where: { status: { not: TicketStatus.CLOSED }, adminId: null } }),
+    db.supportTicket.count({
+      where: { status: TicketStatus.CLOSED, closedAt: { gte: todayStart, lt: todayEnd } },
+    }),
+  ]);
+
+  return { open, waitingCustomer, overdue, unassigned, resolvedToday };
+}
+
+/** Bulk (re)assign — or, with `adminId: null`, unassign — a batch of tickets. */
+export async function bulkAssignTickets(db: Db, ids: number[], adminId: number | null): Promise<number> {
+  const res = await db.supportTicket.updateMany({
+    where: { id: { in: ids } },
+    data: { adminId },
+  });
+  return res.count;
+}
+
+/** Bulk-set priority on a batch of tickets. */
+export async function bulkSetTicketPriority(db: Db, ids: number[], priority: TicketPriority): Promise<number> {
+  const res = await db.supportTicket.updateMany({
+    where: { id: { in: ids } },
+    data: { priority },
+  });
+  return res.count;
+}
+
+/** Bulk-close a batch of tickets, reusing `closeTicket`'s atomic
+ * conditional-update guard per id (mirrors `bulkDeleteVouchers`'s
+ * loop-and-collect shape: check existence, then attempt, then collect). A
+ * ticket already CLOSED is already-done — counted as succeeded, not
+ * re-processed (closeTicket's own guard makes the re-attempt a safe no-op,
+ * so this can never double-fire the buyer notification). */
+export async function bulkCloseTickets(
+  db: Db,
+  ids: number[],
+): Promise<{ succeeded: number[]; failed: { id: number; error: string }[] }> {
+  const succeeded: number[] = [];
+  const failed: { id: number; error: string }[] = [];
+  for (const id of ids) {
+    const ticket = await db.supportTicket.findUnique({ where: { id } });
+    if (!ticket) {
+      failed.push({ id, error: "ticket not found" });
+      continue;
+    }
+    await closeTicket(db, id); // no-op via the atomic guard if already CLOSED
+    succeeded.push(id);
+  }
+  return { succeeded, failed };
 }

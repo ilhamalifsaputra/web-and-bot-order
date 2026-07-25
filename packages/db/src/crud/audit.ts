@@ -29,6 +29,7 @@ export interface AuditFilter {
   adminId?: number | null;
   action?: string | null;
   targetType?: string | null;
+  targetId?: number | null;
   since?: Date | null;
   until?: Date | null;
 }
@@ -38,6 +39,7 @@ function auditWhere(f: AuditFilter): Prisma.AuditLogWhereInput {
   if (f.adminId != null) where.adminId = f.adminId;
   if (f.action) where.action = f.action;
   if (f.targetType) where.targetType = f.targetType;
+  if (f.targetId != null) where.targetId = f.targetId;
   if (f.since != null || f.until != null) {
     where.createdAt = {};
     if (f.since != null) where.createdAt.gte = f.since;

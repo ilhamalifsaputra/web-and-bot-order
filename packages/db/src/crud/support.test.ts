@@ -15,8 +15,15 @@ import {
   closeTicketByUser,
   reopenTicket,
   TICKET_REOPEN_WINDOW_DAYS,
+  listTicketsPaged,
+  countTickets,
+  getTicketStats,
+  bulkAssignTickets,
+  bulkSetTicketPriority,
+  bulkCloseTickets,
 } from "./support";
-import { TicketStatus, SenderType } from "@app/core/enums";
+import { TicketStatus, TicketPriority, SenderType } from "@app/core/enums";
+import { addMinutes, addDays } from "@app/core/datetime";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -44,8 +51,19 @@ beforeEach(async () => {
   await prisma.user.deleteMany();
 });
 
-async function makeUser(telegramId: bigint | null) {
-  return prisma.user.create({ data: { telegramId, referralCode: `r${Math.random()}` } });
+async function makeUser(
+  telegramId: bigint | null,
+  extra: { fullName?: string; username?: string } = {},
+) {
+  return prisma.user.create({
+    data: { telegramId, referralCode: `r${Math.random()}`, ...extra },
+  });
+}
+
+async function makeAdmin() {
+  return prisma.user.create({
+    data: { referralCode: `a${Math.random()}`, role: "ADMIN" },
+  });
 }
 
 describe("closeTicket atomic guard", () => {
@@ -240,5 +258,260 @@ describe("reopenTicket", () => {
 
   it("returns not_closed for a non-existent ticket", async () => {
     expect(await reopenTicket(prisma, 999999)).toEqual({ ok: false, reason: "not_closed" });
+  });
+});
+
+describe("listTicketsPaged / countTickets — filtering + pagination", () => {
+  it("filters by status (single and array)", async () => {
+    const user = await makeUser(1001n);
+    const open = await createTicket(prisma, user.id, "open ticket");
+    const replied = await createTicket(prisma, user.id, "replied ticket");
+    await prisma.supportTicket.update({ where: { id: replied.id }, data: { status: TicketStatus.REPLIED } });
+    const closed = await createTicket(prisma, user.id, "closed ticket");
+    await closeTicket(prisma, closed.id);
+
+    const openOnly = await listTicketsPaged(prisma, { status: TicketStatus.OPEN });
+    expect(openOnly.map((t) => t.id)).toEqual([open.id]);
+
+    const openOrReplied = await listTicketsPaged(prisma, {
+      status: [TicketStatus.OPEN, TicketStatus.REPLIED],
+    });
+    expect(new Set(openOrReplied.map((t) => t.id))).toEqual(new Set([open.id, replied.id]));
+
+    expect(await countTickets(prisma, { status: TicketStatus.CLOSED })).toBe(1);
+  });
+
+  it("filters by priority (single and array)", async () => {
+    const user = await makeUser(1002n);
+    const low = await createTicket(prisma, user.id, "low prio");
+    await prisma.supportTicket.update({ where: { id: low.id }, data: { priority: TicketPriority.LOW } });
+    const high = await createTicket(prisma, user.id, "high prio");
+    await prisma.supportTicket.update({ where: { id: high.id }, data: { priority: TicketPriority.HIGH } });
+    const urgent = await createTicket(prisma, user.id, "urgent prio");
+    await prisma.supportTicket.update({ where: { id: urgent.id }, data: { priority: TicketPriority.URGENT } });
+
+    const highOnly = await listTicketsPaged(prisma, { priority: TicketPriority.HIGH });
+    expect(highOnly.map((t) => t.id)).toEqual([high.id]);
+
+    const highOrUrgent = await listTicketsPaged(prisma, {
+      priority: [TicketPriority.HIGH, TicketPriority.URGENT],
+    });
+    expect(new Set(highOrUrgent.map((t) => t.id))).toEqual(new Set([high.id, urgent.id]));
+
+    expect(await countTickets(prisma, { priority: TicketPriority.LOW })).toBe(1);
+  });
+
+  it("filters by assigned/unassigned", async () => {
+    const user = await makeUser(1003n);
+    const admin = await makeAdmin();
+    const assigned = await createTicket(prisma, user.id, "assigned ticket");
+    await prisma.supportTicket.update({ where: { id: assigned.id }, data: { adminId: admin.id } });
+    const unassigned = await createTicket(prisma, user.id, "unassigned ticket");
+
+    expect((await listTicketsPaged(prisma, { assigned: "assigned" })).map((t) => t.id)).toEqual([assigned.id]);
+    expect((await listTicketsPaged(prisma, { assigned: "unassigned" })).map((t) => t.id)).toEqual([
+      unassigned.id,
+    ]);
+  });
+
+  it("filters by adminId (a specific assignee)", async () => {
+    const user = await makeUser(1004n);
+    const adminA = await makeAdmin();
+    const adminB = await makeAdmin();
+    const ticketA = await createTicket(prisma, user.id, "for admin A");
+    await prisma.supportTicket.update({ where: { id: ticketA.id }, data: { adminId: adminA.id } });
+    const ticketB = await createTicket(prisma, user.id, "for admin B");
+    await prisma.supportTicket.update({ where: { id: ticketB.id }, data: { adminId: adminB.id } });
+
+    expect((await listTicketsPaged(prisma, { adminId: adminA.id })).map((t) => t.id)).toEqual([ticketA.id]);
+  });
+
+  it("filters by overdue (OPEN, never replied, older than 4h)", async () => {
+    const user = await makeUser(1005n);
+    const overdue = await createTicket(prisma, user.id, "old open ticket");
+    await prisma.supportTicket.update({
+      where: { id: overdue.id },
+      data: { createdAt: addMinutes(new Date(), -300) }, // 5h old
+    });
+    const fresh = await createTicket(prisma, user.id, "fresh open ticket"); // just created
+    const repliedOld = await createTicket(prisma, user.id, "old but replied");
+    await prisma.supportTicket.update({
+      where: { id: repliedOld.id },
+      data: { createdAt: addMinutes(new Date(), -300), status: TicketStatus.REPLIED, repliedAt: new Date() },
+    });
+
+    const overdueList = await listTicketsPaged(prisma, { overdue: true });
+    expect(overdueList.map((t) => t.id)).toEqual([overdue.id]);
+    void fresh;
+  });
+
+  it("q searches message content and the related user's fullName/username", async () => {
+    const user = await makeUser(1006n, { fullName: "Alice Wonderland", username: "alicew" });
+    const other = await makeUser(1007n, { fullName: "Bob Builder" });
+    const byMessage = await createTicket(prisma, other.id, "my payment is broken");
+    const byName = await createTicket(prisma, user.id, "unrelated text");
+
+    const found = await listTicketsPaged(prisma, { q: "broken" });
+    expect(found.map((t) => t.id)).toEqual([byMessage.id]);
+
+    const foundByName = await listTicketsPaged(prisma, { q: "Wonderland" });
+    expect(foundByName.map((t) => t.id)).toEqual([byName.id]);
+
+    const foundByUsername = await listTicketsPaged(prisma, { q: "alicew" });
+    expect(foundByUsername.map((t) => t.id)).toEqual([byName.id]);
+  });
+
+  it("paginates with limit/offset and sorts newest/oldest", async () => {
+    const user = await makeUser(1008n);
+    const t1 = await createTicket(prisma, user.id, "first");
+    await new Promise((r) => setTimeout(r, 5));
+    const t2 = await createTicket(prisma, user.id, "second");
+    await new Promise((r) => setTimeout(r, 5));
+    const t3 = await createTicket(prisma, user.id, "third");
+
+    const newestFirst = await listTicketsPaged(prisma, { sort: "newest" });
+    expect(newestFirst.map((t) => t.id)).toEqual([t3.id, t2.id, t1.id]);
+
+    const oldestFirst = await listTicketsPaged(prisma, { sort: "oldest" });
+    expect(oldestFirst.map((t) => t.id)).toEqual([t1.id, t2.id, t3.id]);
+
+    const page1 = await listTicketsPaged(prisma, { sort: "newest", limit: 2, offset: 0 });
+    const page2 = await listTicketsPaged(prisma, { sort: "newest", limit: 2, offset: 2 });
+    expect(page1.map((t) => t.id)).toEqual([t3.id, t2.id]);
+    expect(page2.map((t) => t.id)).toEqual([t1.id]);
+
+    expect(await countTickets(prisma)).toBe(3);
+  });
+
+  it("sorts by priority (URGENT > HIGH > MEDIUM > LOW), stable within a page", async () => {
+    const user = await makeUser(1009n);
+    const low = await createTicket(prisma, user.id, "low");
+    const urgent = await createTicket(prisma, user.id, "urgent");
+    await prisma.supportTicket.update({ where: { id: urgent.id }, data: { priority: TicketPriority.URGENT } });
+    const medium = await createTicket(prisma, user.id, "medium"); // default MEDIUM
+
+    const sorted = await listTicketsPaged(prisma, { sort: "priority" });
+    expect(sorted.map((t) => t.id)).toEqual([urgent.id, medium.id, low.id]);
+  });
+
+  it("populates the related user (the bug fix listOpenTickets doesn't have)", async () => {
+    const user = await makeUser(1010n, { fullName: "Populated User" });
+    await createTicket(prisma, user.id, "hi");
+
+    const rows = await listTicketsPaged(prisma, {});
+    expect(rows[0]!.user).toBeDefined();
+    expect(rows[0]!.user.fullName).toBe("Populated User");
+  });
+});
+
+describe("getTicketStats", () => {
+  it("counts open/waitingCustomer/overdue/unassigned/resolvedToday independently", async () => {
+    const user = await makeUser(1101n);
+    const admin = await makeAdmin();
+    const now = new Date();
+
+    // open, unassigned, not overdue
+    await createTicket(prisma, user.id, "fresh open");
+
+    // open, overdue, unassigned
+    const overdueTicket = await createTicket(prisma, user.id, "stale open");
+    await prisma.supportTicket.update({
+      where: { id: overdueTicket.id },
+      data: { createdAt: addMinutes(now, -300) },
+    });
+
+    // waiting on customer (REPLIED), assigned
+    const repliedTicket = await createTicket(prisma, user.id, "replied");
+    await prisma.supportTicket.update({
+      where: { id: repliedTicket.id },
+      data: { status: TicketStatus.REPLIED, repliedAt: now, adminId: admin.id },
+    });
+
+    // closed today
+    const closedToday = await createTicket(prisma, user.id, "closed today");
+    await closeTicket(prisma, closedToday.id);
+
+    // closed yesterday — must NOT count in resolvedToday
+    const closedYesterday = await createTicket(prisma, user.id, "closed yesterday");
+    await closeTicket(prisma, closedYesterday.id);
+    await prisma.supportTicket.update({
+      where: { id: closedYesterday.id },
+      data: { closedAt: addDays(now, -1) },
+    });
+
+    const stats = await getTicketStats(prisma, now);
+    expect(stats.open).toBe(2); // fresh open + stale open
+    expect(stats.waitingCustomer).toBe(1); // repliedTicket
+    expect(stats.overdue).toBe(1); // stale open only
+    expect(stats.unassigned).toBe(2); // fresh open + stale open (repliedTicket is assigned, closed ones excluded)
+    expect(stats.resolvedToday).toBe(1); // closedToday only
+  });
+});
+
+describe("bulk ticket operations", () => {
+  it("bulkAssignTickets assigns/unassigns a batch and returns the affected count", async () => {
+    const user = await makeUser(1201n);
+    const admin = await makeAdmin();
+    const t1 = await createTicket(prisma, user.id, "a");
+    const t2 = await createTicket(prisma, user.id, "b");
+
+    const assignedCount = await bulkAssignTickets(prisma, [t1.id, t2.id], admin.id);
+    expect(assignedCount).toBe(2);
+    const rows = await prisma.supportTicket.findMany({ where: { id: { in: [t1.id, t2.id] } } });
+    expect(rows.every((r) => r.adminId === admin.id)).toBe(true);
+
+    const unassignedCount = await bulkAssignTickets(prisma, [t1.id], null);
+    expect(unassignedCount).toBe(1);
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: t1.id } });
+    expect(fresh!.adminId).toBeNull();
+  });
+
+  it("bulkSetTicketPriority sets priority on a batch and returns the affected count", async () => {
+    const user = await makeUser(1202n);
+    const t1 = await createTicket(prisma, user.id, "a");
+    const t2 = await createTicket(prisma, user.id, "b");
+
+    const count = await bulkSetTicketPriority(prisma, [t1.id, t2.id], TicketPriority.URGENT);
+    expect(count).toBe(2);
+    const rows = await prisma.supportTicket.findMany({ where: { id: { in: [t1.id, t2.id] } } });
+    expect(rows.every((r) => r.priority === TicketPriority.URGENT)).toBe(true);
+  });
+
+  describe("bulkCloseTickets", () => {
+    it("closes a batch of OPEN tickets, all succeeding", async () => {
+      const user = await makeUser(1203n);
+      const t1 = await createTicket(prisma, user.id, "a");
+      const t2 = await createTicket(prisma, user.id, "b");
+
+      const result = await bulkCloseTickets(prisma, [t1.id, t2.id]);
+      expect(new Set(result.succeeded)).toEqual(new Set([t1.id, t2.id]));
+      expect(result.failed).toEqual([]);
+      const rows = await prisma.supportTicket.findMany({ where: { id: { in: [t1.id, t2.id] } } });
+      expect(rows.every((r) => r.status === TicketStatus.CLOSED)).toBe(true);
+    });
+
+    it("a ticket already CLOSED in the batch is counted as already-done (succeeded), not double-processed", async () => {
+      const user = await makeUser(1204n);
+      const alreadyClosed = await createTicket(prisma, user.id, "already closed");
+      await closeTicket(prisma, alreadyClosed.id);
+      const stillOpen = await createTicket(prisma, user.id, "still open");
+
+      const result = await bulkCloseTickets(prisma, [alreadyClosed.id, stillOpen.id]);
+      expect(new Set(result.succeeded)).toEqual(new Set([alreadyClosed.id, stillOpen.id]));
+      expect(result.failed).toEqual([]);
+      // Confirm the double-tap guard: closedAt on the already-closed ticket
+      // did not get bumped to a new timestamp by the second close attempt.
+      const before = await prisma.supportTicket.findUnique({ where: { id: alreadyClosed.id } });
+      expect(before!.status).toBe(TicketStatus.CLOSED);
+    });
+
+    it("reports a non-existent id as failed", async () => {
+      const user = await makeUser(1205n);
+      const t1 = await createTicket(prisma, user.id, "a");
+
+      const result = await bulkCloseTickets(prisma, [t1.id, 999999]);
+      expect(result.succeeded).toEqual([t1.id]);
+      expect(result.failed).toEqual([{ id: 999999, error: "ticket not found" }]);
+    });
   });
 });

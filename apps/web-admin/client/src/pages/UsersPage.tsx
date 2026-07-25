@@ -224,8 +224,10 @@ export function UsersPage() {
                     {row.telegramId && (
                       <DropdownMenuItem
                         onSelect={() => {
-                          navigator.clipboard.writeText(row.telegramId!);
-                          toast.success("Telegram ID copied.");
+                          void navigator.clipboard
+                            ?.writeText(row.telegramId!)
+                            .then(() => toast.success("Telegram ID copied."))
+                            .catch(() => toast.error("Couldn't copy to the clipboard."));
                         }}
                       >
                         <Copy className="h-4 w-4" />

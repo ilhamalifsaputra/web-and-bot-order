@@ -95,7 +95,8 @@ describe("UsersPage", () => {
     expect(screen.getByText("Rp150.000")).toBeInTheDocument(); // totalSpent.idr
     expect(screen.getByText("2026-01-01")).toBeInTheDocument(); // createdAtDisplay
     expect(screen.getByText("2026-01-02 07:00")).toBeInTheDocument(); // lastSeenAtDisplay
-    expect(screen.getByText("4")).toBeInTheDocument(); // orderCount
+    const row = screen.getByText("Andi Santoso").closest("tr")!;
+    expect(within(row).getByText("4")).toBeInTheDocument(); // orderCount
 
     // New grouped column headers. "Customer" collides with the CUSTOMER role
     // badge's text, so scope that one lookup to a <th>.

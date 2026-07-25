@@ -89,3 +89,41 @@ export function setChannelValidator(fn: typeof channelValidator): void {
 export function getChannelValidator(): typeof channelValidator {
   return channelValidator;
 }
+
+export type FileResolution = { ok: true; filePath: string } | { ok: false };
+
+/**
+ * Resolve a Telegram `file_id` to its `file_path` via getFile — used by the
+ * admin support-ticket photo-preview route. Plain fetch (no grammy here); the
+ * bot token never appears in logs or error messages.
+ */
+export async function resolveTelegramFile(botToken: string, fileId: string): Promise<FileResolution> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), TELEGRAM_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(
+      `https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(fileId)}`,
+      { signal: ac.signal },
+    );
+    const data = (await res.json()) as { ok?: boolean; result?: { file_path?: string } };
+    return data.ok && typeof data.result?.file_path === "string"
+      ? { ok: true, filePath: data.result.file_path }
+      : { ok: false };
+  } catch {
+    return { ok: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+let fileResolver: (botToken: string, fileId: string) => Promise<FileResolution> = resolveTelegramFile;
+
+/** Test hook: stub the getFile call so tests never hit the network. */
+export function setFileResolver(fn: typeof fileResolver): void {
+  fileResolver = fn;
+}
+
+/** Current file resolver (the stub in tests, the real getFile otherwise). */
+export function getFileResolver(): typeof fileResolver {
+  return fileResolver;
+}

@@ -176,6 +176,16 @@ export function assignTicket(db: Db, ticketId: number, adminId: number | null) {
   });
 }
 
+/** Set a single ticket's priority. Task 2 only added the bulk version
+ * (bulkSetTicketPriority) — this is the one-ticket counterpart used by the
+ * detail page's priority dropdown. */
+export function setTicketPriority(db: Db, ticketId: number, priority: TicketPriority) {
+  return db.supportTicket.update({
+    where: { id: ticketId },
+    data: { priority },
+  });
+}
+
 /** Last N messages for a ticket, chronological order. */
 export async function listTicketMessages(db: Db, ticketId: number, limit = 10) {
   const rows = await db.ticketMessage.findMany({
@@ -228,6 +238,18 @@ const OVERDUE_MINUTES = 240;
  * `addMinutes(now, -240)`, so the 4h figure lives in exactly one place. */
 export function overdueCutoff(now: Date = new Date()): Date {
   return addMinutes(now, -OVERDUE_MINUTES);
+}
+
+/** Same overdue predicate as the `{ overdue: true }` branch of `ticketWhere`,
+ * but for a single already-fetched row rather than a `where` clause — used by
+ * the paged-list route to stamp each item with `isOverdue` without a second
+ * per-row query. Takes the same `cutoff` (from `overdueCutoff`) so the list
+ * route and `getTicketStats` can never disagree on the threshold. */
+export function isTicketOverdue(
+  ticket: { status: string; repliedAt: Date | null; createdAt: Date },
+  cutoff: Date,
+): boolean {
+  return ticket.status === TicketStatus.OPEN && ticket.repliedAt === null && ticket.createdAt < cutoff;
 }
 
 /** Overdue rule (single source of truth for the KPI/filter/badge alike) —

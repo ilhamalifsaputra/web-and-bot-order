@@ -125,7 +125,8 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
 
   app.post("/api/vouchers/:voucherId/update", { preHandler: csrfProtect }, async (req, reply) => {
     const voucherId = Number((req.params as { voucherId: string }).voucherId);
-    if ((await getVoucher(prisma, voucherId)) === null) {
+    const existing = await getVoucher(prisma, voucherId);
+    if (existing === null) {
       return reply.code(404).send({ error: "Voucher not found." });
     }
 
@@ -135,6 +136,12 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
     if (body.code !== undefined) {
       const code = String(body.code).trim().toUpperCase();
       if (!code) return reply.code(400).send({ error: "Code is required." });
+      if (code !== existing.code) {
+        const clash = await getVoucherByCode(prisma, code);
+        if (clash !== null && clash.id !== voucherId) {
+          return reply.code(409).send({ error: `Voucher '${code}' already exists.` });
+        }
+      }
       args.code = code;
     }
 

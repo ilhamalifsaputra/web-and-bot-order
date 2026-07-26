@@ -3007,6 +3007,26 @@ describe("vouchers", () => {
     expect((await prisma.voucher.findUnique({ where: { id: v.id } }))!.code).toBe("UPD2");
   });
 
+  it("update voucher rejects a code that collides with a different existing voucher (409, JSON error, not 500)", async () => {
+    await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "upd4a", type: "percent", value: "5" });
+    await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "upd4b", type: "percent", value: "5" });
+    const v = (await getVoucherByCode(prisma, "UPD4B"))!;
+
+    const res = await postJsonOrders(`/api/vouchers/${v.id}/update`, seed.cookie, seed.csrf, { code: "upd4a" });
+    expect(res.statusCode).toBe(409);
+    const body = JSON.parse(res.body) as { error: string };
+    expect(body.error).toContain("UPD4A");
+    expect((await prisma.voucher.findUnique({ where: { id: v.id } }))!.code).toBe("UPD4B");
+  });
+
+  it("update voucher allows re-submitting a voucher's own unchanged code (no false collision)", async () => {
+    await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "upd4c", type: "percent", value: "5" });
+    const v = (await getVoucherByCode(prisma, "UPD4C"))!;
+
+    const res = await postJsonOrders(`/api/vouchers/${v.id}/update`, seed.cookie, seed.csrf, { code: "upd4c", value: "9" });
+    expect(res.statusCode).toBe(200);
+  });
+
   it("update voucher without product_ids in the body leaves an existing SELECTED voucher's products untouched", async () => {
     const category = await createCategory(prisma, "Streaming", "🎬");
     const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product B" });

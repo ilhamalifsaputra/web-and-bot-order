@@ -50,6 +50,15 @@ export async function createVoucher(
       throw new ValidationError("error.invalid_discount_percent");
     }
   }
+  // A negative FIXED value was never bounded on any path — unlike a >100
+  // PERCENT (harmless; capped at the eligible subtotal), a negative discount
+  // flows straight into orders.ts's `subtotal.minus(discount)` and INCREASES
+  // what the customer pays instead of discounting it (Critical defect fix,
+  // pre-merge review — same class of bug the PERCENT guard above exists to
+  // prevent).
+  if (args.type === VoucherType.FIXED && new Decimal(args.value).isNegative()) {
+    throw new ValidationError("error.invalid_discount_fixed_value");
+  }
   const scope = args.scope ?? VoucherScope.ALL;
   const voucher = await db.voucher.create({
     data: {
@@ -84,10 +93,18 @@ export async function createVoucher(
  *
  * The voucher-row update and the VoucherProduct set replacement run in one
  * short `db.$transaction` so a crash mid-edit can never leave the row and
- * its scoped-product set disagreeing. The product set is always replaced
+ * its scoped-product set disagreeing. The product set is replaced
  * (delete-then-recreate) rather than diffed — simplest correct behavior for
- * a small per-voucher set, and it naturally clears any stale SELECTED rows
- * when an admin flips scope back to ALL.
+ * a small per-voucher set — but ONLY when the caller explicitly passes
+ * `productIds`. `productIds === undefined` means "caller isn't touching the
+ * product set" and leaves existing `VoucherProduct` rows completely alone:
+ * a partial edit that only changes e.g. `value` on a SELECTED-scope voucher
+ * must never silently wipe its product list just because that one call
+ * didn't happen to mention it. To also clear a SELECTED voucher's product
+ * set (e.g. when flipping `scope` back to `ALL`), pass `productIds: []`
+ * explicitly alongside it. (Leaving stale `VoucherProduct` rows behind after
+ * an ALL flip without an explicit `productIds: []` is harmless — they're
+ * never read while `scope === "ALL"` — just not proactively cleaned up.)
  */
 export async function updateVoucher(
   db: PrismaClient,
@@ -114,6 +131,28 @@ export async function updateVoucher(
     throw new Error("cannot change the code of a voucher that has been used");
   }
 
+  // Critical defect fix (pre-merge review): createVoucher has always bounded
+  // a PERCENT value to (0,100], but updateVoucher merely did
+  // `data.value = new Decimal(args.value)` with no bounds at all — an admin
+  // editing a PERCENT voucher's value to e.g. -10 produces a negative
+  // discount that INCREASES what every buyer applying it pays (see
+  // applyVoucherToSubtotal's zero-floor comment for the exact mechanism).
+  // Validated against the FINAL type/value pair (after this call's changes
+  // are applied), not just the fields this call happens to touch, so
+  // flipping `type` without touching `value` — or vice versa — can never
+  // leave a stale, now-invalid value in place.
+  if (args.value !== undefined || args.type !== undefined) {
+    const finalType = args.type ?? existing.type;
+    const finalValue = args.value !== undefined ? new Decimal(args.value) : new Decimal(existing.value);
+    if (finalType === VoucherType.PERCENT) {
+      if (finalValue.lte(0) || finalValue.gt(100)) {
+        throw new ValidationError("error.invalid_discount_percent");
+      }
+    } else if (finalType === VoucherType.FIXED && finalValue.isNegative()) {
+      throw new ValidationError("error.invalid_discount_fixed_value");
+    }
+  }
+
   const data: Record<string, unknown> = {};
   if (args.code !== undefined) data.code = nextCode;
   if (args.type !== undefined) data.type = args.type;
@@ -129,15 +168,24 @@ export async function updateVoucher(
   if (args.scope !== undefined) data.scope = args.scope;
 
   const finalScope = args.scope ?? existing.scope;
-  const productIds = args.productIds ?? [];
 
-  await db.$transaction([
-    db.voucher.update({ where: { id: voucherId }, data }),
-    db.voucherProduct.deleteMany({ where: { voucherId } }),
-    ...(finalScope === VoucherScope.SELECTED && productIds.length > 0
-      ? [db.voucherProduct.createMany({ data: productIds.map((productId) => ({ voucherId, productId })) })]
-      : []),
-  ]);
+  // Only touch the VoucherProduct set when the caller explicitly passed
+  // productIds — omitting it (undefined) must never delete existing rows
+  // (Critical fix, code review round 1: a bare `updateVoucher(db, id,
+  // { value: "25" })` on a SELECTED-scope voucher was silently wiping its
+  // entire product set, since deleteMany ran unconditionally on every call).
+  const ops =
+    args.productIds !== undefined
+      ? [
+          db.voucher.update({ where: { id: voucherId }, data }),
+          db.voucherProduct.deleteMany({ where: { voucherId } }),
+          ...(finalScope === VoucherScope.SELECTED && args.productIds.length > 0
+            ? [db.voucherProduct.createMany({ data: args.productIds.map((productId) => ({ voucherId, productId })) })]
+            : []),
+        ]
+      : [db.voucher.update({ where: { id: voucherId }, data })];
+
+  await db.$transaction(ops);
 
   return db.voucher.findUnique({ where: { id: voucherId } });
 }
@@ -231,6 +279,24 @@ export function applyVoucherToSubtotal(
     const maxDiscount = new Decimal(voucher.maxDiscount);
     if (discount.greaterThan(maxDiscount)) discount = maxDiscount; // the smaller of the two caps wins
   }
+  // Defense in depth (Critical defect fix, pre-merge review): floor at zero
+  // as the LAST step, after both caps, not before them. Both caps above are
+  // upper bounds only (`greaterThan` only ever pulls discount DOWN), so a
+  // negative discount — from a misconfigured voucher `value`, or even a
+  // corrupted negative `maxDiscount` — sails through them completely
+  // unchanged, and could be reintroduced by the maxDiscount cap itself if
+  // this floor ran before it. Placing the floor last guarantees the
+  // invariant `0 <= discount <= eligibleSub` regardless of which caller or
+  // code path produced the raw value, no matter what runs in between. This
+  // matters because orders.ts computes
+  // `afterDiscount = subtotal.minus(bulkDiscount).minus(discount)`
+  // (createOrderFromCart / createOrderDirect) — a negative discount there
+  // ADDS to what the customer is charged instead of subtracting, silently
+  // overcharging every buyer who applies the voucher. createVoucher/
+  // updateVoucher already reject an out-of-range value up front; this floor
+  // is the backstop that holds even if a bad value reaches this pure
+  // function some other way.
+  if (discount.isNegative()) discount = new Decimal(0);
   return quantizeMoney(discount, 4);
 }
 
@@ -253,6 +319,64 @@ export async function assertVoucherNotRedeemedByUser(db: Db, voucherId: number, 
 export async function getVoucherProductIds(db: Db, voucherId: number): Promise<number[]> {
   const rows = await db.voucherProduct.findMany({ where: { voucherId }, select: { productId: true } });
   return rows.map((r) => r.productId);
+}
+
+/** One caller-supplied cart/order line, already priced by whatever pricing
+ *  helper the caller uses — see computeEligibleAmounts below for why this
+ *  file stays pricing-agnostic instead of recomputing prices itself. */
+export interface EligibilityLine {
+  /** The real catalog Product id (NOT the Denomination/SKU id) — voucher
+   *  scope always matches against this. */
+  catalogProductId: number;
+  /** This line's own gross subtotal contribution (unitPrice × quantity,
+   *  before its own bulk discount — mirrors the full-cart subtotal/
+   *  bulkDiscount pair, which are also tracked as two separate numbers
+   *  rather than one pre-netted figure). */
+  lineSubtotal: Decimal.Value;
+  /** This line's own bulk-discount contribution. */
+  lineBulkDiscount: Decimal.Value;
+}
+
+/**
+ * Resolve `(eligibleSubtotal, eligibleBulkDiscount)` for a voucher scoped
+ * against a set of already-priced lines — the single source of truth for the
+ * "if scope === SELECTED, fetch getVoucherProductIds, then sum only the
+ * matching lines; otherwise reuse the full totals untouched" glue that used
+ * to be re-implemented near-identically at every checkout/preview call site
+ * (`createOrderFromCart`, `createOrderDirect`, the order-bot's confirmation
+ * screen, the storefront's checkout preview — code review round 1, Finding 2).
+ *
+ * ALL-scope (and any non-SELECTED scope) short-circuits to `fullSubtotal`/
+ * `fullBulkDiscount` untouched, with zero DB round-trip and zero
+ * recomputation — byte-identical to every pre-scope voucher's behavior.
+ *
+ * Deliberately pricing-agnostic: this file has no dependency on
+ * `orders.ts`'s `unitPrice`/`computeBulkDiscountForCart` (`orders.ts` already
+ * imports FROM `vouchers.ts`; the reverse would be circular). Each call site
+ * computes its own line's subtotal/bulk-discount contribution with whatever
+ * pricing helper it already uses and passes the already-computed Decimals in
+ * via `lines` — this function only owns the scope-membership fetch/filter/sum
+ * step. A single-SKU call site is just the one-line-array case.
+ */
+export async function computeEligibleAmounts(
+  db: Db,
+  voucher: { id: number; scope: string },
+  lines: EligibilityLine[],
+  fullSubtotal: Decimal.Value,
+  fullBulkDiscount: Decimal.Value,
+): Promise<{ eligibleSubtotal: Decimal; eligibleBulkDiscount: Decimal }> {
+  if (voucher.scope !== VoucherScope.SELECTED) {
+    return { eligibleSubtotal: new Decimal(fullSubtotal), eligibleBulkDiscount: new Decimal(fullBulkDiscount) };
+  }
+  const scopedProductIds = new Set(await getVoucherProductIds(db, voucher.id));
+  let eligibleSubtotal = new Decimal(0);
+  let eligibleBulkDiscount = new Decimal(0);
+  for (const line of lines) {
+    if (!scopedProductIds.has(line.catalogProductId)) continue;
+    eligibleSubtotal = eligibleSubtotal.plus(line.lineSubtotal);
+    eligibleBulkDiscount = eligibleBulkDiscount.plus(line.lineBulkDiscount);
+  }
+  return { eligibleSubtotal, eligibleBulkDiscount };
 }
 
 export type VoucherStatus = "active" | "expired" | "usedUp" | "disabled" | "scheduled";
@@ -376,6 +500,31 @@ export async function getVoucherPerformance(
   const result = new Map<number, { ordersCount: number; revenue: Decimal; customers: number }>();
   for (const [voucherId, b] of acc) {
     result.set(voucherId, { ordersCount: b.ordersCount, revenue: q4(b.revenue), customers: b.customerIds.size });
+  }
+  return result;
+}
+
+/** Batched `{id, name}` product lookup for a page of voucher rows (admin
+ *  Vouchers page's `products` column) — one query for the whole page, not an
+ *  N+1 per row (mirrors getVoucherPerformance's batching style). ALL-scope
+ *  vouchers simply have no VoucherProduct rows and are absent from the
+ *  returned Map; callers should default a missing key to `[]`. */
+export async function getVoucherProductNames(
+  db: Db,
+  voucherIds: number[],
+): Promise<Map<number, { id: number; name: string }[]>> {
+  if (voucherIds.length === 0) return new Map();
+
+  const rows = await db.voucherProduct.findMany({
+    where: { voucherId: { in: voucherIds } },
+    select: { voucherId: true, product: { select: { id: true, name: true } } },
+  });
+
+  const result = new Map<number, { id: number; name: string }[]>();
+  for (const r of rows) {
+    const list = result.get(r.voucherId) ?? [];
+    list.push(r.product);
+    result.set(r.voucherId, list);
   }
   return result;
 }

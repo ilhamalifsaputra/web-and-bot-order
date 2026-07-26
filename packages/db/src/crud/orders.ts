@@ -5,7 +5,7 @@
  * and outbox changes land atomically.
  */
 import { config } from "@app/core/config";
-import { OrderStatus, StockStatus, UserRole, DeliveryType, VoucherScope, langCode } from "@app/core/enums";
+import { OrderStatus, StockStatus, UserRole, DeliveryType, langCode } from "@app/core/enums";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import {
   quantizeMoney,
@@ -24,7 +24,13 @@ import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getBulkPricingForDenomination } from "./catalog";
-import { getVoucherByCode, applyVoucherToSubtotal, assertVoucherNotRedeemedByUser, getVoucherProductIds } from "./vouchers";
+import {
+  getVoucherByCode,
+  applyVoucherToSubtotal,
+  assertVoucherNotRedeemedByUser,
+  computeEligibleAmounts,
+  type EligibilityLine,
+} from "./vouchers";
 import { countAvailableStock, allocateOneAvailableStock } from "./stock";
 import { adjustWallet, getUser } from "./users";
 import { clearCart, getCart } from "./cart";
@@ -370,24 +376,21 @@ export async function createOrderFromCart(
     // ALL-scope (the default, and every pre-migration voucher) skips this
     // entirely and reuses the full cart's subtotal/bulkDiscount verbatim, so
     // this is byte-identical to the pre-scope behavior for that case.
-    let eligibleSubtotal = subtotal;
-    let eligibleBulkDiscount = bulkDiscount;
-    if (voucher.scope === VoucherScope.SELECTED) {
-      const scopedProductIds = new Set(await getVoucherProductIds(db, voucher.id));
-      let eSub = ZERO;
-      for (const ci of cart) {
-        if (!scopedProductIds.has(ci.product.productId)) continue;
-        const itemSubtotal = unitPrice(ci.product, isReseller, pricedAt).times(ci.quantity);
-        eSub = eSub.plus(itemSubtotal);
-      }
-      eligibleSubtotal = eSub;
-      eligibleBulkDiscount = computeBulkDiscountForCart(
-        cart.filter((ci) => scopedProductIds.has(ci.product.productId)),
-        bulkRules,
-        isReseller,
-        pricedAt,
-      );
-    }
+    const eligibilityLines: EligibilityLine[] = cart.map((ci) => {
+      const itemSubtotal = unitPrice(ci.product, isReseller, pricedAt).times(ci.quantity);
+      return {
+        catalogProductId: ci.product.productId,
+        lineSubtotal: itemSubtotal,
+        lineBulkDiscount: bulkDiscountFor(itemSubtotal, bulkRules[ci.productId], ci.quantity),
+      };
+    });
+    const { eligibleSubtotal, eligibleBulkDiscount } = await computeEligibleAmounts(
+      db,
+      voucher,
+      eligibilityLines,
+      subtotal,
+      bulkDiscount,
+    );
 
     // Cap against the subtotal NET of the bulk discount (mirrors
     // createOrderDirect's matching step below) — capping against the gross
@@ -586,13 +589,13 @@ export async function createOrderDirect(
     // entirely or not at all — no partial-line math needed, unlike the cart
     // path. ALL-scope (the default) is always eligible, byte-identical to the
     // pre-scope behavior.
-    let isEligible = true;
-    if (voucher.scope === VoucherScope.SELECTED) {
-      const scopedProductIds = await getVoucherProductIds(db, voucher.id);
-      isEligible = scopedProductIds.includes(product.productId);
-    }
-    const eligibleSubtotal = isEligible ? subtotal : ZERO;
-    const eligibleBulkDiscount = isEligible ? bulkDiscount : ZERO;
+    const { eligibleSubtotal, eligibleBulkDiscount } = await computeEligibleAmounts(
+      db,
+      voucher,
+      [{ catalogProductId: product.productId, lineSubtotal: subtotal, lineBulkDiscount: bulkDiscount }],
+      subtotal,
+      bulkDiscount,
+    );
 
     voucherDiscount = applyVoucherToSubtotal(
       voucher,

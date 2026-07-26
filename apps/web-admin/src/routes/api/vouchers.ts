@@ -1,26 +1,32 @@
 import type { FastifyInstance } from "fastify";
-import { VoucherType } from "@app/core/enums";
+import { VoucherType, VoucherScope } from "@app/core/enums";
+import { ValidationError } from "@app/core/errors";
 import { Decimal } from "@app/core/money";
 import {
   prisma,
   listVouchersPaged,
   getVoucherStats,
+  getVoucherPerformance,
+  getVoucherProductNames,
   getVoucherByCode,
   getVoucher,
   createVoucher,
+  updateVoucher,
   setVoucherActive,
   deleteVoucher,
   bulkSetVouchersActive,
   bulkDeleteVouchers,
   logAdminAction,
+  deriveVoucherStatus,
   type VoucherStatus,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { displayDate } from "../../dateDisplay";
 
 const VOUCHER_TYPES = Object.values(VoucherType) as string[];
+const VOUCHER_SCOPES = Object.values(VoucherScope) as string[];
 const PAGE_SIZE = 50;
-const VOUCHER_STATUSES: readonly VoucherStatus[] = ["active", "expired", "usedUp"];
+const VOUCHER_STATUSES: readonly VoucherStatus[] = ["active", "expired", "usedUp", "disabled", "scheduled"];
 
 export default async function vouchersApiRoutes(app: FastifyInstance): Promise<void> {
   app.get("/api/vouchers", { preHandler: currentAdmin }, async (req, reply) => {
@@ -34,10 +40,28 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       listVouchersPaged(prisma, { q: search, status, limit: PAGE_SIZE, offset }),
       getVoucherStats(prisma),
     ]);
-    const vouchersWithDisplay = rows.map((v) => ({ ...v, expiresAtDisplay: displayDate(v.expiresAt) }));
+    const voucherIds = rows.map((v) => v.id);
+    const [performanceByVoucher, productNamesByVoucher] = await Promise.all([
+      getVoucherPerformance(prisma, voucherIds),
+      getVoucherProductNames(prisma, voucherIds),
+    ]);
+    const now = new Date();
+    const vouchersWithDisplay = rows.map((v) => {
+      const perf = performanceByVoucher.get(v.id);
+      return {
+        ...v,
+        expiresAtDisplay: displayDate(v.expiresAt),
+        products: v.scope === VoucherScope.SELECTED ? (productNamesByVoucher.get(v.id) ?? []) : [],
+        status: deriveVoucherStatus(v, now),
+        ordersCount: perf?.ordersCount ?? 0,
+        revenue: perf?.revenue.toString() ?? "0",
+        customers: perf?.customers ?? 0,
+      };
+    });
     return reply.send({
       vouchers: vouchersWithDisplay,
       types: VOUCHER_TYPES,
+      scopes: VOUCHER_SCOPES,
       total,
       page,
       pageSize: PAGE_SIZE,
@@ -79,17 +103,70 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       expiry = d;
     }
 
+    // The four scope/scheduling fields below mirror POST /api/vouchers/:voucherId/update's
+    // validation exactly (same field names, same error messages) so the create
+    // and edit forms can share one request-body shape — see VouchersPage.tsx's
+    // `voucherRequestBody` helper, which both the create and update mutations
+    // now build their body from.
+    let maxDiscountDec: Decimal | null = null;
+    const maxDiscountRaw = (body.max_discount ?? "").trim();
+    if (maxDiscountRaw !== "") {
+      try {
+        maxDiscountDec = new Decimal(maxDiscountRaw);
+      } catch {
+        return reply.code(400).send({ error: "Max discount must be a number." });
+      }
+    }
+
+    let startAt: Date | null = null;
+    const startAtRaw = (body.start_at ?? "").trim();
+    if (startAtRaw !== "") {
+      const d = new Date(`${startAtRaw}T00:00:00Z`);
+      if (Number.isNaN(d.getTime())) return reply.code(400).send({ error: "Start date must be YYYY-MM-DD." });
+      startAt = d;
+    }
+
+    let scope: VoucherScope | undefined;
+    if (body.scope !== undefined) {
+      const scopeUpper = String(body.scope).toUpperCase();
+      if (!VOUCHER_SCOPES.includes(scopeUpper)) {
+        return reply.code(400).send({ error: "Invalid voucher scope." });
+      }
+      scope = scopeUpper as VoucherScope;
+    }
+
+    let productIds: number[] | undefined;
+    if ((body as Record<string, unknown>).product_ids !== undefined) {
+      const raw = (body as Record<string, unknown>).product_ids;
+      if (!Array.isArray(raw) || !raw.every((id) => Number.isInteger(Number(id)) && Number(id) > 0)) {
+        return reply.code(400).send({ error: "Product ids must be an array of positive integers." });
+      }
+      productIds = raw.map((id) => Number(id));
+    }
+
     if ((await getVoucherByCode(prisma, code)) !== null) {
       return reply.code(409).send({ error: `Voucher '${code}' already exists.` });
     }
-    const v = await createVoucher(prisma, {
-      code,
-      type: typeUpper as VoucherType,
-      value: valueDec,
-      usageLimit: limit,
-      minPurchase: minDec,
-      expiresAt: expiry,
-    });
+    let v;
+    try {
+      v = await createVoucher(prisma, {
+        code,
+        type: typeUpper as VoucherType,
+        value: valueDec,
+        usageLimit: limit,
+        minPurchase: minDec,
+        expiresAt: expiry,
+        maxDiscount: maxDiscountDec,
+        startAt,
+        scope,
+        productIds,
+      });
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        return reply.code(422).send({ error: err.message });
+      }
+      throw err;
+    }
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "voucher_create",
@@ -98,6 +175,152 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       details: `Created voucher "${code}" (${typeUpper}, value ${valueDec.toString()}, limit ${limit}).`,
     });
     return reply.code(201).send({ voucher: v });
+  });
+
+  app.post("/api/vouchers/:voucherId/update", { preHandler: csrfProtect }, async (req, reply) => {
+    const voucherId = Number((req.params as { voucherId: string }).voucherId);
+    const existing = await getVoucher(prisma, voucherId);
+    if (existing === null) {
+      return reply.code(404).send({ error: "Voucher not found." });
+    }
+
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const args: Parameters<typeof updateVoucher>[2] = {};
+
+    if (body.code !== undefined) {
+      const code = String(body.code).trim().toUpperCase();
+      if (!code) return reply.code(400).send({ error: "Code is required." });
+      if (code !== existing.code) {
+        const clash = await getVoucherByCode(prisma, code);
+        if (clash !== null && clash.id !== voucherId) {
+          return reply.code(409).send({ error: `Voucher '${code}' already exists.` });
+        }
+      }
+      args.code = code;
+    }
+
+    if (body.type !== undefined) {
+      const typeUpper = String(body.type).toUpperCase();
+      if (!VOUCHER_TYPES.includes(typeUpper)) {
+        return reply.code(400).send({ error: "Invalid voucher type." });
+      }
+      args.type = typeUpper as VoucherType;
+    }
+
+    if (body.value !== undefined) {
+      try {
+        args.value = new Decimal(String(body.value).trim());
+      } catch {
+        return reply.code(400).send({ error: "Value must be a number." });
+      }
+    }
+
+    if (body.min_purchase !== undefined) {
+      try {
+        args.minPurchase = new Decimal(String(body.min_purchase).trim() || "0");
+      } catch {
+        return reply.code(400).send({ error: "Min purchase must be a number." });
+      }
+    }
+
+    if (body.max_discount !== undefined) {
+      const raw = String(body.max_discount ?? "").trim();
+      if (raw === "") {
+        args.maxDiscount = null;
+      } else {
+        try {
+          args.maxDiscount = new Decimal(raw);
+        } catch {
+          return reply.code(400).send({ error: "Max discount must be a number." });
+        }
+      }
+    }
+
+    if (body.usage_limit !== undefined) {
+      const raw = String(body.usage_limit ?? "").trim();
+      if (raw === "") {
+        args.usageLimit = null;
+      } else {
+        const n = Number(raw);
+        if (!Number.isInteger(n)) return reply.code(400).send({ error: "Usage limit must be a number." });
+        args.usageLimit = n;
+      }
+    }
+
+    if (body.expires_at !== undefined) {
+      const raw = String(body.expires_at ?? "").trim();
+      if (raw === "") {
+        args.expiresAt = null;
+      } else {
+        const d = new Date(`${raw}T00:00:00Z`);
+        if (Number.isNaN(d.getTime())) return reply.code(400).send({ error: "Expiry must be YYYY-MM-DD." });
+        args.expiresAt = d;
+      }
+    }
+
+    if (body.start_at !== undefined) {
+      const raw = String(body.start_at ?? "").trim();
+      if (raw === "") {
+        args.startAt = null;
+      } else {
+        const d = new Date(`${raw}T00:00:00Z`);
+        if (Number.isNaN(d.getTime())) return reply.code(400).send({ error: "Start date must be YYYY-MM-DD." });
+        args.startAt = d;
+      }
+    }
+
+    if (body.scope !== undefined) {
+      const scopeUpper = String(body.scope).toUpperCase();
+      if (!VOUCHER_SCOPES.includes(scopeUpper)) {
+        return reply.code(400).send({ error: "Invalid voucher scope." });
+      }
+      args.scope = scopeUpper as VoucherScope;
+    }
+
+    // Only touch the product set when the request explicitly mentions it —
+    // defaulting a missing `product_ids` to `[]` here would silently wipe an
+    // existing SELECTED-scope voucher's products on every partial update
+    // that doesn't happen to mention them (the same bug fixed at the crud
+    // layer in updateVoucher itself; see that function's doc comment).
+    if (body.product_ids !== undefined) {
+      const raw = body.product_ids;
+      if (!Array.isArray(raw) || !raw.every((id) => Number.isInteger(Number(id)) && Number(id) > 0)) {
+        return reply.code(400).send({ error: "Product ids must be an array of positive integers." });
+      }
+      args.productIds = raw.map((id) => Number(id));
+    }
+
+    let updated;
+    try {
+      updated = await updateVoucher(prisma, voucherId, args);
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        return reply.code(422).send({ error: err.message });
+      }
+      if (err instanceof Error && err.message === "cannot change the code of a voucher that has been used") {
+        return reply.code(409).send({ error: "Cannot change code: this voucher has already been used." });
+      }
+      throw err;
+    }
+
+    const summaryParts: string[] = [];
+    if (updated && args.value !== undefined) {
+      summaryParts.push(`value ${updated.value.toString()}${updated.type === VoucherType.PERCENT ? "%" : ""}`);
+    }
+    if (updated && (args.scope !== undefined || args.productIds !== undefined)) {
+      const productCount = await prisma.voucherProduct.count({ where: { voucherId } });
+      summaryParts.push(updated.scope === VoucherScope.SELECTED ? `scope: ${productCount} products` : "scope: all products");
+    }
+    const details = `Updated voucher "${updated?.code}"${summaryParts.length > 0 ? ` (${summaryParts.join(", ")})` : ""}.`;
+
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "voucher_update",
+      targetType: "voucher",
+      targetId: voucherId,
+      details,
+    });
+    return reply.send({ voucher: updated });
   });
 
   app.post("/api/vouchers/:voucherId/toggle", { preHandler: csrfProtect }, async (req, reply) => {

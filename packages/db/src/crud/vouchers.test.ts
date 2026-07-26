@@ -10,9 +10,11 @@ import {
   updateVoucher,
   applyVoucherToSubtotal,
   getVoucherProductIds,
+  computeEligibleAmounts,
   deriveVoucherStatus,
   getVoucherStats,
   getVoucherPerformance,
+  getVoucherProductNames,
   type VoucherLike,
 } from "./vouchers";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
@@ -70,6 +72,23 @@ describe("createVoucher discountPercent bounds (PERCENT type)", () => {
   it("does NOT bound a FIXED voucher's value (capped at subtotal elsewhere)", async () => {
     const v = await createVoucher(prisma, { code: "BIGFIXED", type: VoucherType.FIXED, value: "999999" });
     expect(Number(v.value)).toBe(999999);
+  });
+
+  // Critical defect fix: a FIXED voucher's negative value was never bounded
+  // on any path (the PERCENT guard above only ever covered PERCENT). A
+  // negative FIXED value flows straight into applyVoucherToSubtotal's
+  // `subtotal.minus(...).minus(discount)` in orders.ts and INCREASES what
+  // the customer pays instead of discounting it.
+  it("rejects a negative FIXED value", async () => {
+    await expect(
+      createVoucher(prisma, { code: "NEGFIXED", type: VoucherType.FIXED, value: "-5" }),
+    ).rejects.toMatchObject({ key: "error.invalid_discount_fixed_value" });
+    expect(await prisma.voucher.findUnique({ where: { code: "NEGFIXED" } })).toBeNull();
+  });
+
+  it("still accepts a FIXED value of exactly 0", async () => {
+    const v = await createVoucher(prisma, { code: "ZEROFIXED", type: VoucherType.FIXED, value: "0" });
+    expect(Number(v.value)).toBe(0);
   });
 });
 
@@ -199,6 +218,35 @@ describe("applyVoucherToSubtotal", () => {
       expect.objectContaining({ key: "error.voucher_inactive" }),
     );
   });
+
+  // Critical defect fix (pre-merge review): applyVoucherToSubtotal's two caps
+  // (`greaterThan` against eligibleSubtotal / maxDiscount) are upper bounds
+  // only, so a negative computed discount previously sailed through both of
+  // them unchanged. orders.ts computes
+  // `afterDiscount = subtotal.minus(bulkDiscount).minus(discount)` — a
+  // negative discount there ADDS to what the customer pays instead of
+  // subtracting, i.e. a misconfigured voucher would silently overcharge
+  // every buyer who applied it. This drives the pure function directly with
+  // a negative `value` (bypassing createVoucher/updateVoucher's bounds
+  // checks) to prove the defense-in-depth floor holds even if a bad value
+  // reaches this function some other way.
+  it("floors a negative PERCENT-computed discount at zero instead of letting it inflate afterDiscount", () => {
+    const v = baseVoucher({ type: VoucherType.PERCENT, value: "-10" });
+    const discount = applyVoucherToSubtotal(v, "20.00", "20.00");
+    expect(discount.equals("0")).toBe(true);
+  });
+
+  it("floors a negative FIXED value at zero instead of letting it inflate afterDiscount", () => {
+    const v = baseVoucher({ type: VoucherType.FIXED, value: "-10" });
+    const discount = applyVoucherToSubtotal(v, "20.00", "20.00");
+    expect(discount.equals("0")).toBe(true);
+  });
+
+  it("maxDiscount of exactly 0 caps an otherwise-positive discount at exactly 0 (pins the `!= null` check against a future truthy-check regression, since maxDiscount: 0 is falsy)", () => {
+    const v = baseVoucher({ type: VoucherType.PERCENT, value: "10", maxDiscount: "0" });
+    const discount = applyVoucherToSubtotal(v, "20.00", "20.00");
+    expect(discount.equals("0")).toBe(true);
+  });
 });
 
 describe("getVoucherProductIds", () => {
@@ -224,6 +272,104 @@ describe("getVoucherProductIds", () => {
   it("returns an empty array for an ALL-scope voucher", async () => {
     const v = await createVoucher(prisma, { code: "ALLSCOPE", type: VoucherType.PERCENT, value: "10" });
     expect(await getVoucherProductIds(prisma, v.id)).toEqual([]);
+  });
+});
+
+// Code review round 1, Finding 2: this single function is now the one place
+// the "if scope===SELECTED, fetch getVoucherProductIds, then sum only the
+// matching lines; else reuse the full totals untouched" glue lives, instead
+// of it being re-implemented near-identically at every checkout/preview call
+// site (createOrderFromCart, createOrderDirect, the order-bot's confirmation
+// screen, the storefront's checkout preview).
+describe("computeEligibleAmounts", () => {
+  beforeEach(async () => {
+    await resetDb(prisma);
+  });
+
+  it("ALL-scope (and any non-SELECTED scope) returns the full totals untouched, without querying the DB", async () => {
+    // A voucher id that doesn't exist at all — proves the ALL-scope branch
+    // never reaches the DB (a SELECTED-scope call with this id would throw
+    // or return an empty set instead).
+    const result = await computeEligibleAmounts(
+      prisma,
+      { id: 999999, scope: VoucherScope.ALL },
+      [{ catalogProductId: 1, lineSubtotal: "999", lineBulkDiscount: "1" }],
+      "20.00",
+      "3.00",
+    );
+    expect(result.eligibleSubtotal.equals("20.00")).toBe(true);
+    expect(result.eligibleBulkDiscount.equals("3.00")).toBe(true);
+  });
+
+  it("SELECTED-scope sums only the matching lines, ignoring non-matching lines' contributions", async () => {
+    const category = await createCategory(prisma, "Streaming", "🎬");
+    const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Scoped" });
+    const p2 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Not Scoped" });
+    const v = await createVoucher(prisma, {
+      code: "ELIGSUM",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [p1.id],
+    });
+
+    const result = await computeEligibleAmounts(
+      prisma,
+      v,
+      [
+        { catalogProductId: p1.id, lineSubtotal: "20.00", lineBulkDiscount: "2.00" },
+        { catalogProductId: p2.id, lineSubtotal: "50.00", lineBulkDiscount: "5.00" },
+      ],
+      "70.00",
+      "7.00",
+    );
+    expect(result.eligibleSubtotal.equals("20.00")).toBe(true);
+    expect(result.eligibleBulkDiscount.equals("2.00")).toBe(true);
+  });
+
+  it("SELECTED-scope with zero matching lines returns zero for both amounts", async () => {
+    const category = await createCategory(prisma, "Streaming", "🎬");
+    const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Scoped" });
+    const p2 = await createCatalogProduct(prisma, { categoryId: category.id, name: "In Cart" });
+    const v = await createVoucher(prisma, {
+      code: "ELIGZERO",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [p1.id],
+    });
+
+    const result = await computeEligibleAmounts(
+      prisma,
+      v,
+      [{ catalogProductId: p2.id, lineSubtotal: "50.00", lineBulkDiscount: "5.00" }],
+      "50.00",
+      "5.00",
+    );
+    expect(result.eligibleSubtotal.equals("0")).toBe(true);
+    expect(result.eligibleBulkDiscount.equals("0")).toBe(true);
+  });
+
+  it("SELECTED-scope with a single-line array (the createOrderDirect / confirmation-screen shape) works the same way", async () => {
+    const category = await createCategory(prisma, "Streaming", "🎬");
+    const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Scoped" });
+    const v = await createVoucher(prisma, {
+      code: "ELIGSINGLE",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [p1.id],
+    });
+
+    const result = await computeEligibleAmounts(
+      prisma,
+      v,
+      [{ catalogProductId: p1.id, lineSubtotal: "5.00", lineBulkDiscount: "0" }],
+      "5.00",
+      "0",
+    );
+    expect(result.eligibleSubtotal.equals("5.00")).toBe(true);
+    expect(result.eligibleBulkDiscount.equals("0")).toBe(true);
   });
 });
 
@@ -283,6 +429,87 @@ describe("updateVoucher", () => {
 
     await updateVoucher(prisma, v.id, { scope: VoucherScope.ALL, productIds: [] });
     expect(await getVoucherProductIds(prisma, v.id)).toEqual([]);
+  });
+
+  // Critical fix (code review round 1): a partial update that doesn't mention
+  // productIds at all must never wipe an existing SELECTED-scope voucher's
+  // product set. The test above only ever exercises calls that explicitly
+  // pass productIds (even an empty array), so it never caught the bug where
+  // deleteMany ran unconditionally on every updateVoucher call.
+  it("leaves an existing SELECTED-scope voucher's product set untouched when productIds is omitted from the call", async () => {
+    const category = await createCategory(prisma, "Streaming", "🎬");
+    const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product A" });
+    const p2 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product B" });
+    const v = await createVoucher(prisma, {
+      code: "KEEPSCOPE",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [p1.id, p2.id],
+    });
+    expect((await getVoucherProductIds(prisma, v.id)).sort()).toEqual([p1.id, p2.id].sort());
+
+    // An admin fixing a typo'd value — no mention of productIds at all.
+    const updated = await updateVoucher(prisma, v.id, { value: "25" });
+
+    expect(Number(updated!.value)).toBe(25);
+    expect(updated!.scope).toBe(VoucherScope.SELECTED);
+    expect((await getVoucherProductIds(prisma, v.id)).sort()).toEqual([p1.id, p2.id].sort());
+  });
+});
+
+// Critical defect fix (pre-merge review): unlike createVoucher, updateVoucher
+// let an admin set a PERCENT value outside (0,100] or a negative FIXED value
+// with zero validation — the exact scenario that produces a negative
+// applyVoucherToSubtotal discount and overcharges every buyer who applies the
+// voucher (see the "floors a negative ... discount" tests above).
+describe("updateVoucher value bounds (mirrors createVoucher's guard)", () => {
+  beforeEach(async () => {
+    await resetDb(prisma);
+  });
+
+  it("rejects a PERCENT value update below or equal to 0, or above 100", async () => {
+    const v = await createVoucher(prisma, { code: "UPDBOUND1", type: VoucherType.PERCENT, value: "10" });
+    await expect(updateVoucher(prisma, v.id, { value: "-10" })).rejects.toMatchObject({
+      key: "error.invalid_discount_percent",
+    });
+    await expect(updateVoucher(prisma, v.id, { value: "0" })).rejects.toMatchObject({
+      key: "error.invalid_discount_percent",
+    });
+    await expect(updateVoucher(prisma, v.id, { value: "150" })).rejects.toMatchObject({
+      key: "error.invalid_discount_percent",
+    });
+    const fresh = await prisma.voucher.findUnique({ where: { id: v.id } });
+    expect(Number(fresh!.value)).toBe(10); // rejected update never persisted
+  });
+
+  it("rejects a negative FIXED value update", async () => {
+    const v = await createVoucher(prisma, { code: "UPDBOUND2", type: VoucherType.FIXED, value: "10" });
+    await expect(updateVoucher(prisma, v.id, { value: "-5" })).rejects.toMatchObject({
+      key: "error.invalid_discount_fixed_value",
+    });
+    const fresh = await prisma.voucher.findUnique({ where: { id: v.id } });
+    expect(Number(fresh!.value)).toBe(10);
+  });
+
+  it("validates against the FINAL type when type and value change together in one call", async () => {
+    const v = await createVoucher(prisma, { code: "UPDBOUND3", type: VoucherType.FIXED, value: "10" });
+    await expect(
+      updateVoucher(prisma, v.id, { type: VoucherType.PERCENT, value: "150" }),
+    ).rejects.toMatchObject({ key: "error.invalid_discount_percent" });
+  });
+
+  it("validates the EXISTING value when only type flips to PERCENT without the call touching value", async () => {
+    const v = await createVoucher(prisma, { code: "UPDBOUND4", type: VoucherType.FIXED, value: "500" });
+    await expect(updateVoucher(prisma, v.id, { type: VoucherType.PERCENT })).rejects.toMatchObject({
+      key: "error.invalid_discount_percent",
+    });
+  });
+
+  it("still accepts an in-range PERCENT value update", async () => {
+    const v = await createVoucher(prisma, { code: "UPDBOUND5", type: VoucherType.PERCENT, value: "10" });
+    const updated = await updateVoucher(prisma, v.id, { value: "50" });
+    expect(Number(updated!.value)).toBe(50);
   });
 });
 
@@ -491,9 +718,88 @@ describe("getVoucherPerformance", () => {
     expect(result.get(v.id)!.revenue.equals("160100.0000")).toBe(true);
   });
 
+  // Test gap flagged by pre-merge review: getVoucherPerformance's own ternary
+  // (`o.currency === "USDT" && o.fxRate != null ? times(fxRate) : raw`) was
+  // never exercised with fxRate === null. revenue.ts's combinedRevenueByDay
+  // uses the identical ternary (packages/db/src/crud/revenue.ts:377-379) and
+  // falls back to the raw totalAmount unconverted when fxRate is missing —
+  // this pins getVoucherPerformance to that same convention.
+  it("a DELIVERED USDT order with fxRate: null falls back to counting its raw totalAmount unconverted", async () => {
+    const v = await createVoucher(prisma, { code: "PERFUSDTNULL", type: VoucherType.PERCENT, value: "10" });
+    await makeUserAndOrder({
+      telegramId: 3301,
+      referralCode: "P3301",
+      voucherId: v.id,
+      totalAmount: "50",
+      currency: "USDT",
+      fxRate: null,
+    });
+
+    const result = await getVoucherPerformance(prisma, [v.id]);
+    expect(result.get(v.id)!.revenue.equals("50.0000")).toBe(true);
+  });
+
   it("a voucher id with zero delivered orders is simply absent from the returned Map", async () => {
     const v = await createVoucher(prisma, { code: "PERFNONE", type: VoucherType.PERCENT, value: "10" });
     const result = await getVoucherPerformance(prisma, [v.id]);
     expect(result.has(v.id)).toBe(false);
+  });
+});
+
+describe("getVoucherProductNames", () => {
+  beforeEach(async () => {
+    await resetDb(prisma);
+  });
+
+  it("returns an empty Map for an empty voucherIds input without querying", async () => {
+    const result = await getVoucherProductNames(prisma, []);
+    expect(result.size).toBe(0);
+  });
+
+  it("an ALL-scope voucher (no VoucherProduct rows) is absent from the returned Map", async () => {
+    const v = await createVoucher(prisma, { code: "NAMESALL", type: VoucherType.PERCENT, value: "10" });
+    const result = await getVoucherProductNames(prisma, [v.id]);
+    expect(result.has(v.id)).toBe(false);
+  });
+
+  it("a SELECTED-scope voucher returns its scoped products' {id, name}", async () => {
+    const category = await createCategory(prisma, "Streaming", "🎬");
+    const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product A" });
+    const p2 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product B" });
+    const v = await createVoucher(prisma, {
+      code: "NAMESSEL",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [p1.id, p2.id],
+    });
+
+    const result = await getVoucherProductNames(prisma, [v.id]);
+    const names = (result.get(v.id) ?? []).map((p) => p.name).sort();
+    expect(names).toEqual(["Product A", "Product B"]);
+  });
+
+  it("batches multiple voucher ids in one call, keyed correctly per voucher", async () => {
+    const category = await createCategory(prisma, "Streaming", "🎬");
+    const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product A" });
+    const p2 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product B" });
+    const v1 = await createVoucher(prisma, {
+      code: "NAMESBATCH1",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [p1.id],
+    });
+    const v2 = await createVoucher(prisma, {
+      code: "NAMESBATCH2",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [p2.id],
+    });
+
+    const result = await getVoucherProductNames(prisma, [v1.id, v2.id]);
+    expect(result.get(v1.id)).toEqual([{ id: p1.id, name: "Product A" }]);
+    expect(result.get(v2.id)).toEqual([{ id: p2.id, name: "Product B" }]);
   });
 });

@@ -19,12 +19,13 @@
  */
 import type { FastifyPluginAsync } from "fastify";
 import { config } from "@app/core/config";
-import { DeliveryType, OrderCurrency, OrderStatus, PaymentMethod, VoucherScope } from "@app/core/enums";
+import { DeliveryType, OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import { effectiveUnitPrice } from "@app/core/flash";
+import { bulkDiscountFor } from "@app/core/bulk";
 import { ensureUtc } from "@app/core/datetime";
 import { formatIdr, formatUsdt } from "@app/core/formatters";
 import {
@@ -33,7 +34,8 @@ import {
   getBulkPricingForDenomination,
   getVoucherByCode,
   applyVoucherToSubtotal,
-  getVoucherProductIds,
+  computeEligibleAmounts,
+  type EligibilityLine,
   computeBulkDiscountForCart,
   createOrderFromCart,
   completeCartOrderWithWalletCredit,
@@ -132,24 +134,21 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
         // let a voucher look valid here only to be rejected at order
         // creation). ALL-scope (the default) skips straight to
         // eligibleSubtotal = subtotal, byte-identical to the pre-scope preview.
-        let eligibleSubtotal = subtotal;
-        let eligibleBulkDiscount = bulkDiscount;
-        if (voucher.scope === VoucherScope.SELECTED) {
-          const scopedProductIds = new Set(await getVoucherProductIds(prisma, voucher.id));
-          const eligibleLines = lines.filter((ci) => scopedProductIds.has(ci.product.productId));
-          let eSub = new Decimal(0);
-          for (const ci of eligibleLines) {
-            const unit = effectiveUnitPrice(ci.product, isReseller, pricedAt);
-            eSub = eSub.plus(unit.times(ci.quantity));
-          }
-          eligibleSubtotal = eSub;
-          eligibleBulkDiscount = computeBulkDiscountForCart(
-            eligibleLines as Parameters<typeof computeBulkDiscountForCart>[0],
-            bulkRules,
-            isReseller,
-            pricedAt,
-          );
-        }
+        const eligibilityLines: EligibilityLine[] = lines.map((ci) => {
+          const itemSubtotal = effectiveUnitPrice(ci.product, isReseller, pricedAt).times(ci.quantity);
+          return {
+            catalogProductId: ci.product.productId,
+            lineSubtotal: itemSubtotal,
+            lineBulkDiscount: bulkDiscountFor(itemSubtotal, bulkRules[ci.productId], ci.quantity),
+          };
+        });
+        const { eligibleSubtotal, eligibleBulkDiscount } = await computeEligibleAmounts(
+          prisma,
+          voucher,
+          eligibilityLines,
+          subtotal,
+          bulkDiscount,
+        );
         // Cap against the subtotal NET of the bulk discount — the exact input
         // createOrderFromCart uses (packages/db/src/crud/orders.ts, the Money-2
         // fix). Capping against the gross subtotal here made this preview quote

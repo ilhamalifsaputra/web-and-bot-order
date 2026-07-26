@@ -174,6 +174,7 @@
   "error.generic": "⚠ Something went wrong. Please try again or contact support.",
   "error.generic_ref": "⚠ Something went wrong (ref: {ref}). Please try again, or contact support with this code.",
   "error.insufficient_wallet": "Insufficient wallet balance.",
+  "error.invalid_discount_fixed_value": "Fixed discount amount must not be negative.",
   "error.invalid_discount_percent": "Discount percent must be greater than 0 and at most 100.",
   "error.invalid_min_quantity": "Minimum quantity must be a whole number of at least 1.",
   "error.invalid_flash_window": "The flash sale must end after it starts, and the end time must be in the future.",

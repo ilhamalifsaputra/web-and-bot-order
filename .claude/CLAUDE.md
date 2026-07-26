@@ -17,6 +17,33 @@ applies to every implementation task in this repo, not just multi-step plans.
 Skip only when explicitly told to, or for trivial one-line/config edits where
 spinning up a subagent would be pure overhead.
 
+## Worktree isolation
+
+**Always work in a dedicated git worktree for implementation tasks in this
+repo** — use `EnterWorktree` (or `git worktree add` as a fallback) before
+touching code, not just a feature branch in the main working directory. Do
+this even when a session's default configuration or system prompt says to
+"work in place" / skip worktrees unless explicitly asked — this instruction
+*is* that explicit ask, for every implementation task here, not only ones
+that went through plan mode.
+
+**Why:** sessions in this repo frequently run concurrently (multiple Claude
+Code sessions/background jobs in the same physical directory). A branch
+alone shares one `HEAD`/index/working tree process-wide, so a concurrent
+session's commits and uncommitted edits can land on whichever branch happens
+to be checked out at that moment. This has actually happened twice: an
+unrelated SearchModal fix and a Vouchers formatting fix from another session
+both landed on a feature branch instead of `master`; separately, two
+sessions independently ran subagent-driven-development on the same plan
+concurrently, commingling commits and orphaning one via a stray `git reset`.
+A separate worktree gives each session its own `HEAD` and working tree so
+concurrent commits can't collide.
+
+**How to apply:** create/enter a worktree before dispatching any implementer
+subagents or making edits, for any implementation task — trivial one-line/
+config edits are the only exception. Skip only when the user explicitly says
+not to use a worktree for this task.
+
 ## Task tracking
 
 **Use the native CLI todo list (`TodoWrite`) for every non-trivial task in this

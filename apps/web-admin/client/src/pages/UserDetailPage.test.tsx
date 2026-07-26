@@ -176,3 +176,46 @@ describe("UserDetailPage — wallet ledger currency column", () => {
     expect(screen.getByText("2026-07-02")).toBeInTheDocument();
   });
 });
+
+describe("UserDetailPage — support tickets", () => {
+  it("renders a populated Support Tickets card with subject/status/date columns", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...USER_DETAIL,
+          tickets: [
+            { id: 101, subject: "Order not received", status: "OPEN", createdAt: "2026-07-15T10:00:00.000Z", createdAtDisplay: "2026-07-15" },
+            { id: 102, subject: "Payment issue", status: "CLOSED", createdAt: "2026-07-16T14:30:00.000Z", createdAtDisplay: "2026-07-16" },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+
+    expect(screen.getByText("Support Tickets (2)")).toBeInTheDocument();
+    expect(screen.getByText("Order not received")).toBeInTheDocument();
+    expect(screen.getByText("Payment issue")).toBeInTheDocument();
+    // Check column headers exist (multiple Status headers are OK as long as they're in different tables)
+    const columnHeaders = screen.getAllByRole("columnheader", { name: "Subject" });
+    expect(columnHeaders.length).toBeGreaterThan(0);
+    expect(screen.getAllByText("2026-07-15")).toHaveLength(1); // only in tickets
+  });
+});
+
+describe("UserDetailPage — anchor navigation", () => {
+  it("renders both #ledger and #tickets anchors for deep linking", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(USER_DETAIL), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    const { container } = render(<UserDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Andi Santoso")).toBeInTheDocument());
+
+    const ledgerAnchor = container.querySelector("#ledger");
+    const ticketsAnchor = container.querySelector("#tickets");
+
+    expect(ledgerAnchor).toBeInTheDocument();
+    expect(ticketsAnchor).toBeInTheDocument();
+  });
+});

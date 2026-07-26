@@ -200,7 +200,7 @@ export function UserDetailPage() {
       </Card>
 
       {/* Wallet ledger */}
-      <Card>
+      <Card className="mt-6 scroll-mt-20" id="ledger">
         <CardHeader><CardTitle>Wallet Ledger ({data.ledger.length})</CardTitle></CardHeader>
         <CardContent>
           <DataTable
@@ -215,6 +215,24 @@ export function UserDetailPage() {
             data={data.ledger.map((l, i) => ({ ...l, _key: i }))}
             keyExtractor={l => l._key}
             empty={<EmptyState title="No ledger entries" />}
+          />
+        </CardContent>
+      </Card>
+
+      {/* Support Tickets */}
+      <Card className="mt-6 scroll-mt-20" id="tickets">
+        <CardHeader><CardTitle>Support Tickets ({data.tickets.length})</CardTitle></CardHeader>
+        <CardContent>
+          <DataTable
+            columns={[
+              { key: "subject", header: "Subject", render: t => <span className="text-sm text-ink">{t.subject}</span> },
+              { key: "status", header: "Status", render: t => <StatusBadge status={t.status} /> },
+              { key: "date", header: "Date", render: t => <span className="text-xs text-ink-soft">{t.createdAtDisplay ?? "—"}</span> },
+            ]}
+            data={data.tickets}
+            keyExtractor={t => t.id}
+            onRowClick={t => navigate(`/support/${t.id}`)}
+            empty={<EmptyState title="No support tickets" />}
           />
         </CardContent>
       </Card>

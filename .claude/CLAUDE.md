@@ -50,7 +50,11 @@ not to use a worktree for this task.
 repo.** Create the todo list before starting work, keep exactly one item
 `in_progress` at a time, and mark items `completed` immediately after finishing
 them — don't batch updates. Skip only for a single trivial one-line/config
-edit where a todo list would be pure overhead.
+edit where a todo list would be pure overhead. If `TodoWrite` isn't in the
+session's available tool list (e.g. some background-job session types don't
+expose it), fall back to a plain markdown checklist and say so — don't
+silently substitute one for the other without noting the tool wasn't
+available.
 
 Workspaces (pnpm: `apps/*` + `packages/*`): `apps/order-bot` (grammY),
 `apps/web-admin` (Fastify JSON API + built React SPA admin panel), `apps/storefront`

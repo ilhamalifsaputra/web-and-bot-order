@@ -4,16 +4,22 @@
  */
 import { config } from "@app/core/config";
 import { isAdmin } from "@app/core/runtime";
-import { UserRole, Language } from "@app/core/enums";
+import { UserRole, Language, OrderStatus } from "@app/core/enums";
 import { quantizeMoney, generateReferralCode } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
+import { startOfDayUtc } from "@app/core/datetime";
+import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { invalidateWarmUser } from "./warmUserCache";
 
 const likeContains = (q: string) => ({ contains: q });
+
+/** Admins are managed on the separate Admins page — the Customers page's list,
+ * filters, and KPIs never include role=ADMIN, filtered or not. */
+const NON_ADMIN_ROLES = [UserRole.CUSTOMER, UserRole.RESELLER];
 
 export function getUserByTelegramId(db: Db, telegramId: number | bigint) {
   return db.user.findUnique({ where: { telegramId: BigInt(telegramId) } });
@@ -295,4 +301,219 @@ export async function listWalletLedger(
     adminId: r.adminId,
     orderId: r.orderId,
   }));
+}
+
+// ---- Filtered list/count/KPIs for the Customers admin page ----------------
+
+export type UserSort = "newest" | "oldest" | "lastSeen" | "spend";
+
+export interface UserFilter {
+  role?: Exclude<UserRole, "ADMIN"> | null; // CUSTOMER or RESELLER only; null/omitted = both (never ADMIN)
+  banned?: boolean | null; // true=banned only, false=active only, null/omitted=both
+  q?: string | null; // same OR-contains shape as searchUsers
+  since?: Date | null; // createdAt >=
+  until?: Date | null; // createdAt <=
+  lastSeenSince?: Date | null; // lastSeenAt >=
+  lastSeenUntil?: Date | null; // lastSeenAt <=
+  ids?: number[] | null; // restrict to this exact id set (bulk export-selected)
+}
+
+function userWhere(f: UserFilter): Prisma.UserWhereInput {
+  // Runtime guard: ensure ADMIN is never included, even if someone casts around
+  // the type. Only permit f.role if it's actually in NON_ADMIN_ROLES.
+  const allowedRoles = f.role && NON_ADMIN_ROLES.includes(f.role) ? [f.role] : NON_ADMIN_ROLES;
+  const where: Prisma.UserWhereInput = {
+    role: { in: allowedRoles },
+  };
+  if (f.banned != null) where.banned = f.banned;
+  if (f.ids != null) where.id = { in: f.ids };
+  if (f.since != null || f.until != null) {
+    where.createdAt = {};
+    if (f.since != null) where.createdAt.gte = f.since;
+    if (f.until != null) where.createdAt.lte = f.until;
+  }
+  if (f.lastSeenSince != null || f.lastSeenUntil != null) {
+    where.lastSeenAt = {};
+    if (f.lastSeenSince != null) where.lastSeenAt.gte = f.lastSeenSince;
+    if (f.lastSeenUntil != null) where.lastSeenAt.lte = f.lastSeenUntil;
+  }
+  if (f.q) {
+    const term = f.q.trim();
+    const or: Prisma.UserWhereInput[] = [
+      { username: likeContains(term) },
+      { fullName: likeContains(term) },
+      { loginUsername: likeContains(term) },
+      { email: likeContains(term) },
+    ];
+    if (/^\d+$/.test(term)) or.push({ telegramId: BigInt(term) });
+    where.OR = or;
+  }
+  return where;
+}
+
+function userOrderBy(sort?: UserSort): Prisma.UserOrderByWithRelationInput {
+  if (sort === "oldest") return { createdAt: "asc" };
+  if (sort === "lastSeen") return { lastSeenAt: "desc" };
+  return { createdAt: "desc" };
+}
+
+/**
+ * Rank a filtered set of user ids by DELIVERED-order IDR spend, descending,
+ * then return the requested page of ids. A single `findMany` relation-orderBy
+ * cannot sort by a child relation's `_sum`, only `_count` — this two-phase
+ * approach (match ids, then `groupBy`-rank them) is required because `groupBy`
+ * DOES support ordering by `_sum`.
+ *
+ * IDR-only, deliberately — spend is inherently two numbers (IDR, USDT) and
+ * blending them into one ranking would fabricate a single scalar
+ * (`CurrencyStack` exists specifically to avoid exactly that). Users with no
+ * DELIVERED IDR orders (including USDT-only spenders) rank as zero-IDR-
+ * spenders, appended after every real IDR spender in their original
+ * createdAt-desc order.
+ */
+async function rankUserIdsBySpend(
+  db: Db,
+  where: Prisma.UserWhereInput,
+  offset: number,
+  limit: number,
+): Promise<number[]> {
+  const matched = await db.user.findMany({ where, select: { id: true }, orderBy: { createdAt: "desc" } });
+  const matchedIds = matched.map((u) => u.id);
+  if (matchedIds.length === 0) return [];
+
+  const ranked = await db.order.groupBy({
+    by: ["userId"],
+    where: { userId: { in: matchedIds }, status: OrderStatus.DELIVERED, currency: "IDR" },
+    _sum: { totalAmount: true },
+    orderBy: { _sum: { totalAmount: "desc" } },
+  });
+  const rankedIds = ranked.map((r) => r.userId);
+  const rankedSet = new Set(rankedIds);
+  const zeroSpendIds = matchedIds.filter((id) => !rankedSet.has(id)); // already createdAt-desc
+  const fullyRankedIds = [...rankedIds, ...zeroSpendIds];
+  return fullyRankedIds.slice(offset, offset + limit);
+}
+
+/** Filtered, sorted, paginated user list — the Customers page's data source. */
+export async function listUsers(
+  db: Db,
+  opts: UserFilter & { sort?: UserSort; limit?: number; offset?: number } = {},
+) {
+  const limit = opts.limit ?? 20;
+  const offset = opts.offset ?? 0;
+  const where = userWhere(opts);
+
+  if (opts.sort === "spend") {
+    const pageIds = await rankUserIdsBySpend(db, where, offset, limit);
+    if (pageIds.length === 0) return [];
+    const rows = await db.user.findMany({ where: { id: { in: pageIds } } });
+    const byId = new Map(rows.map((u) => [u.id, u]));
+    return pageIds.map((id) => byId.get(id)).filter((u): u is (typeof rows)[number] => u != null);
+  }
+
+  return db.user.findMany({ where, orderBy: userOrderBy(opts.sort), skip: offset, take: limit });
+}
+
+/** Count matching `listUsers`' filter — for the Customers page's pagination total. */
+export function countUsers(db: Db, opts: UserFilter = {}) {
+  return db.user.count({ where: userWhere(opts) });
+}
+
+export interface CustomersKpis {
+  totalCustomers: number;
+  newToday: number;
+  activeToday: number;
+  returningCustomers: number;
+  totalRevenue: { idr: Decimal; usdt: Decimal };
+}
+
+/**
+ * Customers page KPI row. All figures are non-admin only.
+ * `returningCustomers` counts users with >=2 DELIVERED orders — a user with 1
+ * DELIVERED + 3 PENDING does not count. `totalRevenue` is all-time (distinct
+ * from Orders' "Revenue Today"), DELIVERED-only.
+ */
+export async function customersKpis(db: Db): Promise<CustomersKpis> {
+  const todayStart = startOfDayUtc();
+  const nonAdmin = { role: { in: NON_ADMIN_ROLES } };
+  const [totalCustomers, newToday, activeToday, returningGroups, revenueGroups] = await Promise.all([
+    db.user.count({ where: nonAdmin }),
+    db.user.count({ where: { ...nonAdmin, createdAt: { gte: todayStart } } }),
+    db.user.count({ where: { ...nonAdmin, lastSeenAt: { gte: todayStart } } }),
+    db.order.groupBy({ by: ["userId"], where: { status: OrderStatus.DELIVERED, user: nonAdmin }, _count: { _all: true } }),
+    db.order.groupBy({ by: ["currency"], where: { status: OrderStatus.DELIVERED, user: nonAdmin }, _sum: { totalAmount: true } }),
+  ]);
+
+  const returningCustomers = returningGroups.filter((g) => g._count._all >= 2).length;
+
+  let idr = new Decimal(0);
+  let usdt = new Decimal(0);
+  for (const g of revenueGroups) {
+    const sum = new Decimal(g._sum.totalAmount ?? 0);
+    if (g.currency === "IDR") idr = idr.plus(sum); else usdt = usdt.plus(sum);
+  }
+  return { totalCustomers, newToday, activeToday, returningCustomers, totalRevenue: { idr, usdt } };
+}
+
+export interface UserOrderStats {
+  totalOrders: number; // any status
+  lastOrderAt: Date | null; // max createdAt, any status
+  deliveredOrders: number; // DELIVERED only — feeds the per-row "Returning" badge in Task 5
+}
+
+/**
+ * Batched per-user order stats for a page of users — exactly 3 `groupBy`
+ * calls total for the whole page (never one query per user), mirroring
+ * `totalSpentByUserIds`'s existing batching discipline. Users with zero
+ * orders are absent from the returned Map.
+ */
+export async function orderStatsByUserIds(db: Db, userIds: number[]): Promise<Map<number, UserOrderStats>> {
+  const result = new Map<number, UserOrderStats>();
+  if (userIds.length === 0) return result;
+
+  const [counts, lastOrders, delivered] = await Promise.all([
+    db.order.groupBy({ by: ["userId"], where: { userId: { in: userIds } }, _count: { _all: true } }),
+    db.order.groupBy({ by: ["userId"], where: { userId: { in: userIds } }, _max: { createdAt: true } }),
+    db.order.groupBy({ by: ["userId"], where: { userId: { in: userIds }, status: OrderStatus.DELIVERED }, _count: { _all: true } }),
+  ]);
+  const lastMap = new Map(lastOrders.map((r) => [r.userId, r._max.createdAt]));
+  const deliveredMap = new Map(delivered.map((r) => [r.userId, r._count._all]));
+  for (const c of counts) {
+    result.set(c.userId, {
+      totalOrders: c._count._all,
+      lastOrderAt: lastMap.get(c.userId) ?? null,
+      deliveredOrders: deliveredMap.get(c.userId) ?? 0,
+    });
+  }
+  return result;
+}
+
+/** In-memory throttle for touchLastSeen — same TTL/pattern as
+ * warmUserCache.ts's cache, so a busy storefront session doesn't take a
+ * lastSeenAt write on every single page view (SQLite is single-writer). */
+const LAST_SEEN_TOUCH_TTL_MS = 5 * 60 * 1000;
+const lastSeenTouchedAt = new Map<number, number>();
+
+/**
+ * Refresh a user's lastSeenAt from web activity, throttled to at most once
+ * per LAST_SEEN_TOUCH_TTL_MS per user. The bot already keeps lastSeenAt
+ * fresh on every message via upsertUser; the storefront never touched it at
+ * all before this, so web-only customers looked permanently inactive after
+ * registration. Called from the storefront's per-request customer
+ * resolution — fire-and-forget, not awaited by the caller.
+ *
+ * Best-effort and self-logging (touchLastSeen never throws) — a DB failure
+ * here must never crash the app. The update is idempotent and only affects
+ * the 'Active Today' KPI, not the customer's session.
+ */
+export async function touchLastSeen(db: Db, userId: number): Promise<void> {
+  const lastTouch = lastSeenTouchedAt.get(userId);
+  const now = Date.now();
+  if (lastTouch != null && now - lastTouch < LAST_SEEN_TOUCH_TTL_MS) return;
+  lastSeenTouchedAt.set(userId, now);
+  try {
+    await db.user.update({ where: { id: userId }, data: { lastSeenAt: new Date(now) } });
+  } catch (err) {
+    logger.error({ err, userId }, "Failed to update a customer's last-seen timestamp from storefront activity — this only affects the 'Active Today' admin KPI, not the customer's session.");
+  }
 }

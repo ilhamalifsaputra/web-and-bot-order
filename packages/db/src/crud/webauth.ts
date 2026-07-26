@@ -26,6 +26,7 @@ export async function createWebUser(
     loginUsername: string;
     email: string;
     passwordHash: string;
+    fullName: string;
     referredByCode?: string | null;
   },
 ) {
@@ -49,6 +50,7 @@ export async function createWebUser(
           loginUsername,
           email,
           passwordHash: args.passwordHash,
+          fullName: args.fullName,
           role: UserRole.CUSTOMER,
           language: config.DEFAULT_LANGUAGE.toUpperCase() as Language,
           referralCode: generateReferralCode(),

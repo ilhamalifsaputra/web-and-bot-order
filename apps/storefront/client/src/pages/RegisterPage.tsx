@@ -30,11 +30,12 @@ export default function RegisterPage() {
   const next = safeNext(params.get("next"));
   const ref = (params.get("ref") ?? "").slice(0, 16);
 
+  const [fullName, setFullName] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
 
   const registerMutation = useMutation({
-    mutationFn: (vars: { username: string; email: string; password: string; password2: string }) =>
+    mutationFn: (vars: { fullName: string; username: string; email: string; password: string; password2: string }) =>
       publicPost<RegisterResponse>("/api/v1/auth/register", { ...vars, ref, next }),
     // Full page load (not navigate()) — the shell must re-serve with the
     // fresh CSRF token now that a session cookie exists.
@@ -47,6 +48,7 @@ export default function RegisterPage() {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
     registerMutation.mutate({
+      fullName,
       username,
       email,
       password: String(formData.get("password") ?? ""),
@@ -72,6 +74,23 @@ export default function RegisterPage() {
           )}
 
           <form onSubmit={onSubmit} className="mt-6 space-y-4">
+            <div>
+              <label className="text-sm font-semibold" htmlFor="fullName">
+                {t("web.register_fullname")}
+              </label>
+              <input
+                className="field mt-1"
+                type="text"
+                id="fullName"
+                name="fullName"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                autoComplete="name"
+                required
+                minLength={2}
+                maxLength={100}
+              />
+            </div>
             <div>
               <label className="text-sm font-semibold" htmlFor="username">
                 {t("web.register_username")}

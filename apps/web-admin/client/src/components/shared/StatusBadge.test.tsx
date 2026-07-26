@@ -68,4 +68,9 @@ describe("StatusBadge", () => {
     const { container } = render(<StatusBadge status="CREDITED_TO_BALANCE" />);
     expect(container.querySelector(".bg-grass-tint")).not.toBeNull();
   });
+
+  it("uses the green tone for returning customers", () => {
+    const { container } = render(<StatusBadge status="RETURNING" />);
+    expect(container.querySelector(".bg-grass-tint")).not.toBeNull();
+  });
 });

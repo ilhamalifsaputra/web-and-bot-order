@@ -38,6 +38,8 @@ import {
   markUnderpaid,
   recordUnmatchedTx,
   listAuditLogs,
+  setUserRole,
+  setUserBanned,
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
@@ -580,13 +582,17 @@ describe("orders", () => {
   });
 
   it("list shows a web buyer's login handle, not a dash", async () => {
-    // Web-store buyers have no Telegram fullName/username — only loginUsername /
-    // email. The API must expose loginUsername so the client can show it.
+    // Simulates a pre-existing web buyer registered before fullName became a
+    // required registration field (Customers module upgrade Task 7) — such
+    // accounts are intentionally left with a null fullName, never backfilled.
+    // The API must expose loginUsername so the client can show it instead.
     const web = await createWebUser(prisma, {
       loginUsername: "weshopper",
       email: "we@shop.test",
       passwordHash: "x",
+      fullName: "placeholder",
     });
+    await prisma.user.update({ where: { id: web.id }, data: { fullName: null } });
     await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 });
 
     const res = await get("/api/orders", seed.cookie);
@@ -853,11 +859,15 @@ describe("orders API — approve/resend enqueue the buyer's account DM", () => {
   }
 
   async function makeWebOnlyDeliveredOrder(loginUsername: string): Promise<number> {
+    // Simulates a pre-existing web buyer registered before fullName became a
+    // required field (Customers module upgrade Task 7) — left null, never backfilled.
     const web = await createWebUser(prisma, {
       loginUsername,
       email: `${loginUsername}@shop.test`,
       passwordHash: "x",
+      fullName: "placeholder",
     });
+    await prisma.user.update({ where: { id: web.id }, data: { fullName: null } });
     const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
     await attachPaymentProof(prisma, order.id, { fileId: "proof", txid: `TX${loginUsername.toUpperCase()}` });
     return order.id;
@@ -2850,6 +2860,77 @@ describe("users", () => {
   it("wallet rejects bad CSRF", async () => {
     const res = await post(`/api/users/${seed.customerId}/wallet`, seed.cookie, { csrf_token: "bad", delta: "1000" });
     expect(res.statusCode).toBe(403);
+  });
+
+  describe("CSV export", () => {
+    it("returns CSV headers, Content-Disposition, and the matching row for a seeded customer", async () => {
+      setBotIdentity({ publicChannelId: -100123456789 });
+      const exportUser = await upsertUser(prisma, {
+        telegramId: 777001,
+        username: "exportcust",
+        fullName: "Export Customer",
+      });
+      await setUserRole(prisma, exportUser.id, UserRole.RESELLER);
+      await setUserBanned(prisma, exportUser.id, true, "test ban");
+
+      const order = (await createOrderDirect(prisma, { user: exportUser, productId: seed.productId, quantity: 1 }))!;
+      await attachPaymentProof(prisma, order.id, { fileId: "proof123", txid: "TX1234567890" });
+      const approveRes = await post(`/api/orders/${order.id}/approve`, seed.cookie, { csrf_token: seed.csrf });
+      expect(approveRes.statusCode).toBe(200);
+
+      const res = await get("/api/users/export", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toBe("text/csv; charset=utf-8");
+      expect(res.headers["content-disposition"]).toBe('attachment; filename="customers.csv"');
+
+      const lines = res.body.trim().split("\r\n");
+      expect(lines[0]).toBe(
+        [
+          "Telegram ID",
+          "Full Name",
+          "Username",
+          "Role",
+          "Status",
+          "Joined",
+          "Last Seen",
+          "Total Spent (IDR)",
+          "Total Spent (USDT)",
+          "Orders",
+          "Last Order",
+        ].join(","),
+      );
+
+      const row = lines.find((l) => l.startsWith("777001,"));
+      expect(row).toBeDefined();
+      const cols = row!.split(",");
+      expect(cols[1]).toBe("Export Customer"); // Full Name
+      expect(cols[2]).toBe("exportcust"); // Username
+      expect(cols[3]).toBe("RESELLER"); // Role
+      expect(cols[4]).toBe("Banned"); // Status
+      expect(cols[7]).not.toBe("0"); // Total Spent (IDR) — the DELIVERED order made it non-trivial
+      expect(cols[9]).toBe("1"); // Orders
+      expect(cols[10]).not.toBe(""); // Last Order — a raw ISO timestamp, not blank
+    });
+
+    // Finding 1 (final-review fix): a public, unauthenticated storefront
+    // registrant can set fullName to anything, including a string Excel/Sheets
+    // interpret as a formula on open — csvField must neutralize a leading
+    // =, +, -, or @ before this row reaches an admin's spreadsheet.
+    it("neutralizes a fullName starting with '=' so it can't run as a spreadsheet formula", async () => {
+      await upsertUser(prisma, {
+        telegramId: 777002,
+        username: "injector",
+        fullName: "=1+1",
+      });
+
+      const res = await get("/api/users/export", seed.cookie);
+      expect(res.statusCode).toBe(200);
+      const lines = res.body.trim().split("\r\n");
+      const row = lines.find((l) => l.startsWith("777002,"));
+      expect(row).toBeDefined();
+      expect(row).not.toContain(",=1+1,");
+      expect(row).toContain(",'=1+1,");
+    });
   });
 });
 

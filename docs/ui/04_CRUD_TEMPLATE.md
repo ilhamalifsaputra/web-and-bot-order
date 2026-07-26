@@ -110,6 +110,22 @@ Two `FilterBar` modes:
   pages (avoids firing a request per keystroke). Optionally wrap in `<form
   onSubmit>` for Enter-to-submit.
 
+A server-side filtered page's free-text `SearchBar` may additionally use a
+**third, search-specific sub-mode — search-live** — while every other field in
+the same `FilterBar` stays on draft + commit: the `SearchBar`'s own value
+commits on a **250–350ms debounce** (via the shared `useDebouncedValue` hook,
+`hooks/useDebouncedValue.ts`) independent of the surrounding Apply button, and
+is round-tripped to the URL (`?q=...`) via `useSearchParams` so the query
+survives a reload/back-navigation. Use this when the search field's own
+result-narrowing is valuable moment-to-moment (a lookup-style search) and the
+other filter fields remain deliberate/Apply-gated (discrete pickers, where
+debouncing makes no UX sense). Pass `loading={isFetching && value !== ""}` to
+`SearchBar` (its `loading` prop swaps the leading icon for a spinning
+`Loader2`) so a debounced refetch has a visible in-place indicator. Reference
+implementation: `apps/web-admin/client/src/pages/UsersPage.tsx`. Do not add
+this live-commit behavior to a `Select`/`DateInput`/other structured filter —
+it's scoped to free-text search only.
+
 ### Sorting
 There is **no clickable-column-header sorting** anywhere in this app (see
 `00_AI_RULES.md` §4). Where sorting exists, it's a separate `Select` control (e.g.

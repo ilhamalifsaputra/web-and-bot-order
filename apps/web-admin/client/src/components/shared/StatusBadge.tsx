@@ -34,6 +34,10 @@ const TONE: Record<string, Tone> = {
   SCHEDULED: "warning",
   EXPIRED: "neutral",
   INACTIVE: "neutral",
+  // Voucher lifecycle (VouchersPage's Voucher Status column).
+  ACTIVE: "success",
+  DISABLED: "neutral",
+  USAGE_LIMIT_REACHED: "warning",
   // NotificationStatus (OutboxPage) — align PENDING/SENDING with the same
   // warning tone PENDING_PAYMENT already gets, instead of falling back to neutral.
   PENDING: "warning",

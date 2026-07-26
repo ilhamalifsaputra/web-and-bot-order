@@ -102,6 +102,47 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       expiry = d;
     }
 
+    // The four scope/scheduling fields below mirror POST /api/vouchers/:voucherId/update's
+    // validation exactly (same field names, same error messages) so the create
+    // and edit forms can share one request-body shape — see VouchersPage.tsx's
+    // `updateBodyFromForm` helper, which both the create and update mutations
+    // now build their body from.
+    let maxDiscountDec: Decimal | null = null;
+    const maxDiscountRaw = (body.max_discount ?? "").trim();
+    if (maxDiscountRaw !== "") {
+      try {
+        maxDiscountDec = new Decimal(maxDiscountRaw);
+      } catch {
+        return reply.code(400).send({ error: "Max discount must be a number." });
+      }
+    }
+
+    let startAt: Date | null = null;
+    const startAtRaw = (body.start_at ?? "").trim();
+    if (startAtRaw !== "") {
+      const d = new Date(`${startAtRaw}T00:00:00Z`);
+      if (Number.isNaN(d.getTime())) return reply.code(400).send({ error: "Start date must be YYYY-MM-DD." });
+      startAt = d;
+    }
+
+    let scope: VoucherScope | undefined;
+    if (body.scope !== undefined) {
+      const scopeUpper = String(body.scope).toUpperCase();
+      if (!VOUCHER_SCOPES.includes(scopeUpper)) {
+        return reply.code(400).send({ error: "Invalid voucher scope." });
+      }
+      scope = scopeUpper as VoucherScope;
+    }
+
+    let productIds: number[] | undefined;
+    if ((body as Record<string, unknown>).product_ids !== undefined) {
+      const raw = (body as Record<string, unknown>).product_ids;
+      if (!Array.isArray(raw) || !raw.every((id) => Number.isInteger(Number(id)) && Number(id) > 0)) {
+        return reply.code(400).send({ error: "Product ids must be an array of positive integers." });
+      }
+      productIds = raw.map((id) => Number(id));
+    }
+
     if ((await getVoucherByCode(prisma, code)) !== null) {
       return reply.code(409).send({ error: `Voucher '${code}' already exists.` });
     }
@@ -112,6 +153,10 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       usageLimit: limit,
       minPurchase: minDec,
       expiresAt: expiry,
+      maxDiscount: maxDiscountDec,
+      startAt,
+      scope,
+      productIds,
     });
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,

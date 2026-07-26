@@ -347,6 +347,53 @@ describe("VouchersPage", () => {
     expect(screen.getByText("Select products")).toBeInTheDocument();
   });
 
+  it("creates a SELECTED-scope voucher via a single POST /api/vouchers call, never the update endpoint", async () => {
+    // Regression test for the create-route gap found in review: POST
+    // /api/vouchers used to only accept the original 6 fields, so this page
+    // had to chain an immediate POST .../update to actually persist
+    // scope/product_ids on create. The route now accepts all 10 fields
+    // directly (mirrors the update route's validation), so Create (and
+    // Duplicate, which shares this same mutation) must never call the
+    // update endpoint.
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(listResponse([]));
+    render(<VouchersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/no vouchers/i)).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "New Voucher" }));
+    await user.type(screen.getByLabelText(/^code/i), "NEWSEL");
+    await user.type(screen.getByLabelText(/^value/i), "15");
+
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ categories: [], products: [] })) // GET /api/catalog (picker mounts)
+      .mockResolvedValueOnce(jsonResponse({ voucher: { id: 42, code: "NEWSEL" } })) // POST /api/vouchers
+      .mockResolvedValueOnce(listResponse([])); // GET /api/vouchers refetch after invalidate
+
+    await user.click(screen.getByRole("combobox", { name: "Scope" }));
+    await waitFor(() => screen.getByRole("option", { name: "Selected Products" }));
+    await user.click(screen.getByRole("option", { name: "Selected Products" }));
+    await waitFor(() => expect(screen.getByText("Select products")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/vouchers",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"scope":"SELECTED"'),
+      }),
+    ));
+
+    const requestedUrls = fetchSpy.mock.calls.map(call => call[0]);
+    expect(requestedUrls.filter(url => url === "/api/vouchers")).toHaveLength(1);
+    expect(requestedUrls.some(url => typeof url === "string" && url.includes("/update"))).toBe(false);
+
+    // Drain the invalidated-query refetch too, so no pending fetch() call
+    // from this test's mocked queue leaks into the next test.
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3));
+  });
+
   it("edits a voucher: pre-fills the form and PATCHes via the update endpoint", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(listResponse([VOUCHER]));

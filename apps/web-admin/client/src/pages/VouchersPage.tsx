@@ -169,9 +169,15 @@ function expirationCell(v: Voucher, now: Date): { text: string; muted: boolean }
   return { text: `Ends ${v.expiresAtDisplay ?? ""}`, muted: false };
 }
 
-/** Shared by the Edit/Duplicate submit path and the create-then-extend chain
- *  below — the exact body POST /api/vouchers/:id/update expects. */
-function updateBodyFromForm(form: VoucherFormState): Record<string, unknown> {
+/** Shared request body builder for both `POST /api/vouchers` (create) and
+ *  `POST /api/vouchers/:id/update` — the two routes accept an identical
+ *  field set, so Create/Edit/Duplicate can all build their request body the
+ *  same way. `product_ids` is always sent explicitly (either the current
+ *  selection, or `[]` for ALL scope) — see the update route's doc comment on
+ *  why an *omitted* `product_ids` (not the same as an empty array) is
+ *  reserved for "leave the existing product set untouched", which never
+ *  applies to a full-form submission like this one. */
+function voucherRequestBody(form: VoucherFormState): Record<string, unknown> {
   return {
     code: form.code,
     type: form.type,
@@ -403,27 +409,7 @@ export function VouchersPage() {
   }
 
   const create = useMutation({
-    mutationFn: async (body: VoucherFormState) => {
-      const basic = {
-        code: body.code,
-        type: body.type,
-        value: body.value,
-        min_purchase: body.min_purchase,
-        usage_limit: body.usage_limit,
-        expires_at: body.expires_at,
-      };
-      const created = await apiPost<{ voucher: { id: number } }>("/api/vouchers", basic);
-      // POST /api/vouchers only accepts the six original fields above — scope,
-      // maxDiscount, startAt and the product-scope set are only settable via
-      // the update endpoint. Chain an immediate update so this form's
-      // extended fields actually take effect instead of silently no-op'ing.
-      const needsExtended =
-        body.scope === "SELECTED" || body.max_discount.trim() !== "" || body.start_at.trim() !== "";
-      if (needsExtended) {
-        await apiPost(`/api/vouchers/${created.voucher.id}/update`, updateBodyFromForm(body));
-      }
-      return created;
-    },
+    mutationFn: (body: VoucherFormState) => apiPost("/api/vouchers", voucherRequestBody(body)),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["vouchers"] });
       closeForm();
@@ -433,7 +419,7 @@ export function VouchersPage() {
 
   const update = useMutation({
     mutationFn: ({ id, form: f }: { id: number; form: VoucherFormState }) =>
-      apiPost(`/api/vouchers/${id}/update`, updateBodyFromForm(f)),
+      apiPost(`/api/vouchers/${id}/update`, voucherRequestBody(f)),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["vouchers"] });
       closeForm();

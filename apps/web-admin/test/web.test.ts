@@ -2997,6 +2997,25 @@ describe("vouchers", () => {
     expect(res.statusCode).toBe(404);
   });
 
+  it("update voucher rejects an out-of-range PERCENT value (422, JSON error, not 500)", async () => {
+    await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "upd5", type: "percent", value: "10" });
+    const v = (await getVoucherByCode(prisma, "UPD5"))!;
+
+    const res = await postJsonOrders(`/api/vouchers/${v.id}/update`, seed.cookie, seed.csrf, { value: "150" });
+    expect(res.statusCode).toBe(422);
+    const body = JSON.parse(res.body) as { error: string };
+    expect(body.error).toBe("error.invalid_discount_percent");
+    expect(Number((await prisma.voucher.findUnique({ where: { id: v.id } }))!.value)).toBe(10);
+  });
+
+  it("create voucher rejects an out-of-range PERCENT value (422, JSON error, not 500)", async () => {
+    const res = await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "bad150", type: "percent", value: "150" });
+    expect(res.statusCode).toBe(422);
+    const body = JSON.parse(res.body) as { error: string };
+    expect(body.error).toBe("error.invalid_discount_percent");
+    expect(await getVoucherByCode(prisma, "BAD150")).toBeNull();
+  });
+
   it("update voucher refuses a code change once the voucher has been used (409)", async () => {
     await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "upd2", type: "percent", value: "5" });
     const v = (await getVoucherByCode(prisma, "UPD2"))!;

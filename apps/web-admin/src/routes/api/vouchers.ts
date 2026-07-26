@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { VoucherType, VoucherScope } from "@app/core/enums";
+import { ValidationError } from "@app/core/errors";
 import { Decimal } from "@app/core/money";
 import {
   prisma,
@@ -146,18 +147,26 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
     if ((await getVoucherByCode(prisma, code)) !== null) {
       return reply.code(409).send({ error: `Voucher '${code}' already exists.` });
     }
-    const v = await createVoucher(prisma, {
-      code,
-      type: typeUpper as VoucherType,
-      value: valueDec,
-      usageLimit: limit,
-      minPurchase: minDec,
-      expiresAt: expiry,
-      maxDiscount: maxDiscountDec,
-      startAt,
-      scope,
-      productIds,
-    });
+    let v;
+    try {
+      v = await createVoucher(prisma, {
+        code,
+        type: typeUpper as VoucherType,
+        value: valueDec,
+        usageLimit: limit,
+        minPurchase: minDec,
+        expiresAt: expiry,
+        maxDiscount: maxDiscountDec,
+        startAt,
+        scope,
+        productIds,
+      });
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        return reply.code(422).send({ error: err.message });
+      }
+      throw err;
+    }
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "voucher_create",
@@ -285,6 +294,9 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
     try {
       updated = await updateVoucher(prisma, voucherId, args);
     } catch (err) {
+      if (err instanceof ValidationError) {
+        return reply.code(422).send({ error: err.message });
+      }
       if (err instanceof Error && err.message === "cannot change the code of a voucher that has been used") {
         return reply.code(409).send({ error: "Cannot change code: this voucher has already been used." });
       }

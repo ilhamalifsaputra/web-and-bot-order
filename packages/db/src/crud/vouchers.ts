@@ -50,6 +50,15 @@ export async function createVoucher(
       throw new ValidationError("error.invalid_discount_percent");
     }
   }
+  // A negative FIXED value was never bounded on any path — unlike a >100
+  // PERCENT (harmless; capped at the eligible subtotal), a negative discount
+  // flows straight into orders.ts's `subtotal.minus(discount)` and INCREASES
+  // what the customer pays instead of discounting it (Critical defect fix,
+  // pre-merge review — same class of bug the PERCENT guard above exists to
+  // prevent).
+  if (args.type === VoucherType.FIXED && new Decimal(args.value).isNegative()) {
+    throw new ValidationError("error.invalid_discount_fixed_value");
+  }
   const scope = args.scope ?? VoucherScope.ALL;
   const voucher = await db.voucher.create({
     data: {
@@ -120,6 +129,28 @@ export async function updateVoucher(
   const nextCode = args.code !== undefined ? args.code.toUpperCase() : existing.code;
   if (nextCode !== existing.code && existing.usedCount > 0) {
     throw new Error("cannot change the code of a voucher that has been used");
+  }
+
+  // Critical defect fix (pre-merge review): createVoucher has always bounded
+  // a PERCENT value to (0,100], but updateVoucher merely did
+  // `data.value = new Decimal(args.value)` with no bounds at all — an admin
+  // editing a PERCENT voucher's value to e.g. -10 produces a negative
+  // discount that INCREASES what every buyer applying it pays (see
+  // applyVoucherToSubtotal's zero-floor comment for the exact mechanism).
+  // Validated against the FINAL type/value pair (after this call's changes
+  // are applied), not just the fields this call happens to touch, so
+  // flipping `type` without touching `value` — or vice versa — can never
+  // leave a stale, now-invalid value in place.
+  if (args.value !== undefined || args.type !== undefined) {
+    const finalType = args.type ?? existing.type;
+    const finalValue = args.value !== undefined ? new Decimal(args.value) : new Decimal(existing.value);
+    if (finalType === VoucherType.PERCENT) {
+      if (finalValue.lte(0) || finalValue.gt(100)) {
+        throw new ValidationError("error.invalid_discount_percent");
+      }
+    } else if (finalType === VoucherType.FIXED && finalValue.isNegative()) {
+      throw new ValidationError("error.invalid_discount_fixed_value");
+    }
   }
 
   const data: Record<string, unknown> = {};
@@ -248,6 +279,24 @@ export function applyVoucherToSubtotal(
     const maxDiscount = new Decimal(voucher.maxDiscount);
     if (discount.greaterThan(maxDiscount)) discount = maxDiscount; // the smaller of the two caps wins
   }
+  // Defense in depth (Critical defect fix, pre-merge review): floor at zero
+  // as the LAST step, after both caps, not before them. Both caps above are
+  // upper bounds only (`greaterThan` only ever pulls discount DOWN), so a
+  // negative discount — from a misconfigured voucher `value`, or even a
+  // corrupted negative `maxDiscount` — sails through them completely
+  // unchanged, and could be reintroduced by the maxDiscount cap itself if
+  // this floor ran before it. Placing the floor last guarantees the
+  // invariant `0 <= discount <= eligibleSub` regardless of which caller or
+  // code path produced the raw value, no matter what runs in between. This
+  // matters because orders.ts computes
+  // `afterDiscount = subtotal.minus(bulkDiscount).minus(discount)`
+  // (createOrderFromCart / createOrderDirect) — a negative discount there
+  // ADDS to what the customer is charged instead of subtracting, silently
+  // overcharging every buyer who applies the voucher. createVoucher/
+  // updateVoucher already reject an out-of-range value up front; this floor
+  // is the backstop that holds even if a bad value reaches this pure
+  // function some other way.
+  if (discount.isNegative()) discount = new Decimal(0);
   return quantizeMoney(discount, 4);
 }
 

@@ -73,6 +73,23 @@ describe("createVoucher discountPercent bounds (PERCENT type)", () => {
     const v = await createVoucher(prisma, { code: "BIGFIXED", type: VoucherType.FIXED, value: "999999" });
     expect(Number(v.value)).toBe(999999);
   });
+
+  // Critical defect fix: a FIXED voucher's negative value was never bounded
+  // on any path (the PERCENT guard above only ever covered PERCENT). A
+  // negative FIXED value flows straight into applyVoucherToSubtotal's
+  // `subtotal.minus(...).minus(discount)` in orders.ts and INCREASES what
+  // the customer pays instead of discounting it.
+  it("rejects a negative FIXED value", async () => {
+    await expect(
+      createVoucher(prisma, { code: "NEGFIXED", type: VoucherType.FIXED, value: "-5" }),
+    ).rejects.toMatchObject({ key: "error.invalid_discount_fixed_value" });
+    expect(await prisma.voucher.findUnique({ where: { code: "NEGFIXED" } })).toBeNull();
+  });
+
+  it("still accepts a FIXED value of exactly 0", async () => {
+    const v = await createVoucher(prisma, { code: "ZEROFIXED", type: VoucherType.FIXED, value: "0" });
+    expect(Number(v.value)).toBe(0);
+  });
 });
 
 /** Minimal ALL-scope VoucherLike builder — every field applyVoucherToSubtotal
@@ -200,6 +217,35 @@ describe("applyVoucherToSubtotal", () => {
     expect(() => applyVoucherToSubtotal(v, "10.00", "10.00")).toThrowError(
       expect.objectContaining({ key: "error.voucher_inactive" }),
     );
+  });
+
+  // Critical defect fix (pre-merge review): applyVoucherToSubtotal's two caps
+  // (`greaterThan` against eligibleSubtotal / maxDiscount) are upper bounds
+  // only, so a negative computed discount previously sailed through both of
+  // them unchanged. orders.ts computes
+  // `afterDiscount = subtotal.minus(bulkDiscount).minus(discount)` — a
+  // negative discount there ADDS to what the customer pays instead of
+  // subtracting, i.e. a misconfigured voucher would silently overcharge
+  // every buyer who applied it. This drives the pure function directly with
+  // a negative `value` (bypassing createVoucher/updateVoucher's bounds
+  // checks) to prove the defense-in-depth floor holds even if a bad value
+  // reaches this function some other way.
+  it("floors a negative PERCENT-computed discount at zero instead of letting it inflate afterDiscount", () => {
+    const v = baseVoucher({ type: VoucherType.PERCENT, value: "-10" });
+    const discount = applyVoucherToSubtotal(v, "20.00", "20.00");
+    expect(discount.equals("0")).toBe(true);
+  });
+
+  it("floors a negative FIXED value at zero instead of letting it inflate afterDiscount", () => {
+    const v = baseVoucher({ type: VoucherType.FIXED, value: "-10" });
+    const discount = applyVoucherToSubtotal(v, "20.00", "20.00");
+    expect(discount.equals("0")).toBe(true);
+  });
+
+  it("maxDiscount of exactly 0 caps an otherwise-positive discount at exactly 0 (pins the `!= null` check against a future truthy-check regression, since maxDiscount: 0 is falsy)", () => {
+    const v = baseVoucher({ type: VoucherType.PERCENT, value: "10", maxDiscount: "0" });
+    const discount = applyVoucherToSubtotal(v, "20.00", "20.00");
+    expect(discount.equals("0")).toBe(true);
   });
 });
 
@@ -412,6 +458,61 @@ describe("updateVoucher", () => {
   });
 });
 
+// Critical defect fix (pre-merge review): unlike createVoucher, updateVoucher
+// let an admin set a PERCENT value outside (0,100] or a negative FIXED value
+// with zero validation — the exact scenario that produces a negative
+// applyVoucherToSubtotal discount and overcharges every buyer who applies the
+// voucher (see the "floors a negative ... discount" tests above).
+describe("updateVoucher value bounds (mirrors createVoucher's guard)", () => {
+  beforeEach(async () => {
+    await resetDb(prisma);
+  });
+
+  it("rejects a PERCENT value update below or equal to 0, or above 100", async () => {
+    const v = await createVoucher(prisma, { code: "UPDBOUND1", type: VoucherType.PERCENT, value: "10" });
+    await expect(updateVoucher(prisma, v.id, { value: "-10" })).rejects.toMatchObject({
+      key: "error.invalid_discount_percent",
+    });
+    await expect(updateVoucher(prisma, v.id, { value: "0" })).rejects.toMatchObject({
+      key: "error.invalid_discount_percent",
+    });
+    await expect(updateVoucher(prisma, v.id, { value: "150" })).rejects.toMatchObject({
+      key: "error.invalid_discount_percent",
+    });
+    const fresh = await prisma.voucher.findUnique({ where: { id: v.id } });
+    expect(Number(fresh!.value)).toBe(10); // rejected update never persisted
+  });
+
+  it("rejects a negative FIXED value update", async () => {
+    const v = await createVoucher(prisma, { code: "UPDBOUND2", type: VoucherType.FIXED, value: "10" });
+    await expect(updateVoucher(prisma, v.id, { value: "-5" })).rejects.toMatchObject({
+      key: "error.invalid_discount_fixed_value",
+    });
+    const fresh = await prisma.voucher.findUnique({ where: { id: v.id } });
+    expect(Number(fresh!.value)).toBe(10);
+  });
+
+  it("validates against the FINAL type when type and value change together in one call", async () => {
+    const v = await createVoucher(prisma, { code: "UPDBOUND3", type: VoucherType.FIXED, value: "10" });
+    await expect(
+      updateVoucher(prisma, v.id, { type: VoucherType.PERCENT, value: "150" }),
+    ).rejects.toMatchObject({ key: "error.invalid_discount_percent" });
+  });
+
+  it("validates the EXISTING value when only type flips to PERCENT without the call touching value", async () => {
+    const v = await createVoucher(prisma, { code: "UPDBOUND4", type: VoucherType.FIXED, value: "500" });
+    await expect(updateVoucher(prisma, v.id, { type: VoucherType.PERCENT })).rejects.toMatchObject({
+      key: "error.invalid_discount_percent",
+    });
+  });
+
+  it("still accepts an in-range PERCENT value update", async () => {
+    const v = await createVoucher(prisma, { code: "UPDBOUND5", type: VoucherType.PERCENT, value: "10" });
+    const updated = await updateVoucher(prisma, v.id, { value: "50" });
+    expect(Number(updated!.value)).toBe(50);
+  });
+});
+
 describe("deriveVoucherStatus", () => {
   const now = new Date("2026-07-26T00:00:00Z");
   const future = new Date(now.getTime() + 86_400_000);
@@ -615,6 +716,27 @@ describe("getVoucherPerformance", () => {
 
     const result = await getVoucherPerformance(prisma, [v.id]);
     expect(result.get(v.id)!.revenue.equals("160100.0000")).toBe(true);
+  });
+
+  // Test gap flagged by pre-merge review: getVoucherPerformance's own ternary
+  // (`o.currency === "USDT" && o.fxRate != null ? times(fxRate) : raw`) was
+  // never exercised with fxRate === null. revenue.ts's combinedRevenueByDay
+  // uses the identical ternary (packages/db/src/crud/revenue.ts:377-379) and
+  // falls back to the raw totalAmount unconverted when fxRate is missing —
+  // this pins getVoucherPerformance to that same convention.
+  it("a DELIVERED USDT order with fxRate: null falls back to counting its raw totalAmount unconverted", async () => {
+    const v = await createVoucher(prisma, { code: "PERFUSDTNULL", type: VoucherType.PERCENT, value: "10" });
+    await makeUserAndOrder({
+      telegramId: 3301,
+      referralCode: "P3301",
+      voucherId: v.id,
+      totalAmount: "50",
+      currency: "USDT",
+      fxRate: null,
+    });
+
+    const result = await getVoucherPerformance(prisma, [v.id]);
+    expect(result.get(v.id)!.revenue.equals("50.0000")).toBe(true);
   });
 
   it("a voucher id with zero delivered orders is simply absent from the returned Map", async () => {

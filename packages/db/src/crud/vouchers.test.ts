@@ -10,6 +10,7 @@ import {
   updateVoucher,
   applyVoucherToSubtotal,
   getVoucherProductIds,
+  computeEligibleAmounts,
   deriveVoucherStatus,
   getVoucherStats,
   getVoucherPerformance,
@@ -227,6 +228,104 @@ describe("getVoucherProductIds", () => {
   });
 });
 
+// Code review round 1, Finding 2: this single function is now the one place
+// the "if scope===SELECTED, fetch getVoucherProductIds, then sum only the
+// matching lines; else reuse the full totals untouched" glue lives, instead
+// of it being re-implemented near-identically at every checkout/preview call
+// site (createOrderFromCart, createOrderDirect, the order-bot's confirmation
+// screen, the storefront's checkout preview).
+describe("computeEligibleAmounts", () => {
+  beforeEach(async () => {
+    await resetDb(prisma);
+  });
+
+  it("ALL-scope (and any non-SELECTED scope) returns the full totals untouched, without querying the DB", async () => {
+    // A voucher id that doesn't exist at all — proves the ALL-scope branch
+    // never reaches the DB (a SELECTED-scope call with this id would throw
+    // or return an empty set instead).
+    const result = await computeEligibleAmounts(
+      prisma,
+      { id: 999999, scope: VoucherScope.ALL },
+      [{ catalogProductId: 1, lineSubtotal: "999", lineBulkDiscount: "1" }],
+      "20.00",
+      "3.00",
+    );
+    expect(result.eligibleSubtotal.equals("20.00")).toBe(true);
+    expect(result.eligibleBulkDiscount.equals("3.00")).toBe(true);
+  });
+
+  it("SELECTED-scope sums only the matching lines, ignoring non-matching lines' contributions", async () => {
+    const category = await createCategory(prisma, "Streaming", "🎬");
+    const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Scoped" });
+    const p2 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Not Scoped" });
+    const v = await createVoucher(prisma, {
+      code: "ELIGSUM",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [p1.id],
+    });
+
+    const result = await computeEligibleAmounts(
+      prisma,
+      v,
+      [
+        { catalogProductId: p1.id, lineSubtotal: "20.00", lineBulkDiscount: "2.00" },
+        { catalogProductId: p2.id, lineSubtotal: "50.00", lineBulkDiscount: "5.00" },
+      ],
+      "70.00",
+      "7.00",
+    );
+    expect(result.eligibleSubtotal.equals("20.00")).toBe(true);
+    expect(result.eligibleBulkDiscount.equals("2.00")).toBe(true);
+  });
+
+  it("SELECTED-scope with zero matching lines returns zero for both amounts", async () => {
+    const category = await createCategory(prisma, "Streaming", "🎬");
+    const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Scoped" });
+    const p2 = await createCatalogProduct(prisma, { categoryId: category.id, name: "In Cart" });
+    const v = await createVoucher(prisma, {
+      code: "ELIGZERO",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [p1.id],
+    });
+
+    const result = await computeEligibleAmounts(
+      prisma,
+      v,
+      [{ catalogProductId: p2.id, lineSubtotal: "50.00", lineBulkDiscount: "5.00" }],
+      "50.00",
+      "5.00",
+    );
+    expect(result.eligibleSubtotal.equals("0")).toBe(true);
+    expect(result.eligibleBulkDiscount.equals("0")).toBe(true);
+  });
+
+  it("SELECTED-scope with a single-line array (the createOrderDirect / confirmation-screen shape) works the same way", async () => {
+    const category = await createCategory(prisma, "Streaming", "🎬");
+    const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Scoped" });
+    const v = await createVoucher(prisma, {
+      code: "ELIGSINGLE",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [p1.id],
+    });
+
+    const result = await computeEligibleAmounts(
+      prisma,
+      v,
+      [{ catalogProductId: p1.id, lineSubtotal: "5.00", lineBulkDiscount: "0" }],
+      "5.00",
+      "0",
+    );
+    expect(result.eligibleSubtotal.equals("5.00")).toBe(true);
+    expect(result.eligibleBulkDiscount.equals("0")).toBe(true);
+  });
+});
+
 describe("updateVoucher", () => {
   beforeEach(async () => {
     await resetDb(prisma);
@@ -283,6 +382,32 @@ describe("updateVoucher", () => {
 
     await updateVoucher(prisma, v.id, { scope: VoucherScope.ALL, productIds: [] });
     expect(await getVoucherProductIds(prisma, v.id)).toEqual([]);
+  });
+
+  // Critical fix (code review round 1): a partial update that doesn't mention
+  // productIds at all must never wipe an existing SELECTED-scope voucher's
+  // product set. The test above only ever exercises calls that explicitly
+  // pass productIds (even an empty array), so it never caught the bug where
+  // deleteMany ran unconditionally on every updateVoucher call.
+  it("leaves an existing SELECTED-scope voucher's product set untouched when productIds is omitted from the call", async () => {
+    const category = await createCategory(prisma, "Streaming", "🎬");
+    const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product A" });
+    const p2 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product B" });
+    const v = await createVoucher(prisma, {
+      code: "KEEPSCOPE",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [p1.id, p2.id],
+    });
+    expect((await getVoucherProductIds(prisma, v.id)).sort()).toEqual([p1.id, p2.id].sort());
+
+    // An admin fixing a typo'd value — no mention of productIds at all.
+    const updated = await updateVoucher(prisma, v.id, { value: "25" });
+
+    expect(Number(updated!.value)).toBe(25);
+    expect(updated!.scope).toBe(VoucherScope.SELECTED);
+    expect((await getVoucherProductIds(prisma, v.id)).sort()).toEqual([p1.id, p2.id].sort());
   });
 });
 

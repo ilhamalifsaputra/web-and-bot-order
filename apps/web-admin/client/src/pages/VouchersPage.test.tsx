@@ -354,7 +354,11 @@ describe("VouchersPage", () => {
     // scope/product_ids on create. The route now accepts all 10 fields
     // directly (mirrors the update route's validation), so Create (and
     // Duplicate, which shares this same mutation) must never call the
-    // update endpoint.
+    // update endpoint. Also drives the picker -> form -> request-body wiring
+    // end to end: a product actually clicked in the scope picker must show
+    // up in the POST body's `product_ids` array, not merely leave `scope`
+    // as "SELECTED" (a prior version of this test never populated the
+    // catalog, so it could never have caught a broken picker->form wire-up).
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(listResponse([]));
     render(<VouchersPage />, { wrapper: Wrapper });
@@ -366,7 +370,10 @@ describe("VouchersPage", () => {
 
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(jsonResponse({ categories: [], products: [] })) // GET /api/catalog (picker mounts)
+      .mockResolvedValueOnce(jsonResponse({
+        categories: [{ id: 1, name: "Streaming" }],
+        products: [{ id: 9, name: "Disney Plus", categoryId: 1, isActive: true, isArchived: false }],
+      })) // GET /api/catalog (picker mounts)
       .mockResolvedValueOnce(jsonResponse({ voucher: { id: 42, code: "NEWSEL" } })) // POST /api/vouchers
       .mockResolvedValueOnce(listResponse([])); // GET /api/vouchers refetch after invalidate
 
@@ -374,6 +381,10 @@ describe("VouchersPage", () => {
     await waitFor(() => screen.getByRole("option", { name: "Selected Products" }));
     await user.click(screen.getByRole("option", { name: "Selected Products" }));
     await waitFor(() => expect(screen.getByText("Select products")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Select products" }));
+    await user.click(await screen.findByRole("checkbox", { name: "Disney Plus" }));
+    expect(screen.getByRole("button", { name: "1 product selected" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Create" }));
 
@@ -388,6 +399,13 @@ describe("VouchersPage", () => {
     const requestedUrls = fetchSpy.mock.calls.map(call => call[0]);
     expect(requestedUrls.filter(url => url === "/api/vouchers")).toHaveLength(1);
     expect(requestedUrls.some(url => typeof url === "string" && url.includes("/update"))).toBe(false);
+
+    // The real assertion this test exists for: the product actually clicked
+    // in the picker must reach the request body as `product_ids`, not just
+    // an assertion that `scope` is "SELECTED".
+    const createCall = fetchSpy.mock.calls.find(call => call[0] === "/api/vouchers")!;
+    const createBody = JSON.parse((createCall[1] as RequestInit).body as string) as { product_ids: number[] };
+    expect(createBody.product_ids).toEqual([9]);
 
     // Drain the invalidated-query refetch too, so no pending fetch() call
     // from this test's mocked queue leaks into the next test.

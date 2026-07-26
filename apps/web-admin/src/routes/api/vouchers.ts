@@ -105,7 +105,7 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
     // The four scope/scheduling fields below mirror POST /api/vouchers/:voucherId/update's
     // validation exactly (same field names, same error messages) so the create
     // and edit forms can share one request-body shape — see VouchersPage.tsx's
-    // `updateBodyFromForm` helper, which both the create and update mutations
+    // `voucherRequestBody` helper, which both the create and update mutations
     // now build their body from.
     let maxDiscountDec: Decimal | null = null;
     const maxDiscountRaw = (body.max_discount ?? "").trim();

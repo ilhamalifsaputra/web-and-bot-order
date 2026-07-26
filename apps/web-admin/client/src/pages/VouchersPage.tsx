@@ -7,7 +7,6 @@ import {
   Plus,
   X,
   Trash2,
-  Ticket,
   CheckCircle2,
   Ban,
   CalendarClock,

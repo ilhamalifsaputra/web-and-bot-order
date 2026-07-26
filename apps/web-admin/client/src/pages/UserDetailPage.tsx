@@ -225,7 +225,7 @@ export function UserDetailPage() {
         <CardContent>
           <DataTable
             columns={[
-              { key: "subject", header: "Subject", render: t => <span className="text-sm text-ink">{t.subject}</span> },
+              { key: "subject", header: "Subject", render: t => <span className="text-sm text-ink">{t.message}</span> },
               { key: "status", header: "Status", render: t => <StatusBadge status={t.status} /> },
               { key: "date", header: "Date", render: t => <span className="text-xs text-ink-soft">{t.createdAtDisplay ?? "—"}</span> },
             ]}

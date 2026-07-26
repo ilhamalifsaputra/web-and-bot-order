@@ -184,8 +184,8 @@ describe("UserDetailPage — support tickets", () => {
         JSON.stringify({
           ...USER_DETAIL,
           tickets: [
-            { id: 101, subject: "Order not received", status: "OPEN", createdAt: "2026-07-15T10:00:00.000Z", createdAtDisplay: "2026-07-15" },
-            { id: 102, subject: "Payment issue", status: "CLOSED", createdAt: "2026-07-16T14:30:00.000Z", createdAtDisplay: "2026-07-16" },
+            { id: 101, message: "Order not received", status: "OPEN", createdAt: "2026-07-15T10:00:00.000Z", createdAtDisplay: "2026-07-15" },
+            { id: 102, message: "Payment issue", status: "CLOSED", createdAt: "2026-07-16T14:30:00.000Z", createdAtDisplay: "2026-07-16" },
           ],
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },

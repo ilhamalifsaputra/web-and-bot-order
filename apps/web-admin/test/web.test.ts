@@ -2966,6 +2966,60 @@ describe("vouchers", () => {
     expect(res.statusCode).toBe(403);
   });
 
+  it("update voucher happy path (value + scope + products)", async () => {
+    const category = await createCategory(prisma, "Streaming", "🎬");
+    const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product A" });
+    await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "upd1", type: "percent", value: "10" });
+    const v = (await getVoucherByCode(prisma, "UPD1"))!;
+
+    const res = await postJsonOrders(`/api/vouchers/${v.id}/update`, seed.cookie, seed.csrf, {
+      value: "15",
+      scope: "SELECTED",
+      product_ids: [p1.id],
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as { voucher: { value: string; scope: string } };
+    expect(Number(body.voucher.value)).toBe(15);
+    expect(body.voucher.scope).toBe("SELECTED");
+
+    const updated = await prisma.voucher.findUnique({ where: { id: v.id } });
+    expect(Number(updated!.value)).toBe(15);
+    const links = await prisma.voucherProduct.findMany({ where: { voucherId: v.id } });
+    expect(links.map((l) => l.productId)).toEqual([p1.id]);
+
+    const audit = await prisma.auditLog.findMany({ where: { action: "voucher_update", targetId: v.id } });
+    expect(audit.length).toBe(1);
+    expect(audit[0]!.details).toContain("UPD1");
+  });
+
+  it("update voucher 404s for a nonexistent id", async () => {
+    const res = await postJsonOrders("/api/vouchers/999999/update", seed.cookie, seed.csrf, { value: "20" });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("update voucher refuses a code change once the voucher has been used (409)", async () => {
+    await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "upd2", type: "percent", value: "5" });
+    const v = (await getVoucherByCode(prisma, "UPD2"))!;
+    await prisma.voucher.update({ where: { id: v.id }, data: { usedCount: 1 } });
+
+    const res = await postJsonOrders(`/api/vouchers/${v.id}/update`, seed.cookie, seed.csrf, { code: "upd2new" });
+    expect(res.statusCode).toBe(409);
+    expect((await prisma.voucher.findUnique({ where: { id: v.id } }))!.code).toBe("UPD2");
+  });
+
+  it("update voucher without product_ids in the body leaves an existing SELECTED voucher's products untouched", async () => {
+    const category = await createCategory(prisma, "Streaming", "🎬");
+    const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product B" });
+    await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "upd3", type: "percent", value: "10" });
+    const v = (await getVoucherByCode(prisma, "UPD3"))!;
+    await postJsonOrders(`/api/vouchers/${v.id}/update`, seed.cookie, seed.csrf, { scope: "SELECTED", product_ids: [p1.id] });
+
+    const res = await postJsonOrders(`/api/vouchers/${v.id}/update`, seed.cookie, seed.csrf, { value: "20" });
+    expect(res.statusCode).toBe(200);
+    const links = await prisma.voucherProduct.findMany({ where: { voucherId: v.id } });
+    expect(links.map((l) => l.productId)).toEqual([p1.id]);
+  });
+
   it("GET /api/vouchers supports q, status, and page params, and returns stats + total", async () => {
     await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "SEARCHABLE1", type: "PERCENT", value: "10" });
     await post("/api/vouchers", seed.cookie, { csrf_token: seed.csrf, code: "OTHER2", type: "PERCENT", value: "5" });

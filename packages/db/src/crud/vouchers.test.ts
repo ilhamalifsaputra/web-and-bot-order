@@ -14,6 +14,7 @@ import {
   deriveVoucherStatus,
   getVoucherStats,
   getVoucherPerformance,
+  getVoucherProductNames,
   type VoucherLike,
 } from "./vouchers";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
@@ -620,5 +621,63 @@ describe("getVoucherPerformance", () => {
     const v = await createVoucher(prisma, { code: "PERFNONE", type: VoucherType.PERCENT, value: "10" });
     const result = await getVoucherPerformance(prisma, [v.id]);
     expect(result.has(v.id)).toBe(false);
+  });
+});
+
+describe("getVoucherProductNames", () => {
+  beforeEach(async () => {
+    await resetDb(prisma);
+  });
+
+  it("returns an empty Map for an empty voucherIds input without querying", async () => {
+    const result = await getVoucherProductNames(prisma, []);
+    expect(result.size).toBe(0);
+  });
+
+  it("an ALL-scope voucher (no VoucherProduct rows) is absent from the returned Map", async () => {
+    const v = await createVoucher(prisma, { code: "NAMESALL", type: VoucherType.PERCENT, value: "10" });
+    const result = await getVoucherProductNames(prisma, [v.id]);
+    expect(result.has(v.id)).toBe(false);
+  });
+
+  it("a SELECTED-scope voucher returns its scoped products' {id, name}", async () => {
+    const category = await createCategory(prisma, "Streaming", "🎬");
+    const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product A" });
+    const p2 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product B" });
+    const v = await createVoucher(prisma, {
+      code: "NAMESSEL",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [p1.id, p2.id],
+    });
+
+    const result = await getVoucherProductNames(prisma, [v.id]);
+    const names = (result.get(v.id) ?? []).map((p) => p.name).sort();
+    expect(names).toEqual(["Product A", "Product B"]);
+  });
+
+  it("batches multiple voucher ids in one call, keyed correctly per voucher", async () => {
+    const category = await createCategory(prisma, "Streaming", "🎬");
+    const p1 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product A" });
+    const p2 = await createCatalogProduct(prisma, { categoryId: category.id, name: "Product B" });
+    const v1 = await createVoucher(prisma, {
+      code: "NAMESBATCH1",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [p1.id],
+    });
+    const v2 = await createVoucher(prisma, {
+      code: "NAMESBATCH2",
+      type: VoucherType.PERCENT,
+      value: "10",
+      scope: VoucherScope.SELECTED,
+      productIds: [p2.id],
+    });
+
+    const result = await getVoucherProductNames(prisma, [v1.id, v2.id]);
+    expect(result.get(v1.id)).toEqual([{ id: p1.id, name: "Product A" }]);
+    expect(result.get(v2.id)).toEqual([{ id: p2.id, name: "Product B" }]);
   });
 });

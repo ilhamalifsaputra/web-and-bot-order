@@ -455,6 +455,31 @@ export async function getVoucherPerformance(
   return result;
 }
 
+/** Batched `{id, name}` product lookup for a page of voucher rows (admin
+ *  Vouchers page's `products` column) — one query for the whole page, not an
+ *  N+1 per row (mirrors getVoucherPerformance's batching style). ALL-scope
+ *  vouchers simply have no VoucherProduct rows and are absent from the
+ *  returned Map; callers should default a missing key to `[]`. */
+export async function getVoucherProductNames(
+  db: Db,
+  voucherIds: number[],
+): Promise<Map<number, { id: number; name: string }[]>> {
+  if (voucherIds.length === 0) return new Map();
+
+  const rows = await db.voucherProduct.findMany({
+    where: { voucherId: { in: voucherIds } },
+    select: { voucherId: true, product: { select: { id: true, name: true } } },
+  });
+
+  const result = new Map<number, { id: number; name: string }[]>();
+  for (const r of rows) {
+    const list = result.get(r.voucherId) ?? [];
+    list.push(r.product);
+    result.set(r.voucherId, list);
+  }
+  return result;
+}
+
 /** Toggle-only bulk action — can't fail per-item, so a simple updateMany
  *  suffices (mirrors bulkSetCatalogProductsActive, packages/db/src/crud/catalog.ts:212-216). */
 export async function bulkSetVouchersActive(db: Db, ids: number[], isActive: boolean): Promise<number> {

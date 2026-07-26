@@ -429,7 +429,11 @@ export function VouchersPage() {
   const toggle = useMutation({
     mutationFn: ({ id, active }: { id: number; active: boolean }) =>
       apiPost(`/api/vouchers/${id}/toggle`, { is_active: active ? "1" : "0" }),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["vouchers"] }); },
+    onSuccess: (_data, vars) => {
+      void qc.invalidateQueries({ queryKey: ["vouchers"] });
+      toast.success(vars.active ? "Voucher enabled." : "Voucher disabled.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
   const del = useMutation({
@@ -626,7 +630,9 @@ export function VouchersPage() {
                 </div>
               )}
               <Button type="submit" disabled={create.isPending || update.isPending} className="self-end">
-                {mode === "edit" ? "Save Changes" : "Create"}
+                {mode === "edit"
+                  ? (update.isPending ? "Saving…" : "Save Changes")
+                  : (create.isPending ? "Creating…" : "Create")}
               </Button>
             </form>
           </CardContent>

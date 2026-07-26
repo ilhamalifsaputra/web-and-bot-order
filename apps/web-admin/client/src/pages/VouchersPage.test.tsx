@@ -560,6 +560,12 @@ describe("VouchersPage", () => {
       method: "POST",
       body: JSON.stringify({ ids: [1, 2], action: "deactivate" }),
     })));
+    // Drain the invalidated-query refetch too, so no pending fetch() call
+    // from this test's mocked queue leaks into the next test (same pattern
+    // as the toggle/delete tests above — this test was missing it, which
+    // caused an intermittent, order-dependent failure in the very next
+    // test, "clears the bulk selection when the page changes").
+    await waitFor(() => expect(postSpy).toHaveBeenCalledTimes(3));
   });
 
   it("clears the bulk selection when the page changes", async () => {

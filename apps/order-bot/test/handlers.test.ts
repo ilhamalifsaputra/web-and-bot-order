@@ -1720,6 +1720,24 @@ describe("verification handlers", () => {
     expect(JSON.stringify(sink)).toContain(order.orderCode);
   });
 
+  it("viewOrder with a payment screenshot retires the previous admin screen and tracks the new photo message", async () => {
+    // Regression test: viewOrder used to send the screenshot via a bare
+    // ctx.replyWithPhoto that never retired the queue list's keyboard nor
+    // updated ctx.session.adminMsgId, leaving two live inline keyboards in
+    // the chat at once (violates "one active keyboard per chat").
+    const order = await pendingVerificationOrder();
+    const { ctx, sink } = adminCtx({
+      session: { lang: "en", scratch: {}, adminMsgId: 10 },
+      replyWithPhotoResult: { message_id: 555 },
+    });
+    await verification.viewOrder(ctx, order.id);
+
+    const retire = calls(sink, "editMessageReplyMarkup");
+    expect(retire.length).toBe(1);
+    expect(retire[0]!.args[1]).toBe(10); // the previous (queue list) bubble gets retired
+    expect(ctx.session.adminMsgId).toBe(555); // tracks the new photo message
+  });
+
   it("approve delivers the order, marks stock SOLD, enqueues outbox + audit, DMs the buyer", async () => {
     // The testimonial channel post (ORDER_DELIVERED) only gets enqueued when
     // a public channel is configured — set one so this test still exercises

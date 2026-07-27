@@ -2029,6 +2029,49 @@ describe("callback router", () => {
     expect(ctx.session.awaitingQtyDenomId).toBe(sample.product.id);
   });
 
+  // handleQtyTextInput deletes the user's typed message to keep the chat clean (single-bubble wizard).
+  it("handleQtyTextInput deletes the typed message on valid quantity input", async () => {
+    const { ctx, sink } = customerCtx({ text: "5" });
+    ctx.session.awaitingQtyDenomId = sample.product.id;
+    await customer.handleProductNumber(ctx);
+
+    // Verify consumeInput was called by checking deleteMessage was called with the message id
+    const deletes = calls(sink, "deleteMessage");
+    expect(deletes.length).toBe(1);
+    expect(deletes[0]?.args[1]).toBe(ctx.message?.message_id);
+
+    // Verify the user was navigated to the denomination detail with the qty
+    expect(sentIncludes(sink, sample.product.name)).toBe(true);
+  });
+
+  it("handleQtyTextInput deletes the typed message on invalid quantity (non-numeric)", async () => {
+    const { ctx, sink } = customerCtx({ text: "abc" });
+    ctx.session.awaitingQtyDenomId = sample.product.id;
+    await customer.handleProductNumber(ctx);
+
+    // Verify consumeInput was called
+    const deletes = calls(sink, "deleteMessage");
+    expect(deletes.length).toBe(1);
+    expect(deletes[0]?.args[1]).toBe(ctx.message?.message_id);
+
+    // Verify error message was shown (the rendered text includes "Invalid quantity")
+    expect(sentIncludes(sink, "Invalid quantity")).toBe(true);
+  });
+
+  it("handleQtyTextInput deletes the typed message when quantity exceeds stock", async () => {
+    const { ctx, sink } = customerCtx({ text: "9999" });
+    ctx.session.awaitingQtyDenomId = sample.product.id;
+    await customer.handleProductNumber(ctx);
+
+    // Verify consumeInput was called
+    const deletes = calls(sink, "deleteMessage");
+    expect(deletes.length).toBe(1);
+    expect(deletes[0]?.args[1]).toBe(ctx.message?.message_id);
+
+    // Verify error message was shown (the rendered text includes "Invalid quantity")
+    expect(sentIncludes(sink, "Invalid quantity")).toBe(true);
+  });
+
   // §8.6 — a dispatcher crash surfaces a quotable correlation ref to the user.
   it("surfaces a correlation ref when a dispatcher throws (§8.6)", async () => {
     // No dbUser in session → requireUser() throws inside the dispatcher.

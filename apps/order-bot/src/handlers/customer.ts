@@ -45,7 +45,7 @@ import {
   listTicketMessages,
 } from "@app/db";
 import { BotState, type MyContext } from "../context";
-import { smartEdit, renderMenu } from "../util/chat";
+import { smartEdit, renderMenu, consumeInput } from "../util/chat";
 import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/banner";
 import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
@@ -648,6 +648,7 @@ export async function qtyInputCancel(ctx: MyContext, denominationId: number): Pr
 }
 
 async function handleQtyTextInput(ctx: MyContext, denominationId: number, rawText: string): Promise<void> {
+  await consumeInput(ctx);
   const lang = ctx.session.lang;
   const d = await getDenomination(prisma, denominationId);
   if (d === null) {

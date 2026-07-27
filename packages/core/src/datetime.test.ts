@@ -37,4 +37,18 @@ describe("parseShopLocal", () => {
     expect(parseShopLocal("   ")).toBeNull();
     expect(parseShopLocal("not a date")).toBeNull();
   });
+
+  it("resolves a bare YYYY-MM-DD date to shop-local start of day (voucher start_at convention)", () => {
+    // apps/web-admin/src/routes/api/vouchers.ts calls parseShopLocal(raw) directly
+    // for start_at: a bare date defaults to midnight in config.TIMEZONE
+    // (Asia/Jakarta, +7), i.e. 2026-07-27T17:00:00Z, not UTC midnight.
+    expect(parseShopLocal("2026-07-28")!.toISOString()).toBe("2026-07-27T17:00:00.000Z");
+  });
+
+  it("resolves a YYYY-MM-DDT23:59:59 date to shop-local end of day (voucher expires_at convention)", () => {
+    // apps/web-admin/src/routes/api/vouchers.ts calls parseShopLocal(`${raw}T23:59:59`)
+    // for expires_at, so the voucher stays valid through the whole selected
+    // shop-local day: 23:59:59 in Asia/Jakarta (+7) is 16:59:59 UTC the same day.
+    expect(parseShopLocal("2026-07-28T23:59:59")!.toISOString()).toBe("2026-07-28T16:59:59.000Z");
+  });
 });

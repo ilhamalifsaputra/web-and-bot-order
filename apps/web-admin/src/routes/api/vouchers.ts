@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { VoucherType, VoucherScope } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { Decimal } from "@app/core/money";
+import { parseShopLocal } from "@app/core/datetime";
 import {
   prisma,
   listVouchersPaged,
@@ -98,8 +99,8 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
     let expiry: Date | null = null;
     const expiresRaw = (body.expires_at ?? "").trim();
     if (expiresRaw) {
-      const d = new Date(`${expiresRaw}T00:00:00Z`);
-      if (Number.isNaN(d.getTime())) return reply.code(400).send({ error: "Expiry must be YYYY-MM-DD." });
+      const d = parseShopLocal(`${expiresRaw}T23:59:59`);
+      if (d === null) return reply.code(400).send({ error: "Expiry must be YYYY-MM-DD." });
       expiry = d;
     }
 
@@ -121,8 +122,8 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
     let startAt: Date | null = null;
     const startAtRaw = (body.start_at ?? "").trim();
     if (startAtRaw !== "") {
-      const d = new Date(`${startAtRaw}T00:00:00Z`);
-      if (Number.isNaN(d.getTime())) return reply.code(400).send({ error: "Start date must be YYYY-MM-DD." });
+      const d = parseShopLocal(startAtRaw);
+      if (d === null) return reply.code(400).send({ error: "Start date must be YYYY-MM-DD." });
       startAt = d;
     }
 
@@ -252,8 +253,8 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       if (raw === "") {
         args.expiresAt = null;
       } else {
-        const d = new Date(`${raw}T00:00:00Z`);
-        if (Number.isNaN(d.getTime())) return reply.code(400).send({ error: "Expiry must be YYYY-MM-DD." });
+        const d = parseShopLocal(`${raw}T23:59:59`);
+        if (d === null) return reply.code(400).send({ error: "Expiry must be YYYY-MM-DD." });
         args.expiresAt = d;
       }
     }
@@ -263,8 +264,8 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       if (raw === "") {
         args.startAt = null;
       } else {
-        const d = new Date(`${raw}T00:00:00Z`);
-        if (Number.isNaN(d.getTime())) return reply.code(400).send({ error: "Start date must be YYYY-MM-DD." });
+        const d = parseShopLocal(raw);
+        if (d === null) return reply.code(400).send({ error: "Start date must be YYYY-MM-DD." });
         args.startAt = d;
       }
     }

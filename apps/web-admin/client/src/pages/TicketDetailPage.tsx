@@ -19,13 +19,19 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import { Send, CircleX } from "lucide-react";
+import { Send, CircleX, CheckCircle2, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 import { ticketPriorityLabel } from "../lib/ticketPriority";
 
 const PRIORITY_VALUES = ["LOW", "MEDIUM", "HIGH", "URGENT"];
+const CATEGORY_VALUES = ["ORDER", "PAYMENT", "ACCOUNT", "PRODUCT", "OTHER"];
+const UNCATEGORIZED = "_uncategorized_";
+
+function categoryLabel(category: string): string {
+  return category.charAt(0) + category.slice(1).toLowerCase();
+}
 
 interface TicketOrderItem {
   id: number;
@@ -53,6 +59,7 @@ interface Ticket {
   photoFileIds: string | null;
   status: string;
   priority: string;
+  category: string | null;
   adminId: number | null;
   createdAt: string;
   createdAtDisplay: string | null;
@@ -183,6 +190,33 @@ export function TicketDetailPage() {
     onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
+  const setCategory = useMutation({
+    mutationFn: (category: string | null) => apiPost(`/api/support/${ticketId}/classify`, { category }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["ticket", ticketId] });
+      toast.success("Category updated.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
+  });
+
+  const resolve = useMutation({
+    mutationFn: () => apiPost(`/api/support/${ticketId}/resolve`, {}),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["ticket", ticketId] });
+      toast.success("Ticket marked resolved.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
+  });
+
+  const reopen = useMutation({
+    mutationFn: () => apiPost(`/api/support/${ticketId}/reopen`, {}),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["ticket", ticketId] });
+      toast.success("Ticket reopened.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
+  });
+
   if (isError) return <PageLayout title="Ticket"><p className="text-sm text-rust">Failed to load ticket.</p></PageLayout>;
   if (!data) return <PageLayout title="Ticket"><p>Loading…</p></PageLayout>;
 
@@ -222,6 +256,37 @@ export function TicketDetailPage() {
                 ))}
               </SelectContent>
             </Select>
+            <Select
+              value={ticket.category ?? UNCATEGORIZED}
+              onValueChange={(v) => setCategory.mutate(v === UNCATEGORIZED ? null : v)}
+              disabled={setCategory.isPending}
+            >
+              <SelectTrigger className="w-40" aria-label="Ticket category">
+                <SelectValue>
+                  {ticket.category ? categoryLabel(ticket.category) : "Uncategorized"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={UNCATEGORIZED}>Uncategorized</SelectItem>
+                {CATEGORY_VALUES.map((c) => (
+                  <SelectItem key={c} value={c}>
+                    {categoryLabel(c)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {(ticket.status === "OPEN" || ticket.status === "REPLIED") && (
+              <Button variant="outline" onClick={() => resolve.mutate()} disabled={resolve.isPending}>
+                <CheckCircle2 className="h-4 w-4" />
+                Resolve
+              </Button>
+            )}
+            {ticket.status === "CLOSED" && (
+              <Button variant="outline" onClick={() => reopen.mutate()} disabled={reopen.isPending}>
+                <RotateCcw className="h-4 w-4" />
+                Reopen
+              </Button>
+            )}
           </>
         }
       />

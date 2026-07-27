@@ -14,6 +14,9 @@ import {
   getTicketWithOrder,
   closeTicketByUser,
   reopenTicket,
+  reopenTicketAdmin,
+  resolveTicket,
+  classifyTicket,
   TICKET_REOPEN_WINDOW_DAYS,
   listTicketsPaged,
   countTickets,
@@ -22,7 +25,7 @@ import {
   bulkSetTicketPriority,
   bulkCloseTickets,
 } from "./support";
-import { TicketStatus, TicketPriority, SenderType } from "@app/core/enums";
+import { TicketStatus, TicketPriority, TicketCategory, SenderType } from "@app/core/enums";
 import { addMinutes, addDays } from "@app/core/datetime";
 
 let db: TestDb;
@@ -606,5 +609,107 @@ describe("bulk ticket operations", () => {
       expect(result.succeeded).toEqual([t1.id]);
       expect(result.failed).toEqual([{ id: 999999, error: "ticket not found" }]);
     });
+  });
+});
+
+describe("resolveTicket", () => {
+  it("marks an OPEN ticket RESOLVED and stamps resolvedAt/lastStatusChangeAt", async () => {
+    const user = await makeUser(1300n);
+    const ticket = await createTicket(prisma, user.id, "help");
+    const ok = await resolveTicket(prisma, ticket.id);
+    expect(ok).toBe(true);
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.RESOLVED);
+    expect(fresh!.resolvedAt).not.toBeNull();
+    expect(fresh!.lastStatusChangeAt.getTime()).toBe(fresh!.resolvedAt!.getTime());
+  });
+
+  it("a second call on an already-RESOLVED ticket returns false (no-op)", async () => {
+    const user = await makeUser(1301n);
+    const ticket = await createTicket(prisma, user.id, "help");
+    expect(await resolveTicket(prisma, ticket.id)).toBe(true);
+    expect(await resolveTicket(prisma, ticket.id)).toBe(false);
+  });
+
+  it("refuses to resolve an already-CLOSED ticket", async () => {
+    const user = await makeUser(1302n);
+    const ticket = await createTicket(prisma, user.id, "help");
+    await closeTicket(prisma, ticket.id);
+    expect(await resolveTicket(prisma, ticket.id)).toBe(false);
+  });
+});
+
+describe("reopenTicketAdmin", () => {
+  it("reopens a CLOSED ticket to OPEN, clearing closedAt, with no time window", async () => {
+    const user = await makeUser(1310n);
+    const ticket = await createTicket(prisma, user.id, "help");
+    await closeTicket(prisma, ticket.id);
+    // Backdate closedAt well past TICKET_REOPEN_WINDOW_DAYS — the admin
+    // route has no such window, unlike the customer-facing reopenTicket.
+    const wayPast = new Date(Date.now() - (TICKET_REOPEN_WINDOW_DAYS + 30) * 86_400_000);
+    await prisma.supportTicket.update({ where: { id: ticket.id }, data: { closedAt: wayPast } });
+
+    const ok = await reopenTicketAdmin(prisma, ticket.id);
+    expect(ok).toBe(true);
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.OPEN);
+    expect(fresh!.closedAt).toBeNull();
+  });
+
+  it("refuses to reopen a ticket that isn't CLOSED", async () => {
+    const user = await makeUser(1311n);
+    const ticket = await createTicket(prisma, user.id, "help"); // still OPEN
+    expect(await reopenTicketAdmin(prisma, ticket.id)).toBe(false);
+  });
+});
+
+describe("classifyTicket", () => {
+  it("sets priority and category independently applied — omitting one leaves it as-is", async () => {
+    const user = await makeUser(1320n);
+    const ticket = await createTicket(prisma, user.id, "help");
+
+    await classifyTicket(prisma, ticket.id, { priority: TicketPriority.URGENT });
+    let fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.priority).toBe(TicketPriority.URGENT);
+    expect(fresh!.category).toBeNull();
+
+    await classifyTicket(prisma, ticket.id, { category: TicketCategory.PAYMENT });
+    fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.priority).toBe(TicketPriority.URGENT);
+    expect(fresh!.category).toBe(TicketCategory.PAYMENT);
+  });
+
+  it("an explicit null category clears it back to uncategorized", async () => {
+    const user = await makeUser(1321n);
+    const ticket = await createTicket(prisma, user.id, "help");
+    await classifyTicket(prisma, ticket.id, { category: TicketCategory.ORDER });
+    await classifyTicket(prisma, ticket.id, { category: null });
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.category).toBeNull();
+  });
+});
+
+describe("listTicketsPaged / countTickets — category filter", () => {
+  it("filters by category on the default (newest/oldest) sort path", async () => {
+    const user = await makeUser(1330n);
+    const payment = await createTicket(prisma, user.id, "payment issue");
+    await classifyTicket(prisma, payment.id, { category: TicketCategory.PAYMENT });
+    const order = await createTicket(prisma, user.id, "order issue");
+    await classifyTicket(prisma, order.id, { category: TicketCategory.ORDER });
+
+    const rows = await listTicketsPaged(prisma, { category: TicketCategory.PAYMENT });
+    expect(rows.map((r) => r.id)).toEqual([payment.id]);
+    expect(await countTickets(prisma, { category: TicketCategory.PAYMENT })).toBe(1);
+  });
+
+  it("filters by category on the sort:priority raw-SQL path too", async () => {
+    const user = await makeUser(1331n);
+    const payment = await createTicket(prisma, user.id, "payment issue");
+    await classifyTicket(prisma, payment.id, { category: TicketCategory.PAYMENT, priority: TicketPriority.LOW });
+    const order = await createTicket(prisma, user.id, "order issue");
+    await classifyTicket(prisma, order.id, { category: TicketCategory.ORDER, priority: TicketPriority.URGENT });
+
+    const rows = await listTicketsPaged(prisma, { category: TicketCategory.PAYMENT, sort: "priority" });
+    expect(rows.map((r) => r.id)).toEqual([payment.id]);
   });
 });

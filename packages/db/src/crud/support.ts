@@ -2,7 +2,7 @@
  * Support tickets + ticket messages — port of those sections of Python crud.py.
  */
 import { Prisma } from "@prisma/client";
-import { TicketStatus, TicketPriority, SenderType } from "@app/core/enums";
+import { TicketStatus, TicketPriority, TicketCategory, SenderType } from "@app/core/enums";
 import { addDays, addMinutes, startOfDayUtc } from "@app/core/datetime";
 import type { Db } from "./_types";
 
@@ -17,8 +17,33 @@ export function createTicket(
   return db.supportTicket.create({ data: { userId, message, photoFileIds, attachmentUrls, orderId } });
 }
 
+/** Fields of the linked customer surfaced in ticket JSON responses (web-admin
+ * list/detail/CSV export) — NEVER `include: { user: true }` on a ticket
+ * query: that pulls every User column (passwordHash, email, wallet
+ * balances, bannedReason, …) into the response body the admin's browser
+ * receives. Keep in sync with what SupportPage.tsx/TicketDetailPage.tsx
+ * actually read off `ticket.user`. */
+const TICKET_USER_SELECT = {
+  id: true,
+  fullName: true,
+  username: true,
+  telegramId: true,
+  loginUsername: true,
+} as const;
+
+/** Same leak guard as `TICKET_USER_SELECT`, scoped to the smaller set of
+ * fields the UI reads off `ticket.admin` (the assigned admin). */
+const TICKET_ADMIN_SELECT = {
+  id: true,
+  fullName: true,
+  username: true,
+} as const;
+
 export function getTicket(db: Db, ticketId: number) {
-  return db.supportTicket.findUnique({ where: { id: ticketId } });
+  return db.supportTicket.findUnique({
+    where: { id: ticketId },
+    include: { user: { select: TICKET_USER_SELECT }, admin: { select: TICKET_ADMIN_SELECT } },
+  });
 }
 
 /** Ticket + its linked order (items with denomination, voucher) when one is
@@ -37,7 +62,9 @@ export function getTicketWithOrder(db: Db, ticketId: number) {
   });
 }
 
-/** All non-closed tickets (OPEN + REPLIED), newest first. */
+/** All non-closed tickets (OPEN + REPLIED), newest first. Used by
+ * apps/order-bot's admin ticket list — do not change its shape/behavior,
+ * the web-admin queue uses `listTickets` instead. */
 export function listOpenTickets(db: Db, limit = 50) {
   return db.supportTicket.findMany({
     where: { status: { not: TicketStatus.CLOSED } },
@@ -45,6 +72,8 @@ export function listOpenTickets(db: Db, limit = 50) {
     take: limit,
   });
 }
+
+// ---- Operational queue (web-admin) ----------------------------------------
 
 /**
  * Close a ticket; return the ticket owner's telegram_id (to notify) or null.
@@ -55,7 +84,7 @@ export function listOpenTickets(db: Db, limit = 50) {
 export async function closeTicket(db: Db, ticketId: number): Promise<bigint | null> {
   const res = await db.supportTicket.updateMany({
     where: { id: ticketId, status: { not: TicketStatus.CLOSED } },
-    data: { status: TicketStatus.CLOSED, closedAt: new Date() },
+    data: { status: TicketStatus.CLOSED, closedAt: new Date(), lastStatusChangeAt: new Date() },
   });
   if (res.count === 0) return null;
   const ticket = await db.supportTicket.findUnique({ where: { id: ticketId } });
@@ -73,6 +102,19 @@ export async function closeTicketByUser(db: Db, ticketId: number): Promise<boole
   const res = await db.supportTicket.updateMany({
     where: { id: ticketId, status: { not: TicketStatus.CLOSED } },
     data: { status: TicketStatus.CLOSED, closedAt: new Date() },
+  });
+  return res.count === 1;
+}
+
+/** Mark a ticket RESOLVED — distinct from CLOSED (still visible/reopenable,
+ * just no longer needing staff attention). Same double-tap-safe conditional
+ * claim shape as closeTicket. Returns true iff this call performed the
+ * transition. */
+export async function resolveTicket(db: Db, ticketId: number): Promise<boolean> {
+  const now = new Date();
+  const res = await db.supportTicket.updateMany({
+    where: { id: ticketId, status: { notIn: [TicketStatus.RESOLVED, TicketStatus.CLOSED] } },
+    data: { status: TicketStatus.RESOLVED, resolvedAt: now, lastStatusChangeAt: now },
   });
   return res.count === 1;
 }
@@ -102,6 +144,29 @@ export async function reopenTicket(
     data: { status: TicketStatus.OPEN, closedAt: null },
   });
   return { ok: true };
+}
+
+/** Reopen a CLOSED ticket back to OPEN (admin action — no bot equivalent, no
+ * time window; distinct from the customer-facing `reopenTicket` above).
+ * Returns true iff this call performed the transition. */
+export async function reopenTicketAdmin(db: Db, ticketId: number): Promise<boolean> {
+  const res = await db.supportTicket.updateMany({
+    where: { id: ticketId, status: TicketStatus.CLOSED },
+    data: { status: TicketStatus.OPEN, closedAt: null, lastStatusChangeAt: new Date() },
+  });
+  return res.count === 1;
+}
+
+/** Admin triage: set priority and/or category. No status/timestamp side effects. */
+export function classifyTicket(
+  db: Db,
+  ticketId: number,
+  args: { priority?: string; category?: string | null },
+) {
+  const data: Prisma.SupportTicketUpdateInput = {};
+  if (args.priority !== undefined) data.priority = args.priority;
+  if (args.category !== undefined) data.category = args.category;
+  return db.supportTicket.update({ where: { id: ticketId }, data });
 }
 
 /** Save admin reply; return customer's telegram_id (to DM) or null. */
@@ -152,15 +217,23 @@ export async function addTicketMessage(
     where: { id: args.ticketId },
   });
   if (ticket) {
+    const now = new Date();
     if (args.senderType === SenderType.USER) {
       await db.supportTicket.update({
         where: { id: args.ticketId },
-        data: { status: TicketStatus.OPEN },
+        data: { status: TicketStatus.OPEN, lastStatusChangeAt: now },
       });
     } else {
       await db.supportTicket.update({
         where: { id: args.ticketId },
-        data: { status: TicketStatus.REPLIED, repliedAt: new Date() },
+        data: {
+          status: TicketStatus.REPLIED,
+          repliedAt: now,
+          lastStatusChangeAt: now,
+          // Set once — true first-response time, unlike repliedAt (overwritten
+          // on every admin reply).
+          firstResponseAt: ticket.firstResponseAt ?? now,
+        },
       });
     }
   }
@@ -221,10 +294,14 @@ export function listStaleRepliedTickets(db: Db, cutoff: Date) {
 export interface TicketFilter {
   status?: TicketStatus | TicketStatus[] | null;
   priority?: TicketPriority | TicketPriority[] | null;
+  category?: TicketCategory | TicketCategory[] | null;
   assigned?: "assigned" | "unassigned" | null;
   adminId?: number | null;
   overdue?: boolean | null;
   q?: string | null;
+  /** Restrict to this exact set of ticket ids — the export route's "export
+   * only the selected rows" path. */
+  ids?: number[] | null;
 }
 
 /** How long after creation a still-OPEN, never-replied ticket counts as
@@ -266,9 +343,13 @@ function ticketWhere(f: TicketFilter, cutoff: Date): Prisma.SupportTicketWhereIn
   if (f.priority != null) {
     where.priority = Array.isArray(f.priority) ? { in: f.priority } : f.priority;
   }
+  if (f.category != null) {
+    where.category = Array.isArray(f.category) ? { in: f.category } : f.category;
+  }
   if (f.assigned === "assigned") where.adminId = { not: null };
   else if (f.assigned === "unassigned") where.adminId = null;
   if (f.adminId != null) where.adminId = f.adminId;
+  if (f.ids != null) where.id = { in: f.ids };
   if (f.overdue) {
     where.status = TicketStatus.OPEN;
     where.repliedAt = null;
@@ -312,9 +393,17 @@ function ticketWhereRaw(f: TicketFilter, cutoff: Date): Prisma.Sql {
         : Prisma.sql`priority = ${f.priority}`,
     );
   }
+  if (f.category != null) {
+    conditions.push(
+      Array.isArray(f.category)
+        ? Prisma.sql`category IN (${Prisma.join(f.category)})`
+        : Prisma.sql`category = ${f.category}`,
+    );
+  }
   if (f.assigned === "assigned") conditions.push(Prisma.sql`admin_id IS NOT NULL`);
   else if (f.assigned === "unassigned") conditions.push(Prisma.sql`admin_id IS NULL`);
   if (f.adminId != null) conditions.push(Prisma.sql`admin_id = ${f.adminId}`);
+  if (f.ids != null) conditions.push(Prisma.sql`id IN (${Prisma.join(f.ids)})`);
   if (f.overdue) {
     conditions.push(Prisma.sql`status = ${TicketStatus.OPEN}`);
     conditions.push(Prisma.sql`replied_at IS NULL`);
@@ -376,14 +465,17 @@ export async function listTicketsPaged(
     // of newest-first must still surface here.
     const ids = await listTicketIdsByPriorityRank(db, opts, cutoff, limit, offset);
     if (ids.length === 0) return [];
-    const rows = await db.supportTicket.findMany({ where: { id: { in: ids } }, include: { user: true } });
+    const rows = await db.supportTicket.findMany({
+      where: { id: { in: ids } },
+      include: { user: { select: TICKET_USER_SELECT }, admin: { select: TICKET_ADMIN_SELECT } },
+    });
     const rowById = new Map(rows.map((r) => [r.id, r]));
     return ids.map((id) => rowById.get(id)).filter((r): r is (typeof rows)[number] => r !== undefined);
   }
 
   return db.supportTicket.findMany({
     where: ticketWhere(opts, cutoff),
-    include: { user: true },
+    include: { user: { select: TICKET_USER_SELECT }, admin: { select: TICKET_ADMIN_SELECT } },
     orderBy: { createdAt: opts.sort === "oldest" ? "asc" : "desc" },
     skip: offset,
     take: limit,
@@ -488,6 +580,32 @@ export async function bulkCloseTickets(
       continue;
     }
     await closeTicket(db, id); // no-op via the atomic guard if already CLOSED
+    succeeded.push(id);
+  }
+  return { succeeded, failed };
+}
+
+/** Bulk resolve — unlike bulkCloseTickets, an already-RESOLVED-or-CLOSED
+ * ticket in the batch is a real failure (not a silent no-op): resolving is a
+ * one-way admin decision the caller should know didn't apply, not an idle
+ * status refresh. Mirrors bulkAssignTickets/bulkCloseTickets' shape. */
+export async function bulkResolveTickets(
+  db: Db,
+  ids: number[],
+): Promise<{ succeeded: number[]; failed: { id: number; error: string }[] }> {
+  const succeeded: number[] = [];
+  const failed: { id: number; error: string }[] = [];
+  for (const id of ids) {
+    const ticket = await db.supportTicket.findUnique({ where: { id } });
+    if (!ticket) {
+      failed.push({ id, error: "ticket not found" });
+      continue;
+    }
+    const ok = await resolveTicket(db, id);
+    if (!ok) {
+      failed.push({ id, error: "already resolved or closed" });
+      continue;
+    }
     succeeded.push(id);
   }
   return { succeeded, failed };

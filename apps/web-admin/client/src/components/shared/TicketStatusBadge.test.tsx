@@ -24,6 +24,13 @@ describe("TicketStatusBadge", () => {
     expect(container.querySelector(".text-pine-dark")).not.toBeNull();
   });
 
+  it("renders the RESOLVED status with grass tone", () => {
+    const { container } = render(<TicketStatusBadge status="RESOLVED" />);
+    expect(screen.getByText("Resolved")).toBeInTheDocument();
+    expect(container.querySelector(".bg-grass-tint")).not.toBeNull();
+    expect(container.querySelector(".text-grass-dark")).not.toBeNull();
+  });
+
   it("renders the CLOSED status with sand tone", () => {
     const { container } = render(<TicketStatusBadge status="CLOSED" />);
     expect(screen.getByText("Closed")).toBeInTheDocument();

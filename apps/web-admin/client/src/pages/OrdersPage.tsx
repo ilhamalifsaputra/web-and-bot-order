@@ -134,6 +134,9 @@ export function OrdersPage() {
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const initialStatus = searchParams.get("status") ?? "";
+  // Lets other pages (e.g. Support's "Order History" row action) deep-link
+  // straight into a pre-filtered Orders search via /orders?q=<term>.
+  const initialQ = searchParams.get("q") ?? "";
 
   // `draft.status` is the granular single-status Select (still useful for
   // narrowing WITHIN a tab, e.g. tab=Awaiting + Select=UNDERPAID). When it
@@ -142,11 +145,11 @@ export function OrdersPage() {
   // search/paymentMethod/date-range/status-select stay on the existing
   // Apply-button-commit pattern.
   const [activeTab, setActiveTab] = useState<StatusTabKey>("all");
-  const [draft, setDraft] = useState({ status: initialStatus, paymentMethod: "", q: "", since: "", until: "" });
+  const [draft, setDraft] = useState({ status: initialStatus, paymentMethod: "", q: initialQ, since: "", until: "" });
   const [filters, setFilters] = useState<Filters>({
     status: initialStatus,
     paymentMethod: "",
-    q: "",
+    q: initialQ,
     since: "",
     until: "",
     page: 1,

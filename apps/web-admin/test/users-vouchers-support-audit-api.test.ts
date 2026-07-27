@@ -689,7 +689,7 @@ describe("GET /api/support/photo/:fileId", () => {
 });
 
 describe("GET /api/users", () => {
-  it("returns users with correct orderCount in response", async () => {
+  it("returns users with correct totalOrders in response", async () => {
     // Create a product/denomination with stock
     const category = await createCategory(prisma, "TestCategory");
     const catalogProduct = await createCatalogProduct(prisma, { categoryId: category.id, name: "TestProduct" });
@@ -717,19 +717,19 @@ describe("GET /api/users", () => {
     const res = await get("/api/users", cookie);
     expect(res.statusCode).toBe(200);
 
-    const body = res.json() as { users: Array<{ id: number; orderCount: number }> };
+    const body = res.json() as { users: Array<{ id: number; totalOrders: number }> };
     expect(Array.isArray(body.users)).toBe(true);
 
     // Find the users in the response
     const userWithOrder = body.users.find((u) => u.id === customerId);
     const userWithoutOrder = body.users.find((u) => u.id === userWithoutOrders.id);
 
-    // Assert orderCount values
+    // Assert totalOrders values
     expect(userWithOrder).toBeDefined();
-    expect(userWithOrder!.orderCount).toBe(1);
+    expect(userWithOrder!.totalOrders).toBe(1);
 
     expect(userWithoutOrder).toBeDefined();
-    expect(userWithoutOrder!.orderCount).toBe(0);
+    expect(userWithoutOrder!.totalOrders).toBe(0);
   });
 
   it("requires auth (anon → 303 /login)", async () => {

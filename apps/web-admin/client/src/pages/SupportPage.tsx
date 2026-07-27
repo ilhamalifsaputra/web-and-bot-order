@@ -44,6 +44,8 @@ import {
   AlertTriangle,
   UserX,
   CheckCircle2,
+  Tag,
+  RotateCcw,
 } from "lucide-react";
 import { ticketStatusLabel } from "../lib/ticketStatus";
 import { ticketPriorityLabel } from "../lib/ticketPriority";
@@ -65,6 +67,7 @@ interface TicketRow {
   message: string;
   status: string;
   priority: string;
+  category: string | null;
   adminId: number | null;
   createdAt: string;
   createdAtDisplay: string | null;
@@ -104,6 +107,7 @@ interface BulkActionResult {
 interface Filters {
   status: string;
   priority: string;
+  category: string;
   assigned: string;
   sort: string;
   overdue: boolean;
@@ -114,10 +118,16 @@ interface Filters {
 const UNASSIGNED = "_unassigned_";
 const ALL_STATUSES = "_all_";
 const ALL_PRIORITIES = "_all_";
+const ALL_CATEGORIES = "_all_";
 const ALL_ASSIGNED = "_all_";
-const STATUS_VALUES = ["OPEN", "REPLIED", "CLOSED"];
+const STATUS_VALUES = ["OPEN", "REPLIED", "RESOLVED", "CLOSED"];
 const PRIORITY_VALUES = ["LOW", "MEDIUM", "HIGH", "URGENT"];
+const CATEGORY_VALUES = ["ORDER", "PAYMENT", "ACCOUNT", "PRODUCT", "OTHER"];
 const DEFAULT_SORT = "newest";
+
+function categoryLabel(category: string): string {
+  return category.charAt(0) + category.slice(1).toLowerCase();
+}
 
 function useTickets(q: string, filters: Filters) {
   return useQuery<SupportData>({
@@ -127,6 +137,7 @@ function useTickets(q: string, filters: Filters) {
       if (q) params.set("q", q);
       if (filters.status) params.set("status", filters.status);
       if (filters.priority) params.set("priority", filters.priority);
+      if (filters.category) params.set("category", filters.category);
       if (filters.assigned) params.set("assigned", filters.assigned);
       if (filters.sort) params.set("sort", filters.sort);
       if (filters.overdue) params.set("overdue", "true");
@@ -161,10 +172,11 @@ export function SupportPage() {
 
   const [qDraft, setQDraft] = useState("");
   const [q, setQ] = useState("");
-  const [draft, setDraft] = useState({ status: "", priority: "", assigned: "", sort: DEFAULT_SORT });
+  const [draft, setDraft] = useState({ status: "", priority: "", category: "", assigned: "", sort: DEFAULT_SORT });
   const [filters, setFilters] = useState<Filters>({
     status: "",
     priority: "",
+    category: "",
     assigned: "",
     sort: DEFAULT_SORT,
     overdue: false,
@@ -284,10 +296,38 @@ export function SupportPage() {
     onError: (e: Error) => toast.error(describeError(e.message)),
   });
 
+  const resolve = useMutation({
+    mutationFn: (ticketId: number) => apiPost(`/api/support/${ticketId}/resolve`, {}),
+    onSuccess: () => {
+      invalidateAll();
+      toast.success("Ticket marked resolved.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
+  });
+
+  const reopen = useMutation({
+    mutationFn: (ticketId: number) => apiPost(`/api/support/${ticketId}/reopen`, {}),
+    onSuccess: () => {
+      invalidateAll();
+      toast.success("Ticket reopened.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
+  });
+
+  const classify = useMutation({
+    mutationFn: (vars: { ticketId: number; category: string }) =>
+      apiPost(`/api/support/${vars.ticketId}/classify`, { category: vars.category }),
+    onSuccess: () => {
+      invalidateAll();
+      toast.success("Ticket category updated.");
+    },
+    onError: (e: Error) => toast.error(describeError(e.message)),
+  });
+
   const bulkAction = useMutation({
     mutationFn: (vars: {
       ids: number[];
-      action: "assign" | "close" | "priority";
+      action: "assign" | "close" | "priority" | "resolve";
       adminId?: number | null;
       priority?: string;
     }) => apiPost<BulkActionResult>("/api/support/bulk-action", vars),
@@ -296,7 +336,13 @@ export function SupportPage() {
       invalidateAll();
       setSelected(new Set());
       const verb =
-        vars.action === "assign" ? "Assigned" : vars.action === "close" ? "Closed" : "Updated priority for";
+        vars.action === "assign"
+          ? "Assigned"
+          : vars.action === "close"
+            ? "Closed"
+            : vars.action === "resolve"
+              ? "Resolved"
+              : "Updated priority for";
       toast.success(
         result.failed.length > 0
           ? `${verb} ${result.succeeded.length} of ${vars.ids.length} tickets — ${result.failed.length} skipped.`
@@ -339,6 +385,7 @@ export function SupportPage() {
       ...f,
       status: draft.status,
       priority: draft.priority,
+      category: draft.category,
       assigned: draft.assigned,
       sort: draft.sort,
       page: 1,
@@ -346,10 +393,19 @@ export function SupportPage() {
   }
 
   function clearFilters() {
-    setDraft({ status: "", priority: "", assigned: "", sort: DEFAULT_SORT });
+    setDraft({ status: "", priority: "", category: "", assigned: "", sort: DEFAULT_SORT });
     setQDraft("");
     setQ("");
-    setFilters({ status: "", priority: "", assigned: "", sort: DEFAULT_SORT, overdue: false, page: 1, pageSize: 20 });
+    setFilters({
+      status: "",
+      priority: "",
+      category: "",
+      assigned: "",
+      sort: DEFAULT_SORT,
+      overdue: false,
+      page: 1,
+      pageSize: 20,
+    });
   }
 
   /** The Overdue KPI doubles as a quick-filter (the lowest-effort way to
@@ -358,12 +414,13 @@ export function SupportPage() {
    * every other filter/search/sort so the count on the card and the rows on
    * screen never disagree, and clicking it again toggles back to no filter. */
   function toggleOverdueFilter() {
-    setDraft({ status: "", priority: "", assigned: "", sort: DEFAULT_SORT });
+    setDraft({ status: "", priority: "", category: "", assigned: "", sort: DEFAULT_SORT });
     setQDraft("");
     setQ("");
     setFilters((f) => ({
       status: "",
       priority: "",
+      category: "",
       assigned: "",
       sort: DEFAULT_SORT,
       overdue: !f.overdue,
@@ -373,14 +430,32 @@ export function SupportPage() {
   }
 
   const hasActiveFilter = Boolean(
-    filters.status || filters.priority || filters.assigned || filters.sort !== DEFAULT_SORT || filters.overdue || q,
+    filters.status ||
+      filters.priority ||
+      filters.category ||
+      filters.assigned ||
+      filters.sort !== DEFAULT_SORT ||
+      filters.overdue ||
+      q,
   );
+
+  const exportParams = new URLSearchParams();
+  if (q) exportParams.set("q", q);
+  if (filters.status) exportParams.set("status", filters.status);
+  if (filters.priority) exportParams.set("priority", filters.priority);
+  if (filters.category) exportParams.set("category", filters.category);
+  if (filters.assigned) exportParams.set("assigned", filters.assigned);
 
   return (
     <PageLayout title="Support">
       <PageHeader
         title="Support"
         description="Manage customer support tickets, assignments and escalations."
+        actions={
+          <a href={`/api/support/export?${exportParams.toString()}`}>
+            <Button variant="outline" size="sm">Export CSV</Button>
+          </a>
+        }
       />
 
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
@@ -446,6 +521,26 @@ export function SupportPage() {
               {PRIORITY_VALUES.map((p) => (
                 <SelectItem key={p} value={p}>
                   {ticketPriorityLabel(p)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-soft">Category</label>
+          <Select
+            value={draft.category || ALL_CATEGORIES}
+            onValueChange={(v) => setDraft((d) => ({ ...d, category: v === ALL_CATEGORIES ? "" : v }))}
+          >
+            <SelectTrigger className="w-40" aria-label="Category filter">
+              <SelectValue placeholder="All categories" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_CATEGORIES}>All</SelectItem>
+              {CATEGORY_VALUES.map((c) => (
+                <SelectItem key={c} value={c}>
+                  {categoryLabel(c)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -526,6 +621,15 @@ export function SupportPage() {
               ))}
             </SelectContent>
           </Select>
+
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={bulkAction.isPending}
+            onClick={() => bulkAction.mutate({ ids: Array.from(selected), action: "resolve" })}
+          >
+            Resolve
+          </Button>
 
           <ConfirmDialog
             trigger={
@@ -615,6 +719,13 @@ export function SupportPage() {
             render: (row) => <TicketPriorityBadge priority={row.priority} />,
           },
           {
+            key: "category",
+            header: "Category",
+            render: (row) => (
+              <span className="text-sm text-ink-soft">{row.category ? categoryLabel(row.category) : "Uncategorized"}</span>
+            ),
+          },
+          {
             key: "status",
             header: "Status",
             render: (row) => (
@@ -697,6 +808,34 @@ export function SupportPage() {
                         ))}
                       </DropdownMenuSubContent>
                     </DropdownMenuSub>
+                    <DropdownMenuSub>
+                      <DropdownMenuSubTrigger>
+                        <Tag className="h-4 w-4" />
+                        Classify
+                      </DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent>
+                        {CATEGORY_VALUES.map((c) => (
+                          <DropdownMenuItem
+                            key={c}
+                            onSelect={() => classify.mutate({ ticketId: row.id, category: c })}
+                          >
+                            {categoryLabel(c)}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                    {(row.status === "OPEN" || row.status === "REPLIED") && (
+                      <DropdownMenuItem onSelect={() => resolve.mutate(row.id)}>
+                        <CheckCircle2 className="h-4 w-4" />
+                        Resolve
+                      </DropdownMenuItem>
+                    )}
+                    {row.status === "CLOSED" && (
+                      <DropdownMenuItem onSelect={() => reopen.mutate(row.id)}>
+                        <RotateCcw className="h-4 w-4" />
+                        Reopen
+                      </DropdownMenuItem>
+                    )}
                     {row.status !== "CLOSED" && (
                       <>
                         <DropdownMenuSeparator />

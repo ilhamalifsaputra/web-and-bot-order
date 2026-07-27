@@ -51,6 +51,7 @@ const TICKET_OPEN = {
   message: "Order tidak sampai, mohon bantuannya untuk dicek ya kak",
   status: "OPEN",
   priority: "HIGH",
+  category: "ORDER",
   adminId: null,
   createdAt: "2026-06-26T10:00:00.000Z",
   createdAtDisplay: "2026-06-26",
@@ -66,6 +67,7 @@ const TICKET_REPLIED = {
   message: "Refund request",
   status: "REPLIED",
   priority: "MEDIUM",
+  category: null,
   adminId: 7,
   createdAt: "2026-06-20T10:00:00.000Z",
   createdAtDisplay: "2026-06-20",
@@ -73,6 +75,12 @@ const TICKET_REPLIED = {
   repliedAtDisplay: "2026-06-21",
   isOverdue: false,
   user: { id: 11, fullName: "Sari", username: null },
+};
+
+const TICKET_CLOSED = {
+  ...TICKET_REPLIED,
+  id: 3,
+  status: "CLOSED",
 };
 
 const ADMIN_ROW = { id: 7, telegramId: 555, name: "Rina" };
@@ -600,5 +608,103 @@ describe("SupportPage", () => {
 
     await waitFor(() => expect(screen.getByText(/Ticket #1 status changed to Waiting Customer/)).toBeInTheDocument());
     expect(screen.getByText(/New ticket #3 from Sari/)).toBeInTheDocument();
+  });
+
+  it("shows the ticket's category label in its own column, or Uncategorized when unset", async () => {
+    mockFetchRouter();
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+
+    // TICKET_OPEN has category "ORDER", TICKET_REPLIED has category null.
+    expect(screen.getByText("Order")).toBeInTheDocument();
+    expect(screen.getByText("Uncategorized")).toBeInTheDocument();
+  });
+
+  it("applies the category filter as a server query param via Apply", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const fetchSpy = mockFetchRouter();
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+
+    await user.click(screen.getByRole("combobox", { name: "Category filter" }));
+    await user.click(await screen.findByRole("option", { name: "Payment" }));
+    await user.click(screen.getByRole("button", { name: /^apply$/i }));
+
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/support?category=PAYMENT&sort=newest"));
+  });
+
+  it("Export CSV link carries the active filters through to /api/support/export", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    mockFetchRouter();
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+
+    await user.click(screen.getByRole("combobox", { name: "Priority filter" }));
+    await user.click(await screen.findByRole("option", { name: "High" }));
+    await user.click(screen.getByRole("button", { name: /^apply$/i }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("link", { name: /export csv/i })).toHaveAttribute(
+        "href",
+        "/api/support/export?priority=HIGH",
+      ),
+    );
+  });
+
+  it("row-actions dropdown: Resolve (only offered for OPEN/REPLIED) posts to /:id/resolve", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let resolvedUrl: string | null = null;
+    mockFetchRouter({
+      support: supportData([TICKET_OPEN]),
+      onPost: (url) => {
+        if (url === "/api/support/1/resolve") resolvedUrl = url;
+        return { ok: true };
+      },
+    });
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for ticket #1" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).queryByText("Reopen")).not.toBeInTheDocument();
+    await user.click(within(menu).getByText("Resolve"));
+
+    await waitFor(() => expect(resolvedUrl).toBe("/api/support/1/resolve"));
+    await waitFor(() => expect(screen.getByText("Ticket marked resolved.")).toBeInTheDocument());
+  });
+
+  it("row-actions dropdown: Reopen (only offered for CLOSED) posts to /:id/reopen", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    let reopenedUrl: string | null = null;
+    mockFetchRouter({
+      support: supportData([TICKET_CLOSED]),
+      onPost: (url) => {
+        if (url === "/api/support/3/reopen") reopenedUrl = url;
+        return { ok: true };
+      },
+    });
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Refund request")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for ticket #3" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).queryByText("Resolve")).not.toBeInTheDocument();
+    // A CLOSED ticket also can't be closed again.
+    expect(within(menu).queryByText("Close")).not.toBeInTheDocument();
+    await user.click(within(menu).getByText("Reopen"));
+
+    await waitFor(() => expect(reopenedUrl).toBe("/api/support/3/reopen"));
+    await waitFor(() => expect(screen.getByText("Ticket reopened.")).toBeInTheDocument());
+  });
+
+  it("row-actions dropdown: Classify submenu is offered for every ticket regardless of status", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    mockFetchRouter({ support: supportData([TICKET_OPEN]) });
+    render(<SupportPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Actions for ticket #1" }));
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByText("Classify")).toBeInTheDocument();
   });
 });

@@ -6,6 +6,7 @@
 export const TICKET_STATUS_LABELS: Record<string, string> = {
   OPEN: "Open",
   REPLIED: "Waiting Customer",
+  RESOLVED: "Resolved",
   CLOSED: "Closed",
 };
 

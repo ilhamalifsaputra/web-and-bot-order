@@ -37,6 +37,7 @@ const BASE_TICKET = {
   photoFileIds: null,
   status: "OPEN",
   priority: "HIGH",
+  category: null,
   adminId: null,
   createdAt: "2026-06-26T10:00:00.000Z",
   createdAtDisplay: "2026-06-26 10:00",
@@ -230,5 +231,55 @@ describe("TicketDetailPage — priority control", () => {
     await waitFor(() =>
       expect(apiPost).toHaveBeenCalledWith("/api/support/1/priority", { priority: "URGENT" }),
     );
+  });
+});
+
+describe("TicketDetailPage — category control", () => {
+  it("shows Uncategorized by default and sends a category update via POST /api/support/:ticketId/classify", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    mockFetches(BASE_DETAIL);
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<TicketDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Budi")).toBeInTheDocument());
+
+    expect(screen.getByText("Uncategorized")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("combobox", { name: "Ticket category" }));
+    await waitFor(() => screen.getByRole("option", { name: "Payment" }));
+    await user.click(screen.getByRole("option", { name: "Payment" }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/support/1/classify", { category: "PAYMENT" }),
+    );
+  });
+});
+
+describe("TicketDetailPage — resolve/reopen", () => {
+  it("offers Resolve (not Reopen) for an OPEN ticket, and posts to /api/support/:ticketId/resolve", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    mockFetches(BASE_DETAIL);
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<TicketDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Budi")).toBeInTheDocument());
+
+    expect(screen.queryByRole("button", { name: /reopen/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /resolve/i }));
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/support/1/resolve", {}));
+  });
+
+  it("offers Reopen (not Resolve, not the reply form) for a CLOSED ticket, and posts to /api/support/:ticketId/reopen", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const detail = { ...BASE_DETAIL, ticket: { ...BASE_TICKET, status: "CLOSED" } };
+    mockFetches(detail);
+    vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
+    render(<TicketDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Budi")).toBeInTheDocument());
+
+    expect(screen.queryByRole("button", { name: /^resolve$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /send reply/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /reopen/i }));
+
+    await waitFor(() => expect(apiPost).toHaveBeenCalledWith("/api/support/1/reopen", {}));
   });
 });

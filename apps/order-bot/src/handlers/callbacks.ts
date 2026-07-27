@@ -203,7 +203,12 @@ const dispatchHelp: DomainDispatcher = async (ctx, parts) => {
   if (parts[2] === "open") await customer.showHelpCenter(ctx);
 };
 
+const dispatchAdmin: DomainDispatcher = async (ctx, parts) => {
+  await handleAdminCallback(ctx, parts);
+};
+
 const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
+  adm: dispatchAdmin,
   browse: dispatchBrowse,
   buy: dispatchBuy,
   checkout: dispatchCheckout,
@@ -258,16 +263,6 @@ export async function routeCallback(ctx: MyContext): Promise<void> {
   // sets the flag itself just after rendering its prompt.
   if (!(domain === "qty" && parts[2] === "input")) {
     ctx.session.awaitingQtyDenomId = undefined;
-  }
-
-  if (domain === "adm") {
-    try {
-      await ctx.answerCallbackQuery();
-    } catch {
-      /* already answered */
-    }
-    await handleAdminCallback(ctx, parts);
-    return;
   }
 
   const dispatcher = DOMAIN_ROUTES[domain!];

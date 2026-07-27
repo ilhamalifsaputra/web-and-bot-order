@@ -52,6 +52,14 @@ export interface MakeCtxOptions {
    * real "message is not modified" error, as if the render produced content
    * identical to what the tapped bubble already shows. */
   editThrowsNotModified?: boolean;
+  /** Opt-in: make a SECOND ctx.answerCallbackQuery() call for this ctx reject
+   * with Telegram's real "query is too old / query id is invalid" error, the
+   * way a live bot actually behaves when something tries to answer the same
+   * callback query twice. Off by default (answerCallbackQuery always
+   * resolves) so this doesn't change behavior for the ~1700 existing call
+   * sites that don't opt in — only set this when a test specifically needs
+   * to prove a handler doesn't double-answer. */
+  rejectDuplicateAnswerCallbackQuery?: boolean;
 }
 
 export interface FakeCtx {
@@ -143,6 +151,31 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
         }
       : undefined;
 
+  // Tracks whether THIS ctx's callback query has already been answered, for
+  // the opt-in rejectDuplicateAnswerCallbackQuery behavior below.
+  let callbackQueryAnswered = false;
+  const answerCallbackQuery = opts.rejectDuplicateAnswerCallbackQuery
+    ? (...args: unknown[]) => {
+        if (callbackQueryAnswered) {
+          return Promise.reject(
+            new GrammyError(
+              "Call to 'answerCallbackQuery' failed!",
+              {
+                ok: false,
+                error_code: 400,
+                description: "Bad Request: query is too old and response timeout expired or query id is invalid",
+              },
+              "answerCallbackQuery",
+              {},
+            ),
+          );
+        }
+        callbackQueryAnswered = true;
+        sink.push({ method: "answerCallbackQuery", args });
+        return Promise.resolve(true);
+      }
+    : rec("answerCallbackQuery");
+
   const callbackQuery = opts.callbackData
     ? {
         id: "cb-" + ++msgSeq,
@@ -180,7 +213,7 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
     editMessageText: recCtxEdit("editMessageText"),
     editMessageCaption: recCtxEdit("editMessageCaption"),
     editMessageReplyMarkup: rec("editMessageReplyMarkup"),
-    answerCallbackQuery: rec("answerCallbackQuery"),
+    answerCallbackQuery,
     // Real grammY's ConversationFlavor — only .enter() is exercised outside
     // the conversations() middleware today (checkout.ts's showOrderConfirmation
     // calls it directly for the manual_with_info gate). Recorded into the sink

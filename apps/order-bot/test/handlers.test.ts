@@ -1959,6 +1959,36 @@ describe("callback router", () => {
     expect(sink.length).toBeGreaterThan(0);
   });
 
+  it("routes v1:adm:* through the same generic dispatch as every other domain, so the handler's real toast survives instead of being lost to a premature blank pre-answer (double-answer fix)", async () => {
+    // Regression test: the router used to special-case domain "adm" by firing
+    // a blank answerCallbackQuery() BEFORE calling handleAdminCallback, outside
+    // the outer try/catch. userSetReseller (admin.ts) then calls
+    // answerCallbackQuery again with the real show_alert toast — a real
+    // Telegram bot rejects answering the same callback query twice, so that
+    // second call used to throw, get caught by nothing (the adm branch
+    // bypassed the outer try/catch), and blow up into grammY's global
+    // bot.catch with the admin never seeing their confirmation.
+    // rejectDuplicateAnswerCallbackQuery makes this mock ctx simulate that
+    // real "already answered" rejection, so this test can only pass if the
+    // router answers exactly once — with the handler's real content.
+    const { ctx, sink } = adminCtx({
+      callbackData: `v1:adm:users:reseller:${sample.user.id}:1`,
+      rejectDuplicateAnswerCallbackQuery: true,
+    });
+
+    await expect(routeCallback(ctx)).resolves.not.toThrow();
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.length).toBe(1);
+    const [answerOpts] = answers[0]!.args as [{ text?: string; show_alert?: boolean }];
+    expect(answerOpts.text).toBe("Role set to RESELLER");
+    expect(answerOpts.show_alert).toBe(true);
+
+    // The mutation and its downstream re-render both actually happened —
+    // proving the handler ran to completion instead of throwing mid-flight.
+    expect((await getUser(prisma, sample.user.id))!.role).toBe(UserRole.RESELLER);
+  });
+
   it("malformed callback data is answered, not thrown", async () => {
     const { ctx, sink } = customerCtx({ callbackData: "garbage" });
     await routeCallback(ctx);

@@ -124,6 +124,72 @@ describe("POST /api/users/:userId/ban", () => {
   });
 });
 
+describe("POST /api/users/:userId/wallet", () => {
+  it("happy path: credits a customer's wallet and audits", async () => {
+    const res = await postJson(`/api/users/${customerId}/wallet`, cookie, csrf, {
+      delta: "50000",
+      currency: "IDR",
+      note: "manual top-up",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { ok: boolean; newBalance: string };
+    expect(body.newBalance).toBe("50000");
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: customerId } });
+    expect(user.walletBalance.toString()).toBe("50000");
+    const audit = await prisma.auditLog.findFirst({ where: { action: "wallet_adjust" } });
+    expect(audit).toBeTruthy();
+  });
+
+  it("404s for a non-existent user", async () => {
+    const res = await postJson(`/api/users/999999/wallet`, cookie, csrf, { delta: "1000", note: "x" });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("requires auth (anon → 303 /login)", async () => {
+    const res = await postJson(`/api/users/${customerId}/wallet`, null, csrf, { delta: "1000", note: "x" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("rejects bad CSRF (403)", async () => {
+    const res = await postJson(`/api/users/${customerId}/wallet`, cookie, "bad", { delta: "1000", note: "x" });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("is atomic: audit-log failure rolls back the balance change and ledger row too", async () => {
+    // adjustWallet (no internal $transaction of its own — its doc comment
+    // requires the CALLER to wrap it) writes the new wallet balance AND a
+    // wallet_transactions ledger row as two separate awaited calls, before
+    // logAdminAction writes a third, separate audit row. Force the audit
+    // insert to fail (FK violation: the acting admin's User row no longer
+    // exists, so audit_logs.admin_id has nothing to reference) and prove the
+    // route's prisma.$transaction rolls the balance + ledger write back with
+    // it — not just the audit write — so the three can never diverge.
+    const before = (await prisma.user.findUniqueOrThrow({ where: { id: customerId } })).walletBalance.toString();
+    await prisma.user.delete({ where: { id: adminId } });
+
+    const res = await postJson(`/api/users/${customerId}/wallet`, cookie, csrf, {
+      delta: "50000",
+      currency: "IDR",
+      note: "manual top-up",
+    });
+    // Not a ValidationError, so the route's catch rethrows → Fastify 500,
+    // not the usual JSON error response.
+    expect(res.statusCode).toBe(500);
+
+    // The balance must be unchanged — the adjustWallet write must have
+    // rolled back alongside the failed audit insert.
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: customerId } });
+    expect(user.walletBalance.toString()).toBe(before);
+
+    // And no wallet_transactions ledger row or audit row exists either.
+    const ledger = await prisma.walletTransaction.findMany({ where: { userId: customerId } });
+    expect(ledger.length).toBe(0);
+    const audit = await prisma.auditLog.findMany({ where: { action: "wallet_adjust" } });
+    expect(audit.length).toBe(0);
+  });
+});
+
 describe("POST /api/vouchers", () => {
   it("happy path: creates a voucher (lowercase code+type normalized) and audits", async () => {
     const res = await postJson("/api/vouchers", cookie, csrf, {

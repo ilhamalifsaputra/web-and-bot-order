@@ -206,6 +206,25 @@ describe("POST /api/vouchers", () => {
     expect(audit).toBeTruthy();
   });
 
+  it("stores expires_at/start_at at shop-local day boundaries, not UTC midnight", async () => {
+    // config.TIMEZONE defaults to Asia/Jakarta (+7): a bare 2026-07-28 start_at
+    // is shop-local midnight (2026-07-27T17:00:00Z), and a bare 2026-07-28
+    // expires_at is shop-local end of day (2026-07-28T16:59:59Z) — not UTC
+    // midnight (2026-07-28T00:00:00Z), which is what the pre-fix `new
+    // Date(`${raw}T00:00:00Z`)` parsing produced.
+    const res = await postJson("/api/vouchers", cookie, csrf, {
+      code: "DATERANGE",
+      type: "percent",
+      value: "10",
+      start_at: "2026-07-28",
+      expires_at: "2026-07-28",
+    });
+    expect(res.statusCode).toBe(201);
+    const voucher = await prisma.voucher.findUniqueOrThrow({ where: { code: "DATERANGE" } });
+    expect(voucher.startAt?.toISOString()).toBe("2026-07-27T17:00:00.000Z");
+    expect(voucher.expiresAt?.toISOString()).toBe("2026-07-28T16:59:59.000Z");
+  });
+
   it("rejects a duplicate code with 409", async () => {
     await postJson("/api/vouchers", cookie, csrf, { code: "SAVE10", type: "percent", value: "10" });
     const res = await postJson("/api/vouchers", cookie, csrf, { code: "SAVE10", type: "percent", value: "5" });
@@ -262,6 +281,25 @@ describe("POST /api/vouchers/:voucherId/toggle + /delete", () => {
   it("rejects bad CSRF (403)", async () => {
     const res = await postJson("/api/vouchers/1/toggle", cookie, "bad", { is_active: "0" });
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe("POST /api/vouchers/:voucherId/update", () => {
+  it("stores expires_at/start_at at shop-local day boundaries, not UTC midnight", async () => {
+    const create = await postJson("/api/vouchers", cookie, csrf, { code: "SAVE10", type: "percent", value: "10" });
+    const { voucher } = create.json() as { voucher: { id: number } };
+
+    // Same shop-local (Asia/Jakarta, +7) convention as the create route:
+    // start_at lands at shop-local start of day, expires_at at shop-local
+    // end of day — not UTC midnight.
+    const res = await postJson(`/api/vouchers/${voucher.id}/update`, cookie, csrf, {
+      start_at: "2026-07-28",
+      expires_at: "2026-07-28",
+    });
+    expect(res.statusCode).toBe(200);
+    const updated = await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } });
+    expect(updated.startAt?.toISOString()).toBe("2026-07-27T17:00:00.000Z");
+    expect(updated.expiresAt?.toISOString()).toBe("2026-07-28T16:59:59.000Z");
   });
 });
 

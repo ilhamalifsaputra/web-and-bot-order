@@ -18,15 +18,29 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FastifyInstance } from "fastify";
+import { prisma, getSetting } from "@app/db";
 import { currentAdmin } from "../plugins/auth";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = process.env.STATIC_DIR ?? join(HERE, "..", "..", "static");
 const SPA_INDEX_PATH = join(STATIC_DIR, "dashboard-app", "index.html");
 
+function esc(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 export default async function spaShellRoutes(app: FastifyInstance): Promise<void> {
   app.get("/*", { preHandler: currentAdmin }, async (req, reply) => {
-    const html = readFileSync(SPA_INDEX_PATH, "utf-8").replace("__CSRF_TOKEN__", req.admin?.csrf ?? "");
+    const favicon = await getSetting(prisma, "web_favicon_url").then((v) => v || "/static/favicon.svg");
+    const raw = readFileSync(SPA_INDEX_PATH, "utf-8");
+    const faviconTag = `<link rel="icon" href="${esc(favicon)}">`;
+    const html = raw.includes('<link rel="icon"')
+      ? raw.replace(/<link rel="icon"[^>]*>/, faviconTag).replace("__CSRF_TOKEN__", req.admin?.csrf ?? "")
+      : raw.replace("__CSRF_TOKEN__", req.admin?.csrf ?? "").replace("</head>", `${faviconTag}</head>`);
     return reply.type("text/html").send(html);
   });
 }

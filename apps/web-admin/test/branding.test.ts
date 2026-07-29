@@ -2,7 +2,7 @@ import "./setup-env"; // MUST be first: sets env + builds the temp DB schema.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
-import { prisma, initDb, upsertUser, createCategory, setSetting, getSetting } from "@app/db";
+import { prisma, initDb, upsertUser, createCategory, setSetting, getSetting, deleteSetting } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { makeSession, sessionJtiKey, newJti } from "../src/auth";
 import { buildApp } from "../src/server";
@@ -286,5 +286,23 @@ describe("branding page", () => {
     expect(res.statusCode).toBe(200);
     expect(res.headers["x-content-type-options"]).toBe("nosniff");
     expect(String(res.headers["content-security-policy"])).toContain("default-src 'none'");
+  });
+
+  it("injects default or configured web_favicon_url into HTML shell <head>", async () => {
+    await deleteSetting(prisma, "web_favicon_url");
+    const resDefault = await app.inject({ method: "GET", url: "/login" });
+    expect(resDefault.statusCode).toBe(200);
+    expect(resDefault.body).toContain('<link rel="icon" href="/static/favicon.svg">');
+
+    await setSetting(prisma, "web_favicon_url", "/uploads/branding/favicon-test.png");
+    const resCustom = await app.inject({ method: "GET", url: "/login" });
+    expect(resCustom.statusCode).toBe(200);
+    expect(resCustom.body).toContain('<link rel="icon" href="/uploads/branding/favicon-test.png">');
+
+    const resAuthCustom = await app.inject({ method: "GET", url: "/", cookies: { [COOKIE]: cookie } });
+    expect(resAuthCustom.statusCode).toBe(200);
+    expect(resAuthCustom.body).toContain('<link rel="icon" href="/uploads/branding/favicon-test.png">');
+
+    await deleteSetting(prisma, "web_favicon_url");
   });
 });

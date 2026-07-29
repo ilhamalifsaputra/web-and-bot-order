@@ -18,13 +18,25 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const STATIC_DIR = process.env.STATIC_DIR ?? join(HERE, "..", "..", "static");
 const SPA_INDEX = join(STATIC_DIR, "dashboard-app", "index.html");
 
+function esc(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 export default async function setupShellRoutes(app: FastifyInstance): Promise<void> {
   // These paths go through the lock check (redirect to /login if setup complete)
   for (const path of ["/setup", "/setup/owner", "/setup/shop"]) {
     app.get(path, async (_req, reply) => {
       if (await checkSetupLock(reply)) return; // already redirected
+      const favicon = await getSetting(prisma, "web_favicon_url").then((v) => v || "/static/favicon.svg");
+      const faviconTag = `<link rel="icon" href="${esc(favicon)}">`;
       const raw = readFileSync(SPA_INDEX, "utf-8");
-      const html = raw.replace("__CSRF_TOKEN__", "");
+      const html = raw.includes('<link rel="icon"')
+        ? raw.replace(/<link rel="icon"[^>]*>/, faviconTag).replace("__CSRF_TOKEN__", "")
+        : raw.replace("__CSRF_TOKEN__", "").replace("</head>", `${faviconTag}</head>`);
       return reply.type("text/html").send(html);
     });
   }
@@ -33,11 +45,18 @@ export default async function setupShellRoutes(app: FastifyInstance): Promise<vo
   // Remove the Nunjucks GET handler from setup.ts and serve SPA here instead.
   // Inject meta tag telling React whether bot token was configured.
   app.get("/setup/done", async (_req, reply) => {
+    const favicon = await getSetting(prisma, "web_favicon_url").then((v) => v || "/static/favicon.svg");
+    const faviconTag = `<link rel="icon" href="${esc(favicon)}">`;
     const botConfigured = (await getSetting(prisma, "bot_token")) !== null;
     const raw = readFileSync(SPA_INDEX, "utf-8");
-    const html = raw
-      .replace("__CSRF_TOKEN__", "")
-      .replace("</head>", `<meta name="setup-bot-configured" content="${botConfigured}"></head>`);
+    const html = raw.includes('<link rel="icon"')
+      ? raw
+          .replace(/<link rel="icon"[^>]*>/, faviconTag)
+          .replace("__CSRF_TOKEN__", "")
+          .replace("</head>", `<meta name="setup-bot-configured" content="${botConfigured}"></head>`)
+      : raw
+          .replace("__CSRF_TOKEN__", "")
+          .replace("</head>", `${faviconTag}<meta name="setup-bot-configured" content="${botConfigured}"></head>`);
     return reply.type("text/html").send(html);
   });
 }

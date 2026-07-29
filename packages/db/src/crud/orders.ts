@@ -1562,6 +1562,7 @@ function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
   }
   if (f.q) {
     const term = f.q.trim();
+    const cleanTerm = term.replace(/^#/, "").trim();
     const or: Prisma.OrderWhereInput[] = [
       { orderCode: { contains: term } },
       { user: { username: { contains: term } } },
@@ -1570,7 +1571,16 @@ function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
       { user: { email: { contains: term } } },
       { items: { some: { product: { name: { contains: term } } } } },
     ];
-    if (/^\d+$/.test(term)) or.push({ user: { telegramId: BigInt(term) } });
+    if (cleanTerm !== term) {
+      or.push({ orderCode: { contains: cleanTerm } });
+    }
+    if (/^\d+$/.test(cleanTerm)) {
+      const num = Number(cleanTerm);
+      if (Number.isSafeInteger(num) && num > 0) {
+        or.push({ id: num });
+      }
+      or.push({ user: { telegramId: BigInt(cleanTerm) } });
+    }
     where.OR = or;
   }
   return where;

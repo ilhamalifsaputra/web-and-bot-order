@@ -4593,6 +4593,23 @@ describe("global search", () => {
     expect(data.exactOrderId).toBe(orderId);
   });
 
+  it("numeric order id or leading '#' returns exact order id via the API", async () => {
+    const orderId = await makePendingOrder();
+    const order = (await getOrder(prisma, orderId))!;
+
+    const resById = await get(`/api/search?q=${orderId}`, seed.cookie);
+    expect(resById.statusCode).toBe(200);
+    expect((JSON.parse(resById.body) as { exactOrderId: number }).exactOrderId).toBe(orderId);
+
+    const resByHashId = await get(`/api/search?q=%23${orderId}`, seed.cookie);
+    expect(resByHashId.statusCode).toBe(200);
+    expect((JSON.parse(resByHashId.body) as { exactOrderId: number }).exactOrderId).toBe(orderId);
+
+    const resByHashCode = await get(`/api/search?q=%23${encodeURIComponent(order.orderCode)}`, seed.cookie);
+    expect(resByHashCode.statusCode).toBe(200);
+    expect((JSON.parse(resByHashCode.body) as { exactOrderId: number }).exactOrderId).toBe(orderId);
+  });
+
   it("a free-text query returns grouped results via the API", async () => {
     const res = await get("/api/search?q=cust", seed.cookie);
     expect(res.statusCode).toBe(200);

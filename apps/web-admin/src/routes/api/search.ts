@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { prisma, getOrderByCode, searchUsers, searchDenominations } from "@app/db";
+import { prisma, getOrder, getOrderByCode, searchUsers, searchDenominations } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
 
 export default async function searchApiRoutes(app: FastifyInstance): Promise<void> {
@@ -7,8 +7,21 @@ export default async function searchApiRoutes(app: FastifyInstance): Promise<voi
     const q = ((req.query as Record<string, string | undefined>).q ?? "").trim();
     if (!q) return reply.send({ q: "", exactOrderId: null, users: [], products: [] });
 
-    // Exact order-code match → return the id so the client can navigate directly.
-    const exact = await getOrderByCode(prisma, q) ?? await getOrderByCode(prisma, q.toUpperCase());
+    const cleanQ = q.replace(/^#/, "").trim();
+
+    // Exact order-code match or numeric order ID → return the id so the client can navigate directly.
+    let exact =
+      (await getOrderByCode(prisma, q)) ??
+      (await getOrderByCode(prisma, q.toUpperCase())) ??
+      (cleanQ !== q ? ((await getOrderByCode(prisma, cleanQ)) ?? (await getOrderByCode(prisma, cleanQ.toUpperCase()))) : null);
+
+    if (!exact && /^\d+$/.test(cleanQ)) {
+      const num = Number(cleanQ);
+      if (Number.isSafeInteger(num) && num > 0) {
+        exact = await getOrder(prisma, num);
+      }
+    }
+
     if (exact) return reply.send({ q, exactOrderId: exact.id, users: [], products: [] });
 
     const [users, products] = await Promise.all([

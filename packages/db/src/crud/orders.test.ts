@@ -207,13 +207,22 @@ describe("computeOrderEligibility", () => {
 // Orders admin-page refactor: orderWhere()'s widened OrderFilter (q free-text
 // search, array status, paymentMethod, ids) via listOrders/countOrders.
 describe("listOrders/countOrders — q search + array status + paymentMethod + ids", () => {
-  it("q matches the order code", async () => {
+  it("q matches the order code, numeric order id, and '#' prefixed queries", async () => {
     const order = await makeOrder("PENDING_VERIFICATION");
     await makeOrder("PENDING_VERIFICATION"); // decoy, unrelated code
 
-    const results = await listOrders(prisma, { q: order.orderCode });
-    expect(results.map((o) => o.id)).toEqual([order.id]);
+    const resultsByCode = await listOrders(prisma, { q: order.orderCode });
+    expect(resultsByCode.map((o) => o.id)).toEqual([order.id]);
     expect(await countOrders(prisma, { q: order.orderCode })).toBe(1);
+
+    const resultsById = await listOrders(prisma, { q: String(order.id) });
+    expect(resultsById.map((o) => o.id)).toContain(order.id);
+
+    const resultsByHashId = await listOrders(prisma, { q: `#${order.id}` });
+    expect(resultsByHashId.map((o) => o.id)).toContain(order.id);
+
+    const resultsByHashCode = await listOrders(prisma, { q: `#${order.orderCode}` });
+    expect(resultsByHashCode.map((o) => o.id)).toEqual([order.id]);
   });
 
   it("q matches the buyer's username, fullName, loginUsername, email, or telegramId", async () => {

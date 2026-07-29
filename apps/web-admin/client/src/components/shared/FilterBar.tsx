@@ -17,28 +17,22 @@ export function FilterBar({
   className,
 }: FilterBarProps): JSX.Element {
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        onApply?.();
-      }}
-      className={cn("flex flex-wrap items-end gap-2", className)}
-    >
+    <div className={cn("flex flex-wrap items-end gap-2", className)}>
       {children}
       {(onApply || onClear) && (
         <div className="ml-auto flex items-end gap-2">
           {onClear && (
-            <Button type="button" variant="ghost" onClick={onClear}>
+            <Button variant="ghost" onClick={onClear}>
               Clear
             </Button>
           )}
           {onApply && (
-            <Button type="submit" variant="outline" onClick={onApply}>
+            <Button variant="outline" onClick={onApply}>
               Apply
             </Button>
           )}
         </div>
       )}
-    </form>
+    </div>
   )
 }

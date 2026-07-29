@@ -356,6 +356,7 @@ export function OrdersPage() {
         <SearchBar
           value={draft.q}
           onChange={(v) => setDraft((f) => ({ ...f, q: v }))}
+          onSearch={applyFilters}
           placeholder="Search order code, customer or product..."
           className="w-full sm:w-[420px]"
         />

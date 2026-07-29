@@ -5,6 +5,8 @@ import { cn } from "@/lib/utils";
 interface SearchBarProps {
   value: string;
   onChange: (value: string) => void;
+  /** Optional callback triggered when the user presses Enter while focused in the input. */
+  onSearch?: () => void;
   placeholder?: string;
   className?: string;
   /** Swaps the leading Search icon for a spinning Loader2 — for callers that
@@ -14,7 +16,7 @@ interface SearchBarProps {
   loading?: boolean;
 }
 
-export function SearchBar({ value, onChange, placeholder, className, loading }: SearchBarProps): JSX.Element {
+export function SearchBar({ value, onChange, onSearch, placeholder, className, loading }: SearchBarProps): JSX.Element {
   return (
     <div className={cn("relative w-full sm:w-64", className)}>
       {loading ? (
@@ -25,6 +27,12 @@ export function SearchBar({ value, onChange, placeholder, className, loading }: 
       <Input
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && onSearch) {
+            e.preventDefault();
+            onSearch();
+          }
+        }}
         placeholder={placeholder}
         className="pl-8"
       />

@@ -51,7 +51,9 @@ export function computeQrisAdminFee(subtotalAmount: Decimal.Value): Decimal {
 }
 
 /** totalAmount (already net of discounts/wallet) + the QRIS admin fee — the
- * amount actually sent to TokoPay and compared against on confirm. */
+ * fee-inclusive amount expected to be paid by the buyer and verified on confirm.
+ * (Note: createTransaction/checkTransaction are passed the base totalAmount,
+ * as TokoPay automatically computes and adds its admin fee on top of nominal). */
 export function qrisChargeAmount(totalAmount: Decimal.Value, subtotalAmount: Decimal.Value): Decimal {
   return new Decimal(totalAmount).plus(computeQrisAdminFee(subtotalAmount));
 }

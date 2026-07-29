@@ -100,7 +100,7 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
   let status: Awaited<ReturnType<typeof checkTransaction>>;
   try {
-    status = await checkTransaction(creds, { refId: order.orderCode, amountIdr: expectedCharge });
+    status = await checkTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
   } catch (err) {
     logger.warn({ err }, `Failed to check TokoPay status for order ${order.orderCode} — will retry on the next reconcile cycle`);
     return;

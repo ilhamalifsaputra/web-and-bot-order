@@ -1051,7 +1051,7 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   // Create (idempotent on ref_id) the gateway transaction + cache it.
   let gateway;
   try {
-    gateway = await createTransaction(creds, { refId: order.orderCode, amountIdr: chargeAmount });
+    gateway = await createTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
     // Tagged `gateway: "tokopay"` to match the cache shape the storefront's own
     // cache-write sites produce (apps/storefront/src/routes/checkout.ts) — its
     // parseCachedGateway() requires this discriminator before trusting the cache.

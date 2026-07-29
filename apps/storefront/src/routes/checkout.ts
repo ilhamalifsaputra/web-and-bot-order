@@ -562,7 +562,7 @@ export async function payView(order: OrderRow) {
           try {
             gateway = await createTransaction(creds, {
               refId: order.orderCode,
-              amountIdr: qrisGrandTotal!,
+              amountIdr: order.totalAmount,
             });
             const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "tokopay", ...gateway });
             if (!committed) {
@@ -759,7 +759,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
     const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
     let live;
     try {
-      live = await checkTransaction(creds, { refId: cb.refId, amountIdr: expectedCharge });
+      live = await checkTransaction(creds, { refId: cb.refId, amountIdr: order.totalAmount });
     } catch (err) {
       logger.error({ err }, `Failed to check TokoPay's live transaction status for order ${order.orderCode} — the callback will be ignored until a retry confirms payment`);
       return reply.send({ status: "status check failed" });

@@ -124,6 +124,72 @@ describe("POST /api/users/:userId/ban", () => {
   });
 });
 
+describe("POST /api/users/:userId/wallet", () => {
+  it("happy path: credits a customer's wallet and audits", async () => {
+    const res = await postJson(`/api/users/${customerId}/wallet`, cookie, csrf, {
+      delta: "50000",
+      currency: "IDR",
+      note: "manual top-up",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { ok: boolean; newBalance: string };
+    expect(body.newBalance).toBe("50000");
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: customerId } });
+    expect(user.walletBalance.toString()).toBe("50000");
+    const audit = await prisma.auditLog.findFirst({ where: { action: "wallet_adjust" } });
+    expect(audit).toBeTruthy();
+  });
+
+  it("404s for a non-existent user", async () => {
+    const res = await postJson(`/api/users/999999/wallet`, cookie, csrf, { delta: "1000", note: "x" });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("requires auth (anon → 303 /login)", async () => {
+    const res = await postJson(`/api/users/${customerId}/wallet`, null, csrf, { delta: "1000", note: "x" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("rejects bad CSRF (403)", async () => {
+    const res = await postJson(`/api/users/${customerId}/wallet`, cookie, "bad", { delta: "1000", note: "x" });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("is atomic: audit-log failure rolls back the balance change and ledger row too", async () => {
+    // adjustWallet (no internal $transaction of its own — its doc comment
+    // requires the CALLER to wrap it) writes the new wallet balance AND a
+    // wallet_transactions ledger row as two separate awaited calls, before
+    // logAdminAction writes a third, separate audit row. Force the audit
+    // insert to fail (FK violation: the acting admin's User row no longer
+    // exists, so audit_logs.admin_id has nothing to reference) and prove the
+    // route's prisma.$transaction rolls the balance + ledger write back with
+    // it — not just the audit write — so the three can never diverge.
+    const before = (await prisma.user.findUniqueOrThrow({ where: { id: customerId } })).walletBalance.toString();
+    await prisma.user.delete({ where: { id: adminId } });
+
+    const res = await postJson(`/api/users/${customerId}/wallet`, cookie, csrf, {
+      delta: "50000",
+      currency: "IDR",
+      note: "manual top-up",
+    });
+    // Not a ValidationError, so the route's catch rethrows → Fastify 500,
+    // not the usual JSON error response.
+    expect(res.statusCode).toBe(500);
+
+    // The balance must be unchanged — the adjustWallet write must have
+    // rolled back alongside the failed audit insert.
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: customerId } });
+    expect(user.walletBalance.toString()).toBe(before);
+
+    // And no wallet_transactions ledger row or audit row exists either.
+    const ledger = await prisma.walletTransaction.findMany({ where: { userId: customerId } });
+    expect(ledger.length).toBe(0);
+    const audit = await prisma.auditLog.findMany({ where: { action: "wallet_adjust" } });
+    expect(audit.length).toBe(0);
+  });
+});
+
 describe("POST /api/vouchers", () => {
   it("happy path: creates a voucher (lowercase code+type normalized) and audits", async () => {
     const res = await postJson("/api/vouchers", cookie, csrf, {
@@ -138,6 +204,25 @@ describe("POST /api/vouchers", () => {
     expect(voucher!.type).toBe("PERCENT");
     const audit = await prisma.auditLog.findFirst({ where: { action: "voucher_create" } });
     expect(audit).toBeTruthy();
+  });
+
+  it("stores expires_at/start_at at shop-local day boundaries, not UTC midnight", async () => {
+    // config.TIMEZONE defaults to Asia/Jakarta (+7): a bare 2026-07-28 start_at
+    // is shop-local midnight (2026-07-27T17:00:00Z), and a bare 2026-07-28
+    // expires_at is shop-local end of day (2026-07-28T16:59:59Z) — not UTC
+    // midnight (2026-07-28T00:00:00Z), which is what the pre-fix `new
+    // Date(`${raw}T00:00:00Z`)` parsing produced.
+    const res = await postJson("/api/vouchers", cookie, csrf, {
+      code: "DATERANGE",
+      type: "percent",
+      value: "10",
+      start_at: "2026-07-28",
+      expires_at: "2026-07-28",
+    });
+    expect(res.statusCode).toBe(201);
+    const voucher = await prisma.voucher.findUniqueOrThrow({ where: { code: "DATERANGE" } });
+    expect(voucher.startAt?.toISOString()).toBe("2026-07-27T17:00:00.000Z");
+    expect(voucher.expiresAt?.toISOString()).toBe("2026-07-28T16:59:59.000Z");
   });
 
   it("rejects a duplicate code with 409", async () => {
@@ -196,6 +281,25 @@ describe("POST /api/vouchers/:voucherId/toggle + /delete", () => {
   it("rejects bad CSRF (403)", async () => {
     const res = await postJson("/api/vouchers/1/toggle", cookie, "bad", { is_active: "0" });
     expect(res.statusCode).toBe(403);
+  });
+});
+
+describe("POST /api/vouchers/:voucherId/update", () => {
+  it("stores expires_at/start_at at shop-local day boundaries, not UTC midnight", async () => {
+    const create = await postJson("/api/vouchers", cookie, csrf, { code: "SAVE10", type: "percent", value: "10" });
+    const { voucher } = create.json() as { voucher: { id: number } };
+
+    // Same shop-local (Asia/Jakarta, +7) convention as the create route:
+    // start_at lands at shop-local start of day, expires_at at shop-local
+    // end of day — not UTC midnight.
+    const res = await postJson(`/api/vouchers/${voucher.id}/update`, cookie, csrf, {
+      start_at: "2026-07-28",
+      expires_at: "2026-07-28",
+    });
+    expect(res.statusCode).toBe(200);
+    const updated = await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } });
+    expect(updated.startAt?.toISOString()).toBe("2026-07-27T17:00:00.000Z");
+    expect(updated.expiresAt?.toISOString()).toBe("2026-07-28T16:59:59.000Z");
   });
 });
 

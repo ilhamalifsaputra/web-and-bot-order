@@ -295,23 +295,26 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
     if (!(await getUser(prisma, userId))) return reply.code(404).send({ error: "User not found." });
     let newBalance: Decimal;
     try {
-      newBalance = await adjustWallet(prisma, userId, deltaDec, {
-        reason: "admin_adjust",
-        note: note || null,
-        adminId: req.admin!.userId,
-        currency,
+      newBalance = await prisma.$transaction(async (tx) => {
+        const balance = await adjustWallet(tx, userId, deltaDec, {
+          reason: "admin_adjust",
+          note: note || null,
+          adminId: req.admin!.userId,
+          currency,
+        });
+        await logAdminAction(tx, {
+          adminId: req.admin!.userId,
+          action: "wallet_adjust",
+          targetType: "user",
+          targetId: userId,
+          details: `Adjusted ${currency} wallet by ${deltaDec.toString()}. Note: "${note.slice(0, 160)}".`,
+        });
+        return balance;
       });
     } catch (e) {
       if (e instanceof ValidationError) return reply.code(422).send({ error: e.message });
       throw e;
     }
-    await logAdminAction(prisma, {
-      adminId: req.admin!.userId,
-      action: "wallet_adjust",
-      targetType: "user",
-      targetId: userId,
-      details: `Adjusted ${currency} wallet by ${deltaDec.toString()}. Note: "${note.slice(0, 160)}".`,
-    });
     return reply.send({ ok: true, newBalance: newBalance.toString() });
   });
 }

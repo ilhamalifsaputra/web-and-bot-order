@@ -1720,6 +1720,24 @@ describe("verification handlers", () => {
     expect(JSON.stringify(sink)).toContain(order.orderCode);
   });
 
+  it("viewOrder with a payment screenshot retires the previous admin screen and tracks the new photo message", async () => {
+    // Regression test: viewOrder used to send the screenshot via a bare
+    // ctx.replyWithPhoto that never retired the queue list's keyboard nor
+    // updated ctx.session.adminMsgId, leaving two live inline keyboards in
+    // the chat at once (violates "one active keyboard per chat").
+    const order = await pendingVerificationOrder();
+    const { ctx, sink } = adminCtx({
+      session: { lang: "en", scratch: {}, adminMsgId: 10 },
+      replyWithPhotoResult: { message_id: 555 },
+    });
+    await verification.viewOrder(ctx, order.id);
+
+    const retire = calls(sink, "editMessageReplyMarkup");
+    expect(retire.length).toBe(1);
+    expect(retire[0]!.args[1]).toBe(10); // the previous (queue list) bubble gets retired
+    expect(ctx.session.adminMsgId).toBe(555); // tracks the new photo message
+  });
+
   it("approve delivers the order, marks stock SOLD, enqueues outbox + audit, DMs the buyer", async () => {
     // The testimonial channel post (ORDER_DELIVERED) only gets enqueued when
     // a public channel is configured — set one so this test still exercises
@@ -1959,6 +1977,36 @@ describe("callback router", () => {
     expect(sink.length).toBeGreaterThan(0);
   });
 
+  it("routes v1:adm:* through the same generic dispatch as every other domain, so the handler's real toast survives instead of being lost to a premature blank pre-answer (double-answer fix)", async () => {
+    // Regression test: the router used to special-case domain "adm" by firing
+    // a blank answerCallbackQuery() BEFORE calling handleAdminCallback, outside
+    // the outer try/catch. userSetReseller (admin.ts) then calls
+    // answerCallbackQuery again with the real show_alert toast — a real
+    // Telegram bot rejects answering the same callback query twice, so that
+    // second call used to throw, get caught by nothing (the adm branch
+    // bypassed the outer try/catch), and blow up into grammY's global
+    // bot.catch with the admin never seeing their confirmation.
+    // rejectDuplicateAnswerCallbackQuery makes this mock ctx simulate that
+    // real "already answered" rejection, so this test can only pass if the
+    // router answers exactly once — with the handler's real content.
+    const { ctx, sink } = adminCtx({
+      callbackData: `v1:adm:users:reseller:${sample.user.id}:1`,
+      rejectDuplicateAnswerCallbackQuery: true,
+    });
+
+    await expect(routeCallback(ctx)).resolves.not.toThrow();
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.length).toBe(1);
+    const [answerOpts] = answers[0]!.args as [{ text?: string; show_alert?: boolean }];
+    expect(answerOpts.text).toBe("Role set to RESELLER");
+    expect(answerOpts.show_alert).toBe(true);
+
+    // The mutation and its downstream re-render both actually happened —
+    // proving the handler ran to completion instead of throwing mid-flight.
+    expect((await getUser(prisma, sample.user.id))!.role).toBe(UserRole.RESELLER);
+  });
+
   it("malformed callback data is answered, not thrown", async () => {
     const { ctx, sink } = customerCtx({ callbackData: "garbage" });
     await routeCallback(ctx);
@@ -1979,6 +2027,49 @@ describe("callback router", () => {
     const { ctx } = customerCtx({ callbackData: `v1:qty:input:${sample.product.id}` });
     await routeCallback(ctx);
     expect(ctx.session.awaitingQtyDenomId).toBe(sample.product.id);
+  });
+
+  // handleQtyTextInput deletes the user's typed message to keep the chat clean (single-bubble wizard).
+  it("handleQtyTextInput deletes the typed message on valid quantity input", async () => {
+    const { ctx, sink } = customerCtx({ text: "5" });
+    ctx.session.awaitingQtyDenomId = sample.product.id;
+    await customer.handleProductNumber(ctx);
+
+    // Verify consumeInput was called by checking deleteMessage was called with the message id
+    const deletes = calls(sink, "deleteMessage");
+    expect(deletes.length).toBe(1);
+    expect(deletes[0]?.args[1]).toBe(ctx.message?.message_id);
+
+    // Verify the user was navigated to the denomination detail with the qty
+    expect(sentIncludes(sink, sample.product.name)).toBe(true);
+  });
+
+  it("handleQtyTextInput deletes the typed message on invalid quantity (non-numeric)", async () => {
+    const { ctx, sink } = customerCtx({ text: "abc" });
+    ctx.session.awaitingQtyDenomId = sample.product.id;
+    await customer.handleProductNumber(ctx);
+
+    // Verify consumeInput was called
+    const deletes = calls(sink, "deleteMessage");
+    expect(deletes.length).toBe(1);
+    expect(deletes[0]?.args[1]).toBe(ctx.message?.message_id);
+
+    // Verify error message was shown (the rendered text includes "Invalid quantity")
+    expect(sentIncludes(sink, "Invalid quantity")).toBe(true);
+  });
+
+  it("handleQtyTextInput deletes the typed message when quantity exceeds stock", async () => {
+    const { ctx, sink } = customerCtx({ text: "9999" });
+    ctx.session.awaitingQtyDenomId = sample.product.id;
+    await customer.handleProductNumber(ctx);
+
+    // Verify consumeInput was called
+    const deletes = calls(sink, "deleteMessage");
+    expect(deletes.length).toBe(1);
+    expect(deletes[0]?.args[1]).toBe(ctx.message?.message_id);
+
+    // Verify error message was shown (the rendered text includes "Invalid quantity")
+    expect(sentIncludes(sink, "Invalid quantity")).toBe(true);
   });
 
   // §8.6 — a dispatcher crash surfaces a quotable correlation ref to the user.

@@ -22,7 +22,7 @@ import {
   lowStockDenominations,
 } from "@app/db";
 import type { MyContext } from "../context";
-import { adminEdit } from "../util/chat";
+import { adminEdit, retireKeyboard } from "../util/chat";
 import { coreT, t } from "../util/i18n";
 import { esc, formatIdr, orderAmount, groupOrderItems, redactCredentials } from "../util/format";
 import { requireAdminId } from "../util/adminAudit";
@@ -97,7 +97,10 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
   const screenshotFileId = order.paymentProofFileId;
   if (screenshotFileId) {
     try {
-      await ctx.replyWithPhoto(screenshotFileId, { caption: text, parse_mode: "HTML", reply_markup: keyboard });
+      const prev = ctx.session.adminMsgId ?? ctx.callbackQuery?.message?.message_id;
+      const msg = await ctx.replyWithPhoto(screenshotFileId, { caption: text, parse_mode: "HTML", reply_markup: keyboard });
+      if (prev !== undefined && prev !== msg.message_id) await retireKeyboard(ctx, prev);
+      ctx.session.adminMsgId = msg.message_id;
       return;
     } catch {
       logger.warn("Could not send proof screenshot; falling back to text");

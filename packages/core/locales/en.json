@@ -59,6 +59,7 @@
   "admin.wallet_bad_args": "Bad arguments.",
   "admin.wallet_failed": "Adjustment failed (user not found?).",
   "admin.wallet_usage": "Usage: /wallet &lt;user_db_id&gt; &lt;amount&gt; [IDR|USDT] (defaults to IDR)",
+  "admin.wallet_usage_hint": "Use /wallet {uid} <amount> [IDR|USDT] to adjust (negative to deduct; defaults to IDR).",
   "admin.users": "👥 Users",
   "admin.verification_item": "Order <code>{code}</code>\nUser: {user}\nTotal: <b>{total}</b>\nTxID: <code>{txid}</code>\n\n{lines}",
   "admin.verifications": "✅ Verifications ({count})",

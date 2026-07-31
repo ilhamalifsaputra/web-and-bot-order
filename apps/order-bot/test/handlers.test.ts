@@ -1851,6 +1851,34 @@ describe("admin handlers", () => {
     expect(sentIncludes(sink, "2.5 USDT")).toBe(true);
   });
 
+  // Follow-up to the M-4 fix above: the "Adjust wallet" button's toast is the
+  // one place that teaches an admin the new [IDR|USDT] argument exists, and it
+  // must go through t() like every other admin-facing string in this file
+  // (no leaked English — see docs/ui and the bot UX skill).
+  it("userWalletPrompt's toast documents the optional currency argument via i18n", async () => {
+    const callbackData = `v1:adm:users:wallet:${sample.user.id}`;
+    const { ctx, sink } = adminCtx({ callbackData });
+    await handleAdminCallback(ctx, callbackData.split(":"));
+    const toast = calls(sink, "answerCallbackQuery").at(-1);
+    expect((toast!.args[0] as { text?: string }).text).toBe(
+      `Use /wallet ${sample.user.id} <amount> [IDR|USDT] to adjust (negative to deduct; defaults to IDR).`,
+    );
+  });
+
+  it("userWalletPrompt's toast is localized to the admin's language (proves it routes through t(), not a raw string)", async () => {
+    const callbackData = `v1:adm:users:wallet:${sample.user.id}`;
+    const { ctx, sink } = makeCtx({
+      from: { id: 999, username: "boss" },
+      callbackData,
+      session: { lang: "id", scratch: {}, dbUser: { id: adminDbId, telegramId: "999", role: UserRole.ADMIN, language: "ID", referralCode: "A", walletBalance: "0" } },
+    });
+    await handleAdminCallback(ctx, callbackData.split(":"));
+    const toast = calls(sink, "answerCallbackQuery").at(-1);
+    expect((toast!.args[0] as { text?: string }).text).toBe(
+      `Gunakan /wallet ${sample.user.id} <jumlah> [IDR|USDT] untuk menyesuaikan (negatif untuk mengurangi; default IDR).`,
+    );
+  });
+
   // M-4 (backend audit 2026-07-31): /wallet had no currency argument and
   // always adjusted the IDR balance via adjustWallet's default — an admin
   // crediting a referral commission (always USDT) would silently create a

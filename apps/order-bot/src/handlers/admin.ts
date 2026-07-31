@@ -195,7 +195,7 @@ async function userSetReseller(ctx: MyContext, userId: number, on: boolean): Pro
 
 async function userWalletPrompt(ctx: MyContext, userId: number): Promise<void> {
   await ctx.answerCallbackQuery({
-    text: `Use /wallet ${userId} <amount> [IDR|USDT] to adjust (negative to deduct; defaults to IDR).`,
+    text: t(ctx, "admin.wallet_usage_hint", { uid: userId }),
     show_alert: true,
   });
 }

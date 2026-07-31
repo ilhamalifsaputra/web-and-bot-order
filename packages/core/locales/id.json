@@ -59,6 +59,7 @@
   "admin.wallet_bad_args": "Argumen salah.",
   "admin.wallet_failed": "Penyesuaian gagal (user tidak ditemukan?).",
   "admin.wallet_usage": "Cara pakai: /wallet &lt;user_db_id&gt; &lt;jumlah&gt; [IDR|USDT] (default IDR)",
+  "admin.wallet_usage_hint": "Gunakan /wallet {uid} <jumlah> [IDR|USDT] untuk menyesuaikan (negatif untuk mengurangi; default IDR).",
   "admin.users": "👥 User",
   "admin.verification_item": "Order <code>{code}</code>\nUser: {user}\nTotal: <b>{total}</b>\nTxID: <code>{txid}</code>\n\n{lines}",
   "admin.verifications": "✅ Verifikasi ({count})",

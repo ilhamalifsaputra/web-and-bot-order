@@ -14,7 +14,16 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder } from "@app/db";
+// claimGatewaySlot is wrapped (delegating to the real implementation by
+// default) so the M-6 race tests below can override it once to simulate a
+// concurrent claimant — see "doesn't create a second TokoPay transaction
+// when it loses the gateway claim to a concurrent request".
+vi.mock("@app/db", async (orig) => {
+  const actual = await orig<typeof import("@app/db")>();
+  return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot) };
+});
+
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
@@ -1217,6 +1226,55 @@ describe("checkout handlers", () => {
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
     expect(orders.length).toBe(1);
     expect(orders[0]!.status).toBe("CANCELLED");
+  });
+
+  // M-6 fix, backend audit 2026-07-31: the order this creates is visible to
+  // the same buyer on the storefront (My Orders → Pay) the instant it's
+  // created, so its own payView (apps/storefront/src/routes/checkout.ts)
+  // could concurrently claim this exact order's gateway slot first. Mirrors
+  // the storefront's own race coverage (apps/storefront/test/checkout-
+  // gateway-race.test.ts + the crud-level claimGatewaySlot/commitGatewayResult/
+  // releaseGatewaySlot tests in packages/db/src/crud/orders.test.ts) by
+  // overriding claimGatewaySlot once to simulate a concurrent competitor
+  // (the storefront) winning the SAME order's real claim before the bot's own
+  // real claim attempt runs — proving the loser (the bot) never calls TokoPay
+  // a second time and never clobbers or cancels the winner's order.
+  it("buyNowTokopay doesn't create a second TokoPay transaction when it loses the gateway claim to a concurrent request (M-6 fix)", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    vi.mocked(claimGatewaySlot).mockImplementationOnce(async (db, orderId) => {
+      // Simulate a concurrent storefront payView call that already committed
+      // its own TokoPay transaction for this exact order — real DB write, not
+      // a fake return value — so the assertions below are checking the
+      // actual persisted row.
+      await prisma.order.update({
+        where: { id: orderId },
+        data: { paymentRef: JSON.stringify({ gateway: "tokopay", trxId: "STOREFRONT-WON-RACE" }) },
+      });
+      // The bot's own real claim attempt now genuinely finds paymentRef
+      // already non-null and correctly loses.
+      return claimGatewaySlot(db, orderId);
+    });
+    // Mock call history isn't reset between tests in this file (other tests
+    // check `.mock.lastCall` rather than a total count for the same reason)
+    // — so assert no NEW call was added, rather than "never called at all".
+    const callsBefore = vi.mocked(mockedCreateTokopayTransaction).mock.calls.length;
+    const { ctx } = customerCtx();
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+
+    // The bot never called TokoPay a second time for this order.
+    expect(vi.mocked(mockedCreateTokopayTransaction).mock.calls.length).toBe(callsBefore);
+
+    const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
+    expect(orders.length).toBe(1);
+    // Losing the claim is NOT treated like a gateway failure — the order
+    // stays PENDING_PAYMENT (the other caller's invoice is legitimately in
+    // flight) instead of being cancelled out from under it.
+    expect(orders[0]!.status).toBe("PENDING_PAYMENT");
+    // The winner's cached invoice survives untouched.
+    const cached = JSON.parse(orders[0]!.paymentRef!) as { gateway?: string; trxId?: string };
+    expect(cached.gateway).toBe("tokopay");
+    expect(cached.trxId).toBe("STOREFRONT-WON-RACE");
   });
 
   it("buyNowTokopay keeps the voucher applied in session when order creation fails, so a retry can reuse it (Pricing-3 fix)", async () => {

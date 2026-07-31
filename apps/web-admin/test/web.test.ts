@@ -5218,11 +5218,13 @@ describe("setup wizard — step 1 (connect bot)", () => {
 });
 
 describe("setup wizard — restart trigger", () => {
-  it("locks out /setup/restart once setup is complete (H-5: no more unauthenticated reboot loop)", async () => {
-    // Default suite state (top-level beforeAll) models a CONFIGURED deploy —
-    // setup_completed is already "true" here, so this must behave exactly
-    // like its locked siblings (/setup/bot, /setup/owner, /setup/shop): a
-    // 303 to /login, and no restart file written.
+  it("rejects a POST from an unauthenticated caller (H-5: no more anonymous reboot loop)", async () => {
+    // Modeled as a fully configured deploy (setup_completed=true) — the real
+    // scenario the H-5 finding described: an anonymous caller looping this
+    // route to reboot the process. currentAdmin rejects it with a 303 to
+    // /login before the handler body (and the restart-file write) ever runs,
+    // same as every other currentAdmin-gated route in this app.
+    await setSetting(prisma, "setup_completed", "true");
     await setSetting(prisma, "bot_token", "123:test-token");
     const target = join(tmpdir(), `restart-${Date.now()}.txt`);
     process.env.RESTART_TRIGGER_FILE = target;
@@ -5232,6 +5234,7 @@ describe("setup wizard — restart trigger", () => {
         url: "/setup/restart",
         payload: form({}),
         headers: { "content-type": "application/x-www-form-urlencoded" },
+        // No session cookie attached — this is the anonymous caller case.
       });
       expect(res.statusCode).toBe(303);
       expect(res.headers.location).toBe("/login");
@@ -5242,19 +5245,51 @@ describe("setup wizard — restart trigger", () => {
     }
   });
 
-  it("still writes the Passenger restart file best-effort during the setup wizard", async () => {
-    await deleteSetting(prisma, "setup_completed"); // open the wizard, like its siblings' tests
+  it("succeeds for the real caller: the owner's session right after finishing the wizard", async () => {
+    // Reproduces the ONLY real production path to this route: SetupDonePage's
+    // "Restart server" button fires POST /setup/restart from the Done screen,
+    // which is only reachable after /setup/shop's finish handler has already
+    // called markSetupComplete() and auto-logged the owner in with a real
+    // session cookie (setup.ts's step-3 handler, ~lines 168-187). So by the
+    // time this button is legitimately clicked, setup_completed is already
+    // true and a valid admin session already exists — exactly what this test
+    // sets up before calling /setup/restart.
+    const RESTART_OWNER_TG = 7000999;
+    await deleteSetting(prisma, "setup_completed");
     await deleteSetting(prisma, "setup_owner_tg");
+    resetAccountFailures(RESTART_OWNER_TG);
+    setAdminIds([...config.ADMIN_IDS]);
+
+    await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({
+        telegram_id: String(RESTART_OWNER_TG),
+        username: "restart-owner",
+        password: "supersecret",
+        password_confirm: "supersecret",
+      }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+
+    const finishRes = await app.inject({
+      method: "POST",
+      url: "/setup/shop",
+      payload: form({ shop_name: "Toko Demo" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(finishRes.statusCode).toBe(303);
+    expect(finishRes.headers.location).toBe("/setup/done");
+    const setCookie = finishRes.headers["set-cookie"];
+    expect(setCookie).toBeDefined();
+    const raw = Array.isArray(setCookie) ? setCookie[0]! : setCookie!;
+    const ownerCookie = decodeURIComponent(raw.split(";")[0]!.split("=").slice(1).join("="));
+
     await setSetting(prisma, "bot_token", "123:test-token");
     const target = join(tmpdir(), `restart-${Date.now()}.txt`);
     process.env.RESTART_TRIGGER_FILE = target;
     try {
-      const res = await app.inject({
-        method: "POST",
-        url: "/setup/restart",
-        payload: form({}),
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-      });
+      const res = await post("/setup/restart", ownerCookie, {});
       expect(res.statusCode).toBe(200);
       expect(existsSync(target)).toBe(true);
       const data = JSON.parse(res.body) as { ok: boolean; restarted: boolean; bot_configured: boolean };

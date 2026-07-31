@@ -27,6 +27,7 @@ import {
 } from "@app/db";
 import { hashPassword, makeSession, newJti, passwordHashKey, sessionJtiKey } from "../auth";
 import { setTokenValidator, getTokenValidator } from "../lib/telegramCheck";
+import { currentAdmin } from "../plugins/auth";
 
 // Re-exported for tests that import setTokenValidator from this module.
 export { setTokenValidator };
@@ -198,8 +199,17 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
 
   // Best-effort Passenger restart: touch tmp/restart.txt so the app reboots and
   // picks up the new bot token/admin (grammY can't hot-swap a token — spec §7).
-  app.post("/setup/restart", async (_req, reply) => {
-    if (await checkSetupLock(reply)) return;
+  // Unlike its three siblings, this route is only ever called from the Done
+  // screen — i.e. AFTER /setup/shop's finish handler has already called
+  // markSetupComplete() and auto-logged the owner in (setup.ts above), so a
+  // `checkSetupLock` guard would 303-redirect every real call before it ever
+  // runs. Gate on a real admin session instead (H-5): an anonymous caller can
+  // no longer loop this to reboot the process, while the legitimate
+  // post-setup "Restart server" click (which always carries a valid session
+  // cookie by the time it fires) keeps working. No csrfProtect here — the
+  // pre-auth SPA client (publicPost) doesn't attach a CSRF token; adding it
+  // would need a client-side change too, tracked as a follow-up, not this fix.
+  app.post("/setup/restart", { preHandler: currentAdmin }, async (_req, reply) => {
     const target = process.env.RESTART_TRIGGER_FILE ?? join(process.cwd(), "tmp", "restart.txt");
     let ok = true;
     try {

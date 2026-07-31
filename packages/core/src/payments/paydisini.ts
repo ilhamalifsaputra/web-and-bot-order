@@ -36,6 +36,43 @@ export interface PaydisiniOrderInfo {
   totalBayar: string | null;
 }
 
+/**
+ * GET a PayDisini endpoint whose query string carries `user_key`/`api_key`,
+ * and return its parsed JSON body. PayDisini's API (per its public docs,
+ * flagged ASSUMPTION above) only accepts these credentials via query string
+ * — there's no header/POST-body alternative to switch to. Given that, every
+ * failure mode of the raw `fetch()` call is caught HERE, inside this single
+ * choke point, and rethrown as a new `Error` built from a static,
+ * credential-free string:
+ *   - `fetch()` itself can reject (DNS failure, connection refused, aborted,
+ *     TLS error, …) before a `Response` even exists. Node's `fetch` some­times
+ *     attaches the failed request to `err.cause`, which a naive `logger.error({
+ *     err })` downstream (or an *unhandled rejection* if a caller forgets to
+ *     `.catch()`) would serialize whole — echoing the api key straight back
+ *     into logs. Catching it here and throwing a fresh, static-message Error
+ *     means nothing downstream ever sees the original object.
+ *   - `res.json()` can throw on a malformed body; same treatment.
+ * The existing `!res.ok` branch keeps its own static-message throw (no
+ * change in behavior), just relocated into this shared helper so both
+ * `createTransaction` and `checkTransaction` get the same guarantee.
+ */
+async function fetchPaydisiniJson(url: string, errorPrefix: string): Promise<Record<string, unknown>> {
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch {
+    throw new Error(`${errorPrefix} network error`); // never log the query — it carries the api key
+  }
+  if (!res.ok) {
+    throw new Error(`${errorPrefix} HTTP ${res.status}`); // never log the query — it carries the api key
+  }
+  try {
+    return (await res.json()) as Record<string, unknown>;
+  } catch {
+    throw new Error(`${errorPrefix} returned an unparseable response`); // never log the query — it carries the api key
+  }
+}
+
 /** Create (or fetch — ref_id is idempotent) the gateway transaction for an order. */
 export async function createTransaction(
   creds: PaydisiniCreds,
@@ -48,11 +85,7 @@ export async function createTransaction(
     amount: new Decimal(args.amountIdr).toFixed(0),
     service: creds.channel,
   });
-  const res = await fetch(`${API_BASE}/v1/transaction?${params.toString()}`);
-  if (!res.ok) {
-    throw new Error(`PayDisini order HTTP ${res.status}`); // never log the query — it carries the api key
-  }
-  const body = (await res.json()) as {
+  const body = (await fetchPaydisiniJson(`${API_BASE}/v1/transaction?${params.toString()}`, "PayDisini order")) as {
     success?: unknown;
     status?: unknown;
     data?: Record<string, unknown>;
@@ -104,11 +137,7 @@ export async function checkTransaction(
     amount: new Decimal(args.amountIdr).toFixed(0),
     service: creds.channel,
   });
-  const res = await fetch(`${API_BASE}/v1/transaction?${params.toString()}`);
-  if (!res.ok) {
-    throw new Error(`PayDisini status HTTP ${res.status}`); // never log the query — it carries the api key
-  }
-  const body = (await res.json()) as {
+  const body = (await fetchPaydisiniJson(`${API_BASE}/v1/transaction?${params.toString()}`, "PayDisini status")) as {
     success?: unknown;
     status?: unknown;
     data?: Record<string, unknown>;

@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { localize } from "@app/core/datetime";
-import { ProductType, UserRole, DeliveryType } from "@app/core/enums";
+import { ProductType, UserRole, DeliveryType, OrderStatus, PaymentMethod } from "@app/core/enums";
 import {
   prisma,
   initDb,
@@ -220,6 +220,20 @@ function multipart(
 
 function postMultipart(url: string, cookie: string | null, mp: ReturnType<typeof multipart>) {
   return app.inject({ method: "POST", url, headers: mp.headers, cookies: cookie ? { [COOKIE]: cookie } : {}, payload: mp.payload });
+}
+
+/** True if `key` appears anywhere in `value` (object or array), at any
+ * depth — the H-4 regression tests below use this to prove a JSON response
+ * never carries a raw User row's `passwordHash`/`email`, however deeply
+ * nested (e.g. under `orders[].user`, not just top-level `user`). */
+function containsKeyDeep(value: unknown, key: string): boolean {
+  if (value === null || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some((v) => containsKeyDeep(v, key));
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (k === key) return true;
+    if (containsKeyDeep(v, key)) return true;
+  }
+  return false;
 }
 
 async function makePendingOrder(): Promise<number> {
@@ -4453,6 +4467,94 @@ describe("payments", () => {
     // And of course no audit row exists either.
     const audit = await prisma.auditLog.findMany({ where: { action: "tx_dismiss", details: "tx=ATOMTX1" } });
     expect(audit.length).toBe(0);
+  });
+});
+
+// ---- H-4 (backend audit 2026-07-31): the Users/Orders/Payments JSON APIs
+// used to spread whole Prisma User rows (`...u`, `...user`, an order's
+// `user: true` include) straight into the response body — reachable by the
+// lowest-privilege `readonly` admin role. getUser/listUsers and
+// fullInclude/listOrders now project a fixed field set that never includes
+// passwordHash (or email), so these prove the leak is actually closed rather
+// than just "the endpoint still works." A distinctive passwordHash value
+// makes a false negative (e.g. the hash landing under some other key)
+// visible too, not just a `passwordHash` key check.
+describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
+  const LEAK_HASH = "hash-must-never-leave-the-server-h4";
+  const LEAK_EMAIL = "h4-leak-check@shop.test";
+
+  async function makeWebBuyer(loginUsername: string) {
+    return createWebUser(prisma, {
+      loginUsername,
+      email: LEAK_EMAIL,
+      passwordHash: LEAK_HASH,
+      fullName: "H4 Leak Check",
+    });
+  }
+
+  it("GET /api/users never exposes passwordHash", async () => {
+    await makeWebBuyer("h4users1");
+    const res = await get("/api/users", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain(LEAK_HASH);
+    expect(containsKeyDeep(JSON.parse(res.body), "passwordHash")).toBe(false);
+  });
+
+  it("GET /api/users/:userId never exposes passwordHash", async () => {
+    const web = await makeWebBuyer("h4users2");
+    const res = await get(`/api/users/${web.id}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain(LEAK_HASH);
+    expect(containsKeyDeep(JSON.parse(res.body), "passwordHash")).toBe(false);
+  });
+
+  it("GET /api/orders never exposes the buyer's passwordHash", async () => {
+    const web = await makeWebBuyer("h4orders1");
+    await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 });
+    const res = await get("/api/orders", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain(LEAK_HASH);
+    expect(containsKeyDeep(JSON.parse(res.body), "passwordHash")).toBe(false);
+  });
+
+  it("GET /api/orders/:orderId never exposes the buyer's passwordHash", async () => {
+    const web = await makeWebBuyer("h4orders2");
+    const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
+    const res = await get(`/api/orders/${order.id}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain(LEAK_HASH);
+    expect(containsKeyDeep(JSON.parse(res.body), "passwordHash")).toBe(false);
+  });
+
+  it("GET /api/payments never exposes an underpaid buyer's passwordHash", async () => {
+    const web = await makeWebBuyer("h4pay1");
+    const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
+    await markUnderpaid(prisma, { orderId: order.id, binanceTxId: `H4TX-${order.id}`, amount: "1.00" });
+    const res = await get("/api/payments", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain(LEAK_HASH);
+    expect(containsKeyDeep(JSON.parse(res.body), "passwordHash")).toBe(false);
+  });
+
+  // Covers payments.ts's OTHER raw order list — pendingInternal, sourced from
+  // binance_internal.ts's listPendingInternalOrders, not listOrders — so this
+  // exercises a different crud query than the "underpaid" test above.
+  it("GET /api/payments never exposes a pending-internal-transfer buyer's passwordHash", async () => {
+    const web = await makeWebBuyer("h4pay2");
+    const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: OrderStatus.PENDING_PAYMENT,
+        paymentMethod: PaymentMethod.BINANCE_INTERNAL,
+        paymentRef: `H4REF-${order.id}`,
+        expiresAt: new Date(Date.now() + 3_600_000),
+      },
+    });
+    const res = await get("/api/payments", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain(LEAK_HASH);
+    expect(containsKeyDeep(JSON.parse(res.body), "passwordHash")).toBe(false);
   });
 });
 

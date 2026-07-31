@@ -174,11 +174,15 @@ describe("stock deduction", () => {
 
   it("reject refunds wallet and rolls back voucher usage", async () => {
     const { product, voucher } = sample;
-    let { user } = sample;
+    const { user: sampleUser } = sample;
 
     // Give the user a 3.00 wallet balance, then re-read so the order sees it.
-    await prisma.user.update({ where: { id: user.id }, data: { walletBalance: "3.0000" } });
-    user = (await getUser(prisma, user.id))!;
+    await prisma.user.update({ where: { id: sampleUser.id }, data: { walletBalance: "3.0000" } });
+    // `getUser` projects out passwordHash/email (backend audit finding H-4),
+    // so its return type is narrower than `sample.user` — a fresh binding
+    // instead of reassigning `user` keeps this test independent of that
+    // projection's exact field set.
+    const user = (await getUser(prisma, sampleUser.id))!;
 
     await addToCart(prisma, user.id, product.id, 2); // 10.00
     const created = await createOrderFromCart(prisma, {

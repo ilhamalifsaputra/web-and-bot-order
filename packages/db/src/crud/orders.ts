@@ -220,10 +220,31 @@ export async function releaseGatewaySlot(db: Db, orderId: number, sentinel: stri
   });
 }
 
+/** Fields of the linked buyer surfaced through Order's `user` relation.
+ * web-admin's Orders and Payments pages spread the whole order object
+ * straight into JSON (list/detail/CSV export, and the underpaid/pending-
+ * internal-transfer lists on the Payments page — see binance_internal.ts's
+ * `listPendingInternalOrders`, which reuses this same projection), reachable
+ * by the lowest-privilege `readonly` admin role — so this must NEVER widen to
+ * include `passwordHash` or `email` (backend audit finding H-4). Keep in
+ * sync with what order-bot's payment reconcilers/pollers and web-admin's
+ * Orders/Payments routes actually read off `order.user`: telegramId +
+ * language for notification dispatch, fullName/username/loginUsername for
+ * CSV export and eligibility labels. Mirrors the TICKET_USER_SELECT pattern
+ * in crud/support.ts. */
+export const ORDER_USER_SELECT = {
+  id: true,
+  telegramId: true,
+  username: true,
+  fullName: true,
+  loginUsername: true,
+  language: true,
+} as const;
+
 /** Eager-load shape matching the Python get_order selectinload set. */
 const fullInclude = {
   items: { include: { product: true, stockItem: true } },
-  user: true,
+  user: { select: ORDER_USER_SELECT },
   voucher: true,
 } satisfies Prisma.OrderInclude;
 
@@ -301,7 +322,7 @@ export function getOrder(db: Db, orderId: number) {
 export function getOrderByCode(db: Db, orderCode: string) {
   return db.order.findUnique({
     where: { orderCode },
-    include: { items: { include: { product: true } }, user: true },
+    include: { items: { include: { product: true } }, user: { select: ORDER_USER_SELECT } },
   });
 }
 
@@ -1601,7 +1622,7 @@ export function listOrders(
 ) {
   return db.order.findMany({
     where: orderWhere(opts),
-    include: { user: true, items: { include: { product: true } } },
+    include: { user: { select: ORDER_USER_SELECT }, items: { include: { product: true } } },
     orderBy: { createdAt: "desc" },
     skip: opts.offset ?? 0,
     take: opts.limit ?? 50,

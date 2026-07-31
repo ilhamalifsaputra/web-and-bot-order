@@ -21,12 +21,47 @@ const likeContains = (q: string) => ({ contains: q });
  * filters, and KPIs never include role=ADMIN, filtered or not. */
 const NON_ADMIN_ROLES = [UserRole.CUSTOMER, UserRole.RESELLER];
 
+/** Every User column except `passwordHash` and `email` — the general-purpose
+ * projection for `getUser`/`listUsers`, used by web-admin's Customers page and
+ * order-bot's admin/customer/checkout handlers alike. These two functions'
+ * results get spread straight into JSON responses readable by the
+ * lowest-privilege `readonly` admin role (Customers list, detail, CSV
+ * export), so `passwordHash` must NEVER be selectable here (backend audit
+ * finding H-4). `email` is dropped too: nothing that reads through this
+ * projection renders it (checked against UsersPage.tsx/UserDetailPage.tsx and
+ * every order-bot caller) — the one caller that genuinely needs the full row
+ * (email + passwordHash, for the storefront's own-account settings page) uses
+ * `getUserWithPasswordHash` in crud/webauth.ts instead. Mirrors the
+ * TICKET_USER_SELECT pattern in crud/support.ts. Add new User columns here
+ * explicitly as they're added to the schema — this list is NOT auto-synced
+ * with Prisma's model. */
+const USER_SELECT = {
+  id: true,
+  telegramId: true,
+  username: true,
+  fullName: true,
+  loginUsername: true,
+  role: true,
+  language: true,
+  walletBalance: true,
+  walletBalanceUsdt: true,
+  referralCode: true,
+  referredById: true,
+  banned: true,
+  bannedReason: true,
+  createdAt: true,
+  lastSeenAt: true,
+} as const;
+
 export function getUserByTelegramId(db: Db, telegramId: number | bigint) {
   return db.user.findUnique({ where: { telegramId: BigInt(telegramId) } });
 }
 
+/** General-purpose user lookup — never returns `passwordHash` or `email` (see
+ * USER_SELECT above). Login/credential verification uses
+ * `getUserWithPasswordHash` (crud/webauth.ts) instead. */
 export function getUser(db: Db, userId: number) {
-  return db.user.findUnique({ where: { id: userId } });
+  return db.user.findUnique({ where: { id: userId }, select: USER_SELECT });
 }
 
 /**
@@ -406,12 +441,12 @@ export async function listUsers(
   if (opts.sort === "spend") {
     const pageIds = await rankUserIdsBySpend(db, where, offset, limit);
     if (pageIds.length === 0) return [];
-    const rows = await db.user.findMany({ where: { id: { in: pageIds } } });
+    const rows = await db.user.findMany({ where: { id: { in: pageIds } }, select: USER_SELECT });
     const byId = new Map(rows.map((u) => [u.id, u]));
     return pageIds.map((id) => byId.get(id)).filter((u): u is (typeof rows)[number] => u != null);
   }
 
-  return db.user.findMany({ where, orderBy: userOrderBy(opts.sort), skip: offset, take: limit });
+  return db.user.findMany({ where, orderBy: userOrderBy(opts.sort), skip: offset, take: limit, select: USER_SELECT });
 }
 
 /** Count matching `listUsers`' filter — for the Customers page's pagination total. */

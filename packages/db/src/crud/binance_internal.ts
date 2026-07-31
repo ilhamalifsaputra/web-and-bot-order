@@ -16,7 +16,15 @@ import { startOfDayUtc } from "@app/core/datetime";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
-import { getOrder, createOrderDirect, approveOrder, settlePaidOrder, applyUsdtWalletToOrder, type SettleResult } from "./orders";
+import {
+  getOrder,
+  createOrderDirect,
+  approveOrder,
+  settlePaidOrder,
+  applyUsdtWalletToOrder,
+  ORDER_USER_SELECT,
+  type SettleResult,
+} from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { adjustWallet } from "./users";
 import { getSetting, setSetting } from "./settings";
@@ -156,7 +164,13 @@ export function listDeliveredOrdersAwaitingEdit(db: Db, method: PaymentMethod) {
   });
 }
 
-/** PENDING, not-yet-expired internal-transfer orders the poller should match against. */
+/** PENDING, not-yet-expired internal-transfer orders the poller should match
+ * against. Also the direct data source for web-admin's Payments page
+ * "pending internal transfers" list (apps/web-admin/src/routes/api/
+ * payments.ts spreads these straight into JSON) — `user` is therefore
+ * projected through orders.ts's ORDER_USER_SELECT, never `include: { user:
+ * true }`, so a raw passwordHash/email can't ship in that response
+ * (backend audit finding H-4). */
 export function listPendingInternalOrders(db: Db, now: Date) {
   return db.order.findMany({
     where: {
@@ -165,7 +179,7 @@ export function listPendingInternalOrders(db: Db, now: Date) {
       paymentRef: { not: null },
       expiresAt: { gt: now },
     },
-    include: { user: true },
+    include: { user: { select: ORDER_USER_SELECT } },
   });
 }
 

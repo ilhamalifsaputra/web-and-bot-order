@@ -6,6 +6,7 @@ import {
   prisma,
   createBybitOrder,
   deliverPaidBybitOrder,
+  markUnderpaidBybit,
   recordUnmatchedBybitTx,
   listPendingBybitOrders,
   resolveBybitConfig,
@@ -289,11 +290,58 @@ describe("processDeposits (poll-loop wiring)", () => {
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xT2" } }))!.outcome).toBe("unmatched");
   });
 
-  it("records a no-candidate deposit as unmatched", async () => {
-    await makeBybitOrder();
+  // No pending orders at all — the only way to get a genuine "no candidate"
+  // result now that matchByAmount accepts overpayment unbounded above (M-14):
+  // with a pending order present, ANY amount at or above its total is a clean
+  // match (deliver-as-overpaid) and any amount short of it alone is underpaid,
+  // so "unmatched" only remains reachable via zero candidates or ambiguity.
+  it("records a no-candidate deposit as unmatched (no pending orders)", async () => {
     const { api } = fakeApi();
     await processDeposits(api, [dep({ txId: "0xT3", amount: 999.99 })], await pending());
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xT3" } }))!.outcome).toBe("unmatched");
+  });
+
+  // M-14 (backend audit 2026-07-31): Internal Transfer has no memo, so amount
+  // is the only disambiguator — a buyer who rounds up used to match nothing
+  // (recorded unmatched, order later auto-cancels at expiry) even though the
+  // money genuinely arrived. matchByAmount is now asymmetric: at-or-above the
+  // order's total is accepted, overpayment included.
+  it("delivers on a deposit that overpays the sole pending order (previously unmatched)", async () => {
+    const order = (await makeBybitOrder())!;
+    const { api } = fakeApi();
+    const overpaid = Number(order.totalAmount) + 0.5; // well beyond float-noise tolerance
+    await processDeposits(api, [dep({ txId: "0xOVER", amount: overpaid })], await pending());
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
+    expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xOVER" } }))!.outcome).toBe("matched");
+  });
+
+  // Mirror of the overpay case on the short side: a deposit that's uniquely
+  // attributable to the sole pending order but short of its total beyond
+  // tolerance now flags UNDERPAID instead of silently falling through to
+  // "unmatched" (M-14).
+  it("flags the sole pending order UNDERPAID on a deposit that's short (previously unmatched)", async () => {
+    const order = (await makeBybitOrder())!;
+    const { api, sent } = fakeApi();
+    const underpaid = Number(order.totalAmount) - 0.5; // short beyond tolerance
+    await processDeposits(api, [dep({ txId: "0xUNDER", amount: underpaid })], await pending());
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.UNDERPAID);
+    expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xUNDER" } }))!.outcome).toBe("underpaid");
+    expect(sent.some((m) => /[Uu]nderpaid/.test(m.text))).toBe(true);
+  });
+
+  // A deposit short of BOTH pending orders (ambiguous underpaid candidate)
+  // must still refuse rather than guess which order it was meant for — same
+  // ambiguity guard as the matched path, just on the short side.
+  it("refuses an underpaid deposit that's ambiguous between two pending orders → unmatched", async () => {
+    const a = (await makeBybitOrder())!;
+    const b = (await makeBybitOrder())!; // unique-cents off in tests → equal totals
+    expect(a.totalAmount).toEqual(b.totalAmount);
+    const { api } = fakeApi();
+    const underpaid = Number(a.totalAmount) - 0.5;
+    await processDeposits(api, [dep({ txId: "0xUNDER-AMB", amount: underpaid })], await pending());
+    expect((await prisma.order.findUnique({ where: { id: a.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect((await prisma.order.findUnique({ where: { id: b.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xUNDER-AMB" } }))!.outcome).toBe("unmatched");
   });
 });
 
@@ -372,5 +420,16 @@ describe("recordUnmatchedBybitTx", () => {
     expect(await recordUnmatchedBybitTx(prisma, { bybitTxId: "0xUNM", amount: "9.99" })).toBe(true);
     expect(await recordUnmatchedBybitTx(prisma, { bybitTxId: "0xUNM", amount: "9.99" })).toBe(false);
     expect(await prisma.processedBybitTx.count({ where: { bybitTxId: "0xUNM", outcome: "unmatched" } })).toBe(1);
+  });
+});
+
+describe("markUnderpaidBybit", () => {
+  it("flags the order UNDERPAID once (idempotent)", async () => {
+    const order = await makeBybitOrder();
+    const first = await markUnderpaidBybit(prisma, { orderId: order!.id, bybitTxId: "0xUP", amount: "1.00" });
+    expect(first).toBe(true);
+    expect((await prisma.order.findUnique({ where: { id: order!.id } }))!.status).toBe(OrderStatus.UNDERPAID);
+    const second = await markUnderpaidBybit(prisma, { orderId: order!.id, bybitTxId: "0xUP", amount: "1.00" });
+    expect(second).toBe(false);
   });
 });

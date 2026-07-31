@@ -4,9 +4,10 @@
  *
  * Mirrors binance_internal.ts but simpler: internal transfers carry NO memo, so
  * an incoming deposit is matched to a PENDING order purely by its unique total
- * amount (USE_UNIQUE_CENTS keeps every order distinct). There is therefore no
- * underpaid auto-path — a deposit whose amount matches no order is "unmatched"
- * and left for manual review.
+ * amount (USE_UNIQUE_CENTS keeps every order distinct). A deposit that's
+ * neither a clean (at-or-above-total) match nor uniquely attributable as
+ * underpaid to one pending order is "unmatched" and left for manual review
+ * (M-14, backend audit 2026-07-31 — see markUnderpaidBybit).
  *
  * Idempotency on SQLite: the `processed_bybit_tx.bybit_tx_id` UNIQUE constraint
  * is the concurrency gate — claiming the internal-deposit txID is an atomic
@@ -206,6 +207,43 @@ export async function deliverPaidBybitOrder(
       .catch(() => undefined);
     throw e;
   }
+}
+
+/**
+ * A deposit uniquely attributable to one pending order but short of its total
+ * beyond tolerance (M-14, backend audit 2026-07-31): flag UNDERPAID for admin
+ * review (idempotent), mirroring `markUnderpaid` in binance_internal.ts. There
+ * is no memo here to confirm intent, so the caller only reaches this once its
+ * own amount-only search (`matchUnderpaidByAmount`) found exactly one pending
+ * order pricier than the received amount — the same ambiguity guard as the
+ * matched path, just on the short side.
+ */
+export async function markUnderpaidBybit(
+  db: Db,
+  args: { orderId: number; bybitTxId: string; amount: Decimal.Value },
+): Promise<boolean> {
+  try {
+    await db.processedBybitTx.create({
+      data: { bybitTxId: args.bybitTxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "underpaid" },
+    });
+  } catch (e) {
+    if (isUniqueViolation(e)) return false;
+    throw e;
+  }
+  await db.order.update({
+    where: { id: args.orderId },
+    data: {
+      bybitTxid: args.bybitTxId,
+      adminNote: `[underpaid] received ${new Decimal(args.amount).toString()} via tx ${args.bybitTxId}`,
+    },
+  });
+  await transitionOrderStatus(db, {
+    orderId: args.orderId,
+    from: OrderStatus.PENDING_PAYMENT,
+    to: OrderStatus.UNDERPAID,
+    meta: `bybitTxId=${args.bybitTxId}`,
+  });
+  return true;
 }
 
 /** A deposit that matched no PENDING order — record once for manual review. */

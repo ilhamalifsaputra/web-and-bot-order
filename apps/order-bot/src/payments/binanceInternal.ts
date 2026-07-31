@@ -99,10 +99,18 @@ export function classifyTx(
  * Amount fallback for when the note is missing/garbled (the live probe showed
  * `/sapi/v1/pay/transactions` returns an empty `note` for C2C transfers, so we
  * cannot rely on the memo alone). A transfer maps to an order ONLY when exactly
- * one pending order expects an amount within `tolerance` of the received amount.
- * With unique-cents enabled every order has a distinct total, so this is exact;
- * on a collision (≥2 candidates) we refuse and leave it for manual matching,
- * never guessing whose money it is. Returns the sole candidate or null.
+ * one pending order's total is at or below the received amount (within
+ * `tolerance` on the short side, unbounded above) — see M-14 (backend audit
+ * 2026-07-31): a buyer who rounds up (a very common real-world behavior) must
+ * still match, so overpayment is never rejected on the amount check alone.
+ * With unique-cents enabled every order has a distinct total, so this is exact
+ * for a genuine payment; on a collision (≥2 candidates — e.g. the received
+ * amount happens to overpay one order AND exactly match a pricier one) we
+ * refuse and leave it for manual matching, never guessing whose money it is.
+ * Returns the sole candidate or null. A tx that's short of EVERY candidate
+ * beyond tolerance yields no hits here — see `matchUnderpaidByAmount` for the
+ * mirrored short-side search memo-less rails use to flag underpaid instead of
+ * silently leaving it unmatched.
  */
 export function matchByAmount<T extends { totalAmount: Decimal.Value }>(
   tx: { amount: number },
@@ -110,7 +118,30 @@ export function matchByAmount<T extends { totalAmount: Decimal.Value }>(
   tolerance = AMOUNT_TOLERANCE,
 ): T | null {
   const hits = orders.filter(
-    (o) => Math.abs(tx.amount - new Decimal(o.totalAmount).toNumber()) <= tolerance,
+    (o) => tx.amount - new Decimal(o.totalAmount).toNumber() >= -tolerance,
+  );
+  return hits.length === 1 ? hits[0]! : null;
+}
+
+/**
+ * Mirror of `matchByAmount` for the short side, used by the memo-less Bybit
+ * rails (Internal Transfer, BSC) once `matchByAmount` itself finds no clean
+ * match: a transfer maps to a "genuinely short" candidate ONLY when exactly
+ * one pending order's total exceeds the received amount by MORE than
+ * `tolerance` (a plain float-noise short-fall already matched above and never
+ * reaches this function). Same ambiguity guard as `matchByAmount` — ≥2
+ * candidates (e.g. two pending orders both pricier than the received amount)
+ * refuses rather than guessing which order the buyer meant to pay. Returns the
+ * sole candidate or null; the caller routes a hit to that rail's
+ * `markUnderpaid` equivalent instead of recording the deposit as unmatched.
+ */
+export function matchUnderpaidByAmount<T extends { totalAmount: Decimal.Value }>(
+  tx: { amount: number },
+  orders: readonly T[],
+  tolerance = AMOUNT_TOLERANCE,
+): T | null {
+  const hits = orders.filter(
+    (o) => new Decimal(o.totalAmount).toNumber() - tx.amount > tolerance,
   );
   return hits.length === 1 ? hits[0]! : null;
 }
@@ -393,8 +424,10 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
   for (const tx of txs) {
     // Primary: match the buyer's note to an order's paymentRef. Fallback: when
     // the note is empty/garbled, match by a unique expected amount (see
-    // matchByAmount). The amount path only ever yields an exact-within-tolerance
-    // hit, so it's treated as a clean "match" (never auto-underpaid).
+    // matchByAmount, M-14 backend audit 2026-07-31: at-or-above expected, with
+    // overpayment accepted rather than rejected). The amount path only ever
+    // yields a hit at or above the expected total, so it's treated as a clean
+    // "match" (never auto-underpaid) — a short amount simply yields no hit here.
     //
     // The amount fallback is gated on USE_UNIQUE_CENTS: without it, distinct
     // orders can share an identical total, turning a no-note transfer into a

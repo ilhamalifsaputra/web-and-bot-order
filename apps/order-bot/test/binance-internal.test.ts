@@ -28,6 +28,7 @@ import {
   classifyTx,
   noteMatches,
   matchByAmount,
+  matchUnderpaidByAmount,
   normalizeTx,
   processTransfers,
   fetchIncomingTransfers,
@@ -186,19 +187,57 @@ describe("matchByAmount (note-less fallback)", () => {
     { id: 3, totalAmount: "12.3400" },
   ];
 
-  it("returns the sole order within tolerance", () => {
-    expect(matchByAmount({ amount: 7.5 }, orders)?.id).toBe(2);
-    expect(matchByAmount({ amount: 12.3401 }, orders)?.id).toBe(3); // within 0.001
+  it("returns the sole order at or within tolerance of the received amount", () => {
+    expect(matchByAmount({ amount: 7.5 }, [orders[1]!])?.id).toBe(2);
+    expect(matchByAmount({ amount: 12.3401 }, [orders[2]!])?.id).toBe(3); // within 0.001
+  });
+
+  // M-14 (backend audit 2026-07-31): overpayment (a buyer rounding up) is no
+  // longer rejected on the amount check — the received amount only needs to be
+  // AT OR ABOVE the sole candidate's total (unbounded above).
+  it("matches an overpaid amount against the sole candidate pricier orders can't reach", () => {
+    expect(matchByAmount({ amount: 20 }, [orders[2]!])?.id).toBe(3); // overpays by ~7.66
+  });
+
+  it("an overpaid amount that ALSO reaches a cheaper order's total is ambiguous, not guessed", () => {
+    // 7.5 both exactly matches order 2 and overpays order 1 by 2.5 — the
+    // system can't tell which the buyer meant, so it refuses rather than
+    // assuming the "obviously exact" one.
+    expect(matchByAmount({ amount: 7.5 }, orders)).toBeNull();
   });
 
   it("refuses when no order matches", () => {
-    expect(matchByAmount({ amount: 99 }, orders)).toBeNull();
-    expect(matchByAmount({ amount: 4.5 }, orders)).toBeNull(); // underpaid → no amount match
+    expect(matchByAmount({ amount: 4.5 }, [orders[0]!])).toBeNull(); // underpaid → no amount match
   });
 
   it("refuses on a collision (≥2 candidates) rather than guessing", () => {
     const dup = [{ id: 1, totalAmount: "5.0000" }, { id: 2, totalAmount: "5.0000" }];
     expect(matchByAmount({ amount: 5.0 }, dup)).toBeNull();
+  });
+});
+
+describe("matchUnderpaidByAmount (mirrored short-side search for memo-less rails)", () => {
+  const orders = [
+    { id: 1, totalAmount: "5.0000" },
+    { id: 2, totalAmount: "7.5000" },
+  ];
+
+  it("returns the sole order the received amount falls short of beyond tolerance", () => {
+    expect(matchUnderpaidByAmount({ amount: 4.5 }, [orders[0]!])?.id).toBe(1);
+  });
+
+  it("refuses within tolerance (that's a clean match, not underpaid)", () => {
+    expect(matchUnderpaidByAmount({ amount: 4.9995 }, [orders[0]!])).toBeNull();
+  });
+
+  it("refuses on a collision — short of ≥2 candidates at once", () => {
+    // 4.5 is short of BOTH orders' totals beyond tolerance — can't tell which
+    // one the buyer was trying (and failing) to pay.
+    expect(matchUnderpaidByAmount({ amount: 4.0 }, orders)).toBeNull();
+  });
+
+  it("refuses when the amount isn't short of anything (that's matchByAmount's job)", () => {
+    expect(matchUnderpaidByAmount({ amount: 10 }, orders)).toBeNull();
   });
 });
 

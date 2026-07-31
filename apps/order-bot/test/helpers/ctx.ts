@@ -31,6 +31,20 @@ export interface SentCall {
 export interface MakeCtxOptions {
   sink?: SentCall[];
   session?: Partial<SessionData>;
+  /** Reuse this exact session object instead of building a fresh one, so a
+   * whole scripted conversation shares ONE session. That is what really
+   * happens: every update for a chat resolves to the same grammY session
+   * object, and @grammyjs/conversations hands the live context — hence that
+   * live session — to whichever wait() resumed the turn. Without this, each
+   * scripted update gets a private session and cross-turn state (menuMsgId,
+   * scratch) is unobservable, which is what let a cross-wait anchor bug hide
+   * from the suite. Takes precedence over `session`. */
+  sharedSession?: SessionData;
+  /** Message ids that behave as already-deleted for THIS ctx: any edit
+   * targeting them rejects the way real Telegram does ("message to edit not
+   * found"). Lets a test drive smartEdit's and editAnchor's fresh-send
+   * fallback without first scripting a deleteMessage call. */
+  deletedMessageIds?: number[];
   from?: { id: number; username?: string; first_name?: string; last_name?: string };
   /** Sets ctx.callbackQuery with this data. */
   callbackData?: string;
@@ -80,7 +94,7 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
   // editing a deleted message throws, which is what makes smartEdit's catch
   // fall through to a fresh send instead of "successfully" editing a bubble
   // that no longer exists.
-  const deletedIds = new Set<number>();
+  const deletedIds = new Set<number>(opts.deletedMessageIds ?? []);
 
   // A raw grammY InputFile can't be JSON.stringify'd (its toJSON throws
   // "must be sent via grammY"), which would blow up sentIncludes the moment a
@@ -123,13 +137,31 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
       return Promise.resolve({ message_id: ++msgSeq, chat, date: 0 });
     };
 
+  // api-level editors take an explicit (chatId, messageId, …) — unlike the
+  // ctx-level ones they don't depend on a callback query, so this is the path
+  // wizard anchors use. Reject when the target bubble is gone, the way real
+  // Telegram does, so editAnchor's fresh-send fallback is reachable from a
+  // test. editMessageReplyMarkup deliberately stays on the plain recorder:
+  // retireKeyboard swallows its errors anyway, and keeping it recorded lets
+  // tests still observe that a stale bubble's keyboard was retired.
+  const recApiEdit =
+    (method: string) =>
+    (...args: unknown[]) => {
+      const messageId = args[1];
+      if (typeof messageId === "number" && deletedIds.has(messageId)) {
+        return Promise.reject(new Error("message to edit not found"));
+      }
+      sink.push({ method, args: sanitize(args) });
+      return Promise.resolve({ message_id: ++msgSeq, chat, date: 0 });
+    };
+
   const api = {
     sendMessage: rec("sendMessage"),
     sendPhoto: rec("sendPhoto"),
     sendDocument: rec("sendDocument"),
     sendMediaGroup: rec("sendMediaGroup"),
-    editMessageText: rec("editMessageText"),
-    editMessageCaption: rec("editMessageCaption"),
+    editMessageText: recApiEdit("editMessageText"),
+    editMessageCaption: recApiEdit("editMessageCaption"),
     editMessageReplyMarkup: rec("editMessageReplyMarkup"),
     deleteMessage: recDelete("deleteMessage"),
     setMyCommands: rec("setMyCommands"),
@@ -186,11 +218,13 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
       }
     : undefined;
 
-  const session: SessionData = {
-    lang: "en",
-    scratch: {},
-    ...opts.session,
-  } as SessionData;
+  const session: SessionData =
+    opts.sharedSession ??
+    ({
+      lang: "en",
+      scratch: {},
+      ...opts.session,
+    } as SessionData);
 
   const ctx = {
     update: { update_id: ++msgSeq },
@@ -225,14 +259,20 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
   return { ctx, sink };
 }
 
-/** A conversation handle stub feeding queued contexts; external() runs ops now. */
+/** A conversation handle stub feeding queued contexts; external() runs ops now.
+ *
+ * A queue entry may be a ready-made context or a thunk built at wait() time.
+ * Thunks exist because a realistic tap has to reference state the conversation
+ * hasn't produced yet: the wizard's buttons live ON the anchor bubble, so a
+ * tap's callbackQuery.message.message_id must equal the anchor id — which only
+ * exists once the earlier step has rendered. */
 export class FakeConversation {
-  constructor(private readonly queue: MyContext[]) {}
+  constructor(private readonly queue: Array<MyContext | (() => MyContext)>) {}
 
   async wait(): Promise<MyContext> {
     const c = this.queue.shift();
     if (!c) throw new Error("FakeConversation: queue empty (conversation waited for more input than scripted)");
-    return c;
+    return typeof c === "function" ? c() : c;
   }
   waitFor = (_q?: unknown) => this.wait();
   waitForHears = (_t?: unknown) => this.wait();

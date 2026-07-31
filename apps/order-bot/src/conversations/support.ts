@@ -36,9 +36,20 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
   await smartEdit(ctx, intro, ckb.backToMain(lang));
 
   // --- AWAITING_TICKET: description ---
+  // lastCtx tracks the freshest waited context. @grammyjs/conversations
+  // replays the conversation on every resume, so the entry `ctx` parameter
+  // is a throwaway reconstruction of the FIRST update only — a menuAnchor
+  // fallback (fresh send) after any wait() must write its new anchor id onto
+  // the update that's actually being persisted (the latest `u`), never back
+  // onto `ctx`, or the write is silently lost and the next render re-derives
+  // a stale, already-abandoned anchor id (same "stray keyboard" bug this
+  // conversation exists to avoid, just reached a different way). Matches the
+  // ctx-then-u pattern used throughout checkout.ts/customerInfo.ts.
+  let lastCtx: MyContext = ctx;
   let body: string;
   for (;;) {
     const u = await conversation.wait();
+    lastCtx = u;
     if (isCmd(u, "start")) return void (await startCommand(u));
     if (isCmd(u, "cancel")) return void (await smartEdit(u, t(u, "menu.main"), ckb.backToMain(lang)));
     const text = u.message?.text;
@@ -67,9 +78,10 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
   const orders = await conversation.external(() => listUserOrders(prisma, info.id, 5, 0));
   let orderId: number | null = null;
   if (orders.length) {
-    await menuAnchor(ctx, t(ctx, "support.ask_order"), ckb.orderPickerKb(orders, lang));
+    await menuAnchor(lastCtx, t(lastCtx, "support.ask_order"), ckb.orderPickerKb(orders, lang));
     for (;;) {
       const u = await conversation.wait();
+      lastCtx = u;
       if (isCmd(u, "start")) return void (await startCommand(u));
       if (isCmd(u, "cancel")) return void (await smartEdit(u, t(u, "menu.main"), ckb.backToMain(lang)));
       const labelText = u.message?.text;
@@ -96,12 +108,13 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
     }
   }
 
-  await menuAnchor(ctx, t(ctx, "support.ask_photos"), ckb.supportPhotoPromptKb(0, lang));
+  await menuAnchor(lastCtx, t(lastCtx, "support.ask_photos"), ckb.supportPhotoPromptKb(0, lang));
 
   // --- AWAITING_PHOTOS: up to 3, auto-submit at 3, or Submit button ---
   const photos: string[] = [];
   for (;;) {
     const u = await conversation.wait();
+    lastCtx = u;
     const data = u.callbackQuery?.data ?? "";
     if (data === "v1:support:photos:done") {
       await u.answerCallbackQuery();
@@ -137,7 +150,7 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
     photoFileIds,
   });
 
-  await menuAnchor(ctx, t(ctx, "support.received"), ckb.backToMain(lang));
+  await menuAnchor(lastCtx, t(lastCtx, "support.received"), ckb.backToMain(lang));
 
   const photoNote = photos.length ? `\n📎 ${photos.length} photo(s) attached` : "";
   const forwardText =

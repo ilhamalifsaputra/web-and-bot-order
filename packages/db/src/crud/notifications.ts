@@ -10,6 +10,7 @@
  */
 import type { PrismaClient, Tx } from "../client";
 import { config } from "@app/core/config";
+import { logger } from "@app/core/logger";
 import {
   NotificationEvent,
   NotificationStatus,
@@ -566,6 +567,34 @@ export const FLASH_SALE_BROADCAST_CHUNK_SIZE = 500;
  * template for NotificationEvent.FLASH_SALE_BROADCAST in
  * packages/outbox-dispatcher/src/templates.ts — that's the one actually sent to
  * customers; this is only what the admin sees in the History table.
+ *
+ * Both terminal status writes (the SENT-flip on success, the FAILED-flip in
+ * the `catch`) are themselves ordinary SQLite writes that can fail under the
+ * exact writer contention this whole function exists to relieve — so neither
+ * is allowed to leave the row silently stuck (H-7 follow-up fix #2, backend
+ * audit 2026-07-31/08-01):
+ * - The row is created with `claimedAt` set, the same "atomically claimed"
+ *   marker `claimNextDueBroadcast` sets on the admin-compose broadcast path.
+ *   That's what makes `reapStaleBroadcasts` (`crud/broadcasts.ts`) able to see
+ *   this row at all — its `claimedAt: { lt: staleCutoff }` filter matches
+ *   nothing on a NULL column, so a row created without it would be invisible
+ *   to that existing stale-claim safety net forever. With `claimedAt` set, a
+ *   row that never reaches SENT or FAILED here (because BOTH the primary
+ *   write and its own recovery write failed) is still reclaimed as FAILED by
+ *   `reapStaleBroadcasts`, which `drainBroadcasts` already runs on every tick
+ *   — no new job needed.
+ * - The FAILED-flip in `catch` is itself wrapped in try/catch: if that write
+ *   ALSO throws (a double fault), the secondary error is logged but NEVER
+ *   allowed to replace the original chunk error in what gets re-thrown — a
+ *   caller catching this must always see the real root cause, not a masking
+ *   failure from the recovery attempt.
+ * - The trailing SENT-flip is also wrapped: if it throws, all customers WERE
+ *   still successfully enqueued (the loop above already completed), so this
+ *   function does NOT throw over a purely cosmetic bookkeeping failure — it
+ *   logs and returns `users.length` as normal. The row is left SENDING with
+ *   `claimedAt` set, so `reapStaleBroadcasts` reclaims it as FAILED later;
+ *   that terminal status ends up misleading for what was actually a full
+ *   success, but "eventually FAILED" beats "stuck forever."
  */
 export async function enqueueFlashSaleBroadcast(
   db: PrismaClient,
@@ -614,6 +643,12 @@ export async function enqueueFlashSaleBroadcast(
       failedCount: 0,
       createdById: args.createdById ?? null,
       scheduledAt: null,
+      // Same "atomically claimed" marker claimNextDueBroadcast sets — without
+      // it, reapStaleBroadcasts's `claimedAt: { lt: staleCutoff }` filter can
+      // never match this row (NULL never compares less-than anything), so a
+      // row stuck in SENDING here would be invisible to that safety net
+      // forever (H-7 follow-up fix #2, backend audit 2026-07-31/08-01).
+      claimedAt: new Date(),
       sentAt: null,
     },
   });
@@ -627,25 +662,54 @@ export async function enqueueFlashSaleBroadcast(
       await db.broadcast.update({ where: { id: bc.id }, data: { sentCount: { increment: chunk.length } } });
     }
   } catch (err) {
-    await db.broadcast.update({
-      where: { id: bc.id },
-      data: {
-        status: BroadcastStatus.FAILED,
-        failureReason: (
-          "Enqueueing the customer fan-out failed partway through — sentCount reflects how many customers " +
-          "were already queued the DM before the failure; the remainder were never reached. Re-announcing " +
-          "this sale (e.g. by re-scheduling it) will re-notify the WHOLE customer base with no de-duplication " +
-          "against those already reached here, so anyone covered by sentCount will receive it twice."
-        ).slice(0, 500),
-      },
-    });
+    try {
+      await db.broadcast.update({
+        where: { id: bc.id },
+        data: {
+          status: BroadcastStatus.FAILED,
+          failureReason: (
+            "Enqueueing the customer fan-out failed partway through — sentCount reflects how many customers " +
+            "were already queued the DM before the failure; the remainder were never reached. Re-announcing " +
+            "this sale (e.g. by re-scheduling it) will re-notify the WHOLE customer base with no de-duplication " +
+            "against those already reached here, so anyone covered by sentCount will receive it twice."
+          ).slice(0, 500),
+        },
+      });
+    } catch (recoveryErr) {
+      // Double fault: the row also failed to flip to FAILED (same writer
+      // contention that caused the original chunk failure is a likely cause).
+      // Log it, but do NOT let it replace the original error below — a
+      // caller catching this must see the real root cause. The row is left
+      // SENDING, but claimedAt is already set above, so reapStaleBroadcasts
+      // reclaims it as FAILED once BROADCAST_STALE_CLAIM_MS passes instead of
+      // it being lost forever.
+      logger.error(
+        { err: recoveryErr, broadcastId: bc.id },
+        "Failed to flip a flash-sale Broadcast row to FAILED after its customer fan-out already failed — the row stays SENDING for now, but reapStaleBroadcasts will reclaim it as FAILED once its stale-claim window passes",
+      );
+    }
     throw err;
   }
 
-  await db.broadcast.update({
-    where: { id: bc.id },
-    data: { status: BroadcastStatus.SENT, sentAt: new Date() },
-  });
+  try {
+    await db.broadcast.update({
+      where: { id: bc.id },
+      data: { status: BroadcastStatus.SENT, sentAt: new Date() },
+    });
+  } catch (err) {
+    // Every customer WAS successfully enqueued — the loop above already
+    // completed — so this is purely the terminal bookkeeping write failing,
+    // not a delivery failure. Don't throw over it: the caller (and this
+    // function's return value) should still reflect the real outcome. The
+    // row is left SENDING with claimedAt set, so reapStaleBroadcasts
+    // reclaims it as FAILED later — a misleading terminal status for what
+    // was actually a full success, but "eventually FAILED" beats "stuck
+    // forever," and the sentCount on the row already shows the true count.
+    logger.error(
+      { err, broadcastId: bc.id },
+      "Enqueued the whole flash-sale customer fan-out successfully, but failed to flip its Broadcast row from SENDING to SENT — the row stays SENDING (with an accurate sentCount) until reapStaleBroadcasts reclaims it as FAILED, even though delivery itself was not affected",
+    );
+  }
   return users.length;
 }
 

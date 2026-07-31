@@ -31,6 +31,7 @@ import {
   NOTIF_RETRY_MAX_MS,
 } from "./notifications";
 import { addAdminIdToDb } from "./admins";
+import { reapStaleBroadcasts, BROADCAST_STALE_CLAIM_MS } from "./broadcasts";
 import { NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 
@@ -691,6 +692,7 @@ describe("enqueueFlashSaleBroadcast", () => {
     expect(broadcastRow!.sentCount).toBe(FLASH_SALE_BROADCAST_CHUNK_SIZE);
     expect(broadcastRow!.failureReason).toBeTruthy();
     expect(broadcastRow!.failureReason).toContain("partway through");
+    expect(broadcastRow!.claimedAt).not.toBeNull();
 
     // The first chunk's outbox rows really did commit (createMany auto-commits
     // outside any transaction) — those customers were genuinely queued the DM,
@@ -701,6 +703,111 @@ describe("enqueueFlashSaleBroadcast", () => {
       return chatId >= TELEGRAM_ID_BASE && chatId < TELEGRAM_ID_BASE + RECIPIENT_COUNT;
     });
     expect(thisRunRows.length).toBe(FLASH_SALE_BROADCAST_CHUNK_SIZE);
+  });
+
+  // H-7 follow-up fix #2 (backend audit 2026-07-31/08-01): a second review
+  // pass found that the terminal SENT-flip written after the chunk loop was a
+  // bare, unguarded `db.broadcast.update(...)` — if THAT write itself failed
+  // (plausible under the same SQLite writer contention this whole task exists
+  // to relieve), the row was left stuck in SENDING forever, because the row
+  // was created without `claimedAt`, making it invisible to
+  // reapStaleBroadcasts's `claimedAt: { lt: staleCutoff }` filter (NULL never
+  // compares less-than anything). This test simulates exactly that: every
+  // customer is genuinely enqueued, but the final status-flip write fails.
+  it("still returns the full recipient count when only the terminal SENT-flip write fails, and the resulting stuck-SENDING row is reclaimable by reapStaleBroadcasts", async () => {
+    await prisma.user.updateMany({ data: { banned: true } }); // neutralize leftovers from earlier tests
+    const RECIPIENT_COUNT = 5;
+    const TELEGRAM_ID_BASE = 9_600_000;
+    await prisma.user.createMany({
+      data: Array.from({ length: RECIPIENT_COUNT }, (_, i) => ({
+        telegramId: BigInt(TELEGRAM_ID_BASE + i),
+        referralCode: `flash-sentflip-fail-${i}`,
+        banned: false,
+      })),
+    });
+
+    const failingDb = {
+      user: prisma.user,
+      notificationOutbox: prisma.notificationOutbox,
+      broadcast: {
+        create: (args: Parameters<PrismaClient["broadcast"]["create"]>[0]) => prisma.broadcast.create(args),
+        update: (args: Parameters<PrismaClient["broadcast"]["update"]>[0]) => {
+          // Only fail the terminal SENT-flip — let the per-chunk sentCount
+          // increments through, same as a real run would experience.
+          if ((args.data as { status?: unknown }).status === "SENT") {
+            throw new Error("simulated terminal SENT-flip write failure");
+          }
+          return prisma.broadcast.update(args);
+        },
+      },
+    } as unknown as PrismaClient;
+
+    // The function does NOT throw over this — delivery itself succeeded.
+    const notified = await enqueueFlashSaleBroadcast(failingDb, sale);
+    expect(notified).toBe(RECIPIENT_COUNT);
+
+    const stuck = await prisma.broadcast.findFirst({ orderBy: { id: "desc" } });
+    expect(stuck!.status).toBe("SENDING"); // never got the SENT flip
+    expect(stuck!.sentCount).toBe(RECIPIENT_COUNT); // but the real count landed
+    expect(stuck!.claimedAt).not.toBeNull(); // the fix: this is what makes it reclaimable
+
+    // Prove it's not just "has claimedAt set" but genuinely reclaimable via
+    // the codebase's existing stale-claim safety net.
+    const reaped = await reapStaleBroadcasts(prisma, new Date(Date.now() + BROADCAST_STALE_CLAIM_MS + 60_000));
+    expect(reaped).toBeGreaterThanOrEqual(1);
+    const after = await prisma.broadcast.findUnique({ where: { id: stuck!.id } });
+    expect(after!.status).toBe("FAILED");
+  });
+
+  // Same follow-up fix — the double-fault case: the chunk loop fails AND the
+  // catch block's own FAILED-flip write also fails. The original chunk error
+  // must still be what propagates (not the secondary write failure masking
+  // it), and the row must still end up reclaimable rather than silently lost.
+  it("propagates the original chunk error (not a masking secondary error) when the FAILED-flip write also fails, and the row is still reclaimable", async () => {
+    await prisma.user.updateMany({ data: { banned: true } });
+    const RECIPIENT_COUNT = FLASH_SALE_BROADCAST_CHUNK_SIZE + 50;
+    const TELEGRAM_ID_BASE = 9_700_000;
+    await prisma.user.createMany({
+      data: Array.from({ length: RECIPIENT_COUNT }, (_, i) => ({
+        telegramId: BigInt(TELEGRAM_ID_BASE + i),
+        referralCode: `flash-doublefault-${i}`,
+        banned: false,
+      })),
+    });
+
+    let createManyCalls = 0;
+    const failingDb = {
+      user: prisma.user,
+      notificationOutbox: {
+        createMany: (args: Parameters<PrismaClient["notificationOutbox"]["createMany"]>[0]) => {
+          createManyCalls++;
+          if (createManyCalls === 2) throw new Error("simulated write failure on the 2nd chunk");
+          return prisma.notificationOutbox.createMany(args);
+        },
+      },
+      broadcast: {
+        create: (args: Parameters<PrismaClient["broadcast"]["create"]>[0]) => prisma.broadcast.create(args),
+        update: (args: Parameters<PrismaClient["broadcast"]["update"]>[0]) => {
+          if ((args.data as { status?: unknown }).status === "FAILED") {
+            throw new Error("simulated FAILED-flip write failure (double fault)");
+          }
+          return prisma.broadcast.update(args);
+        },
+      },
+    } as unknown as PrismaClient;
+
+    // The ORIGINAL chunk error propagates — not the double-fault's own error.
+    await expect(enqueueFlashSaleBroadcast(failingDb, sale)).rejects.toThrow("simulated write failure on the 2nd chunk");
+
+    const stuck = await prisma.broadcast.findFirst({ orderBy: { id: "desc" } });
+    expect(stuck!.status).toBe("SENDING"); // the FAILED-flip never landed
+    expect(stuck!.sentCount).toBe(FLASH_SALE_BROADCAST_CHUNK_SIZE); // first chunk's progress still visible
+    expect(stuck!.claimedAt).not.toBeNull();
+
+    const reaped = await reapStaleBroadcasts(prisma, new Date(Date.now() + BROADCAST_STALE_CLAIM_MS + 60_000));
+    expect(reaped).toBeGreaterThanOrEqual(1);
+    const after = await prisma.broadcast.findUnique({ where: { id: stuck!.id } });
+    expect(after!.status).toBe("FAILED");
   });
 });
 

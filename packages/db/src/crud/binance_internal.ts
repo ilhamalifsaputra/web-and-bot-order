@@ -30,6 +30,7 @@ import { adjustWallet } from "./users";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
+import { enqueueAdminOverpaid } from "./notifications";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -240,6 +241,30 @@ export async function deliverPaidInternalOrder(
         meta: `binanceTxId=${args.binanceTxId}`,
       });
       const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
+      // Overpayment: the buyer sent more USDT than the order total. Still
+      // deliver (handled above) but flag the ledger row and alert admins so
+      // the excess can be refunded/credited manually — never auto-refunded.
+      // Mirrors TokoPay/PayDisini/NOWPayments (M-13, backend audit
+      // 2026-07-31): Binance Internal's match tolerance already lets an
+      // overpaid transfer through to delivery, but until now it left no
+      // ledger flag and no admin alert, so the excess had no operational
+      // trail for a later refund request.
+      const paidAmount = new Decimal(args.amount);
+      const excess = paidAmount.minus(order.totalAmount);
+      if (excess.greaterThan(0)) {
+        await tx.processedBinanceTx.update({ where: { binanceTxId: args.binanceTxId }, data: { outcome: "overpaid" } });
+        await enqueueAdminOverpaid(tx, {
+          orderId: result.order.id,
+          orderCode: result.order.orderCode,
+          paid: paidAmount,
+          expected: order.totalAmount,
+          excess,
+          currency: order.currency,
+        });
+        logger.warn(
+          `Binance Internal order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
+        );
+      }
       if (result.kind === "delivered") {
         logger.info(`Auto-delivered internal-transfer order ${result.order.orderCode} for Binance transaction ${args.binanceTxId}`);
         return { status: "delivered" as const, order: result.order, credentials: result.credentials };
@@ -306,6 +331,7 @@ export async function recordUnmatchedTx(db: Db, args: { binanceTxId: string; amo
 /** Known ledger outcomes, in the order the ops panel lists them. */
 export const TX_OUTCOMES = [
   "matched",
+  "overpaid",
   "underpaid",
   "unmatched",
   "delivery_failed",

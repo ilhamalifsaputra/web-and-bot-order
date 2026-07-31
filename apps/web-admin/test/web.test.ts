@@ -698,17 +698,29 @@ describe("orders", () => {
   // order (paid manual SKU an admin can't source) previously had no
   // reject/refund path at all — rejectOrder hard-guarded PENDING_VERIFICATION
   // only, even though PROCESSING -> REJECTED is legal in LEGAL_TRANSITIONS.
-  it("reject also works on a PROCESSING order (paid manual SKU an admin can't source)", async () => {
+  //
+  // H-2 (backend audit, 2026-07-31): that "legal" reject turned out to strand
+  // the buyer's already-paid money — a PROCESSING order is always paid
+  // (settlePaidOrder stamps paidAt on the same transition), and REJECTED is
+  // terminal, so creditOrderToBalance could never touch it again afterward.
+  // rejectOrder now refuses a paid order outright; credit-balance (now
+  // canCredit-eligible for PROCESSING too) is the way to actually recover it.
+  it("reject refuses a paid PROCESSING order — credit-balance is the recovery path instead (H-2)", async () => {
     const orderId = await makeProcessingOrder();
     const res = await post(`/api/orders/${orderId}/reject`, seed.cookie, {
       csrf_token: seed.csrf,
       reason: "out of stock, can't source",
     });
-    expect(res.statusCode).toBe(200);
-    const order = (await getOrder(prisma, orderId))!;
-    expect(order.status).toBe("REJECTED");
+    expect(res.statusCode).toBe(422);
+    const body = JSON.parse(res.body) as { error: string };
+    expect(body.error).toBe("error.order_paid_needs_credit");
+    expect((await getOrder(prisma, orderId))!.status).toBe("PROCESSING");
     const audit = await prisma.auditLog.findMany({ where: { action: "reject_order", targetId: orderId } });
-    expect(audit.length).toBe(1);
+    expect(audit.length).toBe(0);
+
+    const creditRes = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(creditRes.statusCode).toBe(200);
+    expect((await getOrder(prisma, orderId))!.status).toBe("CANCELLED");
   });
 
   it("GET order detail: canReject is true for both PENDING_VERIFICATION and PROCESSING, but canAct (Approve) stays PENDING_VERIFICATION-only", async () => {
@@ -729,6 +741,9 @@ describe("orders", () => {
     });
     expect(processingRes.json().canReject).toBe(true);
     expect(processingRes.json().canAct).toBe(false);
+    // H-2 (backend audit, 2026-07-31): canCredit now covers PROCESSING too —
+    // reject alone can no longer recover a paid PROCESSING order's money.
+    expect(processingRes.json().canCredit).toBe(true);
   });
 
   it("approve requires auth (anon → 303 /login)", async () => {

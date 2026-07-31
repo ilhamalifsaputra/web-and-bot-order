@@ -1009,6 +1009,33 @@ async function releaseOrderHolds(
   }
 }
 
+/**
+ * H-2 guard (backend audit, 2026-07-31): `rejectOrder`/`cancelOrder` both end
+ * at a terminal state (REJECTED/CANCELLED) that `creditOrderToBalance`
+ * refuses to touch afterward ("error.order_terminal") — so once an order's
+ * `paidAt` is set (the same "was this actually paid" signal `settlePaidOrder`
+ * stamps for a real payment event, see its own doc-comment), rejecting or
+ * cancelling it directly would strand that payment forever instead of
+ * releasing it back to the buyer. Refuse the transition and point the caller
+ * at `creditOrderToBalance` instead — unless this exact order was already
+ * credited (the same `unfulfilled_credit` ledger check `creditOrderToBalance`
+ * uses for its own double-credit guard), which would mean a caller is
+ * legitimately finishing a credit that, for some reason, didn't already
+ * leave the order CANCELLED.
+ */
+async function assertNotPaidWithoutCredit(
+  db: Db,
+  order: { id: number; paidAt: Date | null },
+): Promise<void> {
+  if (!order.paidAt) return;
+  const alreadyCredited = await db.walletTransaction.findFirst({
+    where: { orderId: order.id, reason: "unfulfilled_credit" },
+  });
+  if (!alreadyCredited) {
+    throw new ValidationError("error.order_paid_needs_credit");
+  }
+}
+
 export async function cancelOrder(db: Db, orderId: number, reason: string) {
   const order = await getOrder(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
@@ -1022,6 +1049,7 @@ export async function cancelOrder(db: Db, orderId: number, reason: string) {
   if (order.status === OrderStatus.DELIVERED) {
     throw new ValidationError("error.order_already_delivered");
   }
+  await assertNotPaidWithoutCredit(db, order);
   // Prevent abuse: fake proof then cancel to recycle stock. A customer can't
   // self-cancel once their crypto is already incoming/confirming on-chain
   // either (PAYMENT_DETECTED/CONFIRMING/CONFIRMED) — same "money is already
@@ -1155,6 +1183,12 @@ export async function rejectOrder(
   if (!rejectable.includes(order.status)) {
     throw new ValidationError("error.order_not_pending_verification");
   }
+  // H-2 (backend audit, 2026-07-31): a PROCESSING order reaches here already
+  // paid (settlePaidOrder stamped paidAt) — rejecting it directly would
+  // strand that payment at the terminal REJECTED state forever. Send the
+  // admin to "Credit to Balance" (creditOrderToBalance, now that canCredit
+  // covers PROCESSING too) instead.
+  await assertNotPaidWithoutCredit(db, order);
 
   await releaseOrderHolds(db, order);
   await db.order.update({
@@ -1533,7 +1567,13 @@ export interface OrderEligibility {
   isDelivered: boolean;
   /** PENDING_VERIFICATION — one-click approve/deliver. */
   canAct: boolean;
-  /** PENDING_VERIFICATION | UNDERPAID — eligible for credit-to-balance. */
+  /** PENDING_VERIFICATION | UNDERPAID | PROCESSING — eligible for
+   * credit-to-balance. PROCESSING is a paid manual-fulfilment order an admin
+   * couldn't source the account for — H-2 (backend audit, 2026-07-31): this
+   * used to be missing even though `canReject` already covered PROCESSING,
+   * so Reject was the only refund-shaped action offered, and rejecting moves
+   * the order to the terminal REJECTED state where `creditOrderToBalance`
+   * then refuses to act — stranding the buyer's already-paid money. */
   canCredit: boolean;
   /** PROCESSING — manual hand-fulfil, needs admin-typed content. */
   canFulfill: boolean;
@@ -1548,7 +1588,10 @@ export function computeOrderEligibility(status: string, telegramId: bigint | nul
   return {
     isDelivered,
     canAct: status === OrderStatus.PENDING_VERIFICATION,
-    canCredit: status === OrderStatus.PENDING_VERIFICATION || status === OrderStatus.UNDERPAID,
+    canCredit:
+      status === OrderStatus.PENDING_VERIFICATION ||
+      status === OrderStatus.UNDERPAID ||
+      status === OrderStatus.PROCESSING,
     canFulfill: status === OrderStatus.PROCESSING,
     canReject: status === OrderStatus.PENDING_VERIFICATION || status === OrderStatus.PROCESSING,
     canResend: isDelivered && telegramId != null,

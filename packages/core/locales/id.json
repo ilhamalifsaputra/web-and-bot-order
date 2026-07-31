@@ -187,6 +187,7 @@
   "error.order_already_delivered": "Pesanan ini sudah diterima.",
   "error.order_not_found": "Pesanan tidak ditemukan.",
   "error.order_not_processing": "Pesanan ini sudah tidak lagi menunggu diproses — mungkin sudah selesai diproses.",
+  "error.order_paid_needs_credit": "Pesanan ini sudah dibayar — kreditkan ke saldo pembeli, bukan ditolak/dibatalkan, supaya pembayarannya tidak hilang.",
   "error.order_terminal": "Pesanan ini sudah ditutup dan tidak bisa dikreditkan.",
   "error.order_not_pending": "Pesanan ini tidak dapat dibayar lagi.",
   "error.ticket_not_found": "Tiket tidak ditemukan.",

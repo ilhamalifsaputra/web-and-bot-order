@@ -15,6 +15,8 @@ const KNOWN_ERROR_MESSAGES: Record<string, string> = {
     "This item has no stock reserved and can't be delivered automatically — refund or credit the buyer instead.",
   "error.order_not_processing":
     "This order is no longer awaiting fulfilment — it may have already been processed.",
+  "error.order_paid_needs_credit":
+    "This order was already paid — use \"Credit to Balance\" instead of Reject/Cancel, so the payment isn't lost.",
 };
 
 /** Looks up a known `ValidationError` key and returns a readable English

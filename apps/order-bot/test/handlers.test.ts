@@ -1805,6 +1805,25 @@ describe("admin handlers", () => {
     expect(offersForwardAction(sink)).toBe(true);
   });
 
+  // M-3 (backend audit 2026-07-31): `new Decimal("NaN")` constructs
+  // successfully, so an admin typing "/wallet <uid> NaN" previously sailed
+  // straight through to adjustWallet and would have poisoned the balance.
+  it("adminWalletCommand rejects a NaN amount as bad args, same as a malformed uid", async () => {
+    const { ctx, sink } = adminCtx({ match: `${sample.user.id} NaN` });
+    const before = (await getUser(prisma, sample.user.id))!.walletBalance;
+    await adminWalletCommand(ctx);
+    expect(sentIncludes(sink, "Bad arguments")).toBe(true);
+    expect((await getUser(prisma, sample.user.id))!.walletBalance.toString()).toBe(before.toString());
+  });
+
+  it("adminWalletCommand rejects an Infinity amount as bad args", async () => {
+    const { ctx, sink } = adminCtx({ match: `${sample.user.id} Infinity` });
+    const before = (await getUser(prisma, sample.user.id))!.walletBalance;
+    await adminWalletCommand(ctx);
+    expect(sentIncludes(sink, "Bad arguments")).toBe(true);
+    expect((await getUser(prisma, sample.user.id))!.walletBalance.toString()).toBe(before.toString());
+  });
+
   it("adminWalletCommand credits the wallet, localizes the result, and offers a back action", async () => {
     // An Indonesian-speaking admin must see the result in Indonesian (not a
     // hardcoded English line) — proves the success screen goes through i18n.

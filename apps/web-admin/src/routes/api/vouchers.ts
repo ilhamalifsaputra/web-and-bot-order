@@ -88,6 +88,13 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
     } catch {
       return reply.code(400).send({ error: "Value and min purchase must be numbers." });
     }
+    // `new Decimal("NaN")`/`new Decimal("Infinity")` construct successfully
+    // (they don't throw), so a non-finite value would otherwise sail past
+    // the try/catch above and persist a NaN/Infinity amount (M-3, backend
+    // audit 2026-07-31) — same rejection as an unparsable value.
+    if (!valueDec.isFinite() || !minDec.isFinite()) {
+      return reply.code(400).send({ error: "Value and min purchase must be numbers." });
+    }
 
     let limit: number | null = null;
     if ((body.usage_limit ?? "").trim()) {
@@ -214,6 +221,10 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       } catch {
         return reply.code(400).send({ error: "Value must be a number." });
       }
+      // NaN/Infinity construct successfully — reject explicitly (M-3).
+      if (!args.value.isFinite()) {
+        return reply.code(400).send({ error: "Value must be a number." });
+      }
     }
 
     if (body.min_purchase !== undefined) {
@@ -232,6 +243,10 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
         try {
           args.maxDiscount = new Decimal(raw);
         } catch {
+          return reply.code(400).send({ error: "Max discount must be a number." });
+        }
+        // NaN/Infinity construct successfully — reject explicitly (M-3).
+        if (!args.maxDiscount.isFinite()) {
           return reply.code(400).send({ error: "Max discount must be a number." });
         }
       }

@@ -224,7 +224,11 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
   try {
     uid = parseInt(args[0]!, 10);
     amt = new Decimal(args[1]!);
-    if (Number.isNaN(uid)) throw new Error("bad uid");
+    // `new Decimal("NaN")`/`new Decimal("Infinity")` construct successfully
+    // (they don't throw), so a non-finite amount would otherwise reach
+    // adjustWallet and poison the wallet balance (M-3, backend audit
+    // 2026-07-31) — reject it the same way a bad uid already is, below.
+    if (Number.isNaN(uid) || !amt.isFinite()) throw new Error("bad uid");
   } catch {
     await adminEdit(ctx, t(ctx, "admin.wallet_bad_args"), akb.backToAdminKb(lang));
     return;

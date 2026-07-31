@@ -46,7 +46,10 @@ export async function createVoucher(
   // subtotal in applyVoucherToSubtotal, so only the percentage needs bounding.
   if (args.type === VoucherType.PERCENT) {
     const value = new Decimal(args.value);
-    if (value.lte(0) || value.gt(100)) {
+    // `.isFinite()` rejects NaN/Infinity, which `new Decimal("NaN")`
+    // constructs successfully and every inequality below returns false for —
+    // see activeFlashPercent (@app/core/flash.ts) for the identical pattern.
+    if (!value.isFinite() || value.lte(0) || value.gt(100)) {
       throw new ValidationError("error.invalid_discount_percent");
     }
   }
@@ -56,8 +59,11 @@ export async function createVoucher(
   // what the customer pays instead of discounting it (Critical defect fix,
   // pre-merge review — same class of bug the PERCENT guard above exists to
   // prevent).
-  if (args.type === VoucherType.FIXED && new Decimal(args.value).isNegative()) {
-    throw new ValidationError("error.invalid_discount_fixed_value");
+  if (args.type === VoucherType.FIXED) {
+    const value = new Decimal(args.value);
+    if (!value.isFinite() || value.isNegative()) {
+      throw new ValidationError("error.invalid_discount_fixed_value");
+    }
   }
   const scope = args.scope ?? VoucherScope.ALL;
   const voucher = await db.voucher.create({
@@ -145,11 +151,13 @@ export async function updateVoucher(
     const finalType = args.type ?? existing.type;
     const finalValue = args.value !== undefined ? new Decimal(args.value) : new Decimal(existing.value);
     if (finalType === VoucherType.PERCENT) {
-      if (finalValue.lte(0) || finalValue.gt(100)) {
+      if (!finalValue.isFinite() || finalValue.lte(0) || finalValue.gt(100)) {
         throw new ValidationError("error.invalid_discount_percent");
       }
-    } else if (finalType === VoucherType.FIXED && finalValue.isNegative()) {
-      throw new ValidationError("error.invalid_discount_fixed_value");
+    } else if (finalType === VoucherType.FIXED) {
+      if (!finalValue.isFinite() || finalValue.isNegative()) {
+        throw new ValidationError("error.invalid_discount_fixed_value");
+      }
     }
   }
 
@@ -296,7 +304,13 @@ export function applyVoucherToSubtotal(
   // updateVoucher already reject an out-of-range value up front; this floor
   // is the backstop that holds even if a bad value reaches this pure
   // function some other way.
-  if (discount.isNegative()) discount = new Decimal(0);
+  //
+  // `!discount.isFinite()` catches NaN/Infinity the same way: `isNegative()`
+  // alone returns false for NaN, so a NaN voucher.value (or a NaN
+  // eligibleSubtotal/maxDiscount reaching this pure function) would
+  // otherwise sail through both caps above and poison orders.ts's totals
+  // (M-3, backend audit 2026-07-31).
+  if (!discount.isFinite() || discount.isNegative()) discount = new Decimal(0);
   return quantizeMoney(discount, 4);
 }
 

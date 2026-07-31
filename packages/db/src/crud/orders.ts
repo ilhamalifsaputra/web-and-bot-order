@@ -976,6 +976,15 @@ async function releaseOrderHolds(
         data: { usedCount: { decrement: 1 } },
       });
     }
+    // M-2 (backend audit, 2026-07-31): also clear the (voucherId, userId)
+    // redemption row so a cancelled/rejected/expired order doesn't
+    // permanently lock this buyer out of a one-per-user voucher —
+    // assertVoucherNotRedeemedByUser checks for this row's existence, not
+    // usedCount. deleteMany (not delete) so this stays a no-op if the row
+    // was already cleared, instead of throwing P2025.
+    await db.voucherRedemption.deleteMany({
+      where: { voucherId: order.voucherId, userId: order.userId },
+    });
   }
 }
 

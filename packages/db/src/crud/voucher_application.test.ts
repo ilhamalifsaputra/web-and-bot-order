@@ -12,6 +12,7 @@ import {
   createVoucher,
   addToCart,
   createOrderFromCart,
+  cancelOrder,
 } from "@app/db";
 import { VoucherType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -176,5 +177,45 @@ describe("createOrderFromCart with voucher", () => {
 
     const fresh = await prisma.voucher.findUnique({ where: { id: voucher.id } });
     expect(fresh!.usedCount).toBe(1); // the blocked attempt never reached the increment
+  });
+
+  // M-2 (backend audit, 2026-07-31): cancelling/expiring an order must release
+  // the buyer's one-per-user redemption lock, not just roll back the global
+  // usedCount — previously the VoucherRedemption row outlived the order and
+  // permanently blocked the same user from ever using that voucher again.
+  it("cancelling the order lets the same user redeem the voucher again", async () => {
+    const { user, product, voucher } = sample;
+    await addToCart(prisma, user.id, product.id, 2);
+    const order = await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
+
+    await cancelOrder(prisma, order!.id, "user_cancelled");
+
+    const redemption = await prisma.voucherRedemption.findUnique({
+      where: { voucherId_userId: { voucherId: voucher.id, userId: user.id } },
+    });
+    expect(redemption).toBeNull();
+
+    const freshVoucher = await prisma.voucher.findUnique({ where: { id: voucher.id } });
+    expect(freshVoucher!.usedCount).toBe(0);
+
+    await addToCart(prisma, user.id, product.id, 2);
+    const secondOrder = await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
+    expect(secondOrder!.voucherId).toBe(voucher.id);
+  });
+
+  // The "expired" path is just cancelOrder(reason: "expired") called from the
+  // order-bot's cron sweep (apps/order-bot/src/jobs/index.ts) — same code
+  // path as an explicit user/admin cancel, so it gets the same coverage here.
+  it("expiring the order (cancelOrder with reason 'expired') also releases the redemption", async () => {
+    const { user, product, voucher } = sample;
+    await addToCart(prisma, user.id, product.id, 2);
+    const order = await createOrderFromCart(prisma, { user, voucherCode: "SAVE10" });
+
+    await cancelOrder(prisma, order!.id, "expired");
+
+    const redemption = await prisma.voucherRedemption.findUnique({
+      where: { voucherId_userId: { voucherId: voucher.id, userId: user.id } },
+    });
+    expect(redemption).toBeNull();
   });
 });

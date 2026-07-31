@@ -434,11 +434,13 @@ export async function listVouchersPaged(
  *  computed over the WHOLE table, never scoped to the current search/status
  *  filter or page (mirrors PaymentsPage's KPI cards, which read
  *  server-wide aggregates rather than the currently-filtered/paginated set).
- *  `totalRedemptions` counts `VoucherRedemption` rows, not `sum(usedCount)`:
- *  `usedCount` decrements on order cancellation (releaseOrderHolds,
- *  orders.ts) while VoucherRedemption rows are never deleted, so the
- *  redemption count is the true all-time metric a "Total Redemptions" KPI
- *  should report. */
+ *  `totalRedemptions` counts `VoucherRedemption` rows, not `sum(usedCount)` —
+ *  the two move together now: `releaseOrderHolds` (orders.ts, M-2 backend
+ *  audit fix 2026-07-31) decrements `usedCount` AND deletes the matching
+ *  `VoucherRedemption` row on cancel/reject/expire, so this KPI reflects
+ *  currently-held redemptions, not an all-time counter — a cancelled order's
+ *  redemption no longer counts here (by design: the buyer's one-per-user
+ *  slot is freed, so the redemption never really "happened"). */
 export async function getVoucherStats(
   db: Db,
   now: Date = new Date(),

@@ -623,7 +623,15 @@ describe("getVoucherStats", () => {
     expect(stats.totalRedemptions).toBe(2);
   });
 
-  it("totalRedemptions stays correct even after a redeemed voucher's usedCount is decremented (cancellation)", async () => {
+  // Note: this seeds the DB directly to prove getVoucherStats counts
+  // VoucherRedemption rows regardless of usedCount, rather than exercising
+  // the real cancelOrder/releaseOrderHolds path — since M-2 (backend audit,
+  // 2026-07-31), a REAL cancellation deletes this row too (see
+  // voucher_application.test.ts), so this specific row/usedCount combination
+  // (redemption row present, usedCount back at 0) no longer occurs from an
+  // actual cancel/reject/expire; it's a synthetic case kept to pin down
+  // getVoucherStats' own counting behavior in isolation.
+  it("totalRedemptions counts a VoucherRedemption row independently of the voucher's usedCount", async () => {
     const category = await createCategory(prisma, "Streaming", "🎬");
     const parentProduct = await createCatalogProduct(prisma, { categoryId: category.id, name: "P" });
     await createDenomination(prisma, {
@@ -644,7 +652,7 @@ describe("getVoucherStats", () => {
     await prisma.voucher.update({ where: { id: v.id }, data: { usedCount: 0 } });
 
     const stats = await getVoucherStats(prisma);
-    expect(stats.totalRedemptions).toBe(1); // the VoucherRedemption row survives the cancellation
+    expect(stats.totalRedemptions).toBe(1); // counted by row existence, not usedCount
   });
 });
 

@@ -4475,13 +4475,22 @@ describe("payments", () => {
 // `user: true` include) straight into the response body — reachable by the
 // lowest-privilege `readonly` admin role. getUser/listUsers and
 // fullInclude/listOrders now project a fixed field set that never includes
-// passwordHash (or email), so these prove the leak is actually closed rather
-// than just "the endpoint still works." A distinctive passwordHash value
-// makes a false negative (e.g. the hash landing under some other key)
-// visible too, not just a `passwordHash` key check.
+// passwordHash or email, so these prove the leak is actually closed rather
+// than just "the endpoint still works." Distinctive passwordHash AND email
+// values make a false negative (e.g. either landing under some other key)
+// visible too, not just a key-name check — every assertion pair below covers
+// both leaked-value classes, not just passwordHash.
 describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
   const LEAK_HASH = "hash-must-never-leave-the-server-h4";
   const LEAK_EMAIL = "h4-leak-check@shop.test";
+
+  function expectNoLeak(res: { body: string }) {
+    const parsed = JSON.parse(res.body);
+    expect(res.body).not.toContain(LEAK_HASH);
+    expect(containsKeyDeep(parsed, "passwordHash")).toBe(false);
+    expect(res.body).not.toContain(LEAK_EMAIL);
+    expect(containsKeyDeep(parsed, "email")).toBe(false);
+  }
 
   async function makeWebBuyer(loginUsername: string) {
     return createWebUser(prisma, {
@@ -4492,54 +4501,49 @@ describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
     });
   }
 
-  it("GET /api/users never exposes passwordHash", async () => {
+  it("GET /api/users never exposes passwordHash or email", async () => {
     await makeWebBuyer("h4users1");
     const res = await get("/api/users", seed.cookie);
     expect(res.statusCode).toBe(200);
-    expect(res.body).not.toContain(LEAK_HASH);
-    expect(containsKeyDeep(JSON.parse(res.body), "passwordHash")).toBe(false);
+    expectNoLeak(res);
   });
 
-  it("GET /api/users/:userId never exposes passwordHash", async () => {
+  it("GET /api/users/:userId never exposes passwordHash or email", async () => {
     const web = await makeWebBuyer("h4users2");
     const res = await get(`/api/users/${web.id}`, seed.cookie);
     expect(res.statusCode).toBe(200);
-    expect(res.body).not.toContain(LEAK_HASH);
-    expect(containsKeyDeep(JSON.parse(res.body), "passwordHash")).toBe(false);
+    expectNoLeak(res);
   });
 
-  it("GET /api/orders never exposes the buyer's passwordHash", async () => {
+  it("GET /api/orders never exposes the buyer's passwordHash or email", async () => {
     const web = await makeWebBuyer("h4orders1");
     await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 });
     const res = await get("/api/orders", seed.cookie);
     expect(res.statusCode).toBe(200);
-    expect(res.body).not.toContain(LEAK_HASH);
-    expect(containsKeyDeep(JSON.parse(res.body), "passwordHash")).toBe(false);
+    expectNoLeak(res);
   });
 
-  it("GET /api/orders/:orderId never exposes the buyer's passwordHash", async () => {
+  it("GET /api/orders/:orderId never exposes the buyer's passwordHash or email", async () => {
     const web = await makeWebBuyer("h4orders2");
     const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
     const res = await get(`/api/orders/${order.id}`, seed.cookie);
     expect(res.statusCode).toBe(200);
-    expect(res.body).not.toContain(LEAK_HASH);
-    expect(containsKeyDeep(JSON.parse(res.body), "passwordHash")).toBe(false);
+    expectNoLeak(res);
   });
 
-  it("GET /api/payments never exposes an underpaid buyer's passwordHash", async () => {
+  it("GET /api/payments never exposes an underpaid buyer's passwordHash or email", async () => {
     const web = await makeWebBuyer("h4pay1");
     const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
     await markUnderpaid(prisma, { orderId: order.id, binanceTxId: `H4TX-${order.id}`, amount: "1.00" });
     const res = await get("/api/payments", seed.cookie);
     expect(res.statusCode).toBe(200);
-    expect(res.body).not.toContain(LEAK_HASH);
-    expect(containsKeyDeep(JSON.parse(res.body), "passwordHash")).toBe(false);
+    expectNoLeak(res);
   });
 
   // Covers payments.ts's OTHER raw order list — pendingInternal, sourced from
   // binance_internal.ts's listPendingInternalOrders, not listOrders — so this
   // exercises a different crud query than the "underpaid" test above.
-  it("GET /api/payments never exposes a pending-internal-transfer buyer's passwordHash", async () => {
+  it("GET /api/payments never exposes a pending-internal-transfer buyer's passwordHash or email", async () => {
     const web = await makeWebBuyer("h4pay2");
     const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
     await prisma.order.update({
@@ -4553,8 +4557,7 @@ describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
     });
     const res = await get("/api/payments", seed.cookie);
     expect(res.statusCode).toBe(200);
-    expect(res.body).not.toContain(LEAK_HASH);
-    expect(containsKeyDeep(JSON.parse(res.body), "passwordHash")).toBe(false);
+    expectNoLeak(res);
   });
 });
 

@@ -74,6 +74,7 @@ import {
 import {
   createTransaction as createPaydisiniTransaction,
   verifyCallback as verifyPaydisiniCallback,
+  checkTransaction as checkPaydisiniTransaction,
   type PaydisiniOrderInfo,
 } from "@app/core/payments/paydisini";
 import {
@@ -827,6 +828,16 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
   // same response contract so PayDisini stops retrying regardless of outcome:
   // 403 disabled, 403 bad signature, 200 for every other outcome including
   // delivery-failed) ----
+  //
+  // M-9 fix (backend audit 2026-07-31): PayDisini's signature
+  // (md5(apiKey:userKey:refId:amount)) does NOT cover `status` (see the ⚠
+  // ASSUMPTION note in @app/core/payments/paydisini), so a body claiming any
+  // `status` would otherwise pass as long as the signature for that
+  // ref_id/amount is valid. Same design flaw TokoPay had — hardened the same
+  // way: re-confirm the payment live against PayDisini's API
+  // (`checkTransaction`) before trusting "paid" or using the amount for
+  // delivery — a forged/replayed callback body can't fake that
+  // server-to-server call.
   app.post("/pay/paydisini/callback", async (req, reply) => {
     // Payment-3 fix, security audit 2026-06-23 — see the TokoPay callback above.
     if (webhookRateLimited("paydisini", clientIp(req))) return reply.code(429).send({ status: "rate limited" });
@@ -845,20 +856,35 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       await recordUnmatchedPaydisiniTx(prisma, { trxId: cb.trxId, amount: cb.amount });
       return reply.send({ status: "unmatched" });
     }
-    // Amount sanity: never deliver on a short payment.
-    if (cb.amount.lessThan(order.totalAmount)) {
+
+    let live;
+    try {
+      live = await checkPaydisiniTransaction(creds, { refId: cb.refId, amountIdr: order.totalAmount });
+    } catch (err) {
+      logger.error({ err }, `Failed to check PayDisini's live transaction status for order ${order.orderCode} — the callback will be ignored until a retry confirms payment`);
+      return reply.send({ status: "status check failed" });
+    }
+    if (!live.paid) {
       logger.warn(
-        `PayDisini callback for order ${order.orderCode} is short-paid — got ${cb.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
+        `PayDisini callback claimed paid but live status check disagrees for ${order.orderCode} — trusting the live check over the callback body, so this delivery is skipped for now; the reconcile poller will retry and deliver once PayDisini's own status catches up`,
       );
-      await recordUnmatchedPaydisiniTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+      return reply.send({ status: "not confirmed live" });
+    }
+    // Amount sanity: never deliver on a short payment. Trust the LIVE amount
+    // from checkTransaction, not the unsigned callback body field.
+    if (live.amount.lessThan(order.totalAmount)) {
+      logger.warn(
+        `PayDisini callback for order ${order.orderCode} is short-paid — got ${live.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
+      );
+      await recordUnmatchedPaydisiniTx(prisma, { trxId: live.trxId ?? cb.trxId, amount: live.amount });
       return reply.send({ status: "amount mismatch" });
     }
 
     try {
       const r = await deliverPaidPaydisiniOrder(prisma, {
         orderId: order.id,
-        trxId: cb.trxId,
-        amount: cb.amount,
+        trxId: live.trxId ?? cb.trxId,
+        amount: live.amount,
         shopUrl: shopPublicUrl(),
       });
       if (r.status === "delivered") nudgeOutboxDispatcher();

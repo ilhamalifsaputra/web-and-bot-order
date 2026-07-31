@@ -56,11 +56,25 @@ export async function subscribeToRestock(
   }
 }
 
+/** Subscribers waiting on restock, joined with their user (needed to DM them)
+ * and filtered to `telegramId != null` — a web-only subscriber has no chat to
+ * send to, so they're excluded here rather than left for every caller to
+ * special-case (mirrors the `telegramId: { not: null }` filter broadcasts use,
+ * see crud/broadcasts.ts / crud/notifications.ts). */
 export function listRestockSubscribers(db: Db, productId: number) {
   return db.restockSubscription.findMany({
-    where: { productId },
-    include: { product: { include: { product: true } } },
+    where: { productId, user: { telegramId: { not: null } } },
+    include: { product: { include: { product: true } }, user: true },
   });
+}
+
+/** Consumes one restock subscription. Callers should only call this AFTER the
+ * subscriber's notification DM has actually succeeded — never as a bulk
+ * pre-delete before the send loop runs — so a DM failure (rate limit, bot
+ * restart mid-loop) leaves the subscription in place to retry against the
+ * next restock instead of silently losing the subscriber. */
+export function deleteRestockSubscription(db: Db, id: number) {
+  return db.restockSubscription.delete({ where: { id } });
 }
 
 /** Number of users waiting for restock, per product id. Products with no

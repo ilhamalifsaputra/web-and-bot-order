@@ -23,7 +23,7 @@ vi.mock("@app/db", async (orig) => {
   return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot) };
 });
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot } from "@app/db";
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
@@ -41,7 +41,7 @@ import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuc
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
-import { handleAdminCallback, adminCommand, adminWalletCommand, adminEmojiIdCommand, renderUserCard } from "../src/handlers/admin";
+import { handleAdminCallback, adminCommand, adminWalletCommand, adminEmojiIdCommand, renderUserCard, notifyRestockSubscribers } from "../src/handlers/admin";
 import { routeCallback } from "../src/handlers/callbacks";
 import { upsertUser } from "@app/db";
 
@@ -1757,6 +1757,77 @@ describe("drainBroadcasts", () => {
     const { api, sent } = fakeApi();
     await drainBroadcasts(api);
     expect(sent.length).toBe(0);
+  });
+});
+
+// ===========================================================================
+// Restock subscriber notification (throttled send loop, per-subscription consume)
+// ===========================================================================
+
+describe("notifyRestockSubscribers", () => {
+  it("consumes only the subscription whose DM succeeded, keeping the failed one for retry", async () => {
+    const other = await upsertUser(prisma, { telegramId: 4242, username: "other", fullName: "Other User" });
+    await subscribeToRestock(prisma, sample.user.id, sample.product.id);
+    await subscribeToRestock(prisma, other.id, sample.product.id);
+
+    const { ctx } = adminCtx();
+    const sent: number[] = [];
+    // Simulate other's DM (e.g. rate limit / bot restart mid-loop) failing
+    // while sample.user's succeeds.
+    ctx.api.sendMessage = (async (chatId: number) => {
+      sent.push(chatId);
+      if (chatId === Number(other.telegramId)) throw new Error("simulated Telegram failure");
+      return { message_id: 1 };
+    }) as unknown as typeof ctx.api.sendMessage;
+
+    await notifyRestockSubscribers(ctx, sample.product.id);
+
+    expect(sent.sort()).toEqual([Number(sample.user.telegramId), Number(other.telegramId)].sort());
+    const remaining = await prisma.restockSubscription.findMany({ where: { productId: sample.product.id } });
+    // sample.user's DM succeeded -> subscription consumed (not retryable).
+    expect(remaining.some((s) => s.userId === sample.user.id)).toBe(false);
+    // other's DM failed -> subscription kept (retryable next restock).
+    expect(remaining.some((s) => s.userId === other.id)).toBe(true);
+  });
+
+  it("skips a web-only subscriber (telegramId: null) instead of sending to chat 0", async () => {
+    const webOnly = await prisma.user.create({
+      data: { telegramId: null, referralCode: "WEBONLY1", role: UserRole.CUSTOMER, language: "EN" },
+    });
+    await subscribeToRestock(prisma, sample.user.id, sample.product.id);
+    await subscribeToRestock(prisma, webOnly.id, sample.product.id);
+
+    const { ctx } = adminCtx();
+    const sent: number[] = [];
+    ctx.api.sendMessage = (async (chatId: number) => {
+      sent.push(chatId);
+      return { message_id: 1 };
+    }) as unknown as typeof ctx.api.sendMessage;
+
+    await notifyRestockSubscribers(ctx, sample.product.id);
+
+    expect(sent).toEqual([Number(sample.user.telegramId)]);
+    expect(sent).not.toContain(0);
+    const remaining = await prisma.restockSubscription.findMany({ where: { productId: sample.product.id } });
+    // The Telegram-linked subscriber was notified and consumed...
+    expect(remaining.some((s) => s.userId === sample.user.id)).toBe(false);
+    // ...the web-only one was never targeted, so its row is untouched.
+    expect(remaining.some((s) => s.userId === webOnly.id)).toBe(true);
+  });
+
+  it("throttles between sends (40ms per recipient, mirroring drainBroadcasts)", async () => {
+    const other = await upsertUser(prisma, { telegramId: 4343, username: "other2", fullName: "Other Two" });
+    await subscribeToRestock(prisma, sample.user.id, sample.product.id);
+    await subscribeToRestock(prisma, other.id, sample.product.id);
+
+    const { ctx } = adminCtx();
+    ctx.api.sendMessage = (async () => ({ message_id: 1 })) as unknown as typeof ctx.api.sendMessage;
+
+    const start = Date.now();
+    await notifyRestockSubscribers(ctx, sample.product.id);
+    // 2 recipients * 40ms throttle ⇒ at least ~80ms elapsed (minus scheduling
+    // jitter — assert a lower bound well under the nominal value).
+    expect(Date.now() - start).toBeGreaterThanOrEqual(70);
   });
 });
 

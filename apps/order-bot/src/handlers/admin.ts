@@ -42,14 +42,10 @@ import type { MyContext } from "../context";
 import { adminEdit } from "../util/chat";
 import { BANNER_FILEID_KEY } from "../util/banner";
 import { coreT, t } from "../util/i18n";
-import { esc, formatUsdtAmount, formatIdr, mixedAmount } from "../util/format";
+import { esc, formatIdr, formatUsdt, mixedAmount } from "../util/format";
 import { requireAdminId } from "../util/adminAudit";
 import * as akb from "../keyboards/admin";
 import * as verification from "./verification";
-
-// USDT figures only (wallet balances). Catalog prices and voucher FIXED values
-// are central Rupiah → formatIdr; mixed revenue totals → mixedAmount.
-const price = (v: Decimal.Value) => formatUsdtAmount(v);
 
 // ===========================================================================
 // /admin command + main menu
@@ -169,7 +165,8 @@ export async function renderUserCard(ctx: MyContext, userId: number): Promise<vo
     `TG ID: <code>${u.telegramId}</code>\n` +
     `DB ID: <code>${u.id}</code>\n` +
     `Role: ${u.role} | Banned: ${u.banned}\n` +
-    `Wallet: ${price(u.walletBalance)}\n` +
+    `Wallet (IDR): ${formatIdr(u.walletBalance)}\n` +
+    `Wallet (USDT): ${formatUsdt(u.walletBalanceUsdt)}\n` +
     `Referral code: <code>${esc(u.referralCode)}</code>`;
   await adminEdit(
     ctx,
@@ -198,12 +195,12 @@ async function userSetReseller(ctx: MyContext, userId: number, on: boolean): Pro
 
 async function userWalletPrompt(ctx: MyContext, userId: number): Promise<void> {
   await ctx.answerCallbackQuery({
-    text: `Use /wallet ${userId} <amount> to adjust (negative to deduct).`,
+    text: `Use /wallet ${userId} <amount> [IDR|USDT] to adjust (negative to deduct; defaults to IDR).`,
     show_alert: true,
   });
 }
 
-/** `/wallet <user_db_id> <amount>` — manual wallet adjustment by admin. */
+/** `/wallet <user_db_id> <amount> [IDR|USDT]` — manual wallet adjustment by admin. */
 export async function adminWalletCommand(ctx: MyContext): Promise<void> {
   if (!ctx.from || !isAdmin(ctx.from.id)) {
     logger.warn(`Non-admin user ${ctx.from?.id} tried to use /wallet — request blocked, user is not in the admin id list`);
@@ -215,12 +212,16 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   const args = (typeof ctx.match === "string" ? ctx.match : "").trim().split(/\s+/).filter(Boolean);
   logger.info(`Admin wallet command from user ${ctx.from?.id} with args "${args.join(" ")}"`);
-  if (args.length !== 2) {
+  if (args.length < 2 || args.length > 3) {
     await adminEdit(ctx, t(ctx, "admin.wallet_usage"), akb.backToAdminKb(lang));
     return;
   }
   let uid: number;
   let amt: Decimal;
+  // Trailing currency argument is optional and defaults to IDR so every
+  // pre-existing "/wallet <uid> <amount>" usage keeps behaving exactly as
+  // before (M-4, backend audit 2026-07-31).
+  let currency: "IDR" | "USDT" = "IDR";
   try {
     uid = parseInt(args[0]!, 10);
     amt = new Decimal(args[1]!);
@@ -229,6 +230,11 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     // adjustWallet and poison the wallet balance (M-3, backend audit
     // 2026-07-31) — reject it the same way a bad uid already is, below.
     if (Number.isNaN(uid) || !amt.isFinite()) throw new Error("bad uid");
+    if (args[2] !== undefined) {
+      const requested = args[2].toUpperCase();
+      if (requested !== "IDR" && requested !== "USDT") throw new Error("bad currency");
+      currency = requested;
+    }
   } catch {
     await adminEdit(ctx, t(ctx, "admin.wallet_bad_args"), akb.backToAdminKb(lang));
     return;
@@ -240,13 +246,13 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     newBal = await prisma.$transaction(async (tx) => {
       const admin = await getUserByTelegramId(tx, adminTg);
       const actingId = requireAdminId(admin);
-      const bal = await adjustWallet(tx, uid, amt, { allowNegative: true, reason: "admin_adjust", adminId: actingId });
+      const bal = await adjustWallet(tx, uid, amt, { allowNegative: true, reason: "admin_adjust", adminId: actingId, currency });
       await logAdminAction(tx, {
         adminId: actingId,
         action: "wallet_adjust",
         targetType: "user",
         targetId: uid,
-        details: `Adjusted wallet by ${amt}; new balance is ${bal}.`,
+        details: `Adjusted the user's ${currency} wallet by ${amt}; new balance is ${bal}.`,
       });
       return bal;
     });
@@ -255,7 +261,8 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     await adminEdit(ctx, t(ctx, "admin.wallet_failed"), akb.backToAdminKb(lang));
     return;
   }
-  await adminEdit(ctx, t(ctx, "admin.wallet_adjusted", { uid, balance: price(newBal) }), akb.backToAdminKb(lang));
+  const balanceDisplay = currency === "USDT" ? formatUsdt(newBal) : formatIdr(newBal);
+  await adminEdit(ctx, t(ctx, "admin.wallet_adjusted", { uid, currency, balance: balanceDisplay }), akb.backToAdminKb(lang));
 }
 
 // ===========================================================================

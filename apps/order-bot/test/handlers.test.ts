@@ -32,7 +32,7 @@ import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuc
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
-import { handleAdminCallback, adminCommand, adminWalletCommand, adminEmojiIdCommand } from "../src/handlers/admin";
+import { handleAdminCallback, adminCommand, adminWalletCommand, adminEmojiIdCommand, renderUserCard } from "../src/handlers/admin";
 import { routeCallback } from "../src/handlers/callbacks";
 import { upsertUser } from "@app/db";
 
@@ -1835,6 +1835,62 @@ describe("admin handlers", () => {
     await adminWalletCommand(ctx);
     expect(sentIncludes(sink, "Saldo baru")).toBe(true); // localized to the admin's language
     expect(offersForwardAction(sink)).toBe(true);
+  });
+
+  // M-4 (backend audit 2026-07-31): the card used to render only
+  // walletBalance through a bare, unlabelled formatter (no "Rp"/"USDT"),
+  // and never showed walletBalanceUsdt at all — an admin resolving "where's
+  // my referral credit?" for a USDT-only customer saw "Wallet: 0" and had no
+  // way to tell which currency that even was.
+  it("renderUserCard shows both wallet balances distinctly, each with an explicit currency label", async () => {
+    await adjustWallet(prisma, sample.user.id, "1000", { reason: "test_seed" });
+    await adjustWallet(prisma, sample.user.id, "2.5", { reason: "test_seed", currency: "USDT" });
+    const { ctx, sink } = adminCtx();
+    await renderUserCard(ctx, sample.user.id);
+    expect(sentIncludes(sink, "Rp1.000")).toBe(true);
+    expect(sentIncludes(sink, "2.5 USDT")).toBe(true);
+  });
+
+  // M-4 (backend audit 2026-07-31): /wallet had no currency argument and
+  // always adjusted the IDR balance via adjustWallet's default — an admin
+  // crediting a referral commission (always USDT) would silently create a
+  // second, wrong IDR balance instead.
+  it("/wallet <uid> <amount> USDT credits walletBalanceUsdt and leaves walletBalance untouched", async () => {
+    const before = (await getUser(prisma, sample.user.id))!;
+    const { ctx, sink } = adminCtx({ match: `${sample.user.id} 5 USDT` });
+    await adminWalletCommand(ctx);
+    const after = (await getUser(prisma, sample.user.id))!;
+    expect(Number(after.walletBalanceUsdt)).toBeCloseTo(Number(before.walletBalanceUsdt) + 5);
+    expect(after.walletBalance.toString()).toBe(before.walletBalance.toString());
+    expect(sentIncludes(sink, "USDT")).toBe(true); // audit-visible reply states which currency was adjusted
+  });
+
+  it("/wallet <uid> <amount> with no currency argument still defaults to IDR (no regression)", async () => {
+    const before = (await getUser(prisma, sample.user.id))!;
+    const { ctx } = adminCtx({ match: `${sample.user.id} 7` });
+    await adminWalletCommand(ctx);
+    const after = (await getUser(prisma, sample.user.id))!;
+    expect(Number(after.walletBalance)).toBeCloseTo(Number(before.walletBalance) + 7);
+    expect(after.walletBalanceUsdt.toString()).toBe(before.walletBalanceUsdt.toString());
+  });
+
+  it("/wallet <uid> <amount> IDR (explicit) behaves the same as the default", async () => {
+    const before = (await getUser(prisma, sample.user.id))!;
+    const { ctx } = adminCtx({ match: `${sample.user.id} 3 idr` }); // lower-case currency is accepted too
+    await adminWalletCommand(ctx);
+    const after = (await getUser(prisma, sample.user.id))!;
+    expect(Number(after.walletBalance)).toBeCloseTo(Number(before.walletBalance) + 3);
+    expect(after.walletBalanceUsdt.toString()).toBe(before.walletBalanceUsdt.toString());
+  });
+
+  it("/wallet rejects an unrecognized trailing currency argument as bad args", async () => {
+    const before = (await getUser(prisma, sample.user.id))!;
+    const { ctx, sink } = adminCtx({ match: `${sample.user.id} 5 EUR` });
+    await adminWalletCommand(ctx);
+    const after = (await getUser(prisma, sample.user.id))!;
+    expect(sentIncludes(sink, "Bad arguments")).toBe(true);
+    expect(after.walletBalance.toString()).toBe(before.walletBalance.toString());
+    expect(after.walletBalanceUsdt.toString()).toBe(before.walletBalanceUsdt.toString());
   });
 
   it("/emojiid explains itself when the command arrives bare", async () => {

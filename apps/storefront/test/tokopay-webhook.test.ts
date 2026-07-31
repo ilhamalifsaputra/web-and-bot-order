@@ -32,7 +32,7 @@ import {
   createDenomination,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
-import { qrisChargeAmount } from "@app/core/payments/tokopay";
+import { qrisChargeAmount, computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { buildApp } from "../src/server";
 
 const MERCHANT_ID = "m-test-tokopay";
@@ -117,13 +117,15 @@ beforeEach(async () => {
   mockCheckTransaction = vi.fn();
 });
 
-/** Create a PENDING_PAYMENT TOKOPAY order directly (bypassing checkout/cart) for webhook-only tests. */
-async function createPendingTokopayOrder(orderCode: string, totalAmount: string) {
+/** Create a PENDING_PAYMENT TOKOPAY order directly (bypassing checkout/cart) for webhook-only tests.
+ * `subtotalAmount` defaults to `totalAmount` (no discount); pass it explicitly to model a
+ * discounted order (voucher/bulk) where the two diverge. */
+async function createPendingTokopayOrder(orderCode: string, totalAmount: string, subtotalAmount?: string) {
   return prisma.order.create({
     data: {
       orderCode,
       userId,
-      subtotalAmount: totalAmount,
+      subtotalAmount: subtotalAmount ?? totalAmount,
       totalAmount,
       status: "PENDING_PAYMENT",
       currency: "IDR",
@@ -161,9 +163,9 @@ describe("POST /pay/tokopay/callback", () => {
     expect(mockCheckTransaction).not.toHaveBeenCalled();
   });
 
-  it("happy path: delivers when the live status check confirms paid + matching amount (subtotal + QRIS admin fee)", async () => {
+  it("happy path: delivers when the live status check confirms paid + matching amount (total + QRIS admin fee)", async () => {
     const order = await createPendingTokopayOrder("ORD-TPHAPPY", "50000");
-    const charge = qrisChargeAmount(order.totalAmount, order.subtotalAmount).toString();
+    const charge = qrisChargeAmount(order.totalAmount).toString();
     mockCheckTransaction.mockResolvedValue(liveAgrees({ amount: charge, trxId: "TRX-HAPPY-1" }));
     const payload = signedPayload({ refId: order.orderCode, amount: charge, trxId: "TRX-HAPPY-1" });
 
@@ -178,6 +180,36 @@ describe("POST /pay/tokopay/callback", () => {
     const ledger = await prisma.processedTokopayTx.findUnique({ where: { trxId: "TRX-HAPPY-1" } });
     expect(ledger).not.toBeNull();
     expect(ledger!.outcome).toBe("matched");
+  });
+
+  // H-1 (backend audit 2026-07-31): TokoPay's createTransaction sends
+  // order.totalAmount (net of discounts) as `nominal` and TokoPay adds its own
+  // fee on top of THAT — never the pre-discount gross subtotal. A discounted
+  // order must be accepted when the buyer pays exactly
+  // totalAmount + 0.7%-of-totalAmount, even though that's LESS than
+  // totalAmount + 0.7%-of-subtotalAmount (the old, wrong formula).
+  it("accepts a discounted order paid at exactly totalAmount + fee(totalAmount) — the old subtotal-based formula would have rejected it as short-paid", async () => {
+    // Gross subtotal 100000, discount brings totalAmount down to 70000.
+    const order = await createPendingTokopayOrder("ORD-TPDISCOUNT", "70000", "100000");
+    const charge = qrisChargeAmount(order.totalAmount).toString();
+    // What a gateway billing 0.7% of the ACTUAL nominal (totalAmount) sent
+    // would charge: 100 flat + 0.7% * 70000 = 100 + 490 = 590 fee -> 70590 total.
+    expect(charge).toBe("70590");
+    // What the old (buggy) subtotal-based formula would have demanded instead
+    // — strictly more than what the buyer actually paid.
+    const oldWrongExpectedCharge = new Decimal(order.totalAmount).plus(computeQrisAdminFee(order.subtotalAmount));
+    expect(oldWrongExpectedCharge.toString()).toBe("70800"); // 70000 + (100 + 0.7%*100000=700)
+    expect(new Decimal(charge).lessThan(oldWrongExpectedCharge)).toBe(true);
+
+    mockCheckTransaction.mockResolvedValue(liveAgrees({ amount: charge, trxId: "TRX-DISCOUNT-1" }));
+    const payload = signedPayload({ refId: order.orderCode, amount: charge, trxId: "TRX-DISCOUNT-1" });
+
+    const res = await app.inject({ method: "POST", url: "/pay/tokopay/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "delivered" }); // NOT "amount mismatch"
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe("DELIVERED");
   });
 
   it("rejects a payment of the bare order total (no QRIS admin fee) as short-paid", async () => {
@@ -231,7 +263,7 @@ describe("POST /pay/tokopay/callback", () => {
 
   it("is idempotent: replaying the same trx id after delivery is a no-op (already_processed)", async () => {
     const order = await createPendingTokopayOrder("ORD-TPREPLAY", "50000");
-    const charge = qrisChargeAmount(order.totalAmount, order.subtotalAmount).toString();
+    const charge = qrisChargeAmount(order.totalAmount).toString();
     mockCheckTransaction.mockResolvedValue(liveAgrees({ amount: charge, trxId: "TRX-REPLAY-1" }));
     const payload = signedPayload({ refId: order.orderCode, amount: charge, trxId: "TRX-REPLAY-1" });
 

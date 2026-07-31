@@ -130,7 +130,7 @@ describe("deliverPaidTokopayOrder", () => {
     // number — compute the expected excess from the actual total instead of
     // assuming "5". "Expected" now includes the QRIS admin fee, since that's
     // the amount actually charged (createTransaction) and checked.
-    const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
+    const expectedCharge = qrisChargeAmount(order.totalAmount);
     const paid = expectedCharge.plus("3"); // overpay by 3
 
     const result = await deliverPaidTokopayOrder(prisma, {
@@ -157,9 +157,9 @@ describe("deliverPaidTokopayOrder", () => {
     expect(payload.currency).toBe(result.order.currency);
   });
 
-  it("paying exactly subtotal + QRIS admin fee is NOT flagged overpaid", async () => {
+  it("paying exactly total + QRIS admin fee is NOT flagged overpaid", async () => {
     const order = await makePendingTokopayOrder();
-    const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
+    const expectedCharge = qrisChargeAmount(order.totalAmount);
 
     const result = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
@@ -175,6 +175,42 @@ describe("deliverPaidTokopayOrder", () => {
       where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
     });
     expect(adminRows.length).toBe(0);
+  });
+
+  // H-1 (backend audit 2026-07-31): TokoPay's createTransaction sends
+  // order.totalAmount (net of any voucher/bulk discount) as `nominal` and
+  // TokoPay adds its own fee on top of THAT — never the pre-discount gross
+  // subtotal. A voucher-discounted order must deliver (not "amount mismatch"
+  // territory / short-paid) when paid exactly totalAmount + fee(totalAmount),
+  // even though that's less than totalAmount + fee(subtotalAmount) (the old,
+  // wrong formula this test would have failed under).
+  it("delivers a voucher-discounted order paid at exactly totalAmount + fee(totalAmount)", async () => {
+    const order = (await createOrderDirect(prisma, {
+      user: sample.user,
+      productId: sample.product.id,
+      quantity: 1,
+      voucherCode: sample.voucher.code, // SAVE10 — 10% off, minPurchase 3
+    }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.TOKOPAY } });
+    // SAVE10 really discounted this order — subtotal and total must diverge,
+    // or this test would pass even with the old, buggy subtotal-based formula.
+    expect(order.totalAmount.toString()).not.toBe(order.subtotalAmount.toString());
+
+    // What a gateway billing 0.7% of the ACTUAL nominal (totalAmount) sent
+    // would charge — the exact figure the buyer's wallet/QR app would show.
+    const gatewayFee = new Decimal(100).plus(order.totalAmount.times("0.007")).toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
+    const expectedCharge = qrisChargeAmount(order.totalAmount);
+    expect(expectedCharge.toString()).toBe(order.totalAmount.plus(gatewayFee).toString());
+
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-discount-exact-1",
+      amount: expectedCharge,
+    });
+    expect(result.status).toBe("delivered"); // not short-paid
+
+    const ledgerRow = await prisma.processedTokopayTx.findUnique({ where: { trxId: "trx-discount-exact-1" } });
+    expect(ledgerRow?.outcome).toBe("matched"); // not "overpaid" either — exact fee, no excess
   });
 });
 

@@ -1191,7 +1191,7 @@ describe("checkout handlers", () => {
     // The gateway request is sent order.totalAmount (TokoPay adds its fee
     // automatically on top of nominal), while the caption shows the fee breakdown.
     const { computeQrisAdminFee } = await import("@app/core/payments/tokopay");
-    const fee = computeQrisAdminFee(order.subtotalAmount);
+    const fee = computeQrisAdminFee(order.totalAmount);
     const chargeAmount = new Decimal(order.totalAmount).plus(fee);
     const lastCall = vi.mocked(mockedCreateTokopayTransaction).mock.lastCall!;
     expect(new Decimal(lastCall[1].amountIdr).toString()).toBe(new Decimal(order.totalAmount).toString());

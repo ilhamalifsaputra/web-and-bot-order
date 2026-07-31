@@ -64,7 +64,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     const created = await makeTokopayOrder();
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
     expect(pending).toBeDefined();
-    const charge = qrisChargeAmount(pending!.totalAmount, pending!.subtotalAmount);
+    const charge = qrisChargeAmount(pending!.totalAmount);
     stubStatus({ status: "Paid", trx_id: "TRX-RC", total_bayar: charge.toString() });
 
     await reconcileOrder(fakeApi(), CREDS, pending!);
@@ -112,7 +112,7 @@ describe("reconcileOrder (TokoPay poller safety net)", () => {
     const created = await makeTokopayOrder();
     const [pending] = await listPendingTokopayOrders(prisma, new Date());
     await setOrderPaymentMessage(prisma, created!.id, 555, 777);
-    const charge = qrisChargeAmount(pending!.totalAmount, pending!.subtotalAmount);
+    const charge = qrisChargeAmount(pending!.totalAmount);
     stubStatus({ status: "Paid", trx_id: "TRX-FLIP", total_bayar: charge.toString() });
 
     const api = fakeApi();

@@ -138,7 +138,7 @@ export async function deliverPaidTokopayOrder(
       // excess can be refunded/credited manually — never auto-refunded. This
       // stays unconditional — a buyer can overpay regardless of delivery type.
       const paidAmount = new Decimal(args.amount);
-      const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
+      const expectedCharge = qrisChargeAmount(order.totalAmount);
       const excess = paidAmount.minus(expectedCharge);
       if (excess.greaterThan(0)) {
         await tx.processedTokopayTx.update({ where: { trxId: args.trxId }, data: { outcome: "overpaid" } });

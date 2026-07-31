@@ -171,8 +171,11 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
   const total = Decimal.max(new Decimal(0), subtotal.minus(bulkDiscount).minus(voucherDiscount));
   // QRIS admin fee preview (TokoPay only — @app/core/payments/tokopay is the
   // one place this formula is computed) so the checkout page can show it
-  // before the buyer has even picked a payment method.
-  const qrisAdminFee = computeQrisAdminFee(subtotal);
+  // before the buyer has even picked a payment method. Based on `total` (net
+  // of bulk discount/voucher), NOT `subtotal` — TokoPay's nominal (and so its
+  // own fee) is computed off the discounted total actually sent to the
+  // gateway, never the pre-discount gross (H-1 fix, backend audit 2026-07-31).
+  const qrisAdminFee = computeQrisAdminFee(total);
   const qrisGrandTotal = total.plus(qrisAdminFee);
   // `lines` (the already-joined CartItem rows, each with its Denomination via
   // `ci.product`) rides along so checkoutView can build its per-item array
@@ -540,8 +543,10 @@ export async function payView(order: OrderRow) {
   // column — see the CachedGateway doc comment above parseCachedGateway.
   // QRIS admin fee — derived from immutable order fields, so it's always safe
   // to recompute (see @app/core/payments/tokopay computeQrisAdminFee doc).
-  const qrisAdminFee = isQris ? computeQrisAdminFee(order.subtotalAmount) : null;
-  const qrisGrandTotal = isQris ? qrisChargeAmount(order.totalAmount, order.subtotalAmount) : null;
+  // Based on order.totalAmount (what's actually sent to the gateway as
+  // `nominal`), NOT subtotalAmount — H-1 fix, backend audit 2026-07-31.
+  const qrisAdminFee = isQris ? computeQrisAdminFee(order.totalAmount) : null;
+  const qrisGrandTotal = isQris ? qrisChargeAmount(order.totalAmount) : null;
 
   let gateway: TokopayOrderInfo | null = null;
   let gatewayError = false;
@@ -756,7 +761,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       return reply.send({ status: "unmatched" });
     }
 
-    const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
+    const expectedCharge = qrisChargeAmount(order.totalAmount);
     let live;
     try {
       live = await checkTransaction(creds, { refId: cb.refId, amountIdr: order.totalAmount });

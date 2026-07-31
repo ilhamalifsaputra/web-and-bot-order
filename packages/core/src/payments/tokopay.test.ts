@@ -68,11 +68,11 @@ describe("verifyCallback", () => {
 });
 
 describe("computeQrisAdminFee", () => {
-  it("is Rp100 flat on a zero subtotal", () => {
+  it("is Rp100 flat on a zero amount", () => {
     expect(computeQrisAdminFee(0).toFixed(0)).toBe("100");
   });
 
-  it("adds 0.70% of the subtotal on top of the flat fee", () => {
+  it("adds 0.70% of the amount on top of the flat fee", () => {
     expect(computeQrisAdminFee(10000).toFixed(0)).toBe("170"); // 100 + 70
   });
 
@@ -83,9 +83,16 @@ describe("computeQrisAdminFee", () => {
 });
 
 describe("qrisChargeAmount", () => {
-  it("adds the computed admin fee to the order total", () => {
-    // subtotal=500 -> fee=104 (see computeQrisAdminFee test above)
-    expect(qrisChargeAmount(1000, 500).toFixed(0)).toBe("1104");
+  it("adds the fee computed on totalAmount itself to the order total (H-1 fix)", () => {
+    // totalAmount=1000 -> fee = 100 + 0.007*1000 = 107
+    expect(qrisChargeAmount(1000).toFixed(0)).toBe("1107");
+  });
+
+  it("bases the fee on the discounted total, not a separate pre-discount subtotal", () => {
+    // A discounted order: gateway only ever sees totalAmount as `nominal`, so
+    // the fee it actually adds is 0.7% of totalAmount, never the gross subtotal.
+    // totalAmount=500 -> fee = 100 + 0.007*500 = 103.5 -> 104 (half-up)
+    expect(qrisChargeAmount(500).toFixed(0)).toBe("604");
   });
 });
 

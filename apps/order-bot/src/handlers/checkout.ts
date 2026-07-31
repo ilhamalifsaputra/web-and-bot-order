@@ -1045,7 +1045,9 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
 
-  const adminFee = computeQrisAdminFee(order.subtotalAmount);
+  // Based on order.totalAmount (what's actually sent to the gateway as
+  // `nominal` below), NOT subtotalAmount — H-1 fix, backend audit 2026-07-31.
+  const adminFee = computeQrisAdminFee(order.totalAmount);
   const chargeAmount = new Decimal(order.totalAmount).plus(adminFee);
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.

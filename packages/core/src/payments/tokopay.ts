@@ -38,15 +38,24 @@ export const QRIS_ADMIN_FEE_FLAT = new Decimal(100);
 export const QRIS_ADMIN_FEE_PERCENT = new Decimal("0.007"); // 0.70%
 
 /**
- * Rp100 + 0.70% of the order subtotal, rounded to the nearest whole Rupiah
- * (IDR has no fractional currency in this codebase). The ONE place this
- * formula is computed — every caller (bot checkout, storefront checkout/pay,
- * webhook, reconcile poller, overpayment check) must import this rather than
- * re-deriving it inline.
+ * Rp100 + 0.70% of the amount TokoPay actually receives as `nominal`
+ * (createTransaction/checkTransaction always pass `order.totalAmount` — net of
+ * bulk discount / voucher / wallet credit — never the pre-discount subtotal),
+ * rounded to the nearest whole Rupiah (IDR has no fractional currency in this
+ * codebase). The ONE place this formula is computed — every caller (bot
+ * checkout, storefront checkout/pay, webhook, reconcile poller, overpayment
+ * check) must import this rather than re-deriving it inline.
+ *
+ * ⚠ Must be called with the SAME amount passed to createTransaction/
+ *   checkTransaction as `nominal` (i.e. `order.totalAmount`) — TokoPay computes
+ *   its own fee on top of that nominal, so basing this on any other figure
+ *   (e.g. the pre-discount subtotal) desyncs the fee we expect from the fee
+ *   TokoPay actually charges and makes every discounted order look short-paid
+ *   (H-1, backend audit 2026-07-31).
  */
-export function computeQrisAdminFee(subtotalAmount: Decimal.Value): Decimal {
+export function computeQrisAdminFee(amountIdr: Decimal.Value): Decimal {
   return QRIS_ADMIN_FEE_FLAT
-    .plus(new Decimal(subtotalAmount).times(QRIS_ADMIN_FEE_PERCENT))
+    .plus(new Decimal(amountIdr).times(QRIS_ADMIN_FEE_PERCENT))
     .toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
 }
 
@@ -54,8 +63,8 @@ export function computeQrisAdminFee(subtotalAmount: Decimal.Value): Decimal {
  * fee-inclusive amount expected to be paid by the buyer and verified on confirm.
  * (Note: createTransaction/checkTransaction are passed the base totalAmount,
  * as TokoPay automatically computes and adds its admin fee on top of nominal). */
-export function qrisChargeAmount(totalAmount: Decimal.Value, subtotalAmount: Decimal.Value): Decimal {
-  return new Decimal(totalAmount).plus(computeQrisAdminFee(subtotalAmount));
+export function qrisChargeAmount(totalAmount: Decimal.Value): Decimal {
+  return new Decimal(totalAmount).plus(computeQrisAdminFee(totalAmount));
 }
 
 /** Create (or fetch — ref_id is idempotent) the gateway transaction for an order. */

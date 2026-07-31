@@ -408,12 +408,27 @@ export async function drainBroadcasts(api: Api): Promise<void> {
  * longer null, the next tick will NOT retry it (unlike the old design, where
  * that failure mode was impossible because everything shared one rollback).
  * The catch block below logs that case loudly, distinctly from a claim
- * failure, so it surfaces as an ops alert rather than silently under-sending;
- * recovering from it (re-notifying the missed customers) is a manual admin
- * step. This is judged an acceptable trade for no longer risking every other
- * writer in the app on a single large broadcast. Re-scheduling a SKU resets
- * the stamp to null in `setFlashSale`, which is what legitimately
- * re-announces it (and would also be the manual recovery path here).
+ * failure, so it surfaces as an ops alert rather than silently under-sending.
+ * This is judged an acceptable trade for no longer risking every other writer
+ * in the app on a single large broadcast.
+ *
+ * What that manual recovery actually looks like (H-7 follow-up fix, backend
+ * audit 2026-07-31/08-01 — corrected after an earlier version of this
+ * comment promised a cleaner story than the code actually delivered):
+ * `enqueueFlashSaleBroadcast` now writes its `Broadcast` row BEFORE its
+ * chunked insert loop and flips it to FAILED (with a partial `sentCount`) if
+ * a chunk throws, so Broadcast History WILL show a row for a partial
+ * failure — it is no longer silently empty. But there is still no
+ * de-duplication: re-scheduling the SKU resets `flashAnnouncedAt` to null in
+ * `setFlashSale`, and the next tick's `enqueueFlashSaleBroadcast` run then
+ * fans out to the ENTIRE eligible customer base again, with no check against
+ * who the failed run's `sentCount` already reached. An admin re-announcing
+ * after a partial failure WILL double-DM every customer the partial run
+ * already got to. Building real de-duplication (tracking exactly which
+ * customers a given announcement run already reached, across enqueue
+ * attempts) is out of scope here; until that exists, the honest guidance is:
+ * check the FAILED row's `sentCount` first, and treat re-announcing as a
+ * "some customers get this DM twice" action, not a clean retry.
  */
 export async function announceStartedFlashSales(): Promise<void> {
   const started = await listUnannouncedStartedFlashSales(prisma);
@@ -462,9 +477,14 @@ export async function announceStartedFlashSales(): Promise<void> {
     } catch (err) {
       // The claim above already committed, so this sale will NOT be retried —
       // unlike the claim-failure branch, this is not self-healing. Log it as
-      // an ops alert: some or all customers may be missing the DM and an
-      // admin needs to notice and re-notify manually.
-      logger.error({ err }, `The flash sale on denomination ${denom.id} was stamped as announced, but enqueueing the customer fan-out failed partway through — some customers may never have been queued the DM, and this will not retry automatically; an admin should check the Broadcast History and re-notify manually if needed`);
+      // an ops alert. enqueueFlashSaleBroadcast has already flipped its
+      // Broadcast row to FAILED with a partial sentCount before re-throwing,
+      // so Broadcast History does show this run — but re-announcing (e.g. by
+      // re-scheduling the SKU) is NOT a clean retry: it fans out to the whole
+      // customer base again with no de-duplication against whoever the
+      // partial run's sentCount already reached, so those customers get the
+      // DM twice. Say that plainly rather than implying a clean recovery.
+      logger.error({ err }, `The flash sale on denomination ${denom.id} was stamped as announced, but enqueueing the customer fan-out failed partway through — check Broadcast History for a FAILED row on this sale to see how many customers (sentCount) were already reached before it failed. Re-announcing this sale (e.g. re-scheduling it) will re-notify the WHOLE customer base with no de-duplication, so those already-reached customers will receive the DM twice; an admin should weigh that before deciding whether to re-announce`);
     }
   }
   if (announced > 0) {

@@ -17,6 +17,7 @@ import {
   enqueueAdminPasswordReset,
   enqueueRestockBroadcast,
   enqueueFlashSaleBroadcast,
+  FLASH_SALE_BROADCAST_CHUNK_SIZE,
   fetchPendingNotifications,
   claimNotification,
   releaseNotificationClaim,
@@ -632,10 +633,74 @@ describe("enqueueFlashSaleBroadcast", () => {
     expect(chatIds.size).toBe(RECIPIENT_COUNT);
 
     const broadcastRow = await prisma.broadcast.findFirst({ orderBy: { id: "desc" } });
+    expect(broadcastRow!.status).toBe("SENT");
     expect(broadcastRow!.totalCount).toBe(notified);
     expect(broadcastRow!.sentCount).toBe(notified);
     // Exactly one Broadcast row for the whole fan-out, not one per chunk.
     expect(await prisma.broadcast.count({ where: { totalCount: notified } })).toBe(1);
+  });
+
+  // H-7 follow-up fix (backend audit 2026-07-31/08-01): a code-review pass on
+  // the chunked-write fix above found that the Broadcast row used to be
+  // written only AFTER every chunk succeeded — so a chunk throwing partway
+  // through left ZERO trace in Broadcast History, even though the earlier
+  // chunks' createMany calls had already committed real outbox rows (each
+  // createMany auto-commits outside any transaction, so those DMs really did
+  // get queued). That directly contradicted announceStartedFlashSales's own
+  // recovery guidance to "check Broadcast History." The Broadcast row is now
+  // created up front (SENDING, sentCount 0) and flipped to FAILED with a
+  // partial sentCount if a chunk throws, instead of only ever being written
+  // on full success. This test simulates a chunk failure (via a `db` stand-in
+  // whose notificationOutbox.createMany rejects on the 2nd chunk, after
+  // proxying the 1st chunk through to the real Prisma client) and asserts
+  // that failure is now visible and accurate in Broadcast History.
+  it("leaves a FAILED Broadcast row with an accurate partial sentCount when a chunk fails partway through the fan-out", async () => {
+    await prisma.user.updateMany({ data: { banned: true } }); // neutralize leftovers from earlier tests
+    const RECIPIENT_COUNT = FLASH_SALE_BROADCAST_CHUNK_SIZE + 100; // forces exactly 2 chunks: a full one, then a partial one
+    const TELEGRAM_ID_BASE = 9_500_000;
+    await prisma.user.createMany({
+      data: Array.from({ length: RECIPIENT_COUNT }, (_, i) => ({
+        telegramId: BigInt(TELEGRAM_ID_BASE + i),
+        referralCode: `flash-partial-fail-${i}`,
+        banned: false,
+      })),
+    });
+
+    let createManyCalls = 0;
+    const failingDb = {
+      user: prisma.user,
+      notificationOutbox: {
+        createMany: (args: Parameters<PrismaClient["notificationOutbox"]["createMany"]>[0]) => {
+          createManyCalls++;
+          if (createManyCalls === 2) throw new Error("simulated write failure on the 2nd chunk");
+          return prisma.notificationOutbox.createMany(args);
+        },
+      },
+      broadcast: prisma.broadcast,
+    } as unknown as PrismaClient;
+
+    await expect(enqueueFlashSaleBroadcast(failingDb, sale)).rejects.toThrow("simulated write failure on the 2nd chunk");
+    expect(createManyCalls).toBe(2); // both chunks were attempted; the 2nd is what threw
+
+    const broadcastRow = await prisma.broadcast.findFirst({ orderBy: { id: "desc" } });
+    expect(broadcastRow!.status).toBe("FAILED");
+    expect(broadcastRow!.totalCount).toBe(RECIPIENT_COUNT);
+    // Only the first (successful) chunk's count landed — not 0 (which the old,
+    // create-only-on-success version would have left nothing to even check),
+    // and not the full RECIPIENT_COUNT (the 2nd chunk never committed).
+    expect(broadcastRow!.sentCount).toBe(FLASH_SALE_BROADCAST_CHUNK_SIZE);
+    expect(broadcastRow!.failureReason).toBeTruthy();
+    expect(broadcastRow!.failureReason).toContain("partway through");
+
+    // The first chunk's outbox rows really did commit (createMany auto-commits
+    // outside any transaction) — those customers were genuinely queued the DM,
+    // even though the overall run is now reported FAILED, not silently SENT.
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.FLASH_SALE_BROADCAST } });
+    const thisRunRows = rows.filter((r) => {
+      const chatId = (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id;
+      return chatId >= TELEGRAM_ID_BASE && chatId < TELEGRAM_ID_BASE + RECIPIENT_COUNT;
+    });
+    expect(thisRunRows.length).toBe(FLASH_SALE_BROADCAST_CHUNK_SIZE);
   });
 });
 

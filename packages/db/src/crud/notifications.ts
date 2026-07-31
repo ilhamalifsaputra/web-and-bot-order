@@ -13,6 +13,7 @@ import { config } from "@app/core/config";
 import {
   NotificationEvent,
   NotificationStatus,
+  BroadcastStatus,
   langCode,
 } from "@app/core/enums";
 import type { Decimal } from "@app/core/money";
@@ -516,7 +517,7 @@ export async function enqueueRestockBroadcast(
  * chunking keeps each individual write short (a few hundred rows) regardless
  * of how large the customer base grows, instead of one insert scaling with it.
  */
-const FLASH_SALE_BROADCAST_CHUNK_SIZE = 500;
+export const FLASH_SALE_BROADCAST_CHUNK_SIZE = 500;
 
 /**
  * Enqueue a "flash sale is live" DM to every non-banned customer with a linked
@@ -532,18 +533,34 @@ const FLASH_SALE_BROADCAST_CHUNK_SIZE = 500;
  * The customer `findMany` runs unguarded (a plain read), and the outbox rows
  * are written in `FLASH_SALE_BROADCAST_CHUNK_SIZE`-row chunks — each
  * `createMany` call is its own short, self-contained write — rather than one
- * `createMany` sized to the whole customer base. No-op (returns 0) if there
- * are no eligible customers.
+ * `createMany` sized to the whole customer base. No-op (returns 0, no
+ * `Broadcast` row) if there are no eligible customers.
  *
  * Prices and the end time arrive here as already-formatted display strings
  * (shop currency via `formatIdr`, shop timezone via `localize`) — the caller
  * owns that formatting, exactly like ORDER_DELIVERED's `delivered_at`, so the
  * dispatcher never has to do money or timezone math at send time.
  *
- * Also writes a `Broadcast` row with status SENT so the announcement shows up
- * in the web-admin Broadcast History table alongside the restock ones; the
- * sent/total counts are optimistic (assume delivery succeeds) since the actual
- * per-recipient send happens later, asynchronously, via the outbox dispatcher.
+ * The `Broadcast` row (so the announcement shows up in the web-admin
+ * Broadcast History table alongside the restock ones) is written BEFORE the
+ * chunk loop below, as SENDING with `sentCount: 0`, and is updated after each
+ * chunk lands and once more at the very end — NOT written only after every
+ * chunk has already succeeded (H-7 follow-up fix, backend audit
+ * 2026-07-31/08-01: the original version of this split wrote the Broadcast
+ * row only on full success, so a chunk throwing partway through left ZERO
+ * trace in Broadcast History even though the earlier chunks' `createMany`
+ * calls had already committed real, already-delivered-to-the-dispatcher
+ * outbox rows for those customers — directly contradicting
+ * `announceStartedFlashSales`'s own guidance to check Broadcast History after
+ * a partial failure). If a chunk throws, the row is flipped to FAILED with a
+ * `failureReason` and its `sentCount` frozen at however many customers the
+ * successful chunks already reached, then the original error is re-thrown so
+ * the caller's existing logging still fires — so Broadcast History now always
+ * reflects reality: SENT with the full count on success, or FAILED with an
+ * honest partial `sentCount` on a partial failure. Total/sent counts here are
+ * otherwise optimistic (assume delivery succeeds) since the actual
+ * per-recipient send happens later, asynchronously, via the outbox
+ * dispatcher.
  *
  * `message` here MUST be kept in sync (plain-text, same content) with the HTML
  * template for NotificationEvent.FLASH_SALE_BROADCAST in
@@ -581,10 +598,8 @@ export async function enqueueFlashSaleBroadcast(
       buyer_language: langCode(u.language),
     }),
   }));
-  for (let i = 0; i < rows.length; i += FLASH_SALE_BROADCAST_CHUNK_SIZE) {
-    await db.notificationOutbox.createMany({ data: rows.slice(i, i + FLASH_SALE_BROADCAST_CHUNK_SIZE) });
-  }
-  await db.broadcast.create({
+
+  const bc = await db.broadcast.create({
     data: {
       message:
         `⚡ FLASH SALE — ${args.discountPercent}% OFF\n\n` +
@@ -593,14 +608,43 @@ export async function enqueueFlashSaleBroadcast(
         `⏳ Ends: ${args.endsAt}\n\n` +
         `Grab it before the timer runs out!`,
       segment: "ALL",
-      status: "SENT",
+      status: BroadcastStatus.SENDING,
       totalCount: users.length,
-      sentCount: users.length,
+      sentCount: 0,
       failedCount: 0,
       createdById: args.createdById ?? null,
       scheduledAt: null,
-      sentAt: new Date(),
+      sentAt: null,
     },
+  });
+
+  try {
+    for (let i = 0; i < rows.length; i += FLASH_SALE_BROADCAST_CHUNK_SIZE) {
+      const chunk = rows.slice(i, i + FLASH_SALE_BROADCAST_CHUNK_SIZE);
+      await db.notificationOutbox.createMany({ data: chunk });
+      // Reflect progress after every chunk, not just at the end, so a crash
+      // between chunks still leaves an accurate partial sentCount behind.
+      await db.broadcast.update({ where: { id: bc.id }, data: { sentCount: { increment: chunk.length } } });
+    }
+  } catch (err) {
+    await db.broadcast.update({
+      where: { id: bc.id },
+      data: {
+        status: BroadcastStatus.FAILED,
+        failureReason: (
+          "Enqueueing the customer fan-out failed partway through — sentCount reflects how many customers " +
+          "were already queued the DM before the failure; the remainder were never reached. Re-announcing " +
+          "this sale (e.g. by re-scheduling it) will re-notify the WHOLE customer base with no de-duplication " +
+          "against those already reached here, so anyone covered by sentCount will receive it twice."
+        ).slice(0, 500),
+      },
+    });
+    throw err;
+  }
+
+  await db.broadcast.update({
+    where: { id: bc.id },
+    data: { status: BroadcastStatus.SENT, sentAt: new Date() },
   });
   return users.length;
 }

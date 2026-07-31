@@ -8,6 +8,7 @@
 // web-admin dashboard SPA).
 import "./setup-env"; // FIRST import — sets env before @app/* load
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { readdir } from "node:fs/promises";
 // PayDisini's createTransaction hits a real gateway HTTP endpoint — mock it
 // for the PAYDISINI pay-view test below (mirrors the mock that lived in
 // storefront.test.ts before the cluster-C cutover moved the checkout tests
@@ -56,6 +57,7 @@ import {
 import { DeliveryType, OrderStatus, VoucherType } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { hashPassword } from "@app/core/password";
+import { TICKET_DIR } from "../src/lib/ticketAttachments";
 import { buildApp } from "../src/server";
 
 let app: FastifyInstance;
@@ -1605,6 +1607,72 @@ describe("/api/v1/account twins", () => {
       });
       expect(tooManyRes.statusCode).toBe(400);
       expect(tooManyRes.json()).toEqual({ error: "web.support_attach_error_count" });
+    });
+
+    // M-18 (backend audit 2026-07-31): parseTicketMultipart used to write
+    // every attachment part to disk WHILE streaming, before the route ever
+    // checked the message/order-ownership guards below — an empty-message
+    // (or bad-order) request "succeeded" with no ticket row, orphaning the
+    // file forever since storageCleanupJob only prunes files reachable from a
+    // ticket. Both regressions are guarded here by diffing TICKET_DIR's
+    // listing (not just asserting the response), since a passing response
+    // alone wouldn't have caught the old bug.
+    it("support ticket create with an empty message leaves no attachment file on disk (M-18)", async () => {
+      const before = await readdir(TICKET_DIR).catch(() => [] as string[]);
+      const mp = multipart({ message: "" }, [
+        { field: "attachments", filename: "orphan.png", contentType: "image/png", content: PNG },
+      ]);
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf, ...mp.headers },
+        payload: mp.payload,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().ticket_id).toBeNull();
+      const after = await readdir(TICKET_DIR).catch(() => [] as string[]);
+      expect(after).toEqual(before);
+    });
+
+    it("support ticket create against an order the caller doesn't own leaves no attachment file on disk (M-18)", async () => {
+      const before = await readdir(TICKET_DIR).catch(() => [] as string[]);
+      const mp = multipart({ message: "help with this order", order_code: "NO-SUCH-ORDER-CODE" }, [
+        { field: "attachments", filename: "orphan2.png", contentType: "image/png", content: PNG },
+      ]);
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf, ...mp.headers },
+        payload: mp.payload,
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json()).toEqual({ error: "error.order_not_found" });
+      const after = await readdir(TICKET_DIR).catch(() => [] as string[]);
+      expect(after).toEqual(before);
+    });
+
+    it("support ticket reply with an empty message leaves no attachment file on disk (M-18)", async () => {
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/v1/account/support",
+        headers: { cookie, "x-csrf-token": csrf },
+        payload: { message: "a ticket to reply against" },
+      });
+      const ticketId = created.json().ticket_id as number;
+
+      const before = await readdir(TICKET_DIR).catch(() => [] as string[]);
+      const mp = multipart({ message: "" }, [
+        { field: "attachments", filename: "orphan3.png", contentType: "image/png", content: PNG },
+      ]);
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/v1/account/support/${ticketId}/reply`,
+        headers: { cookie, "x-csrf-token": csrf, ...mp.headers },
+        payload: mp.payload,
+      });
+      expect(res.statusCode).toBe(200);
+      const after = await readdir(TICKET_DIR).catch(() => [] as string[]);
+      expect(after).toEqual(before);
     });
 
     it("another user's ticket 404s (never 403)", async () => {

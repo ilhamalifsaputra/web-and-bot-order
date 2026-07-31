@@ -32,6 +32,12 @@ beforeAll(async () => {
   app.get("/reset/:code/__test_throw", async () => {
     throw new Error("boom (test-only, exercising the error handler)");
   });
+  // Test-only route for the query-string case (M-19): a query string can
+  // carry secrets too (e.g. the storefront's Telegram Login HMAC payload),
+  // so the error handler must strip it the same way the access-log hook does.
+  app.get("/__test_throw_query", async () => {
+    throw new Error("boom (test-only, exercising the error handler)");
+  });
 });
 
 afterAll(async () => {
@@ -54,6 +60,25 @@ describe("web-admin setErrorHandler", () => {
     const loggedMeta = errorSpy.mock.calls[0]?.[0] as { path?: string };
     expect(loggedMeta.path).toBe("/reset/[redacted]/__test_throw");
     expect(loggedMeta.path).not.toContain(secretCode);
+
+    errorSpy.mockRestore();
+  });
+
+  it("strips the query string from the logged path on an unhandled error (M-19)", async () => {
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    const secretQuery = "token=AbCdEf123456-_liveSecretQueryValue";
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/__test_throw_query?${secretQuery}`,
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(errorSpy).toHaveBeenCalled();
+    const loggedMeta = errorSpy.mock.calls[0]?.[0] as { path?: string };
+    expect(loggedMeta.path).toBe("/__test_throw_query");
+    expect(loggedMeta.path).not.toContain("?");
+    expect(loggedMeta.path).not.toContain(secretQuery);
 
     errorSpy.mockRestore();
   });

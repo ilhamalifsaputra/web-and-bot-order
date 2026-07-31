@@ -32,6 +32,13 @@ beforeAll(async () => {
   app.get("/api/v1/auth/reset/:token/__test_throw", async () => {
     throw new Error("boom (test-only, exercising the error handler)");
   });
+  // Test-only route shaped like the real Telegram Login callback
+  // (GET /auth/telegram?...&hash=...), which carries its HMAC-signed auth
+  // payload entirely in the query string. Exercises the M-19 fix: an error
+  // thrown here must not leak that still-valid, replayable payload into logs.
+  app.get("/auth/telegram/__test_throw", async () => {
+    throw new Error("boom (test-only, exercising the error handler)");
+  });
 });
 
 afterAll(async () => {
@@ -55,6 +62,28 @@ describe("storefront setErrorHandler", () => {
     const loggedMeta = errorSpy.mock.calls[0]?.[0] as { path?: string };
     expect(loggedMeta.path).toBe("/api/v1/auth/reset/[redacted]/__test_throw");
     expect(loggedMeta.path).not.toContain(secretToken);
+
+    errorSpy.mockRestore();
+  });
+
+  it("strips the query string from the logged path on an unhandled error (M-19)", async () => {
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    // Shaped like the Telegram Login widget's HMAC-signed auth payload —
+    // a still-valid, replayable credential if it ever ended up in a log.
+    const secretQuery = "id=123&first_name=Test&auth_date=1234567890&hash=deadbeefliveHmacSignature";
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/auth/telegram/__test_throw?${secretQuery}`,
+    });
+
+    expect(res.statusCode).toBe(500);
+    expect(errorSpy).toHaveBeenCalled();
+    const loggedMeta = errorSpy.mock.calls[0]?.[0] as { path?: string };
+    expect(loggedMeta.path).toBe("/auth/telegram/__test_throw");
+    expect(loggedMeta.path).not.toContain("?");
+    expect(loggedMeta.path).not.toContain("hash=");
+    expect(loggedMeta.path).not.toContain(secretQuery);
 
     errorSpy.mockRestore();
   });

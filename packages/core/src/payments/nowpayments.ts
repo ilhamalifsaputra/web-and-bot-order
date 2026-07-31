@@ -158,7 +158,10 @@ export function verifyIpn(
     return null;
   }
 
-  if (typeof body.payment_id !== "string" && typeof body.payment_id !== "number") {
+  if (
+    (typeof body.payment_id !== "string" && typeof body.payment_id !== "number") ||
+    body.payment_id === ""
+  ) {
     logger.warn("NOWPayments IPN is missing a usable payment_id — rejecting the callback instead of treating it as a valid (empty) idempotency key");
     return null;
   }

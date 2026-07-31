@@ -84,6 +84,15 @@ describe("verifyIpn", () => {
     expect(verifyIpn(bodyObj, makeSignature(bodyObj), CREDS)).toBeNull();
   });
 
+  // A literal "" payment_id passes `typeof x === "string"` — it's a distinct
+  // case from "missing"/"malformed" above and must be rejected explicitly,
+  // otherwise trxId: "" flows straight through as a valid, ledger-poisoning
+  // idempotency key (this was the gap a reviewer caught in the first pass).
+  it("returns null (rejects) when payment_id is a literal empty string", () => {
+    const body = { order_id: "ORD-EMPTYPID", payment_status: "finished", payment_id: "", actually_paid: 10 };
+    expect(verifyIpn(body, makeSignature(body), CREDS)).toBeNull();
+  });
+
   it("still rejects a second, independent IPN missing payment_id — proves there's no shared poisoned state across calls", () => {
     const body1 = { order_id: "ORD-NOPID-A", payment_status: "finished", actually_paid: 10 };
     const body2 = { order_id: "ORD-NOPID-B", payment_status: "finished", actually_paid: 20 };

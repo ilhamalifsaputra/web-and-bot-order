@@ -248,6 +248,42 @@ describe("POST /pay/nowpayments/callback", () => {
     expect(await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "" } })).toBeNull();
   });
 
+  // Same M-12 gap, but via a literal "" payment_id rather than an omitted one
+  // — "" passes a naive `typeof x === "string"` check, so this is a distinct
+  // code path from the missing-payment_id case above and must be rejected
+  // explicitly too. Two identical empty-string IPNs are sent to prove the
+  // first didn't leave a poisoned "" ledger row for the second to trip on.
+  it("403s on an otherwise-correctly-signed IPN with a literal empty-string payment_id, and independently rejects a second one — no poisoned empty-string ledger state left behind", async () => {
+    const order = await createPendingNowpaymentsOrder("ORD-EMPTYPID-NP", "50");
+    const { body, signature } = signedIpn({ orderId: order.orderCode, amount: "50", trxId: "" });
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/pay/nowpayments/callback",
+      headers: { "x-nowpayments-sig": signature },
+      payload: body,
+    });
+    expect(first.statusCode).toBe(403);
+    expect(first.json()).toEqual({ status: "bad signature" });
+
+    const updatedAfterFirst = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updatedAfterFirst!.status).toBe("PENDING_PAYMENT"); // untouched
+    expect(await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "" } })).toBeNull();
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/pay/nowpayments/callback",
+      headers: { "x-nowpayments-sig": signature },
+      payload: body,
+    });
+    expect(second.statusCode).toBe(403);
+    expect(second.json()).toEqual({ status: "bad signature" });
+
+    const updatedAfterSecond = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updatedAfterSecond!.status).toBe("PENDING_PAYMENT"); // still untouched — second IPN independently rejected
+    expect(await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "" } })).toBeNull();
+  });
+
   it("records an unmatched tx when no NOWPAYMENTS order matches the order_id", async () => {
     const { body, signature } = signedIpn({ orderId: "ORD-NO-SUCH-ORDER", amount: "12.5", trxId: "PID-UNMATCHED-1" });
     const res = await app.inject({

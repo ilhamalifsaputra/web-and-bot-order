@@ -343,6 +343,57 @@ describe("processDeposits (poll-loop wiring)", () => {
     expect((await prisma.order.findUnique({ where: { id: b.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xUNDER-AMB" } }))!.outcome).toBe("unmatched");
   });
+
+  // THE regression test (code-review follow-up, Important #4): the
+  // production configuration is USE_UNIQUE_CENTS on (both Bybit rails
+  // hard-gate the poller on it specifically because it makes every pending
+  // order's total distinct). A prior version of this fix's amount-matching
+  // treated ANY order at or below the paid amount as a "candidate" and
+  // refused whenever ≥2 qualified — which meant a payment for any order
+  // except the single cheapest pending one was refused as "ambiguous" the
+  // instant a second, cheaper order existed. Best-fit selection (the largest
+  // qualifying total) fixes this: the deposit here exactly matches the
+  // PRICIER of two distinct-total pending orders and must deliver it, not
+  // refuse.
+  it("matches the pricier of two distinct-total pending orders when paid exactly, not refused as ambiguous", async () => {
+    const cheap = (await makeBybitOrder())!;
+    const pricier = (await makeBybitOrder())!;
+    const pricierTotal = new Decimal(cheap.totalAmount).plus(2); // force distinct totals
+    await prisma.order.update({ where: { id: pricier.id }, data: { totalAmount: pricierTotal } });
+    const { api } = fakeApi();
+    await processDeposits(api, [dep({ txId: "0xPRICIER", amount: pricierTotal.toNumber() })], await pending());
+    expect((await prisma.order.findUnique({ where: { id: pricier.id } }))!.status).toBe(OrderStatus.DELIVERED);
+    expect((await prisma.order.findUnique({ where: { id: cheap.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT); // untouched
+    expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xPRICIER" } }))!.outcome).toBe("matched");
+  });
+
+  // Critical #2 (code-review follow-up): the ambiguity guard alone gives NO
+  // protection once only one order is pending — the everyday overnight state
+  // for a small shop. An amount far beyond the sole pending order's total
+  // (an unrelated top-up to the same UID, a mistyped transfer, a late
+  // payment for an already-expired order) must NOT auto-deliver on a guess —
+  // it now falls through to "unmatched" for manual review instead.
+  it("does not auto-deliver a deposit that overpays the sole pending order far beyond the cap → unmatched", async () => {
+    const order = (await makeBybitOrder())!;
+    const { api } = fakeApi();
+    const farOverpaid = Number(order.totalAmount) + 500; // e.g. an unrelated $500 transfer vs a $5 order
+    await processDeposits(api, [dep({ txId: "0xFAROVER", amount: farOverpaid })], await pending());
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xFAROVER" } }))!.outcome).toBe("unmatched");
+  });
+
+  // Critical #3 (code-review follow-up): a stray deposit far below the
+  // underpaid floor (dust, a test transfer) against the sole pending order
+  // must NOT flip it to UNDERPAID — that would pull it out of the matcher's
+  // own pending pool and orphan the buyer's real payment when it lands.
+  it("does not flag underpaid for a stray deposit far below the underpaid floor → unmatched", async () => {
+    const order = (await makeBybitOrder())!;
+    const { api } = fakeApi();
+    const dust = Number(order.totalAmount) * 0.1; // 10% of expected — well under the 50% floor
+    await processDeposits(api, [dep({ txId: "0xDUST", amount: dust })], await pending());
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+    expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xDUST" } }))!.outcome).toBe("unmatched");
+  });
 });
 
 // ===========================================================================
@@ -431,5 +482,21 @@ describe("markUnderpaidBybit", () => {
     expect((await prisma.order.findUnique({ where: { id: order!.id } }))!.status).toBe(OrderStatus.UNDERPAID);
     const second = await markUnderpaidBybit(prisma, { orderId: order!.id, bybitTxId: "0xUP", amount: "1.00" });
     expect(second).toBe(false);
+  });
+
+  // Important #5 (code-review follow-up): the ledger claim and the order
+  // mutation are now wrapped so a stale order (already moved on past
+  // PENDING_PAYMENT by the time this runs) is a clean, reported "did not
+  // apply" — not a blind `true` with the order silently left untouched. The
+  // ledger claim itself still succeeds (same idempotency-first shape as
+  // deliverPaidBybitOrder's own "stale" case), so a retry never re-attempts it.
+  it("returns false (does not transition) when the order already left PENDING_PAYMENT — ledger claim still recorded", async () => {
+    const order = (await makeBybitOrder())!;
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.CANCELLED } });
+    const result = await markUnderpaidBybit(prisma, { orderId: order.id, bybitTxId: "0xUP-STALE", amount: "1.00" });
+    expect(result).toBe(false);
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.CANCELLED); // untouched
+    const ledgerRow = await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xUP-STALE" } });
+    expect(ledgerRow?.outcome).toBe("underpaid"); // claim still recorded, just didn't apply to a stale order
   });
 });

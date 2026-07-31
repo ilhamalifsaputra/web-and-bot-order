@@ -339,15 +339,17 @@ export async function pollOnce(api: Api): Promise<void> {
  * each. A deposit already tied to an order (its `bybitTxid`) from a
  * previous cycle is re-matched by that txid, never by amount again (gap #1
  * fix). A genuinely new deposit is matched by UNIQUE amount (BEP20 has no
- * memo) against orders that haven't seen one yet — at or above the pending
- * order's total, overpayment included (M-14, backend audit 2026-07-31) — on
- * a collision (≥2 candidates) it is refused. A deposit short of every match
- * candidate is then tried against the mirrored short-side search
- * (`matchUnderpaidByAmount`): if it's uniquely attributable to one pending
- * order there, that order is flagged UNDERPAID; otherwise (or on its own
- * ≥2-candidate collision) the deposit is recorded "unmatched" and left for
- * manual review, never guessed — but ONLY once Bybit reports it as Success;
- * a still-confirming no-match deposit is simply skipped this cycle; a later
+ * memo) against orders that haven't seen one yet — `matchByAmount` picks the
+ * BEST FIT (the largest total the deposit covers), overpayment included up
+ * to a cap (M-14, backend audit 2026-07-31) — beyond that cap, or on a tie
+ * at the best-fit total (≥2 candidates), it is refused. A deposit short of
+ * every match candidate is then tried against the mirrored, floored
+ * short-side search (`matchUnderpaidByAmount`): if it's uniquely
+ * attributable to one pending order there, that order is flagged UNDERPAID;
+ * otherwise (or on its own ≥2-candidate collision, or below the underpaid
+ * floor) the deposit is recorded "unmatched" and left for manual review,
+ * never guessed — but ONLY once Bybit reports it as Success; a
+ * still-confirming no-match deposit is simply skipped this cycle; a later
  * deposit/order may yet resolve it, and claiming the ledger row before
  * knowing which order (if any) it belongs to would be premature. Extracted
  * from pollOnce so it can be integration-tested against the real DB without
@@ -374,7 +376,7 @@ export async function processDeposits(
         const underpaidOrder = matchUnderpaidByAmount({ amount: dep.amount }, pendingOnly, AMOUNT_TOLERANCE);
         if (underpaidOrder) {
           if (await markUnderpaidBybitBsc(prisma, { orderId: underpaidOrder.id, bybitTxId: dep.txId, amount: dep.amount })) {
-            logger.warn(`Bybit BSC order ${underpaidOrder.orderCode} underpaid — received ${dep.amount}, expected ${underpaidOrder.totalAmount}, left PENDING for manual review`);
+            logger.warn(`Bybit BSC order ${underpaidOrder.orderCode} underpaid — received ${dep.amount}, expected ${underpaidOrder.totalAmount}, flagged UNDERPAID for manual review`);
             await alertAdmins(
               api,
               `⚠️ Underpaid Bybit BSC order <code>${underpaidOrder.orderCode}</code>\nReceived <b>${dep.amount}</b>, expected <b>${underpaidOrder.totalAmount}</b> (tx ${esc(dep.txId)}).`,

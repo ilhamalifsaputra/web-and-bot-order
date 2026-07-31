@@ -22,7 +22,7 @@ import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, createOrderDirect, settlePaidOrder, applyUsdtWalletToOrder } from "./orders";
-import { transitionOrderStatus } from "./orderStatus";
+import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
@@ -215,11 +215,24 @@ export async function deliverPaidBybitOrder(
  * review (idempotent), mirroring `markUnderpaid` in binance_internal.ts. There
  * is no memo here to confirm intent, so the caller only reaches this once its
  * own amount-only search (`matchUnderpaidByAmount`) found exactly one pending
- * order pricier than the received amount — the same ambiguity guard as the
- * matched path, just on the short side.
+ * order pricier than the received amount (and within the underpaid floor) —
+ * the same ambiguity guard as the matched path, just on the short side.
+ *
+ * Same two-phase idempotency shape as `deliverPaidBybitOrder`: the ledger
+ * claim (UNIQUE gate on `bybitTxId`) happens first and is NOT rolled back on
+ * a later failure, so a retry never re-attempts a claim that already
+ * succeeded; the order mutation (bybitTxid/adminNote + the UNDERPAID
+ * transition) is wrapped in its own `$transaction` so a partial failure
+ * there can't leave the order half-updated. If the transaction throws, the
+ * ledger row is tagged `underpaid_flag_failed` (visible for ops diagnosis)
+ * instead of staying claimed with no trace of what happened. Uses
+ * `tryTransitionOrderStatus` (not the throwing variant) so losing a status
+ * race to another poller/tracker is a benign, reported "did not apply"
+ * rather than an uncaught exception — and the return value reflects that:
+ * `false` whenever the order wasn't actually flagged, never a blind `true`.
  */
 export async function markUnderpaidBybit(
-  db: Db,
+  db: PrismaClient,
   args: { orderId: number; bybitTxId: string; amount: Decimal.Value },
 ): Promise<boolean> {
   try {
@@ -230,20 +243,31 @@ export async function markUnderpaidBybit(
     if (isUniqueViolation(e)) return false;
     throw e;
   }
-  await db.order.update({
-    where: { id: args.orderId },
-    data: {
-      bybitTxid: args.bybitTxId,
-      adminNote: `[underpaid] received ${new Decimal(args.amount).toString()} via tx ${args.bybitTxId}`,
-    },
-  });
-  await transitionOrderStatus(db, {
-    orderId: args.orderId,
-    from: OrderStatus.PENDING_PAYMENT,
-    to: OrderStatus.UNDERPAID,
-    meta: `bybitTxId=${args.bybitTxId}`,
-  });
-  return true;
+
+  try {
+    return await db.$transaction(async (tx: Tx) => {
+      const order = await getOrder(tx, args.orderId);
+      if (!order || order.status !== OrderStatus.PENDING_PAYMENT) return false; // stale — moved on already
+      await tx.order.update({
+        where: { id: args.orderId },
+        data: {
+          bybitTxid: args.bybitTxId,
+          adminNote: `[underpaid] received ${new Decimal(args.amount).toString()} via tx ${args.bybitTxId}`,
+        },
+      });
+      return tryTransitionOrderStatus(tx, {
+        orderId: args.orderId,
+        from: OrderStatus.PENDING_PAYMENT,
+        to: OrderStatus.UNDERPAID,
+        meta: `bybitTxId=${args.bybitTxId}`,
+      });
+    });
+  } catch (e) {
+    await db.processedBybitTx
+      .update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "underpaid_flag_failed" } })
+      .catch(() => undefined);
+    throw e;
+  }
 }
 
 /** A deposit that matched no PENDING order — record once for manual review. */

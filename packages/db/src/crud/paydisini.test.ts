@@ -21,7 +21,7 @@ vi.mock("@app/core/config", async () => {
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { createOrderDirect, deliverPaidPaydisiniOrder, recordUnmatchedPaydisiniTx, addAdminIdToDb, getPaydisiniCreds, setSetting, deleteSetting } from "@app/db";
-import { OrderStatus, PaymentMethod, NotificationEvent } from "@app/core/enums";
+import { OrderStatus, PaymentMethod, NotificationEvent, StockStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 
 let db: TestDb;
@@ -221,6 +221,49 @@ describe("deliverPaidPaydisiniOrder", () => {
       where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
     });
     expect(adminRows.length).toBe(2); // still just one per admin id, not duplicated
+  });
+
+  // H-3 (backend audit 2026-07-31): the ledger claim used to survive a failed
+  // delivery transaction forever — every retry (webhook redelivery, reconcile
+  // poller) hit the trx_id UNIQUE constraint and was turned away as
+  // already_processed, silently losing the buyer's payment. Wiping all stock
+  // for the product forces approveOrder's out-of-stock guard to throw INSIDE
+  // the delivery $transaction, rolling it back (the real-world equivalent of
+  // a SQLITE_BUSY collision or a transient failure mid-delivery).
+  it("a claim whose delivery failed is retryable — a later call with the same trx id succeeds instead of already_processed", async () => {
+    const order = await makePendingPaydisiniOrder();
+
+    await prisma.stockItem.updateMany({ where: { productId: sample.product.id }, data: { status: StockStatus.DEAD } });
+
+    await expect(
+      deliverPaidPaydisiniOrder(prisma, { orderId: order.id, trxId: "trx-retry-1", amount: order.totalAmount }),
+    ).rejects.toThrow();
+
+    // The claim row survives the rollback, tagged delivery_failed — and the
+    // order itself rolled all the way back to PENDING_PAYMENT, not stuck
+    // mid-transition.
+    const failedLedger = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "trx-retry-1" } });
+    expect(failedLedger?.outcome).toBe("delivery_failed");
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+
+    // Restock, then retry with the SAME trx id — this must now succeed
+    // instead of hitting the UNIQUE constraint and returning already_processed.
+    await prisma.stockItem.create({
+      data: { productId: sample.product.id, credentials: "retry-cred@example.com:pwd", status: StockStatus.AVAILABLE },
+    });
+
+    const retry = await deliverPaidPaydisiniOrder(prisma, { orderId: order.id, trxId: "trx-retry-1", amount: order.totalAmount });
+    expect(retry.status).toBe("delivered");
+    if (retry.status !== "delivered") throw new Error("expected delivered");
+    expect(retry.order.status).toBe(OrderStatus.DELIVERED);
+
+    const ledgerRow = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "trx-retry-1" } });
+    expect(ledgerRow?.outcome).toBe("matched");
+    expect(ledgerRow?.orderId).toBe(order.id);
+
+    // Still exactly one ledger row — reclaimed in place, not duplicated.
+    const rows = await prisma.processedPaydisiniTx.findMany({ where: { trxId: "trx-retry-1" } });
+    expect(rows.length).toBe(1);
   });
 
   it("an order that is no longer PENDING_PAYMENT/PAYDISINI is stale", async () => {

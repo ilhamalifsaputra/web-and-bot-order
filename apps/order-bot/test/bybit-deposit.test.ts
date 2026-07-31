@@ -181,6 +181,49 @@ describe("deliverPaidBybitOrder (idempotency + delivery)", () => {
     expect(res.status).toBe("stale");
     expect(await prisma.stockItem.count({ where: { status: StockStatus.SOLD } })).toBe(1); // not re-delivered
   });
+
+  // H-3 (backend audit 2026-07-31): the ledger claim used to survive a failed
+  // delivery transaction forever — every retry (poller cycle) hit the
+  // bybit_tx_id UNIQUE constraint and was turned away as already_processed,
+  // silently losing the buyer's payment. Wiping all stock for the product
+  // forces settlePaidOrder's out-of-stock guard to throw INSIDE the delivery
+  // $transaction, rolling it back (the real-world equivalent of a SQLITE_BUSY
+  // collision or a transient failure mid-delivery).
+  it("a claim whose delivery failed is retryable — a later call with the same tx id succeeds instead of already_processed", async () => {
+    const order = await makeBybitOrder();
+
+    await prisma.stockItem.updateMany({ where: { productId: sample.product.id }, data: { status: StockStatus.DEAD } });
+
+    await expect(
+      deliverPaidBybitOrder(prisma, { orderId: order!.id, bybitTxId: "0x-retry-1", amount: order!.totalAmount }),
+    ).rejects.toThrow();
+
+    // The claim row survives the rollback, tagged delivery_failed — and the
+    // order itself rolled all the way back to PENDING_PAYMENT, not stuck
+    // mid-transition.
+    const failedLedger = await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0x-retry-1" } });
+    expect(failedLedger?.outcome).toBe("delivery_failed");
+    expect((await prisma.order.findUnique({ where: { id: order!.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+
+    // Restock, then retry with the SAME tx id — this must now succeed
+    // instead of hitting the UNIQUE constraint and returning already_processed.
+    await prisma.stockItem.create({
+      data: { productId: sample.product.id, credentials: "retry-cred@example.com:pwd", status: StockStatus.AVAILABLE },
+    });
+
+    const retry = await deliverPaidBybitOrder(prisma, { orderId: order!.id, bybitTxId: "0x-retry-1", amount: order!.totalAmount });
+    expect(retry.status).toBe("delivered");
+    if (retry.status !== "delivered") throw new Error("expected delivered");
+    expect(retry.order.status).toBe(OrderStatus.DELIVERED);
+
+    const ledgerRow = await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0x-retry-1" } });
+    expect(ledgerRow?.outcome).toBe("matched");
+    expect(ledgerRow?.orderId).toBe(order!.id);
+
+    // Still exactly one ledger row — reclaimed in place, not duplicated.
+    const rows = await prisma.processedBybitTx.findMany({ where: { bybitTxId: "0x-retry-1" } });
+    expect(rows.length).toBe(1);
+  });
 });
 
 // ===========================================================================

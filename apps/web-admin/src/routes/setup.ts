@@ -199,6 +199,7 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
   // Best-effort Passenger restart: touch tmp/restart.txt so the app reboots and
   // picks up the new bot token/admin (grammY can't hot-swap a token — spec §7).
   app.post("/setup/restart", async (_req, reply) => {
+    if (await checkSetupLock(reply)) return;
     const target = process.env.RESTART_TRIGGER_FILE ?? join(process.cwd(), "tmp", "restart.txt");
     let ok = true;
     try {

@@ -5218,7 +5218,33 @@ describe("setup wizard — step 1 (connect bot)", () => {
 });
 
 describe("setup wizard — restart trigger", () => {
-  it("writes the Passenger restart file best-effort", async () => {
+  it("locks out /setup/restart once setup is complete (H-5: no more unauthenticated reboot loop)", async () => {
+    // Default suite state (top-level beforeAll) models a CONFIGURED deploy —
+    // setup_completed is already "true" here, so this must behave exactly
+    // like its locked siblings (/setup/bot, /setup/owner, /setup/shop): a
+    // 303 to /login, and no restart file written.
+    await setSetting(prisma, "bot_token", "123:test-token");
+    const target = join(tmpdir(), `restart-${Date.now()}.txt`);
+    process.env.RESTART_TRIGGER_FILE = target;
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/setup/restart",
+        payload: form({}),
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+      });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+      expect(existsSync(target)).toBe(false);
+    } finally {
+      if (existsSync(target)) rmSync(target);
+      delete process.env.RESTART_TRIGGER_FILE;
+    }
+  });
+
+  it("still writes the Passenger restart file best-effort during the setup wizard", async () => {
+    await deleteSetting(prisma, "setup_completed"); // open the wizard, like its siblings' tests
+    await deleteSetting(prisma, "setup_owner_tg");
     await setSetting(prisma, "bot_token", "123:test-token");
     const target = join(tmpdir(), `restart-${Date.now()}.txt`);
     process.env.RESTART_TRIGGER_FILE = target;
@@ -5238,6 +5264,7 @@ describe("setup wizard — restart trigger", () => {
     } finally {
       if (existsSync(target)) rmSync(target);
       delete process.env.RESTART_TRIGGER_FILE;
+      await setSetting(prisma, "setup_completed", "true"); // restore suite default
     }
   });
 });

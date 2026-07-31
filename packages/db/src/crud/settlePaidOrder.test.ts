@@ -113,6 +113,64 @@ describe("settlePaidOrder", () => {
     expect(result.credentials[0]).toBe(items[0]!.stockItem!.credentials);
   });
 
+  // M-5 (backend audit 2026-07-31): settlePaidOrder used to read the LIVE
+  // denomination row to decide auto-vs-manual, so editing deliveryType while
+  // an order was in flight could strand reserved stock (AUTO->manual edit) or
+  // misroute a manual order into the auto-deliver branch (manual->AUTO edit).
+  // deliveryTypeSnapshot freezes the decision at order-creation time instead.
+  it("AUTO order reserves stock, denomination is edited to manual before payment: settlePaidOrder still delivers via the snapshot and sells the reserved stock (no stuck RESERVED rows)", async () => {
+    const order = await makePendingVerificationOrder(sample.product.id, 1);
+
+    // The reservation made at checkout time must still be RESERVED right now.
+    const reservedBefore = await prisma.orderItem.findFirst({
+      where: { orderId: order.id },
+      include: { stockItem: true },
+    });
+    expect(reservedBefore!.stockItem).not.toBeNull();
+    expect(reservedBefore!.stockItem!.status).toBe(StockStatus.RESERVED);
+    expect(reservedBefore!.deliveryTypeSnapshot).toBe(DeliveryType.AUTO);
+
+    // Admin flips the SKU to manual delivery while the order is still in flight.
+    await updateDenomination(prisma, sample.product.id, { deliveryType: DeliveryType.MANUAL });
+
+    const result = await settlePaidOrder(prisma, order.id, { adminId });
+
+    // The snapshot (not the now-manual live row) decided the branch: still AUTO.
+    expect(result.kind).toBe("delivered");
+    expect(result.credentials).toHaveLength(1);
+
+    const item = await prisma.orderItem.findFirst({
+      where: { orderId: order.id },
+      include: { stockItem: true },
+    });
+    // The reserved StockItem was sold, not abandoned — never left stuck RESERVED.
+    expect(item!.stockItem).not.toBeNull();
+    expect(item!.stockItem!.status).toBe(StockStatus.SOLD);
+    expect(item!.stockItem!.status).not.toBe(StockStatus.RESERVED);
+  });
+
+  // Reverse edit: manual -> auto before payment must not strand a paid order.
+  it("MANUAL order (no stock reserved), denomination is edited to auto before payment: settlePaidOrder still queues it for hand-fulfilment via the snapshot, instead of failing out-of-stock", async () => {
+    const manualDenom = await makeManualDenom(DeliveryType.MANUAL);
+    const order = await makePendingVerificationOrder(manualDenom.id, 1);
+
+    const before = await prisma.orderItem.findFirst({ where: { orderId: order.id } });
+    expect(before!.deliveryTypeSnapshot).toBe(DeliveryType.MANUAL);
+    expect(before!.stockItemId).toBeNull();
+
+    // Admin flips the SKU to auto delivery while the order is still in flight.
+    // This denomination has zero stock rows, so taking the AUTO branch now
+    // would fail with error.cannot_deliver_out_of_stock instead of queuing.
+    await updateDenomination(prisma, manualDenom.id, { deliveryType: DeliveryType.AUTO });
+
+    const result = await settlePaidOrder(prisma, order.id, { adminId });
+
+    expect(result.kind).toBe("processing");
+    expect(result.credentials).toEqual([]);
+    const freshOrder = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(freshOrder!.status).toBe(OrderStatus.PROCESSING);
+  });
+
   it("manual SKU: queues for hand-fulfilment instead of delivering, and touches no stock", async () => {
     const manualDenom = await makeManualDenom(DeliveryType.MANUAL);
     const order = await makePendingVerificationOrder(manualDenom.id, 1);

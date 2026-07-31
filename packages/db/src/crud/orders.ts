@@ -527,6 +527,7 @@ export async function createOrderFromCart(
           quantity: 1,
           unitPrice: unit,
           warrantyDaysSnapshot: (ci.product as unknown as { warrantyDays: number }).warrantyDays,
+          deliveryTypeSnapshot: ci.product.deliveryType,
         },
       });
     }
@@ -706,6 +707,7 @@ export async function createOrderDirect(
         quantity: 1,
         unitPrice: q4(unit),
         warrantyDaysSnapshot: product.warrantyDays,
+        deliveryTypeSnapshot: product.deliveryType,
       },
     });
   }
@@ -1438,9 +1440,13 @@ export async function settlePaidOrder(
   // Orders are homogeneous (the storefront cart blocks mixing delivery types,
   // and the bot orders one SKU at a time), so any manual line makes the whole
   // order manual.
-  const isManual = order.items.some(
-    (it) => (it.product as { deliveryType?: string }).deliveryType !== DeliveryType.AUTO,
-  );
+  //
+  // Reads deliveryTypeSnapshot (frozen at order-creation time), NOT the live
+  // denomination row: an admin editing a SKU's deliveryType after this order
+  // was placed must never change which branch an already-in-flight order
+  // takes (M-5, backend audit 2026-07-31) — see OrderItem.deliveryTypeSnapshot
+  // in schema.prisma for the full rationale.
+  const isManual = order.items.some((it) => it.deliveryTypeSnapshot !== DeliveryType.AUTO);
 
   // ── AUTO branch (unchanged behavior) ────────────────────────────────────
   if (!isManual) {

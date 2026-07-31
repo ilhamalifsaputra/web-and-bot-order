@@ -367,6 +367,16 @@ model OrderItem {
   quantity             Int     @default(1)
   unitPrice            Decimal @map("unit_price")
   warrantyDaysSnapshot Int     @map("warranty_days_snapshot")
+  /// Denomination.deliveryType frozen at order-creation time (default "auto" for
+  /// pre-migration rows, backfilled from the live denomination — see the
+  /// migration). settlePaidOrder reads THIS, not the live denomination row,
+  /// so editing a SKU's deliveryType after an order was placed can never flip
+  /// which branch (auto-deliver vs. hand-fulfil) an in-flight order takes —
+  /// otherwise an AUTO order's reserved StockItem rows get stranded RESERVED
+  /// forever if the SKU is edited to manual before payment, or a MANUAL order
+  /// gets misrouted into the auto-deliver branch and fails out-of-stock if
+  /// edited to auto before payment (M-5, backend audit 2026-07-31).
+  deliveryTypeSnapshot String  @default("auto") @map("delivery_type_snapshot")
 
   // Restrict, not Cascade (Infra-5 fix, security audit 2026-06-23): line items
   // are the order's financial detail — deleting an Order must never silently

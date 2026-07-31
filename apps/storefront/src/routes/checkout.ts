@@ -56,6 +56,7 @@ import {
   getNowpaymentsCreds,
   deliverPaidNowpaymentsOrder,
   recordUnmatchedNowpaymentsTx,
+  enqueueAdminStalePayment,
   claimGatewaySlot,
   commitGatewayResult,
   releaseGatewaySlot,
@@ -814,6 +815,18 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         shopUrl: shopPublicUrl(),
       });
       if (r.status === "delivered") nudgeOutboxDispatcher();
+      if (r.status === "stale") {
+        const trxId = live.trxId ?? cb.trxId;
+        logger.warn(
+          `TokoPay confirmed payment for order ${order.orderCode} (tx ${trxId}) but it had already left PENDING_PAYMENT — likely auto-cancelled before this webhook arrived; admin alerted to verify and deliver manually`,
+        );
+        await enqueueAdminStalePayment(prisma, {
+          orderId: order.id,
+          orderCode: order.orderCode,
+          gateway: "TokoPay",
+          trxId,
+        });
+      }
       return reply.send({ status: r.status });
     } catch (err) {
       logger.error({ err }, `Failed to deliver paid TokoPay order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);
@@ -888,6 +901,18 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         shopUrl: shopPublicUrl(),
       });
       if (r.status === "delivered") nudgeOutboxDispatcher();
+      if (r.status === "stale") {
+        const trxId = live.trxId ?? cb.trxId;
+        logger.warn(
+          `PayDisini confirmed payment for order ${order.orderCode} (tx ${trxId}) but it had already left PENDING_PAYMENT — likely auto-cancelled before this webhook arrived; admin alerted to verify and deliver manually`,
+        );
+        await enqueueAdminStalePayment(prisma, {
+          orderId: order.id,
+          orderCode: order.orderCode,
+          gateway: "PayDisini",
+          trxId,
+        });
+      }
       return reply.send({ status: r.status });
     } catch (err) {
       logger.error({ err }, `Failed to deliver paid PayDisini order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);
@@ -946,6 +971,17 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         shopUrl: shopPublicUrl(),
       });
       if (r.status === "delivered") nudgeOutboxDispatcher();
+      if (r.status === "stale") {
+        logger.warn(
+          `NOWPayments confirmed payment for order ${order.orderCode} (tx ${cb.trxId}) but it had already left PENDING_PAYMENT — likely auto-cancelled before this webhook arrived; admin alerted to verify and deliver manually`,
+        );
+        await enqueueAdminStalePayment(prisma, {
+          orderId: order.id,
+          orderCode: order.orderCode,
+          gateway: "NOWPayments",
+          trxId: cb.trxId,
+        });
+      }
       return reply.send({ status: r.status });
     } catch (err) {
       logger.error({ err }, `Failed to deliver paid NOWPayments order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);

@@ -164,6 +164,38 @@ export async function enqueueManualOrderAdminAlert(
 }
 
 /**
+ * Enqueue one admin DM per resolved admin alerting that a payment-gateway
+ * webhook (TokoPay/PayDisini/NOWPayments) confirmed payment for an order that
+ * had already left PENDING_PAYMENT by the time the delivery transaction ran
+ * (M-10 fix, backend audit 2026-07-31) — routine, since
+ * `autoCancelExpiredOrders` cancels orders on a timer and can race a slow
+ * webhook. Nothing else recovers this automatically: the reconcile pollers
+ * only act on orders still PENDING_PAYMENT, and `reconcileFinances` doesn't
+ * scan ledger rows, so this needs a human to check whether the buyer actually
+ * paid and reconcile manually. Same fan-out-per-admin shape as
+ * `enqueueAdminOverpaid`. No-op if no admin is resolved.
+ */
+export async function enqueueAdminStalePayment(
+  db: Db,
+  args: { orderId: number; orderCode: string; gateway: string; trxId: string },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_STALE_PAYMENT,
+        orderId: args.orderId,
+        payloadJson: JSON.stringify({
+          chat_id: adminId,
+          order_code: args.orderCode,
+          gateway: args.gateway,
+          trx_id: args.trxId,
+        }),
+      },
+    });
+  }
+}
+
+/**
  * A SENDING row whose claim is older than this is treated as abandoned (the
  * dispatcher that claimed it died mid-send, before reaching
  * markNotificationSent/Failed) and becomes claimable again. Infra-2 fix,

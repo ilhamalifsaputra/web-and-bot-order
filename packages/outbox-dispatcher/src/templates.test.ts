@@ -184,6 +184,31 @@ describe("notifier templates.render", () => {
     expect(out).toContain("&lt;b&gt;ORD&lt;/b&gt;");
   });
 
+  it("renders ADMIN_STALE_PAYMENT as a bilingual admin DM with the gateway, order code and trx id", () => {
+    const out = render("ADMIN_STALE_PAYMENT", {
+      order_code: "ORD-STALE-1",
+      gateway: "TokoPay",
+      trx_id: "TRX-STALE-1",
+    });
+    expect(out).toContain("<code>ORD-STALE-1</code>");
+    expect(out).toContain("TokoPay");
+    expect(out).toContain("<code>TRX-STALE-1</code>");
+    expect(out).toMatch(/no longer pending/i);
+    expect(out).toMatch(/tidak lagi menunggu pembayaran/i); // Indonesian line
+  });
+
+  it("HTML-escapes ADMIN_STALE_PAYMENT interpolated values", () => {
+    const out = render("ADMIN_STALE_PAYMENT", {
+      order_code: "<b>ORD</b>",
+      gateway: "<script>alert(1)</script>",
+      trx_id: "<i>trx</i>",
+    });
+    expect(out).not.toContain("<script>");
+    expect(out).not.toContain("<b>ORD</b>");
+    expect(out).not.toContain("<i>trx</i>");
+    expect(out).toContain("&lt;b&gt;ORD&lt;/b&gt;");
+  });
+
   it("returns empty string for unknown events", () => {
     expect(render("something.else", payload)).toBe("");
     // lowercase value form is NOT what is stored -> must not match

@@ -13,6 +13,7 @@ import {
   enqueueNotification,
   enqueueOrderPipelineFailed,
   enqueueManualOrderAdminAlert,
+  enqueueAdminStalePayment,
   enqueueAdminPasswordReset,
   enqueueRestockBroadcast,
   enqueueFlashSaleBroadcast,
@@ -400,6 +401,39 @@ describe("enqueueManualOrderAdminAlert", () => {
     expect(payload.items).toEqual([{ name: "Netflix Premium", qty: 2 }]);
     expect(payload.total).toBe("15.5");
     expect(payload.currency).toBe("USDT");
+  });
+});
+
+// enqueueAdminStalePayment shares enqueueOrderPipelineFailed's exact
+// per-admin fan-out primitive, so "no admin resolved -> no-op" is already
+// covered above; this block only asserts this function's own event/payload
+// shape. Runs after the earlier blocks, so 4001/4002/4501/4502 are already
+// persisted in the shared `admin_ids` Setting.
+describe("enqueueAdminStalePayment", () => {
+  it("enqueues one ADMIN_STALE_PAYMENT DM per resolved admin, with chat_id/order_code/gateway/trx_id", async () => {
+    const orderId = await seedOrder();
+
+    await enqueueAdminStalePayment(prisma, {
+      orderId,
+      orderCode: "ORD-STALETEST",
+      gateway: "TokoPay",
+      trxId: "TRX-STALE-1",
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.ADMIN_STALE_PAYMENT, orderId },
+    });
+    expect(rows.length).toBeGreaterThan(0);
+    const chatIds = rows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id).sort((a, b) => a - b);
+    expect(chatIds).toEqual([4001, 4002, 4501, 4502]);
+    const payload = JSON.parse(rows[0]!.payloadJson) as {
+      order_code: string;
+      gateway: string;
+      trx_id: string;
+    };
+    expect(payload.order_code).toBe("ORD-STALETEST");
+    expect(payload.gateway).toBe("TokoPay");
+    expect(payload.trx_id).toBe("TRX-STALE-1");
   });
 });
 

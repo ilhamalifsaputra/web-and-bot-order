@@ -326,4 +326,42 @@ describe("POST /pay/nowpayments/callback", () => {
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe("PENDING_PAYMENT");
   });
+
+  // M-10 (backend audit 2026-07-31): the order left PENDING_PAYMENT (here,
+  // simulating autoCancelExpiredOrders having already cancelled it) between
+  // this IPN arriving and deliverPaidNowpaymentsOrder's transaction running.
+  // No poller can recover this either, so it must alert an admin rather than
+  // silently doing nothing.
+  it("logs a warning and enqueues an ADMIN_STALE_PAYMENT alert when the order left PENDING_PAYMENT before delivery ran", async () => {
+    const order = await prisma.order.create({
+      data: {
+        orderCode: "ORD-NPSTALE",
+        userId,
+        subtotalAmount: "50",
+        totalAmount: "50",
+        status: "CANCELLED", // no longer PENDING_PAYMENT by the time the IPN's delivery transaction runs
+        currency: "USDT",
+        paymentMethod: "NOWPAYMENTS",
+      },
+    });
+    const { body, signature } = signedIpn({ orderId: order.orderCode, amount: "50", trxId: "PID-STALE-1" });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/pay/nowpayments/callback",
+      headers: { "x-nowpayments-sig": signature },
+      payload: body,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "stale" });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: "ADMIN_STALE_PAYMENT", orderId: order.id },
+    });
+    expect(rows.length).toBeGreaterThan(0);
+    const alert = JSON.parse(rows[0]!.payloadJson) as { order_code: string; gateway: string; trx_id: string };
+    expect(alert.order_code).toBe("ORD-NPSTALE");
+    expect(alert.gateway).toBe("NOWPayments");
+    expect(alert.trx_id).toBe("PID-STALE-1");
+  });
 });

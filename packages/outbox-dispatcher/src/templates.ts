@@ -176,6 +176,12 @@ interface BulkPurchaseBroadcastPayload {
   template?: unknown;
 }
 
+interface AdminStalePaymentPayload {
+  order_code?: unknown;
+  gateway?: unknown;
+  trx_id?: unknown;
+}
+
 /** Return the message body for an outbox event, or "" to skip. */
 export function render(
   event: string,
@@ -187,7 +193,8 @@ export function render(
     RestockBroadcastPayload &
     FlashSaleBroadcastPayload &
     ManualOrderQueuedPayload &
-    BulkPurchaseBroadcastPayload,
+    BulkPurchaseBroadcastPayload &
+    AdminStalePaymentPayload,
 ): string {
   if (event === NotificationEvent.BULK_PURCHASE_BROADCAST) {
     // Channel post: qty/product_name/denomination_name are derived from the
@@ -293,6 +300,23 @@ export function render(
       `${itemsText}\n` +
       `💳 Total: <b>${total} ${currency}</b>\n` +
       `Pembayaran sudah dikonfirmasi — tolong fulfil pesanan ini secara manual di panel admin.`
+    );
+  }
+  if (event === NotificationEvent.ADMIN_STALE_PAYMENT) {
+    // Admin DM: a payment-gateway webhook confirmed payment for an order that
+    // had already left PENDING_PAYMENT (typically auto-cancelled) by the time
+    // the delivery transaction ran — nothing else recovers this
+    // automatically, so a human needs to check and reconcile manually.
+    const code = escape(String(payload.order_code ?? ""));
+    const gateway = escape(String(payload.gateway ?? ""));
+    const trxId = escape(String(payload.trx_id ?? ""));
+    return (
+      `⚠️ <b>${gateway} confirmed payment for order <code>${code}</code>, but it was no longer pending</b>\n` +
+      `Transaction: <code>${trxId}</code>\n` +
+      `The order likely auto-cancelled before this payment could be matched — please verify the buyer paid and deliver manually if so.\n\n` +
+      `⚠️ <b>${gateway} mengonfirmasi pembayaran untuk pesanan <code>${code}</code>, tapi pesanan ini sudah tidak lagi menunggu pembayaran</b>\n` +
+      `Transaksi: <code>${trxId}</code>\n` +
+      `Pesanan kemungkinan sudah dibatalkan otomatis sebelum pembayaran ini bisa dicocokkan — mohon periksa apakah pelanggan sudah membayar dan kirim manual jika perlu.`
     );
   }
   if (event === NotificationEvent.ADMIN_OVERPAID) {

@@ -390,4 +390,38 @@ describe("POST /pay/paydisini/callback", () => {
     const ledger = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "TRX-PENDING-1" } });
     expect(ledger).toBeNull();
   });
+
+  // M-10 (backend audit 2026-07-31): the order left PENDING_PAYMENT (here,
+  // simulating autoCancelExpiredOrders having already cancelled it) between
+  // this webhook arriving and deliverPaidPaydisiniOrder's transaction
+  // running. No poller can recover this either, so it must alert an admin
+  // rather than silently doing nothing.
+  it("logs a warning and enqueues an ADMIN_STALE_PAYMENT alert when the order left PENDING_PAYMENT before delivery ran", async () => {
+    const order = await prisma.order.create({
+      data: {
+        orderCode: "ORD-PDSTALE",
+        userId,
+        subtotalAmount: "50000",
+        totalAmount: "50000",
+        status: "CANCELLED", // no longer PENDING_PAYMENT by the time the webhook's delivery transaction runs
+        currency: "IDR",
+        paymentMethod: "PAYDISINI",
+      },
+    });
+    mockCheckTransaction.mockResolvedValue(liveAgrees({ amount: "50000", trxId: "TRX-PDSTALE-1" }));
+    const payload = signedPayload({ refId: order.orderCode, amount: "50000", trxId: "TRX-PDSTALE-1" });
+
+    const res = await app.inject({ method: "POST", url: "/pay/paydisini/callback", payload });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ status: "stale" });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: "ADMIN_STALE_PAYMENT", orderId: order.id },
+    });
+    expect(rows.length).toBeGreaterThan(0);
+    const alert = JSON.parse(rows[0]!.payloadJson) as { order_code: string; gateway: string; trx_id: string };
+    expect(alert.order_code).toBe("ORD-PDSTALE");
+    expect(alert.gateway).toBe("PayDisini");
+    expect(alert.trx_id).toBe("TRX-PDSTALE-1");
+  });
 });

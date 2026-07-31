@@ -3886,6 +3886,31 @@ describe("settings", () => {
     expect(verifyPassword("newpassword1", stored!)).toBe(true);
   });
 
+  it("password change rotates the session jti — old cookie stops authenticating, re-issued cookie keeps this device logged in", async () => {
+    await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("oldpassword"));
+
+    // Sanity: the pre-change cookie authenticates before the password change.
+    expect((await get("/api/settings", seed.cookie)).statusCode).toBe(200);
+
+    const res = await post("/api/settings/password", seed.cookie, {
+      csrf_token: seed.csrf, current_password: "oldpassword", new_password: "newpassword1", confirm_password: "newpassword1",
+    });
+    expect(res.statusCode).toBe(200);
+
+    // The old cookie (minted before the change) must no longer authenticate.
+    const stale = await get("/api/settings", seed.cookie);
+    expect(stale.statusCode).toBe(303);
+    expect(stale.headers.location).toBe("/login");
+
+    // The response's own re-issued cookie must still authenticate this device.
+    const setCookie = res.headers["set-cookie"];
+    expect(setCookie).toBeDefined();
+    const rawHeader = Array.isArray(setCookie) ? setCookie[0]! : setCookie!;
+    const value = decodeURIComponent(rawHeader.split(";")[0]!.split("=").slice(1).join("="));
+    const fresh = await get("/api/settings", value);
+    expect(fresh.statusCode).toBe(200);
+  });
+
   it("password change with wrong current rejected", async () => {
     await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("realpw12"));
     const res = await post("/api/settings/password", seed.cookie, {

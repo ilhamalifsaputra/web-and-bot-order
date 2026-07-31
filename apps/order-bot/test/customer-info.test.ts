@@ -28,6 +28,7 @@ import { buildSampleData, resetDb, type SampleData } from "../../../tests/helper
 import { makeCtx, FakeConversation, calls, sentIncludes, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
+import { t } from "../src/util/i18n";
 import * as checkout from "../src/handlers/checkout";
 import { customerInfoConversation } from "../src/conversations/customerInfo";
 
@@ -288,6 +289,27 @@ describe("customerInfoConversation", () => {
 
     expect(cancelTap.session.scratch.customerData).toBeUndefined();
     expect(calls(sink, "conversation.enter").some((c) => c.args[0] === "customerInfo")).toBe(true);
+  });
+
+  it("an unrecognized tap during the wait answers error.stale_screen and the conversation keeps waiting (M-22 fix)", async () => {
+    const denom = await makeManualWithInfoDenom([GAME_ID_FIELD]);
+    const sink: SentCall[] = [];
+    const entry = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      session: { ...userSession(), scratch: { pendingInfoProductId: denom.id, pendingInfoQuantity: 1 } },
+      callbackData: `v1:buy:${denom.id}:1`,
+    }).ctx;
+    const staleTap = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), callbackData: "v1:menu:main" }).ctx;
+    const answerMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "GID-777" }).ctx;
+    const conv = new FakeConversation([staleTap, answerMsg]);
+
+    await customerInfoConversation(conv.asMyConversation(), entry);
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
+    // Conversation was unaffected — it kept waiting and completed normally.
+    expect(JSON.parse(answerMsg.session.scratch.customerData as string)).toEqual([{ game_id: "GID-777" }]);
   });
 
   it("defends against a manual_with_info SKU with no configured fields by going straight to renderOrderConfirmation", async () => {

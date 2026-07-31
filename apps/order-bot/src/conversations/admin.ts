@@ -130,6 +130,10 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
       rawText = u.message.text;
       await consumeInput(u);
     } else {
+      // An inline tap that isn't the generic admin escape (e.g. a
+      // stale/duplicate tap) — clear its spinner instead of leaving it
+      // hanging (M-22 fix).
+      if (u.callbackQuery) await u.answerCallbackQuery({ text: t(u, "error.stale_screen") });
       continue;
     }
 

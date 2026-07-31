@@ -18,6 +18,7 @@ import { OrderStatus, SenderType, TicketStatus, UserRole } from "@app/core/enums
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { makeCtx, FakeConversation, calls, sentIncludes, offersForwardAction, type SentCall } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
+import { t } from "../src/util/i18n";
 import { ticketUserReplyConversation } from "../src/conversations/customer";
 import { voucherConversation } from "../src/conversations/checkout";
 import { supportConversation } from "../src/conversations/support";
@@ -221,6 +222,54 @@ describe("support + reject conversations", () => {
     expect(ticket!.orderId).toBeNull();
   });
 
+  it("support: an unrecognized tap during the order-picker wait answers error.stale_screen and the conversation keeps waiting (M-22 fix)", async () => {
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-SUPPORTSTALE-${Math.random()}`,
+        userId: sample.user.id,
+        subtotalAmount: "45000",
+        totalAmount: "45000",
+        status: OrderStatus.DELIVERED,
+      },
+    });
+    await prisma.orderItem.create({
+      data: { orderId: order.id, productId: sample.product.id, unitPrice: "45000", warrantyDaysSnapshot: 30 },
+    });
+
+    const sink: SentCall[] = [];
+    const entry = entryCust(sink, "v1:support:open");
+    const conv = new FakeConversation([
+      msg(sink, { text: "My account stopped working yesterday" }),
+      msg(sink, { callbackData: "v1:menu:main" }), // unrecognized in this wait loop
+      msg(sink, { callbackData: "v1:support:order:skip" }),
+      msg(sink, { callbackData: "v1:support:photos:done" }),
+    ]);
+    await supportConversation(conv.asMyConversation(), entry);
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
+    // Conversation was unaffected — it kept waiting and completed normally.
+    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
+    expect(ticket).toBeTruthy();
+    expect(ticket!.orderId).toBeNull(); // the picker was ultimately skipped
+  });
+
+  it("support: an unrecognized tap during the photos wait answers error.stale_screen and the conversation keeps waiting (M-22 fix)", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryCust(sink, "v1:support:open");
+    const conv = new FakeConversation([
+      msg(sink, { text: "My account stopped working yesterday" }),
+      msg(sink, { callbackData: "v1:menu:main" }), // unrecognized in this wait loop
+      msg(sink, { callbackData: "v1:support:photos:done" }),
+    ]);
+    await supportConversation(conv.asMyConversation(), entry);
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
+    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
+    expect(ticket).toBeTruthy();
+  });
+
   it("reject: admin reason rejects the order, audits, and DMs the buyer", async () => {
     const order = await pendingVerificationOrder();
     const sink: SentCall[] = [];
@@ -297,6 +346,22 @@ describe("admin conversations", () => {
 
     expect(sentIncludes(sink, "Netflix Premium - 1 Month")).toBe(true);
     expect(await prisma.restockSubscription.count({ where: { userId: subscriber.id } })).toBe(0);
+  });
+
+  it("stockUpload: an unrecognized tap during the wait answers error.stale_screen and the conversation keeps waiting (M-22 fix)", async () => {
+    const before = await prisma.stockItem.count({ where: { productId: sample.product.id } });
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:stock:add:${sample.product.id}`);
+    const conv = new FakeConversation([
+      msg(sink, { callbackData: "v1:adm:junk" }), // unrecognized — not v1:adm:cancel, no document/text
+      msg(sink, { text: "new1@x.com:pw1\nnew2@x.com:pw2" }),
+    ]);
+    await stockUploadConversation(conv.asMyConversation(), entry);
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
+    // Conversation was unaffected — it kept waiting and completed normally.
+    expect(await prisma.stockItem.count({ where: { productId: sample.product.id } })).toBe(before + 2);
   });
 
   it("voucherCreate: 3 steps create a voucher", async () => {

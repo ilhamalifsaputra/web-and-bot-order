@@ -92,7 +92,10 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
           break;
         }
       }
-      // Anything else (stray text, unrecognized tap) — ignore and keep waiting.
+      // Anything else (stray text, unrecognized tap) — keep waiting, but a
+      // tap must still get its spinner cleared with feedback instead of
+      // spinning until Telegram gives up (M-22 fix).
+      if (u.callbackQuery) await u.answerCallbackQuery({ text: t(u, "error.stale_screen") });
     }
   }
 
@@ -122,6 +125,10 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
         parse_mode: "HTML",
         reply_markup: ckb.supportPhotoPromptKb(photos.length, lang),
       });
+    } else if (u.callbackQuery) {
+      // An inline tap that isn't "photos:done" (e.g. a stale/duplicate tap) —
+      // clear its spinner instead of leaving it hanging (M-22 fix).
+      await u.answerCallbackQuery({ text: t(u, "error.stale_screen") });
     }
   }
 

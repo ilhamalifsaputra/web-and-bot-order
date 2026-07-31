@@ -18,8 +18,9 @@ import {
 import { DeliveryType } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { makeCtx, FakeConversation, sentIncludes, type SentCall } from "./helpers/ctx";
+import { makeCtx, FakeConversation, calls, sentIncludes, type SentCall } from "./helpers/ctx";
 import type { MyContext, SessionData } from "../src/context";
+import { t } from "../src/util/i18n";
 import { editCustomerInfoConversation } from "../src/conversations/editCustomerInfo";
 
 let sample: SampleData;
@@ -194,6 +195,24 @@ describe("editCustomerInfoConversation — happy paths", () => {
     expect(sentIncludes(sink, "Please enter a valid email address.")).toBe(true);
     const fresh = await getOrder(prisma, orderId);
     expect(JSON.parse(fresh!.customerData!)).toEqual([{ email: "new@example.com" }]);
+  });
+
+  it("an unrecognized tap during the wait answers error.stale_screen and the conversation keeps waiting (M-22 fix)", async () => {
+    const denom = await makeManualWithInfoDenom([GAME_ID_FIELD]);
+    const orderId = await makeProcessingOrder(denom.id, 1, JSON.stringify([{ game_id: "OLD-1" }]));
+    const sink: SentCall[] = [];
+    const entry = entryCtx(orderId, sink);
+    const staleTap = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), callbackData: "v1:menu:main" }).ctx;
+    const answerMsg = makeCtx({ sink, from: { id: 42, username: "tester" }, session: userSession(), text: "NEW-1" }).ctx;
+    const conv = new FakeConversation([staleTap, answerMsg]);
+
+    await editCustomerInfoConversation(conv.asMyConversation(), entry);
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
+    // Conversation was unaffected — it kept waiting and completed normally.
+    const fresh = await getOrder(prisma, orderId);
+    expect(JSON.parse(fresh!.customerData!)).toEqual([{ game_id: "NEW-1" }]);
   });
 
   it("qty=2: prompts once per unit (pre-seeded per-unit) and persists 2 independently-edited answer maps", async () => {

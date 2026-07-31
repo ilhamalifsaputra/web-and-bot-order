@@ -188,7 +188,7 @@ export async function enqueueAdminStalePayment(
           chat_id: adminId,
           order_code: args.orderCode,
           gateway: args.gateway,
-          trx_id: args.trxId,
+          trx_id: args.trxId.slice(0, 300),
         }),
       },
     });

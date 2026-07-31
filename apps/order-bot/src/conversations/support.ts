@@ -11,7 +11,7 @@ import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { prisma, getSetting, createTicket, addTicketMessage, listUserOrders } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
-import { smartEdit } from "../util/chat";
+import { smartEdit, menuAnchor } from "../util/chat";
 import { t } from "../util/i18n";
 import { esc } from "../util/format";
 import { validateText } from "../util/validators";
@@ -67,10 +67,7 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
   const orders = await conversation.external(() => listUserOrders(prisma, info.id, 5, 0));
   let orderId: number | null = null;
   if (orders.length) {
-    await ctx.api.sendMessage(ctx.chat!.id, t(ctx, "support.ask_order"), {
-      parse_mode: "HTML",
-      reply_markup: ckb.orderPickerKb(orders, lang),
-    });
+    await menuAnchor(ctx, t(ctx, "support.ask_order"), ckb.orderPickerKb(orders, lang));
     for (;;) {
       const u = await conversation.wait();
       if (isCmd(u, "start")) return void (await startCommand(u));
@@ -99,10 +96,7 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
     }
   }
 
-  await ctx.api.sendMessage(ctx.chat!.id, t(ctx, "support.ask_photos"), {
-    parse_mode: "HTML",
-    reply_markup: ckb.supportPhotoPromptKb(0, lang),
-  });
+  await menuAnchor(ctx, t(ctx, "support.ask_photos"), ckb.supportPhotoPromptKb(0, lang));
 
   // --- AWAITING_PHOTOS: up to 3, auto-submit at 3, or Submit button ---
   const photos: string[] = [];
@@ -143,10 +137,7 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
     photoFileIds,
   });
 
-  await ctx.api.sendMessage(ctx.chat!.id, t(ctx, "support.received"), {
-    parse_mode: "HTML",
-    reply_markup: ckb.backToMain(lang),
-  });
+  await menuAnchor(ctx, t(ctx, "support.received"), ckb.backToMain(lang));
 
   const photoNote = photos.length ? `\n📎 ${photos.length} photo(s) attached` : "";
   const forwardText =

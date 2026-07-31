@@ -270,6 +270,57 @@ describe("support + reject conversations", () => {
     expect(ticket).toBeTruthy();
   });
 
+  it("support: the order-picker, photo-prompt, and received screens all edit the same anchor bubble instead of leaving stray keyboards (M-23 fix)", async () => {
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-SUPPORTANCHOR-${Math.random()}`,
+        userId: sample.user.id,
+        subtotalAmount: "45000",
+        totalAmount: "45000",
+        status: OrderStatus.DELIVERED,
+      },
+    });
+    await prisma.orderItem.create({
+      data: { orderId: order.id, productId: sample.product.id, unitPrice: "45000", warrantyDaysSnapshot: 30 },
+    });
+
+    const sink: SentCall[] = [];
+    // Entered via a typed /support command (no callback query yet), so the
+    // anchor bubble is established by a fresh ctx.reply() and every later
+    // step must reuse it through menuAnchor's anchor-id edit — this is the
+    // strongest exercise of the M-23 fix, since pre-fix each of the three
+    // sends below (ask_order, ask_photos, received) used a bare
+    // ctx.api.sendMessage that created its own new, never-retired bubble.
+    const entry = makeCtx({ sink, from: { id: 42, username: "tester" }, session: custSession(), text: "/support" }).ctx;
+    const conv = new FakeConversation([
+      msg(sink, { text: "My account stopped working yesterday" }),
+      msg(sink, { callbackData: "v1:support:order:skip" }),
+      msg(sink, { callbackData: "v1:support:photos:done" }),
+    ]);
+    await supportConversation(conv.asMyConversation(), entry);
+
+    // The intro screen has no prior anchor and no callback query to edit, so
+    // it must fall through to exactly one fresh send — that's the anchor.
+    expect(calls(sink, "reply").length).toBe(1);
+
+    // ask_order, ask_photos, and received must all edit that same anchor
+    // message id (via menuAnchor -> editAnchor's ctx.api.editMessageText),
+    // never open a second live bubble.
+    const anchorEdits = calls(sink, "editMessageText");
+    expect(anchorEdits.length).toBe(3);
+    const anchorIds = new Set(anchorEdits.map((c) => c.args[1]));
+    expect(anchorIds.size).toBe(1);
+
+    // None of those three customer-facing screens were ever sent as a fresh
+    // message into the user's own chat (the bug this task fixes).
+    const strayCustomerSends = calls(sink, "sendMessage").filter((c) => c.args[0] === entry.chat!.id);
+    expect(strayCustomerSends.length).toBe(0);
+
+    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
+    expect(ticket).toBeTruthy();
+    expect(ticket!.orderId).toBeNull(); // the picker was skipped
+  });
+
   it("reject: admin reason rejects the order, audits, and DMs the buyer", async () => {
     const order = await pendingVerificationOrder();
     const sink: SentCall[] = [];

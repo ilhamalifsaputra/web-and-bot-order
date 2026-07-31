@@ -48,11 +48,19 @@ export async function bulkAddStock(
   return { added: res.count, skipped: credentials.length - res.count };
 }
 
-export async function markStockDead(db: Db, stockId: number, note: string) {
-  await db.stockItem.update({
-    where: { id: stockId },
+/**
+ * Mark a single stock item dead. Only touches it if still AVAILABLE or
+ * RESERVED — SOLD/already-DEAD rows are left alone so a delivered credential
+ * is never altered (mirrors `bulkMarkStockDead`'s guard). Returns 1 if the
+ * item was updated, 0 if it wasn't eligible (already SOLD/DEAD, or the id
+ * doesn't exist) — callers must check this instead of assuming success.
+ */
+export async function markStockDead(db: Db, stockId: number, note: string): Promise<number> {
+  const res = await db.stockItem.updateMany({
+    where: { id: stockId, status: { in: [StockStatus.AVAILABLE, StockStatus.RESERVED] } },
     data: { status: StockStatus.DEAD, note },
   });
+  return res.count;
 }
 
 /**

@@ -196,6 +196,7 @@
   "error.ticket_not_closed": "This ticket isn't closed.",
   "error.ticket_reopen_expired": "This ticket can no longer be reopened — please create a new ticket.",
   "error.order_not_pending_verification": "This order is not pending verification.",
+  "error.stock_item_not_eligible": "This stock item is already sold or dead and can no longer be changed.",
   "error.illegal_status_transition": "This order's status cannot move from {from} to {to}.",
   "error.out_of_stock": "<b>{product}</b> is out of stock. Please try a different product.",
   "error.rate_limited": "Too many requests. Please wait a moment.",

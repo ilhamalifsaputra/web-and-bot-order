@@ -2061,6 +2061,27 @@ describe("admin handlers", () => {
     expect(await prisma.auditLog.count({ where: { action: "stock_mark_dead", targetId: item!.id } })).toBe(1);
   });
 
+  // M-8 fix, backend audit 2026-07-31: the keyboard already omits the "Dead"
+  // button for SOLD rows, but a stale button (item sold between render and
+  // tap) must still be refused rather than silently corrupting a delivered
+  // credential's status.
+  it("refuses to mark an already-SOLD stock item dead — alert toast, no status change, no audit row", async () => {
+    const item = await prisma.stockItem.update({
+      where: { id: (await prisma.stockItem.findFirst({ where: { productId: sample.product.id, status: "AVAILABLE" } }))!.id },
+      data: { status: "SOLD", soldAt: new Date() },
+    });
+    const { ctx, sink } = adminCtx({ callbackData: `v1:adm:stockitem:dead:${item.id}:${sample.product.id}` });
+    await handleAdminCallback(ctx, `v1:adm:stockitem:dead:${item.id}:${sample.product.id}`.split(":"));
+
+    expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.status).toBe("SOLD");
+    expect(await prisma.auditLog.count({ where: { action: "stock_mark_dead", targetId: item.id } })).toBe(0);
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.length).toBe(1);
+    const [answerOpts] = answers[0]!.args as [{ text?: string; show_alert?: boolean }];
+    expect(answerOpts.show_alert).toBe(true);
+  });
+
   it("dashboard / product / settings menus render", async () => {
     for (const data of ["v1:adm:dash", "v1:adm:prod:menu", "v1:adm:settings:menu", "v1:adm:vouch:menu"]) {
       const { ctx, sink } = adminCtx({ callbackData: data });

@@ -9,7 +9,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { bulkAddStock, availableStockCountsByDenomination } from "./stock";
+import { bulkAddStock, availableStockCountsByDenomination, markStockDead, bulkMarkStockDead } from "./stock";
 import { createDenomination } from "./catalog";
 import { StockStatus } from "@app/core/enums";
 
@@ -133,6 +133,86 @@ describe("bulkAddStock dedup", () => {
   it("empty input returns added=0, skipped=0 without querying", async () => {
     const { product } = sample;
     expect(await bulkAddStock(prisma, product.id, [])).toEqual({ added: 0, skipped: 0 });
+  });
+});
+
+describe("markStockDead", () => {
+  it("marks an AVAILABLE item dead and returns count=1", async () => {
+    const { product } = sample;
+    const item = (await prisma.stockItem.findFirst({
+      where: { productId: product.id, status: StockStatus.AVAILABLE },
+    }))!;
+
+    const count = await markStockDead(prisma, item.id, "confirmed dead");
+
+    expect(count).toBe(1);
+    const after = await prisma.stockItem.findUnique({ where: { id: item.id } });
+    expect(after!.status).toBe(StockStatus.DEAD);
+    expect(after!.note).toBe("confirmed dead");
+  });
+
+  it("marks a RESERVED item dead and returns count=1", async () => {
+    const { product } = sample;
+    const item = (await prisma.stockItem.findFirst({
+      where: { productId: product.id, status: StockStatus.AVAILABLE },
+    }))!;
+    await prisma.stockItem.update({ where: { id: item.id }, data: { status: StockStatus.RESERVED } });
+
+    const count = await markStockDead(prisma, item.id, "confirmed dead");
+
+    expect(count).toBe(1);
+    expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.status).toBe(StockStatus.DEAD);
+  });
+
+  it("refuses to alter a SOLD (delivered) item — returns count=0, status unchanged", async () => {
+    const { product } = sample;
+    const item = (await prisma.stockItem.findFirst({
+      where: { productId: product.id, status: StockStatus.AVAILABLE },
+    }))!;
+    await prisma.stockItem.update({
+      where: { id: item.id },
+      data: { status: StockStatus.SOLD, soldAt: new Date() },
+    });
+
+    const count = await markStockDead(prisma, item.id, "mis-tap by admin");
+
+    expect(count).toBe(0);
+    const after = await prisma.stockItem.findUnique({ where: { id: item.id } });
+    expect(after!.status).toBe(StockStatus.SOLD);
+    // The note (and everything else about the delivered credential) is untouched.
+    expect(after!.note).toBeNull();
+  });
+
+  it("no-ops on an already-DEAD item — returns count=0", async () => {
+    const { product } = sample;
+    const item = (await prisma.stockItem.findFirst({
+      where: { productId: product.id, status: StockStatus.AVAILABLE },
+    }))!;
+    await prisma.stockItem.update({ where: { id: item.id }, data: { status: StockStatus.DEAD, note: "first note" } });
+
+    const count = await markStockDead(prisma, item.id, "second note");
+
+    expect(count).toBe(0);
+    expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.note).toBe("first note");
+  });
+
+  it("returns count=0 for a non-existent stock id", async () => {
+    expect(await markStockDead(prisma, 999999, "n/a")).toBe(0);
+  });
+
+  it("uses the identical status filter as bulkMarkStockDead (SOLD excluded from both)", async () => {
+    const { product } = sample;
+    const items = await prisma.stockItem.findMany({
+      where: { productId: product.id, status: StockStatus.AVAILABLE },
+      take: 2,
+    });
+    await prisma.stockItem.update({ where: { id: items[0]!.id }, data: { status: StockStatus.SOLD, soldAt: new Date() } });
+
+    const singleCount = await markStockDead(prisma, items[0]!.id, "x");
+    const bulkCount = await bulkMarkStockDead(prisma, [items[1]!.id], "x");
+
+    expect(singleCount).toBe(0);
+    expect(bulkCount).toBe(1);
   });
 });
 

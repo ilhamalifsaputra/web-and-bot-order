@@ -2735,6 +2735,21 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect(res.statusCode).toBe(404);
     });
 
+    // M-8 fix, backend audit 2026-07-31: bulkMarkStockDead already refused to
+    // touch SOLD rows; the single-item route had no such guard, so a mis-tap
+    // on a delivered credential in the list view could flip it to DEAD.
+    it("refuses to mark a SOLD (delivered) item dead — 409, status unchanged, no audit row", async () => {
+      const item = await prisma.stockItem.update({
+        where: { id: (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!.id },
+        data: { status: "SOLD", soldAt: new Date() },
+      });
+      const res = await postJson(`/api/stock/item/${item.id}/dead`, seed.cookie, seed.csrf, { note: "mis-tap" });
+      expect(res.statusCode).toBe(409);
+      expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.status).toBe("SOLD");
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_mark_dead", targetId: item.id } });
+      expect(audit).toBeNull();
+    });
+
     it("rejects missing auth (anon -> 303 /login)", async () => {
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
       const res = await postJson(`/api/stock/item/${item.id}/dead`, null, "x", {});

@@ -490,8 +490,9 @@ async function adminMarkStockDead(ctx: MyContext, stockId: number, productId: nu
   // Bot-4 fix, security audit 2026-06-23: was a bare update with no
   // $transaction and NO audit row at all — a stock-status change has no
   // trail back to the admin who made it.
-  await prisma.$transaction(async (tx) => {
-    await markStockDead(tx, stockId, "marked dead by admin");
+  const count = await prisma.$transaction(async (tx) => {
+    const updated = await markStockDead(tx, stockId, "marked dead by admin");
+    if (updated === 0) return 0; // already SOLD/DEAD — nothing to audit
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
       adminId: requireAdminId(admin),
@@ -499,8 +500,13 @@ async function adminMarkStockDead(ctx: MyContext, stockId: number, productId: nu
       targetType: "stock_item",
       targetId: stockId,
     });
+    return updated;
   });
-  await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.stock_marked_dead") });
+  if (count === 0) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.stock_item_not_eligible"), show_alert: true });
+  } else {
+    await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.stock_marked_dead") });
+  }
   await viewStockItems(ctx, productId);
 }
 

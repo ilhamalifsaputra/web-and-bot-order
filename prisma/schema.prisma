@@ -316,6 +316,15 @@ model Order {
   /// `requiredConfirmations` — a display-grade milestone, intentionally
   /// separate from `paidAt`/`deliveredAt` (which stay gated on Bybit's report).
   confirmedAt           DateTime? @map("confirmed_at")
+  /// Set once the confirmation tracker's on-chain lookup has failed
+  /// MAX_CONSECUTIVE_LOOKUP_FAILURES consecutive times (tx genuinely vanished
+  /// from the explorer, or a flaky free-tier API key) — a *non-terminal*
+  /// "tracking is uncertain" flag, not a status transition (M-11 fix, backend
+  /// audit 2026-07-31): the order stays in PAYMENT_DETECTED/CONFIRMING (still
+  /// inside PRE_DELIVERY_STATUSES) so a later genuine Bybit "Success" report
+  /// can still auto-deliver it. Cleared back to null the next time an
+  /// explorer lookup succeeds.
+  trackingStaleAt       DateTime? @map("tracking_stale_at")
 
   user               User                 @relation(fields: [userId], references: [id], onUpdate: NoAction)
   voucher            Voucher?             @relation(fields: [voucherId], references: [id], onUpdate: NoAction)

@@ -269,6 +269,10 @@ export function listTrackedBybitBscOrders(db: Db) {
  * the first time only). Display-only: NEVER transitions toward
  * PENDING_VERIFICATION/DELIVERED — that stays exclusively
  * `deliverPaidBybitBscOrder`'s job, gated on Bybit's own status-3 report.
+ * Also clears `trackingStaleAt` (M-11 fix, backend audit 2026-07-31): a
+ * successful lookup here means the explorer recovered, so any earlier
+ * "tracking is stale" flag from `recordBybitBscTrackingStale` no longer
+ * applies.
  *
  * Returns the order's status AFTER this call (so the caller can push a live
  * bubble update with the right content even when a status transition
@@ -288,7 +292,10 @@ export async function recordBybitBscConfirmationProgress(
 
   await db.order.update({
     where: { id: args.orderId },
-    data: { confirmations: args.confirmations, requiredConfirmations: args.requiredConfirmations },
+    // A successful lookup also clears any previously-set `trackingStaleAt` —
+    // the explorer recovered, so a future degradation gets its own fresh
+    // admin alert instead of staying silently suppressed by the old flag.
+    data: { confirmations: args.confirmations, requiredConfirmations: args.requiredConfirmations, trackingStaleAt: null },
   });
 
   let currentStatus: string = order.status;
@@ -318,23 +325,37 @@ export async function recordBybitBscConfirmationProgress(
 }
 
 /**
- * Escalate a tracked order to FAILED after the tracker's in-memory lookup-
- * failure grace period is exhausted (the tx genuinely seems to have
- * vanished/reorged off-chain, not just a transient explorer hiccup). Returns
- * whether the transition actually applied (false if the order already left
- * PAYMENT_DETECTED/CONFIRMING by the time this runs — e.g. delivered on the
- * same cycle by the deposit poller).
+ * Flag a tracked order's on-chain tracking as stale/uncertain once the
+ * tracker's in-memory lookup-failure grace period is exhausted (the tx
+ * genuinely seems to have vanished/reorged off-chain, or a flaky free-tier
+ * explorer API key, not just a one-off hiccup). Deliberately *non-terminal*
+ * (M-11 fix, backend audit 2026-07-31) — previously this escalated the order
+ * straight to FAILED, but FAILED is not in `PRE_DELIVERY_STATUSES`, so a later
+ * genuine Bybit "Success" report could never auto-deliver it again. Setting
+ * `trackingStaleAt` instead leaves the order in PAYMENT_DETECTED/CONFIRMING
+ * (still inside `PRE_DELIVERY_STATUSES`), so `deliverPaidBybitBscOrder` can
+ * still claim and deliver it whenever Bybit's own report comes in.
+ *
+ * Idempotent by design: returns false (no-op) both when the order already
+ * left PAYMENT_DETECTED/CONFIRMING (e.g. delivered on the same cycle by the
+ * deposit poller) AND when `trackingStaleAt` was already set from an earlier
+ * cycle — the caller uses the return value to fire its admin alert exactly
+ * once per staleness episode, not on every subsequent poll tick.
  */
-export async function recordBybitBscTrackingFailed(db: Db, args: { orderId: number; reason: string }): Promise<boolean> {
+export async function recordBybitBscTrackingStale(db: Db, args: { orderId: number; reason: string }): Promise<boolean> {
   const order = await getOrder(db, args.orderId);
   if (!order) return false;
   if (order.status !== OrderStatus.PAYMENT_DETECTED && order.status !== OrderStatus.CONFIRMING) return false;
-  return tryTransitionOrderStatus(db, {
-    orderId: args.orderId,
-    from: order.status,
-    to: OrderStatus.FAILED,
-    meta: args.reason,
+  if (order.trackingStaleAt != null) return false;
+  const res = await db.order.updateMany({
+    where: {
+      id: args.orderId,
+      status: { in: [OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING] },
+      trackingStaleAt: null,
+    },
+    data: { trackingStaleAt: new Date() },
   });
+  return res.count === 1;
 }
 
 export type BybitBscDeliverResult =

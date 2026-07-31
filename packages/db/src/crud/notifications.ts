@@ -102,12 +102,17 @@ export async function enqueueAdminOverpaid(
 
 /**
  * Enqueue one admin DM per resolved admin alerting that a Bybit BSC order's
- * automated tracking pipeline failed post-detection (tracker lookup-failure
- * grace period exhausted, or a delivery throw after Bybit reported the
- * deposit Success) and needs manual action. Same fan-out-per-admin shape as
- * `enqueueAdminOverpaid`. `reason` is a short diagnostic string — never a
- * secret/credential, but still not the kind of detail a buyer should see,
- * hence an admin DM rather than anything customer-facing.
+ * automated tracking needs manual attention post-detection. Two triggers:
+ * (1) the tracker's lookup-failure grace period exhausted — non-terminal
+ * since M-11 (backend audit 2026-07-31): the order stays in
+ * PAYMENT_DETECTED/CONFIRMING (`recordBybitBscTrackingStale`) so a later
+ * genuine Bybit "Success" report can still auto-deliver it, this alert is
+ * just "an admin should sanity-check this one" — or (2) a delivery throw
+ * after Bybit reported the deposit Success, which DOES escalate the order to
+ * FAILED. Same fan-out-per-admin shape as `enqueueAdminOverpaid`. `reason` is
+ * a short diagnostic string — never a secret/credential, but still not the
+ * kind of detail a buyer should see, hence an admin DM rather than anything
+ * customer-facing.
  */
 export async function enqueueOrderPipelineFailed(
   db: Db,

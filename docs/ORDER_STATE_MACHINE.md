@@ -82,16 +82,16 @@ stateDiagram-v2
 | Status | Arti | Stok | Reversibel? |
 |---|---|---|---|
 | `PENDING_PAYMENT` | Order dibuat, menunggu pembayaran. Default kolom. | **Sudah DIRESERVASI** (Checkout-2 fix, audit 2026-06-23) | Ya → `CANCELLED` (expiry/user) atau → `PAYMENT_DETECTED` (Bybit BSC) |
-| `PAYMENT_DETECTED` | **Bybit BSC saja.** Deposit on-chain terlihat (Bybit status 1/2), belum "Success" Bybit sendiri. `bybitTxid`/`network`/`firstDetectedAt` sudah terisi. | RESERVED | Ya → `CONFIRMING`, `PENDING_VERIFICATION`, atau `FAILED` |
-| `CONFIRMING` | **Bybit BSC saja.** Tracker block-explorer sudah melihat ≥1 konfirmasi. `confirmations` terisi (angka asli, bukan fabrikasi). | RESERVED | Ya → `CONFIRMED`, `PENDING_VERIFICATION`, atau `FAILED` |
-| `CONFIRMED` | **Bybit BSC saja.** `confirmations >= requiredConfirmations` — milestone display-only, BUKAN trigger delivery. `confirmedAt` terisi. | RESERVED | Ya → `PENDING_VERIFICATION` atau `FAILED` |
+| `PAYMENT_DETECTED` | **Bybit BSC saja.** Deposit on-chain terlihat (Bybit status 1/2), belum "Success" Bybit sendiri. `bybitTxid`/`network`/`firstDetectedAt` sudah terisi. `trackingStaleAt` bisa terisi (non-terminal, lihat catatan `FAILED` di bawah) tanpa mengubah status ini. | RESERVED | Ya → `CONFIRMING`, `PENDING_VERIFICATION`, atau `FAILED` (hanya dari delivery throw) |
+| `CONFIRMING` | **Bybit BSC saja.** Tracker block-explorer sudah melihat ≥1 konfirmasi. `confirmations` terisi (angka asli, bukan fabrikasi). `trackingStaleAt` bisa terisi juga (non-terminal). | RESERVED | Ya → `CONFIRMED`, `PENDING_VERIFICATION`, atau `FAILED` (hanya dari delivery throw) |
+| `CONFIRMED` | **Bybit BSC saja.** `confirmations >= requiredConfirmations` — milestone display-only, BUKAN trigger delivery. `confirmedAt` terisi. | RESERVED | Ya → `PENDING_VERIFICATION` atau `FAILED` (hanya dari delivery throw) |
 | `PENDING_VERIFICATION` | Pembayaran terdeteksi oleh gateway auto-confirm — status **transien**, hampir selalu langsung diikuti `approveOrder` dalam transaksi yang sama. | RESERVED | Ya → `DELIVERED` atau `REJECTED` |
 | `UNDERPAID` | (Hanya Binance Internal) Note transfer cocok tapi nominal kurang dari total. Menunggu keputusan admin. | RESERVED (tidak pernah dilepas sampai resolve) | Ya → `PENDING_VERIFICATION` atau `REFUNDED` |
 | `DELIVERED` | **Terminal.** Stok `SOLD`, kredensial sudah/akan dikirim via outbox. | SOLD | Tidak — `creditOrderToBalance`/`cancelOrder` menolak (`error.order_already_delivered`) |
 | `CANCELLED` | **Terminal.** Stok dilepas (`AVAILABLE`), wallet/voucher di-refund. | Dilepas | Tidak (re-cancel = no-op idempoten) |
 | `REJECTED` | **Terminal.** Admin menolak bukti bayar manual. Stok dilepas. | Dilepas | Tidak |
 | `REFUNDED` | **Terminal.** Dari `UNDERPAID` (saldo USDT dikembalikan ke wallet) ATAU dari `FAILED` (admin resolve manual). | Tidak pernah direservasi (UNDERPAID) / RESERVED (FAILED, dilepas saat resolve) | Tidak |
-| `FAILED` | **Terminal.** **Bybit BSC saja.** Pipeline otomatis gagal setelah `PAYMENT_DETECTED` tanpa resolusi otomatis yang aman (tracker grace-period habis, atau delivery throw post-konfirmasi). Beda dari `CANCELLED`/`REJECTED` — itu selalu inisiatif customer/admin, `FAILED` selalu inisiatif sistem. Admin DM via outbox (`ORDER_PIPELINE_FAILED`). | RESERVED (sampai admin resolve ke `CANCELLED`/`REFUNDED`) | Ya → `CANCELLED` atau `REFUNDED` (admin) |
+| `FAILED` | **Terminal.** **Bybit BSC saja.** Sejak M-11 (audit backend 2026-07-31), HANYA delivery throw post-konfirmasi (mis. kehabisan stok) yang mengeskalasi ke sini — tracker grace-period habis TIDAK LAGI melakukan ini (dulu iya, tapi `FAILED` bukan bagian dari `PRE_DELIVERY_STATUSES`, jadi laporan "Success" asli dari Bybit yang datang belakangan tidak pernah bisa auto-deliver lagi). Grace-period habis sekarang hanya menyalakan `trackingStaleAt` (non-terminal) + DM admin, order tetap di `PAYMENT_DETECTED`/`CONFIRMING`. Beda dari `CANCELLED`/`REJECTED` — itu selalu inisiatif customer/admin, `FAILED` selalu inisiatif sistem. Admin DM via outbox (`ORDER_PIPELINE_FAILED`). | RESERVED (sampai admin resolve ke `CANCELLED`/`REFUNDED`) | Ya → `CANCELLED` atau `REFUNDED` (admin) |
 | `PAID` | **Status mati** — ada di enum, tidak pernah di-set. Anggap tidak digunakan. | — | — |
 
 ## Siapa yang memicu transisi
@@ -111,7 +111,7 @@ stateDiagram-v2
 | `PENDING_PAYMENT → PAYMENT_DETECTED` | Deposit on-chain terlihat tapi Bybit belum report "Success" (status 1/2) | `apps/order-bot/src/payments/bybitBscDeposit.ts` `processDeposits` → `recordBybitBscPaymentDetected` |
 | `PAYMENT_DETECTED → CONFIRMING → CONFIRMED` | Poll terpisah ke block explorer (BscScan-compatible) — display-only, TIDAK PERNAH memanggil `approveOrder`/`deliverPaidBybitBscOrder` | `apps/order-bot/src/payments/bybitBscConfirmationTracker.ts` `pollOnce` → `recordBybitBscConfirmationProgress` |
 | `{PAYMENT_DETECTED,CONFIRMING,CONFIRMED} → PENDING_VERIFICATION → DELIVERED` | Bybit akhirnya report status 3 "Success" — gerbang delivery TETAP sama persis, hanya guard pre-delivery yang diperluas | `deliverPaidBybitBscOrder` |
-| `{PAYMENT_DETECTED,CONFIRMING,CONFIRMED} → FAILED` | Tracker: grace-period lookup-not-found habis (`MAX_CONSECUTIVE_LOOKUP_FAILURES`) | `bybitBscConfirmationTracker.ts` → `recordBybitBscTrackingFailed` |
+| `{PAYMENT_DETECTED,CONFIRMING} → {PAYMENT_DETECTED,CONFIRMING}` (status tidak berubah) | Tracker: grace-period lookup-not-found habis (`MAX_CONSECUTIVE_LOOKUP_FAILURES`) — hanya menyalakan `trackingStaleAt` (non-terminal, M-11 fix) + DM admin, TIDAK mengubah status | `bybitBscConfirmationTracker.ts` → `recordBybitBscTrackingStale` |
 | `{PAYMENT_DETECTED,CONFIRMING,CONFIRMED} → FAILED` | Delivery throw setelah ledger diklaim (mis. kehabisan stok) — ledger `processed_bybit_tx` ditandai `delivery_failed` | `deliverPaidBybitBscOrder` (catch block) |
 | `FAILED → CANCELLED` / `FAILED → REFUNDED` | Admin resolve manual (belum ada UI khusus di Phase 1 — via cancelOrder/refund flow yang sudah ada) | — |
 
@@ -166,9 +166,17 @@ stateDiagram-v2
   status-3 ("Success") yang dilaporkan Bybit sendiri — dua sumber kebenaran
   yang independen, tidak ada risiko delivery ganda/kurang akibat keduanya
   tidak sepakat.
-- **`FAILED` reserved untuk kegagalan pipeline otomatis** (tracker
-  grace-period habis, atau delivery throw setelah `PAYMENT_DETECTED`) —
-  berbeda dari `CANCELLED`/`REJECTED` yang selalu inisiatif customer/admin.
-  Setiap transisi ke `FAILED` mengantre satu DM admin per admin
-  (`ORDER_PIPELINE_FAILED`) lewat `notification_outbox` — bukan kirim
+- **`FAILED` reserved untuk kegagalan pipeline otomatis yang genuinely tidak
+  bisa dipulihkan** — sejak M-11 (audit backend 2026-07-31) HANYA delivery
+  throw setelah `PAYMENT_DETECTED` (mis. kehabisan stok). Tracker grace-period
+  habis TIDAK LAGI mengeskalasi ke `FAILED` — itu sengaja dibuat non-terminal
+  (`trackingStaleAt`, lihat `recordBybitBscTrackingStale`) justru karena
+  `FAILED` tidak masuk `PRE_DELIVERY_STATUSES`: kalau tracker (pihak ketiga,
+  bisa flaky) yang mengunci order ke status terminal, laporan "Success" asli
+  dari Bybit sendiri yang datang belakangan tidak akan pernah bisa
+  auto-deliver lagi (`deliverPaidBybitBscOrder` langsung return `"stale"`).
+  `FAILED` beda dari `CANCELLED`/`REJECTED` yang selalu inisiatif
+  customer/admin. Setiap transisi ke `FAILED`, DAN setiap kali
+  `trackingStaleAt` baru dinyalakan, sama-sama mengantre satu DM admin per
+  admin (`ORDER_PIPELINE_FAILED`) lewat `notification_outbox` — bukan kirim
   langsung — supaya tahan proses-restart dan retry otomatis.

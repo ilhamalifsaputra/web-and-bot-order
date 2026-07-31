@@ -52,6 +52,21 @@ const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
 // (typed input, a crafted callback, or a cart row). Checkout-5 fix, security
 // audit 2026-06-23.
 const MAX_QTY_PER_ORDER = 99;
+// Hard ceiling on total units across every active cart line, checked before
+// any per-unit work starts (M-7 fix, backend audit 2026-07-31). Without this,
+// createOrderFromCart's per-unit loop (allocateOneAvailableStock + an
+// OrderItem row for every unit, with no cross-line cap — only the 99-per-line
+// clamp above) could turn a large multi-line cart into thousands of queries
+// inside one $transaction with Prisma's default 5s timeout, holding SQLite's
+// single writer long enough to starve every other writer (the bot, webhooks,
+// delivery transactions) before likely timing out and rolling back the whole
+// order. 300 comfortably covers a real bulk-reseller checkout (several lines
+// each up to the existing 99-per-line cap) while keeping the per-order unit
+// count — and so the per-order query count — bounded to a small constant.
+// Exported so callers (e.g. the storefront's performCheckout) can fail fast
+// on the same cart BEFORE even opening the write transaction, not just once
+// this function is already running inside it.
+export const MAX_CART_ORDER_UNITS = 300;
 
 // Fallback copy for the bulk-purchase channel broadcast (see
 // finalizeDeliverySideEffects) when the admin hasn't set
@@ -358,6 +373,14 @@ export async function createOrderFromCart(
   const rawCart = (await getCart(db, args.user.id)) as unknown as CartLine[];
   const cart = rawCart.filter((ci) => ci.product.isActive);
   if (cart.length === 0) throw new ValidationError("error.cart_empty");
+  // Total-units cap (M-7 fix) — checked first, before any per-line validation
+  // or the order shell is even inserted, so an over-cap cart is rejected as
+  // cheaply as possible (one cart read, one sum) rather than after sinking
+  // work into subtotal/voucher math or reserving stock.
+  const totalUnits = cart.reduce((sum, ci) => sum + ci.quantity, 0);
+  if (totalUnits > MAX_CART_ORDER_UNITS) {
+    throw new ValidationError("error.cart_too_large", { limit: MAX_CART_ORDER_UNITS });
+  }
   // Cart rows are normally clamped to 1-99 by cart.ts, but the very first
   // insert path (addToCart's create branch) doesn't clamp — re-validate here
   // as the final server-side boundary (Checkout-5 fix, security audit
@@ -486,8 +509,9 @@ export async function createOrderFromCart(
   // 7. Pre-check every AUTO line's availability before reserving anything, so
   // the common "you asked for more than we have" case fails before any row is
   // touched (rather than leaving earlier lines reserved). Then reserve stock
-  // atomically (one row per unit, AVAILABLE -> RESERVED) and create one
-  // OrderItem per unit. allocateOneAvailableStock is itself optimistic-locked,
+  // atomically (one row per unit, AVAILABLE -> RESERVED) and batch every
+  // resulting OrderItem row into one createMany below instead of one create
+  // per unit (M-7 fix). allocateOneAvailableStock is itself optimistic-locked,
   // so concurrent checkouts for the same product can never both reserve the
   // same row — that's the real race guard; the pre-check is just a fast-fail.
   // Out-of-stock is now caught HERE instead of first becoming visible at admin
@@ -507,9 +531,21 @@ export async function createOrderFromCart(
       throw new ValidationError("error.out_of_stock", { product: ci.product.name });
     }
   }
+  // Stock reservation is still one allocateOneAvailableStock call per unit
+  // (it's individually optimistic-locked — see its doc comment — so each
+  // unit's assignment genuinely depends on a fresh read of what's still
+  // AVAILABLE after every earlier unit in this same order reserved its row;
+  // that can't be batched without changing which stock item lands on which
+  // line). What CAN be batched is persisting the resulting OrderItem rows:
+  // collect one createMany input per unit here, across every line, and issue
+  // a single createMany after the loop instead of one create per unit — same
+  // rows, same stock assignments, same order, just one insert query instead
+  // of O(units) (M-7 fix, backend audit 2026-07-31).
+  const orderItemsData: Prisma.OrderItemCreateManyInput[] = [];
   for (const ci of cart) {
     const unit = q4(unitPrice(ci.product, isReseller, pricedAt));
     const isManual = ci.product.deliveryType !== DeliveryType.AUTO;
+    const warrantyDays = (ci.product as unknown as { warrantyDays: number }).warrantyDays;
     for (let k = 0; k < ci.quantity; k++) {
       let stockItemId: number | null = null;
       if (!isManual) {
@@ -519,18 +555,19 @@ export async function createOrderFromCart(
         }
         stockItemId = reserved.id;
       }
-      await db.orderItem.create({
-        data: {
-          orderId: order.id,
-          productId: ci.productId,
-          stockItemId,
-          quantity: 1,
-          unitPrice: unit,
-          warrantyDaysSnapshot: (ci.product as unknown as { warrantyDays: number }).warrantyDays,
-          deliveryTypeSnapshot: ci.product.deliveryType,
-        },
+      orderItemsData.push({
+        orderId: order.id,
+        productId: ci.productId,
+        stockItemId,
+        quantity: 1,
+        unitPrice: unit,
+        warrantyDaysSnapshot: warrantyDays,
+        deliveryTypeSnapshot: ci.product.deliveryType,
       });
     }
+  }
+  if (orderItemsData.length > 0) {
+    await db.orderItem.createMany({ data: orderItemsData });
   }
 
   // 8. Final totals

@@ -59,6 +59,7 @@ import {
   claimGatewaySlot,
   commitGatewayResult,
   releaseGatewaySlot,
+  MAX_CART_ORDER_UNITS,
 } from "@app/db";
 import { type Customer } from "../plugins/auth";
 import { clientIp, webhookRateLimited } from "../rateLimit";
@@ -414,6 +415,25 @@ export async function performCheckout(
     choice = { currency: OrderCurrency.IDR, method: PaymentMethod.PAYDISINI };
   } else {
     throw new ValidationError("web.pay_method_unavailable");
+  }
+
+  // Fail fast on an over-cap cart BEFORE even opening the write transaction
+  // below (M-7 fix, backend audit 2026-07-31) — createOrderFromCart does
+  // per-unit stock allocation + an OrderItem insert for every unit in the
+  // cart, and doing that for thousands of units inside one $transaction would
+  // hold SQLite's single writer long enough to starve every other writer (the
+  // bot, webhooks, delivery transactions) before likely timing out. This is a
+  // read against `prisma` directly, outside any transaction, so an over-cap
+  // cart never causes a transaction to even start; createOrderFromCart
+  // enforces the same cap again once inside the transaction as a
+  // defense-in-depth backstop (e.g. for other callers, or a cart that grows
+  // between this check and the transaction opening).
+  const precheckCart = await getCart(prisma, customer.userId);
+  const precheckTotalUnits = precheckCart
+    .filter((ci) => ci.product.isActive)
+    .reduce((sum, ci) => sum + ci.quantity, 0);
+  if (precheckTotalUnits > MAX_CART_ORDER_UNITS) {
+    throw new ValidationError("error.cart_too_large", { limit: MAX_CART_ORDER_UNITS });
   }
 
   const order = await prisma.$transaction(async (tx) => {

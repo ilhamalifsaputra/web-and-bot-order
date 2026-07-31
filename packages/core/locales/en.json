@@ -166,6 +166,7 @@
   "error.cannot_deliver_out_of_stock": "Cannot deliver — <b>{product}</b> has no stock. Try again or contact the buyer manually.",
   "error.cart_empty": "Your cart is empty.",
   "error.cart_mixed_delivery": "This item ships differently from what's already in your cart. Please check out your current cart first, or start a new one.",
+  "error.cart_too_large": "Your cart has too many items to check out in one order (max {limit} total). Please split it into smaller orders.",
   "error.customer_data_incomplete": "Some required information is missing. Please try again.",
   "error.field_required": "This field is required.",
   "error.field_invalid_email": "Please enter a valid email address.",

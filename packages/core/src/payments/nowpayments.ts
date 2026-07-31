@@ -131,7 +131,14 @@ export interface NowpaymentsIpn {
 
 /**
  * Verify an IPN webhook's `x-nowpayments-sig` header + normalize the body.
- * Returns null on a missing/invalid signature.
+ * Returns null on a missing/invalid signature, or on a signature-valid body
+ * that's missing/malformed `payment_id` (M-12, backend audit 2026-07-31): a
+ * blank `trxId` would otherwise become the UNIQUE key in the idempotency
+ * ledger, and every subsequent broken IPN would then be silently answered
+ * "already_processed" against that poisoned `""` row — a genuinely-paid
+ * order would never be delivered or flagged. Rejecting here (same null
+ * contract as a bad signature) means the callback is never processed and
+ * never touches the ledger.
  *
  * Signature scheme (well documented publicly, not a guess): HMAC-SHA512 over
  * `JSON.stringify` of the body with its keys sorted **recursively, alphabetically**
@@ -151,9 +158,12 @@ export function verifyIpn(
     return null;
   }
 
+  if (typeof body.payment_id !== "string" && typeof body.payment_id !== "number") {
+    logger.warn("NOWPayments IPN is missing a usable payment_id — rejecting the callback instead of treating it as a valid (empty) idempotency key");
+    return null;
+  }
+  const trxId = String(body.payment_id);
   const orderId = typeof body.order_id === "string" ? body.order_id : String(body.order_id ?? "");
-  const trxId =
-    typeof body.payment_id === "string" || typeof body.payment_id === "number" ? String(body.payment_id) : "";
   const amountRaw = body.actually_paid ?? body.pay_amount ?? 0;
   let amount: Decimal;
   try {

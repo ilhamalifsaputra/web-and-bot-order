@@ -67,6 +67,30 @@ describe("verifyIpn", () => {
     expect(result?.amount.toFixed(2)).toBe("10.50");
   });
 
+  // M-12 (backend audit 2026-07-31): a missing/malformed payment_id must be
+  // rejected outright, never normalized to trxId: "" — an empty string would
+  // otherwise become a valid (poisoned) idempotency ledger key upstream.
+  it("returns null (rejects) when payment_id is missing, even with a correctly signed body", () => {
+    const body = { order_id: "ORD-NOPID", payment_status: "finished", actually_paid: 10 };
+    const sig = makeSignature(body);
+    expect(verifyIpn(body, sig, CREDS)).toBeNull();
+  });
+
+  it("returns null (rejects) when payment_id is present but not a string/number (e.g. null, object)", () => {
+    const bodyNull = { order_id: "ORD-NULLPID", payment_status: "finished", payment_id: null, actually_paid: 10 };
+    expect(verifyIpn(bodyNull, makeSignature(bodyNull), CREDS)).toBeNull();
+
+    const bodyObj = { order_id: "ORD-OBJPID", payment_status: "finished", payment_id: { bad: true }, actually_paid: 10 };
+    expect(verifyIpn(bodyObj, makeSignature(bodyObj), CREDS)).toBeNull();
+  });
+
+  it("still rejects a second, independent IPN missing payment_id — proves there's no shared poisoned state across calls", () => {
+    const body1 = { order_id: "ORD-NOPID-A", payment_status: "finished", actually_paid: 10 };
+    const body2 = { order_id: "ORD-NOPID-B", payment_status: "finished", actually_paid: 20 };
+    expect(verifyIpn(body1, makeSignature(body1), CREDS)).toBeNull();
+    expect(verifyIpn(body2, makeSignature(body2), CREDS)).toBeNull();
+  });
+
   it("marks a non-finished status as not paid", () => {
     const body = { order_id: "ORD-2", payment_status: "waiting", payment_id: "PID-2", pay_amount: 5 };
     const sig = makeSignature(body);

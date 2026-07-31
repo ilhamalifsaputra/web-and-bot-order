@@ -202,6 +202,52 @@ describe("POST /pay/nowpayments/callback", () => {
     expect(second.json()).toEqual({ status: "already_processed" });
   });
 
+  // M-12 (backend audit 2026-07-31): a signature-valid IPN missing payment_id
+  // must be rejected outright (403), never normalized to trxId: "" and
+  // ledger-inserted — that empty string would otherwise become a valid
+  // idempotency key, and every subsequent broken IPN would be silently
+  // answered "already_processed" against that poisoned row, so a
+  // genuinely-paid order would never be delivered or flagged. Two identical
+  // no-payment_id IPNs are sent below to prove the first didn't leave any
+  // poisoned "" claim (or anything else) behind for the second to trip on.
+  it("403s on an otherwise-correctly-signed IPN missing payment_id, and independently rejects a second one — no poisoned empty-string ledger state left behind", async () => {
+    const order = await createPendingNowpaymentsOrder("ORD-NOPID-NP", "50");
+    const body = {
+      order_id: order.orderCode,
+      payment_status: "finished",
+      actually_paid: "50",
+      pay_amount: "50",
+      // payment_id deliberately omitted
+    };
+    const signature = createHmac("sha512", IPN_SECRET).update(JSON.stringify(sortKeysDeep(body))).digest("hex");
+
+    const first = await app.inject({
+      method: "POST",
+      url: "/pay/nowpayments/callback",
+      headers: { "x-nowpayments-sig": signature },
+      payload: body,
+    });
+    expect(first.statusCode).toBe(403);
+    expect(first.json()).toEqual({ status: "bad signature" });
+
+    const updatedAfterFirst = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updatedAfterFirst!.status).toBe("PENDING_PAYMENT"); // untouched
+    expect(await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "" } })).toBeNull();
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/pay/nowpayments/callback",
+      headers: { "x-nowpayments-sig": signature },
+      payload: body,
+    });
+    expect(second.statusCode).toBe(403);
+    expect(second.json()).toEqual({ status: "bad signature" });
+
+    const updatedAfterSecond = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updatedAfterSecond!.status).toBe("PENDING_PAYMENT"); // still untouched — second IPN independently rejected
+    expect(await prisma.processedNowpaymentsTx.findUnique({ where: { trxId: "" } })).toBeNull();
+  });
+
   it("records an unmatched tx when no NOWPAYMENTS order matches the order_id", async () => {
     const { body, signature } = signedIpn({ orderId: "ORD-NO-SUCH-ORDER", amount: "12.5", trxId: "PID-UNMATCHED-1" });
     const res = await app.inject({

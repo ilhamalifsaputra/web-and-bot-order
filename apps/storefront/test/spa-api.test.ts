@@ -172,6 +172,11 @@ describe("SPA shell wildcard", () => {
     expect(res.body).toContain("<title>404 — SPA Test Shop</title>");
   });
 
+  it("sends Cache-Control: no-store so a reverse proxy never caches a session's CSRF token (M-20)", async () => {
+    const res = await app.inject({ method: "GET", url: "/spa-shell-probe" });
+    expect(res.headers["cache-control"]).toBe("no-store");
+  });
+
   it("respects the shop_lang cookie in the <html lang> substitution", async () => {
     const res = await app.inject({ method: "GET", url: "/spa-shell-probe", headers: { cookie: "shop_lang=id" } });
     expect(res.body).toContain('<html lang="id">');

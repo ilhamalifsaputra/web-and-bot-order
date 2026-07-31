@@ -281,6 +281,11 @@ describe("auth", () => {
     expect(res.body).not.toContain("__CSRF_TOKEN__");
   });
 
+  it("SPA shell sends Cache-Control: no-store so a reverse proxy never caches a session's CSRF token (M-20)", async () => {
+    const res = await get("/", seed.cookie);
+    expect(res.headers["cache-control"]).toBe("no-store");
+  });
+
   it("login happy path sets a working cookie", async () => {
     await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("supersecret"));
     const res = await post("/login", null, { telegram_id: String(ADMIN_TG), password: "supersecret" });

@@ -41,6 +41,11 @@ export default async function spaShellRoutes(app: FastifyInstance): Promise<void
     const html = raw.includes('<link rel="icon"')
       ? raw.replace(/<link rel="icon"[^>]*>/, faviconTag).replace("__CSRF_TOKEN__", req.admin?.csrf ?? "")
       : raw.replace("__CSRF_TOKEN__", req.admin?.csrf ?? "").replace("</head>", `${faviconTag}</head>`);
+    // The live CSRF token is baked into this HTML per-session — a caching
+    // reverse proxy that stored a response could hand one admin's token to
+    // the next visitor, which combined with SameSite=Lax cookies is enough
+    // to forge state-changing requests (audit finding M-20).
+    reply.header("Cache-Control", "no-store");
     return reply.type("text/html").send(html);
   });
 }

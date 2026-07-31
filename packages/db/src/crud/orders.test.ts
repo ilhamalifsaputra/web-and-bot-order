@@ -661,6 +661,21 @@ describe("createOrderFromCart — isActive filtering (Finding #5)", () => {
     const items = await prisma.orderItem.findMany({ where: { orderId: order!.id } });
     expect(items.map((i) => i.productId)).toEqual([product.id]);
   });
+
+  // M-5 (backend audit 2026-07-31): createOrderFromCart must freeze the
+  // denomination's CURRENT deliveryType onto each OrderItem it creates, the
+  // same way it already does for warrantyDaysSnapshot — settlePaidOrder later
+  // reads this snapshot instead of the live denomination row (see
+  // settlePaidOrder.test.ts for the full scenario this protects against).
+  it("stamps deliveryTypeSnapshot from the denomination's current deliveryType onto every created OrderItem", async () => {
+    const { user, product } = sample;
+    await addToCart(prisma, user.id, product.id, 1);
+
+    const order = await createOrderFromCart(prisma, { user });
+    const items = await prisma.orderItem.findMany({ where: { orderId: order!.id } });
+    expect(items).toHaveLength(1);
+    expect(items[0]!.deliveryTypeSnapshot).toBe(product.deliveryType);
+  });
 });
 
 // Finding #4 (audit-per-sku-delivery-flows-2026-07-13.md): the storefront's

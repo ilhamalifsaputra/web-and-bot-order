@@ -171,6 +171,44 @@ describe("settlePaidOrder", () => {
     expect(freshOrder!.status).toBe(OrderStatus.PROCESSING);
   });
 
+  // Deploy-boundary safety net: this repo's real deploy convention is
+  // `prisma db push` (docs/MIGRATIONS.md / CLAUDE.md), not `prisma migrate
+  // deploy` — so a fresh deploy of the deliveryTypeSnapshot column never runs
+  // the migration's backfill UPDATE and every pre-existing OrderItem row is
+  // left with a null snapshot. settlePaidOrder must fall back to the live
+  // denomination row for those rows (exactly the pre-Task-15 behavior),
+  // rather than treating null as "auto" or throwing.
+  it("null deliveryTypeSnapshot (simulating a pre-migration row): AUTO SKU still delivers and sells the reserved stock via the live denomination read", async () => {
+    const order = await makePendingVerificationOrder(sample.product.id, 1);
+    // Simulate a row that predates this column (db push leaves it null, no
+    // backfill) — the live denomination (sample.product) is still AUTO.
+    await prisma.orderItem.updateMany({ where: { orderId: order.id }, data: { deliveryTypeSnapshot: null } });
+
+    const result = await settlePaidOrder(prisma, order.id, { adminId });
+
+    expect(result.kind).toBe("delivered");
+    expect(result.credentials).toHaveLength(1);
+    const item = await prisma.orderItem.findFirst({ where: { orderId: order.id }, include: { stockItem: true } });
+    expect(item!.stockItem!.status).toBe(StockStatus.SOLD);
+  });
+
+  it("null deliveryTypeSnapshot (simulating a pre-migration row): MANUAL SKU still queues for hand-fulfilment via the live denomination read, instead of failing out-of-stock", async () => {
+    const manualDenom = await makeManualDenom(DeliveryType.MANUAL);
+    const order = await makePendingVerificationOrder(manualDenom.id, 1);
+    // Simulate a row that predates this column — the live denomination is
+    // still MANUAL. If this were misread as "auto" (e.g. a NOT NULL DEFAULT
+    // 'auto' column), settlePaidOrder would try to pull stock for a SKU that
+    // has none and throw error.cannot_deliver_out_of_stock instead.
+    await prisma.orderItem.updateMany({ where: { orderId: order.id }, data: { deliveryTypeSnapshot: null } });
+
+    const result = await settlePaidOrder(prisma, order.id, { adminId });
+
+    expect(result.kind).toBe("processing");
+    expect(result.credentials).toEqual([]);
+    const freshOrder = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(freshOrder!.status).toBe(OrderStatus.PROCESSING);
+  });
+
   it("manual SKU: queues for hand-fulfilment instead of delivering, and touches no stock", async () => {
     const manualDenom = await makeManualDenom(DeliveryType.MANUAL);
     const order = await makePendingVerificationOrder(manualDenom.id, 1);

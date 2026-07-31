@@ -1441,12 +1441,18 @@ export async function settlePaidOrder(
   // and the bot orders one SKU at a time), so any manual line makes the whole
   // order manual.
   //
-  // Reads deliveryTypeSnapshot (frozen at order-creation time), NOT the live
+  // Prefers deliveryTypeSnapshot (frozen at order-creation time) over the live
   // denomination row: an admin editing a SKU's deliveryType after this order
   // was placed must never change which branch an already-in-flight order
   // takes (M-5, backend audit 2026-07-31) — see OrderItem.deliveryTypeSnapshot
-  // in schema.prisma for the full rationale.
-  const isManual = order.items.some((it) => it.deliveryTypeSnapshot !== DeliveryType.AUTO);
+  // in schema.prisma for the full rationale. The snapshot is nullable and
+  // falls back to the live product.deliveryType for rows that predate this
+  // column (this repo's deploy convention is `prisma db push`, which adds the
+  // column but never backfills it — see the migration's own comment), which
+  // is exactly the pre-existing live-read behavior for those rows.
+  const isManual = order.items.some(
+    (it) => (it.deliveryTypeSnapshot ?? it.product.deliveryType) !== DeliveryType.AUTO,
+  );
 
   // ── AUTO branch (unchanged behavior) ────────────────────────────────────
   if (!isManual) {

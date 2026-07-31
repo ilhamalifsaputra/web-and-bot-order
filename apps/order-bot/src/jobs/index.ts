@@ -383,13 +383,37 @@ export async function drainBroadcasts(api: Api): Promise<void> {
  * through the outbox (the bot never sends these itself either — the dispatcher
  * delivers them, throttled).
  *
- * The stamp and the enqueue share ONE short transaction, and the stamp is a
- * conditional `updateMany` on `flashAnnouncedAt` still being null: a crash
- * between them rolls both back (so the sale is simply announced on the next
- * tick), and a second worker — or an overlapping tick — that reaches the same
- * row finds count 0 and skips it. Neither ordering can therefore fan the same
- * sale out twice. Re-scheduling a SKU resets the stamp to null in
- * `setFlashSale`, which is what legitimately re-announces it.
+ * Two phases, deliberately NOT one transaction (H-7 fix, backend audit
+ * 2026-07-31 — this used to wrap the claim AND the whole-customer-base
+ * `enqueueFlashSaleBroadcast` fan-out in a single `$transaction` with an
+ * explicit 15s timeout, which held SQLite's single writer lock for however
+ * long that fan-out took, starving every other concurrent writer — checkout,
+ * settlement, cancellation, the outbox dispatcher's own claim — past their
+ * busy_timeout):
+ *
+ * 1. Claim: a short transaction does the conditional `updateMany` on
+ *    `flashAnnouncedAt` still being null. A second worker — or an overlapping
+ *    tick — that reaches the same row after this commits finds count 0 and
+ *    skips it, so the claim alone is what stops the same sale fanning out
+ *    twice; it commits (or rolls back) in milliseconds regardless of customer
+ *    count.
+ * 2. Enqueue: `enqueueFlashSaleBroadcast` runs OUTSIDE any transaction,
+ *    against the top-level `prisma` client, batching its outbox inserts into
+ *    chunks so no single write holds the lock for long.
+ *
+ * Trade-off this introduces: because the claim now commits before the
+ * fan-out runs (rather than both rolling back together), a crash or thrown
+ * error between the two leaves the sale stamped as announced with some or all
+ * of the customer base never enqueued — and since `flashAnnouncedAt` is no
+ * longer null, the next tick will NOT retry it (unlike the old design, where
+ * that failure mode was impossible because everything shared one rollback).
+ * The catch block below logs that case loudly, distinctly from a claim
+ * failure, so it surfaces as an ops alert rather than silently under-sending;
+ * recovering from it (re-notifying the missed customers) is a manual admin
+ * step. This is judged an acceptable trade for no longer risking every other
+ * writer in the app on a single large broadcast. Re-scheduling a SKU resets
+ * the stamp to null in `setFlashSale`, which is what legitimately
+ * re-announces it (and would also be the manual recovery path here).
  */
 export async function announceStartedFlashSales(): Promise<void> {
   const started = await listUnannouncedStartedFlashSales(prisma);
@@ -408,27 +432,39 @@ export async function announceStartedFlashSales(): Promise<void> {
       logger.warn(`Flash sale on denomination ${denom.id} has an unusable discount percent — skipping its announcement; an admin should re-save the sale`);
       continue;
     }
+
+    let claimed: boolean;
     try {
-      const sent = await prisma.$transaction(async (tx) => {
-        const claimed = await tx.denomination.updateMany({
+      claimed = await prisma.$transaction(async (tx) => {
+        const claim = await tx.denomination.updateMany({
           where: { id: denom.id, flashAnnouncedAt: null },
           data: { flashAnnouncedAt: new Date() },
         });
-        if (claimed.count !== 1) return null; // already announced elsewhere
-        return enqueueFlashSaleBroadcast(tx, {
-          productName: denom.product.name,
-          denominationName: denom.name,
-          discountPercent: percent.toString(),
-          oldPrice: formatIdr(denom.price),
-          newPrice: formatIdr(discounted),
-          endsAt: localize(endsAt, "yyyy-LL-dd HH:mm ZZZZ"),
-        });
-      }, { timeout: 15000 });
-      if (sent === null) continue;
+        return claim.count === 1;
+      });
+    } catch (err) {
+      logger.error({ err }, `Failed to claim the announcement stamp for the flash sale on denomination ${denom.id} — nothing was enqueued and it stays unannounced, so it will be retried on the next tick`);
+      continue;
+    }
+    if (!claimed) continue; // already announced elsewhere
+
+    try {
+      const sent = await enqueueFlashSaleBroadcast(prisma, {
+        productName: denom.product.name,
+        denominationName: denom.name,
+        discountPercent: percent.toString(),
+        oldPrice: formatIdr(denom.price),
+        newPrice: formatIdr(discounted),
+        endsAt: localize(endsAt, "yyyy-LL-dd HH:mm ZZZZ"),
+      });
       announced++;
       recipients += sent;
     } catch (err) {
-      logger.error({ err }, `Failed to announce the flash sale on denomination ${denom.id} — nothing was enqueued and it stays unannounced, so it will be retried on the next tick`);
+      // The claim above already committed, so this sale will NOT be retried —
+      // unlike the claim-failure branch, this is not self-healing. Log it as
+      // an ops alert: some or all customers may be missing the DM and an
+      // admin needs to notice and re-notify manually.
+      logger.error({ err }, `The flash sale on denomination ${denom.id} was stamped as announced, but enqueueing the customer fan-out failed partway through — some customers may never have been queued the DM, and this will not retry automatically; an admin should check the Broadcast History and re-notify manually if needed`);
     }
   }
   if (announced > 0) {

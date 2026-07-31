@@ -509,13 +509,30 @@ export async function enqueueRestockBroadcast(
 }
 
 /**
+ * Cap on how many outbox rows a single `createMany` call inside
+ * `enqueueFlashSaleBroadcast` writes at once. SQLite has one writer for the
+ * whole shared `data/bot.db`, so even a single `createMany` call briefly holds
+ * that writer lock for however long it takes to insert all of its rows —
+ * chunking keeps each individual write short (a few hundred rows) regardless
+ * of how large the customer base grows, instead of one insert scaling with it.
+ */
+const FLASH_SALE_BROADCAST_CHUNK_SIZE = 500;
+
+/**
  * Enqueue a "flash sale is live" DM to every non-banned customer with a linked
  * Telegram account, for a denomination whose scheduled sale window has just
- * opened (see the order-bot's `announceStartedFlashSales` job — that job stamps
- * `flashAnnouncedAt` in the same transaction, which is what stops the same sale
- * fanning out twice). Same shape as `enqueueRestockBroadcast`: one `createMany`
- * rather than a per-row loop, because this targets the whole customer base
- * (potentially hundreds/thousands of recipients). No-op (returns 0) if there
+ * opened. MUST be called with the top-level `PrismaClient`, never a `tx` — see
+ * the order-bot's `announceStartedFlashSales` job, which claims
+ * `flashAnnouncedAt` in its own short transaction and only then calls this
+ * function outside that transaction (H-7 fix, backend audit 2026-07-31): the
+ * claim and the fan-out no longer share one transaction, because holding
+ * SQLite's single writer lock for the whole customer-base enumeration +
+ * insert would starve every other concurrent writer (checkout, settlement,
+ * cancellation, the outbox dispatcher's own claim) past their busy_timeout.
+ * The customer `findMany` runs unguarded (a plain read), and the outbox rows
+ * are written in `FLASH_SALE_BROADCAST_CHUNK_SIZE`-row chunks — each
+ * `createMany` call is its own short, self-contained write — rather than one
+ * `createMany` sized to the whole customer base. No-op (returns 0) if there
  * are no eligible customers.
  *
  * Prices and the end time arrive here as already-formatted display strings
@@ -534,7 +551,7 @@ export async function enqueueRestockBroadcast(
  * customers; this is only what the admin sees in the History table.
  */
 export async function enqueueFlashSaleBroadcast(
-  db: Db,
+  db: PrismaClient,
   args: {
     productName: string;
     denominationName: string;
@@ -550,22 +567,23 @@ export async function enqueueFlashSaleBroadcast(
     select: { telegramId: true, language: true },
   });
   if (!users.length) return 0;
-  await db.notificationOutbox.createMany({
-    data: users.map((u) => ({
-      event: NotificationEvent.FLASH_SALE_BROADCAST,
-      orderId: null,
-      payloadJson: JSON.stringify({
-        chat_id: Number(u.telegramId),
-        product_name: args.productName,
-        denomination_name: args.denominationName,
-        discount_percent: args.discountPercent,
-        old_price: args.oldPrice,
-        new_price: args.newPrice,
-        ends_at: args.endsAt,
-        buyer_language: langCode(u.language),
-      }),
-    })),
-  });
+  const rows = users.map((u) => ({
+    event: NotificationEvent.FLASH_SALE_BROADCAST,
+    orderId: null,
+    payloadJson: JSON.stringify({
+      chat_id: Number(u.telegramId),
+      product_name: args.productName,
+      denomination_name: args.denominationName,
+      discount_percent: args.discountPercent,
+      old_price: args.oldPrice,
+      new_price: args.newPrice,
+      ends_at: args.endsAt,
+      buyer_language: langCode(u.language),
+    }),
+  }));
+  for (let i = 0; i < rows.length; i += FLASH_SALE_BROADCAST_CHUNK_SIZE) {
+    await db.notificationOutbox.createMany({ data: rows.slice(i, i + FLASH_SALE_BROADCAST_CHUNK_SIZE) });
+  }
   await db.broadcast.create({
     data: {
       message:

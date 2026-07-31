@@ -264,6 +264,45 @@ describe("announceStartedFlashSales", () => {
     expect(await prisma.broadcast.count()).toBe(1);
   });
 
+  // H-7 fix (backend audit 2026-07-31): the `flashAnnouncedAt` claim and the
+  // customer fan-out used to share one `$transaction`, holding SQLite's
+  // single writer lock for however long the whole-customer-base enqueue
+  // took. They're now two phases — a short claim transaction, then a
+  // chunked enqueue outside any transaction — and this test's job is to
+  // prove that split still delivers to a customer base large enough to need
+  // multiple chunks (500 rows/chunk internally), and that the claim alone
+  // still correctly stops a second run from double-sending to any of them.
+  it("announces a started sale to a large customer base across the two-phase claim-then-chunked-enqueue, still stamping flashAnnouncedAt so a re-run doesn't double-send", async () => {
+    const now = Date.now();
+    await scheduleFlash(sample.product.id, new Date(now - HOUR), new Date(now + HOUR));
+    const EXTRA_RECIPIENTS = 1100; // comfortably more than one 500-row chunk
+    await prisma.user.createMany({
+      data: Array.from({ length: EXTRA_RECIPIENTS }, (_, i) => ({
+        telegramId: BigInt(8_000_000 + i),
+        referralCode: `flash-job-${i}`,
+        banned: false,
+      })),
+    });
+    const expectedRecipients = EXTRA_RECIPIENTS + 1; // + the sample user (telegramId 42)
+
+    await announceStartedFlashSales();
+
+    const afterFirst = await flashRows();
+    expect(afterFirst.length).toBe(expectedRecipients);
+    const broadcastRow = await prisma.broadcast.findFirst({ orderBy: { id: "desc" } });
+    expect(broadcastRow!.totalCount).toBe(expectedRecipients);
+
+    const stamped = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
+    expect(stamped!.flashAnnouncedAt).not.toBeNull();
+
+    // Re-run: the claim (not the enqueue) is what prevents a double-send, so
+    // this must still hold even though the fan-out is no longer in the same
+    // transaction as the claim.
+    await announceStartedFlashSales();
+    expect((await flashRows()).length).toBe(expectedRecipients);
+    expect(await prisma.broadcast.count()).toBe(1);
+  });
+
   it("skips sales that have not started yet, have already ended, or sit on an inactive SKU", async () => {
     const now = Date.now();
     const future = await makeDenomination("not-yet");

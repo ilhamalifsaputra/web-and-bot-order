@@ -597,6 +597,46 @@ describe("enqueueFlashSaleBroadcast", () => {
     expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.FLASH_SALE_BROADCAST } })).toBe(before);
     expect(await prisma.broadcast.count()).toBe(broadcastsBefore);
   });
+
+  // H-7 fix (backend audit 2026-07-31): the outbox insert is now chunked
+  // (FLASH_SALE_BROADCAST_CHUNK_SIZE rows per createMany) instead of one
+  // insert sized to the whole customer base, so no single write holds
+  // SQLite's writer lock for long regardless of how large the base is. This
+  // customer count (1,200) is chosen to be more than double the internal
+  // 500-row chunk size, so the test only passes if multiple chunks actually
+  // ran and every one of them landed — not just the first.
+  it("enqueues every recipient across a large customer base via multiple chunked writes, with one Broadcast row for the whole fan-out", async () => {
+    await prisma.user.updateMany({ data: { banned: true } }); // neutralize leftovers from earlier tests (own new users only, doesn't touch old outbox rows)
+    const RECIPIENT_COUNT = 1200;
+    const TELEGRAM_ID_BASE = 9_000_000; // unique range so this run's rows are identifiable among any leftover outbox rows from earlier tests
+    await prisma.user.createMany({
+      data: Array.from({ length: RECIPIENT_COUNT }, (_, i) => ({
+        telegramId: BigInt(TELEGRAM_ID_BASE + i),
+        referralCode: `flash-chunk-${i}`,
+        banned: false,
+        language: i % 2 === 0 ? "EN" : "ID",
+      })),
+    });
+
+    const notified = await enqueueFlashSaleBroadcast(prisma, sale);
+
+    expect(notified).toBe(RECIPIENT_COUNT);
+    const rows = await prisma.notificationOutbox.findMany({ where: { event: NotificationEvent.FLASH_SALE_BROADCAST } });
+    const thisRunRows = rows.filter((r) => {
+      const chatId = (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id;
+      return chatId >= TELEGRAM_ID_BASE && chatId < TELEGRAM_ID_BASE + RECIPIENT_COUNT;
+    });
+    expect(thisRunRows.length).toBe(RECIPIENT_COUNT);
+    // No duplicate/missing recipients across chunk boundaries.
+    const chatIds = new Set(thisRunRows.map((r) => (JSON.parse(r.payloadJson) as { chat_id: number }).chat_id));
+    expect(chatIds.size).toBe(RECIPIENT_COUNT);
+
+    const broadcastRow = await prisma.broadcast.findFirst({ orderBy: { id: "desc" } });
+    expect(broadcastRow!.totalCount).toBe(notified);
+    expect(broadcastRow!.sentCount).toBe(notified);
+    // Exactly one Broadcast row for the whole fan-out, not one per chunk.
+    expect(await prisma.broadcast.count({ where: { totalCount: notified } })).toBe(1);
+  });
 });
 
 // A bulk broadcast (enqueueRestockBroadcast/enqueueFlashSaleBroadcast) can

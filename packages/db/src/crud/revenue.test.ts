@@ -171,6 +171,32 @@ describe("profitSummarySince", () => {
     expect(result.idr).toBeNull();
     expect(result.usdt).toBeNull();
   });
+
+  it("prorates the order's bulkDiscountAmount + discountAmount into line revenue so a voucher-discounted order that actually lost money reports a loss, not the gross-revenue profit (M-1)", async () => {
+    const now = new Date();
+    // Gross (pre-discount) numbers alone would show a healthy profit:
+    // revenue 10000, cost 8000 -> +2000 (20% margin). But the order carries a
+    // Rp1000 bulk discount + Rp2000 voucher discount (3000 total) that the
+    // buyer actually paid less for — netting only 7000 against the same 8000
+    // cost basis is a genuine Rp1000 loss. If orderItemRevenueIdr still used
+    // gross unitPrice×quantity, this would assert the old (wrong) +2000/20%.
+    const product = await createDenomination(prisma, {
+      productId: parentProductId, name: "Discounted item", type: "SHARED", durationLabel: "1 Month",
+      price: "10000", costPrice: "8000",
+    });
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-disc-${Math.random()}`, userId,
+        subtotalAmount: "10000", bulkDiscountAmount: "1000", discountAmount: "2000",
+        totalAmount: "7000", currency: "IDR", status: "DELIVERED", deliveredAt: now,
+      },
+    });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: product.id, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const result = await profitSummarySince(prisma, new Date(now.getTime() - 60_000));
+    // Net revenue 10000-3000=7000, cost 8000 -> profit -1000, margin -14.29%.
+    expect(result.idr).toEqual({ netProfit: "-1000", marginPct: "-14.29", excludedItemCount: 0 });
+  });
 });
 
 describe("topProductsByMargin", () => {
@@ -230,6 +256,37 @@ describe("topProductsByMargin", () => {
     const profit = await profitSummarySince(prisma, new Date(now.getTime() - 60_000));
     // revenue 3×(30000/15000)=6, cost 3×(15000/15000)=3 -> profit 3, margin 50%.
     expect(profit.usdt).toMatchObject({ netProfit: "3", marginPct: "50" });
+  });
+
+  it("splits the order's bulkDiscountAmount + discountAmount across two lines by their share of subtotalAmount, turning both into losses (M-1)", async () => {
+    const now = new Date();
+    // Two lines, subtotal 6000 + 4000 = 10000. Order carries a Rp1000 bulk
+    // discount + Rp2000 voucher (3000 total), split 60/40 by subtotal share:
+    // line A eats 1800, line B eats 1200. Gross-only numbers would show both
+    // products profitable (A: 6000-5000=+1000, B: 4000-3000=+1000); with the
+    // discount prorated in, both actually lost money.
+    const productA = await createDenomination(prisma, { productId: parentProductId, name: "Product A", type: "SHARED", durationLabel: "1 Month", price: "6000", costPrice: "5000" });
+    const productB = await createDenomination(prisma, { productId: parentProductId, name: "Product B", type: "SHARED", durationLabel: "1 Month", price: "4000", costPrice: "3000" });
+
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-disc-${Math.random()}`, userId,
+        subtotalAmount: "10000", bulkDiscountAmount: "1000", discountAmount: "2000",
+        totalAmount: "7000", currency: "IDR", status: "DELIVERED", deliveredAt: now,
+      },
+    });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: productA.id, quantity: 1, unitPrice: "6000", warrantyDaysSnapshot: 30 } });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: productB.id, quantity: 1, unitPrice: "4000", warrantyDaysSnapshot: 30 } });
+
+    const result = await topProductsByMargin(prisma, new Date(now.getTime() - 60_000), 5);
+    // A: discount 3000×(6000/10000)=1800 -> revenue 4200, cost 5000 -> profit -800.
+    // B: discount 3000×(4000/10000)=1200 -> revenue 2800, cost 3000 -> profit -200.
+    expect(result).toEqual(
+      expect.arrayContaining([
+        { productId: productA.id, productLabel: `${parentProductName} · Product A`, unitsSold: 1, revenueIdrEquiv: "4200", profitIdrEquiv: "-800", costUnknownUnits: 0 },
+        { productId: productB.id, productLabel: `${parentProductName} · Product B`, unitsSold: 1, revenueIdrEquiv: "2800", profitIdrEquiv: "-200", costUnknownUnits: 0 },
+      ]),
+    );
   });
 });
 

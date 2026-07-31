@@ -15,7 +15,24 @@ import type { Db } from "./_types";
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
 
 /**
- * IDR revenue for one delivered OrderItem line: unitPrice × quantity.
+ * IDR revenue for one delivered OrderItem line: unitPrice × quantity, minus
+ * this line's prorated share of the order's `bulkDiscountAmount +
+ * discountAmount` (voucher). Order-level discounts live only on the `Order`
+ * row and are never applied to `OrderItem.unitPrice`, so without this a
+ * discounted order's per-line/per-product profit reported the pre-discount
+ * (gross) revenue instead of what the shop actually banked — a healthy
+ * margin could show even on an order that genuinely lost money (2026-07
+ * backend audit, M-1). The discount is split across lines by each line's
+ * share of the order's `subtotalAmount`: `lineDiscount = totalDiscount ×
+ * (lineSubtotal / orderSubtotal)`, using `Decimal` throughout (never float
+ * division — see the multiply-before-divide order below). `walletUsed` is
+ * deliberately excluded: it's a payment method (money the shop already
+ * holds), not a discount, so it doesn't reduce banked revenue.
+ *
+ * `order` is optional so callers that only need gross line revenue (e.g.
+ * `topProducts`) can omit it and keep the pre-fix behavior; every caller
+ * feeding `profitSummarySince`/`topProductsByMargin` must pass it.
+ *
  * `OrderItem.unitPrice` is ALWAYS the catalog's central-IDR
  * `Denomination.price`, written once at order creation (orders.ts
  * `unitPrice()`, used by createOrderFromCart/createOrderDirect) and never
@@ -28,8 +45,25 @@ const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
  * bug inflated USDT-paid orders' reported revenue by ~fxRate (2026-07
  * financial audit).
  */
-function orderItemRevenueIdr(item: { unitPrice: Decimal.Value; quantity: number }): Decimal {
-  return new Decimal(item.unitPrice).times(item.quantity);
+function orderItemRevenueIdr(item: {
+  unitPrice: Decimal.Value;
+  quantity: number;
+  order?: {
+    subtotalAmount: Decimal.Value;
+    bulkDiscountAmount: Decimal.Value;
+    discountAmount: Decimal.Value;
+  };
+}): Decimal {
+  const lineGross = new Decimal(item.unitPrice).times(item.quantity);
+  if (!item.order) return lineGross;
+  const totalDiscount = new Decimal(item.order.bulkDiscountAmount).plus(item.order.discountAmount);
+  const orderSubtotal = new Decimal(item.order.subtotalAmount);
+  if (totalDiscount.isZero() || orderSubtotal.isZero()) return lineGross;
+  // Multiply before dividing so the only division happens once, at the end,
+  // against the full-precision numerator — avoids compounding rounding from
+  // an intermediate (lineSubtotal / orderSubtotal) ratio.
+  const lineDiscount = totalDiscount.times(lineGross).div(orderSubtotal);
+  return lineGross.minus(lineDiscount);
 }
 
 /** Converts an already-IDR amount into a bucket's own currency: unconverted
@@ -207,6 +241,7 @@ export async function topProductsByMargin(db: Db, since: Date, limit = 5): Promi
       quantity: true,
       unitPrice: true,
       product: { select: { name: true, costPrice: true, product: { select: { name: true } } } },
+      order: { select: { subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true } },
     },
   });
 
@@ -273,7 +308,7 @@ export async function profitSummarySince(db: Db, since: Date): Promise<ProfitSum
       quantity: true,
       unitPrice: true,
       product: { select: { costPrice: true } },
-      order: { select: { currency: true, fxRate: true } },
+      order: { select: { currency: true, fxRate: true, subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true } },
     },
   });
 

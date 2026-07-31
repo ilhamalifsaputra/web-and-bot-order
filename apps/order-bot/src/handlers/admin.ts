@@ -711,6 +711,10 @@ export async function handleAdminCallback(ctx: MyContext, parts: string[]): Prom
       else if (action === "approve") await verification.approve(ctx, n(4));
       else if (action === "resend") await verification.resendCredentials(ctx, n(4));
       // 'reject' is a conversation entry point — intercepted upstream.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback verif action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "prod":
       if (action === "menu") await showProducts(ctx);
@@ -718,18 +722,34 @@ export async function handleAdminCallback(ctx: MyContext, parts: string[]): Prom
       else if (action === "toggle") await toggleProduct(ctx, n(4));
       else if (action === "stock") await viewStockItems(ctx, n(4));
       // 'new', 'type', 'cancel', 'rename', 'price' handled by conversations.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback prod action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "stock":
       if (action === "menu") await showStockMenu(ctx);
       // 'add' handled by stock_upload conversation.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback stock action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "stockitem":
       if (action === "dead") await adminMarkStockDead(ctx, n(4), n(5));
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback stockitem action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "vouch":
       if (action === "menu") await showVouchersMenu(ctx);
       else if (action === "list") await listVouchersView(ctx);
       // 'new' handled by voucher_create conversation.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback vouch action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "users":
       if (action === "menu") await showUsersMenu(ctx);
@@ -738,18 +758,32 @@ export async function handleAdminCallback(ctx: MyContext, parts: string[]): Prom
       else if (action === "reseller") await userSetReseller(ctx, n(4), Boolean(n(5)));
       else if (action === "wallet") await userWalletPrompt(ctx, n(4));
       // 'search' handled by user_search conversation.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback users action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "reports":
       if (action === "menu") await showReports(ctx);
       else if (action === "csv") await exportReport(ctx, parts[4]!);
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback reports action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "settings":
       if (action === "menu") await showSettings(ctx);
       else if (action === "undo" && parts[4] === "banner_image") await undoBannerRemoval(ctx);
       // 'set' handled by setting conversation.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback settings action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "broadcast":
       // 'start' handled by broadcast conversation.
+      logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback broadcast action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+      await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
       break;
     case "cancel":
       // Stale cancel button pressed outside any conversation — go to admin panel.
@@ -759,11 +793,22 @@ export async function handleAdminCallback(ctx: MyContext, parts: string[]): Prom
       if (action === "menu") await showBulkPricing(ctx, n(4));
       else if (action === "del") await deleteBulkPricingHandler(ctx, n(4));
       // 'new' handled by bulk_pricing conversation.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback bulk action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "ticket":
       if (action === "menu") await showTicketsAdmin(ctx);
       else if (action === "close") await closeTicketAdmin(ctx, n(4));
       // 'reply' handled by ticket_reply conversation.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback ticket action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
+    default:
+      logger.warn({ event: "dead_tap", section, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback section "${section}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+      await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
   }
 }

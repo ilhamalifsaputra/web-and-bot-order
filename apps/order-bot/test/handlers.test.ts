@@ -43,6 +43,7 @@ import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
 import { handleAdminCallback, adminCommand, adminWalletCommand, adminEmojiIdCommand, renderUserCard, notifyRestockSubscribers } from "../src/handlers/admin";
 import { routeCallback } from "../src/handlers/callbacks";
+import { t } from "../src/util/i18n";
 import { upsertUser } from "@app/db";
 
 let sample: SampleData;
@@ -2159,6 +2160,29 @@ describe("admin handlers", () => {
       await handleAdminCallback(ctx, data.split(":"));
       expect(sink.length, data).toBeGreaterThan(0);
     }
+  });
+
+  it("unrecognized section/action in admin callback answers error.stale_screen (M-21 fix)", async () => {
+    // Unrecognized section
+    const { ctx: ctx1, sink: sink1 } = adminCtx({ callbackData: "v1:adm:bogus_section" });
+    await handleAdminCallback(ctx1, "v1:adm:bogus_section".split(":"));
+    const answers1 = calls(sink1, "answerCallbackQuery");
+    expect(answers1.length).toBe(1);
+    expect(answers1[0]!.args[0]).toHaveProperty("text", t(ctx1, "error.stale_screen"));
+
+    // Unrecognized action within a known section
+    const { ctx: ctx2, sink: sink2 } = adminCtx({ callbackData: "v1:adm:prod:bogus_action" });
+    await handleAdminCallback(ctx2, "v1:adm:prod:bogus_action".split(":"));
+    const answers2 = calls(sink2, "answerCallbackQuery");
+    expect(answers2.length).toBe(1);
+    expect(answers2[0]!.args[0]).toHaveProperty("text", t(ctx2, "error.stale_screen"));
+
+    // Unrecognized action in broadcast section (which only has conversation entry points)
+    const { ctx: ctx3, sink: sink3 } = adminCtx({ callbackData: "v1:adm:broadcast:bogus_action" });
+    await handleAdminCallback(ctx3, "v1:adm:broadcast:bogus_action".split(":"));
+    const answers3 = calls(sink3, "answerCallbackQuery");
+    expect(answers3.length).toBe(1);
+    expect(answers3[0]!.args[0]).toHaveProperty("text", t(ctx3, "error.stale_screen"));
   });
 });
 

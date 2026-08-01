@@ -35,6 +35,9 @@ jobs:
       - name: Prisma generate
         run: pnpm exec prisma generate
 
+      - name: Migration drift check
+        run: pnpm run check-migration-drift
+
       - name: Typecheck
         run: pnpm -r typecheck
 

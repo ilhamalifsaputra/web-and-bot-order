@@ -18,6 +18,7 @@
     "bybit-probe": "tsx scripts/bybit-internal-probe.ts",
     "binance-probe": "tsx scripts/binance-probe.ts",
     "diag-reconcile-drift": "tsx scripts/diag-reconcile-drift.ts",
+    "check-migration-drift": "prisma migrate diff --from-migrations ./prisma/migrations --to-schema-datamodel ./prisma/schema.prisma --exit-code",
     "start": "NODE_ENV=production tsx apps/server/src/index.ts",
     "typecheck": "pnpm -r typecheck && tsc -p tsconfig.test.json",
     "test": "vitest run",

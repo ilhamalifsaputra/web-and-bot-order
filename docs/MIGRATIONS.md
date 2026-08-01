@@ -36,6 +36,36 @@ dan divalidasi terhadap shadow DB. Perlakukan migrasi hand-authored sebagai
 diklaim untuk batch Infra-5/Pricing-1 di atas; review manual SQL-nya sebelum
 mengandalkannya sebagai dokumentasi otoritatif.
 
+## Cek drift migrasi-vs-schema di CI
+
+Karena `db push` tidak pernah menulis file SQL, folder `prisma/migrations/*`
+bisa diam-diam ketinggalan di belakang `schema.prisma` — kolom/index baru
+ditambahkan ke schema, di-`db push`-kan ke DB dev, tapi tidak ada folder
+migrasi yang dibuat untuk mendokumentasikannya. Ini baru pertama kali
+ketahuan (H-8, 2026-08-01) ketika 12+ kolom dan 2 index di `schema.prisma`
+ternyata tidak punya SQL sama sekali di `prisma/migrations/` — `prisma
+migrate deploy` terhadap DB kosong akan gagal `P2022` di tabel `denominations`/
+`support_tickets`/`orders`/`products` (lihat
+`prisma/migrations/20260801000000_catchup_missing_columns_and_indexes/migration.sql`
+untuk katalog lengkap kolom yang saat itu hilang).
+
+Untuk mencegah drift berulang tanpa ketahuan, script
+`pnpm run check-migration-drift` (`prisma migrate diff --from-migrations
+./prisma/migrations --to-schema-datamodel ./prisma/schema.prisma
+--exit-code`) dijalankan sebagai step CI ("Migration drift check" di
+`.github/workflows/ci.yml`, sebelum typecheck/test) dan **gagal (exit code
+2)** kalau `schema.prisma` dan `prisma/migrations/*` tidak sinkron. Kalau
+step ini merah: jalankan command yang sama tanpa `--exit-code` (tambahkan
+`--script`) untuk lihat SQL-nya, review pola destructive/rebuild
+sebagaimana dijelaskan di komentar migrasi H-8 di atas, lalu simpan sebagai
+folder migrasi baru dengan timestamp setelah folder terakhir.
+
+**Catatan:** CI workflow saat ini nonaktif (`workflow_dispatch` saja, akun
+GitHub Actions terkunci karena billing — lihat komentar di
+`.github/workflows/ci.yml`). Sampai dipulihkan, jalankan
+`pnpm run check-migration-drift` manual sebelum PR yang mengubah
+`schema.prisma`.
+
 ## Cara membuat migrasi (sebagai dokumentasi SQL, opsional)
 
 Jika Anda menambah kolom/tabel di `schema.prisma` dan ingin menyimpan SQL-nya

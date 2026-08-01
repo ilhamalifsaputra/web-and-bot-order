@@ -450,6 +450,46 @@ describe("rankUserIdsBySpend (via listUsers sort: spend)", () => {
     expect(boundaryPage.map((u) => u.id)[0]).toBe(smallSpender.id);
     expect(boundaryPage.length).toBe(2);
   });
+
+  it("ranks correctly across every page of a dataset larger than a single page, including a big spender that is also the oldest-created user — a bound-before-rank implementation that only ranks the most-recently-created slice would drop or under-rank this user instead of placing it first", async () => {
+    const users: Awaited<ReturnType<typeof upsertUser>>[] = [];
+    for (let i = 0; i < 8; i++) {
+      const u = await upsertUser(prisma, { telegramId: 9750 + i, username: `paged_spend_${i}`, fullName: null });
+      // index 0 = oldest createdAt, index 7 = newest.
+      await prisma.user.update({ where: { id: u.id }, data: { createdAt: new Date(2024, 0, i + 1) } });
+      users.push(u);
+    }
+    // Spend is deliberately inverted vs. createdAt: the OLDEST user (index 0)
+    // is the single biggest spender, and spend then decreases with recency
+    // for indices 1-4. Indices 5-7 have zero IDR spend.
+    const spendByIndex: Record<number, string> = {
+      0: "900000",
+      1: "500000",
+      2: "300000",
+      3: "100000",
+      4: "50000",
+    };
+    for (const [idx, amount] of Object.entries(spendByIndex)) {
+      await makeOrder(prisma, users[Number(idx)]!.id, { amount });
+    }
+
+    const ids = users.map((u) => u.id);
+    // Expected: spend descending (0,1,2,3,4), then zero-spenders in
+    // createdAt-desc order (7 newest .. 5 oldest).
+    const expectedRankedOrder = [0, 1, 2, 3, 4, 7, 6, 5].map((idx) => users[idx]!.id);
+
+    // Walk every page at a page size smaller than the dataset and confirm the
+    // concatenation matches the full expected ranking exactly — this is what
+    // breaks if ranking happens on a truncated (bound-then-rank) id set
+    // instead of the full filtered set.
+    const pageSize = 3;
+    const collected: number[] = [];
+    for (let offset = 0; offset < ids.length; offset += pageSize) {
+      const page = await listUsers(prisma, { ids, sort: "spend", limit: pageSize, offset });
+      collected.push(...page.map((u) => u.id));
+    }
+    expect(collected).toEqual(expectedRankedOrder);
+  });
 });
 
 describe("customersKpis", () => {

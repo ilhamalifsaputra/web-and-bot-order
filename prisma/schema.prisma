@@ -58,6 +58,8 @@ model User {
   ticketsAsAdmin       SupportTicket[]       @relation("TicketAdmin")
   voucherRedemptions   VoucherRedemption[]
 
+  @@index([role, createdAt], map: "ix_users_role_created_at")
+  @@index([lastSeenAt], map: "ix_users_last_seen_at")
   @@map("users")
 }
 
@@ -706,6 +708,7 @@ model AuditLog {
   admin User? @relation(fields: [adminId], references: [id], onUpdate: NoAction)
 
   @@index([createdAt], map: "ix_audit_logs_created_at")
+  @@index([targetType, targetId], map: "ix_audit_logs_target")
   @@map("audit_logs")
 }
 

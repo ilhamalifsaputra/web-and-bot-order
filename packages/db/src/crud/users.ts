@@ -395,9 +395,8 @@ function userOrderBy(sort?: UserSort): Prisma.UserOrderByWithRelationInput {
 /**
  * Rank a filtered set of user ids by DELIVERED-order IDR spend, descending,
  * then return the requested page of ids. A single `findMany` relation-orderBy
- * cannot sort by a child relation's `_sum`, only `_count` — this two-phase
- * approach (match ids, then `groupBy`-rank them) is required because `groupBy`
- * DOES support ordering by `_sum`.
+ * cannot sort by a child relation's `_sum`, only `_count` — this ranks via a
+ * `groupBy` on `Order` because `groupBy` DOES support ordering by `_sum`.
  *
  * IDR-only, deliberately — spend is inherently two numbers (IDR, USDT) and
  * blending them into one ranking would fabricate a single scalar
@@ -405,6 +404,25 @@ function userOrderBy(sort?: UserSort): Prisma.UserOrderByWithRelationInput {
  * DELIVERED IDR orders (including USDT-only spenders) rank as zero-IDR-
  * spenders, appended after every real IDR spender in their original
  * createdAt-desc order.
+ *
+ * Bounded, not the "materialize every matched id, then groupBy over all of
+ * them, then slice" shape this replaced (which pulled every filtered user id
+ * — unbounded on a large customer base — before ranking a single page and
+ * discarding the rest, and made `groupBy` chunk its `userId IN (...)` list
+ * around SQLite's parameter-count limit). Instead:
+ *   1. Count how many matched users have >=1 DELIVERED IDR order at all
+ *      (`rankedCount`) — an indexed EXISTS-style count, not a row pull.
+ *   2. If the requested page overlaps the ranked (real-spend) side, pull just
+ *      that slice directly from `groupBy` with `skip`/`take` — the ranking
+ *      and the pagination happen in the same bounded query, filtering by the
+ *      relation (`user: where`) instead of a materialized id list.
+ *   3. If the page still needs more rows after that, pull the remainder from
+ *      the zero-spend side directly via `orders: { none: {...} } }`,
+ *      createdAt-desc, again with `skip`/`take` doing the pagination in SQL.
+ * Every step returns at most `limit` (+ a scalar count) rows — nothing
+ * unbounded is ever materialized — while producing byte-identical ordering
+ * and pagination to the old implementation (see
+ * `packages/db/src/crud/users.test.ts`'s boundary-page assertions).
  */
 async function rankUserIdsBySpend(
   db: Db,
@@ -412,21 +430,40 @@ async function rankUserIdsBySpend(
   offset: number,
   limit: number,
 ): Promise<number[]> {
-  const matched = await db.user.findMany({ where, select: { id: true }, orderBy: { createdAt: "desc" } });
-  const matchedIds = matched.map((u) => u.id);
-  if (matchedIds.length === 0) return [];
+  if (limit <= 0) return [];
 
-  const ranked = await db.order.groupBy({
-    by: ["userId"],
-    where: { userId: { in: matchedIds }, status: OrderStatus.DELIVERED, currency: "IDR" },
-    _sum: { totalAmount: true },
-    orderBy: { _sum: { totalAmount: "desc" } },
-  });
-  const rankedIds = ranked.map((r) => r.userId);
-  const rankedSet = new Set(rankedIds);
-  const zeroSpendIds = matchedIds.filter((id) => !rankedSet.has(id)); // already createdAt-desc
-  const fullyRankedIds = [...rankedIds, ...zeroSpendIds];
-  return fullyRankedIds.slice(offset, offset + limit);
+  const hasDeliveredIdrOrder: Prisma.UserWhereInput = {
+    orders: { some: { status: OrderStatus.DELIVERED, currency: "IDR" } },
+  };
+  const rankedCount = await db.user.count({ where: { ...where, ...hasDeliveredIdrOrder } });
+
+  const result: number[] = [];
+
+  if (offset < rankedCount) {
+    const ranked = await db.order.groupBy({
+      by: ["userId"],
+      where: { status: OrderStatus.DELIVERED, currency: "IDR", user: where },
+      _sum: { totalAmount: true },
+      orderBy: { _sum: { totalAmount: "desc" } },
+      skip: offset,
+      take: Math.min(limit, rankedCount - offset),
+    });
+    result.push(...ranked.map((r) => r.userId));
+  }
+
+  const remaining = limit - result.length;
+  if (remaining > 0) {
+    const zeroSpenders = await db.user.findMany({
+      where: { ...where, orders: { none: { status: OrderStatus.DELIVERED, currency: "IDR" } } },
+      select: { id: true },
+      orderBy: { createdAt: "desc" },
+      skip: Math.max(0, offset - rankedCount),
+      take: remaining,
+    });
+    result.push(...zeroSpenders.map((u) => u.id));
+  }
+
+  return result;
 }
 
 /** Filtered, sorted, paginated user list — the Customers page's data source. */

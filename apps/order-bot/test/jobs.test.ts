@@ -8,6 +8,7 @@ import {
   finalizeOrderPayment,
   setOrderPaymentMessage,
   createBroadcast,
+  createTicket,
   getSetting,
   setSetting,
   BINANCE_UID_KEY,
@@ -16,9 +17,9 @@ import {
   BINANCE_POLL_HEALTH_KEY,
 } from "@app/db";
 import type { Api } from "grammy";
-import { OrderStatus, OrderCurrency } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, TicketStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { autoCancelExpiredOrders, scheduleJobs, drainBroadcasts, announceStartedFlashSales, binancePollWatchdog } from "../src/jobs";
+import { autoCancelExpiredOrders, autoCloseStaleTickets, scheduleJobs, drainBroadcasts, announceStartedFlashSales, binancePollWatchdog } from "../src/jobs";
 import { NotificationEvent } from "@app/core/enums";
 
 let sample: SampleData;
@@ -110,6 +111,57 @@ describe("autoCancelExpiredOrders", () => {
     await autoCancelExpiredOrders(api);
 
     expect(api.sendMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("autoCloseStaleTickets", () => {
+  const HOUR = 3_600_000;
+
+  /** A REPLIED ticket whose repliedAt is already past the 48h cutoff. */
+  async function makeStaleTicket(userId: number) {
+    const ticket = await createTicket(prisma, userId, "help please");
+    await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: { status: TicketStatus.REPLIED, repliedAt: new Date(Date.now() - 49 * HOUR) },
+    });
+    return ticket;
+  }
+
+  // M-27 fix (backend audit 2026-07-31): closing one stale ticket used to run
+  // bare inside the loop (no per-iteration try/catch, only the DM was
+  // guarded), so a single row's failure threw out of the whole `for` loop and
+  // every other stale ticket in that tick stayed open. This mirrors
+  // autoCancelExpiredOrders's per-row try/catch: one failing row is logged
+  // and skipped, the rest of the batch still drains.
+  it("keeps closing the rest of the batch when one ticket's closure throws", async () => {
+    const secondUser = await prisma.user.create({
+      data: { telegramId: BigInt(9001), referralCode: "stale-ticket-2", role: "CUSTOMER" },
+    });
+    const failing = await makeStaleTicket(sample.user.id);
+    const healthy = await makeStaleTicket(secondUser.id);
+    const api = fakeApi();
+
+    const originalUpdateMany = prisma.supportTicket.updateMany.bind(prisma.supportTicket);
+    const spy = vi
+      .spyOn(prisma.supportTicket, "updateMany")
+      .mockImplementation(((args: { where?: { id?: number } }) => {
+        if (args.where?.id === failing.id) {
+          return Promise.reject(new Error("simulated write-lock timeout"));
+        }
+        return originalUpdateMany(args as Parameters<typeof originalUpdateMany>[0]);
+      }) as typeof prisma.supportTicket.updateMany);
+
+    await autoCloseStaleTickets(api);
+    spy.mockRestore();
+
+    const failingRow = await prisma.supportTicket.findUnique({ where: { id: failing.id } });
+    expect(failingRow!.status).toBe(TicketStatus.REPLIED); // untouched — closeTicket threw
+
+    const healthyRow = await prisma.supportTicket.findUnique({ where: { id: healthy.id } });
+    expect(healthyRow!.status).toBe(TicketStatus.CLOSED); // still processed despite the earlier failure
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(api.sendMessage).toHaveBeenCalledWith(9001, expect.any(String), expect.anything());
   });
 });
 

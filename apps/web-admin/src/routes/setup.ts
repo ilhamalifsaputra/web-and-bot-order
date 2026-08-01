@@ -4,6 +4,14 @@
  * the bind-127.0.0.1 + short setup window + permanent lock (spec §8) are the
  * mitigations. /setup* is excluded from the setup gate (see plugins/setupGate),
  * and locks itself once `setup_completed` is set (final step only).
+ *
+ * M-30: an abandoned wizard (browser closed, deploy interrupted) between step
+ * 2 and step 3 must not hold the pre-auth, no-CSRF POST /setup/owner open
+ * forever. OWNER_TG_KEY is timestamped when step 2 sets it and treated as
+ * expired after OWNER_SETUP_WINDOW_MS (see checkSetupLock / isOwnerKeyFresh
+ * below) — once expired, checkSetupLock falls back to the anyAdminPasswordSet
+ * self-heal, which is already true (step 2 already hashed the owner's
+ * password), so the very next request locks the wizard for good.
  */
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -33,6 +41,10 @@ import { currentAdmin } from "../plugins/auth";
 export { setTokenValidator };
 
 export const OWNER_TG_KEY = "setup_owner_tg"; // carries the owner id from step 2 → finish
+// Paired with OWNER_TG_KEY: the Date.now() (ms) at which step 2 wrote it, so
+// checkSetupLock can tell a fresh mid-wizard state from an abandoned one (M-30).
+const OWNER_TG_SET_AT_KEY = "setup_owner_tg_at";
+const OWNER_SETUP_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
 
 /**
  * Once setup is locked, the wizard is gone — send to the normal login.
@@ -59,13 +71,27 @@ export async function checkSetupLock(reply: FastifyReply): Promise<boolean> {
     reply.code(303).redirect("/login");
     return true;
   }
-  const midWizard = (await getSetting(prisma, OWNER_TG_KEY)) !== null;
+  const midWizard = await isOwnerKeyFresh();
   if (!midWizard && (await anyAdminPasswordSet(prisma))) {
     await markSetupComplete(prisma);
     reply.code(303).redirect("/login");
     return true;
   }
   return false;
+}
+
+/**
+ * True only while OWNER_TG_KEY is present AND was written within the last
+ * OWNER_SETUP_WINDOW_MS (M-30). A stale OWNER_TG_KEY (older than the window,
+ * or missing its timestamp entirely — e.g. a pre-fix deploy caught mid-wizard)
+ * is treated as absent, so checkSetupLock falls through to the
+ * anyAdminPasswordSet self-heal instead of trusting it forever.
+ */
+async function isOwnerKeyFresh(): Promise<boolean> {
+  const ownerTg = await getSetting(prisma, OWNER_TG_KEY);
+  if (ownerTg === null) return false;
+  const setAt = Number(await getSetting(prisma, OWNER_TG_SET_AT_KEY));
+  return Number.isFinite(setAt) && Date.now() - setAt < OWNER_SETUP_WINDOW_MS;
 }
 
 export default async function setupRoutes(app: FastifyInstance): Promise<void> {
@@ -138,6 +164,7 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
       throw err;
     }
     await setSetting(prisma, OWNER_TG_KEY, String(telegramId));
+    await setSetting(prisma, OWNER_TG_SET_AT_KEY, String(Date.now())); // starts the M-30 expiry window
     logger.info(`Setup wizard: created owner admin with Telegram id ${telegramId}`); // never log the password
     if (isJson) return reply.send({ ok: true, redirect: "/setup/shop" });
     return reply.code(303).redirect("/setup/shop");
@@ -190,6 +217,7 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
       logger.error(`Setup wizard finish: no user row found for owner Telegram id ${ownerTg} — skipping auto-login, owner will need to log in manually`);
     }
     await deleteSetting(prisma, OWNER_TG_KEY);
+    await deleteSetting(prisma, OWNER_TG_SET_AT_KEY);
     logger.info(`Setup wizard completed — owner with Telegram id ${ownerTg} auto-logged-in`);
     if (isJson) return reply.send({ ok: true, redirect: "/setup/done" });
     return reply.code(303).redirect("/setup/done");

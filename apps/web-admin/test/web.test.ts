@@ -5434,6 +5434,52 @@ describe("setup wizard — step 2/3/finish", () => {
     expect(shopPage.statusCode).toBe(200);
   });
 
+  it("expires an abandoned OWNER_TG_KEY after the setup window (M-30): a second, attacker-supplied telegram_id is refused", async () => {
+    // Simulate the real abandonment scenario: step 2 succeeds (owner password
+    // hashed + OWNER_TG_KEY written), then the operator's browser/deploy is
+    // interrupted before step 3 ever runs — setup_completed stays unset.
+    const ownerRes = await createOwner();
+    expect(ownerRes.statusCode).toBe(303); // step 2 succeeded, owner exists
+    expect(isAdmin(OWNER_TG)).toBe(true);
+
+    // Simulate time passing well past the 30-minute window by backdating the
+    // OWNER_TG_KEY timestamp directly (no need to fake global Date/timers —
+    // the expiry check reads this setting, not the wall clock at write time).
+    await setSetting(prisma, "setup_owner_tg_at", String(Date.now() - 31 * 60 * 1000));
+
+    // An attacker now hits the still-reachable, pre-auth, no-CSRF POST
+    // /setup/owner with their OWN telegram_id, trying to mint a second
+    // super-admin account.
+    const ATTACKER_TG = 6660001;
+    const attackerRes = await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: String(ATTACKER_TG), username: "attacker", password: "attackerpw", password_confirm: "attackerpw" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+
+    // Locked out — redirected to /login instead of processing the body.
+    expect(attackerRes.statusCode).toBe(303);
+    expect(attackerRes.headers.location).toBe("/login");
+    // The escalation itself is what must be prevented, not just the response
+    // shape: the attacker's telegram_id must NOT have become an admin.
+    expect(isAdmin(ATTACKER_TG)).toBe(false);
+    expect(adminIds()).not.toContain(ATTACKER_TG);
+    // The window's expiry self-heals setup_completed (same mechanism as the
+    // bootstrap-takeover case below), permanently closing the wizard.
+    expect(await getSetting(prisma, "setup_completed")).toBe("true");
+    // The legitimate owner from step 2 is unaffected.
+    expect(isAdmin(OWNER_TG)).toBe(true);
+  });
+
+  it("does NOT expire OWNER_TG_KEY inside the setup window (legitimate mid-wizard continue still works)", async () => {
+    await createOwner();
+    // Backdate, but stay just inside the 30-minute window.
+    await setSetting(prisma, "setup_owner_tg_at", String(Date.now() - 29 * 60 * 1000));
+    const shopPage = await app.inject({ method: "GET", url: "/setup/shop" });
+    expect(shopPage.statusCode).toBe(200); // still open — not locked
+  });
+
   it("locks /setup/owner once an admin password exists outside the wizard (bootstrap takeover)", async () => {
     // Simulates a deploy bootstrapped via /bootstrap (sets a password hash
     // directly, never touches setup_owner_tg) instead of the wizard.

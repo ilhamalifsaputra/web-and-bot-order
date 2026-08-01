@@ -64,6 +64,38 @@
 -- Under the three verified-safe mechanisms this doesn't trigger either,
 -- for the same reason: foreign-key enforcement never actually turns on.
 --
+-- INTERACTION WITH THE PARTIALLY-APPLIED 20260725000000 MIGRATION (H-9):
+-- 20260725000000_add_ticket_priority_category_resolved once failed a real
+-- `migrate deploy` with P3018 ("Cannot add a column with non-constant
+-- default"), leaving a database where `category`, `first_response_at` and
+-- `resolved_at` HAD landed but `last_status_change_at` had NOT (SQLite
+-- auto-commits each DDL statement, so the three statements before the
+-- failing one stuck; Prisma nonetheless records `applied_steps_count = 0`,
+-- which is what tempts an operator into `migrate resolve --rolled-back`).
+-- On such a database `SELECT ... "last_status_change_at" ... FROM
+-- "support_tickets"` below has no column to resolve against.
+--
+-- Every column reference in the SELECT is therefore QUALIFIED
+-- (`"support_tickets"."col"`, not bare `"col"`). This is load-bearing, not
+-- style: Prisma's bundled SQLite has the legacy double-quoted-string-literal
+-- fallback ENABLED, so a BARE `"last_status_change_at"` that resolves to no
+-- column is silently reinterpreted as the string literal
+-- 'last_status_change_at' — the rebuild then "succeeds" and writes that
+-- literal text into every row's last_status_change_at, corrupting the whole
+-- table with no error at all. Verified empirically for this task on scratch
+-- databases under the OS temp dir: `prisma db execute` of
+-- `SELECT coalesce("missing_col", "created_at")` stored the string
+-- "missing_col"; the qualified form `coalesce("src"."missing_col", ...)`
+-- failed loudly with `no such column: src.missing_col`. Qualified references
+-- cannot take that fallback, so a partially-applied database now aborts the
+-- migration instead of silently corrupting it.
+--
+-- RECOVERY for that partially-applied state (complete the missing statement
+-- first, THEN mark the old migration applied, THEN deploy) is written out
+-- step by step in docs/MIGRATIONS.md, section "Pemulihan dari `migrate
+-- deploy` yang gagal (P3018 / P3009)". Do not simply re-point this file at
+-- unqualified column names to make the error go away.
+--
 -- CROSS-TASK NOTE: Task 38 (M-29) is scoped to fix two write paths that
 -- never stamp `lastStatusChangeAt` and the resulting schema/migration
 -- mismatch this file closes. This migration's `coalesce(last_status_change_at,
@@ -82,6 +114,14 @@
 -- RedefineTables
 PRAGMA defer_foreign_keys=ON;
 PRAGMA foreign_keys=OFF;
+-- Retry safety: SQLite auto-commits each DDL statement, so if this file
+-- aborts part-way (e.g. the INSERT below hits a partially-applied
+-- support_tickets — see the header), the staging table survives and a second
+-- `migrate deploy` would fail with "table new_support_tickets already
+-- exists", masking the real cause. On a healthy database this is a no-op:
+-- the staging table only ever exists mid-file. It has no foreign-key
+-- children of its own, so dropping it cascades to nothing.
+DROP TABLE IF EXISTS "new_support_tickets";
 CREATE TABLE "new_support_tickets" (
     "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     "user_id" INTEGER NOT NULL,
@@ -104,7 +144,10 @@ CREATE TABLE "new_support_tickets" (
     CONSTRAINT "support_tickets_admin_id_fkey" FOREIGN KEY ("admin_id") REFERENCES "users" ("id") ON DELETE NO ACTION ON UPDATE NO ACTION,
     CONSTRAINT "support_tickets_order_id_fkey" FOREIGN KEY ("order_id") REFERENCES "orders" ("id") ON DELETE SET NULL ON UPDATE NO ACTION
 );
-INSERT INTO "new_support_tickets" ("admin_id", "admin_reply", "attachment_urls", "category", "closed_at", "created_at", "first_response_at", "id", "last_status_change_at", "message", "order_id", "photo_file_ids", "priority", "replied_at", "resolved_at", "status", "user_id") SELECT "admin_id", "admin_reply", "attachment_urls", "category", "closed_at", "created_at", "first_response_at", "id", coalesce("last_status_change_at", CURRENT_TIMESTAMP) AS "last_status_change_at", "message", "order_id", "photo_file_ids", "priority", "replied_at", "resolved_at", "status", "user_id" FROM "support_tickets";
+-- Source columns are qualified with "support_tickets". on purpose — see the
+-- header. A bare double-quoted name that matches no column would be silently
+-- treated as a string literal by Prisma's SQLite build instead of failing.
+INSERT INTO "new_support_tickets" ("admin_id", "admin_reply", "attachment_urls", "category", "closed_at", "created_at", "first_response_at", "id", "last_status_change_at", "message", "order_id", "photo_file_ids", "priority", "replied_at", "resolved_at", "status", "user_id") SELECT "support_tickets"."admin_id", "support_tickets"."admin_reply", "support_tickets"."attachment_urls", "support_tickets"."category", "support_tickets"."closed_at", "support_tickets"."created_at", "support_tickets"."first_response_at", "support_tickets"."id", coalesce("support_tickets"."last_status_change_at", CURRENT_TIMESTAMP) AS "last_status_change_at", "support_tickets"."message", "support_tickets"."order_id", "support_tickets"."photo_file_ids", "support_tickets"."priority", "support_tickets"."replied_at", "support_tickets"."resolved_at", "support_tickets"."status", "support_tickets"."user_id" FROM "support_tickets";
 DROP TABLE "support_tickets";
 ALTER TABLE "new_support_tickets" RENAME TO "support_tickets";
 CREATE INDEX "ix_support_tickets_user_id" ON "support_tickets"("user_id");

@@ -94,6 +94,151 @@ GitHub Actions terkunci karena billing — lihat komentar di
 `pnpm run check-migration-drift` manual sebelum PR yang mengubah
 `schema.prisma`.
 
+## Cek tabrakan timestamp antar folder migrasi
+
+Prisma menerapkan `prisma/migrations/*` berurutan menurut **nama folder
+lengkap** secara leksikografis. Kalau dua folder punya timestamp yang sama,
+urutan pasangan itu ditentukan oleh slug deskriptif di belakang underscore —
+sesuatu yang tidak pernah dipilih siapa pun dengan mempertimbangkan urutan.
+
+Repo ini punya satu pasangan seperti itu:
+`20260725000000_add_support_ticket_priority` dan
+`20260725000000_add_ticket_priority_category_resolved` (dua branch yang
+di-merge independen di hari yang sama). Hari ini keduanya **saling
+independen** — kolom/index yang mereka sentuh tidak beririsan (`priority` +
+`ix_support_tickets_priority` versus `category`/`first_response_at`/
+`resolved_at`/`last_status_change_at` + `ix_support_tickets_status`) dan tidak
+ada yang membaca keluaran yang lain. Ini diverifikasi empiris (H-9,
+2026-08-01) dengan menjalankan `migrate deploy` pada DB kosong setelah
+pasangan itu dipaksa berjalan dalam urutan terbalik: skema akhir identik dan
+`prisma migrate diff` tetap "No difference detected."
+
+Karena itu pasangan tersebut **sengaja tidak di-rename**: mengganti nama
+folder migrasi yang sudah pernah diterapkan akan merusak pelacakan
+`_prisma_migrations` di DB mana pun yang sudah menjalankannya dengan nama
+lama. Yang dicegah sekarang adalah pasangan **baru** masuk tanpa ketahuan:
+`pnpm run check-migration-timestamps`
+(`scripts/check-migration-timestamps.ts`) gagal dengan exit code 1 kalau ada
+timestamp ganda di luar allowlist, dan ikut jalan sebagai bagian `pretest`
+(bersama drift check) plus sebagai step CI.
+
+## Pemulihan dari `migrate deploy` yang gagal (P3018 / P3009)
+
+Bagian ini relevan hanya kalau Anda menjalankan `prisma migrate deploy`
+(bukan alur normal repo ini, yang memakai `db push` — lihat bagian paling
+atas). Belum ada dokumentasi soal ini sebelumnya, padahal repo ini **sudah
+pernah kena** (commit `058afd7`, 2026-07-27).
+
+### Apa arti kedua error itu
+
+| Kode | Kapan muncul | Artinya |
+| --- | --- | --- |
+| `P3018` | Saat satu file migrasi error di tengah jalan | Migrasi itu ditandai **failed** di `_prisma_migrations` (`finished_at` NULL, `rolled_back_at` NULL) |
+| `P3009` | Pada `migrate deploy` **berikutnya** | Prisma menolak menerapkan migrasi baru selama masih ada migrasi berstatus failed |
+
+**Jebakan terbesar: SQLite tidak punya DDL transaksional.** Setiap
+`ALTER TABLE`/`CREATE INDEX` auto-commit sendiri-sendiri, jadi pernyataan
+sebelum yang gagal **tetap tertulis permanen** ke DB. Prisma tetap mencatat
+`applied_steps_count = 0` untuk migrasi yang gagal — angka itu **tidak bisa
+dipercaya** sebagai "tidak ada yang berubah". Selalu cek sendiri dengan
+`PRAGMA table_info(<tabel>)` sebelum memutuskan langkah pemulihan.
+
+### Dua perintah pemulihan Prisma
+
+```bash
+# "Migrasi ini SUDAH benar-benar diterapkan (saya sudah cek/lengkapi manual)" —
+# tandai selesai, JANGAN jalankan ulang SQL-nya.
+pnpm exec prisma migrate resolve --applied <nama_folder_migrasi>
+
+# "Migrasi ini TIDAK meninggalkan jejak apa pun (atau sudah saya undo manual)" —
+# hapus tanda failed sehingga `migrate deploy` berikutnya menjalankan ulang SQL-nya.
+pnpm exec prisma migrate resolve --rolled-back <nama_folder_migrasi>
+```
+
+Keduanya hanya mengubah baris di `_prisma_migrations` — **tidak satu pun
+menyentuh skema/data**. Pilih `--rolled-back` hanya kalau SQL migrasi itu
+memang aman dijalankan ulang dari awal; pada SQLite itu jarang benar untuk
+file berisi `ALTER TABLE ADD COLUMN`, karena kolom yang sudah terlanjur
+masuk akan menabrak `duplicate column name`.
+
+Selalu `deploy/backup/backup.sh` dulu sebelum langkah pemulihan apa pun.
+
+### Kasus nyata: `20260725000000_add_ticket_priority_category_resolved`
+
+Versi awal file itu memakai
+`ADD COLUMN "last_status_change_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`.
+SQLite menolak default non-konstan, jadi pernyataan ke-4 gagal
+(`Cannot add a column with non-constant default`, P3018) **setelah** tiga
+`ADD COLUMN` sebelumnya sudah commit. DB yang kena berada dalam keadaan:
+`category`, `first_response_at`, `resolved_at` **ada**;
+`last_status_change_at` dan index `ix_support_tickets_status` **tidak ada**.
+File-nya sendiri sudah diperbaiki (kolom kini nullable + backfill), tapi
+perbaikan itu tidak bisa menyembuhkan DB yang sudah terlanjur setengah jalan.
+
+Kalau Anda menemukan DB dalam keadaan itu, ini urutan yang benar
+(diverifikasi end-to-end pada DB scratch, H-9):
+
+```bash
+deploy/backup/backup.sh          # 0. selalu
+
+# 1. Selesaikan sendiri bagian yang belum sempat jalan.
+cat > /tmp/repair.sql <<'SQL'
+ALTER TABLE "support_tickets" ADD COLUMN "last_status_change_at" DATETIME;
+UPDATE "support_tickets" SET "last_status_change_at" = "created_at" WHERE "last_status_change_at" IS NULL;
+CREATE INDEX IF NOT EXISTS "ix_support_tickets_status" ON "support_tickets"("status");
+SQL
+pnpm exec prisma db execute --schema prisma/schema.prisma --file /tmp/repair.sql
+
+# 2. Baru tandai migrasinya selesai (JANGAN --rolled-back, lihat di bawah).
+pnpm exec prisma migrate resolve --applied 20260725000000_add_ticket_priority_category_resolved
+
+# 3. Lanjutkan sisa rantainya.
+pnpm exec prisma migrate deploy
+```
+
+**Kenapa bukan `--rolled-back`:** itu menyuruh Prisma menjalankan ulang
+file-nya, dan file itu tetap dibuka tiga `ADD COLUMN` polos tanpa penjaga
+idempotensi — SQLite tidak punya bentuk `ADD COLUMN IF NOT EXISTS` sama
+sekali, jadi tidak ada cara menulis ulang file itu supaya aman diulang.
+Dijalankan ulang, ia langsung gagal `duplicate column name: category`
+(diverifikasi). File itu juga **tidak boleh diedit** sekarang: `migrate
+deploy` memverifikasi checksum tiap migrasi yang sudah diterapkan, jadi
+mengubah isinya — termasuk komentar — akan mematahkan DB mana pun yang sudah
+menjalankannya dengan sukses. Perbaikan apa pun harus maju ke depan
+(migrasi/langkah baru), bukan mengedit file lama.
+
+**Kenapa langkah 1 harus mendahului langkah 2:** kalau Anda langsung
+`--applied` lalu `deploy`, rantainya sampai ke
+`20260801000001_support_tickets_last_status_change_not_null`, yang membangun
+ulang `support_tickets` dan membaca `last_status_change_at` dari tabel lama —
+kolom yang belum ada. Sejak H-9 semua referensi kolom di file itu ditulis
+berkualifikasi (`"support_tickets"."last_status_change_at"`), jadi kasus ini
+**gagal keras** dengan `no such column: support_tickets.last_status_change_at`
+dan tidak ada data yang berubah.
+
+> Sebelum H-9 referensinya polos (`"last_status_change_at"`), dan itu jauh
+> lebih buruk daripada kelihatannya: SQLite bawaan Prisma masih mengaktifkan
+> perilaku warisan "double-quoted string literal", sehingga nama berkutip
+> ganda yang tidak cocok dengan kolom mana pun **diam-diam berubah menjadi
+> literal string**. Hasilnya migrasi "sukses" tanpa error sambil menulis teks
+> `last_status_change_at` ke kolom timestamp setiap baris — diverifikasi
+> empiris di DB scratch pada H-9. Pola ini berlaku untuk **semua** migrasi
+> rebuild bergaya `INSERT INTO "new_x" (...) SELECT ... FROM "x"`
+> (`20260619170759_add_paydisini_nowpayments_ledgers` dan
+> `20260623174046_restrict_financial_cascades` masih memakai bentuk polos;
+> keduanya tidak diubah karena sudah diterapkan dan checksum-nya beku). Kalau
+> Anda menulis migrasi rebuild baru, **selalu kualifikasikan kolom sumber
+> dengan nama tabelnya.**
+
+Kalau langkah 2 terlanjur dijalankan sebelum langkah 1 dan `deploy` sudah
+gagal di `20260801000001`, pulihkan begini (juga diverifikasi): jalankan
+langkah 1, lalu
+`pnpm exec prisma migrate resolve --rolled-back 20260801000001_support_tickets_last_status_change_not_null`,
+lalu `migrate deploy` lagi. Aman diulang karena file itu kini dibuka dengan
+`DROP TABLE IF EXISTS "new_support_tickets"` — tanpa itu, percobaan kedua
+akan gagal dengan `table new_support_tickets already exists` (tabel staging
+ikut auto-commit saat percobaan pertama berhenti di tengah).
+
 ## Cara membuat migrasi (sebagai dokumentasi SQL, opsional)
 
 Jika Anda menambah kolom/tabel di `schema.prisma` dan ingin menyimpan SQL-nya

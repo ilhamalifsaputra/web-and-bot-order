@@ -38,6 +38,9 @@ jobs:
       - name: Migration drift check
         run: pnpm run check-migration-drift
 
+      - name: Migration timestamp collision check
+        run: pnpm run check-migration-timestamps
+
       - name: Typecheck
         run: pnpm -r typecheck
 

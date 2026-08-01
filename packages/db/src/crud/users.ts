@@ -53,6 +53,20 @@ const USER_SELECT = {
   lastSeenAt: true,
 } as const;
 
+/** USER_SELECT plus `email` — the admin global-search projection
+ * (`/api/search`). SearchModal.tsx's `userLabel()` uses `email` as an
+ * identity fallback (fullName → username → loginUsername → email →
+ * telegramId) for a storefront-only customer with no Telegram link and no
+ * display name, so search can't drop it the way the general-purpose
+ * USER_SELECT does. Still deliberately excludes `passwordHash` —
+ * `searchUsers`'s results are spread straight into `/api/search`'s admin
+ * JSON response, reachable by the lowest-privilege `readonly` role, same
+ * threat `USER_SELECT` guards against (backend audit finding H-4). */
+const SEARCH_USER_SELECT = {
+  ...USER_SELECT,
+  email: true,
+} as const;
+
 export function getUserByTelegramId(db: Db, telegramId: number | bigint) {
   return db.user.findUnique({ where: { telegramId: BigInt(telegramId) } });
 }
@@ -228,7 +242,7 @@ export function searchUsers(db: Db, query: string, limit = 20) {
     { email: likeContains(q) },
   ];
   if (/^\d+$/.test(q)) or.push({ telegramId: BigInt(q) });
-  return db.user.findMany({ where: { OR: or }, take: limit });
+  return db.user.findMany({ where: { OR: or }, take: limit, select: SEARCH_USER_SELECT });
 }
 
 /** Most recently registered users — the Customers page's default browse list. */

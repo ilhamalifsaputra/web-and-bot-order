@@ -6,6 +6,22 @@ import { ValidationError } from "@app/core/errors";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 
+/** Reviewer projection for the `user` join on `featuredReviews`/`listReviews`
+ * — display-name fields only. These results get spread straight into
+ * web-admin's `/api/reviews` JSON response (reachable by the lowest-
+ * privilege `readonly` admin role) and rendered as public testimonials on
+ * the storefront home/product pages, so `passwordHash` and `email` must
+ * NEVER be selectable here (backend audit finding H-4; mirrors USER_SELECT
+ * in crud/users.ts). Every caller of either function only ever reads
+ * fullName/username/loginUsername off the joined user (ReviewsPage.tsx,
+ * storefront's reviewerName()/masked-author formatting in pageData.ts) —
+ * confirmed by grepping every call site before narrowing this. */
+const REVIEW_USER_SELECT = {
+  fullName: true,
+  username: true,
+  loginUsername: true,
+} as const;
+
 export async function createReview(
   db: Db,
   args: {
@@ -102,7 +118,7 @@ export function countRestockSubscribers(db: Db, productId: number): Promise<numb
 export function featuredReviews(db: Db, limit = 6) {
   return db.review.findMany({
     where: { hidden: false, rating: { gte: 4 }, comment: { not: null } },
-    include: { user: true, product: true },
+    include: { user: { select: REVIEW_USER_SELECT }, product: true },
     orderBy: { createdAt: "desc" },
     take: limit,
   });
@@ -145,7 +161,7 @@ export function listReviews(
 ) {
   return db.review.findMany({
     where: reviewWhere(opts),
-    include: { user: true, product: true },
+    include: { user: { select: REVIEW_USER_SELECT }, product: true },
     orderBy: { createdAt: "desc" },
     skip: opts.offset ?? 0,
     take: opts.limit ?? 50,

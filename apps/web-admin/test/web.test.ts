@@ -4651,6 +4651,37 @@ describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
     expect(res.statusCode).toBe(200);
     expectNoLeak(res);
   });
+
+  // Follow-up leaks flagged (but not actioned) by Task 6's own report: the
+  // Reviews moderation list spreads `listReviews`'s joined `user` straight
+  // into JSON (reviews.ts:23), and global search returns raw `searchUsers`
+  // rows with no projection at all (search.ts:32) — both reachable by the
+  // lowest-privilege `readonly` admin role, same as the leaks above.
+  it("GET /api/reviews never exposes the reviewer's passwordHash or email", async () => {
+    const web = await makeWebBuyer("h4reviews1");
+    const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
+    await prisma.review.create({
+      data: { userId: web.id, orderId: order.id, productId: seed.productId, rating: 5, comment: "great" },
+    });
+    const res = await get("/api/reviews", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expectNoLeak(res);
+  });
+
+  // Search intentionally keeps `email` (SearchModal.tsx's userLabel() uses it
+  // as an identity fallback for storefront-only customers with no display
+  // name) — so this checks passwordHash absence specifically, and proves the
+  // email assertion below isn't vacuous by confirming the email IS present.
+  it("GET /api/search never exposes a user hit's passwordHash, but keeps email as an identity fallback", async () => {
+    await makeWebBuyer("h4search1");
+    const res = await get(`/api/search?q=${encodeURIComponent("h4search1")}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const parsed = JSON.parse(res.body) as { users: Array<{ email: string | null }> };
+    expect(res.body).not.toContain(LEAK_HASH);
+    expect(containsKeyDeep(parsed, "passwordHash")).toBe(false);
+    expect(res.body).toContain(LEAK_EMAIL);
+    expect(parsed.users.some((u) => u.email === LEAK_EMAIL)).toBe(true);
+  });
 });
 
 // ---- outbox monitor (acceptance #5) ---------------------------------------

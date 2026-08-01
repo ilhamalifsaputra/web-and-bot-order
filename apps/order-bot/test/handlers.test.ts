@@ -45,6 +45,7 @@ import { handleAdminCallback, adminCommand, adminWalletCommand, adminEmojiIdComm
 import { routeCallback } from "../src/handlers/callbacks";
 import { t } from "../src/util/i18n";
 import { upsertUser } from "@app/db";
+import { logger } from "@app/core/logger";
 
 let sample: SampleData;
 let adminDbId: number;
@@ -1894,6 +1895,32 @@ describe("verification handlers", () => {
     const { ctx, sink } = adminCtx({ callbackData: `v1:adm:verif:resend:${order.id}` });
     await verification.resendCredentials(ctx, order.id);
     expect(calls(sink, "sendDocument").some((c) => c.args[0] === 42)).toBe(true);
+  });
+
+  // M-28: the delivery log used to interpolate a `redacted.join(", ")` list of
+  // per-item redacted credentials — forbidden by the logging convention
+  // (never interpolate an id/name/value list; summarize by count) and still
+  // derived-credential material regardless of redaction. A multi-item order
+  // (qty 2, so two credential sets) exercises the join path that a qty-1 test
+  // can't distinguish from a correct count-only message.
+  it("approve's delivery log summarizes multi-credential orders by count, never lists the redacted values (M-28)", async () => {
+    const order = await makeOrder(2);
+    await attachPaymentProof(prisma, order!.id, { fileId: "proof-file", txid: "TX-MULTI-CRED" });
+    const infoSpy = vi.spyOn(logger, "info");
+    const { ctx } = adminCtx({ callbackData: `v1:adm:verif:approve:${order!.id}` });
+    await verification.approve(ctx, order!.id);
+
+    const deliveredLog = infoSpy.mock.calls
+      .map((call) => call[0])
+      .find((msg): msg is string => typeof msg === "string" && msg.startsWith(`Delivered order ${order!.orderCode}`));
+    expect(deliveredLog).toBeTruthy();
+    expect(deliveredLog).toContain("(2 credential set(s))");
+    // The redacted per-item values (from sampleData's user1@example.com..user5@example.com
+    // fixture credentials) must never appear in the log message.
+    expect(deliveredLog).not.toMatch(/user\d+@example\.com/);
+    expect(deliveredLog).not.toContain(", ");
+
+    infoSpy.mockRestore();
   });
 });
 

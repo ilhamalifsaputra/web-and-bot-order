@@ -573,7 +573,7 @@ async function showTicketsAdmin(ctx: MyContext): Promise<void> {
     await adminEdit(ctx, t(ctx, "admin.hdr_tickets_none"), akb.backToAdminKb(lang));
     return;
   }
-  await adminEdit(ctx, `📩 <b>Support Tickets</b>\n\n${tickets.length} open ticket(s):`, akb.ticketsListKb(tickets, lang));
+  await adminEdit(ctx, t(ctx, "admin.hdr_tickets", { count: tickets.length }), akb.ticketsListKb(tickets, lang));
 }
 
 async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void> {

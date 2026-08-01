@@ -50,13 +50,20 @@
 -- db push` or a genuine `prisma migrate deploy`, stop and re-verify
 -- transaction behavior first, the same way this header did.
 --
--- ADDITIONAL RISK (not cascade-related): the rebuild below also creates
--- `support_tickets_order_id_fkey ... ON DELETE SET NULL`, a constraint that
--- has never existed in this table's history — `order_id` was added by
--- 20260724150000_add_support_ticket_order_link as a bare
--- `ALTER TABLE ADD COLUMN` with no FK (SQLite's ADD COLUMN can't add one).
--- With `defer_foreign_keys=ON`, if `foreign_keys` enforcement ends up
--- genuinely ON during this rebuild (i.e. the same bad condition as above —
+-- REQUIRED, NOT INCIDENTAL, PLUS ITS OWN RISK (not cascade-related): the
+-- rebuild below also creates `support_tickets_order_id_fkey ... ON DELETE
+-- SET NULL`, a constraint that has never existed in this table's history —
+-- `order_id` was added by 20260724150000_add_support_ticket_order_link as a
+-- bare `ALTER TABLE ADD COLUMN` with no FK (SQLite's ADD COLUMN can't add
+-- one), but schema.prisma has always declared `order Order? @relation(fields:
+-- [orderId], references: [id], ...)` on SupportTicket. Adding this FK is a
+-- REQUIRED outcome of this migration, not an incidental side effect of the
+-- rebuild: without it, `prisma migrate diff --exit-code` (check-migration-
+-- drift) reports a difference and this migration's own "verified: reports
+-- No difference detected" claim below would be false. It does carry its own
+-- risk, documented here so it isn't mistaken for a free side effect: with
+-- `defer_foreign_keys=ON`, if `foreign_keys` enforcement ends up genuinely
+-- ON during this rebuild (i.e. the same bad condition as above —
 -- an enclosing transaction), any pre-existing support_tickets row whose
 -- order_id points at a since-deleted/nonexistent order would fail this new
 -- FK's deferred check at COMMIT, aborting the migration with an error

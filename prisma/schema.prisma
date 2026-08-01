@@ -203,12 +203,16 @@ model Denomination {
   /// 20260718120000_add_broadcast_on_restock — which appended it after the
   /// table's then-last physical column, created_at. Matching that physical
   /// order here keeps this model's declared field order truthful to the
-  /// real on-disk column order, which matters for any FUTURE nullable/
-  /// no-default column added here: `prisma migrate diff` can emit a plain
-  /// `ALTER TABLE ADD COLUMN` for those as long as they're appended after
-  /// the true physical tail. (It does NOT, on its own, avoid a rebuild for
-  /// NOT NULL + DEFAULT columns — see deliveryType below for why those need
-  /// a different fix.)
+  /// real on-disk column order — documentation value only, though: declared
+  /// field order does NOT affect what `prisma migrate diff` emits.
+  /// Empirically disproven (final-review fix, 2026-08-02): inserting a
+  /// nullable no-default field mid-model in this exact model and re-running
+  /// `prisma migrate diff --script` still produced a plain `ALTER TABLE
+  /// "denominations" ADD COLUMN "probe_mid" TEXT;` — no rebuild — regardless
+  /// of where the field was declared. Prisma's SQLite differ compares
+  /// resulting schema state, not declaration position. (NOT NULL + DEFAULT
+  /// columns are a separate story and do need a rebuild either way — see
+  /// deliveryType below.)
   broadcastOnRestock   Boolean   @default(false) @map("broadcast_on_restock")
   /// How this SKU is fulfilled: "auto" (pull stock, deliver instantly — default,
   /// unchanged behavior), "manual" (admin types & sends the account by hand, no
@@ -576,9 +580,6 @@ model SupportTicket {
   orderId        Int?      @map("order_id")
   /// Bumped on every status transition (open/replied/resolved/closed/reopened)
   /// — the operational queue's "waiting time" and overdue calc read this, not
-  /// createdAt, so a reopened ticket's wait clock resets correctly.
-  /// Bumped on every status transition (open/replied/resolved/closed/reopened)
-  /// — the operational queue's "waiting time" and overdue calc read this, not
   /// createdAt, so a reopened ticket's wait clock resets correctly. NOT NULL
   /// here, but the migration that first added this column
   /// (20260725000000_add_ticket_priority_category_resolved) could only add
@@ -596,19 +597,28 @@ model SupportTicket {
   /// cleanup job's "delete evidence N days after close" eligibility check.
   /// Nullable, no default, so on its own this column is a zero-risk plain
   /// `ALTER TABLE ADD COLUMN` — but `prisma migrate diff` still bundles it
-  /// into the same table rebuild as lastStatusChangeAt above (both because
-  /// of that NOT NULL tightening, AND independently because this model's
-  /// field order doesn't match `support_tickets`' true physical column order
-  /// — attachmentUrls/priority/category/orderId were each added by earlier
-  /// migrations in a different relative order than they're declared here;
-  /// verified empirically that even reverting lastStatusChangeAt to nullable
-  /// alone still leaves closedAt triggering a rebuild, driven by that
-  /// pre-existing order drift). Rather than reorder this whole model to
-  /// chase physical history, 20260801000000_catchup_missing_columns_and_indexes
-  /// hand-writes a plain `ALTER TABLE ADD COLUMN "closed_at"` — Prisma's
-  /// diff engine verifies the resulting DB state against this schema, not
-  /// the SQL text/mechanism used to reach it, so this is unaffected by
-  /// either driver above.
+  /// into the same table rebuild as lastStatusChangeAt above. NOT because of
+  /// this model's declared field order (empirically disproven — see
+  /// broadcastOnRestock's doc-comment on Denomination above: Prisma's SQLite
+  /// differ ignores declared field order entirely, verified by inserting a
+  /// nullable no-default field mid-model and confirming it still emits a
+  /// plain ADD COLUMN). The real second driver is the missing
+  /// `support_tickets_order_id_fkey`: `orderId` above was added by
+  /// 20260724150000_add_support_ticket_order_link as a bare
+  /// `ALTER TABLE ADD COLUMN`, which SQLite cannot attach a foreign key to —
+  /// but this schema declares `order Order? @relation(fields: [orderId], ...)`
+  /// on it below, and SQLite has no way to add a constraint to an existing
+  /// table except a full rebuild. That FK addition is itself a REQUIRED part
+  /// of closing the schema/DB gap (without it, `prisma migrate diff` reports
+  /// a difference), not an incidental side effect — see
+  /// 20260801000001_support_tickets_last_status_change_not_null's own header
+  /// for the full write-up. Rather than reorder this whole model to chase
+  /// physical history, 20260801000000_catchup_missing_columns_and_indexes
+  /// hand-writes a plain `ALTER TABLE ADD COLUMN "closed_at"` for this column
+  /// alone — Prisma's diff engine verifies the resulting DB state against
+  /// this schema, not the SQL text/mechanism used to reach it, so this is
+  /// unaffected by the rebuild 20260801000001 still needs for
+  /// lastStatusChangeAt + the FK.
   closedAt       DateTime? @map("closed_at")
 
   user     User            @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)

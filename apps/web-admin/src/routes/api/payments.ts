@@ -5,8 +5,6 @@ import { logger } from "@app/core/logger";
 import {
   prisma,
   resolveBinanceInternalConfig,
-  listProcessedBinanceTx,
-  countProcessedBinanceTx,
   countProcessedBinanceTxToday,
   processedTxOutcomeCounts,
   getBinancePollHealth,
@@ -21,6 +19,8 @@ import {
   getOrderByCode,
   cancelOrder,
   logAdminAction,
+  listCombinedLedger,
+  countCombinedLedger,
 } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { displayDateTime } from "../../dateDisplay";
@@ -38,8 +38,8 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     const offset = (page - 1) * PAGE_SIZE;
 
     const [ledger, total, todayCount, counts, health, underpaid, pendingInternal] = await Promise.all([
-      listProcessedBinanceTx(prisma, { outcome, q: search, limit: PAGE_SIZE, offset }),
-      countProcessedBinanceTx(prisma, { outcome, q: search }),
+      listCombinedLedger(prisma, { outcome, q: search, limit: PAGE_SIZE, offset }),
+      countCombinedLedger(prisma, { outcome, q: search }),
       countProcessedBinanceTxToday(prisma),
       processedTxOutcomeCounts(prisma),
       getBinancePollHealth(prisma),

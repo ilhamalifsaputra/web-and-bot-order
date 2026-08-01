@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
-import { ordersByStatusSince, manualMatchQueueCounts, recentOrders } from "./reports";
+import { ordersByStatusSince, manualMatchQueueCounts, listCombinedLedger, countCombinedLedger, recentOrders } from "./reports";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -64,6 +64,56 @@ describe("manualMatchQueueCounts", () => {
 
     const result = await manualMatchQueueCounts(prisma);
     expect(result).toEqual({ unmatched: 2, deliveryFailed: 2 });
+  });
+});
+
+describe("listCombinedLedger / countCombinedLedger", () => {
+  it("normalizes rows from all five gateway tables into one shape, tagged with their gateway", async () => {
+    const binance = await prisma.processedBinanceTx.create({ data: { binanceTxId: "bn-1", amount: "1.5", outcome: "unmatched" } });
+    const tokopay = await prisma.processedTokopayTx.create({ data: { trxId: "tp-1", amount: "50000", outcome: "delivery_failed" } });
+
+    const rows = await listCombinedLedger(prisma);
+    expect(rows).toHaveLength(2);
+
+    const binanceRow = rows.find((r) => r.reference === "bn-1");
+    expect(binanceRow).toMatchObject({ id: binance.id, gateway: "binance", reference: "bn-1", amount: "1.5", outcome: "unmatched", orderId: null });
+
+    const tokopayRow = rows.find((r) => r.reference === "tp-1");
+    expect(tokopayRow).toMatchObject({ id: tokopay.id, gateway: "tokopay", reference: "tp-1", amount: "50000", outcome: "delivery_failed", orderId: null });
+  });
+
+  it("sorts merged rows by createdAt descending across gateways", async () => {
+    const older = new Date("2026-01-01T00:00:00.000Z");
+    const newer = new Date("2026-06-01T00:00:00.000Z");
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "bn-old", amount: "1", outcome: "matched", createdAt: older } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-new", amount: "1", outcome: "matched", createdAt: newer } });
+
+    const rows = await listCombinedLedger(prisma);
+    expect(rows.map((r) => r.reference)).toEqual(["tp-new", "bn-old"]);
+  });
+
+  it("filters by outcome across gateways — the regression this task fixes: a non-Binance delivery_failed row used to be structurally invisible", async () => {
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "bn-fail", amount: "1", outcome: "delivery_failed" } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-fail", amount: "1", outcome: "delivery_failed" } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "tp-ok", amount: "1", outcome: "matched" } });
+
+    const rows = await listCombinedLedger(prisma, { outcome: "delivery_failed" });
+    expect(rows.map((r) => r.reference).sort()).toEqual(["bn-fail", "tp-fail"]);
+
+    const count = await countCombinedLedger(prisma, { outcome: "delivery_failed" });
+    expect(count).toBe(2);
+  });
+
+  it("paginates the merged, sorted set in memory", async () => {
+    for (let i = 0; i < 3; i++) {
+      await prisma.processedBinanceTx.create({ data: { binanceTxId: `bn-${i}`, amount: "1", outcome: "unmatched", createdAt: new Date(2026, 0, i + 1) } });
+    }
+    const page1 = await listCombinedLedger(prisma, { limit: 2, offset: 0 });
+    const page2 = await listCombinedLedger(prisma, { limit: 2, offset: 2 });
+    expect(page1).toHaveLength(2);
+    expect(page2).toHaveLength(1);
+    expect(page1.map((r) => r.reference)).toEqual(["bn-2", "bn-1"]);
+    expect(page2.map((r) => r.reference)).toEqual(["bn-0"]);
   });
 });
 

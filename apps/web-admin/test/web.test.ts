@@ -4441,8 +4441,8 @@ describe("payments", () => {
     await recordUnmatchedTx(prisma, { binanceTxId: "RENDTX", amount: "1.00" });
     const res = await get("/api/payments", seed.cookie);
     expect(res.statusCode).toBe(200);
-    const data = JSON.parse(res.body) as { ledger: Array<{ binanceTxId: string }> };
-    expect(data.ledger.some((tx) => tx.binanceTxId === "RENDTX")).toBe(true);
+    const data = JSON.parse(res.body) as { ledger: Array<{ reference: string }> };
+    expect(data.ledger.some((tx) => tx.reference === "RENDTX")).toBe(true);
   });
 
   it("GET /api/payments returns todayCount and honors the q search param", async () => {
@@ -4455,8 +4455,35 @@ describe("payments", () => {
     expect(data.todayCount).toBeGreaterThanOrEqual(2);
 
     const filtered = await get("/api/payments?q=SEARCHABLE", seed.cookie);
-    const filteredData = JSON.parse(filtered.body) as { ledger: Array<{ binanceTxId: string }> };
-    expect(filteredData.ledger.map((tx) => tx.binanceTxId)).toEqual(["SEARCHABLE-1"]);
+    const filteredData = JSON.parse(filtered.body) as { ledger: Array<{ reference: string }> };
+    expect(filteredData.ledger.map((tx) => tx.reference)).toEqual(["SEARCHABLE-1"]);
+  });
+
+  // Task 47 (backend audit follow-up): the ledger used to come exclusively
+  // from listProcessedBinanceTx, so a delivery_failed row on any other
+  // gateway was structurally invisible on this page even though the
+  // Operation Center's "Failed Deliveries" card links straight to
+  // /payments?outcome=delivery_failed. Pre-fix, this test's TokoPay row
+  // would be silently missing from `ledger`.
+  it("GET /api/payments?outcome=delivery_failed returns rows from every gateway, not just Binance", async () => {
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "BN-FAIL-1", amount: "1.00", outcome: "delivery_failed" } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-FAIL-1", amount: "50000", outcome: "delivery_failed" } });
+    // A matched TokoPay row (wrong outcome) must NOT show up under the filter.
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-OK-1", amount: "50000", outcome: "matched" } });
+
+    const res = await get("/api/payments?outcome=delivery_failed", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { ledger: Array<{ reference: string; gateway: string; outcome: string }>; total: number };
+
+    const references = data.ledger.map((tx) => tx.reference);
+    expect(references).toContain("BN-FAIL-1");
+    expect(references).toContain("TP-FAIL-1");
+    expect(references).not.toContain("TP-OK-1");
+
+    const tokopayRow = data.ledger.find((tx) => tx.reference === "TP-FAIL-1");
+    expect(tokopayRow?.gateway).toBe("tokopay");
+    const binanceRow = data.ledger.find((tx) => tx.reference === "BN-FAIL-1");
+    expect(binanceRow?.gateway).toBe("binance");
   });
 
   it("dismiss unmatched tx → outcome dismissed + audit", async () => {

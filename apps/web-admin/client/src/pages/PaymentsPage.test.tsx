@@ -25,7 +25,19 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
-const TX = { id: 1, binanceTxId: "TX123", amount: "100000", currency: "IDR", outcome: "MATCHED", memo: "ORDER-001", processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" };
+function WrapperAt({ initialEntries, children }: { initialEntries: string[]; children: React.ReactNode }) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return (
+    <MemoryRouter initialEntries={initialEntries}>
+      <QueryClientProvider client={qc}>
+        {children}
+        <Toaster />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+}
+
+const TX = { id: 1, gateway: "binance", reference: "TX123", amount: "100000", currency: "IDR", outcome: "MATCHED", memo: "ORDER-001", processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" };
 
 function mockPaymentsFetch(payload: Record<string, unknown>) {
   vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
@@ -77,7 +89,7 @@ describe("PaymentsPage", () => {
 
   it("shows today's total / pending / failed stat cards from server-provided fields", async () => {
     const ledger = [
-      { id: 1, binanceTxId: "TX1", amount: "1", currency: "IDR", outcome: "matched", memo: null, processedAt: "2026-06-26T10:00:00.000Z" },
+      { id: 1, gateway: "binance", reference: "TX1", amount: "1", currency: "IDR", outcome: "matched", memo: null, processedAt: "2026-06-26T10:00:00.000Z" },
     ];
     mockPaymentsFetch({
       enabled: true,
@@ -106,7 +118,7 @@ describe("PaymentsPage", () => {
     // Regression guard for the bug this task fixes: with the old client-side
     // computation, a KPI on page 2 could only ever reflect page 2's rows.
     const ledger = [
-      { id: 99, binanceTxId: "PAGE2-TX", amount: "1", currency: "IDR", outcome: "matched", memo: null, processedAt: "2026-06-01T10:00:00.000Z" },
+      { id: 99, gateway: "binance", reference: "PAGE2-TX", amount: "1", currency: "IDR", outcome: "matched", memo: null, processedAt: "2026-06-01T10:00:00.000Z" },
     ];
     mockPaymentsFetch({
       enabled: true,
@@ -198,7 +210,7 @@ describe("PaymentsPage", () => {
   it("shows a Dismiss action for an unmatched transfer and dismisses it after confirming", async () => {
     const user = userEvent.setup();
     const ledger = [
-      { id: 1, binanceTxId: "TX1", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 1, gateway: "binance", reference: "TX1", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
     ];
     mockPaymentsFetch({ enabled: true, ledger, total: 1, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
     vi.mocked(apiPost).mockResolvedValueOnce({ ok: true });
@@ -227,7 +239,7 @@ describe("PaymentsPage", () => {
   it("adds an unmatched transfer's amount to the buyer's credit balance via order code", async () => {
     const user = userEvent.setup();
     const ledger = [
-      { id: 1, binanceTxId: "CREDIT1", amount: "5", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 1, gateway: "binance", reference: "CREDIT1", amount: "5", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
     ];
     mockPaymentsFetch({ enabled: true, ledger, total: 1, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
     // Search resolves case-insensitively and reports the canonical (uppercased)
@@ -329,9 +341,9 @@ describe("PaymentsPage", () => {
   it("bulk-dismisses selected unmatched transfers", async () => {
     const user = userEvent.setup();
     const ledger = [
-      { id: 1, binanceTxId: "BULK1", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
-      { id: 2, binanceTxId: "BULK2", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
-      { id: 3, binanceTxId: "MATCHED1", amount: "1", currency: "IDR", outcome: "matched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 1, gateway: "binance", reference: "BULK1", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 2, gateway: "binance", reference: "BULK2", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 3, gateway: "binance", reference: "MATCHED1", amount: "1", currency: "IDR", outcome: "matched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
     ];
     mockPaymentsFetch({ enabled: true, ledger, total: 3, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched", "matched"], counts: {} });
     vi.mocked(apiPost).mockResolvedValue({ ok: true });
@@ -353,8 +365,8 @@ describe("PaymentsPage", () => {
   it("only offers a select-all checkbox that selects eligible (unmatched) rows", async () => {
     const user = userEvent.setup();
     const ledger = [
-      { id: 1, binanceTxId: "ELIG1", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
-      { id: 2, binanceTxId: "MATCHED2", amount: "1", currency: "IDR", outcome: "matched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 1, gateway: "binance", reference: "ELIG1", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 2, gateway: "binance", reference: "MATCHED2", amount: "1", currency: "IDR", outcome: "matched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
     ];
     mockPaymentsFetch({ enabled: true, ledger, total: 2, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched", "matched"], counts: {} });
     render(<PaymentsPage />, { wrapper: Wrapper });
@@ -367,7 +379,7 @@ describe("PaymentsPage", () => {
   it("clears the bulk selection when navigating to the next page", async () => {
     const user = userEvent.setup();
     const pageOneLedger = [
-      { id: 1, binanceTxId: "PAGE1-TX", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 1, gateway: "binance", reference: "PAGE1-TX", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
     ];
     mockPaymentsFetch({ enabled: true, ledger: pageOneLedger, total: 51, todayCount: 0, page: 1, hasNext: true, outcomes: ["unmatched"], counts: {} });
     render(<PaymentsPage />, { wrapper: Wrapper });
@@ -377,7 +389,7 @@ describe("PaymentsPage", () => {
     expect(screen.getByText("1 selected")).toBeInTheDocument();
 
     const pageTwoLedger = [
-      { id: 2, binanceTxId: "PAGE2-TX", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 2, gateway: "binance", reference: "PAGE2-TX", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
     ];
     mockPaymentsFetch({ enabled: true, ledger: pageTwoLedger, total: 51, todayCount: 0, page: 2, hasNext: false, outcomes: ["unmatched"], counts: {} });
     await user.click(screen.getByRole("button", { name: /next/i }));
@@ -399,6 +411,45 @@ describe("PaymentsPage", () => {
     );
     await user.click(screen.getByRole("button", { name: /next/i }));
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("page=2")));
+  });
+
+  // Task 47 (backend audit follow-up): PaymentsPage used to always start
+  // outcome="" regardless of the URL, so landing here via the Operation
+  // Center's "Failed Deliveries" card (/payments?outcome=delivery_failed)
+  // showed an unfiltered ledger. Pre-fix, this test's fetch would have been
+  // called without an outcome param at all.
+  it("seeds the outcome filter from ?outcome= in the URL on mount", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ enabled: true, ledger: [], total: 0, todayCount: 0, page: 1, hasNext: false, outcomes: ["delivery_failed"], counts: {} }), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(
+      <WrapperAt initialEntries={["/payments?outcome=delivery_failed"]}>
+        <PaymentsPage />
+      </WrapperAt>,
+    );
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining("outcome=delivery_failed")),
+    );
+  });
+
+  it("renders a gateway column and omits the row-action dropdown for a non-Binance row, even when unmatched", async () => {
+    const ledger = [
+      { id: 1, gateway: "binance", reference: "BN-1", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+      { id: 2, gateway: "tokopay", reference: "TP-1", amount: "50000", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" },
+    ];
+    mockPaymentsFetch({ enabled: true, ledger, total: 2, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched"], counts: {} });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("BN-1")).toBeInTheDocument());
+
+    expect(screen.getByText("TP-1")).toBeInTheDocument();
+    expect(screen.getByText("TokoPay")).toBeInTheDocument();
+    expect(screen.getByText("Binance Internal")).toBeInTheDocument();
+
+    // Binance's unmatched row gets the actions dropdown; TokoPay's doesn't,
+    // even though it's also unmatched (manual match/credit/dismiss are
+    // Binance-only on the backend).
+    expect(screen.getByRole("button", { name: "Actions for transfer BN-1" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Actions for transfer TP-1" })).not.toBeInTheDocument();
   });
 });
 

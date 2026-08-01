@@ -45,7 +45,7 @@ import {
   listTicketMessages,
 } from "@app/db";
 import { BotState, type MyContext } from "../context";
-import { smartEdit, renderMenu, consumeInput } from "../util/chat";
+import { smartEdit, renderMenu, consumeInput, menuAnchor } from "../util/chat";
 import { BANNER_IMAGE_KEY, BANNER_FILEID_KEY, bannerPhotoArg } from "../util/banner";
 import { productPhotoArg, cacheProductPhotoFileId } from "../util/productPhoto";
 import { t } from "../util/i18n";
@@ -653,14 +653,14 @@ async function handleQtyTextInput(ctx: MyContext, denominationId: number, rawTex
   const d = await getDenomination(prisma, denominationId);
   if (d === null) {
     ctx.session.awaitingQtyDenomId = undefined;
-    await smartEdit(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
+    await menuAnchor(ctx, t(ctx, "error.try_again"), ckb.backToMain(lang));
     return;
   }
   const stock = await countAvailableStock(prisma, d.id);
 
   const isValid = /^\d+$/.test(rawText) && parseInt(rawText, 10) >= 1;
   if (!isValid || parseInt(rawText, 10) > stock) {
-    await smartEdit(ctx, t(ctx, "browse.qty_input_invalid", { max: stock }), ckb.qtyInputCancelKb(denominationId, lang));
+    await menuAnchor(ctx, t(ctx, "browse.qty_input_invalid", { max: stock }), ckb.qtyInputCancelKb(denominationId, lang));
     ctx.session.awaitingQtyDenomId = denominationId;
     return;
   }

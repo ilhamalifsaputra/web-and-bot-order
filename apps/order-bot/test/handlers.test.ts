@@ -2349,6 +2349,44 @@ describe("callback router", () => {
     expect(sentIncludes(sink, "Invalid quantity")).toBe(true);
   });
 
+  // M-24 — handleQtyTextInput used to re-render invalid-quantity errors via
+  // smartEdit, which on a typed (non-callback) update always falls through to
+  // a fresh ctx.reply(). Typing two invalid quantities in a row therefore
+  // stacked two new "invalid quantity" bubbles above the original prompt.
+  // menuAnchor fixes this by editing the session-tracked anchor in place.
+  it("handleQtyTextInput edits the same anchor bubble across two consecutive invalid inputs, never stacking a new one (M-24)", async () => {
+    const sink: SentCall[] = [];
+    // One chat = ONE session object shared across every update, mirroring how
+    // grammY really keys sessions by chat id — required to observe whether
+    // ctx.session.menuMsgId (the anchor) survives across the two typed turns.
+    const shared = { ...userSession(), scratch: {} } as SessionData;
+
+    // Open the wizard via the qty:input callback (button tap) — this anchors
+    // the prompt bubble as ctx.session.menuMsgId, exactly like a real tap.
+    const start = customerCtx({ sink, sharedSession: shared, callbackData: `v1:qty:input:${sample.product.id}` });
+    await routeCallback(start.ctx);
+    const anchorId = shared.menuMsgId;
+    expect(anchorId).toBeDefined();
+
+    // Type two invalid quantities in a row (plain text updates — no callbackQuery).
+    const first = customerCtx({ sink, sharedSession: shared, text: "abc" });
+    await customer.handleProductNumber(first.ctx);
+    const second = customerCtx({ sink, sharedSession: shared, text: "xyz" });
+    await customer.handleProductNumber(second.ctx);
+
+    // Both invalid-input re-renders must have edited the SAME anchor bubble in
+    // place — never a fresh send, which is what would stack extra bubbles.
+    const anchorEdits = calls(sink, "editMessageText").filter((c) => c.args[1] === anchorId);
+    expect(anchorEdits.length).toBe(2);
+    expect(shared.menuMsgId).toBe(anchorId);
+
+    // No fresh "invalid quantity" bubble was ever sent via reply().
+    expect(calls(sink, "reply").length).toBe(0);
+
+    // The wizard is still live, still awaiting a retry.
+    expect(shared.awaitingQtyDenomId).toBe(sample.product.id);
+  });
+
   // §8.6 — a dispatcher crash surfaces a quotable correlation ref to the user.
   it("surfaces a correlation ref when a dispatcher throws (§8.6)", async () => {
     // No dbUser in session → requireUser() throws inside the dispatcher.

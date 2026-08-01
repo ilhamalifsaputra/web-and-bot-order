@@ -620,6 +620,47 @@ describe("admin conversations", () => {
     expect(await getSetting(prisma, "broadcast_inflight_at")).toBeNull();
   });
 
+  // M-25 (backend audit 2026-07-31): a web-only registered customer has no
+  // Telegram chat to DM — before this fix they were still counted in the
+  // preview and attempted as sendMessage(0), inflating "failed" with sends
+  // that could never succeed.
+  it("broadcast: excludes a web-only user (telegramId: null) from both the preview count and the send", async () => {
+    await prisma.user.create({
+      data: { telegramId: null, referralCode: "WEBONLYBC", role: UserRole.CUSTOMER, language: "EN" },
+    });
+
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, "v1:adm:broadcast:start");
+    const conv = new FakeConversation([
+      msg(sink, { text: "Maintenance tonight" }),
+      msg(sink, { callbackData: "v1:adm:broadcast:confirm" }),
+    ]);
+    await broadcastConversation(conv.asMyConversation(), entry);
+
+    // Preview is shown before confirm — recipient count excludes the web-only user (2, not 3).
+    expect(sentIncludes(sink, "<b>2</b> users")).toBe(true);
+    // Only the two Telegram-linked users (42, 999) are actually sent to.
+    const targets = calls(sink, "sendMessage").map((c) => c.args[0]);
+    expect(targets.filter((t) => t !== 42 && t !== 999)).toHaveLength(0);
+    expect(await prisma.auditLog.findFirst({ where: { action: "broadcast" } })).toMatchObject({
+      details: expect.stringContaining("2 users"),
+    });
+  });
+
+  it("broadcast: throttles between sends (40ms per recipient, mirroring drainBroadcasts)", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, "v1:adm:broadcast:start");
+    const conv = new FakeConversation([
+      msg(sink, { text: "Throttled blast" }),
+      msg(sink, { callbackData: "v1:adm:broadcast:confirm" }),
+    ]);
+    const start = Date.now();
+    await broadcastConversation(conv.asMyConversation(), entry);
+    // recipients are users 42 + 999 (2 * 40ms throttle ⇒ at least ~80ms;
+    // assert a lower bound well under the nominal value to absorb scheduling jitter).
+    expect(Date.now() - start).toBeGreaterThanOrEqual(70);
+  });
+
   it("userSearch: a query renders matching users", async () => {
     const sink: SentCall[] = [];
     const entry = entryAdmin(sink, "v1:adm:users:search");

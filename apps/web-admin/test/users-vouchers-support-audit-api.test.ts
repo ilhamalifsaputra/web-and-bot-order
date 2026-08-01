@@ -489,11 +489,11 @@ describe("GET /api/support", () => {
     expect(body.items.map((t) => t.id)).toEqual([assigned.id]);
   });
 
-  it("stamps isOverdue: true on an OPEN, never-replied ticket older than the 4h cutoff", async () => {
+  it("stamps isOverdue: true on an OPEN ticket whose lastStatusChangeAt is older than the 4h cutoff", async () => {
     const overdue = await createTicket(prisma, customerId, "Old open ticket");
     await prisma.supportTicket.update({
       where: { id: overdue.id },
-      data: { createdAt: addMinutes(new Date(), -300) }, // 5h old — past the 4h overdue cutoff
+      data: { lastStatusChangeAt: addMinutes(new Date(), -300) }, // 5h since wait-clock reset — past the 4h cutoff
     });
     const fresh = await createTicket(prisma, customerId, "Fresh open ticket"); // just created
 
@@ -506,11 +506,11 @@ describe("GET /api/support", () => {
     expect(freshItem?.isOverdue).toBe(false);
   });
 
-  it("filters by overdue=true — only OPEN, never-replied tickets older than the 4h cutoff", async () => {
+  it("filters by overdue=true — only OPEN tickets whose lastStatusChangeAt is older than the 4h cutoff", async () => {
     const overdue = await createTicket(prisma, customerId, "Old open ticket");
     await prisma.supportTicket.update({
       where: { id: overdue.id },
-      data: { createdAt: addMinutes(new Date(), -300) },
+      data: { lastStatusChangeAt: addMinutes(new Date(), -300) },
     });
     const fresh = await createTicket(prisma, customerId, "Fresh open ticket");
 

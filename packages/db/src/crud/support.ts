@@ -310,14 +310,14 @@ export interface TicketFilter {
   ids?: number[] | null;
 }
 
-/** How long after creation a still-OPEN, never-replied ticket counts as
- * overdue. The one knob behind the overdue rule below — change it here, not
- * at any call site. */
+/** How long an OPEN ticket can sit without its wait-clock (`lastStatusChangeAt`)
+ * advancing before it counts as overdue. The one knob behind the overdue rule
+ * below — change it here, not at any call site. */
 const OVERDUE_MINUTES = 240;
 
-/** Cutoff `Date` for the overdue rule: a ticket created before this instant
- * (and still OPEN + never replied) is overdue. Callers pass this into
- * `ticketWhere`/`getTicketStats` rather than each computing their own
+/** Cutoff `Date` for the overdue rule: a ticket whose `lastStatusChangeAt` is
+ * older than this instant (and is still OPEN) is overdue. Callers pass this
+ * into `ticketWhere`/`getTicketStats` rather than each computing their own
  * `addMinutes(now, -240)`, so the 4h figure lives in exactly one place. */
 export function overdueCutoff(now: Date = new Date()): Date {
   return addMinutes(now, -OVERDUE_MINUTES);
@@ -327,20 +327,28 @@ export function overdueCutoff(now: Date = new Date()): Date {
  * but for a single already-fetched row rather than a `where` clause — used by
  * the paged-list route to stamp each item with `isOverdue` without a second
  * per-row query. Takes the same `cutoff` (from `overdueCutoff`) so the list
- * route and `getTicketStats` can never disagree on the threshold. */
+ * route and `getTicketStats` can never disagree on the threshold.
+ *
+ * M-31 fix: keys on `lastStatusChangeAt` (the ticket's actual wait-clock
+ * reset point — after Task 38, stamped on every status transition) rather
+ * than `repliedAt`/`createdAt`. A customer follow-up on an already-answered
+ * ticket flips it back to OPEN via `addTicketMessage` WITHOUT clearing
+ * `repliedAt`, so the old `repliedAt IS NULL` term made such tickets
+ * invisible here forever. */
 export function isTicketOverdue(
-  ticket: { status: string; repliedAt: Date | null; createdAt: Date },
+  ticket: { status: string; lastStatusChangeAt: Date },
   cutoff: Date,
 ): boolean {
-  return ticket.status === TicketStatus.OPEN && ticket.repliedAt === null && ticket.createdAt < cutoff;
+  return ticket.status === TicketStatus.OPEN && ticket.lastStatusChangeAt < cutoff;
 }
 
 /** Overdue rule (single source of truth for the KPI/filter/badge alike) —
  * structurally enforced: `getTicketStats`'s `overdue` count calls this same
  * function (via `f.overdue`) rather than repeating the predicate inline, so
  * there is exactly one place that defines "overdue," not two copies that
- * happen to match. OPEN, never replied, and older than `cutoff` (see
- * `overdueCutoff`). */
+ * happen to match. OPEN and `lastStatusChangeAt` older than `cutoff` (see
+ * `overdueCutoff`) — see `isTicketOverdue`'s doc comment for why this keys on
+ * the wait-clock rather than `repliedAt`/`createdAt` (M-31). */
 function ticketWhere(f: TicketFilter, cutoff: Date): Prisma.SupportTicketWhereInput {
   const where: Prisma.SupportTicketWhereInput = {};
   if (f.status != null) {
@@ -358,8 +366,7 @@ function ticketWhere(f: TicketFilter, cutoff: Date): Prisma.SupportTicketWhereIn
   if (f.ids != null) where.id = { in: f.ids };
   if (f.overdue) {
     where.status = TicketStatus.OPEN;
-    where.repliedAt = null;
-    where.createdAt = { lt: cutoff };
+    where.lastStatusChangeAt = { lt: cutoff };
   }
   if (f.q) {
     const term = f.q.trim();
@@ -412,8 +419,7 @@ function ticketWhereRaw(f: TicketFilter, cutoff: Date): Prisma.Sql {
   if (f.ids != null) conditions.push(Prisma.sql`id IN (${Prisma.join(f.ids)})`);
   if (f.overdue) {
     conditions.push(Prisma.sql`status = ${TicketStatus.OPEN}`);
-    conditions.push(Prisma.sql`replied_at IS NULL`);
-    conditions.push(Prisma.sql`created_at < ${cutoff}`);
+    conditions.push(Prisma.sql`last_status_change_at < ${cutoff}`);
   }
   if (f.q) {
     const term = `%${f.q.trim()}%`;

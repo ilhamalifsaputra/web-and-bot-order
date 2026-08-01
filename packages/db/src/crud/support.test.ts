@@ -15,6 +15,7 @@ import {
   closeTicketByUser,
   reopenTicket,
   reopenTicketAdmin,
+  replyToTicket,
   resolveTicket,
   classifyTicket,
   TICKET_REOPEN_WINDOW_DAYS,
@@ -217,6 +218,8 @@ describe("closeTicketByUser", () => {
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
     expect(fresh!.status).toBe(TicketStatus.CLOSED);
     expect(fresh!.closedAt).not.toBeNull();
+    // M-29: closeTicketByUser must stamp lastStatusChangeAt too.
+    expect(fresh!.lastStatusChangeAt.getTime()).toBe(fresh!.closedAt!.getTime());
   });
 
   it("a second call on an already-CLOSED ticket returns false (no-op)", async () => {
@@ -228,16 +231,21 @@ describe("closeTicketByUser", () => {
 });
 
 describe("reopenTicket", () => {
-  it("reopens a ticket closed within the window, clearing closedAt", async () => {
+  it("reopens a ticket closed within the window, clearing closedAt and stamping lastStatusChangeAt", async () => {
     const user = await makeUser(920n);
     const ticket = await createTicket(prisma, user.id, "help");
     await closeTicket(prisma, ticket.id);
+    const closed = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
 
     const result = await reopenTicket(prisma, ticket.id);
     expect(result).toEqual({ ok: true });
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
     expect(fresh!.status).toBe(TicketStatus.OPEN);
     expect(fresh!.closedAt).toBeNull();
+    // M-29: reopenTicket must stamp lastStatusChangeAt (the admin queue's
+    // "Waiting since" column reads this), not just leave the stale value
+    // from the earlier close.
+    expect(fresh!.lastStatusChangeAt.getTime()).toBeGreaterThan(closed!.lastStatusChangeAt.getTime());
   });
 
   it("refuses to reopen a ticket that isn't CLOSED", async () => {
@@ -261,6 +269,50 @@ describe("reopenTicket", () => {
 
   it("returns not_closed for a non-existent ticket", async () => {
     expect(await reopenTicket(prisma, 999999)).toEqual({ ok: false, reason: "not_closed" });
+  });
+});
+
+// M-29: replyToTicket (the bot's admin-reply path) was silently leaving
+// lastStatusChangeAt/firstResponseAt stale — only addTicketMessage stamped
+// them. These assert replyToTicket is correct standalone, independent of
+// whichever caller also happens to call addTicketMessage afterward.
+describe("replyToTicket", () => {
+  it("stamps lastStatusChangeAt and sets firstResponseAt on the first reply", async () => {
+    const user = await makeUser(930n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+    expect(ticket.firstResponseAt).toBeNull();
+
+    const tgId = await replyToTicket(prisma, { ticketId: ticket.id, reply: "on it", adminDbId: admin.id });
+
+    expect(tgId).toBe(930n);
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.REPLIED);
+    expect(fresh!.repliedAt).not.toBeNull();
+    expect(fresh!.lastStatusChangeAt.getTime()).toBeGreaterThan(ticket.lastStatusChangeAt.getTime());
+    expect(fresh!.firstResponseAt).not.toBeNull();
+    expect(fresh!.firstResponseAt!.getTime()).toBe(fresh!.repliedAt!.getTime());
+  });
+
+  it("does NOT overwrite firstResponseAt on a second reply, but still bumps lastStatusChangeAt", async () => {
+    const user = await makeUser(931n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+
+    await replyToTicket(prisma, { ticketId: ticket.id, reply: "first reply", adminDbId: admin.id });
+    const afterFirst = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+
+    await replyToTicket(prisma, { ticketId: ticket.id, reply: "second reply", adminDbId: admin.id });
+    const afterSecond = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+
+    expect(afterSecond!.firstResponseAt!.getTime()).toBe(afterFirst!.firstResponseAt!.getTime());
+    expect(afterSecond!.lastStatusChangeAt.getTime()).toBeGreaterThan(afterFirst!.lastStatusChangeAt.getTime());
+    expect(afterSecond!.repliedAt!.getTime()).toBeGreaterThan(afterFirst!.repliedAt!.getTime());
+  });
+
+  it("returns null for a non-existent ticket", async () => {
+    const admin = await makeAdmin();
+    expect(await replyToTicket(prisma, { ticketId: 999999, reply: "x", adminDbId: admin.id })).toBeNull();
   });
 });
 

@@ -99,9 +99,10 @@ export async function closeTicket(db: Db, ticketId: number): Promise<bigint | nu
  * double-tap / race with an admin closing the same ticket concurrently.
  * Returns false when there was nothing to close. */
 export async function closeTicketByUser(db: Db, ticketId: number): Promise<boolean> {
+  const now = new Date();
   const res = await db.supportTicket.updateMany({
     where: { id: ticketId, status: { not: TicketStatus.CLOSED } },
-    data: { status: TicketStatus.CLOSED, closedAt: new Date() },
+    data: { status: TicketStatus.CLOSED, closedAt: now, lastStatusChangeAt: now },
   });
   return res.count === 1;
 }
@@ -141,7 +142,7 @@ export async function reopenTicket(
   }
   await db.supportTicket.update({
     where: { id: ticketId },
-    data: { status: TicketStatus.OPEN, closedAt: null },
+    data: { status: TicketStatus.OPEN, closedAt: null, lastStatusChangeAt: new Date() },
   });
   return { ok: true };
 }
@@ -178,13 +179,18 @@ export async function replyToTicket(
     where: { id: args.ticketId },
   });
   if (!ticket) return null;
+  const now = new Date();
   await db.supportTicket.update({
     where: { id: args.ticketId },
     data: {
       adminReply: args.reply,
       adminId: args.adminDbId,
       status: TicketStatus.REPLIED,
-      repliedAt: new Date(),
+      repliedAt: now,
+      lastStatusChangeAt: now,
+      // Set once — true first-response time, unlike repliedAt (overwritten
+      // on every admin reply). Mirrors addTicketMessage's ADMIN branch.
+      firstResponseAt: ticket.firstResponseAt ?? now,
     },
   });
   const user = await db.user.findUnique({ where: { id: ticket.userId } });

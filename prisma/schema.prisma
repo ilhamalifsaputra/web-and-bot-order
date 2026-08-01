@@ -378,6 +378,7 @@ model Order {
   @@index([binanceTxid], map: "ix_orders_binance_txid")
   @@index([bybitTxid], map: "ix_orders_bybit_txid")
   @@index([status, createdAt], map: "ix_orders_status_created")
+  @@index([status, deliveredAt], map: "ix_orders_status_delivered")
   @@map("orders")
 }
 
@@ -441,6 +442,7 @@ model OrderItem {
   stockItem StockItem?   @relation(fields: [stockItemId], references: [id], onUpdate: NoAction)
 
   @@index([orderId], map: "ix_order_items_order_id")
+  @@index([productId], map: "ix_order_items_product_id")
   @@map("order_items")
 }
 

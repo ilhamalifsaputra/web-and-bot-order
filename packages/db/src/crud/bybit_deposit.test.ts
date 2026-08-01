@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
+import type { PrismaClient } from "@prisma/client";
 
 vi.mock("@app/core/config", () => ({
   config: {
@@ -8,10 +9,23 @@ vi.mock("@app/core/config", () => ({
     BYBIT_API_SECRET: "env-api-secret",
     BYBIT_API_BASE: "https://api.bybit.com",
     BYBIT_PAYMENT_WINDOW_MINUTES: 30,
+    // Needed by createOrderDirect (packages/db/src/crud/orders.ts), exercised
+    // below by the deliverPaidBybitOrder DB-integration describe block — this
+    // file's config mock otherwise only covers resolveBybitConfig/poll-health,
+    // which don't touch these. Defaults match packages/core/src/config.ts.
+    PAYMENT_WINDOW_MINUTES: 30,
+    USE_UNIQUE_CENTS: true,
+    ADMIN_IDS: [] as number[],
+    DEFAULT_LANGUAGE: "en",
   },
 }));
 
-import { resolveBybitConfig, getBybitPollHealth, recordBybitPollHealth } from "./bybit_deposit";
+import { resolveBybitConfig, getBybitPollHealth, recordBybitPollHealth, deliverPaidBybitOrder } from "./bybit_deposit";
+import { createOrderDirect } from "./orders";
+import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
+import { OrderStatus, PaymentMethod, DeliveryType, NotificationEvent } from "@app/core/enums";
+import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
+import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import type { Db } from "./_types";
 
 /** Mutable in-memory Setting store backing both `findUnique` and `upsert`,
@@ -246,5 +260,84 @@ describe("Bybit poll health — non-rate-limit failure streak (consecutiveFailur
     await recordBybitPollHealth(db, { lastTxCount: 0, success: false, error: "fetch failed: Connect Timeout Error" });
     const health = await getBybitPollHealth(db);
     expect(health.lastSuccessAt).toBe(firstSuccess); // unchanged by the failed cycle
+  });
+});
+
+// ===========================================================================
+// deliverPaidBybitOrder — "processing" branch (M-35, backend audit
+// 2026-07-31). The idempotency/delivered/already_processed/stale branches are
+// covered extensively in apps/order-bot/test/bybit-deposit.test.ts (Task 24,
+// M-14); this file only had resolveBybitConfig/poll-health coverage, and
+// nowhere exercised the "processing" branch a manual-delivery SKU takes.
+// Unlike nowpayments/paydisini/binance_internal, deliverPaidBybitOrder itself
+// has no overpaid-ledger/DM logic at all (see bybit_deposit.ts) — so this
+// only pins the processing-branch shape shared with every gateway via
+// settlePaidOrder, not an overpaid interaction that doesn't exist here.
+describe("deliverPaidBybitOrder — processing branch (manual SKU)", () => {
+  let db: TestDb;
+  let prisma: PrismaClient;
+  let sample: SampleData;
+
+  beforeAll(async () => {
+    db = await makeTestDb();
+    prisma = db.prisma;
+  });
+  afterAll(async () => {
+    await db.cleanup();
+  });
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  /** A manual (no-stock) denomination, on its own category/product. */
+  async function makeManualDenom() {
+    const category = await createCategory(prisma, `manual-cat-${Math.random()}`);
+    const product = await createCatalogProduct(prisma, { categoryId: category.id, name: `Manual Product ${Math.random()}` });
+    return createDenomination(prisma, {
+      productId: product.id,
+      name: "Manual Denom",
+      type: "SHARED",
+      durationLabel: "1 Month",
+      price: "10.00",
+      warrantyDays: 30,
+      deliveryType: DeliveryType.MANUAL,
+    });
+  }
+
+  /** Create a PENDING_PAYMENT order stamped as a Bybit deposit payment. */
+  async function makePendingBybitOrderFor(productId: number) {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId, quantity: 1 }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT } });
+    return order;
+  }
+
+  it("processing (manual SKU): kind stays processing, no stock is touched, and settlePaidOrder's own buyer DM still fires", async () => {
+    const manualDenom = await makeManualDenom();
+    const order = await makePendingBybitOrderFor(manualDenom.id);
+
+    const result = await deliverPaidBybitOrder(prisma, {
+      orderId: order.id,
+      bybitTxId: "0x-processing-1",
+      amount: order.totalAmount,
+    });
+
+    expect(result.status).toBe("processing");
+    if (result.status !== "processing") throw new Error("expected processing");
+    expect(result.order.status).toBe(OrderStatus.PROCESSING);
+
+    // Manual SKUs never reserve stock.
+    const stockCount = await prisma.stockItem.count({ where: { productId: manualDenom.id } });
+    expect(stockCount).toBe(0);
+
+    // Ledger claimed as matched (not overpaid — bybit_deposit.ts has no
+    // overpaid handling at all, unlike the other 4 gateway files).
+    const ledgerRow = await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0x-processing-1" } });
+    expect(ledgerRow?.outcome).toBe("matched");
+
+    const processingDm = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order.id, event: NotificationEvent.ORDER_PROCESSING_DM },
+    });
+    expect(processingDm).not.toBeNull();
   });
 });

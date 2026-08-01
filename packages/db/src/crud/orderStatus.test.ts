@@ -107,6 +107,68 @@ describe("transitionOrderStatus", () => {
     expect(await prisma.orderStatusHistory.count({ where: { orderId } })).toBe(0);
   });
 
+  // M-35 (backend audit 2026-07-31): the per-SKU delivery-flow feature added
+  // 2 new LEGAL_TRANSITIONS entries — PENDING_VERIFICATION gained PROCESSING
+  // as a legal target, and PROCESSING itself became a new row — with no
+  // dedicated test in this file (settlePaidOrder.test.ts exercises the happy
+  // path indirectly through settlePaidOrder, but never asserts the table
+  // itself here, and never pins an adjacent-illegal case for the
+  // PENDING_VERIFICATION row). A test that only asserts the allowed direction
+  // wouldn't catch the table being over-permissive (e.g. accidentally also
+  // allowing PENDING_VERIFICATION -> UNDERPAID).
+  it("PENDING_VERIFICATION -> PROCESSING is legal; PENDING_VERIFICATION -> UNDERPAID (not in the table) is rejected", async () => {
+    expect(LEGAL_TRANSITIONS[OrderStatus.PENDING_VERIFICATION]).toContain(OrderStatus.PROCESSING);
+    expect(LEGAL_TRANSITIONS[OrderStatus.PENDING_VERIFICATION]).not.toContain(OrderStatus.UNDERPAID);
+
+    await prisma.order.update({ where: { id: orderId }, data: { status: OrderStatus.PENDING_VERIFICATION } });
+    await transitionOrderStatus(prisma, {
+      orderId,
+      from: OrderStatus.PENDING_VERIFICATION,
+      to: OrderStatus.PROCESSING,
+    });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(OrderStatus.PROCESSING);
+
+    // Adjacent illegal: PENDING_VERIFICATION -> UNDERPAID is not a shape this
+    // row permits, even though UNDERPAID is a real, reachable Order status
+    // (just not from PENDING_VERIFICATION).
+    await prisma.order.update({ where: { id: orderId }, data: { status: OrderStatus.PENDING_VERIFICATION } });
+    await expect(
+      transitionOrderStatus(prisma, {
+        orderId,
+        from: OrderStatus.PENDING_VERIFICATION,
+        to: OrderStatus.UNDERPAID,
+      }),
+    ).rejects.toMatchObject({ key: "error.illegal_status_transition" });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(OrderStatus.PENDING_VERIFICATION);
+  });
+
+  it("PROCESSING -> DELIVERED is legal; PROCESSING -> PENDING_VERIFICATION (not in the table) is rejected", async () => {
+    expect(LEGAL_TRANSITIONS[OrderStatus.PROCESSING]).toContain(OrderStatus.DELIVERED);
+    expect(LEGAL_TRANSITIONS[OrderStatus.PROCESSING]).not.toContain(OrderStatus.PENDING_VERIFICATION);
+
+    await prisma.order.update({ where: { id: orderId }, data: { status: OrderStatus.PROCESSING } });
+    await transitionOrderStatus(prisma, {
+      orderId,
+      from: OrderStatus.PROCESSING,
+      to: OrderStatus.DELIVERED,
+    });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(OrderStatus.DELIVERED);
+
+    // Adjacent illegal: once PROCESSING, an order can never go BACK to
+    // PENDING_VERIFICATION — distinct from settlePaidOrder.test.ts's own
+    // "PROCESSING -> PENDING_PAYMENT is illegal" pin, so an over-permissive
+    // table allowing either backward hop would still be caught somewhere.
+    await prisma.order.update({ where: { id: orderId }, data: { status: OrderStatus.PROCESSING } });
+    await expect(
+      transitionOrderStatus(prisma, {
+        orderId,
+        from: OrderStatus.PROCESSING,
+        to: OrderStatus.PENDING_VERIFICATION,
+      }),
+    ).rejects.toMatchObject({ key: "error.illegal_status_transition" });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(OrderStatus.PROCESSING);
+  });
+
   it("does not set paidAt/deliveredAt/firstDetectedAt/confirmedAt — those stay the caller's job", async () => {
     await transitionOrderStatus(prisma, {
       orderId,

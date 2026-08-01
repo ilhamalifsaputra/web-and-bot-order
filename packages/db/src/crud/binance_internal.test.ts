@@ -18,8 +18,8 @@ vi.mock("@app/core/config", async () => {
 
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderDirect, deliverPaidInternalOrder } from "@app/db";
-import { OrderStatus, PaymentMethod, NotificationEvent } from "@app/core/enums";
+import { createOrderDirect, deliverPaidInternalOrder, createCategory, createCatalogProduct, createDenomination } from "@app/db";
+import { OrderStatus, PaymentMethod, NotificationEvent, DeliveryType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 
 let db: TestDb;
@@ -47,6 +47,33 @@ async function makePendingInternalOrder() {
     data: { paymentMethod: PaymentMethod.BINANCE_INTERNAL },
   });
   return order;
+}
+
+/** Same as makePendingInternalOrder, but for a caller-supplied denomination
+ * (used to route through a manual-delivery SKU instead of sample.product). */
+async function makePendingInternalOrderFor(productId: number) {
+  const { user } = sample;
+  const order = (await createOrderDirect(prisma, { user, productId, quantity: 1 }))!;
+  await prisma.order.update({
+    where: { id: order.id },
+    data: { paymentMethod: PaymentMethod.BINANCE_INTERNAL },
+  });
+  return order;
+}
+
+/** A manual (no-stock) denomination, on its own category/product. */
+async function makeManualDenom() {
+  const category = await createCategory(prisma, `manual-cat-${Math.random()}`);
+  const product = await createCatalogProduct(prisma, { categoryId: category.id, name: `Manual Product ${Math.random()}` });
+  return createDenomination(prisma, {
+    productId: product.id,
+    name: "Manual Denom",
+    type: "SHARED",
+    durationLabel: "1 Month",
+    price: "10.00",
+    warrantyDays: 30,
+    deliveryType: DeliveryType.MANUAL,
+  });
 }
 
 describe("deliverPaidInternalOrder", () => {
@@ -151,5 +178,48 @@ describe("deliverPaidInternalOrder", () => {
       amount: order.totalAmount,
     });
     expect(result.status).toBe("stale");
+  });
+
+  // M-35 (backend audit 2026-07-31): the "processing" branch (manual-delivery
+  // SKUs, settlePaidOrder's non-AUTO path) had no test at all — including
+  // whether the overpaid ledger flag/admin alert (which stays unconditional,
+  // per the code comment) actually still fires when the order queues for hand
+  // fulfilment instead of auto-delivering.
+  it("processing (manual SKU): kind stays processing, no stock is touched, and the overpaid alert still fires unconditionally", async () => {
+    const manualDenom = await makeManualDenom();
+    const order = await makePendingInternalOrderFor(manualDenom.id);
+    const expectedTotal = new Decimal(order.totalAmount);
+    const paid = expectedTotal.plus("2"); // overpay by 2 USDT
+
+    const result = await deliverPaidInternalOrder(prisma, {
+      orderId: order.id,
+      binanceTxId: "tx-processing-1",
+      amount: paid,
+    });
+
+    expect(result.status).toBe("processing");
+    if (result.status !== "processing") throw new Error("expected processing");
+    expect(result.order.status).toBe(OrderStatus.PROCESSING);
+
+    // Manual SKUs never reserve stock.
+    const stockCount = await prisma.stockItem.count({ where: { productId: manualDenom.id } });
+    expect(stockCount).toBe(0);
+
+    // Overpayment is orthogonal to delivery type — the ledger flag and admin
+    // alert must still fire even though this order queued for hand fulfilment.
+    const ledgerRow = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "tx-processing-1" } });
+    expect(ledgerRow?.outcome).toBe("overpaid");
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    expect(adminRows.length).toBe(1);
+    const payload = JSON.parse(adminRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.excess).toBe("2");
+
+    // settlePaidOrder's own buyer "being prepared" DM went out for the manual queue.
+    const processingDm = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order.id, event: NotificationEvent.ORDER_PROCESSING_DM },
+    });
+    expect(processingDm).not.toBeNull();
   });
 });

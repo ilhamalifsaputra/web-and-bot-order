@@ -20,8 +20,8 @@ vi.mock("@app/core/config", async () => {
 
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderDirect, deliverPaidPaydisiniOrder, recordUnmatchedPaydisiniTx, addAdminIdToDb, getPaydisiniCreds, setSetting, deleteSetting } from "@app/db";
-import { OrderStatus, PaymentMethod, NotificationEvent, StockStatus } from "@app/core/enums";
+import { createOrderDirect, deliverPaidPaydisiniOrder, recordUnmatchedPaydisiniTx, addAdminIdToDb, getPaydisiniCreds, setSetting, deleteSetting, createCategory, createCatalogProduct, createDenomination } from "@app/db";
+import { OrderStatus, PaymentMethod, NotificationEvent, StockStatus, DeliveryType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 
 let db: TestDb;
@@ -49,6 +49,33 @@ async function makePendingPaydisiniOrder() {
     data: { paymentMethod: PaymentMethod.PAYDISINI },
   });
   return order;
+}
+
+/** Same as makePendingPaydisiniOrder, but for a caller-supplied denomination
+ * (used to route through a manual-delivery SKU instead of sample.product). */
+async function makePendingPaydisiniOrderFor(productId: number) {
+  const { user } = sample;
+  const order = (await createOrderDirect(prisma, { user, productId, quantity: 1 }))!;
+  await prisma.order.update({
+    where: { id: order.id },
+    data: { paymentMethod: PaymentMethod.PAYDISINI },
+  });
+  return order;
+}
+
+/** A manual (no-stock) denomination, on its own category/product. */
+async function makeManualDenom() {
+  const category = await createCategory(prisma, `manual-cat-${Math.random()}`);
+  const product = await createCatalogProduct(prisma, { categoryId: category.id, name: `Manual Product ${Math.random()}` });
+  return createDenomination(prisma, {
+    productId: product.id,
+    name: "Manual Denom",
+    type: "SHARED",
+    durationLabel: "1 Month",
+    price: "10.00",
+    warrantyDays: 30,
+    deliveryType: DeliveryType.MANUAL,
+  });
 }
 
 describe("deliverPaidPaydisiniOrder", () => {
@@ -280,6 +307,57 @@ describe("deliverPaidPaydisiniOrder", () => {
 
     const ledgerRow = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "trx-stale-1" } });
     expect(ledgerRow?.outcome).toBe("stale");
+  });
+
+  // M-35 (backend audit 2026-07-31): the "processing" branch (manual-delivery
+  // SKUs, settlePaidOrder's non-AUTO path) had no test at all — including the
+  // interaction between two branches that live right next to each other in the
+  // code: ORDER_DELIVERED_DM is only enqueued when result.kind === "delivered"
+  // (skipped here, since settlePaidOrder already sent its own "being prepared"
+  // DM), while the overpaid ledger flag/admin alert deliberately stays
+  // unconditional. A test that only checked one of the two could pass while
+  // the other silently regressed (e.g. an accidental `&&` tying the overpaid
+  // block to `result.kind === "delivered"` too).
+  it("processing (manual SKU) + overpaid: ORDER_DELIVERED_DM is skipped but the overpaid admin alert still fires unconditionally", async () => {
+    const manualDenom = await makeManualDenom();
+    const order = await makePendingPaydisiniOrderFor(manualDenom.id);
+    const expectedTotal = new Decimal(order.totalAmount);
+    const paid = expectedTotal.plus("1.5");
+
+    const result = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-processing-overpaid-1",
+      amount: paid,
+      shopUrl: "https://shop.example.com",
+    });
+
+    expect(result.status).toBe("processing");
+    if (result.status !== "processing") throw new Error("expected processing");
+    expect(result.order.status).toBe(OrderStatus.PROCESSING);
+
+    // DM-skip: no ORDER_DELIVERED_DM for a "processing" result...
+    const deliveredDm = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order.id, event: NotificationEvent.ORDER_DELIVERED_DM },
+    });
+    expect(deliveredDm).toBeNull();
+    // ...but settlePaidOrder's own buyer DM for the manual queue did go out.
+    const processingDm = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order.id, event: NotificationEvent.ORDER_PROCESSING_DM },
+    });
+    expect(processingDm).not.toBeNull();
+
+    // Overpaid alert stays unconditional regardless of delivery type — one
+    // ADMIN_OVERPAID row per configured admin id ([111, 222] in this file).
+    const ledgerRow = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: "trx-processing-overpaid-1" } });
+    expect(ledgerRow?.outcome).toBe("overpaid");
+    const adminRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
+    });
+    expect(adminRows.length).toBe(2);
+    for (const row of adminRows) {
+      const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
+      expect(payload.excess).toBe("1.5");
+    }
   });
 });
 

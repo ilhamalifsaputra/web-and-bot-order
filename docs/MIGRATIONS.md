@@ -122,6 +122,15 @@ lama. Yang dicegah sekarang adalah pasangan **baru** masuk tanpa ketahuan:
 timestamp ganda di luar allowlist, dan ikut jalan sebagai bagian `pretest`
 (bersama drift check) plus sebagai step CI.
 
+Allowlist-nya menyimpan **nama folder yang persis**, bukan sekadar
+timestamp-nya. Kalau hanya timestamp yang di-allowlist, justru tanggal yang
+paling mungkin dipakai ulang secara tidak sengaja — tanggal yang sudah muncul
+dua kali di tree — jadi satu-satunya tanggal yang tanpa perlindungan sama
+sekali: folder **ketiga** di `20260725000000` akan lolos diam-diam. Karena itu
+guard-nya menuntut kesetaraan himpunan: folder tambahan, folder yang hilang,
+atau folder yang di-rename sama-sama gagal (ketiganya diverifikasi negatif —
+lihat `.superpowers/sdd/2026-07-31-audit-backend-fixes/task-37-report.md`).
+
 ## Pemulihan dari `migrate deploy` yang gagal (P3018 / P3009)
 
 Bagian ini relevan hanya kalau Anda menjalankan `prisma migrate deploy`
@@ -169,7 +178,19 @@ Versi awal file itu memakai
 `ADD COLUMN "last_status_change_at" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP`.
 SQLite menolak default non-konstan, jadi pernyataan ke-4 gagal
 (`Cannot add a column with non-constant default`, P3018) **setelah** tiga
-`ADD COLUMN` sebelumnya sudah commit. DB yang kena berada dalam keadaan:
+`ADD COLUMN` sebelumnya sudah commit.
+
+> **Penting kalau Anda mencoba mereproduksi insiden ini:** penolakan itu
+> **hanya terjadi kalau tabelnya sudah berisi baris.** Pada tabel kosong,
+> `ALTER TABLE … ADD COLUMN … NOT NULL DEFAULT CURRENT_TIMESTAMP` **berhasil**
+> tanpa keluhan apa pun — diverifikasi lewat `prisma db execute`: kolomnya
+> masuk ke tabel kosong, dan pernyataan identik ke tabel berisi satu baris
+> langsung gagal. Jadi DB scratch yang belum di-seed akan terlihat seolah bug
+> ini tidak pernah ada. **Seed dulu tabelnya, baru jalankan migrasinya** —
+> itulah satu-satunya cara reproduksi ini valid, dan juga kenapa bug-nya lolos
+> ke produksi: `db push` (yang dipakai test suite) membangun ulang tabel dari
+> nol alih-alih `ALTER TABLE`, jadi tidak pernah menyentuh jalur ini sama
+> sekali. DB yang kena berada dalam keadaan:
 `category`, `first_response_at`, `resolved_at` **ada**;
 `last_status_change_at` dan index `ix_support_tickets_status` **tidak ada**.
 File-nya sendiri sudah diperbaiki (kolom kini nullable + backfill), tapi
@@ -229,6 +250,18 @@ dan tidak ada data yang berubah.
 > keduanya tidak diubah karena sudah diterapkan dan checksum-nya beku). Kalau
 > Anda menulis migrasi rebuild baru, **selalu kualifikasikan kolom sumber
 > dengan nama tabelnya.**
+
+Aturan terakhir itu tidak lagi cuma imbauan di dokumen:
+`pnpm run check-migration-rebuild-quoting`
+(`scripts/check-migration-rebuild-quoting.ts`) memindai setiap
+`INSERT INTO "new_x" (...) SELECT ... FROM "x"` di seluruh
+`prisma/migrations/*` dan gagal dengan exit code 1 kalau ada kolom sumber yang
+ditulis polos. Alias (`... AS "nama"`) dikecualikan — alias menamai kolom
+keluaran, tidak pernah di-resolve ke tabel sumber. Dua folder pra-H-9 di atas
+di-grandfather **per nama folder**, lengkap dengan jumlah pelanggaran yang
+diharapkan, jadi mengedit file yang checksum-nya beku pun ikut ketahuan.
+Guard ini jalan di `pretest` dan sebagai step CI, sama seperti dua cek
+lainnya.
 
 Kalau langkah 2 terlanjur dijalankan sebelum langkah 1 dan `deploy` sudah
 gagal di `20260801000001`, pulihkan begini (juga diverifikasi): jalankan

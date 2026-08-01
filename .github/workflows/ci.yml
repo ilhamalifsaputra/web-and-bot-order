@@ -41,6 +41,9 @@ jobs:
       - name: Migration timestamp collision check
         run: pnpm run check-migration-timestamps
 
+      - name: Migration rebuild column-quoting check
+        run: pnpm run check-migration-rebuild-quoting
+
       - name: Typecheck
         run: pnpm -r typecheck
 

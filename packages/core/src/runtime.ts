@@ -65,6 +65,13 @@ export function addAdminId(id: number): void {
   resolved.adminIds = Array.from(next);
 }
 
+/** Remove one admin id live (single process — wizard retry / /admins). Idempotent. */
+export function removeAdminId(id: number): void {
+  const next = new Set((resolved.adminIds ?? config.ADMIN_IDS).map(Number));
+  next.delete(Number(id));
+  resolved.adminIds = Array.from(next);
+}
+
 /** Resolved admin ids if stamped, else env config (historical behaviour). */
 export function adminIds(): number[] {
   return resolved.adminIds ?? config.ADMIN_IDS;

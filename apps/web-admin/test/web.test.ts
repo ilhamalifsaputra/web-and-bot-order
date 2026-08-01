@@ -41,6 +41,7 @@ import {
   listAuditLogs,
   setUserRole,
   setUserBanned,
+  __clearSettingsCacheForTests,
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
@@ -5478,6 +5479,113 @@ describe("setup wizard — step 2/3/finish", () => {
     await setSetting(prisma, "setup_owner_tg_at", String(Date.now() - 29 * 60 * 1000));
     const shopPage = await app.inject({ method: "GET", url: "/setup/shop" });
     expect(shopPage.statusCode).toBe(200); // still open — not locked
+  });
+
+  it("does NOT extend the expiry window on a re-POST inside it (anti sliding-window), and replaces the mistyped owner instead of minting a second admin", async () => {
+    // Round 1: operator completes step 2, but (say) fat-fingered the Telegram
+    // ID. OWNER_TG_KEY's timestamp starts the clock.
+    const firstRes = await createOwner();
+    expect(firstRes.statusCode).toBe(303);
+    expect(isAdmin(OWNER_TG)).toBe(true);
+    const originalSetAt = await getSetting(prisma, "setup_owner_tg_at");
+    expect(originalSetAt).not.toBeNull();
+
+    // 25 minutes pass (still inside the 30-minute window) before the operator
+    // notices the typo and retries with the corrected Telegram ID.
+    const backdated = String(Date.now() - 25 * 60 * 1000);
+    await setSetting(prisma, "setup_owner_tg_at", backdated);
+    const CORRECTED_TG = 7000456;
+    resetAccountFailures(CORRECTED_TG);
+    const retryRes = await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: String(CORRECTED_TG), username: "owner", password: "supersecret2", password_confirm: "supersecret2" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(retryRes.statusCode).toBe(303);
+    expect(retryRes.headers.location).toBe("/setup/shop");
+
+    // The corrected id replaced the mistyped one — exactly one wizard-granted
+    // admin exists at a time, not two.
+    expect(isAdmin(CORRECTED_TG)).toBe(true);
+    expect(isAdmin(OWNER_TG)).toBe(false);
+    expect(adminIds()).toContain(CORRECTED_TG);
+    expect(adminIds()).not.toContain(OWNER_TG);
+    expect(await getSetting(prisma, "setup_owner_tg")).toBe(String(CORRECTED_TG));
+    expect(await getSetting(prisma, passwordHashKey(OWNER_TG))).toBeNull(); // old credential retracted
+
+    // The critical assertion: the retry did NOT reset the clock. The
+    // timestamp is still the backdated value from round 1, not "now".
+    expect(await getSetting(prisma, "setup_owner_tg_at")).toBe(backdated);
+
+    // Push past the ORIGINAL 30-minute window (from round 1's real start) —
+    // regardless of the intervening retry, the wizard must now lock for
+    // good. A further attacker-supplied id must be refused.
+    await setSetting(prisma, "setup_owner_tg_at", String(Date.now() - 31 * 60 * 1000));
+    const ATTACKER_TG = 6660003;
+    const attackerRes = await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: String(ATTACKER_TG), username: "attacker", password: "attackerpw", password_confirm: "attackerpw" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(attackerRes.statusCode).toBe(303);
+    expect(attackerRes.headers.location).toBe("/login");
+    expect(isAdmin(ATTACKER_TG)).toBe(false);
+    expect(await getSetting(prisma, "setup_completed")).toBe("true");
+    // The corrected owner from the retry is unaffected by the later lock.
+    expect(isAdmin(CORRECTED_TG)).toBe(true);
+  });
+
+  it("legitimate retry: re-POSTing /setup/owner with the SAME Telegram ID (mistyped password fixed) updates the owner in place without minting a second admin", async () => {
+    await createOwner(); // password "supersecret"
+    expect(isAdmin(OWNER_TG)).toBe(true);
+    const originalSetAt = await getSetting(prisma, "setup_owner_tg_at");
+
+    const retryRes = await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: String(OWNER_TG), username: "owner", password: "correctedpassword1", password_confirm: "correctedpassword1" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(retryRes.statusCode).toBe(303);
+    expect(retryRes.headers.location).toBe("/setup/shop");
+
+    // The retry wrote the new password hash inside a $transaction — a Db
+    // object distinct from `prisma` per settings.ts's cache-scoping comment
+    // — so a `prisma`-scoped getSetting moments later can still see the
+    // pre-retry cached value for up to its 30s TTL. Clear it (same escape
+    // hatch tests/helpers/sampleData.ts's resetDb uses) so this assertion
+    // reads real persisted state, not a stale in-process cache entry.
+    __clearSettingsCacheForTests(prisma);
+
+    // Still exactly one admin (the same id) — and the corrected password now
+    // verifies while the original mistyped one no longer does.
+    expect(isAdmin(OWNER_TG)).toBe(true);
+    expect(await getSetting(prisma, "setup_owner_tg")).toBe(String(OWNER_TG));
+    const storedHash = await getSetting(prisma, passwordHashKey(OWNER_TG));
+    expect(storedHash).not.toBeNull();
+    expect(verifyPassword("correctedpassword1", storedHash!)).toBe(true);
+    expect(verifyPassword("supersecret", storedHash!)).toBe(false);
+    // Recovery works, and the window is untouched by the correction.
+    expect(await getSetting(prisma, "setup_owner_tg_at")).toBe(originalSetAt);
+  });
+
+  it("fails CLOSED on a future/skewed OWNER_TG_SET_AT_KEY timestamp instead of treating it as fresh forever", async () => {
+    await createOwner();
+    // A clock correction, restored backup, or hand-edited row could leave
+    // this timestamp in the future — must not be read as "just created".
+    await setSetting(prisma, "setup_owner_tg_at", String(Date.now() + 60 * 60 * 1000));
+    const ATTACKER_TG = 6660004;
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: String(ATTACKER_TG), username: "attacker", password: "attackerpw", password_confirm: "attackerpw" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect(isAdmin(ATTACKER_TG)).toBe(false);
   });
 
   it("locks /setup/owner once an admin password exists outside the wizard (bootstrap takeover)", async () => {

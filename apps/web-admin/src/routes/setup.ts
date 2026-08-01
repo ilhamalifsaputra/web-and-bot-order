@@ -12,13 +12,21 @@
  * below) — once expired, checkSetupLock falls back to the anyAdminPasswordSet
  * self-heal, which is already true (step 2 already hashed the owner's
  * password), so the very next request locks the wizard for good.
+ *
+ * The timestamp is written ONLY on the first successful step 2 of a wizard
+ * session — a later re-POST to /setup/owner (legitimate retry: mistyped
+ * telegram_id/password) replaces the pending owner in place instead of
+ * minting a second admin, and does NOT rewrite OWNER_TG_SET_AT_KEY. Without
+ * that, every re-POST would reset the clock, so polling /setup/owner faster
+ * than the window kept it "fresh" forever — the same "open forever" hole
+ * M-30 exists to close, just requiring repeated hits instead of one.
  */
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { logger } from "@app/core/logger";
 import { config } from "@app/core/config";
-import { addAdminId, setAdminIds } from "@app/core/runtime";
+import { addAdminId, removeAdminId, setAdminIds } from "@app/core/runtime";
 import {
   prisma,
   getSetting,
@@ -26,6 +34,7 @@ import {
   deleteSetting,
   getUserByTelegramId,
   addAdminIdToDb,
+  removeAdminIdFromDb,
   upsertUser,
   isSetupCompleted,
   anyAdminPasswordSet,
@@ -91,7 +100,15 @@ async function isOwnerKeyFresh(): Promise<boolean> {
   const ownerTg = await getSetting(prisma, OWNER_TG_KEY);
   if (ownerTg === null) return false;
   const setAt = Number(await getSetting(prisma, OWNER_TG_SET_AT_KEY));
-  return Number.isFinite(setAt) && Date.now() - setAt < OWNER_SETUP_WINDOW_MS;
+  if (!Number.isFinite(setAt)) return false;
+  const elapsedMs = Date.now() - setAt;
+  // A negative elapsed time (future/skewed timestamp — restored backup, clock
+  // correction, hand-edited Setting row) must fail CLOSED like the malformed
+  // cases above, not open: without this check it would trivially satisfy
+  // `< OWNER_SETUP_WINDOW_MS` (any negative number is less than a positive
+  // one) and read as "fresh" for as long as the clock stays skewed.
+  if (elapsedMs < 0) return false;
+  return elapsedMs < OWNER_SETUP_WINDOW_MS;
 }
 
 export default async function setupRoutes(app: FastifyInstance): Promise<void> {
@@ -148,11 +165,33 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error });
     }
 
+    // Re-entry within the same wizard session (M-30): checkSetupLock above
+    // already proved that IF OWNER_TG_KEY is present, it's still fresh — so a
+    // present value here is the operator redoing step 2 (mistyped ID or
+    // password), not a brand-new attacker session. Replace the pending owner
+    // in place instead of minting a second admin, and (below) never rewrite
+    // OWNER_TG_SET_AT_KEY on a re-POST, so repeated calls can't slide the
+    // 30-minute window forward. Env-configured admins (config.ADMIN_IDS) are
+    // never demoted here — same rule ../routes/api/admins.ts enforces for its
+    // own remove endpoint — this only ever retracts an id the wizard itself
+    // granted moments earlier.
+    const previousOwnerRaw = await getSetting(prisma, OWNER_TG_KEY);
+    const previousOwnerTg = previousOwnerRaw !== null ? Number(previousOwnerRaw) : null;
+    const isFirstAttempt = previousOwnerTg === null;
+    const shouldReplacePrevious =
+      previousOwnerTg !== null && previousOwnerTg !== telegramId && !config.ADMIN_IDS.includes(previousOwnerTg);
+
     // Make the id an admin in the runtime FIRST so upsertUser resolves role=ADMIN,
     // then persist everything in one short transaction (CLAUDE.md: single-writer).
     addAdminId(telegramId); // runtime first so upsertUser resolves role=ADMIN
     try {
       await prisma.$transaction(async (tx) => {
+        if (shouldReplacePrevious) {
+          // Retract the previous attempt's admin grant so a corrected retry
+          // (different Telegram ID) doesn't leave a second admin behind.
+          await removeAdminIdFromDb(tx, previousOwnerTg!);
+          await deleteSetting(tx, passwordHashKey(previousOwnerTg!));
+        }
         await addAdminIdToDb(tx, telegramId);
         await upsertUser(tx, { telegramId, username, fullName: null });
         await setSetting(tx, passwordHashKey(telegramId), hashPassword(password));
@@ -163,8 +202,14 @@ export default async function setupRoutes(app: FastifyInstance): Promise<void> {
       setAdminIds(await resolveAdminIds(prisma));
       throw err;
     }
+    if (shouldReplacePrevious) removeAdminId(previousOwnerTg!);
     await setSetting(prisma, OWNER_TG_KEY, String(telegramId));
-    await setSetting(prisma, OWNER_TG_SET_AT_KEY, String(Date.now())); // starts the M-30 expiry window
+    if (isFirstAttempt) {
+      // Starts the M-30 expiry window — ONLY on the first successful step 2
+      // of this wizard session. A later retry (above) must not reach this,
+      // or every re-POST would extend the window indefinitely.
+      await setSetting(prisma, OWNER_TG_SET_AT_KEY, String(Date.now()));
+    }
     logger.info(`Setup wizard: created owner admin with Telegram id ${telegramId}`); // never log the password
     if (isJson) return reply.send({ ok: true, redirect: "/setup/shop" });
     return reply.code(303).redirect("/setup/shop");

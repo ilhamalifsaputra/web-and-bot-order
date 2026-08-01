@@ -7,6 +7,7 @@ import {
   revenueByDay,
   revenueSummary,
   profitSummarySince,
+  topProducts,
   topProductsByMargin,
   ordersByDay,
   combinedRevenueByDay,
@@ -199,6 +200,89 @@ describe("profitSummarySince", () => {
   });
 });
 
+describe("topProducts", () => {
+  it("ranks by quantity summed across multiple orders — not by revenue and not by order count — with deterministic tie-breaking (M-33 regression: a naive per-order/per-line grouping, or ranking by revenue, would get this wrong)", async () => {
+    const now = new Date();
+    const productA = await createDenomination(prisma, { productId: parentProductId, name: "A", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+    const productB = await createDenomination(prisma, { productId: parentProductId, name: "B", type: "SHARED", durationLabel: "1 Month", price: "50000" });
+    const productC = await createDenomination(prisma, { productId: parentProductId, name: "C", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+    const productD = await createDenomination(prisma, { productId: parentProductId, name: "D", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    // Product A: 5 units total spread across three separate orders (2+2+1) —
+    // a naive "most orders" or "biggest single order" heuristic would rank
+    // this below B.
+    for (const qty of [2, 2, 1]) {
+      const order = await prisma.order.create({
+        data: { orderCode: `ORD-a-${Math.random()}`, userId, subtotalAmount: String(10000 * qty), totalAmount: String(10000 * qty), currency: "IDR", status: "DELIVERED", deliveredAt: now },
+      });
+      await prisma.orderItem.create({ data: { orderId: order.id, productId: productA.id, quantity: qty, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+    }
+
+    // Product B: a single order of 4 units at 5x the unit price — higher
+    // gross revenue (200000) than A's (50000) but fewer units, so it must
+    // still rank below A if ranking is genuinely by quantity, not revenue.
+    const orderB = await prisma.order.create({
+      data: { orderCode: `ORD-b-${Math.random()}`, userId, subtotalAmount: "200000", totalAmount: "200000", currency: "IDR", status: "DELIVERED", deliveredAt: now },
+    });
+    await prisma.orderItem.create({ data: { orderId: orderB.id, productId: productB.id, quantity: 4, unitPrice: "50000", warrantyDaysSnapshot: 30 } });
+
+    // Products C and D tie at 2 units each — proves a tie doesn't drop or
+    // duplicate a product, and is broken deterministically (by productId).
+    const orderC = await prisma.order.create({
+      data: { orderCode: `ORD-c-${Math.random()}`, userId, subtotalAmount: "20000", totalAmount: "20000", currency: "IDR", status: "DELIVERED", deliveredAt: now },
+    });
+    await prisma.orderItem.create({ data: { orderId: orderC.id, productId: productC.id, quantity: 2, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+    const orderD = await prisma.order.create({
+      data: { orderCode: `ORD-d-${Math.random()}`, userId, subtotalAmount: "20000", totalAmount: "20000", currency: "IDR", status: "DELIVERED", deliveredAt: now },
+    });
+    await prisma.orderItem.create({ data: { orderId: orderD.id, productId: productD.id, quantity: 2, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const result = await topProducts(prisma, new Date(now.getTime() - 60_000), 10);
+
+    expect(result.map((r) => r.productId)).toEqual([
+      productA.id,
+      productB.id,
+      ...[productC.id, productD.id].sort((a, b) => a - b),
+    ]);
+    expect(result[0]).toMatchObject({ productId: productA.id, name: "A", qty: 5, revenue: "50000" });
+    expect(result[1]).toMatchObject({ productId: productB.id, name: "B", qty: 4, revenue: "200000" });
+  });
+
+  it("excludes rows delivered before `since`", async () => {
+    const now = new Date();
+    const before = new Date(now.getTime() - 3_600_000);
+    const product = await createDenomination(prisma, { productId: parentProductId, name: "Old", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    const oldOrder = await prisma.order.create({
+      data: { orderCode: `ORD-old-${Math.random()}`, userId, subtotalAmount: "90000", totalAmount: "90000", currency: "IDR", status: "DELIVERED", deliveredAt: before },
+    });
+    await prisma.orderItem.create({ data: { orderId: oldOrder.id, productId: product.id, quantity: 9, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const recentOrder = await prisma.order.create({
+      data: { orderCode: `ORD-new-${Math.random()}`, userId, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status: "DELIVERED", deliveredAt: now },
+    });
+    await prisma.orderItem.create({ data: { orderId: recentOrder.id, productId: product.id, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    // `since` excludes the old (9-unit) order — if it leaked in, qty would be
+    // 10 and revenue 100000 instead of 1 / 10000.
+    const result = await topProducts(prisma, new Date(now.getTime() - 60_000), 10);
+    expect(result).toEqual([{ productId: product.id, name: "Old", qty: 1, revenue: "10000" }]);
+  });
+
+  it("caps results at `limit`", async () => {
+    const now = new Date();
+    for (let i = 0; i < 12; i++) {
+      const product = await createDenomination(prisma, { productId: parentProductId, name: `P${i}`, type: "SHARED", durationLabel: "1 Month", price: "10000" });
+      const order = await prisma.order.create({
+        data: { orderCode: `ORD-${i}-${Math.random()}`, userId, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status: "DELIVERED", deliveredAt: now },
+      });
+      await prisma.orderItem.create({ data: { orderId: order.id, productId: product.id, quantity: 12 - i, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+    }
+    const result = await topProducts(prisma, new Date(now.getTime() - 60_000), 10);
+    expect(result).toHaveLength(10);
+  });
+});
+
 describe("topProductsByMargin", () => {
   it("ranks by units sold; revenue/profit are the catalog-IDR price as-is, with zero fxRate multiplication for USDT-paid orders", async () => {
     const now = new Date();
@@ -354,6 +438,9 @@ describe("status exclusion", () => {
 
     const top = await topProductsByMargin(prisma, since, 5);
     expect(top).toEqual([{ productId: product.id, productLabel: `${parentProductName} · 1 Month`, unitsSold: 1, revenueIdrEquiv: "10000", profitIdrEquiv: "5000", costUnknownUnits: 0 }]);
+
+    const topByQty = await topProducts(prisma, since, 5);
+    expect(topByQty).toEqual([{ productId: product.id, name: "1 Month", qty: 1, revenue: "10000" }]);
 
     const profit = await profitSummarySince(prisma, since);
     expect(profit.idr).toEqual({ netProfit: "5000", marginPct: "50", excludedItemCount: 0 });

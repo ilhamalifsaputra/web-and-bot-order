@@ -118,7 +118,7 @@ export function ReportsPage() {
             {/* Top products */}
             {data.products.length > 0 && (
               <Card>
-                <CardHeader><CardTitle>Top Products</CardTitle></CardHeader>
+                <CardHeader><CardTitle>Top Products — Last {data.days} days</CardTitle></CardHeader>
                 <CardContent>
                   <DataTable
                     columns={[

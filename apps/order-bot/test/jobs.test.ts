@@ -2,11 +2,23 @@
 import "./setup-db";
 
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { prisma, createOrderDirect, finalizeOrderPayment, setOrderPaymentMessage, createBroadcast } from "@app/db";
+import {
+  prisma,
+  createOrderDirect,
+  finalizeOrderPayment,
+  setOrderPaymentMessage,
+  createBroadcast,
+  getSetting,
+  setSetting,
+  BINANCE_UID_KEY,
+  BINANCE_API_KEY_KEY,
+  BINANCE_API_SECRET_KEY,
+  BINANCE_POLL_HEALTH_KEY,
+} from "@app/db";
 import type { Api } from "grammy";
 import { OrderStatus, OrderCurrency } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { autoCancelExpiredOrders, scheduleJobs, drainBroadcasts, announceStartedFlashSales } from "../src/jobs";
+import { autoCancelExpiredOrders, scheduleJobs, drainBroadcasts, announceStartedFlashSales, binancePollWatchdog } from "../src/jobs";
 import { NotificationEvent } from "@app/core/enums";
 
 let sample: SampleData;
@@ -338,6 +350,18 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       expect(crons[0]!.options.protect).toBe(true);
       expect(crons[1]!.getPattern()).toBe("0 * * * *"); // autoCloseStaleTickets
       expect(crons[1]!.options.protect).toBe(true);
+      // reconcileFinancesJob + the three poller watchdogs (M-26 fix, backend
+      // audit 2026-07-31): these were the one group in this list missing
+      // protect:true, letting a slow Telegram call overlap the next tick and
+      // double-page admins on the same incident.
+      expect(crons[2]!.getPattern()).toBe("0 */6 * * *"); // reconcileFinancesJob
+      expect(crons[2]!.options.protect).toBe(true);
+      expect(crons[3]!.getPattern()).toBe("*/2 * * * *"); // binancePollWatchdog
+      expect(crons[3]!.options.protect).toBe(true);
+      expect(crons[4]!.getPattern()).toBe("*/2 * * * *"); // bybitPollWatchdog
+      expect(crons[4]!.options.protect).toBe(true);
+      expect(crons[5]!.getPattern()).toBe("*/2 * * * *"); // bybitBscPollWatchdog
+      expect(crons[5]!.options.protect).toBe(true);
       // drainBroadcasts — offset to :20 past the minute (not :00, same as
       // autoCancelExpiredOrders above) so the two don't contend for SQLite's
       // single write-lock in the same instant every tick; still protected.
@@ -355,5 +379,82 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
     } finally {
       for (const c of crons) c.stop();
     }
+  });
+});
+
+// M-26 fix (backend audit 2026-07-31): binancePollWatchdog (and its Bybit /
+// Bybit-BSC twins, which share the exact same shape) used to write its
+// "already alerted" flag only AFTER the admin DM loop finished. That left a
+// window — a slow Telegram call, or an overlapping tick before `protect:
+// true` was added to the Cron registration above — where a second run still
+// read the flag as unset and paged every admin again for the same incident.
+// croner's `protect: true` (asserted above) is the scheduler-level guard;
+// these tests exercise the OTHER half of the fix directly — the flag write
+// itself now happens before the loop starts, not just before it finishes —
+// since croner's internal overlap lock isn't something a unit test can
+// trigger without a real timer-based race.
+describe("binancePollWatchdog alert-flag ordering (M-26 fix)", () => {
+  const STALE_MS = 10 * 60_000; // > POLL_STALE_MINUTES (5), well into "alert"
+
+  /** Enable the Binance Internal method and stamp a stale (unhealthy) heartbeat. */
+  async function makeUnhealthy() {
+    await setSetting(prisma, BINANCE_UID_KEY, "12345");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "test-key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "test-secret");
+    await setSetting(
+      prisma,
+      BINANCE_POLL_HEALTH_KEY,
+      JSON.stringify({ lastRun: new Date(Date.now() - STALE_MS).toISOString(), backoffUntil: null, consecutiveFailures: 0 }),
+    );
+  }
+
+  it("writes the alert flag before the admin DM loop, so an invocation that overlaps mid-loop already sees it and sends nothing", async () => {
+    await makeUnhealthy();
+    // ADMIN_IDS is "999,1000" (test/setup-db.ts) — two admins to page.
+    const flagSeenDuringEachDm: (string | null)[] = [];
+    const nestedApi = fakeApi();
+    let nestedTriggered = false;
+    const api = fakeApi({
+      sendMessage: vi.fn(async () => {
+        flagSeenDuringEachDm.push(await getSetting(prisma, "binance_poll_alert_sent"));
+        if (!nestedTriggered) {
+          nestedTriggered = true;
+          // Simulate a second tick firing while this run is still mid-loop —
+          // exactly what `protect: true` on the Cron registration now stops
+          // in production. Calling the job function directly here proves the
+          // flag write ALONE (independent of the scheduler lock) also stops
+          // it from re-alerting.
+          await binancePollWatchdog(nestedApi);
+        }
+        return undefined;
+      }),
+    });
+
+    await binancePollWatchdog(api);
+
+    expect(flagSeenDuringEachDm).toEqual(["1", "1"]); // already "1" for every DM, including the very first
+    expect(api.sendMessage).toHaveBeenCalledTimes(2); // both admins paged once by the original run
+    expect(nestedApi.sendMessage).not.toHaveBeenCalled(); // the overlapping run saw alerted=true and paged no one
+  });
+
+  it("does not re-alert on the next tick after a run whose DM loop had a failure partway through", async () => {
+    await makeUnhealthy();
+    const firstRunApi = fakeApi({
+      sendMessage: vi
+        .fn()
+        .mockResolvedValueOnce(undefined) // admin 999: delivered
+        .mockRejectedValueOnce(new Error("bot was blocked by this admin")), // admin 1000: failed, caught per-admin
+    });
+
+    await binancePollWatchdog(firstRunApi);
+    expect(firstRunApi.sendMessage).toHaveBeenCalledTimes(2);
+    expect(await getSetting(prisma, "binance_poll_alert_sent")).toBe("1");
+
+    // Next tick, still unhealthy (heartbeat untouched) — must see the flag
+    // already set and skip alerting entirely, not just skip the admin who
+    // already got the DM.
+    const secondRunApi = fakeApi();
+    await binancePollWatchdog(secondRunApi);
+    expect(secondRunApi.sendMessage).not.toHaveBeenCalled();
   });
 });

@@ -222,6 +222,17 @@ export async function binancePollWatchdog(api: Api): Promise<void> {
       ? `${health.consecutiveFailures} consecutive cycle(s) failed (last error: ${health.lastError ?? "unknown"})`
       : `no completed cycle in ${mins} min`;
     logger.error(`Binance poller looks unhealthy (${detail}) — alerting admins and pausing auto-confirm`);
+    // Flag flips BEFORE the DM loop, not after (M-26 fix, backend audit
+    // 2026-07-31): the loop below awaits Telegram per admin, so writing the
+    // flag only once every DM was sent left a window where a crash mid-loop
+    // (or an overlapping tick, now also closed by `protect: true` on this
+    // job's registration) left the flag unset and re-triggered a full
+    // re-alert storm on the next run. Writing it first trades that storm for
+    // a narrower failure mode: a crash mid-loop can now leave some admins
+    // unpaged for this incident instead of everyone being paged repeatedly —
+    // each DM failure below is still caught and logged individually, so a
+    // single blocked/deactivated admin never aborts the rest of the loop.
+    await setSetting(prisma, POLL_ALERT_KEY, "1");
     for (const adminId of adminIds()) {
       try {
         await api.sendMessage(
@@ -234,7 +245,6 @@ export async function binancePollWatchdog(api: Api): Promise<void> {
         logger.error({ err }, `Failed to DM admin ${adminId} about the unhealthy Binance poller`);
       }
     }
-    await setSetting(prisma, POLL_ALERT_KEY, "1");
   } else if (decision === "recover") {
     await setSetting(prisma, POLL_ALERT_KEY, "0");
     logger.info("Binance poller recovered — back to completing cycles normally, alert state cleared");
@@ -260,6 +270,9 @@ export async function bybitPollWatchdog(api: Api): Promise<void> {
       ? `${health.consecutiveFailures} consecutive cycle(s) failed (last error: ${health.lastError ?? "unknown"})`
       : `no completed cycle in ${mins} min`;
     logger.error(`Bybit deposit poller looks unhealthy (${detail}) — alerting admins and pausing auto-confirm`);
+    // Flag flips before the DM loop — same reasoning as binancePollWatchdog
+    // above (M-26 fix, backend audit 2026-07-31).
+    await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "1");
     for (const adminId of adminIds()) {
       try {
         await api.sendMessage(
@@ -272,7 +285,6 @@ export async function bybitPollWatchdog(api: Api): Promise<void> {
         logger.error({ err }, `Failed to DM admin ${adminId} about the unhealthy Bybit deposit poller`);
       }
     }
-    await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "1");
   } else if (decision === "recover") {
     await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "0");
     logger.info("Bybit deposit poller recovered — back to completing cycles normally, alert state cleared");
@@ -299,6 +311,9 @@ export async function bybitBscPollWatchdog(api: Api): Promise<void> {
       ? `${health.consecutiveFailures} consecutive cycle(s) failed (last error: ${health.lastError ?? "unknown"})`
       : `no completed cycle in ${mins} min`;
     logger.error(`Bybit BSC deposit poller looks unhealthy (${detail}) — alerting admins and pausing auto-confirm`);
+    // Flag flips before the DM loop — same reasoning as binancePollWatchdog
+    // above (M-26 fix, backend audit 2026-07-31).
+    await setSetting(prisma, BYBIT_BSC_POLL_ALERT_KEY, "1");
     for (const adminId of adminIds()) {
       try {
         await api.sendMessage(
@@ -311,7 +326,6 @@ export async function bybitBscPollWatchdog(api: Api): Promise<void> {
         logger.error({ err }, `Failed to DM admin ${adminId} about the unhealthy Bybit BSC deposit poller`);
       }
     }
-    await setSetting(prisma, BYBIT_BSC_POLL_ALERT_KEY, "1");
   } else if (decision === "recover") {
     await setSetting(prisma, BYBIT_BSC_POLL_ALERT_KEY, "0");
     logger.info("Bybit BSC deposit poller recovered — back to completing cycles normally, alert state cleared");
@@ -544,10 +558,17 @@ export function scheduleJobs(api: Api): Cron[] {
     // already guards against.
     new Cron("*/1 * * * *", { protect: true }, wrap("autoCancelExpiredOrders", autoCancelExpiredOrders)),
     new Cron("0 * * * *", { protect: true }, wrap("autoCloseStaleTickets", autoCloseStaleTickets)),
-    new Cron("0 */6 * * *", wrap("reconcileFinancesJob", reconcileFinancesJob)),
-    new Cron("*/2 * * * *", wrap("binancePollWatchdog", binancePollWatchdog)),
-    new Cron("*/2 * * * *", wrap("bybitPollWatchdog", bybitPollWatchdog)),
-    new Cron("*/2 * * * *", wrap("bybitBscPollWatchdog", bybitBscPollWatchdog)),
+    new Cron("0 */6 * * *", { protect: true }, wrap("reconcileFinancesJob", reconcileFinancesJob)),
+    // { protect: true } (M-26 fix, backend audit 2026-07-31): these three
+    // watchdogs were the one group of jobs in this list missing it. A slow
+    // Telegram API call during the admin DM loop below can let a tick overlap
+    // with the next one; without protect, the overlapping run reads the same
+    // still-unset alert flag and every admin gets paged twice for the same
+    // incident. See the flag-write reordering inside each watchdog function
+    // for the other half of this fix.
+    new Cron("*/2 * * * *", { protect: true }, wrap("binancePollWatchdog", binancePollWatchdog)),
+    new Cron("*/2 * * * *", { protect: true }, wrap("bybitPollWatchdog", bybitPollWatchdog)),
+    new Cron("*/2 * * * *", { protect: true }, wrap("bybitBscPollWatchdog", bybitBscPollWatchdog)),
     // Offset 20s/40s past the minute (croner's optional leading seconds field) so
     // these two don't fire in the same SQLite write-lock instant as
     // autoCancelExpiredOrders above — all three land on second 0 otherwise, and

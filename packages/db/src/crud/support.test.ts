@@ -828,3 +828,91 @@ describe("listTicketsPaged / countTickets — category filter", () => {
     expect(rows.map((r) => r.id)).toEqual([payment.id]);
   });
 });
+
+// M-36: ticketWhere (Prisma, used by countTickets and the default sort) and
+// ticketWhereRaw (raw SQL, used only by sort:"priority") are now both derived
+// from the single buildTicketConditions() list instead of being two
+// hand-kept-in-sync predicates, so the header count and the priority-sorted
+// page can no longer silently disagree on how many tickets match a filter.
+describe("listTicketsPaged / countTickets — unified predicate (M-36)", () => {
+  it("agree on the total for a search term containing % and _ (LIKE wildcard characters)", async () => {
+    const user = await makeUser(1340n, { fullName: "Al%ce_W", username: "user_%name" });
+    const other = await makeUser(1341n);
+    // Both % and _ act as SQL LIKE wildcards on both the Prisma `contains`
+    // path and the raw-SQL `LIKE` path (neither escapes them) — so as long as
+    // the two paths wrap/bind the term identically, they match the same set.
+    // This guards that invariant: if a future change (e.g. escaping one side
+    // but not the other) breaks it, this test catches it as a count/list
+    // mismatch rather than an admin silently seeing inconsistent numbers.
+    await createTicket(prisma, other.id, "flash sale: 50%off_code applies");
+    await createTicket(prisma, other.id, "50Xoffzcode also matches the wildcard reading");
+    await createTicket(prisma, user.id, "totally unrelated message");
+
+    const q = "50%off_";
+    const count = await countTickets(prisma, { q });
+    const priorityList = await listTicketsPaged(prisma, { q, sort: "priority", limit: 100, offset: 0 });
+    const defaultList = await listTicketsPaged(prisma, { q, sort: "newest", limit: 100, offset: 0 });
+
+    expect(count).toBe(2);
+    expect(priorityList.map((t) => t.id).sort()).toEqual(defaultList.map((t) => t.id).sort());
+    expect(priorityList.length).toBe(count);
+  });
+
+  it("agree when a search term matches via the related user's fullName/username, not just message, with % / _ present", async () => {
+    const user = await makeUser(1342n, { fullName: "Bud%get_Buyer", username: "plainname" });
+    const other = await makeUser(1343n, { fullName: "Someone Else" });
+    await createTicket(prisma, user.id, "unrelated body text");
+    await createTicket(prisma, other.id, "also unrelated");
+
+    const q = "Bud%get_Buyer";
+    const count = await countTickets(prisma, { q });
+    const priorityList = await listTicketsPaged(prisma, { q, sort: "priority", limit: 100, offset: 0 });
+
+    expect(count).toBe(1);
+    expect(priorityList.length).toBe(1);
+  });
+
+  it("an explicit status filter combined with overdue:true agrees between countTickets and sort:priority — the concrete M-36 regression: the old ticketWhere unconditionally OVERWROTE where.status/where.lastStatusChangeAt inside the {overdue:true} branch (silently discarding an explicit status filter), while ticketWhereRaw only ever ADDed an extra AND condition (producing a contradiction — 0 rows — instead), so the two paths disagreed whenever a status filter incompatible with OPEN was combined with overdue:true", async () => {
+    const user = await makeUser(1344n);
+    // OPEN and overdue (matches the {overdue:true} predicate on its own).
+    const overdueOpen = await createTicket(prisma, user.id, "old open ticket");
+    await prisma.supportTicket.update({
+      where: { id: overdueOpen.id },
+      data: { lastStatusChangeAt: addMinutes(new Date(), -300) },
+    });
+    // REPLIED (not OPEN) — explicitly filtered for below, but incompatible
+    // with overdue's implicit status=OPEN, so must NOT appear in the result
+    // under either path.
+    const repliedTicket = await createTicket(prisma, user.id, "replied ticket");
+    await prisma.supportTicket.update({
+      where: { id: repliedTicket.id },
+      data: { status: TicketStatus.REPLIED },
+    });
+
+    const filter = { status: TicketStatus.REPLIED, overdue: true };
+    const count = await countTickets(prisma, filter);
+    const priorityList = await listTicketsPaged(prisma, { ...filter, sort: "priority", limit: 100, offset: 0 });
+    const defaultList = await listTicketsPaged(prisma, { ...filter, sort: "newest", limit: 100, offset: 0 });
+
+    // status=REPLIED (explicit) AND overdue's implicit status=OPEN is a
+    // contradiction — correctly zero matches on every path, not "silently
+    // ignore the status filter and return the OPEN overdue ticket instead".
+    expect(count).toBe(0);
+    expect(priorityList).toEqual([]);
+    expect(defaultList).toEqual([]);
+  });
+
+  it("priority ordering itself is unchanged by the refactor — URGENT/HIGH/MEDIUM/LOW rank, ties newest-first, still comes from the raw SQL CASE expression, not from the (now-shared) predicate", async () => {
+    const user = await makeUser(1345n);
+    const low = await createTicket(prisma, user.id, "low");
+    await prisma.supportTicket.update({ where: { id: low.id }, data: { priority: TicketPriority.LOW } });
+    const urgent = await createTicket(prisma, user.id, "urgent");
+    await prisma.supportTicket.update({ where: { id: urgent.id }, data: { priority: TicketPriority.URGENT } });
+    const high = await createTicket(prisma, user.id, "high");
+    await prisma.supportTicket.update({ where: { id: high.id }, data: { priority: TicketPriority.HIGH } });
+    const medium = await createTicket(prisma, user.id, "medium");
+
+    const sorted = await listTicketsPaged(prisma, { sort: "priority" });
+    expect(sorted.map((t) => t.id)).toEqual([urgent.id, high.id, medium.id, low.id]);
+  });
+});

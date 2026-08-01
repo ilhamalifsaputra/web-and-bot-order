@@ -41,6 +41,14 @@ export function resolveSegmentRecipients(db: Db, segment: BroadcastSegment) {
   });
 }
 
+/** A broadcast's segment + recipient count — just enough for an audit-log
+ * `details` sentence (e.g. `Cancelled a broadcast to N recipient(s) in segment
+ * "X".`) without pulling the full row (message text, image refs, etc.) into
+ * a route. */
+export function getBroadcast(db: Db, id: number) {
+  return db.broadcast.findUnique({ where: { id }, select: { segment: true, totalCount: true } });
+}
+
 export function createBroadcast(
   db: Db,
   args: {

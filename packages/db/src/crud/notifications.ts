@@ -741,6 +741,13 @@ export async function outboxStatusCounts(db: Db): Promise<Record<string, number>
   return counts;
 }
 
+/** A single outbox row's `event` type — just enough for an audit-log `details`
+ * sentence (e.g. "Requeued a ${event} notification for delivery.") without
+ * pulling the full row (payload JSON, timestamps, etc.) into a route. */
+export function getNotification(db: Db, notifId: number) {
+  return db.notificationOutbox.findUnique({ where: { id: notifId }, select: { event: true } });
+}
+
 /**
  * Requeue a FAILED (or stuck) notification: back to PENDING, attempts reset to
  * 0, error/sent cleared, so the notifier drains it again on its next cycle.

@@ -13,6 +13,7 @@ import {
   deleteBroadcast,
   reapStaleBroadcasts,
   failBroadcast,
+  getBroadcast,
 } from "./broadcasts";
 
 let db: TestDb;
@@ -217,5 +218,19 @@ describe("broadcast draft/failed lifecycle", () => {
     await finishBroadcast(prisma, bc2.id, { sent: 3, failed: 0, total: 3 });
     await failBroadcast(prisma, bc2.id, "should not apply");
     expect((await prisma.broadcast.findUnique({ where: { id: bc2.id } }))!.status).toBe("SENT");
+  });
+});
+
+describe("getBroadcast", () => {
+  it("returns the segment + recipient count for an existing broadcast", async () => {
+    const bc = await createBroadcast(prisma, {
+      message: "hi", segment: "RESELLERS", scheduledAt: null, createdById: null, total: 7,
+    });
+    const found = await getBroadcast(prisma, bc.id);
+    expect(found).toEqual({ segment: "RESELLERS", totalCount: 7 });
+  });
+
+  it("returns null for a broadcast that doesn't exist", async () => {
+    expect(await getBroadcast(prisma, 999999)).toBeNull();
   });
 });

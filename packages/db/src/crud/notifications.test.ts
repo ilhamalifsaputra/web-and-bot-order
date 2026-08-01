@@ -25,6 +25,7 @@ import {
   markNotificationSent,
   markNotificationFailed,
   retryNotification,
+  getNotification,
   STALE_CLAIM_MS,
   notificationBackoffMs,
   NOTIF_RETRY_BASE_MS,
@@ -201,6 +202,20 @@ describe("outbox CRUD", () => {
       expect(batch).toHaveLength(1);
       expect(batch[0]!.id).not.toBe(badRow!.id);
     });
+  });
+});
+
+describe("getNotification", () => {
+  it("returns just the event type for an existing outbox row", async () => {
+    const orderId = await seedOrder();
+    await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED, orderId, {});
+    const [row] = await fetchPendingNotifications(prisma, 1);
+    const found = await getNotification(prisma, row!.id);
+    expect(found).toEqual({ event: NotificationEvent.ORDER_DELIVERED });
+  });
+
+  it("returns null for a notification that doesn't exist", async () => {
+    expect(await getNotification(prisma, 999999)).toBeNull();
   });
 });
 

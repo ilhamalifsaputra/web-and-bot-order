@@ -8,6 +8,7 @@ import {
   countSegment,
   createBroadcast,
   listBroadcasts,
+  getBroadcast,
   cancelBroadcast,
   queueDraftBroadcast,
   deleteBroadcast,
@@ -92,7 +93,7 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
 
   app.post("/api/broadcast/:id/cancel", { preHandler: csrfProtect }, async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
-    const existing = await prisma.broadcast.findUnique({ where: { id }, select: { segment: true, totalCount: true } });
+    const existing = await getBroadcast(prisma, id);
     const ok = await cancelBroadcast(prisma, id);
     if (!ok) return reply.code(409).send({ error: "Only a pending broadcast can be cancelled." });
     await logAdminAction(prisma, {
@@ -107,7 +108,7 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
 
   app.post("/api/broadcast/:id/queue", { preHandler: csrfProtect }, async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
-    const existing = await prisma.broadcast.findUnique({ where: { id }, select: { segment: true, totalCount: true } });
+    const existing = await getBroadcast(prisma, id);
     const ok = await queueDraftBroadcast(prisma, id);
     if (!ok) return reply.code(409).send({ error: "Only a draft can be queued to send." });
     await logAdminAction(prisma, {
@@ -122,7 +123,7 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
 
   app.post("/api/broadcast/:id/delete", { preHandler: csrfProtect }, async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
-    const existing = await prisma.broadcast.findUnique({ where: { id }, select: { segment: true, totalCount: true } });
+    const existing = await getBroadcast(prisma, id);
     const ok = await deleteBroadcast(prisma, id);
     if (!ok) return reply.code(409).send({ error: "Only a draft can be deleted." });
     await logAdminAction(prisma, {

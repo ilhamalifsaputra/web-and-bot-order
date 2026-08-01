@@ -15,10 +15,20 @@ sederhana dan itulah yang dipakai mulai instalasi awal sampai update rutin.
 Prisma melacak migrasi mana yang sudah jalan) **TIDAK bisa dipercaya** sebagai
 catatan "skema mana yang sudah diterapkan" di DB manapun di repo ini —
 `db push` tidak menulis baris ke tabel itu. Folder `prisma/migrations/*`
-berfungsi sebagai **dokumentasi/audit-trail SQL** (dibuat & divalidasi byte-identik
-via `prisma migrate diff` terhadap shadow DB saat fitur ditambahkan — lihat
-komentar di `docs/audit-security-2026-06-23.md` §Infra-5/§Pricing-1), bukan
-mekanisme penerapan yang dijalankan otomatis.
+berfungsi sebagai **dokumentasi/audit-trail SQL**, bukan mekanisme penerapan
+yang dijalankan otomatis. Sebagian batch (mis. Infra-5/Pricing-1, lihat
+komentar di `docs/audit-security-2026-06-23.md`) memang dibuat & divalidasi
+byte-identik via `prisma migrate diff` terhadap shadow DB saat fitur
+ditambahkan — **tapi itu bukan jaminan yang berlaku untuk seluruh folder.**
+H-8 (2026-08-01) membuktikan sebaliknya: 12+ kolom dan 2 index nyata-nyata
+ada di `schema.prisma` tanpa SQL apa pun di `prisma/migrations/` selama
+berminggu-minggu sebelum ketahuan — drift ini terjadi persis karena tidak
+ada mekanisme yang benar-benar mengecek klaim "sudah divalidasi" itu setiap
+kali `schema.prisma` berubah. Sejak commit yang menambahkan bagian "Cek
+drift migrasi-vs-schema di CI" di bawah, klaim byte-identik sekarang
+**ditegakkan otomatis** (`pnpm run check-migration-drift`, di CI dan sebagai
+`pretest`) — sebelum itu, klaim tersebut hanya sekuat disiplin manual
+penulisnya di commit saat itu, per-batch, tidak diverifikasi ulang.
 
 ## Catatan: sebagian folder migrasi dibuat manual, bukan via Prisma
 
@@ -45,20 +55,38 @@ migrasi yang dibuat untuk mendokumentasikannya. Ini baru pertama kali
 ketahuan (H-8, 2026-08-01) ketika 12+ kolom dan 2 index di `schema.prisma`
 ternyata tidak punya SQL sama sekali di `prisma/migrations/` — `prisma
 migrate deploy` terhadap DB kosong akan gagal `P2022` di tabel `denominations`/
-`support_tickets`/`orders`/`products` (lihat
+`support_tickets`/`orders`/`products`. Katalog lengkap kolom yang saat itu
+hilang, plus review keamanan lengkap (additive vs destructive, kenapa dua
+file terpisah, verifikasi empiris `db push`/`db execute`/`migrate deploy`),
+ada di dua migrasi yang menutupnya:
 `prisma/migrations/20260801000000_catchup_missing_columns_and_indexes/migration.sql`
-untuk katalog lengkap kolom yang saat itu hilang).
+(aman — murni `ALTER TABLE ADD COLUMN`/`CREATE INDEX`, tidak ada rebuild
+tabel sama sekali) dan
+`prisma/migrations/20260801000001_support_tickets_last_status_change_not_null/migration.sql`
+(terisolasi sengaja — satu-satunya bagian yang butuh SQLite table-rebuild,
+karena `support_tickets.last_status_change_at` perlu diketatkan dari
+nullable ke NOT NULL, sesuatu yang SQLite tidak bisa lakukan lewat `ALTER
+TABLE` apa pun; baca header file itu untuk verifikasi keamanannya sebelum
+menjalankannya di luar `db push`/`migrate deploy`).
 
 Untuk mencegah drift berulang tanpa ketahuan, script
 `pnpm run check-migration-drift` (`prisma migrate diff --from-migrations
 ./prisma/migrations --to-schema-datamodel ./prisma/schema.prisma
---exit-code`) dijalankan sebagai step CI ("Migration drift check" di
-`.github/workflows/ci.yml`, sebelum typecheck/test) dan **gagal (exit code
-2)** kalau `schema.prisma` dan `prisma/migrations/*` tidak sinkron. Kalau
-step ini merah: jalankan command yang sama tanpa `--exit-code` (tambahkan
-`--script`) untuk lihat SQL-nya, review pola destructive/rebuild
-sebagaimana dijelaskan di komentar migrasi H-8 di atas, lalu simpan sebagai
-folder migrasi baru dengan timestamp setelah folder terakhir.
+--exit-code`) punya dua tempat jalan: sebagai step CI ("Migration drift
+check" di `.github/workflows/ci.yml`, sebelum typecheck/test — tapi lihat
+catatan di bawah, workflow ini nonaktif hari ini), dan sebagai `pretest` di
+root `package.json`, jadi `pnpm test` menjalankannya duluan setiap kali
+(biaya: satu shadow-DB SQLite sekali per run, beberapa detik) — inilah yang
+SUNGGUH-SUNGGUH menegakkan drift-check ini hari ini, bukan CI. Keduanya **gagal
+(exit code 2)** kalau `schema.prisma` dan `prisma/migrations/*` tidak
+sinkron. Kalau salah satu merah: jalankan command yang sama tanpa
+`--exit-code` (tambahkan `--script`) untuk lihat SQL-nya, review pola
+destructive/rebuild sebagaimana dijelaskan di komentar kedua migrasi H-8 di
+atas (khususnya: cek apakah drift itu murni kolom baru — biasanya aman
+lewat `ALTER TABLE ADD COLUMN` hand-written meski Prisma sendiri
+menghasilkan rebuild — atau benar-benar constraint change pada kolom lama,
+yang di SQLite SELALU butuh rebuild), lalu simpan sebagai folder migrasi
+baru dengan timestamp setelah folder terakhir.
 
 **Catatan:** CI workflow saat ini nonaktif (`workflow_dispatch` saja, akun
 GitHub Actions terkunci karena billing — lihat komentar di

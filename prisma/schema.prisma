@@ -189,22 +189,59 @@ model Denomination {
   resellerPrice        Decimal?  @map("reseller_price")
   /// Source key for auto-fulfilment (e.g. provider/handler id). Null = manual.
   autoDeliverySource   String?   @map("auto_delivery_source")
+  warrantyDays         Int       @default(30) @map("warranty_days")
+  sortOrder            Int       @default(0) @map("sort_order")
+  isActive             Boolean   @default(true) @map("is_active")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  /// When true, adding stock to this SKU enqueues a "back in stock" DM to
+  /// every non-banned customer with a linked Telegram account (not just
+  /// RestockSubscription opt-ins) via notification_outbox. Declared after
+  /// createdAt (not next to isActive, its logical neighbor) because it was
+  /// physically added later, via a plain `ALTER TABLE ADD COLUMN` in
+  /// 20260718120000_add_broadcast_on_restock — which appended it after the
+  /// table's then-last physical column, created_at. Matching that physical
+  /// order here keeps this model's declared field order truthful to the
+  /// real on-disk column order, which matters for any FUTURE nullable/
+  /// no-default column added here: `prisma migrate diff` can emit a plain
+  /// `ALTER TABLE ADD COLUMN` for those as long as they're appended after
+  /// the true physical tail. (It does NOT, on its own, avoid a rebuild for
+  /// NOT NULL + DEFAULT columns — see deliveryType below for why those need
+  /// a different fix.)
+  broadcastOnRestock   Boolean   @default(false) @map("broadcast_on_restock")
   /// How this SKU is fulfilled: "auto" (pull stock, deliver instantly — default,
   /// unchanged behavior), "manual" (admin types & sends the account by hand, no
   /// stock), or "manual_with_info" (manual + buyer fills custom fields at
   /// checkout before payment). See packages/core/src/enums.ts DeliveryType.
+  /// Declared at the end of the model (not next to autoDeliverySource, its
+  /// logical neighbor): this and the other five fields below were added to
+  /// schema.prisma after `denominations` already had live rows and no
+  /// migration for them. Column reordering alone does NOT make `prisma
+  /// migrate diff` emit a plain `ALTER TABLE ADD COLUMN` for this one,
+  /// though — verified empirically while building the H-8 catch-up
+  /// migration: Prisma's SQLite differ unconditionally chooses a full
+  /// create-new/copy/drop/rename table rebuild for ANY new NOT NULL+DEFAULT
+  /// column, appended-at-the-end or not (confirmed by toggling this field
+  /// between nullable and `NOT NULL @default("auto")` in a scratch schema
+  /// copy and re-running the diff; reproduced again on an unrelated
+  /// NOT-NULL-with-default field to rule out something `denominations`-
+  /// specific). DROP TABLE on this cascade-parent table (5 ON DELETE
+  /// CASCADE children: bulk_pricing, cart_items, restock_subscriptions,
+  /// reviews, stock_items) is destructive if the runner applying it wraps
+  /// the script in an explicit transaction (`PRAGMA foreign_keys=OFF` is a
+  /// documented no-op once inside one — reproduced empirically). That's why
+  /// prisma/migrations/20260801000000_catchup_missing_columns_and_indexes
+  /// hand-writes plain `ALTER TABLE ADD COLUMN` statements for this and the
+  /// other five fields below instead of using Prisma's generated rebuild —
+  /// SQLite itself accepts `NOT NULL DEFAULT <constant>` via ADD COLUMN
+  /// (this repo's own broadcastOnRestock precedent above proves it), Prisma
+  /// just doesn't choose to emit it that way. See that migration file's
+  /// header for the full write-up and the verification that `db push` /
+  /// `db execute` / `migrate deploy` all apply it safely today.
   deliveryType         String    @default("auto") @map("delivery_type")
   /// For "manual_with_info" only: JSON-encoded array of buyer-input field specs
   /// (key/label{id,en}/type/required/options/placeholder). Null otherwise. Stored
   /// as TEXT per the repo's JSON-in-string convention (see NotificationOutbox).
   additionalFields     String?   @map("additional_fields")
-  warrantyDays         Int       @default(30) @map("warranty_days")
-  sortOrder            Int       @default(0) @map("sort_order")
-  isActive             Boolean   @default(true) @map("is_active")
-  /// When true, adding stock to this SKU enqueues a "back in stock" DM to
-  /// every non-banned customer with a linked Telegram account (not just
-  /// RestockSubscription opt-ins) via notification_outbox.
-  broadcastOnRestock   Boolean   @default(false) @map("broadcast_on_restock")
   /// Flash sale: percent off (0,100] that REPLACES the base price for everyone
   /// while now is inside [flashStartsAt, flashEndsAt). All three fields are set
   /// and cleared together — any of them null means this SKU has no flash sale.
@@ -218,7 +255,6 @@ model Denomination {
   /// announce job can't fan it out twice. Reset to null whenever the schedule
   /// is rewritten or cleared, which is what lets the same SKU be flashed again.
   flashAnnouncedAt     DateTime? @map("flash_announced_at")
-  createdAt            DateTime  @default(now()) @map("created_at")
 
   product              Product               @relation(fields: [productId], references: [id], onUpdate: NoAction)
   stockItems           StockItem[]
@@ -529,9 +565,6 @@ model SupportTicket {
   firstResponseAt DateTime? @map("first_response_at")
   /// Set once, when an admin marks the ticket RESOLVED (distinct from CLOSED).
   resolvedAt     DateTime? @map("resolved_at")
-  /// Set once, when `closeTicket` flips status -> CLOSED. Drives the storage
-  /// cleanup job's "delete evidence N days after close" eligibility check.
-  closedAt       DateTime? @map("closed_at")
   /// Optional link to the order this ticket is about — customer-picked at
   /// creation time. Null for general-purpose tickets (account issues,
   /// pre-purchase questions). Unlocks the storefront ticket page's Order/
@@ -540,7 +573,39 @@ model SupportTicket {
   /// Bumped on every status transition (open/replied/resolved/closed/reopened)
   /// — the operational queue's "waiting time" and overdue calc read this, not
   /// createdAt, so a reopened ticket's wait clock resets correctly.
+  /// Bumped on every status transition (open/replied/resolved/closed/reopened)
+  /// — the operational queue's "waiting time" and overdue calc read this, not
+  /// createdAt, so a reopened ticket's wait clock resets correctly. NOT NULL
+  /// here, but the migration that first added this column
+  /// (20260725000000_add_ticket_priority_category_resolved) could only add
+  /// it nullable — SQLite's `ALTER TABLE ADD COLUMN` rejects a
+  /// `CURRENT_TIMESTAMP` default as non-constant. Closing that nullable ->
+  /// NOT NULL gap requires an actual table rebuild (SQLite has no `ALTER
+  /// COLUMN`, so this is unavoidable regardless of column order or default-
+  /// constness) — done in prisma/migrations/20260801000001_support_tickets_last_status_change_not_null,
+  /// isolated into its own migration file and given an explicit safety
+  /// write-up because `support_tickets` is a cascade parent (child:
+  /// ticket_messages). See that file's header for the empirical verification
+  /// of when this kind of rebuild is/isn't safe to run.
   lastStatusChangeAt DateTime @default(now()) @map("last_status_change_at")
+  /// Set once, when `closeTicket` flips status -> CLOSED. Drives the storage
+  /// cleanup job's "delete evidence N days after close" eligibility check.
+  /// Nullable, no default, so on its own this column is a zero-risk plain
+  /// `ALTER TABLE ADD COLUMN` — but `prisma migrate diff` still bundles it
+  /// into the same table rebuild as lastStatusChangeAt above (both because
+  /// of that NOT NULL tightening, AND independently because this model's
+  /// field order doesn't match `support_tickets`' true physical column order
+  /// — attachmentUrls/priority/category/orderId were each added by earlier
+  /// migrations in a different relative order than they're declared here;
+  /// verified empirically that even reverting lastStatusChangeAt to nullable
+  /// alone still leaves closedAt triggering a rebuild, driven by that
+  /// pre-existing order drift). Rather than reorder this whole model to
+  /// chase physical history, 20260801000000_catchup_missing_columns_and_indexes
+  /// hand-writes a plain `ALTER TABLE ADD COLUMN "closed_at"` — Prisma's
+  /// diff engine verifies the resulting DB state against this schema, not
+  /// the SQL text/mechanism used to reach it, so this is unaffected by
+  /// either driver above.
+  closedAt       DateTime? @map("closed_at")
 
   user     User            @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   admin    User?           @relation("TicketAdmin", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)

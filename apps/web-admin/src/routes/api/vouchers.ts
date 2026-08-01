@@ -359,7 +359,8 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
 
   app.post("/api/vouchers/:voucherId/delete", { preHandler: csrfProtect }, async (req, reply) => {
     const voucherId = Number((req.params as { voucherId: string }).voucherId);
-    if ((await getVoucher(prisma, voucherId)) === null) {
+    const existing = await getVoucher(prisma, voucherId);
+    if (existing === null) {
       return reply.code(404).send({ error: "Voucher not found." });
     }
     try {
@@ -370,11 +371,14 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       }
       throw err;
     }
+    // deleteVoucher throws above for a used voucher, so reaching here means
+    // usedCount was 0 — "(never used)" is always accurate at this point.
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "voucher_delete",
       targetType: "voucher",
       targetId: voucherId,
+      details: `Deleted voucher "${existing.code}" (never used).`,
     });
     return reply.send({ ok: true });
   });

@@ -506,7 +506,12 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     const stored = await getSetting(prisma, key);
     if (!stored || !verifyPassword(currentPassword, stored)) return reply.code(403).send({ error: "Current password is incorrect." });
     await setSetting(prisma, key, hashPassword(newPassword));
-    await logAdminAction(prisma, { adminId: req.admin!.userId, action: "web_password_change", targetType: "setting" });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "web_password_change",
+      targetType: "setting",
+      details: "Changed their web-admin login password.",
+    });
     logger.info(`Web admin with Telegram id ${req.admin!.telegramId} changed their own password`);
 
     // Rotate the session jti (M-16 fix — mirrors the storefront's Storefront-2
@@ -549,7 +554,12 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     if (!verifyTotp(pending, code)) return reply.code(400).send({ error: "That code is wrong — check your authenticator." });
     await setSetting(prisma, twoFaSecretKey(tg), pending);
     await deleteSetting(prisma, twoFaPendingKey(tg));
-    await logAdminAction(prisma, { adminId: req.admin!.userId, action: "web_2fa_enable", targetType: "setting" });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "web_2fa_enable",
+      targetType: "setting",
+      details: "Enabled two-factor authentication (2FA) for their web-admin login.",
+    });
     return reply.send({ ok: true });
   });
 
@@ -562,7 +572,12 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     if (!stored || !verifyPassword(body.current_password ?? "", stored)) return reply.code(403).send({ error: "Current password is incorrect." });
     if (!verifyTotp(secret, body.totp_code ?? "")) return reply.code(400).send({ error: "That 2FA code is wrong." });
     await deleteSetting(prisma, twoFaSecretKey(tg));
-    await logAdminAction(prisma, { adminId: req.admin!.userId, action: "web_2fa_disable", targetType: "setting" });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "web_2fa_disable",
+      targetType: "setting",
+      details: "Disabled two-factor authentication (2FA) for their web-admin login.",
+    });
     return reply.send({ ok: true });
   });
 }

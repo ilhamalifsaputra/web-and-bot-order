@@ -308,6 +308,7 @@ describe("POST /api/vouchers/:voucherId/toggle + /delete", () => {
     expect(await prisma.voucher.findUnique({ where: { id: voucher.id } })).toBeNull();
     const audit = await prisma.auditLog.findFirst({ where: { action: "voucher_delete" } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("SAVE10");
   });
 
   it("delete 404s for a non-existent voucher", async () => {
@@ -378,6 +379,7 @@ describe("POST /api/support/:ticketId/reply + /close", () => {
     expect(messages.some((m) => m.content === "On it!")).toBe(true);
     const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_reply" } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain(String(ticket.id));
   });
 
   it("reply rejects an empty message with 400", async () => {
@@ -393,6 +395,7 @@ describe("POST /api/support/:ticketId/reply + /close", () => {
     expect((await prisma.supportTicket.findUniqueOrThrow({ where: { id: ticket.id } })).status).toBe("CLOSED");
     const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_close" } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain(String(ticket.id));
   });
 
   it("close 404s for a non-existent ticket", async () => {

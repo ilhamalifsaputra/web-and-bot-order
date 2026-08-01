@@ -118,12 +118,13 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
     const orderId = Number((req.params as { orderId: string }).orderId);
     try {
       await prisma.$transaction(async (tx) => {
-        await cancelOrder(tx, orderId, `underpaid_cancelled by admin_id=${req.admin!.userId}`);
+        const order = await cancelOrder(tx, orderId, `underpaid_cancelled by admin_id=${req.admin!.userId}`);
         await logAdminAction(tx, {
           adminId: req.admin!.userId,
           action: "underpaid_cancel",
           targetType: "order",
           targetId: orderId,
+          details: `Cancelled underpaid order ${order?.orderCode ?? orderId}.`,
         });
       });
     } catch (e) {

@@ -2135,7 +2135,9 @@ describe("admin handlers", () => {
     const { ctx } = adminCtx({ callbackData: `v1:adm:ticket:close:${ticket.id}` });
     await handleAdminCallback(ctx, `v1:adm:ticket:close:${ticket.id}`.split(":"));
     expect((await prisma.supportTicket.findUnique({ where: { id: ticket.id } }))!.status).toBe(TicketStatus.CLOSED);
-    expect(await prisma.auditLog.count({ where: { action: "ticket_close", targetId: ticket.id } })).toBe(1);
+    const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_close", targetId: ticket.id } });
+    expect(audit).toBeTruthy();
+    expect(audit!.details).toContain(String(ticket.id));
   });
 
   it("a double-tap ticket close never sends a second buyer DM (Bot-3 fix)", async () => {
@@ -2157,7 +2159,9 @@ describe("admin handlers", () => {
     const { ctx } = adminCtx({ callbackData: `v1:adm:stockitem:dead:${item!.id}:${sample.product.id}` });
     await handleAdminCallback(ctx, `v1:adm:stockitem:dead:${item!.id}:${sample.product.id}`.split(":"));
     expect((await prisma.stockItem.findUnique({ where: { id: item!.id } }))!.status).toBe("DEAD");
-    expect(await prisma.auditLog.count({ where: { action: "stock_mark_dead", targetId: item!.id } })).toBe(1);
+    const audit = await prisma.auditLog.findFirst({ where: { action: "stock_mark_dead", targetId: item!.id } });
+    expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("Netflix Premium 1M");
   });
 
   // M-8 fix, backend audit 2026-07-31: the keyboard already omits the "Dead"

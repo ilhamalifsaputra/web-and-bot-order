@@ -503,7 +503,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
   app.delete("/api/catalog/denominations/:id", { preHandler: csrfProtect }, async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
     if (!Number.isInteger(id)) return reply.code(400).send({ error: "Invalid denomination id." });
-    const existing = await getDenomination(prisma, id);
+    const existing = await getDenominationWithProduct(prisma, id);
     if (!existing) return reply.code(404).send({ error: "Denomination not found." });
     try {
       await deleteDenomination(prisma, id);
@@ -518,6 +518,7 @@ export default async function catalogApiRoutes(app: FastifyInstance): Promise<vo
       action: "denomination_delete",
       targetType: "denomination",
       targetId: id,
+      details: `Deleted denomination "${existing.name}" from product "${existing.product.name}".`,
     });
     return reply.send({ ok: true });
   });

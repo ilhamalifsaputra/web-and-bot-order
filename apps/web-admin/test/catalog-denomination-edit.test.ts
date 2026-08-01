@@ -246,6 +246,8 @@ describe("DELETE /api/catalog/denominations/:id", () => {
     expect(await prisma.denomination.findUnique({ where: { id } })).toBeNull();
     const audit = await prisma.auditLog.findFirst({ where: { action: "denomination_delete", targetId: id } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("1 Month");
+    expect(audit!.details).toContain("Parent");
   });
 
   it("auth-fail: no admin session is redirected to /login and writes nothing", async () => {

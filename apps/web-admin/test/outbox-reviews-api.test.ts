@@ -73,6 +73,7 @@ describe("POST /api/outbox/:id/retry", () => {
     expect(row!.lastError).toBeNull();
     const audit = await prisma.auditLog.findFirst({ where: { action: "outbox_retry", targetId: id } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("ORDER_DELIVERED");
   });
 
   it("returns 404 for a notification that no longer exists, writes no audit", async () => {
@@ -122,6 +123,8 @@ describe("POST /api/reviews/:reviewId/hide", () => {
     expect((await prisma.review.findUnique({ where: { id: reviewId } }))!.hidden).toBe(true);
     const audit = await prisma.auditLog.findFirst({ where: { action: "review_hide", targetId: reviewId } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("5-star");
+    expect(audit!.details).toContain("P");
   });
 
   it("unhide restores the review and audits as review_unhide", async () => {
@@ -131,6 +134,8 @@ describe("POST /api/reviews/:reviewId/hide", () => {
     expect((await prisma.review.findUnique({ where: { id: reviewId } }))!.hidden).toBe(false);
     const audit = await prisma.auditLog.findFirst({ where: { action: "review_unhide", targetId: reviewId } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("5-star");
+    expect(audit!.details).toContain("P");
   });
 
   it("returns 404 for a review that doesn't exist", async () => {

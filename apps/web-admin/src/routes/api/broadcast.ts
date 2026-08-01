@@ -92,6 +92,7 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
 
   app.post("/api/broadcast/:id/cancel", { preHandler: csrfProtect }, async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
+    const existing = await prisma.broadcast.findUnique({ where: { id }, select: { segment: true, totalCount: true } });
     const ok = await cancelBroadcast(prisma, id);
     if (!ok) return reply.code(409).send({ error: "Only a pending broadcast can be cancelled." });
     await logAdminAction(prisma, {
@@ -99,12 +100,14 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
       action: "broadcast_cancel",
       targetType: "broadcast",
       targetId: id,
+      details: `Cancelled a pending broadcast to ${existing?.totalCount ?? 0} recipient(s) in segment "${existing?.segment ?? "unknown"}".`,
     });
     return reply.send({ ok: true });
   });
 
   app.post("/api/broadcast/:id/queue", { preHandler: csrfProtect }, async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
+    const existing = await prisma.broadcast.findUnique({ where: { id }, select: { segment: true, totalCount: true } });
     const ok = await queueDraftBroadcast(prisma, id);
     if (!ok) return reply.code(409).send({ error: "Only a draft can be queued to send." });
     await logAdminAction(prisma, {
@@ -112,12 +115,14 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
       action: "broadcast_queue_draft",
       targetType: "broadcast",
       targetId: id,
+      details: `Queued a draft broadcast to ${existing?.totalCount ?? 0} recipient(s) in segment "${existing?.segment ?? "unknown"}" to send.`,
     });
     return reply.send({ ok: true });
   });
 
   app.post("/api/broadcast/:id/delete", { preHandler: csrfProtect }, async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
+    const existing = await prisma.broadcast.findUnique({ where: { id }, select: { segment: true, totalCount: true } });
     const ok = await deleteBroadcast(prisma, id);
     if (!ok) return reply.code(409).send({ error: "Only a draft can be deleted." });
     await logAdminAction(prisma, {
@@ -125,6 +130,7 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
       action: "broadcast_delete_draft",
       targetType: "broadcast",
       targetId: id,
+      details: `Deleted a draft broadcast to ${existing?.totalCount ?? 0} recipient(s) in segment "${existing?.segment ?? "unknown"}".`,
     });
     return reply.send({ ok: true });
   });

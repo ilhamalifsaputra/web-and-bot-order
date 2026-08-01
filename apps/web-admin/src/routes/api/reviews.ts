@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { prisma, listReviews, countReviews, productRatingSummaries, setReviewHidden, getReviewById, logAdminAction } from "@app/db";
+import { prisma, listReviews, countReviews, productRatingSummaries, setReviewHidden, getReviewById, getDenomination, logAdminAction } from "@app/db";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { displayDate } from "../../dateDisplay";
 
@@ -34,12 +34,14 @@ export default async function reviewsApiRoutes(app: FastifyInstance): Promise<vo
     const hide = body.hidden;
     const existing = await getReviewById(prisma, reviewId);
     if (!existing) return reply.code(404).send({ error: "Review not found." });
+    const product = await getDenomination(prisma, existing.productId);
     await setReviewHidden(prisma, reviewId, hide);
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: hide ? "review_hide" : "review_unhide",
       targetType: "review",
       targetId: reviewId,
+      details: `${hide ? "Hid" : "Unhid"} a ${existing.rating}-star review for "${product?.name ?? "an unknown product"}".`,
     });
     return reply.send({ ok: true, hidden: hide });
   });

@@ -4353,11 +4353,15 @@ describe("payments", () => {
     expect(after - before).toBeCloseTo(3);
   });
 
-  it("cancel underpaid → CANCELLED", async () => {
+  it("cancel underpaid → CANCELLED + audit", async () => {
     const id = await makeUnderpaidOrder();
+    const orderCode = (await getOrder(prisma, id))!.orderCode;
     const res = await post(`/api/payments/order/${id}/cancel`, seed.cookie, { csrf_token: seed.csrf });
     expect(res.statusCode).toBe(200);
     expect((await getOrder(prisma, id))!.status).toBe("CANCELLED");
+    const audit = await prisma.auditLog.findFirst({ where: { action: "underpaid_cancel", targetId: id } });
+    expect(audit).toBeTruthy();
+    expect(audit!.details).toContain(orderCode);
   });
 
   it("manual match unmatched tx → delivered + ledger updated", async () => {
@@ -4642,6 +4646,7 @@ describe("outbox", () => {
     expect(row!.lastError).toBeNull();
     const audit = await prisma.auditLog.findMany({ where: { action: "outbox_retry", targetId: id } });
     expect(audit.length).toBe(1);
+    expect(audit[0]!.details).toContain("ORDER_DELIVERED");
   });
 
   it("retry requires auth", async () => {
@@ -4708,6 +4713,8 @@ describe("reviews moderation", () => {
     expect((await prisma.review.findUnique({ where: { id } }))!.hidden).toBe(true);
     const audit = await prisma.auditLog.findMany({ where: { action: "review_hide", targetId: id } });
     expect(audit.length).toBe(1);
+    const product = await prisma.denomination.findUnique({ where: { id: seed.productId } });
+    expect(audit[0]!.details).toContain(product!.name);
   });
 
   it("unhide restores the review", async () => {
@@ -5134,6 +5141,9 @@ describe("broadcast", () => {
     const ok = await post(`/api/broadcast/${bc.id}/cancel`, seed.cookie, { csrf_token: seed.csrf });
     expect(ok.statusCode).toBe(200);
     expect((await prisma.broadcast.findUnique({ where: { id: bc.id } }))!.status).toBe("CANCELLED");
+    const audit = await prisma.auditLog.findFirst({ where: { action: "broadcast_cancel", targetId: bc.id } });
+    expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("RESELLERS");
     expect((await post(`/api/broadcast/${bc.id}/cancel`, seed.cookie, { csrf_token: seed.csrf })).statusCode).toBe(409);
   });
 

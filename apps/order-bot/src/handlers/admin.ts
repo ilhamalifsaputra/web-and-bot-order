@@ -492,6 +492,7 @@ async function adminMarkStockDead(ctx: MyContext, stockId: number, productId: nu
   // $transaction and NO audit row at all — a stock-status change has no
   // trail back to the admin who made it.
   const count = await prisma.$transaction(async (tx) => {
+    const stockItem = await tx.stockItem.findUnique({ where: { id: stockId }, include: { product: true } });
     const updated = await markStockDead(tx, stockId, "marked dead by admin");
     if (updated === 0) return 0; // already SOLD/DEAD — nothing to audit
     const admin = await getUserByTelegramId(tx, adminTg);
@@ -500,6 +501,7 @@ async function adminMarkStockDead(ctx: MyContext, stockId: number, productId: nu
       action: "stock_mark_dead",
       targetType: "stock_item",
       targetId: stockId,
+      details: `Marked a stock item dead for product "${stockItem?.product.name ?? productId}".`,
     });
     return updated;
   });
@@ -592,6 +594,7 @@ async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void>
       action: "ticket_close",
       targetType: "support_ticket",
       targetId: ticketId,
+      details: `Closed ticket #${ticketId}.`,
     });
     return tgId;
   });

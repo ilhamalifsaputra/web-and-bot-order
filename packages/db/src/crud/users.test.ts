@@ -5,8 +5,8 @@ import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import {
   upsertUser,
   getUser,
+  getUserByTelegramId,
   searchUsers,
-  listRecentUsers,
   totalSpentByUserIds,
   orderCountByUserIds,
   setUserRole,
@@ -53,21 +53,19 @@ afterAll(async () => {
   await db.cleanup();
 });
 
-describe("listRecentUsers", () => {
-  it("orders by createdAt descending and respects the limit", async () => {
-    const oldest = await upsertUser(prisma, { telegramId: 9001, username: "oldest", fullName: null });
-    // Force a distinct, ordered createdAt so the test isn't relying on
-    // same-millisecond insert order.
-    await prisma.user.update({ where: { id: oldest.id }, data: { createdAt: new Date(Date.now() - 60_000) } });
-    const newest = await upsertUser(prisma, { telegramId: 9002, username: "newest", fullName: null });
+describe("getUserByTelegramId", () => {
+  it("never returns passwordHash or email (backend audit finding H-4)", async () => {
+    const user = await upsertUser(prisma, { telegramId: 9001, username: "projected", fullName: null });
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { passwordHash: "bcrypt$fakehash", email: "leak-check@example.com" },
+    });
 
-    const recent = await listRecentUsers(prisma, 1);
-    expect(recent.length).toBe(1);
-    expect(recent[0]!.id).toBe(newest.id);
-
-    const both = await listRecentUsers(prisma, 50);
-    const ids = both.map((u) => u.id);
-    expect(ids.indexOf(newest.id)).toBeLessThan(ids.indexOf(oldest.id));
+    const found = (await getUserByTelegramId(prisma, 9001)) as Record<string, unknown> | null;
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(user.id);
+    expect("passwordHash" in found!).toBe(false);
+    expect("email" in found!).toBe(false);
   });
 });
 

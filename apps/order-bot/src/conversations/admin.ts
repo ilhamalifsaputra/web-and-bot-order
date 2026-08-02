@@ -79,6 +79,13 @@ async function handledEscape(u: MyContext): Promise<boolean> {
   return false;
 }
 
+/** Clear the spinner on an inline tap this wizard step doesn't recognise (M-22).
+ *  No-op for non-callback updates, and deliberately returns nothing: unlike
+ *  handledEscape, a stale tap does not end the conversation. */
+async function answerStaleTap(u: MyContext): Promise<void> {
+  if (u.callbackQuery) await u.answerCallbackQuery({ text: t(u, "error.stale_screen") });
+}
+
 function adminGate(ctx: MyContext): boolean {
   return isAdmin(ctx.from!.id);
 }
@@ -215,7 +222,10 @@ export async function voucherCreateConversation(conversation: MyConversation, ct
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    if (!u.message?.text) continue;
+    if (!u.message?.text) {
+      await answerStaleTap(u);
+      continue;
+    }
     const raw = u.message.text;
     await consumeInput(u);
     try {
@@ -242,7 +252,10 @@ export async function voucherCreateConversation(conversation: MyConversation, ct
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    if (!u.message?.text) continue;
+    if (!u.message?.text) {
+      await answerStaleTap(u);
+      continue;
+    }
     const raw = u.message.text.trim().toLowerCase().split(/\s+/);
     await consumeInput(u);
     const [typeStr, valStr] = raw;
@@ -273,7 +286,10 @@ export async function voucherCreateConversation(conversation: MyConversation, ct
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    if (!u.message?.text) continue;
+    if (!u.message?.text) {
+      await answerStaleTap(u);
+      continue;
+    }
     const raw = u.message.text.trim();
     await consumeInput(u);
     const n = parseInt(raw, 10);
@@ -384,6 +400,9 @@ export async function broadcastConversation(conversation: MyConversation, ctx: M
       await consumeInput(u);
       break;
     }
+    // Neither a photo nor text — most likely a stale/duplicate inline tap
+    // from a retired keyboard (M-22): clear its spinner and keep waiting.
+    await answerStaleTap(u);
   }
 
   // "ALL" already filters to non-banned, Telegram-linked users (mirrors the
@@ -409,6 +428,9 @@ export async function broadcastConversation(conversation: MyConversation, ctx: M
       await u.answerCallbackQuery();
       break;
     }
+    // This loop never calls handledEscape (it's callback-only), so a stale
+    // tap from a retired keyboard would otherwise hang unanswered (M-22).
+    await answerStaleTap(u);
   }
 
   await adminEdit(ctx, t(ctx, "admin.processing"));
@@ -472,7 +494,10 @@ export async function userSearchConversation(conversation: MyConversation, ctx: 
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    if (!u.message?.text) continue;
+    if (!u.message?.text) {
+      await answerStaleTap(u);
+      continue;
+    }
     const query = u.message.text.trim();
     await consumeInput(u);
     users = await conversation.external(() => searchUsers(prisma, query));
@@ -511,7 +536,10 @@ export async function userBanConversation(conversation: MyConversation, ctx: MyC
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    if (!u.message?.text) continue;
+    if (!u.message?.text) {
+      await answerStaleTap(u);
+      continue;
+    }
     const text = u.message.text;
     await consumeInput(u);
     try {
@@ -590,7 +618,14 @@ export async function settingConversation(conversation: MyConversation, ctx: MyC
         await adminAnchor(u, t(u, "admin.banner_removed_undo"), akb.bannerRemovedUndoKb(lang));
         return;
       }
-      if (!u.message?.photo) {
+      if (!u.message) {
+        // A stale/duplicate inline tap (not a photo/text message) — clear its
+        // spinner instead of misleadingly telling the admin to send a photo
+        // (M-22).
+        await answerStaleTap(u);
+        continue;
+      }
+      if (!u.message.photo) {
         await consumeInput(u);
         await adminAnchor(u, t(u, "admin.setting_err_photo"), akb.cancelInputKb());
         continue;
@@ -601,7 +636,10 @@ export async function settingConversation(conversation: MyConversation, ctx: MyC
       break;
     }
 
-    if (!u.message?.text) continue;
+    if (!u.message?.text) {
+      await answerStaleTap(u);
+      continue;
+    }
     const raw = u.message.text.trim();
     await consumeInput(u);
     if (raw === "-" && (key === "welcome" || key === "support_contact")) {
@@ -683,6 +721,9 @@ export async function productCreateConversation(conversation: MyConversation, ct
         break;
       }
       if (await handledEscape(u)) return;
+      // Stale/duplicate tap from a retired keyboard (M-22) — placed after the
+      // legit resume/fresh/escape branches so a real tap can't be double-answered.
+      await answerStaleTap(u);
     }
   }
 
@@ -695,7 +736,10 @@ export async function productCreateConversation(conversation: MyConversation, ct
     for (;;) {
       const u = await conversation.wait();
       if (await handledEscape(u)) return;
-      if (!u.message?.text) continue;
+      if (!u.message?.text) {
+        await answerStaleTap(u);
+        continue;
+      }
       const raw = u.message.text;
       await consumeInput(u);
       try {
@@ -734,6 +778,9 @@ export async function productCreateConversation(conversation: MyConversation, ct
         await u.answerCallbackQuery();
         break;
       }
+      // Stale/duplicate tap from a retired keyboard (M-22) — placed after the
+      // legit cancel/type branches so a real tap can't be double-answered.
+      await answerStaleTap(u);
     }
     typeLabel = ptype! === ProductType.SHARED ? "Shared" : "Private";
   }
@@ -748,7 +795,10 @@ export async function productCreateConversation(conversation: MyConversation, ct
     for (;;) {
       const u = await conversation.wait();
       if (await handledEscape(u)) return;
-      if (!u.message?.text) continue;
+      if (!u.message?.text) {
+        await answerStaleTap(u);
+        continue;
+      }
       const raw = u.message.text;
       await consumeInput(u);
       try {
@@ -774,7 +824,10 @@ export async function productCreateConversation(conversation: MyConversation, ct
     for (;;) {
       const u = await conversation.wait();
       if (await handledEscape(u)) return;
-      if (!u.message?.text) continue;
+      if (!u.message?.text) {
+        await answerStaleTap(u);
+        continue;
+      }
       const raw = u.message.text.trim().replace(",", ".");
       await consumeInput(u);
       try {
@@ -798,7 +851,10 @@ export async function productCreateConversation(conversation: MyConversation, ct
     for (;;) {
       const u = await conversation.wait();
       if (await handledEscape(u)) return;
-      if (!u.message?.text) continue;
+      if (!u.message?.text) {
+        await answerStaleTap(u);
+        continue;
+      }
       const raw = u.message.text.trim().replace(",", ".");
       await consumeInput(u);
       if (raw === "-") { resellerVal = null; break; }
@@ -820,7 +876,10 @@ export async function productCreateConversation(conversation: MyConversation, ct
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    if (!u.message?.text) continue;
+    if (!u.message?.text) {
+      await answerStaleTap(u);
+      continue;
+    }
     const raw = u.message.text.trim();
     await consumeInput(u);
     if (raw === "-") { warranty = null; break; }
@@ -894,7 +953,10 @@ export async function productEditConversation(conversation: MyConversation, ctx:
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    if (!u.message?.text) continue;
+    if (!u.message?.text) {
+      await answerStaleTap(u);
+      continue;
+    }
     const raw = u.message.text.trim();
     await consumeInput(u);
 
@@ -962,7 +1024,10 @@ export async function bulkPricingConversation(conversation: MyConversation, ctx:
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    if (!u.message?.text) continue;
+    if (!u.message?.text) {
+      await answerStaleTap(u);
+      continue;
+    }
     const raw = u.message.text.trim();
     await consumeInput(u);
     const n = parseInt(raw, 10);
@@ -980,7 +1045,10 @@ export async function bulkPricingConversation(conversation: MyConversation, ctx:
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    if (!u.message?.text) continue;
+    if (!u.message?.text) {
+      await answerStaleTap(u);
+      continue;
+    }
     const raw = u.message.text.trim().replace(",", ".");
     await consumeInput(u);
     try {
@@ -1044,7 +1112,10 @@ export async function ticketReplyConversation(conversation: MyConversation, ctx:
   for (;;) {
     const u = await conversation.wait();
     if (await handledEscape(u)) return;
-    if (!u.message?.text) continue;
+    if (!u.message?.text) {
+      await answerStaleTap(u);
+      continue;
+    }
     const raw = u.message.text;
     await consumeInput(u);
     try {

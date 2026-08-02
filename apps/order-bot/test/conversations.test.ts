@@ -548,6 +548,24 @@ describe("admin conversations", () => {
     expect(v!.usageLimit).toBeNull();
   });
 
+  it("voucherCreate: an unrecognized tap during step 1 answers error.stale_screen and the conversation keeps waiting (M-22 fix)", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, "v1:adm:vouch:new");
+    const conv = new FakeConversation([
+      msg(sink, { callbackData: "v1:adm:junk" }), // unrecognized — not v1:adm:cancel, no text
+      msg(sink, { text: "NEWVC2" }),
+      msg(sink, { text: "percent 15" }),
+      msg(sink, { text: "0" }),
+    ]);
+    await voucherCreateConversation(conv.asMyConversation(), entry);
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
+    // Conversation was unaffected — it kept waiting and completed normally.
+    const v = await prisma.voucher.findFirst({ where: { code: "NEWVC2" } });
+    expect(v).toBeTruthy();
+  });
+
   it("broadcast: message + confirm sends to all non-banned users and audits", async () => {
     const sink: SentCall[] = [];
     const entry = entryAdmin(sink, "v1:adm:broadcast:start");
@@ -559,6 +577,26 @@ describe("admin conversations", () => {
     // recipients are users 42 + 999
     const targets = calls(sink, "sendMessage").map((c) => c.args[0]);
     expect(targets).toEqual(expect.arrayContaining([42, 999]));
+    expect(await prisma.auditLog.count({ where: { action: "broadcast" } })).toBe(1);
+  });
+
+  // This loop never calls handledEscape at all (it's a callback-only confirm
+  // screen), so a fix that only touched handledEscape's callers would have
+  // missed it entirely — the most exposed of the 20 wait() loops for M-22.
+  it("broadcast: an unrecognized tap during the confirm step answers error.stale_screen and the conversation keeps waiting (M-22 fix)", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, "v1:adm:broadcast:start");
+    const conv = new FakeConversation([
+      msg(sink, { text: "Maintenance tonight" }),
+      msg(sink, { callbackData: "v1:adm:junk" }), // unrecognized during the confirm/cancel wait
+      msg(sink, { callbackData: "v1:adm:broadcast:confirm" }),
+    ]);
+    await broadcastConversation(conv.asMyConversation(), entry);
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
+    // Conversation was unaffected — it kept waiting and completed normally.
+    expect(calls(sink, "sendMessage").length).toBeGreaterThan(0);
     expect(await prisma.auditLog.count({ where: { action: "broadcast" } })).toBe(1);
   });
 
@@ -747,6 +785,26 @@ describe("admin conversations", () => {
     expect(await prisma.auditLog.count({ where: { action: "setting_set" } })).toBe(1);
   });
 
+  // Group D (M-22): for the qr/banner_image keys, a stale tap used to fall
+  // into the "not a photo" branch and show the misleading
+  // admin.setting_err_photo error ("please send a photo") merely for tapping
+  // a stale button. The fix guards that branch on u.message so a tap answers
+  // the spinner and loops instead.
+  it("setting: an unrecognized tap while waiting for a QR photo answers error.stale_screen, not the 'send a photo' error (M-22 fix)", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, "v1:adm:settings:set:qr");
+    const conv = new FakeConversation([
+      msg(sink, { callbackData: "v1:adm:junk" }), // unrecognized — not a photo message
+      msg(sink, { photo: [{ file_id: "qr-file-1" }] }),
+    ]);
+    await settingConversation(conv.asMyConversation(), entry);
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
+    expect(sentIncludes(sink, t(entry, "admin.setting_err_photo"))).toBe(false);
+    expect(await getSetting(prisma, "qr")).toBe("qr-file-1");
+  });
+
   it("productCreate: 6 steps create a product + audit", async () => {
     const sink: SentCall[] = [];
     const entry = entryAdmin(sink, "v1:adm:prod:new");
@@ -763,6 +821,43 @@ describe("admin conversations", () => {
     expect(p).toBeTruthy();
     expect(Number(p!.price)).toBe(3.5);
     expect(await prisma.auditLog.count({ where: { action: "product_create" } })).toBe(1);
+  });
+
+  // The regression guard for M-22: the rejected "fold into handledEscape"
+  // shortcut would have answered a legit v1:adm:prod:type:shared tap TWICE
+  // (once with the stale-tap fallback, placed before the legit branch, then
+  // again by the legit branch itself) — grammY throws on a second
+  // answerCallbackQuery for the same query. rejectDuplicateAnswerCallbackQuery
+  // reproduces that real Telegram behavior on this ctx, so if the fallback is
+  // ever moved before the legit type:shared/private branches, this test fails
+  // with an unhandled rejection instead of silently passing.
+  it("productCreate: the type-picker tap is answered exactly once, never with error.stale_screen (M-22 regression guard)", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, "v1:adm:prod:new");
+    const typeTapCtx = makeCtx({
+      sink,
+      from: { id: 999, username: "boss" },
+      session: custSession(),
+      callbackData: "v1:adm:prod:type:shared",
+      rejectDuplicateAnswerCallbackQuery: true,
+    }).ctx;
+    const conv = new FakeConversation([
+      msg(sink, { text: "Spotify Premium 1M" }),
+      typeTapCtx,
+      msg(sink, { text: "1 Month" }),
+      msg(sink, { text: "3.50" }),
+      msg(sink, { text: "-" }),
+      msg(sink, { text: "-" }),
+    ]);
+    await productCreateConversation(conv.asMyConversation(), entry);
+
+    // Would have thrown above (unhandled GrammyError) if typeTapCtx's
+    // answerCallbackQuery had been called twice — reaching here proves it wasn't.
+    const p = await prisma.denomination.findFirst({ where: { name: "Spotify Premium 1M" } });
+    expect(p).toBeTruthy();
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(false);
   });
 
   it("productEdit: rename updates the product + audit", async () => {

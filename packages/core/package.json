@@ -24,6 +24,7 @@
     "./password": "./src/password.ts",
     "./mailer": "./src/mailer.ts",
     "./delivery": "./src/delivery.ts",
+    "./reviews": "./src/reviews.ts",
     "./payments/tokopay": "./src/payments/tokopay.ts",
     "./payments/paydisini": "./src/payments/paydisini.ts",
     "./payments/nowpayments": "./src/payments/nowpayments.ts",

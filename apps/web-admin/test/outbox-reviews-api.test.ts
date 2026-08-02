@@ -395,4 +395,48 @@ describe("GET /api/reviews filters", () => {
     const bySearchIds = (bySearch.json().reviews as { id: number }[]).map((r) => r.id);
     expect(bySearchIds).toEqual([pendingId]);
   });
+
+  it("filters by since/until date range, including boundary inclusivity", async () => {
+    const { reviewId: oldId } = await makeReview();
+    const { reviewId: midId } = await makeReview();
+    const { reviewId: newId } = await makeReview();
+    // Distinct, widely-spaced createdAt values so gte/lte off-by-ones can't
+    // hide behind clock-tick timing the way three back-to-back makeReview()
+    // calls otherwise would.
+    await prisma.review.update({ where: { id: oldId }, data: { createdAt: new Date("2020-01-01T00:00:00.000Z") } });
+    await prisma.review.update({ where: { id: midId }, data: { createdAt: new Date("2020-06-15T00:00:00.000Z") } });
+    await prisma.review.update({ where: { id: newId }, data: { createdAt: new Date("2020-12-31T00:00:00.000Z") } });
+
+    const sinceMid = await app.inject({ method: "GET", url: "/api/reviews?since=2020-06-01", cookies: { [COOKIE]: cookie } });
+    const sinceMidIds = (sinceMid.json().reviews as { id: number }[]).map((r) => r.id).sort((a, b) => a - b);
+    expect(sinceMidIds).toEqual([midId, newId].sort((a, b) => a - b));
+
+    const untilMid = await app.inject({ method: "GET", url: "/api/reviews?until=2020-06-30", cookies: { [COOKIE]: cookie } });
+    const untilMidIds = (untilMid.json().reviews as { id: number }[]).map((r) => r.id).sort((a, b) => a - b);
+    expect(untilMidIds).toEqual([oldId, midId].sort((a, b) => a - b));
+
+    const range = await app.inject({
+      method: "GET",
+      url: "/api/reviews?since=2020-03-01&until=2020-09-01",
+      cookies: { [COOKIE]: cookie },
+    });
+    const rangeIds = (range.json().reviews as { id: number }[]).map((r) => r.id);
+    expect(rangeIds).toEqual([midId]);
+
+    // Boundary inclusivity: since/until at exactly midId's createdAt instant
+    // must each still include midId (gte/lte, not gt/lt).
+    const sinceBoundary = await app.inject({
+      method: "GET",
+      url: "/api/reviews?since=2020-06-15T00:00:00.000Z",
+      cookies: { [COOKIE]: cookie },
+    });
+    expect((sinceBoundary.json().reviews as { id: number }[]).map((r) => r.id)).toContain(midId);
+
+    const untilBoundary = await app.inject({
+      method: "GET",
+      url: "/api/reviews?until=2020-06-15T00:00:00.000Z",
+      cookies: { [COOKIE]: cookie },
+    });
+    expect((untilBoundary.json().reviews as { id: number }[]).map((r) => r.id)).toContain(midId);
+  });
 });

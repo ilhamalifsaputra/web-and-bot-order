@@ -79,6 +79,13 @@ function TelegramPreview({ message, imageUrl }: { message: string; imageUrl: str
   );
 }
 
+/** Poll cadence while a broadcast is still queued or mid-send. */
+const IN_FLIGHT_POLL_MS = 4_000;
+
+/** Statuses that can still change on their own — the actual sending happens in
+ *  the order-bot process, so nothing tells this page about it. */
+const isInFlight = (status: string) => status === "PENDING" || status === "SENDING";
+
 function useBroadcast() {
   return useQuery<BroadcastData>({
     queryKey: ["broadcast"],
@@ -87,6 +94,12 @@ function useBroadcast() {
       if (!res.ok) throw new Error("Failed to load");
       return res.json() as Promise<BroadcastData>;
     },
+    // Refetch ONLY while something is actually in flight, so the Sent counter
+    // the drainer writes every 25 recipients is visible without a manual
+    // reload — and so an idle History table costs nothing once everything has
+    // settled to SENT/FAILED/CANCELLED/DRAFT.
+    refetchInterval: (query) =>
+      query.state.data?.history.some((row) => isInFlight(row.status)) ? IN_FLIGHT_POLL_MS : false,
   });
 }
 

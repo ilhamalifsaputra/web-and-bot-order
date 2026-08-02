@@ -120,6 +120,28 @@ export async function claimNextDueBroadcast(db: Db, now: Date) {
   return res.count > 0 ? next : null;
 }
 
+/**
+ * Flush the drainer's running counters mid-flight so Broadcast History's "Sent"
+ * column creeps up while a long broadcast is in progress, instead of sitting at
+ * 0 until `finishBroadcast` lands the final numbers at the very end.
+ *
+ * Deliberately the same short, guarded `updateMany` shape as `finishBroadcast`:
+ * the `status: SENDING` guard means a flush that races `reapStaleBroadcasts`
+ * (or any other transition off SENDING) quietly no-ops rather than writing
+ * counters onto a row that has already moved on. Called every N recipients,
+ * not every recipient — SQLite is single-writer and shared across processes.
+ */
+export async function updateBroadcastProgress(
+  db: Db,
+  id: number,
+  r: { sent: number; failed: number },
+): Promise<void> {
+  await db.broadcast.updateMany({
+    where: { id, status: BroadcastStatus.SENDING },
+    data: { sentCount: r.sent, failedCount: r.failed },
+  });
+}
+
 export async function finishBroadcast(
   db: Db,
   id: number,
@@ -144,7 +166,7 @@ export async function failBroadcast(db: Db, id: number, reason: string): Promise
 
 /** A SENDING row whose claim is older than this is treated as abandoned
  *  (the drainer that claimed it crashed mid-loop) — 15 min is generous
- *  headroom over the order-bot's 20s drain tick. Mirrors notifications.ts's
+ *  headroom over the order-bot's 15s drain tick. Mirrors notifications.ts's
  *  STALE_CLAIM_MS pattern, but deliberately does NOT make the row
  *  reclaimable/retried (unlike notifications) — see reapStaleBroadcasts. */
 export const BROADCAST_STALE_CLAIM_MS = 15 * 60_000;

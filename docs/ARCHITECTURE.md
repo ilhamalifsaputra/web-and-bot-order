@@ -89,7 +89,7 @@ graph TD
 0 */6 * * *   reconcileFinancesJob
 */2 * * * *   binancePollWatchdog
 */2 * * * *   bybitPollWatchdog
-20 * * * * *  drainBroadcasts           { protect: true }
+5,20,35,50 * * * * *  drainBroadcasts   { protect: true }
 5 * * * *     scheduleFxRefresh (terpisah — jalan walau bot OFF)
 ```
 

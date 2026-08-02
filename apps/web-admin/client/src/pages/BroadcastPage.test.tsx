@@ -250,6 +250,46 @@ describe("BroadcastPage", () => {
     expect(screen.getByText(/sender process restarted/i)).toBeInTheDocument();
   });
 
+  // The order-bot process does the actual sending and flushes its counters
+  // straight to the DB, so nothing pushes those numbers at this page — without
+  // polling the Sent column sits frozen until a manual reload.
+  describe("auto-refresh while a broadcast is in flight", () => {
+    const load = (history: unknown[]) =>
+      new Response(JSON.stringify({ segments: ["ALL"], counts: { ALL: 200 }, history }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    it("polls while a row is SENDING and shows the counter climbing without a reload", async () => {
+      const sending = { ...BROADCAST, id: 7, status: "SENDING", sent: 25 };
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      fetchSpy.mockResolvedValueOnce(load([sending]));
+      fetchSpy.mockResolvedValue(load([{ ...sending, sent: 50 }]));
+
+      render(<BroadcastPage />, { wrapper: Wrapper });
+      await waitFor(() => expect(screen.getByText("25/200")).toBeInTheDocument());
+
+      // Real timers on purpose: the interval is scheduled by React Query
+      // during render, so swapping in fake timers afterwards would not control
+      // it, and RTL cannot auto-advance vitest's fake timers (its detection
+      // looks for a `jest` global). One real poll interval it is.
+      await waitFor(() => expect(screen.getByText("50/200")).toBeInTheDocument(), { timeout: 8_000 });
+    }, 15_000);
+
+    it("stops polling once every row has settled", async () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      // BROADCAST is SENT — nothing left that can change on its own.
+      fetchSpy.mockResolvedValue(load([BROADCAST]));
+
+      render(<BroadcastPage />, { wrapper: Wrapper });
+      await waitFor(() => expect(screen.getByText("12/200")).toBeInTheDocument());
+      const afterFirstLoad = fetchSpy.mock.calls.length;
+
+      await new Promise((resolve) => setTimeout(resolve, 6_000)); // > one poll interval
+      expect(fetchSpy.mock.calls.length).toBe(afterFirstLoad);
+    }, 15_000);
+  });
+
   it("live-updates the Telegram-style preview as the message is typed", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify({ segments: ["ALL"], counts: { ALL: 200 }, history: [] }), { status: 200, headers: { "Content-Type": "application/json" } }),

@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { Decimal } from "@app/core/money";
+import { addDays } from "@app/core/datetime";
 import { prisma, revenueByDay, topProducts, ordersByStatus, voucherUsage } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
 
@@ -23,7 +24,9 @@ export default async function reportsApiRoutes(app: FastifyInstance): Promise<vo
 
     const [daily, products, funnel, vouchers] = await Promise.all([
       revenueByDay(prisma, days),
-      topProducts(prisma, 10),
+      // Scoped to the same `days` window as the rest of this page (was
+      // previously all-time — see task-42-report.md for why that changed).
+      topProducts(prisma, addDays(new Date(), -days), 10),
       ordersByStatus(prisma),
       voucherUsage(prisma, 20),
     ]);

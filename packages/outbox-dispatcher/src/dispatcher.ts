@@ -58,6 +58,7 @@ const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.PRODUCT_RESTOCKED_BROADCAST, // buyer DM (restock broadcast, all customers)
   NotificationEvent.FLASH_SALE_BROADCAST, // buyer DM (flash sale went live, all customers)
   NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED, // admin DM (order queued for hand-fulfilment)
+  NotificationEvent.ADMIN_STALE_PAYMENT, // admin DM (webhook delivery raced order's own expiry/cancel)
 ]);
 
 /** Telegram's hard cap on a single message's text length. */

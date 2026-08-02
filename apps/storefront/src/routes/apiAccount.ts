@@ -21,7 +21,7 @@ import { ValidationError } from "@app/core/errors";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { Decimal } from "@app/core/money";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
-import { parseTicketMultipart } from "../lib/ticketAttachments";
+import { parseTicketMultipart, writeAttachments, type ParsedAttachment } from "../lib/ticketAttachments";
 import {
   prisma,
   setSetting,
@@ -272,11 +272,11 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     if (!customer) return;
     if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
     let message: string;
-    let attachmentUrls: string | null = null;
+    let attachments: ParsedAttachment[] = [];
     let orderCodeInput: string | null = null;
     if (req.isMultipart()) {
       try {
-        ({ message, attachmentUrls, orderCode: orderCodeInput } = await parseTicketMultipart(req));
+        ({ message, attachments, orderCode: orderCodeInput } = await parseTicketMultipart(req));
       } catch (e) {
         if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
         throw e;
@@ -293,8 +293,14 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       }
       orderId = order.id;
     }
+    // M-18 fix (backend audit 2026-07-31): attachments are only written to
+    // disk here, after ownership + the message guard below have both passed
+    // — never during multipart parsing. An empty-message request with
+    // attachments (or one against an order the caller doesn't own) now
+    // leaves nothing on disk for storageCleanupJob to never find.
     let ticketId: number | null = null;
     if (message) {
+      const attachmentUrls = await writeAttachments(attachments);
       const ticket = await createTicket(prisma, customer.userId, message, null, attachmentUrls, orderId);
       ticketId = ticket.id;
     }
@@ -311,10 +317,10 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
       const ticket = await getTicket(prisma, Number(req.params.id));
       let message: string;
-      let attachmentUrls: string | null = null;
+      let attachments: ParsedAttachment[] = [];
       if (req.isMultipart()) {
         try {
-          ({ message, attachmentUrls } = await parseTicketMultipart(req));
+          ({ message, attachments } = await parseTicketMultipart(req));
         } catch (e) {
           if (e instanceof ValidationError) return reply.code(400).send({ error: e.key });
           throw e;
@@ -322,7 +328,10 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       } else {
         message = (req.body?.message ?? "").trim().slice(0, 2000);
       }
+      // M-18 fix: same deferred-write rule as ticket creation above — nothing
+      // hits disk until ownership/status/message have all been checked.
       if (ticket && ticket.userId === customer.userId && ticket.status !== TicketStatus.CLOSED && message) {
+        const attachmentUrls = await writeAttachments(attachments);
         await addTicketMessage(prisma, {
           ticketId: ticket.id,
           senderType: SenderType.USER,

@@ -5,7 +5,7 @@
  * confirming Bybit BSC deposit (PAYMENT_DETECTED/CONFIRMING).
  *
  * Display-only, by construction: this module's only DB writes are
- * `recordBybitBscConfirmationProgress`/`recordBybitBscTrackingFailed`
+ * `recordBybitBscConfirmationProgress`/`recordBybitBscTrackingStale`
  * (packages/db/src/crud/bybit_bsc_deposit.ts), which never call
  * approveOrder/deliverPaidBybitBscOrder and never transition toward
  * PENDING_VERIFICATION/DELIVERED. The actual delivery gate stays
@@ -35,7 +35,7 @@ import {
   prisma,
   listTrackedBybitBscOrders,
   recordBybitBscConfirmationProgress,
-  recordBybitBscTrackingFailed,
+  recordBybitBscTrackingStale,
   enqueueOrderPipelineFailed,
   resolveBybitBscTrackerConfig,
   type BybitBscTrackerConfig,
@@ -46,10 +46,12 @@ import { createBackoffGate } from "./pollBackoff";
 
 type TrackedOrder = Awaited<ReturnType<typeof listTrackedBybitBscOrders>>[number];
 
-/** Consecutive not-found lookups for the SAME order before escalating to
- * FAILED. In-memory (per process) — a restart resets the grace period,
- * an acceptable simplification given the alternative (persisting a counter
- * on the order row) buys little for a rare edge case. */
+/** Consecutive not-found lookups for the SAME order before flagging its
+ * tracking as stale/uncertain (`recordBybitBscTrackingStale` — non-terminal,
+ * M-11 fix, backend audit 2026-07-31). In-memory (per process) — a restart
+ * resets the grace period, an acceptable simplification given the
+ * alternative (persisting a counter on the order row) buys little for a rare
+ * edge case. */
 export const MAX_CONSECUTIVE_LOOKUP_FAILURES = 10;
 
 class RateLimitedError extends Error {}
@@ -193,12 +195,17 @@ export async function pollOnce(api: Api): Promise<void> {
       if (failures >= MAX_CONSECUTIVE_LOOKUP_FAILURES) {
         lookupFailureCounts.delete(order.id);
         const reason = `Bybit BSC transaction ${order.bybitTxid} not found on-chain after ${failures} consecutive lookups`;
-        const failed = await recordBybitBscTrackingFailed(prisma, { orderId: order.id, reason });
-        if (failed) {
-          logger.warn(`Bybit BSC order ${order.orderCode} escalated to FAILED — transaction ${order.bybitTxid} never appeared on-chain after ${failures} consecutive lookups`);
+        // Non-terminal (M-11 fix, backend audit 2026-07-31): this only flags
+        // the order's tracking as stale/uncertain — it does NOT transition
+        // the order, so it stays in PAYMENT_DETECTED/CONFIRMING (still inside
+        // PRE_DELIVERY_STATUSES) and a later genuine Bybit "Success" report
+        // can still auto-deliver it. Previously this escalated straight to
+        // FAILED, which permanently blocked exactly that recovery path.
+        const markedStale = await recordBybitBscTrackingStale(prisma, { orderId: order.id, reason });
+        if (markedStale) {
+          logger.warn(`Bybit BSC order ${order.orderCode} tracking is stale — transaction ${order.bybitTxid} not found on-chain after ${failures} consecutive lookups; the order stays in ${order.status} awaiting Bybit's own payment report`);
           // Durable admin alert via the outbox (this poller has no web
-          // context, but the outbox is the established convention for every
-          // FAILED escalation regardless of which path triggered it).
+          // context) — same convention as every other pipeline-alert path.
           await enqueueOrderPipelineFailed(prisma, { orderId: order.id, orderCode: order.orderCode, reason }).catch(() => undefined);
         }
       }

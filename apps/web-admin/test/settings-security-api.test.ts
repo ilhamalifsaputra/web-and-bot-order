@@ -268,6 +268,7 @@ describe("POST /api/settings/password", () => {
     expect(res.statusCode).toBe(200);
     const audit = await prisma.auditLog.findFirst({ where: { action: "web_password_change" } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("password");
   });
 
   it("rejects the wrong current password with 403, leaves the hash unchanged", async () => {
@@ -323,6 +324,7 @@ describe("POST /api/settings/2fa/begin + /enable + /cancel", () => {
     expect(await getSetting(prisma, twoFaPendingKey(ADMIN_TG))).toBeNull();
     const audit = await prisma.auditLog.findFirst({ where: { action: "web_2fa_enable" } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("2FA");
   });
 
   it("begin refuses when 2FA is already enabled (409)", async () => {
@@ -367,6 +369,7 @@ describe("POST /api/settings/2fa/disable", () => {
     expect(await getSetting(prisma, twoFaSecretKey(ADMIN_TG))).toBeNull();
     const audit = await prisma.auditLog.findFirst({ where: { action: "web_2fa_disable" } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("2FA");
   });
 
   it("rejects the wrong password with 403, leaves 2FA enabled", async () => {

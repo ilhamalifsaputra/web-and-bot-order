@@ -88,6 +88,13 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
     } catch {
       return reply.code(400).send({ error: "Value and min purchase must be numbers." });
     }
+    // `new Decimal("NaN")`/`new Decimal("Infinity")` construct successfully
+    // (they don't throw), so a non-finite value would otherwise sail past
+    // the try/catch above and persist a NaN/Infinity amount (M-3, backend
+    // audit 2026-07-31) — same rejection as an unparsable value.
+    if (!valueDec.isFinite() || !minDec.isFinite()) {
+      return reply.code(400).send({ error: "Value and min purchase must be numbers." });
+    }
 
     let limit: number | null = null;
     if ((body.usage_limit ?? "").trim()) {
@@ -214,6 +221,10 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       } catch {
         return reply.code(400).send({ error: "Value must be a number." });
       }
+      // NaN/Infinity construct successfully — reject explicitly (M-3).
+      if (!args.value.isFinite()) {
+        return reply.code(400).send({ error: "Value must be a number." });
+      }
     }
 
     if (body.min_purchase !== undefined) {
@@ -232,6 +243,10 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
         try {
           args.maxDiscount = new Decimal(raw);
         } catch {
+          return reply.code(400).send({ error: "Max discount must be a number." });
+        }
+        // NaN/Infinity construct successfully — reject explicitly (M-3).
+        if (!args.maxDiscount.isFinite()) {
           return reply.code(400).send({ error: "Max discount must be a number." });
         }
       }
@@ -344,7 +359,8 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
 
   app.post("/api/vouchers/:voucherId/delete", { preHandler: csrfProtect }, async (req, reply) => {
     const voucherId = Number((req.params as { voucherId: string }).voucherId);
-    if ((await getVoucher(prisma, voucherId)) === null) {
+    const existing = await getVoucher(prisma, voucherId);
+    if (existing === null) {
       return reply.code(404).send({ error: "Voucher not found." });
     }
     try {
@@ -355,11 +371,14 @@ export default async function vouchersApiRoutes(app: FastifyInstance): Promise<v
       }
       throw err;
     }
+    // deleteVoucher throws above for a used voucher, so reaching here means
+    // usedCount was 0 — "(never used)" is always accurate at this point.
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "voucher_delete",
       targetType: "voucher",
       targetId: voucherId,
+      details: `Deleted voucher "${existing.code}" (never used).`,
     });
     return reply.send({ ok: true });
   });

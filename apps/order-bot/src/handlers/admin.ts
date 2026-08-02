@@ -37,19 +37,16 @@ import {
   closeTicket,
   logAdminAction,
   listRestockSubscribers,
+  deleteRestockSubscription,
 } from "@app/db";
 import type { MyContext } from "../context";
 import { adminEdit } from "../util/chat";
 import { BANNER_FILEID_KEY } from "../util/banner";
 import { coreT, t } from "../util/i18n";
-import { esc, formatUsdtAmount, formatIdr, mixedAmount } from "../util/format";
+import { esc, formatIdr, formatUsdt, mixedAmount } from "../util/format";
 import { requireAdminId } from "../util/adminAudit";
 import * as akb from "../keyboards/admin";
 import * as verification from "./verification";
-
-// USDT figures only (wallet balances). Catalog prices and voucher FIXED values
-// are central Rupiah → formatIdr; mixed revenue totals → mixedAmount.
-const price = (v: Decimal.Value) => formatUsdtAmount(v);
 
 // ===========================================================================
 // /admin command + main menu
@@ -169,7 +166,8 @@ export async function renderUserCard(ctx: MyContext, userId: number): Promise<vo
     `TG ID: <code>${u.telegramId}</code>\n` +
     `DB ID: <code>${u.id}</code>\n` +
     `Role: ${u.role} | Banned: ${u.banned}\n` +
-    `Wallet: ${price(u.walletBalance)}\n` +
+    `Wallet (IDR): ${formatIdr(u.walletBalance)}\n` +
+    `Wallet (USDT): ${formatUsdt(u.walletBalanceUsdt)}\n` +
     `Referral code: <code>${esc(u.referralCode)}</code>`;
   await adminEdit(
     ctx,
@@ -198,12 +196,12 @@ async function userSetReseller(ctx: MyContext, userId: number, on: boolean): Pro
 
 async function userWalletPrompt(ctx: MyContext, userId: number): Promise<void> {
   await ctx.answerCallbackQuery({
-    text: `Use /wallet ${userId} <amount> to adjust (negative to deduct).`,
+    text: t(ctx, "admin.wallet_usage_hint", { uid: userId }),
     show_alert: true,
   });
 }
 
-/** `/wallet <user_db_id> <amount>` — manual wallet adjustment by admin. */
+/** `/wallet <user_db_id> <amount> [IDR|USDT]` — manual wallet adjustment by admin. */
 export async function adminWalletCommand(ctx: MyContext): Promise<void> {
   if (!ctx.from || !isAdmin(ctx.from.id)) {
     logger.warn(`Non-admin user ${ctx.from?.id} tried to use /wallet — request blocked, user is not in the admin id list`);
@@ -215,16 +213,29 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   const args = (typeof ctx.match === "string" ? ctx.match : "").trim().split(/\s+/).filter(Boolean);
   logger.info(`Admin wallet command from user ${ctx.from?.id} with args "${args.join(" ")}"`);
-  if (args.length !== 2) {
+  if (args.length < 2 || args.length > 3) {
     await adminEdit(ctx, t(ctx, "admin.wallet_usage"), akb.backToAdminKb(lang));
     return;
   }
   let uid: number;
   let amt: Decimal;
+  // Trailing currency argument is optional and defaults to IDR so every
+  // pre-existing "/wallet <uid> <amount>" usage keeps behaving exactly as
+  // before (M-4, backend audit 2026-07-31).
+  let currency: "IDR" | "USDT" = "IDR";
   try {
     uid = parseInt(args[0]!, 10);
     amt = new Decimal(args[1]!);
-    if (Number.isNaN(uid)) throw new Error("bad uid");
+    // `new Decimal("NaN")`/`new Decimal("Infinity")` construct successfully
+    // (they don't throw), so a non-finite amount would otherwise reach
+    // adjustWallet and poison the wallet balance (M-3, backend audit
+    // 2026-07-31) — reject it the same way a bad uid already is, below.
+    if (Number.isNaN(uid) || !amt.isFinite()) throw new Error("bad uid");
+    if (args[2] !== undefined) {
+      const requested = args[2].toUpperCase();
+      if (requested !== "IDR" && requested !== "USDT") throw new Error("bad currency");
+      currency = requested;
+    }
   } catch {
     await adminEdit(ctx, t(ctx, "admin.wallet_bad_args"), akb.backToAdminKb(lang));
     return;
@@ -236,13 +247,13 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     newBal = await prisma.$transaction(async (tx) => {
       const admin = await getUserByTelegramId(tx, adminTg);
       const actingId = requireAdminId(admin);
-      const bal = await adjustWallet(tx, uid, amt, { allowNegative: true, reason: "admin_adjust", adminId: actingId });
+      const bal = await adjustWallet(tx, uid, amt, { allowNegative: true, reason: "admin_adjust", adminId: actingId, currency });
       await logAdminAction(tx, {
         adminId: actingId,
         action: "wallet_adjust",
         targetType: "user",
         targetId: uid,
-        details: `Adjusted wallet by ${amt}; new balance is ${bal}.`,
+        details: `Adjusted the user's ${currency} wallet by ${amt}; new balance is ${bal}.`,
       });
       return bal;
     });
@@ -251,7 +262,8 @@ export async function adminWalletCommand(ctx: MyContext): Promise<void> {
     await adminEdit(ctx, t(ctx, "admin.wallet_failed"), akb.backToAdminKb(lang));
     return;
   }
-  await adminEdit(ctx, t(ctx, "admin.wallet_adjusted", { uid, balance: price(newBal) }), akb.backToAdminKb(lang));
+  const balanceDisplay = currency === "USDT" ? formatUsdt(newBal) : formatIdr(newBal);
+  await adminEdit(ctx, t(ctx, "admin.wallet_adjusted", { uid, currency, balance: balanceDisplay }), akb.backToAdminKb(lang));
 }
 
 // ===========================================================================
@@ -479,17 +491,25 @@ async function adminMarkStockDead(ctx: MyContext, stockId: number, productId: nu
   // Bot-4 fix, security audit 2026-06-23: was a bare update with no
   // $transaction and NO audit row at all — a stock-status change has no
   // trail back to the admin who made it.
-  await prisma.$transaction(async (tx) => {
-    await markStockDead(tx, stockId, "marked dead by admin");
+  const count = await prisma.$transaction(async (tx) => {
+    const stockItem = await tx.stockItem.findUnique({ where: { id: stockId }, include: { product: true } });
+    const updated = await markStockDead(tx, stockId, "marked dead by admin");
+    if (updated === 0) return 0; // already SOLD/DEAD — nothing to audit
     const admin = await getUserByTelegramId(tx, adminTg);
     await logAdminAction(tx, {
       adminId: requireAdminId(admin),
       action: "stock_mark_dead",
       targetType: "stock_item",
       targetId: stockId,
+      details: `Marked a stock item dead for product "${stockItem?.product.name ?? productId}".`,
     });
+    return updated;
   });
-  await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.stock_marked_dead") });
+  if (count === 0) {
+    await ctx.answerCallbackQuery({ text: t(ctx, "error.stock_item_not_eligible"), show_alert: true });
+  } else {
+    await ctx.answerCallbackQuery({ text: t(ctx, "admin.toast.stock_marked_dead") });
+  }
   await viewStockItems(ctx, productId);
 }
 
@@ -555,7 +575,7 @@ async function showTicketsAdmin(ctx: MyContext): Promise<void> {
     await adminEdit(ctx, t(ctx, "admin.hdr_tickets_none"), akb.backToAdminKb(lang));
     return;
   }
-  await adminEdit(ctx, `📩 <b>Support Tickets</b>\n\n${tickets.length} open ticket(s):`, akb.ticketsListKb(tickets, lang));
+  await adminEdit(ctx, t(ctx, "admin.hdr_tickets", { count: tickets.length }), akb.ticketsListKb(tickets, lang));
 }
 
 async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void> {
@@ -574,6 +594,7 @@ async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void>
       action: "ticket_close",
       targetType: "support_ticket",
       targetId: ticketId,
+      details: `Closed ticket #${ticketId}.`,
     });
     return tgId;
   });
@@ -596,28 +617,40 @@ async function closeTicketAdmin(ctx: MyContext, ticketId: number): Promise<void>
 // Restock subscriber notification (used after a stock upload)
 // ===========================================================================
 
+// Throttle between restock-notification DMs — same value/rationale as
+// drainBroadcasts' BROADCAST_THROTTLE_MS (apps/order-bot/src/jobs/index.ts):
+// stays under Telegram's ~30 msg/s bulk limit, which a batch of >~30
+// subscribers reliably trips without a delay between sends.
+const RESTOCK_NOTIFY_THROTTLE_MS = 40;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export async function notifyRestockSubscribers(ctx: MyContext, productId: number): Promise<void> {
   const subs = await listRestockSubscribers(prisma, productId);
   if (!subs.length) return;
   const denomination = (subs[0] as { product: { name: string; product: { name: string } } }).product;
   const productName = `${denomination.product.name} - ${denomination.name}`;
-  const userIds = subs.map((s) => s.userId);
-  const users = await prisma.user.findMany({ where: { id: { in: userIds } } });
-  const targets = users.map((u) => ({ tgId: u.telegramId, lang: langCode(u.language) }));
 
-  // Consume the subscriptions (one-shot notification).
-  await prisma.restockSubscription.deleteMany({ where: { id: { in: subs.map((s) => s.id) } } });
-
-  for (const { tgId, lang } of targets) {
+  for (const sub of subs as unknown as Array<{ id: number; user: { telegramId: bigint | null; language: string } }>) {
+    const tgId = sub.user.telegramId;
+    // listRestockSubscribers already filters to telegramId != null; this stays
+    // defensive so a web-only user can never be sent to chat 0.
+    if (!tgId) continue;
+    const lang = langCode(sub.user.language);
     try {
       await ctx.api.sendMessage(
         Number(tgId),
         coreT("browse.subscribed_restock_notify", lang, { product: esc(productName) }),
         { parse_mode: "HTML" },
       );
+      // Only consume the subscription once its DM has actually gone out — a
+      // failure below (rate limit, bot restart mid-loop) leaves it in place
+      // so the subscriber is retried on the next restock instead of silently
+      // losing their spot.
+      await deleteRestockSubscription(prisma, sub.id);
     } catch (err) {
-      logger.error({ err }, `Failed to notify restock subscriber ${tgId} about "${productName}" being back in stock — their subscription was already consumed, they won't be retried`);
+      logger.error({ err }, `Failed to notify restock subscriber ${tgId} about "${productName}" being back in stock — their subscription was kept so they'll be retried on the next restock`);
     }
+    await sleep(RESTOCK_NOTIFY_THROTTLE_MS);
   }
 }
 
@@ -681,6 +714,10 @@ export async function handleAdminCallback(ctx: MyContext, parts: string[]): Prom
       else if (action === "approve") await verification.approve(ctx, n(4));
       else if (action === "resend") await verification.resendCredentials(ctx, n(4));
       // 'reject' is a conversation entry point — intercepted upstream.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback verif action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "prod":
       if (action === "menu") await showProducts(ctx);
@@ -688,18 +725,34 @@ export async function handleAdminCallback(ctx: MyContext, parts: string[]): Prom
       else if (action === "toggle") await toggleProduct(ctx, n(4));
       else if (action === "stock") await viewStockItems(ctx, n(4));
       // 'new', 'type', 'cancel', 'rename', 'price' handled by conversations.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback prod action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "stock":
       if (action === "menu") await showStockMenu(ctx);
       // 'add' handled by stock_upload conversation.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback stock action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "stockitem":
       if (action === "dead") await adminMarkStockDead(ctx, n(4), n(5));
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback stockitem action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "vouch":
       if (action === "menu") await showVouchersMenu(ctx);
       else if (action === "list") await listVouchersView(ctx);
       // 'new' handled by voucher_create conversation.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback vouch action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "users":
       if (action === "menu") await showUsersMenu(ctx);
@@ -708,18 +761,32 @@ export async function handleAdminCallback(ctx: MyContext, parts: string[]): Prom
       else if (action === "reseller") await userSetReseller(ctx, n(4), Boolean(n(5)));
       else if (action === "wallet") await userWalletPrompt(ctx, n(4));
       // 'search' handled by user_search conversation.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback users action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "reports":
       if (action === "menu") await showReports(ctx);
       else if (action === "csv") await exportReport(ctx, parts[4]!);
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback reports action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "settings":
       if (action === "menu") await showSettings(ctx);
       else if (action === "undo" && parts[4] === "banner_image") await undoBannerRemoval(ctx);
       // 'set' handled by setting conversation.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback settings action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "broadcast":
       // 'start' handled by broadcast conversation.
+      logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback broadcast action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+      await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
       break;
     case "cancel":
       // Stale cancel button pressed outside any conversation — go to admin panel.
@@ -729,11 +796,22 @@ export async function handleAdminCallback(ctx: MyContext, parts: string[]): Prom
       if (action === "menu") await showBulkPricing(ctx, n(4));
       else if (action === "del") await deleteBulkPricingHandler(ctx, n(4));
       // 'new' handled by bulk_pricing conversation.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback bulk action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
     case "ticket":
       if (action === "menu") await showTicketsAdmin(ctx);
       else if (action === "close") await closeTicketAdmin(ctx, n(4));
       // 'reply' handled by ticket_reply conversation.
+      else {
+        logger.warn({ event: "dead_tap", section, action, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback ticket action "${action}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+        await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
+      }
       break;
+    default:
+      logger.warn({ event: "dead_tap", section, callbackData: ctx.callbackQuery?.data, userId: ctx.from?.id }, `Admin callback section "${section}" is not recognized — likely a button from a stale bubble, showing the stale-screen toast instead`);
+      await ctx.answerCallbackQuery({ text: t(ctx, "error.stale_screen") });
   }
 }

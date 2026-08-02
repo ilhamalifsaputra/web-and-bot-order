@@ -7,6 +7,7 @@ import {
   revenueByDay,
   revenueSummary,
   profitSummarySince,
+  topProducts,
   topProductsByMargin,
   ordersByDay,
   combinedRevenueByDay,
@@ -171,6 +172,115 @@ describe("profitSummarySince", () => {
     expect(result.idr).toBeNull();
     expect(result.usdt).toBeNull();
   });
+
+  it("prorates the order's bulkDiscountAmount + discountAmount into line revenue so a voucher-discounted order that actually lost money reports a loss, not the gross-revenue profit (M-1)", async () => {
+    const now = new Date();
+    // Gross (pre-discount) numbers alone would show a healthy profit:
+    // revenue 10000, cost 8000 -> +2000 (20% margin). But the order carries a
+    // Rp1000 bulk discount + Rp2000 voucher discount (3000 total) that the
+    // buyer actually paid less for — netting only 7000 against the same 8000
+    // cost basis is a genuine Rp1000 loss. If orderItemRevenueIdr still used
+    // gross unitPrice×quantity, this would assert the old (wrong) +2000/20%.
+    const product = await createDenomination(prisma, {
+      productId: parentProductId, name: "Discounted item", type: "SHARED", durationLabel: "1 Month",
+      price: "10000", costPrice: "8000",
+    });
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-disc-${Math.random()}`, userId,
+        subtotalAmount: "10000", bulkDiscountAmount: "1000", discountAmount: "2000",
+        totalAmount: "7000", currency: "IDR", status: "DELIVERED", deliveredAt: now,
+      },
+    });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: product.id, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const result = await profitSummarySince(prisma, new Date(now.getTime() - 60_000));
+    // Net revenue 10000-3000=7000, cost 8000 -> profit -1000, margin -14.29%.
+    expect(result.idr).toEqual({ netProfit: "-1000", marginPct: "-14.29", excludedItemCount: 0 });
+  });
+});
+
+describe("topProducts", () => {
+  it("ranks by quantity summed across multiple orders — not by revenue and not by order count — with deterministic tie-breaking (M-33 regression: a naive per-order/per-line grouping, or ranking by revenue, would get this wrong)", async () => {
+    const now = new Date();
+    const productA = await createDenomination(prisma, { productId: parentProductId, name: "A", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+    const productB = await createDenomination(prisma, { productId: parentProductId, name: "B", type: "SHARED", durationLabel: "1 Month", price: "50000" });
+    const productC = await createDenomination(prisma, { productId: parentProductId, name: "C", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+    const productD = await createDenomination(prisma, { productId: parentProductId, name: "D", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    // Product A: 5 units total spread across three separate orders (2+2+1) —
+    // a naive "most orders" or "biggest single order" heuristic would rank
+    // this below B.
+    for (const qty of [2, 2, 1]) {
+      const order = await prisma.order.create({
+        data: { orderCode: `ORD-a-${Math.random()}`, userId, subtotalAmount: String(10000 * qty), totalAmount: String(10000 * qty), currency: "IDR", status: "DELIVERED", deliveredAt: now },
+      });
+      await prisma.orderItem.create({ data: { orderId: order.id, productId: productA.id, quantity: qty, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+    }
+
+    // Product B: a single order of 4 units at 5x the unit price — higher
+    // gross revenue (200000) than A's (50000) but fewer units, so it must
+    // still rank below A if ranking is genuinely by quantity, not revenue.
+    const orderB = await prisma.order.create({
+      data: { orderCode: `ORD-b-${Math.random()}`, userId, subtotalAmount: "200000", totalAmount: "200000", currency: "IDR", status: "DELIVERED", deliveredAt: now },
+    });
+    await prisma.orderItem.create({ data: { orderId: orderB.id, productId: productB.id, quantity: 4, unitPrice: "50000", warrantyDaysSnapshot: 30 } });
+
+    // Products C and D tie at 2 units each — proves a tie doesn't drop or
+    // duplicate a product, and is broken deterministically (by productId).
+    const orderC = await prisma.order.create({
+      data: { orderCode: `ORD-c-${Math.random()}`, userId, subtotalAmount: "20000", totalAmount: "20000", currency: "IDR", status: "DELIVERED", deliveredAt: now },
+    });
+    await prisma.orderItem.create({ data: { orderId: orderC.id, productId: productC.id, quantity: 2, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+    const orderD = await prisma.order.create({
+      data: { orderCode: `ORD-d-${Math.random()}`, userId, subtotalAmount: "20000", totalAmount: "20000", currency: "IDR", status: "DELIVERED", deliveredAt: now },
+    });
+    await prisma.orderItem.create({ data: { orderId: orderD.id, productId: productD.id, quantity: 2, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const result = await topProducts(prisma, new Date(now.getTime() - 60_000), 10);
+
+    expect(result.map((r) => r.productId)).toEqual([
+      productA.id,
+      productB.id,
+      ...[productC.id, productD.id].sort((a, b) => a - b),
+    ]);
+    expect(result[0]).toMatchObject({ productId: productA.id, name: "A", qty: 5, revenue: "50000" });
+    expect(result[1]).toMatchObject({ productId: productB.id, name: "B", qty: 4, revenue: "200000" });
+  });
+
+  it("excludes rows delivered before `since`", async () => {
+    const now = new Date();
+    const before = new Date(now.getTime() - 3_600_000);
+    const product = await createDenomination(prisma, { productId: parentProductId, name: "Old", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    const oldOrder = await prisma.order.create({
+      data: { orderCode: `ORD-old-${Math.random()}`, userId, subtotalAmount: "90000", totalAmount: "90000", currency: "IDR", status: "DELIVERED", deliveredAt: before },
+    });
+    await prisma.orderItem.create({ data: { orderId: oldOrder.id, productId: product.id, quantity: 9, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    const recentOrder = await prisma.order.create({
+      data: { orderCode: `ORD-new-${Math.random()}`, userId, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status: "DELIVERED", deliveredAt: now },
+    });
+    await prisma.orderItem.create({ data: { orderId: recentOrder.id, productId: product.id, quantity: 1, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+
+    // `since` excludes the old (9-unit) order — if it leaked in, qty would be
+    // 10 and revenue 100000 instead of 1 / 10000.
+    const result = await topProducts(prisma, new Date(now.getTime() - 60_000), 10);
+    expect(result).toEqual([{ productId: product.id, name: "Old", qty: 1, revenue: "10000" }]);
+  });
+
+  it("caps results at `limit`", async () => {
+    const now = new Date();
+    for (let i = 0; i < 12; i++) {
+      const product = await createDenomination(prisma, { productId: parentProductId, name: `P${i}`, type: "SHARED", durationLabel: "1 Month", price: "10000" });
+      const order = await prisma.order.create({
+        data: { orderCode: `ORD-${i}-${Math.random()}`, userId, subtotalAmount: "10000", totalAmount: "10000", currency: "IDR", status: "DELIVERED", deliveredAt: now },
+      });
+      await prisma.orderItem.create({ data: { orderId: order.id, productId: product.id, quantity: 12 - i, unitPrice: "10000", warrantyDaysSnapshot: 30 } });
+    }
+    const result = await topProducts(prisma, new Date(now.getTime() - 60_000), 10);
+    expect(result).toHaveLength(10);
+  });
 });
 
 describe("topProductsByMargin", () => {
@@ -230,6 +340,37 @@ describe("topProductsByMargin", () => {
     const profit = await profitSummarySince(prisma, new Date(now.getTime() - 60_000));
     // revenue 3×(30000/15000)=6, cost 3×(15000/15000)=3 -> profit 3, margin 50%.
     expect(profit.usdt).toMatchObject({ netProfit: "3", marginPct: "50" });
+  });
+
+  it("splits the order's bulkDiscountAmount + discountAmount across two lines by their share of subtotalAmount, turning both into losses (M-1)", async () => {
+    const now = new Date();
+    // Two lines, subtotal 6000 + 4000 = 10000. Order carries a Rp1000 bulk
+    // discount + Rp2000 voucher (3000 total), split 60/40 by subtotal share:
+    // line A eats 1800, line B eats 1200. Gross-only numbers would show both
+    // products profitable (A: 6000-5000=+1000, B: 4000-3000=+1000); with the
+    // discount prorated in, both actually lost money.
+    const productA = await createDenomination(prisma, { productId: parentProductId, name: "Product A", type: "SHARED", durationLabel: "1 Month", price: "6000", costPrice: "5000" });
+    const productB = await createDenomination(prisma, { productId: parentProductId, name: "Product B", type: "SHARED", durationLabel: "1 Month", price: "4000", costPrice: "3000" });
+
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-disc-${Math.random()}`, userId,
+        subtotalAmount: "10000", bulkDiscountAmount: "1000", discountAmount: "2000",
+        totalAmount: "7000", currency: "IDR", status: "DELIVERED", deliveredAt: now,
+      },
+    });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: productA.id, quantity: 1, unitPrice: "6000", warrantyDaysSnapshot: 30 } });
+    await prisma.orderItem.create({ data: { orderId: order.id, productId: productB.id, quantity: 1, unitPrice: "4000", warrantyDaysSnapshot: 30 } });
+
+    const result = await topProductsByMargin(prisma, new Date(now.getTime() - 60_000), 5);
+    // A: discount 3000×(6000/10000)=1800 -> revenue 4200, cost 5000 -> profit -800.
+    // B: discount 3000×(4000/10000)=1200 -> revenue 2800, cost 3000 -> profit -200.
+    expect(result).toEqual(
+      expect.arrayContaining([
+        { productId: productA.id, productLabel: `${parentProductName} · Product A`, unitsSold: 1, revenueIdrEquiv: "4200", profitIdrEquiv: "-800", costUnknownUnits: 0 },
+        { productId: productB.id, productLabel: `${parentProductName} · Product B`, unitsSold: 1, revenueIdrEquiv: "2800", profitIdrEquiv: "-200", costUnknownUnits: 0 },
+      ]),
+    );
   });
 });
 
@@ -297,6 +438,9 @@ describe("status exclusion", () => {
 
     const top = await topProductsByMargin(prisma, since, 5);
     expect(top).toEqual([{ productId: product.id, productLabel: `${parentProductName} · 1 Month`, unitsSold: 1, revenueIdrEquiv: "10000", profitIdrEquiv: "5000", costUnknownUnits: 0 }]);
+
+    const topByQty = await topProducts(prisma, since, 5);
+    expect(topByQty).toEqual([{ productId: product.id, name: "1 Month", qty: 1, revenue: "10000" }]);
 
     const profit = await profitSummarySince(prisma, since);
     expect(profit.idr).toEqual({ netProfit: "5000", marginPct: "50", excludedItemCount: 0 });

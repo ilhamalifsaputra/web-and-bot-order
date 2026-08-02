@@ -77,14 +77,26 @@ export async function deliverPaidPaydisiniOrder(
   db: PrismaClient,
   args: { orderId: number; trxId: string; amount: Decimal.Value; shopUrl?: string | null },
 ): Promise<PaydisiniDeliverResult> {
-  // 1. Claim the trx id. A duplicate means another callback already handled it.
+  // 1. Claim the trx id. A duplicate normally means another callback already
+  //    handled it — UNLESS the prior claim's delivery transaction itself
+  //    failed (outcome "delivery_failed"): that claim never actually
+  //    delivered anything, so it must be re-claimable, or the buyer's payment
+  //    is silently lost forever behind a stuck idempotency row (H-3, backend
+  //    audit 2026-07-31). Re-claiming is a single atomic UPDATE gated on
+  //    outcome="delivery_failed" — SQLite serializes writers, so if two
+  //    retries race, exactly one `updateMany` sees count=1 and proceeds; the
+  //    other sees count=0 and correctly reports already_processed.
   try {
     await db.processedPaydisiniTx.create({
       data: { trxId: args.trxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
   } catch (e) {
-    if (isUniqueViolation(e)) return { status: "already_processed" };
-    throw e;
+    if (!isUniqueViolation(e)) throw e;
+    const reclaimed = await db.processedPaydisiniTx.updateMany({
+      where: { trxId: args.trxId, outcome: "delivery_failed" },
+      data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
+    });
+    if (reclaimed.count === 0) return { status: "already_processed" };
   }
 
   // 2. Deliver. On failure, flag the ledger row (e.g. paid but out of stock)

@@ -69,6 +69,23 @@ export async function createWebUser(
   throw new Error("Could not generate a unique referral code");
 }
 
+/**
+ * Full user row INCLUDING `passwordHash` (and `email`) — for the storefront's
+ * own-account session load (`apps/storefront/src/plugins/auth.ts`'s
+ * `optionalCustomer`), which needs `passwordHash` to answer "does this
+ * account have a password" and to verify `current_password` on a credentials
+ * change (apps/storefront/src/routes/apiAccount.ts), and `email` to render
+ * the account's own settings form. This is the one narrowly-scoped exception
+ * to crud/users.ts's `getUser`, which projects both fields out for every
+ * admin-and-bot-facing caller (backend audit finding H-4) — a user reading
+ * their OWN passwordHash/email server-side to manage their OWN account is not
+ * the leak that finding is about. NEVER use this for admin-facing JSON
+ * responses, and never send `passwordHash` itself back to any client.
+ */
+export function getUserWithPasswordHash(db: Db, userId: number) {
+  return db.user.findUnique({ where: { id: userId } });
+}
+
 export function findUserByLoginIdentifier(db: Db, identifier: string) {
   const ident = identifier.trim().toLowerCase();
   if (!ident) return Promise.resolve(null);

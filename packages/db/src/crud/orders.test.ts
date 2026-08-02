@@ -18,6 +18,8 @@ import {
   createOrderFromCart,
   createOrderDirect,
   rejectOrder,
+  cancelOrder,
+  creditOrderToBalance,
   getOrder,
   listOrders,
   countOrders,
@@ -159,11 +161,15 @@ describe("computeOrderEligibility", () => {
     });
   });
 
-  it("PROCESSING: canFulfill and canReject, not canAct/canCredit", () => {
+  // H-2 (backend audit, 2026-07-31): canCredit now also covers PROCESSING —
+  // a paid manual-fulfilment order an admin can't source the account for
+  // used to have Reject as its only refund-shaped action, which stranded
+  // the buyer's payment at the terminal REJECTED state forever.
+  it("PROCESSING: canFulfill, canReject, and now canCredit too — not canAct", () => {
     expect(computeOrderEligibility("PROCESSING", null)).toEqual({
       isDelivered: false,
       canAct: false,
-      canCredit: false,
+      canCredit: true,
       canFulfill: true,
       canReject: true,
       canResend: false,
@@ -527,6 +533,90 @@ describe("rejectOrder — PROCESSING support (Finding #2)", () => {
   });
 });
 
+// H-2 (backend audit, 2026-07-31): canCredit was missing PROCESSING even
+// though canReject already covered it, so a paid manual-fulfilment order an
+// admin couldn't source had only Reject as a refund-shaped action — which
+// moved it to the terminal REJECTED state where creditOrderToBalance then
+// refuses to act, stranding the buyer's already-paid money. This block
+// covers all three parts of the fix: canCredit now true for a paid
+// PROCESSING order, crediting it actually succeeds end-to-end, and
+// rejectOrder/cancelOrder now refuse a paid order instead of silently
+// discarding the payment.
+describe("H-2 — paid PROCESSING orders: canCredit, successful credit, and reject/cancel guard", () => {
+  afterEach(async () => {
+    await prisma.orderItem.deleteMany();
+  });
+
+  it("computeOrderEligibility('PROCESSING') is canCredit regardless of paidAt (status-only flag)", () => {
+    expect(computeOrderEligibility("PROCESSING", null).canCredit).toBe(true);
+  });
+
+  it("creditOrderToBalance succeeds on a paid PROCESSING order — credits the balance and marks it CANCELLED", async () => {
+    const order = await makeOrder("PROCESSING", { paidAt: new Date(), currency: "IDR" });
+    const before = (await prisma.user.findUnique({ where: { id: userId } }))!;
+
+    const res = await creditOrderToBalance(prisma, { orderId: order.id, adminId: 5 });
+
+    expect(res.currency).toBe("IDR");
+    expect(new Decimal(res.credited).equals(order.totalAmount)).toBe(true);
+    const after = (await prisma.user.findUnique({ where: { id: userId } }))!;
+    expect(new Decimal(after.walletBalance).minus(new Decimal(before.walletBalance)).toString()).toBe(
+      new Decimal(order.totalAmount).toString(),
+    );
+    expect((await getOrder(prisma, order.id))!.status).toBe("CANCELLED");
+  });
+
+  it("rejectOrder refuses a paid PROCESSING order instead of stranding the payment at REJECTED", async () => {
+    const order = await makeOrder("PROCESSING", { paidAt: new Date() });
+
+    await expect(
+      rejectOrder(prisma, order.id, { adminId: 1, reason: "can't source account" }),
+    ).rejects.toMatchObject({ key: "error.order_paid_needs_credit" });
+
+    // Refused before any side effect — order is untouched, and the buyer's
+    // payment can still be recovered via creditOrderToBalance.
+    expect((await getOrder(prisma, order.id))!.status).toBe("PROCESSING");
+    await expect(creditOrderToBalance(prisma, { orderId: order.id, adminId: 1 })).resolves.toMatchObject({
+      currency: "IDR",
+    });
+    expect((await getOrder(prisma, order.id))!.status).toBe("CANCELLED");
+  });
+
+  it("cancelOrder refuses a paid PROCESSING order the same way", async () => {
+    const order = await makeOrder("PROCESSING", { paidAt: new Date() });
+
+    await expect(cancelOrder(prisma, order.id, "admin_cancelled: test")).rejects.toMatchObject({
+      key: "error.order_paid_needs_credit",
+    });
+    expect((await getOrder(prisma, order.id))!.status).toBe("PROCESSING");
+  });
+
+  it("an unpaid PROCESSING order (paidAt null) is unaffected — reject/cancel still work directly", async () => {
+    const rejectable = await makeOrder("PROCESSING");
+    await expect(
+      rejectOrder(prisma, rejectable.id, { adminId: 1, reason: "out of stock" }),
+    ).resolves.toMatchObject({ status: "REJECTED" });
+
+    const cancellable = await makeOrder("PROCESSING");
+    await expect(cancelOrder(prisma, cancellable.id, "admin_cancelled: test")).resolves.toMatchObject({
+      status: "CANCELLED",
+    });
+  });
+
+  it("rejectOrder/cancelOrder allow a paid order that was already credited (defensive escape hatch)", async () => {
+    const order = await makeOrder("PROCESSING", { paidAt: new Date() });
+    await creditOrderToBalance(prisma, { orderId: order.id, adminId: 1 });
+    // creditOrderToBalance already moved it to CANCELLED (terminal), so both
+    // functions now refuse for the ordinary "already terminal" reason, not
+    // the paidAt guard — proving the guard doesn't block a legitimately
+    // already-credited order from being read/left alone.
+    await expect(rejectOrder(prisma, order.id, { adminId: 1, reason: "x" })).rejects.toMatchObject({
+      key: "error.order_not_pending_verification",
+    });
+    await expect(cancelOrder(prisma, order.id, "x")).resolves.toMatchObject({ status: "CANCELLED" });
+  });
+});
+
 // Finding #5 (audit-per-sku-delivery-flows-2026-07-13.md): performCheckout's
 // homogeneity/customerData guards already filter cart lines by
 // product.isActive, but createOrderFromCart itself read the cart via the
@@ -570,6 +660,21 @@ describe("createOrderFromCart — isActive filtering (Finding #5)", () => {
     const order = await createOrderFromCart(prisma, { user });
     const items = await prisma.orderItem.findMany({ where: { orderId: order!.id } });
     expect(items.map((i) => i.productId)).toEqual([product.id]);
+  });
+
+  // M-5 (backend audit 2026-07-31): createOrderFromCart must freeze the
+  // denomination's CURRENT deliveryType onto each OrderItem it creates, the
+  // same way it already does for warrantyDaysSnapshot — settlePaidOrder later
+  // reads this snapshot instead of the live denomination row (see
+  // settlePaidOrder.test.ts for the full scenario this protects against).
+  it("stamps deliveryTypeSnapshot from the denomination's current deliveryType onto every created OrderItem", async () => {
+    const { user, product } = sample;
+    await addToCart(prisma, user.id, product.id, 1);
+
+    const order = await createOrderFromCart(prisma, { user });
+    const items = await prisma.orderItem.findMany({ where: { orderId: order!.id } });
+    expect(items).toHaveLength(1);
+    expect(items[0]!.deliveryTypeSnapshot).toBe(product.deliveryType);
   });
 });
 

@@ -15,7 +15,24 @@ import type { Db } from "./_types";
 const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
 
 /**
- * IDR revenue for one delivered OrderItem line: unitPrice × quantity.
+ * IDR revenue for one delivered OrderItem line: unitPrice × quantity, minus
+ * this line's prorated share of the order's `bulkDiscountAmount +
+ * discountAmount` (voucher). Order-level discounts live only on the `Order`
+ * row and are never applied to `OrderItem.unitPrice`, so without this a
+ * discounted order's per-line/per-product profit reported the pre-discount
+ * (gross) revenue instead of what the shop actually banked — a healthy
+ * margin could show even on an order that genuinely lost money (2026-07
+ * backend audit, M-1). The discount is split across lines by each line's
+ * share of the order's `subtotalAmount`: `lineDiscount = totalDiscount ×
+ * (lineSubtotal / orderSubtotal)`, using `Decimal` throughout (never float
+ * division — see the multiply-before-divide order below). `walletUsed` is
+ * deliberately excluded: it's a payment method (money the shop already
+ * holds), not a discount, so it doesn't reduce banked revenue.
+ *
+ * `order` is optional so callers that only need gross line revenue (e.g.
+ * `topProducts`) can omit it and keep the pre-fix behavior; every caller
+ * feeding `profitSummarySince`/`topProductsByMargin` must pass it.
+ *
  * `OrderItem.unitPrice` is ALWAYS the catalog's central-IDR
  * `Denomination.price`, written once at order creation (orders.ts
  * `unitPrice()`, used by createOrderFromCart/createOrderDirect) and never
@@ -28,8 +45,25 @@ const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
  * bug inflated USDT-paid orders' reported revenue by ~fxRate (2026-07
  * financial audit).
  */
-function orderItemRevenueIdr(item: { unitPrice: Decimal.Value; quantity: number }): Decimal {
-  return new Decimal(item.unitPrice).times(item.quantity);
+function orderItemRevenueIdr(item: {
+  unitPrice: Decimal.Value;
+  quantity: number;
+  order?: {
+    subtotalAmount: Decimal.Value;
+    bulkDiscountAmount: Decimal.Value;
+    discountAmount: Decimal.Value;
+  };
+}): Decimal {
+  const lineGross = new Decimal(item.unitPrice).times(item.quantity);
+  if (!item.order) return lineGross;
+  const totalDiscount = new Decimal(item.order.bulkDiscountAmount).plus(item.order.discountAmount);
+  const orderSubtotal = new Decimal(item.order.subtotalAmount);
+  if (totalDiscount.isZero() || orderSubtotal.isZero()) return lineGross;
+  // Multiply before dividing so the only division happens once, at the end,
+  // against the full-precision numerator — avoids compounding rounding from
+  // an intermediate (lineSubtotal / orderSubtotal) ratio.
+  const lineDiscount = totalDiscount.times(lineGross).div(orderSubtotal);
+  return lineGross.minus(lineDiscount);
 }
 
 /** Converts an already-IDR amount into a bucket's own currency: unconverted
@@ -150,33 +184,70 @@ export interface TopProduct {
   revenue: string;
 }
 
-/** Best-selling products by delivered quantity, with revenue (unit_price ×
- * quantity summed in JS — OrderItem has no stored line subtotal). */
-export async function topProducts(db: Db, limit = 10): Promise<TopProduct[]> {
-  const items = await db.orderItem.findMany({
-    where: { order: { status: OrderStatus.DELIVERED } },
-    select: { productId: true, quantity: true, unitPrice: true },
+/**
+ * Best-selling products since `since`, ranked by delivered quantity — the
+ * ranking itself is a bounded, indexed `groupBy` (`ix_order_items_product_id`
+ * + `ix_orders_status_delivered`, Task 41) instead of pulling every delivered
+ * OrderItem row into JS just to bucket-and-sort the top N (M-33, 2026-07
+ * backend audit: this used to be an unbounded `findMany` over the entire
+ * order-history table on every Reports-page request).
+ *
+ * `since` is required and positional, matching `revenueSummary` and
+ * `profitSummarySince` in this file — every windowed query in this module
+ * takes its bound the same way rather than three different conventions.
+ *
+ * Revenue is GROSS (unit_price × quantity, no order-level discount proration)
+ * — deliberately, not a bug. `orderItemRevenueIdr`'s proration (M-1) needs
+ * each line's parent `order.subtotalAmount`/`bulkDiscountAmount`/
+ * `discountAmount`, which isn't summable through `groupBy`'s `_sum` (it only
+ * sums a stored column, never unitPrice×quantity, let alone a
+ * discount-prorated variant of it). Ranking is unaffected either way — it
+ * was already by quantity sold, not revenue, before this fix — so this stays
+ * consistent with the pre-existing "topProducts is gross, topProductsByMargin
+ * is net" split documented on orderItemRevenueIdr above. A caller that needs
+ * discount-aware profit per product already has `topProductsByMargin`.
+ *
+ * The revenue figure is filled in with a second query scoped to just the top
+ * N product ids (not the whole table), so the "no full-table scan" property
+ * holds for both phases.
+ */
+export async function topProducts(db: Db, since: Date, limit = 10): Promise<TopProduct[]> {
+  const grouped = await db.orderItem.groupBy({
+    by: ["productId"],
+    where: { order: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } } },
+    _sum: { quantity: true },
+    // Secondary key on productId gives deterministic tie-breaking — SQLite
+    // does not guarantee a stable order for rows tied on _sum.quantity.
+    orderBy: [{ _sum: { quantity: "desc" } }, { productId: "asc" }],
+    take: limit,
   });
-  // OrderItem is keyed by denomination (column is `product_id`).
-  const products = await db.denomination.findMany({ select: { id: true, name: true } });
+  if (grouped.length === 0) return [];
+
+  const productIds = grouped.map((g) => g.productId);
+  const [items, products] = await Promise.all([
+    db.orderItem.findMany({
+      where: {
+        productId: { in: productIds },
+        order: { status: OrderStatus.DELIVERED, deliveredAt: { gte: since } },
+      },
+      select: { productId: true, quantity: true, unitPrice: true },
+    }),
+    // OrderItem is keyed by denomination (column is `product_id`).
+    db.denomination.findMany({ where: { id: { in: productIds } }, select: { id: true, name: true } }),
+  ]);
   const nameById = new Map(products.map((p) => [p.id, p.name]));
 
-  const acc = new Map<number, { qty: number; revenue: Decimal }>();
+  const revenueByProduct = new Map<number, Decimal>();
   for (const it of items) {
-    const a = acc.get(it.productId) ?? { qty: 0, revenue: new Decimal(0) };
-    a.qty += it.quantity;
-    a.revenue = a.revenue.plus(orderItemRevenueIdr(it));
-    acc.set(it.productId, a);
+    revenueByProduct.set(it.productId, (revenueByProduct.get(it.productId) ?? new Decimal(0)).plus(orderItemRevenueIdr(it)));
   }
-  return [...acc.entries()]
-    .map(([productId, a]) => ({
-      productId,
-      name: nameById.get(productId) ?? `#${productId}`,
-      qty: a.qty,
-      revenue: q4(a.revenue).toString(),
-    }))
-    .sort((a, b) => b.qty - a.qty)
-    .slice(0, limit);
+
+  return grouped.map((g) => ({
+    productId: g.productId,
+    name: nameById.get(g.productId) ?? `#${g.productId}`,
+    qty: g._sum.quantity ?? 0,
+    revenue: q4(revenueByProduct.get(g.productId) ?? new Decimal(0)).toString(),
+  }));
 }
 
 export interface TopProductMargin {
@@ -207,6 +278,7 @@ export async function topProductsByMargin(db: Db, since: Date, limit = 5): Promi
       quantity: true,
       unitPrice: true,
       product: { select: { name: true, costPrice: true, product: { select: { name: true } } } },
+      order: { select: { subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true } },
     },
   });
 
@@ -273,7 +345,7 @@ export async function profitSummarySince(db: Db, since: Date): Promise<ProfitSum
       quantity: true,
       unitPrice: true,
       product: { select: { costPrice: true } },
-      order: { select: { currency: true, fxRate: true } },
+      order: { select: { currency: true, fxRate: true, subtotalAmount: true, bulkDiscountAmount: true, discountAmount: true } },
     },
   });
 

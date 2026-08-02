@@ -156,6 +156,28 @@ describe("POST /api/users/:userId/wallet", () => {
     expect(res.statusCode).toBe(403);
   });
 
+  // M-3 (backend audit 2026-07-31): `new Decimal("NaN")` constructs
+  // successfully (doesn't throw the existing try/catch) and `.isZero()`
+  // returns false for NaN, so a NaN delta previously sailed through and
+  // would have poisoned the wallet balance.
+  it("rejects a NaN delta with 400, same as an unparsable amount", async () => {
+    const res = await postJson(`/api/users/${customerId}/wallet`, cookie, csrf, {
+      delta: "NaN",
+      note: "x",
+    });
+    expect(res.statusCode).toBe(400);
+    const before = (await prisma.user.findUniqueOrThrow({ where: { id: customerId } })).walletBalance.toString();
+    expect(before).toBe("0");
+  });
+
+  it("rejects an Infinity delta with 400", async () => {
+    const res = await postJson(`/api/users/${customerId}/wallet`, cookie, csrf, {
+      delta: "Infinity",
+      note: "x",
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
   it("is atomic: audit-log failure rolls back the balance change and ledger row too", async () => {
     // adjustWallet (no internal $transaction of its own — its doc comment
     // requires the CALLER to wrap it) writes the new wallet balance AND a
@@ -241,6 +263,27 @@ describe("POST /api/vouchers", () => {
     const res = await postJson("/api/vouchers", cookie, "bad", { code: "SAVE10", type: "percent", value: "10" });
     expect(res.statusCode).toBe(403);
   });
+
+  // M-3 (backend audit 2026-07-31): `new Decimal("NaN")` constructs
+  // successfully (doesn't throw the existing try/catch), so a NaN value or
+  // min_purchase previously sailed straight through to createVoucher and
+  // would have persisted.
+  it("rejects a NaN value with 400", async () => {
+    const res = await postJson("/api/vouchers", cookie, csrf, { code: "NANVAL", type: "percent", value: "NaN" });
+    expect(res.statusCode).toBe(400);
+    expect(await prisma.voucher.findUnique({ where: { code: "NANVAL" } })).toBeNull();
+  });
+
+  it("rejects a NaN min_purchase with 400", async () => {
+    const res = await postJson("/api/vouchers", cookie, csrf, {
+      code: "NANMINP",
+      type: "percent",
+      value: "10",
+      min_purchase: "NaN",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(await prisma.voucher.findUnique({ where: { code: "NANMINP" } })).toBeNull();
+  });
 });
 
 describe("POST /api/vouchers/:voucherId/toggle + /delete", () => {
@@ -265,6 +308,7 @@ describe("POST /api/vouchers/:voucherId/toggle + /delete", () => {
     expect(await prisma.voucher.findUnique({ where: { id: voucher.id } })).toBeNull();
     const audit = await prisma.auditLog.findFirst({ where: { action: "voucher_delete" } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("SAVE10");
   });
 
   it("delete 404s for a non-existent voucher", async () => {
@@ -301,6 +345,29 @@ describe("POST /api/vouchers/:voucherId/update", () => {
     expect(updated.startAt?.toISOString()).toBe("2026-07-27T17:00:00.000Z");
     expect(updated.expiresAt?.toISOString()).toBe("2026-07-28T16:59:59.000Z");
   });
+
+  // M-3 (backend audit 2026-07-31): `new Decimal("NaN")` constructs
+  // successfully (doesn't throw the existing try/catch), so a NaN value or
+  // max_discount previously sailed straight through to updateVoucher.
+  it("rejects a NaN value with 400, leaving the existing value untouched", async () => {
+    const create = await postJson("/api/vouchers", cookie, csrf, { code: "SAVE10", type: "percent", value: "10" });
+    const { voucher } = create.json() as { voucher: { id: number } };
+
+    const res = await postJson(`/api/vouchers/${voucher.id}/update`, cookie, csrf, { value: "NaN" });
+    expect(res.statusCode).toBe(400);
+    const fresh = await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } });
+    expect(Number(fresh.value)).toBe(10);
+  });
+
+  it("rejects a NaN max_discount with 400", async () => {
+    const create = await postJson("/api/vouchers", cookie, csrf, { code: "SAVE10", type: "percent", value: "10" });
+    const { voucher } = create.json() as { voucher: { id: number } };
+
+    const res = await postJson(`/api/vouchers/${voucher.id}/update`, cookie, csrf, { max_discount: "NaN" });
+    expect(res.statusCode).toBe(400);
+    const fresh = await prisma.voucher.findUniqueOrThrow({ where: { id: voucher.id } });
+    expect(fresh.maxDiscount).toBeNull();
+  });
 });
 
 describe("POST /api/support/:ticketId/reply + /close", () => {
@@ -312,6 +379,7 @@ describe("POST /api/support/:ticketId/reply + /close", () => {
     expect(messages.some((m) => m.content === "On it!")).toBe(true);
     const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_reply" } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain(String(ticket.id));
   });
 
   it("reply rejects an empty message with 400", async () => {
@@ -327,6 +395,7 @@ describe("POST /api/support/:ticketId/reply + /close", () => {
     expect((await prisma.supportTicket.findUniqueOrThrow({ where: { id: ticket.id } })).status).toBe("CLOSED");
     const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_close" } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain(String(ticket.id));
   });
 
   it("close 404s for a non-existent ticket", async () => {
@@ -423,11 +492,11 @@ describe("GET /api/support", () => {
     expect(body.items.map((t) => t.id)).toEqual([assigned.id]);
   });
 
-  it("stamps isOverdue: true on an OPEN, never-replied ticket older than the 4h cutoff", async () => {
+  it("stamps isOverdue: true on an OPEN ticket whose lastStatusChangeAt is older than the 4h cutoff", async () => {
     const overdue = await createTicket(prisma, customerId, "Old open ticket");
     await prisma.supportTicket.update({
       where: { id: overdue.id },
-      data: { createdAt: addMinutes(new Date(), -300) }, // 5h old — past the 4h overdue cutoff
+      data: { lastStatusChangeAt: addMinutes(new Date(), -300) }, // 5h since wait-clock reset — past the 4h cutoff
     });
     const fresh = await createTicket(prisma, customerId, "Fresh open ticket"); // just created
 
@@ -440,11 +509,11 @@ describe("GET /api/support", () => {
     expect(freshItem?.isOverdue).toBe(false);
   });
 
-  it("filters by overdue=true — only OPEN, never-replied tickets older than the 4h cutoff", async () => {
+  it("filters by overdue=true — only OPEN tickets whose lastStatusChangeAt is older than the 4h cutoff", async () => {
     const overdue = await createTicket(prisma, customerId, "Old open ticket");
     await prisma.supportTicket.update({
       where: { id: overdue.id },
-      data: { createdAt: addMinutes(new Date(), -300) },
+      data: { lastStatusChangeAt: addMinutes(new Date(), -300) },
     });
     const fresh = await createTicket(prisma, customerId, "Fresh open ticket");
 

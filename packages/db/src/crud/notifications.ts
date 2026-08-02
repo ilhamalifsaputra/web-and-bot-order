@@ -10,9 +10,11 @@
  */
 import type { PrismaClient, Tx } from "../client";
 import { config } from "@app/core/config";
+import { logger } from "@app/core/logger";
 import {
   NotificationEvent,
   NotificationStatus,
+  BroadcastStatus,
   langCode,
 } from "@app/core/enums";
 import type { Decimal } from "@app/core/money";
@@ -102,12 +104,17 @@ export async function enqueueAdminOverpaid(
 
 /**
  * Enqueue one admin DM per resolved admin alerting that a Bybit BSC order's
- * automated tracking pipeline failed post-detection (tracker lookup-failure
- * grace period exhausted, or a delivery throw after Bybit reported the
- * deposit Success) and needs manual action. Same fan-out-per-admin shape as
- * `enqueueAdminOverpaid`. `reason` is a short diagnostic string — never a
- * secret/credential, but still not the kind of detail a buyer should see,
- * hence an admin DM rather than anything customer-facing.
+ * automated tracking needs manual attention post-detection. Two triggers:
+ * (1) the tracker's lookup-failure grace period exhausted — non-terminal
+ * since M-11 (backend audit 2026-07-31): the order stays in
+ * PAYMENT_DETECTED/CONFIRMING (`recordBybitBscTrackingStale`) so a later
+ * genuine Bybit "Success" report can still auto-deliver it, this alert is
+ * just "an admin should sanity-check this one" — or (2) a delivery throw
+ * after Bybit reported the deposit Success, which DOES escalate the order to
+ * FAILED. Same fan-out-per-admin shape as `enqueueAdminOverpaid`. `reason` is
+ * a short diagnostic string — never a secret/credential, but still not the
+ * kind of detail a buyer should see, hence an admin DM rather than anything
+ * customer-facing.
  */
 export async function enqueueOrderPipelineFailed(
   db: Db,
@@ -157,6 +164,38 @@ export async function enqueueManualOrderAdminAlert(
           items: args.items,
           total: args.total.toString(),
           currency: args.currency,
+        }),
+      },
+    });
+  }
+}
+
+/**
+ * Enqueue one admin DM per resolved admin alerting that a payment-gateway
+ * webhook (TokoPay/PayDisini/NOWPayments) confirmed payment for an order that
+ * had already left PENDING_PAYMENT by the time the delivery transaction ran
+ * (M-10 fix, backend audit 2026-07-31) — routine, since
+ * `autoCancelExpiredOrders` cancels orders on a timer and can race a slow
+ * webhook. Nothing else recovers this automatically: the reconcile pollers
+ * only act on orders still PENDING_PAYMENT, and `reconcileFinances` doesn't
+ * scan ledger rows, so this needs a human to check whether the buyer actually
+ * paid and reconcile manually. Same fan-out-per-admin shape as
+ * `enqueueAdminOverpaid`. No-op if no admin is resolved.
+ */
+export async function enqueueAdminStalePayment(
+  db: Db,
+  args: { orderId: number; orderCode: string; gateway: string; trxId: string },
+): Promise<void> {
+  for (const adminId of await resolveAdminIds(db)) {
+    await db.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.ADMIN_STALE_PAYMENT,
+        orderId: args.orderId,
+        payloadJson: JSON.stringify({
+          chat_id: adminId,
+          order_code: args.orderCode,
+          gateway: args.gateway,
+          trx_id: args.trxId.slice(0, 300),
         }),
       },
     });
@@ -472,32 +511,93 @@ export async function enqueueRestockBroadcast(
 }
 
 /**
+ * Cap on how many outbox rows a single `createMany` call inside
+ * `enqueueFlashSaleBroadcast` writes at once. SQLite has one writer for the
+ * whole shared `data/bot.db`, so even a single `createMany` call briefly holds
+ * that writer lock for however long it takes to insert all of its rows —
+ * chunking keeps each individual write short (a few hundred rows) regardless
+ * of how large the customer base grows, instead of one insert scaling with it.
+ */
+export const FLASH_SALE_BROADCAST_CHUNK_SIZE = 500;
+
+/**
  * Enqueue a "flash sale is live" DM to every non-banned customer with a linked
  * Telegram account, for a denomination whose scheduled sale window has just
- * opened (see the order-bot's `announceStartedFlashSales` job — that job stamps
- * `flashAnnouncedAt` in the same transaction, which is what stops the same sale
- * fanning out twice). Same shape as `enqueueRestockBroadcast`: one `createMany`
- * rather than a per-row loop, because this targets the whole customer base
- * (potentially hundreds/thousands of recipients). No-op (returns 0) if there
- * are no eligible customers.
+ * opened. MUST be called with the top-level `PrismaClient`, never a `tx` — see
+ * the order-bot's `announceStartedFlashSales` job, which claims
+ * `flashAnnouncedAt` in its own short transaction and only then calls this
+ * function outside that transaction (H-7 fix, backend audit 2026-07-31): the
+ * claim and the fan-out no longer share one transaction, because holding
+ * SQLite's single writer lock for the whole customer-base enumeration +
+ * insert would starve every other concurrent writer (checkout, settlement,
+ * cancellation, the outbox dispatcher's own claim) past their busy_timeout.
+ * The customer `findMany` runs unguarded (a plain read), and the outbox rows
+ * are written in `FLASH_SALE_BROADCAST_CHUNK_SIZE`-row chunks — each
+ * `createMany` call is its own short, self-contained write — rather than one
+ * `createMany` sized to the whole customer base. No-op (returns 0, no
+ * `Broadcast` row) if there are no eligible customers.
  *
  * Prices and the end time arrive here as already-formatted display strings
  * (shop currency via `formatIdr`, shop timezone via `localize`) — the caller
  * owns that formatting, exactly like ORDER_DELIVERED's `delivered_at`, so the
  * dispatcher never has to do money or timezone math at send time.
  *
- * Also writes a `Broadcast` row with status SENT so the announcement shows up
- * in the web-admin Broadcast History table alongside the restock ones; the
- * sent/total counts are optimistic (assume delivery succeeds) since the actual
- * per-recipient send happens later, asynchronously, via the outbox dispatcher.
+ * The `Broadcast` row (so the announcement shows up in the web-admin
+ * Broadcast History table alongside the restock ones) is written BEFORE the
+ * chunk loop below, as SENDING with `sentCount: 0`, and is updated after each
+ * chunk lands and once more at the very end — NOT written only after every
+ * chunk has already succeeded (H-7 follow-up fix, backend audit
+ * 2026-07-31/08-01: the original version of this split wrote the Broadcast
+ * row only on full success, so a chunk throwing partway through left ZERO
+ * trace in Broadcast History even though the earlier chunks' `createMany`
+ * calls had already committed real, already-delivered-to-the-dispatcher
+ * outbox rows for those customers — directly contradicting
+ * `announceStartedFlashSales`'s own guidance to check Broadcast History after
+ * a partial failure). If a chunk throws, the row is flipped to FAILED with a
+ * `failureReason` and its `sentCount` frozen at however many customers the
+ * successful chunks already reached, then the original error is re-thrown so
+ * the caller's existing logging still fires — so Broadcast History now always
+ * reflects reality: SENT with the full count on success, or FAILED with an
+ * honest partial `sentCount` on a partial failure. Total/sent counts here are
+ * otherwise optimistic (assume delivery succeeds) since the actual
+ * per-recipient send happens later, asynchronously, via the outbox
+ * dispatcher.
  *
  * `message` here MUST be kept in sync (plain-text, same content) with the HTML
  * template for NotificationEvent.FLASH_SALE_BROADCAST in
  * packages/outbox-dispatcher/src/templates.ts — that's the one actually sent to
  * customers; this is only what the admin sees in the History table.
+ *
+ * Both terminal status writes (the SENT-flip on success, the FAILED-flip in
+ * the `catch`) are themselves ordinary SQLite writes that can fail under the
+ * exact writer contention this whole function exists to relieve — so neither
+ * is allowed to leave the row silently stuck (H-7 follow-up fix #2, backend
+ * audit 2026-07-31/08-01):
+ * - The row is created with `claimedAt` set, the same "atomically claimed"
+ *   marker `claimNextDueBroadcast` sets on the admin-compose broadcast path.
+ *   That's what makes `reapStaleBroadcasts` (`crud/broadcasts.ts`) able to see
+ *   this row at all — its `claimedAt: { lt: staleCutoff }` filter matches
+ *   nothing on a NULL column, so a row created without it would be invisible
+ *   to that existing stale-claim safety net forever. With `claimedAt` set, a
+ *   row that never reaches SENT or FAILED here (because BOTH the primary
+ *   write and its own recovery write failed) is still reclaimed as FAILED by
+ *   `reapStaleBroadcasts`, which `drainBroadcasts` already runs on every tick
+ *   — no new job needed.
+ * - The FAILED-flip in `catch` is itself wrapped in try/catch: if that write
+ *   ALSO throws (a double fault), the secondary error is logged but NEVER
+ *   allowed to replace the original chunk error in what gets re-thrown — a
+ *   caller catching this must always see the real root cause, not a masking
+ *   failure from the recovery attempt.
+ * - The trailing SENT-flip is also wrapped: if it throws, all customers WERE
+ *   still successfully enqueued (the loop above already completed), so this
+ *   function does NOT throw over a purely cosmetic bookkeeping failure — it
+ *   logs and returns `users.length` as normal. The row is left SENDING with
+ *   `claimedAt` set, so `reapStaleBroadcasts` reclaims it as FAILED later;
+ *   that terminal status ends up misleading for what was actually a full
+ *   success, but "eventually FAILED" beats "stuck forever."
  */
 export async function enqueueFlashSaleBroadcast(
-  db: Db,
+  db: PrismaClient,
   args: {
     productName: string;
     denominationName: string;
@@ -513,23 +613,22 @@ export async function enqueueFlashSaleBroadcast(
     select: { telegramId: true, language: true },
   });
   if (!users.length) return 0;
-  await db.notificationOutbox.createMany({
-    data: users.map((u) => ({
-      event: NotificationEvent.FLASH_SALE_BROADCAST,
-      orderId: null,
-      payloadJson: JSON.stringify({
-        chat_id: Number(u.telegramId),
-        product_name: args.productName,
-        denomination_name: args.denominationName,
-        discount_percent: args.discountPercent,
-        old_price: args.oldPrice,
-        new_price: args.newPrice,
-        ends_at: args.endsAt,
-        buyer_language: langCode(u.language),
-      }),
-    })),
-  });
-  await db.broadcast.create({
+  const rows = users.map((u) => ({
+    event: NotificationEvent.FLASH_SALE_BROADCAST,
+    orderId: null,
+    payloadJson: JSON.stringify({
+      chat_id: Number(u.telegramId),
+      product_name: args.productName,
+      denomination_name: args.denominationName,
+      discount_percent: args.discountPercent,
+      old_price: args.oldPrice,
+      new_price: args.newPrice,
+      ends_at: args.endsAt,
+      buyer_language: langCode(u.language),
+    }),
+  }));
+
+  const bc = await db.broadcast.create({
     data: {
       message:
         `⚡ FLASH SALE — ${args.discountPercent}% OFF\n\n` +
@@ -538,15 +637,79 @@ export async function enqueueFlashSaleBroadcast(
         `⏳ Ends: ${args.endsAt}\n\n` +
         `Grab it before the timer runs out!`,
       segment: "ALL",
-      status: "SENT",
+      status: BroadcastStatus.SENDING,
       totalCount: users.length,
-      sentCount: users.length,
+      sentCount: 0,
       failedCount: 0,
       createdById: args.createdById ?? null,
       scheduledAt: null,
-      sentAt: new Date(),
+      // Same "atomically claimed" marker claimNextDueBroadcast sets — without
+      // it, reapStaleBroadcasts's `claimedAt: { lt: staleCutoff }` filter can
+      // never match this row (NULL never compares less-than anything), so a
+      // row stuck in SENDING here would be invisible to that safety net
+      // forever (H-7 follow-up fix #2, backend audit 2026-07-31/08-01).
+      claimedAt: new Date(),
+      sentAt: null,
     },
   });
+
+  try {
+    for (let i = 0; i < rows.length; i += FLASH_SALE_BROADCAST_CHUNK_SIZE) {
+      const chunk = rows.slice(i, i + FLASH_SALE_BROADCAST_CHUNK_SIZE);
+      await db.notificationOutbox.createMany({ data: chunk });
+      // Reflect progress after every chunk, not just at the end, so a crash
+      // between chunks still leaves an accurate partial sentCount behind.
+      await db.broadcast.update({ where: { id: bc.id }, data: { sentCount: { increment: chunk.length } } });
+    }
+  } catch (err) {
+    try {
+      await db.broadcast.update({
+        where: { id: bc.id },
+        data: {
+          status: BroadcastStatus.FAILED,
+          failureReason: (
+            "Enqueueing the customer fan-out failed partway through — sentCount reflects how many customers " +
+            "were already queued the DM before the failure; the remainder were never reached. Re-announcing " +
+            "this sale (e.g. by re-scheduling it) will re-notify the WHOLE customer base with no de-duplication " +
+            "against those already reached here, so anyone covered by sentCount will receive it twice."
+          ).slice(0, 500),
+        },
+      });
+    } catch (recoveryErr) {
+      // Double fault: the row also failed to flip to FAILED (same writer
+      // contention that caused the original chunk failure is a likely cause).
+      // Log it, but do NOT let it replace the original error below — a
+      // caller catching this must see the real root cause. The row is left
+      // SENDING, but claimedAt is already set above, so reapStaleBroadcasts
+      // reclaims it as FAILED once BROADCAST_STALE_CLAIM_MS passes instead of
+      // it being lost forever.
+      logger.error(
+        { err: recoveryErr, broadcastId: bc.id },
+        "Failed to flip a flash-sale Broadcast row to FAILED after its customer fan-out already failed — the row stays SENDING for now, but reapStaleBroadcasts will reclaim it as FAILED once its stale-claim window passes",
+      );
+    }
+    throw err;
+  }
+
+  try {
+    await db.broadcast.update({
+      where: { id: bc.id },
+      data: { status: BroadcastStatus.SENT, sentAt: new Date() },
+    });
+  } catch (err) {
+    // Every customer WAS successfully enqueued — the loop above already
+    // completed — so this is purely the terminal bookkeeping write failing,
+    // not a delivery failure. Don't throw over it: the caller (and this
+    // function's return value) should still reflect the real outcome. The
+    // row is left SENDING with claimedAt set, so reapStaleBroadcasts
+    // reclaims it as FAILED later — a misleading terminal status for what
+    // was actually a full success, but "eventually FAILED" beats "stuck
+    // forever," and the sentCount on the row already shows the true count.
+    logger.error(
+      { err, broadcastId: bc.id },
+      "Enqueued the whole flash-sale customer fan-out successfully, but failed to flip its Broadcast row from SENDING to SENT — the row stays SENDING (with an accurate sentCount) until reapStaleBroadcasts reclaims it as FAILED, even though delivery itself was not affected",
+    );
+  }
   return users.length;
 }
 
@@ -576,6 +739,13 @@ export async function outboxStatusCounts(db: Db): Promise<Record<string, number>
   const counts: Record<string, number> = {};
   for (const g of grouped) counts[g.status] = g._count._all;
   return counts;
+}
+
+/** A single outbox row's `event` type — just enough for an audit-log `details`
+ * sentence (e.g. "Requeued a ${event} notification for delivery.") without
+ * pulling the full row (payload JSON, timestamps, etc.) into a route. */
+export function getNotification(db: Db, notifId: number) {
+  return db.notificationOutbox.findUnique({ where: { id: notifId }, select: { event: true } });
 }
 
 /**

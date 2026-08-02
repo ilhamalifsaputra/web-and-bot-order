@@ -300,6 +300,17 @@ export const NotificationEvent = {
   // gated the same way as ORDER_DELIVERED — skipped entirely when no channel
   // is configured, rather than left as a dead PENDING row.
   BULK_PURCHASE_BROADCAST: "BULK_PURCHASE_BROADCAST",
+  // Admin DM (not a channel post): a payment-gateway webhook (TokoPay/
+  // PayDisini/NOWPayments) confirmed payment for an order that had already
+  // left PENDING_PAYMENT by the time the delivery transaction ran (M-10 fix,
+  // backend audit 2026-07-31) — typically `autoCancelExpiredOrders` cancelled
+  // it on a timer between the callback arriving and the transaction running.
+  // Nothing else recovers this automatically: the reconcile pollers only fire
+  // for orders still PENDING_PAYMENT, and reconcileFinances doesn't scan
+  // ledger rows, so the payment needs a human to reconcile. payload carries
+  // `chat_id` (the admin's telegram id) plus order_code/gateway/trx_id, same
+  // fan-out-per-admin shape as ADMIN_OVERPAID.
+  ADMIN_STALE_PAYMENT: "ADMIN_STALE_PAYMENT",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];

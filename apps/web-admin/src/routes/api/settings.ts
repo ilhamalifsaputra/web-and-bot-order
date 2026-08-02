@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
 import {
@@ -20,6 +21,9 @@ import {
   hashPassword,
   verifyPassword,
   passwordHashKey,
+  sessionJtiKey,
+  newJti,
+  makeSession,
   twoFaSecretKey,
   twoFaPendingKey,
   generateTotpSecret,
@@ -502,8 +506,30 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     const stored = await getSetting(prisma, key);
     if (!stored || !verifyPassword(currentPassword, stored)) return reply.code(403).send({ error: "Current password is incorrect." });
     await setSetting(prisma, key, hashPassword(newPassword));
-    await logAdminAction(prisma, { adminId: req.admin!.userId, action: "web_password_change", targetType: "setting" });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "web_password_change",
+      targetType: "setting",
+      details: "Changed their web-admin login password.",
+    });
     logger.info(`Web admin with Telegram id ${req.admin!.telegramId} changed their own password`);
+
+    // Rotate the session jti (M-16 fix — mirrors the storefront's Storefront-2
+    // guard and this app's own /reset and /login) so a stolen session cookie
+    // stops authenticating the moment its owner changes their password. The
+    // cookie is re-issued for THIS request only, so the admin who just changed
+    // it stays logged in on their own device — every other device's cookie
+    // (still carrying the old jti) is what gets invalidated.
+    const jti = newJti();
+    await setSetting(prisma, sessionJtiKey(req.admin!.telegramId), jti);
+    const { raw } = makeSession(req.admin!.userId, req.admin!.telegramId, jti);
+    reply.setCookie(config.WEB_COOKIE_NAME, raw, {
+      path: "/",
+      maxAge: config.WEB_SESSION_TTL_HOURS * 3600,
+      httpOnly: true,
+      sameSite: "lax",
+      secure: config.WEB_COOKIE_SECURE,
+    });
     return reply.send({ ok: true });
   });
 
@@ -528,7 +554,12 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     if (!verifyTotp(pending, code)) return reply.code(400).send({ error: "That code is wrong — check your authenticator." });
     await setSetting(prisma, twoFaSecretKey(tg), pending);
     await deleteSetting(prisma, twoFaPendingKey(tg));
-    await logAdminAction(prisma, { adminId: req.admin!.userId, action: "web_2fa_enable", targetType: "setting" });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "web_2fa_enable",
+      targetType: "setting",
+      details: "Enabled two-factor authentication (2FA) for their web-admin login.",
+    });
     return reply.send({ ok: true });
   });
 
@@ -541,7 +572,12 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
     if (!stored || !verifyPassword(body.current_password ?? "", stored)) return reply.code(403).send({ error: "Current password is incorrect." });
     if (!verifyTotp(secret, body.totp_code ?? "")) return reply.code(400).send({ error: "That 2FA code is wrong." });
     await deleteSetting(prisma, twoFaSecretKey(tg));
-    await logAdminAction(prisma, { adminId: req.admin!.userId, action: "web_2fa_disable", targetType: "setting" });
+    await logAdminAction(prisma, {
+      adminId: req.admin!.userId,
+      action: "web_2fa_disable",
+      targetType: "setting",
+      details: "Disabled two-factor authentication (2FA) for their web-admin login.",
+    });
     return reply.send({ ok: true });
   });
 }

@@ -90,6 +90,31 @@ describe("createVoucher discountPercent bounds (PERCENT type)", () => {
     const v = await createVoucher(prisma, { code: "ZEROFIXED", type: VoucherType.FIXED, value: "0" });
     expect(Number(v.value)).toBe(0);
   });
+
+  // M-3 (backend audit 2026-07-31): `new Decimal("NaN")` constructs
+  // successfully and every inequality guard above (`.lte(0)`, `.gt(100)`,
+  // `.isNegative()`) returns false for NaN, so a NaN value previously sailed
+  // straight through both bounds checks and persisted.
+  it("rejects a NaN PERCENT value", async () => {
+    await expect(
+      createVoucher(prisma, { code: "NANPCT", type: VoucherType.PERCENT, value: "NaN" }),
+    ).rejects.toMatchObject({ key: "error.invalid_discount_percent" });
+    expect(await prisma.voucher.findUnique({ where: { code: "NANPCT" } })).toBeNull();
+  });
+
+  it("rejects an Infinity PERCENT value", async () => {
+    await expect(
+      createVoucher(prisma, { code: "INFPCT", type: VoucherType.PERCENT, value: "Infinity" }),
+    ).rejects.toMatchObject({ key: "error.invalid_discount_percent" });
+    expect(await prisma.voucher.findUnique({ where: { code: "INFPCT" } })).toBeNull();
+  });
+
+  it("rejects a NaN FIXED value (isNegative() alone is false for NaN)", async () => {
+    await expect(
+      createVoucher(prisma, { code: "NANFIXED", type: VoucherType.FIXED, value: "NaN" }),
+    ).rejects.toMatchObject({ key: "error.invalid_discount_fixed_value" });
+    expect(await prisma.voucher.findUnique({ where: { code: "NANFIXED" } })).toBeNull();
+  });
 });
 
 /** Minimal ALL-scope VoucherLike builder — every field applyVoucherToSubtotal
@@ -245,6 +270,26 @@ describe("applyVoucherToSubtotal", () => {
   it("maxDiscount of exactly 0 caps an otherwise-positive discount at exactly 0 (pins the `!= null` check against a future truthy-check regression, since maxDiscount: 0 is falsy)", () => {
     const v = baseVoucher({ type: VoucherType.PERCENT, value: "10", maxDiscount: "0" });
     const discount = applyVoucherToSubtotal(v, "20.00", "20.00");
+    expect(discount.equals("0")).toBe(true);
+  });
+
+  // M-3 (backend audit 2026-07-31): createVoucher/updateVoucher now reject a
+  // NaN value up front, but this pure function is the last line of defense
+  // for a bad value reaching it some other way (a pre-guard row, or hand-
+  // edited data) — `isNegative()` alone is false for NaN, so without the
+  // `!discount.isFinite()` check a NaN discount would sail past the floor
+  // and poison orders.ts's `subtotal.minus(bulkDiscount).minus(discount)`.
+  it("floors a NaN-computed FIXED discount at zero instead of letting NaN poison the order total", () => {
+    const v = baseVoucher({ type: VoucherType.FIXED, value: "NaN" });
+    const discount = applyVoucherToSubtotal(v, "20.00", "20.00");
+    expect(discount.isFinite()).toBe(true);
+    expect(discount.equals("0")).toBe(true);
+  });
+
+  it("floors a NaN-computed PERCENT discount at zero instead of letting NaN poison the order total", () => {
+    const v = baseVoucher({ type: VoucherType.PERCENT, value: "NaN" });
+    const discount = applyVoucherToSubtotal(v, "20.00", "20.00");
+    expect(discount.isFinite()).toBe(true);
     expect(discount.equals("0")).toBe(true);
   });
 });
@@ -511,6 +556,26 @@ describe("updateVoucher value bounds (mirrors createVoucher's guard)", () => {
     const updated = await updateVoucher(prisma, v.id, { value: "50" });
     expect(Number(updated!.value)).toBe(50);
   });
+
+  // M-3 (backend audit 2026-07-31): same NaN-sails-past-every-inequality gap
+  // as createVoucher, but on the update path.
+  it("rejects a NaN PERCENT value update", async () => {
+    const v = await createVoucher(prisma, { code: "UPDNANPCT", type: VoucherType.PERCENT, value: "10" });
+    await expect(updateVoucher(prisma, v.id, { value: "NaN" })).rejects.toMatchObject({
+      key: "error.invalid_discount_percent",
+    });
+    const fresh = await prisma.voucher.findUnique({ where: { id: v.id } });
+    expect(Number(fresh!.value)).toBe(10);
+  });
+
+  it("rejects a NaN FIXED value update", async () => {
+    const v = await createVoucher(prisma, { code: "UPDNANFIXED", type: VoucherType.FIXED, value: "10" });
+    await expect(updateVoucher(prisma, v.id, { value: "NaN" })).rejects.toMatchObject({
+      key: "error.invalid_discount_fixed_value",
+    });
+    const fresh = await prisma.voucher.findUnique({ where: { id: v.id } });
+    expect(Number(fresh!.value)).toBe(10);
+  });
 });
 
 describe("deriveVoucherStatus", () => {
@@ -623,7 +688,15 @@ describe("getVoucherStats", () => {
     expect(stats.totalRedemptions).toBe(2);
   });
 
-  it("totalRedemptions stays correct even after a redeemed voucher's usedCount is decremented (cancellation)", async () => {
+  // Note: this seeds the DB directly to prove getVoucherStats counts
+  // VoucherRedemption rows regardless of usedCount, rather than exercising
+  // the real cancelOrder/releaseOrderHolds path — since M-2 (backend audit,
+  // 2026-07-31), a REAL cancellation deletes this row too (see
+  // voucher_application.test.ts), so this specific row/usedCount combination
+  // (redemption row present, usedCount back at 0) no longer occurs from an
+  // actual cancel/reject/expire; it's a synthetic case kept to pin down
+  // getVoucherStats' own counting behavior in isolation.
+  it("totalRedemptions counts a VoucherRedemption row independently of the voucher's usedCount", async () => {
     const category = await createCategory(prisma, "Streaming", "🎬");
     const parentProduct = await createCatalogProduct(prisma, { categoryId: category.id, name: "P" });
     await createDenomination(prisma, {
@@ -644,7 +717,7 @@ describe("getVoucherStats", () => {
     await prisma.voucher.update({ where: { id: v.id }, data: { usedCount: 0 } });
 
     const stats = await getVoucherStats(prisma);
-    expect(stats.totalRedemptions).toBe(1); // the VoucherRedemption row survives the cancellation
+    expect(stats.totalRedemptions).toBe(1); // counted by row existence, not usedCount
   });
 });
 

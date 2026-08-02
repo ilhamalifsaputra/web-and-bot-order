@@ -99,9 +99,10 @@ export async function closeTicket(db: Db, ticketId: number): Promise<bigint | nu
  * double-tap / race with an admin closing the same ticket concurrently.
  * Returns false when there was nothing to close. */
 export async function closeTicketByUser(db: Db, ticketId: number): Promise<boolean> {
+  const now = new Date();
   const res = await db.supportTicket.updateMany({
     where: { id: ticketId, status: { not: TicketStatus.CLOSED } },
-    data: { status: TicketStatus.CLOSED, closedAt: new Date() },
+    data: { status: TicketStatus.CLOSED, closedAt: now, lastStatusChangeAt: now },
   });
   return res.count === 1;
 }
@@ -141,7 +142,7 @@ export async function reopenTicket(
   }
   await db.supportTicket.update({
     where: { id: ticketId },
-    data: { status: TicketStatus.OPEN, closedAt: null },
+    data: { status: TicketStatus.OPEN, closedAt: null, lastStatusChangeAt: new Date() },
   });
   return { ok: true };
 }
@@ -178,13 +179,18 @@ export async function replyToTicket(
     where: { id: args.ticketId },
   });
   if (!ticket) return null;
+  const now = new Date();
   await db.supportTicket.update({
     where: { id: args.ticketId },
     data: {
       adminReply: args.reply,
       adminId: args.adminDbId,
       status: TicketStatus.REPLIED,
-      repliedAt: new Date(),
+      repliedAt: now,
+      lastStatusChangeAt: now,
+      // Set once — true first-response time, unlike repliedAt (overwritten
+      // on every admin reply). Mirrors addTicketMessage's ADMIN branch.
+      firstResponseAt: ticket.firstResponseAt ?? now,
     },
   });
   const user = await db.user.findUnique({ where: { id: ticket.userId } });
@@ -304,14 +310,14 @@ export interface TicketFilter {
   ids?: number[] | null;
 }
 
-/** How long after creation a still-OPEN, never-replied ticket counts as
- * overdue. The one knob behind the overdue rule below — change it here, not
- * at any call site. */
+/** How long an OPEN ticket can sit without its wait-clock (`lastStatusChangeAt`)
+ * advancing before it counts as overdue. The one knob behind the overdue rule
+ * below — change it here, not at any call site. */
 const OVERDUE_MINUTES = 240;
 
-/** Cutoff `Date` for the overdue rule: a ticket created before this instant
- * (and still OPEN + never replied) is overdue. Callers pass this into
- * `ticketWhere`/`getTicketStats` rather than each computing their own
+/** Cutoff `Date` for the overdue rule: a ticket whose `lastStatusChangeAt` is
+ * older than this instant (and is still OPEN) is overdue. Callers pass this
+ * into `ticketWhere`/`getTicketStats` rather than each computing their own
  * `addMinutes(now, -240)`, so the 4h figure lives in exactly one place. */
 export function overdueCutoff(now: Date = new Date()): Date {
   return addMinutes(now, -OVERDUE_MINUTES);
@@ -321,101 +327,140 @@ export function overdueCutoff(now: Date = new Date()): Date {
  * but for a single already-fetched row rather than a `where` clause — used by
  * the paged-list route to stamp each item with `isOverdue` without a second
  * per-row query. Takes the same `cutoff` (from `overdueCutoff`) so the list
- * route and `getTicketStats` can never disagree on the threshold. */
+ * route and `getTicketStats` can never disagree on the threshold.
+ *
+ * Deliberately NOT folded into `buildTicketConditions` below: this operates
+ * on a plain `{ status, lastStatusChangeAt }` object already in memory (the
+ * per-row "Overdue" badge, stamped after the page's rows are fetched), not on
+ * a query — there's no SQL/Prisma `where` fragment to share here, only the
+ * same threshold value (`cutoff`, sourced from the one `overdueCutoff`
+ * function), which this already takes as a parameter rather than
+ * recomputing. Unifying it with the query-side predicate would mean wrapping
+ * a two-line boolean check in the same {prisma, raw} condition shape for no
+ * reduction in duplication — the "overdue" *rule* has one source
+ * (`overdueCutoff`/`OVERDUE_MINUTES`); its three call sites just apply it in
+ * three structurally different contexts (a Prisma filter, a raw-SQL filter, a
+ * JS boolean).
+ *
+ * M-31 fix: keys on `lastStatusChangeAt` (the ticket's actual wait-clock
+ * reset point — after Task 38, stamped on every status transition) rather
+ * than `repliedAt`/`createdAt`. A customer follow-up on an already-answered
+ * ticket flips it back to OPEN via `addTicketMessage` WITHOUT clearing
+ * `repliedAt`, so the old `repliedAt IS NULL` term made such tickets
+ * invisible here forever. */
 export function isTicketOverdue(
-  ticket: { status: string; repliedAt: Date | null; createdAt: Date },
+  ticket: { status: string; lastStatusChangeAt: Date },
   cutoff: Date,
 ): boolean {
-  return ticket.status === TicketStatus.OPEN && ticket.repliedAt === null && ticket.createdAt < cutoff;
+  return ticket.status === TicketStatus.OPEN && ticket.lastStatusChangeAt < cutoff;
 }
 
-/** Overdue rule (single source of truth for the KPI/filter/badge alike) —
- * structurally enforced: `getTicketStats`'s `overdue` count calls this same
- * function (via `f.overdue`) rather than repeating the predicate inline, so
- * there is exactly one place that defines "overdue," not two copies that
- * happen to match. OPEN, never replied, and older than `cutoff` (see
- * `overdueCutoff`). */
-function ticketWhere(f: TicketFilter, cutoff: Date): Prisma.SupportTicketWhereInput {
-  const where: Prisma.SupportTicketWhereInput = {};
+/** One `{ prisma, raw }` pair per active filter term — the single place a new
+ * `TicketFilter` field gets translated into both a Prisma `where` fragment
+ * and its parameterized raw-SQL equivalent. `ticketWhere` and
+ * `ticketWhereRaw` are thin derivations of this list (AND-joined), so there
+ * is exactly one function to edit when a filter changes, not two hand-kept-
+ * in-sync copies — the M-36 audit finding: the two `where` builders had
+ * already drifted (the `{overdue:true}` branch used to unconditionally
+ * overwrite `where.status`/`where.lastStatusChangeAt` in the Prisma version
+ * while the raw version just added an extra `AND`, so combining an explicit
+ * `status` filter with `overdue: true` silently dropped the status filter on
+ * one path and produced a contradiction — 0 rows — on the other; see
+ * support.test.ts's "status filter + overdue" case, which fails against the
+ * old two-copies code). Every value that can come from request input (`q`,
+ * the CSV status/priority filters) is bound via Prisma's tagged-template
+ * parameter binding on the raw side — never string-interpolated — so the raw
+ * half can't become a SQL-injection vector. Raw-side column names are the
+ * `support_tickets`/`users` table columns (see the `@map`s on
+ * `SupportTicket`/`User` in schema.prisma), not the Prisma field names. */
+function buildTicketConditions(
+  f: TicketFilter,
+  cutoff: Date,
+): { prisma: Prisma.SupportTicketWhereInput; raw: Prisma.Sql }[] {
+  const conditions: { prisma: Prisma.SupportTicketWhereInput; raw: Prisma.Sql }[] = [];
   if (f.status != null) {
-    where.status = Array.isArray(f.status) ? { in: f.status } : f.status;
+    conditions.push({
+      prisma: { status: Array.isArray(f.status) ? { in: f.status } : f.status },
+      raw: Array.isArray(f.status)
+        ? Prisma.sql`status IN (${Prisma.join(f.status)})`
+        : Prisma.sql`status = ${f.status}`,
+    });
   }
   if (f.priority != null) {
-    where.priority = Array.isArray(f.priority) ? { in: f.priority } : f.priority;
+    conditions.push({
+      prisma: { priority: Array.isArray(f.priority) ? { in: f.priority } : f.priority },
+      raw: Array.isArray(f.priority)
+        ? Prisma.sql`priority IN (${Prisma.join(f.priority)})`
+        : Prisma.sql`priority = ${f.priority}`,
+    });
   }
   if (f.category != null) {
-    where.category = Array.isArray(f.category) ? { in: f.category } : f.category;
+    conditions.push({
+      prisma: { category: Array.isArray(f.category) ? { in: f.category } : f.category },
+      raw: Array.isArray(f.category)
+        ? Prisma.sql`category IN (${Prisma.join(f.category)})`
+        : Prisma.sql`category = ${f.category}`,
+    });
   }
-  if (f.assigned === "assigned") where.adminId = { not: null };
-  else if (f.assigned === "unassigned") where.adminId = null;
-  if (f.adminId != null) where.adminId = f.adminId;
-  if (f.ids != null) where.id = { in: f.ids };
+  if (f.assigned === "assigned") {
+    conditions.push({ prisma: { adminId: { not: null } }, raw: Prisma.sql`admin_id IS NOT NULL` });
+  } else if (f.assigned === "unassigned") {
+    conditions.push({ prisma: { adminId: null }, raw: Prisma.sql`admin_id IS NULL` });
+  }
+  if (f.adminId != null) {
+    conditions.push({ prisma: { adminId: f.adminId }, raw: Prisma.sql`admin_id = ${f.adminId}` });
+  }
+  if (f.ids != null) {
+    conditions.push({ prisma: { id: { in: f.ids } }, raw: Prisma.sql`id IN (${Prisma.join(f.ids)})` });
+  }
   if (f.overdue) {
-    where.status = TicketStatus.OPEN;
-    where.repliedAt = null;
-    where.createdAt = { lt: cutoff };
+    // AND'd as two independent conditions (not an overwrite) — combines
+    // correctly with an explicit `f.status` filter above instead of silently
+    // replacing it. See this function's doc comment (M-36).
+    conditions.push({ prisma: { status: TicketStatus.OPEN }, raw: Prisma.sql`status = ${TicketStatus.OPEN}` });
+    conditions.push({
+      prisma: { lastStatusChangeAt: { lt: cutoff } },
+      raw: Prisma.sql`last_status_change_at < ${cutoff}`,
+    });
   }
   if (f.q) {
     const term = f.q.trim();
-    where.OR = [
-      { message: { contains: term } },
-      { user: { fullName: { contains: term } } },
-      { user: { username: { contains: term } } },
-    ];
+    const likeTerm = `%${term}%`;
+    conditions.push({
+      prisma: {
+        OR: [
+          { message: { contains: term } },
+          { user: { fullName: { contains: term } } },
+          { user: { username: { contains: term } } },
+        ],
+      },
+      raw: Prisma.sql`(message LIKE ${likeTerm} OR user_id IN (SELECT id FROM users WHERE full_name LIKE ${likeTerm} OR username LIKE ${likeTerm}))`,
+    });
   }
-  return where;
+  return conditions;
 }
 
-/** Same predicate as `ticketWhere`, translated into a parameterized raw-SQL
- * `WHERE` clause (no leading `WHERE` keyword) — used only by `sort:
- * "priority"` below, which needs a real `ORDER BY` across every matching row,
- * not just the current page (Prisma/SQLite can't express a custom enum-rank
- * `orderBy` directly, so there's no way to do this through the query builder
- * alone). Every value that can come from request input (`q`, the CSV
- * status/priority filters) is passed through Prisma's tagged-template
- * parameter binding — never string-interpolated — so this can't become a
- * SQL-injection vector. Column names are the raw `support_tickets`/`users`
- * table columns (see the `@map`s on `SupportTicket`/`User` in schema.prisma),
- * not the Prisma field names. */
+/** Ticket filter predicate as a Prisma `where` — used by `countTickets` and
+ * the default (newest/oldest) sort path of `listTicketsPaged`. Derived from
+ * `buildTicketConditions` (see its doc comment for why) via an explicit `AND`
+ * array rather than assigning to top-level keys, so two conditions on the
+ * same field (e.g. an explicit `status` filter plus `overdue`'s implicit
+ * `status: OPEN`) combine instead of the later one silently overwriting the
+ * earlier one. */
+function ticketWhere(f: TicketFilter, cutoff: Date): Prisma.SupportTicketWhereInput {
+  const conditions = buildTicketConditions(f, cutoff);
+  return conditions.length > 0 ? { AND: conditions.map((c) => c.prisma) } : {};
+}
+
+/** Same predicate as `ticketWhere`, as a parameterized raw-SQL `WHERE` clause
+ * (no leading `WHERE` keyword) — used only by `sort: "priority"` below, which
+ * needs a real `ORDER BY` across every matching row, not just the current
+ * page (Prisma/SQLite can't express a custom enum-rank `orderBy` directly, so
+ * there's no way to do this through the query builder alone). Derived from
+ * `buildTicketConditions`, same as `ticketWhere` — see its doc comment. */
 function ticketWhereRaw(f: TicketFilter, cutoff: Date): Prisma.Sql {
-  const conditions: Prisma.Sql[] = [];
-  if (f.status != null) {
-    conditions.push(
-      Array.isArray(f.status)
-        ? Prisma.sql`status IN (${Prisma.join(f.status)})`
-        : Prisma.sql`status = ${f.status}`,
-    );
-  }
-  if (f.priority != null) {
-    conditions.push(
-      Array.isArray(f.priority)
-        ? Prisma.sql`priority IN (${Prisma.join(f.priority)})`
-        : Prisma.sql`priority = ${f.priority}`,
-    );
-  }
-  if (f.category != null) {
-    conditions.push(
-      Array.isArray(f.category)
-        ? Prisma.sql`category IN (${Prisma.join(f.category)})`
-        : Prisma.sql`category = ${f.category}`,
-    );
-  }
-  if (f.assigned === "assigned") conditions.push(Prisma.sql`admin_id IS NOT NULL`);
-  else if (f.assigned === "unassigned") conditions.push(Prisma.sql`admin_id IS NULL`);
-  if (f.adminId != null) conditions.push(Prisma.sql`admin_id = ${f.adminId}`);
-  if (f.ids != null) conditions.push(Prisma.sql`id IN (${Prisma.join(f.ids)})`);
-  if (f.overdue) {
-    conditions.push(Prisma.sql`status = ${TicketStatus.OPEN}`);
-    conditions.push(Prisma.sql`replied_at IS NULL`);
-    conditions.push(Prisma.sql`created_at < ${cutoff}`);
-  }
-  if (f.q) {
-    const term = `%${f.q.trim()}%`;
-    conditions.push(
-      Prisma.sql`(message LIKE ${term} OR user_id IN (SELECT id FROM users WHERE full_name LIKE ${term} OR username LIKE ${term}))`,
-    );
-  }
-  return conditions.length > 0 ? Prisma.join(conditions, " AND ") : Prisma.sql`1=1`;
+  const conditions = buildTicketConditions(f, cutoff);
+  return conditions.length > 0 ? Prisma.join(conditions.map((c) => c.raw), " AND ") : Prisma.sql`1=1`;
 }
 
 /** Ordered ticket ids for `sort: "priority"`, ranked URGENT→HIGH→MEDIUM→LOW

@@ -52,6 +52,21 @@ const q4 = (v: Decimal.Value) => quantizeMoney(v, 4);
 // (typed input, a crafted callback, or a cart row). Checkout-5 fix, security
 // audit 2026-06-23.
 const MAX_QTY_PER_ORDER = 99;
+// Hard ceiling on total units across every active cart line, checked before
+// any per-unit work starts (M-7 fix, backend audit 2026-07-31). Without this,
+// createOrderFromCart's per-unit loop (allocateOneAvailableStock + an
+// OrderItem row for every unit, with no cross-line cap — only the 99-per-line
+// clamp above) could turn a large multi-line cart into thousands of queries
+// inside one $transaction with Prisma's default 5s timeout, holding SQLite's
+// single writer long enough to starve every other writer (the bot, webhooks,
+// delivery transactions) before likely timing out and rolling back the whole
+// order. 300 comfortably covers a real bulk-reseller checkout (several lines
+// each up to the existing 99-per-line cap) while keeping the per-order unit
+// count — and so the per-order query count — bounded to a small constant.
+// Exported so callers (e.g. the storefront's performCheckout) can fail fast
+// on the same cart BEFORE even opening the write transaction, not just once
+// this function is already running inside it.
+export const MAX_CART_ORDER_UNITS = 300;
 
 // Fallback copy for the bulk-purchase channel broadcast (see
 // finalizeDeliverySideEffects) when the admin hasn't set
@@ -220,10 +235,31 @@ export async function releaseGatewaySlot(db: Db, orderId: number, sentinel: stri
   });
 }
 
+/** Fields of the linked buyer surfaced through Order's `user` relation.
+ * web-admin's Orders and Payments pages spread the whole order object
+ * straight into JSON (list/detail/CSV export, and the underpaid/pending-
+ * internal-transfer lists on the Payments page — see binance_internal.ts's
+ * `listPendingInternalOrders`, which reuses this same projection), reachable
+ * by the lowest-privilege `readonly` admin role — so this must NEVER widen to
+ * include `passwordHash` or `email` (backend audit finding H-4). Keep in
+ * sync with what order-bot's payment reconcilers/pollers and web-admin's
+ * Orders/Payments routes actually read off `order.user`: telegramId +
+ * language for notification dispatch, fullName/username/loginUsername for
+ * CSV export and eligibility labels. Mirrors the TICKET_USER_SELECT pattern
+ * in crud/support.ts. */
+export const ORDER_USER_SELECT = {
+  id: true,
+  telegramId: true,
+  username: true,
+  fullName: true,
+  loginUsername: true,
+  language: true,
+} as const;
+
 /** Eager-load shape matching the Python get_order selectinload set. */
 const fullInclude = {
   items: { include: { product: true, stockItem: true } },
-  user: true,
+  user: { select: ORDER_USER_SELECT },
   voucher: true,
 } satisfies Prisma.OrderInclude;
 
@@ -301,7 +337,7 @@ export function getOrder(db: Db, orderId: number) {
 export function getOrderByCode(db: Db, orderCode: string) {
   return db.order.findUnique({
     where: { orderCode },
-    include: { items: { include: { product: true } }, user: true },
+    include: { items: { include: { product: true } }, user: { select: ORDER_USER_SELECT } },
   });
 }
 
@@ -337,6 +373,14 @@ export async function createOrderFromCart(
   const rawCart = (await getCart(db, args.user.id)) as unknown as CartLine[];
   const cart = rawCart.filter((ci) => ci.product.isActive);
   if (cart.length === 0) throw new ValidationError("error.cart_empty");
+  // Total-units cap (M-7 fix) — checked first, before any per-line validation
+  // or the order shell is even inserted, so an over-cap cart is rejected as
+  // cheaply as possible (one cart read, one sum) rather than after sinking
+  // work into subtotal/voucher math or reserving stock.
+  const totalUnits = cart.reduce((sum, ci) => sum + ci.quantity, 0);
+  if (totalUnits > MAX_CART_ORDER_UNITS) {
+    throw new ValidationError("error.cart_too_large", { limit: MAX_CART_ORDER_UNITS });
+  }
   // Cart rows are normally clamped to 1-99 by cart.ts, but the very first
   // insert path (addToCart's create branch) doesn't clamp — re-validate here
   // as the final server-side boundary (Checkout-5 fix, security audit
@@ -465,8 +509,9 @@ export async function createOrderFromCart(
   // 7. Pre-check every AUTO line's availability before reserving anything, so
   // the common "you asked for more than we have" case fails before any row is
   // touched (rather than leaving earlier lines reserved). Then reserve stock
-  // atomically (one row per unit, AVAILABLE -> RESERVED) and create one
-  // OrderItem per unit. allocateOneAvailableStock is itself optimistic-locked,
+  // atomically (one row per unit, AVAILABLE -> RESERVED) and batch every
+  // resulting OrderItem row into one createMany below instead of one create
+  // per unit (M-7 fix). allocateOneAvailableStock is itself optimistic-locked,
   // so concurrent checkouts for the same product can never both reserve the
   // same row — that's the real race guard; the pre-check is just a fast-fail.
   // Out-of-stock is now caught HERE instead of first becoming visible at admin
@@ -486,9 +531,21 @@ export async function createOrderFromCart(
       throw new ValidationError("error.out_of_stock", { product: ci.product.name });
     }
   }
+  // Stock reservation is still one allocateOneAvailableStock call per unit
+  // (it's individually optimistic-locked — see its doc comment — so each
+  // unit's assignment genuinely depends on a fresh read of what's still
+  // AVAILABLE after every earlier unit in this same order reserved its row;
+  // that can't be batched without changing which stock item lands on which
+  // line). What CAN be batched is persisting the resulting OrderItem rows:
+  // collect one createMany input per unit here, across every line, and issue
+  // a single createMany after the loop instead of one create per unit — same
+  // rows, same stock assignments, same order, just one insert query instead
+  // of O(units) (M-7 fix, backend audit 2026-07-31).
+  const orderItemsData: Prisma.OrderItemCreateManyInput[] = [];
   for (const ci of cart) {
     const unit = q4(unitPrice(ci.product, isReseller, pricedAt));
     const isManual = ci.product.deliveryType !== DeliveryType.AUTO;
+    const warrantyDays = (ci.product as unknown as { warrantyDays: number }).warrantyDays;
     for (let k = 0; k < ci.quantity; k++) {
       let stockItemId: number | null = null;
       if (!isManual) {
@@ -498,17 +555,19 @@ export async function createOrderFromCart(
         }
         stockItemId = reserved.id;
       }
-      await db.orderItem.create({
-        data: {
-          orderId: order.id,
-          productId: ci.productId,
-          stockItemId,
-          quantity: 1,
-          unitPrice: unit,
-          warrantyDaysSnapshot: (ci.product as unknown as { warrantyDays: number }).warrantyDays,
-        },
+      orderItemsData.push({
+        orderId: order.id,
+        productId: ci.productId,
+        stockItemId,
+        quantity: 1,
+        unitPrice: unit,
+        warrantyDaysSnapshot: warrantyDays,
+        deliveryTypeSnapshot: ci.product.deliveryType,
       });
     }
+  }
+  if (orderItemsData.length > 0) {
+    await db.orderItem.createMany({ data: orderItemsData });
   }
 
   // 8. Final totals
@@ -685,6 +744,7 @@ export async function createOrderDirect(
         quantity: 1,
         unitPrice: q4(unit),
         warrantyDaysSnapshot: product.warrantyDays,
+        deliveryTypeSnapshot: product.deliveryType,
       },
     });
   }
@@ -976,6 +1036,42 @@ async function releaseOrderHolds(
         data: { usedCount: { decrement: 1 } },
       });
     }
+    // M-2 (backend audit, 2026-07-31): also clear the (voucherId, userId)
+    // redemption row so a cancelled/rejected/expired order doesn't
+    // permanently lock this buyer out of a one-per-user voucher —
+    // assertVoucherNotRedeemedByUser checks for this row's existence, not
+    // usedCount. deleteMany (not delete) so this stays a no-op if the row
+    // was already cleared, instead of throwing P2025.
+    await db.voucherRedemption.deleteMany({
+      where: { voucherId: order.voucherId, userId: order.userId },
+    });
+  }
+}
+
+/**
+ * H-2 guard (backend audit, 2026-07-31): `rejectOrder`/`cancelOrder` both end
+ * at a terminal state (REJECTED/CANCELLED) that `creditOrderToBalance`
+ * refuses to touch afterward ("error.order_terminal") — so once an order's
+ * `paidAt` is set (the same "was this actually paid" signal `settlePaidOrder`
+ * stamps for a real payment event, see its own doc-comment), rejecting or
+ * cancelling it directly would strand that payment forever instead of
+ * releasing it back to the buyer. Refuse the transition and point the caller
+ * at `creditOrderToBalance` instead — unless this exact order was already
+ * credited (the same `unfulfilled_credit` ledger check `creditOrderToBalance`
+ * uses for its own double-credit guard), which would mean a caller is
+ * legitimately finishing a credit that, for some reason, didn't already
+ * leave the order CANCELLED.
+ */
+async function assertNotPaidWithoutCredit(
+  db: Db,
+  order: { id: number; paidAt: Date | null },
+): Promise<void> {
+  if (!order.paidAt) return;
+  const alreadyCredited = await db.walletTransaction.findFirst({
+    where: { orderId: order.id, reason: "unfulfilled_credit" },
+  });
+  if (!alreadyCredited) {
+    throw new ValidationError("error.order_paid_needs_credit");
   }
 }
 
@@ -992,6 +1088,7 @@ export async function cancelOrder(db: Db, orderId: number, reason: string) {
   if (order.status === OrderStatus.DELIVERED) {
     throw new ValidationError("error.order_already_delivered");
   }
+  await assertNotPaidWithoutCredit(db, order);
   // Prevent abuse: fake proof then cancel to recycle stock. A customer can't
   // self-cancel once their crypto is already incoming/confirming on-chain
   // either (PAYMENT_DETECTED/CONFIRMING/CONFIRMED) — same "money is already
@@ -1125,6 +1222,12 @@ export async function rejectOrder(
   if (!rejectable.includes(order.status)) {
     throw new ValidationError("error.order_not_pending_verification");
   }
+  // H-2 (backend audit, 2026-07-31): a PROCESSING order reaches here already
+  // paid (settlePaidOrder stamped paidAt) — rejecting it directly would
+  // strand that payment at the terminal REJECTED state forever. Send the
+  // admin to "Credit to Balance" (creditOrderToBalance, now that canCredit
+  // covers PROCESSING too) instead.
+  await assertNotPaidWithoutCredit(db, order);
 
   await releaseOrderHolds(db, order);
   await db.order.update({
@@ -1374,8 +1477,18 @@ export async function settlePaidOrder(
   // Orders are homogeneous (the storefront cart blocks mixing delivery types,
   // and the bot orders one SKU at a time), so any manual line makes the whole
   // order manual.
+  //
+  // Prefers deliveryTypeSnapshot (frozen at order-creation time) over the live
+  // denomination row: an admin editing a SKU's deliveryType after this order
+  // was placed must never change which branch an already-in-flight order
+  // takes (M-5, backend audit 2026-07-31) — see OrderItem.deliveryTypeSnapshot
+  // in schema.prisma for the full rationale. The snapshot is nullable and
+  // falls back to the live product.deliveryType for rows that predate this
+  // column (this repo's deploy convention is `prisma db push`, which adds the
+  // column but never backfills it — see the migration's own comment), which
+  // is exactly the pre-existing live-read behavior for those rows.
   const isManual = order.items.some(
-    (it) => (it.product as { deliveryType?: string }).deliveryType !== DeliveryType.AUTO,
+    (it) => (it.deliveryTypeSnapshot ?? it.product.deliveryType) !== DeliveryType.AUTO,
   );
 
   // ── AUTO branch (unchanged behavior) ────────────────────────────────────
@@ -1503,7 +1616,13 @@ export interface OrderEligibility {
   isDelivered: boolean;
   /** PENDING_VERIFICATION — one-click approve/deliver. */
   canAct: boolean;
-  /** PENDING_VERIFICATION | UNDERPAID — eligible for credit-to-balance. */
+  /** PENDING_VERIFICATION | UNDERPAID | PROCESSING — eligible for
+   * credit-to-balance. PROCESSING is a paid manual-fulfilment order an admin
+   * couldn't source the account for — H-2 (backend audit, 2026-07-31): this
+   * used to be missing even though `canReject` already covered PROCESSING,
+   * so Reject was the only refund-shaped action offered, and rejecting moves
+   * the order to the terminal REJECTED state where `creditOrderToBalance`
+   * then refuses to act — stranding the buyer's already-paid money. */
   canCredit: boolean;
   /** PROCESSING — manual hand-fulfil, needs admin-typed content. */
   canFulfill: boolean;
@@ -1518,7 +1637,10 @@ export function computeOrderEligibility(status: string, telegramId: bigint | nul
   return {
     isDelivered,
     canAct: status === OrderStatus.PENDING_VERIFICATION,
-    canCredit: status === OrderStatus.PENDING_VERIFICATION || status === OrderStatus.UNDERPAID,
+    canCredit:
+      status === OrderStatus.PENDING_VERIFICATION ||
+      status === OrderStatus.UNDERPAID ||
+      status === OrderStatus.PROCESSING,
     canFulfill: status === OrderStatus.PROCESSING,
     canReject: status === OrderStatus.PENDING_VERIFICATION || status === OrderStatus.PROCESSING,
     canResend: isDelivered && telegramId != null,
@@ -1592,7 +1714,7 @@ export function listOrders(
 ) {
   return db.order.findMany({
     where: orderWhere(opts),
-    include: { user: true, items: { include: { product: true } } },
+    include: { user: { select: ORDER_USER_SELECT }, items: { include: { product: true } } },
     orderBy: { createdAt: "desc" },
     skip: opts.offset ?? 0,
     take: opts.limit ?? 50,

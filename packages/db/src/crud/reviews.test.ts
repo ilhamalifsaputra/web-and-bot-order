@@ -1,7 +1,16 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
-import { productRating, listReviews, setReviewHidden, featuredReviews, overallRating } from "./reviews";
+import {
+  productRating,
+  listReviews,
+  setReviewHidden,
+  featuredReviews,
+  overallRating,
+  listRestockSubscribers,
+  deleteRestockSubscription,
+  subscribeToRestock,
+} from "./reviews";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
 
 let db: TestDb;
@@ -115,5 +124,47 @@ describe("home-page social proof (featuredReviews + overallRating)", () => {
     const r = await overallRating(prisma);
     expect(r.count).toBe(2);
     expect(r.avg).toBeCloseTo(4.0);
+  });
+});
+
+describe("listRestockSubscribers (web-only users excluded, user+product joined)", () => {
+  it("excludes a subscriber whose user has no telegramId, and joins user + product", async () => {
+    const productId = await seed([]);
+    const linked = await prisma.user.create({
+      data: { telegramId: BigInt(Math.floor(Math.random() * 1e15)), referralCode: `r${Math.random()}`, language: "EN" },
+    });
+    const webOnly = await prisma.user.create({
+      data: { telegramId: null, referralCode: `r${Math.random()}`, language: "EN" },
+    });
+    await subscribeToRestock(prisma, linked.id, productId);
+    await subscribeToRestock(prisma, webOnly.id, productId);
+
+    const subs = await listRestockSubscribers(prisma, productId);
+
+    expect(subs).toHaveLength(1);
+    expect(subs[0]!.userId).toBe(linked.id);
+    expect(subs[0]!.user.telegramId).toBe(linked.telegramId);
+    expect(subs[0]!.product.name).toBeTruthy();
+  });
+});
+
+describe("deleteRestockSubscription", () => {
+  it("removes exactly the given subscription, leaving others for the same product untouched", async () => {
+    const productId = await seed([]);
+    const a = await prisma.user.create({
+      data: { telegramId: BigInt(Math.floor(Math.random() * 1e15)), referralCode: `r${Math.random()}` },
+    });
+    const b = await prisma.user.create({
+      data: { telegramId: BigInt(Math.floor(Math.random() * 1e15)), referralCode: `r${Math.random()}` },
+    });
+    await subscribeToRestock(prisma, a.id, productId);
+    await subscribeToRestock(prisma, b.id, productId);
+    const [subA, subB] = await listRestockSubscribers(prisma, productId);
+
+    await deleteRestockSubscription(prisma, subA!.id);
+
+    const remaining = await prisma.restockSubscription.findMany({ where: { productId } });
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]!.id).toBe(subB!.id);
   });
 });

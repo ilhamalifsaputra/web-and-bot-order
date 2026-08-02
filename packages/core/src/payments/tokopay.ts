@@ -32,21 +32,67 @@ export interface TokopayOrderInfo {
   totalBayar: string | null;
 }
 
+/**
+ * GET a TokoPay endpoint whose query string carries `merchant`/`secret`, and
+ * return its parsed JSON body. TokoPay's API (per its public docs, flagged
+ * ASSUMPTION above) only accepts these credentials via query string — there's
+ * no header/POST-body alternative to switch to. Given that, every failure
+ * mode of the raw `fetch()` call is caught HERE, inside this single choke
+ * point, and rethrown as a new `Error` built from a static, credential-free
+ * string:
+ *   - `fetch()` itself can reject (DNS failure, connection refused, aborted,
+ *     TLS error, …) before a `Response` even exists. Node's `fetch` some­times
+ *     attaches the failed request to `err.cause`, which a naive `logger.error({
+ *     err })` downstream (or an *unhandled rejection* if a caller forgets to
+ *     `.catch()`) would serialize whole — echoing the secret straight back
+ *     into logs. Catching it here and throwing a fresh, static-message Error
+ *     means nothing downstream ever sees the original object.
+ *   - `res.json()` can throw on a malformed body; same treatment.
+ * The existing `!res.ok` branch keeps its own static-message throw (no
+ * change in behavior), just relocated into this shared helper so both
+ * `createTransaction` and `checkTransaction` get the same guarantee.
+ */
+async function fetchTokopayJson(url: string, errorPrefix: string): Promise<Record<string, unknown>> {
+  let res: Response;
+  try {
+    res = await fetch(url);
+  } catch {
+    throw new Error(`${errorPrefix} network error`); // never log the query — it carries the secret
+  }
+  if (!res.ok) {
+    throw new Error(`${errorPrefix} HTTP ${res.status}`); // never log the query — it carries the secret
+  }
+  try {
+    return (await res.json()) as Record<string, unknown>;
+  } catch {
+    throw new Error(`${errorPrefix} returned an unparseable response`); // never log the query — it carries the secret
+  }
+}
+
 /** QRIS admin-fee constants — TokoPay only; PayDisini and every other gateway
  * stay fee-free. Charged ON TOP of the order total. */
 export const QRIS_ADMIN_FEE_FLAT = new Decimal(100);
 export const QRIS_ADMIN_FEE_PERCENT = new Decimal("0.007"); // 0.70%
 
 /**
- * Rp100 + 0.70% of the order subtotal, rounded to the nearest whole Rupiah
- * (IDR has no fractional currency in this codebase). The ONE place this
- * formula is computed — every caller (bot checkout, storefront checkout/pay,
- * webhook, reconcile poller, overpayment check) must import this rather than
- * re-deriving it inline.
+ * Rp100 + 0.70% of the amount TokoPay actually receives as `nominal`
+ * (createTransaction/checkTransaction always pass `order.totalAmount` — net of
+ * bulk discount / voucher / wallet credit — never the pre-discount subtotal),
+ * rounded to the nearest whole Rupiah (IDR has no fractional currency in this
+ * codebase). The ONE place this formula is computed — every caller (bot
+ * checkout, storefront checkout/pay, webhook, reconcile poller, overpayment
+ * check) must import this rather than re-deriving it inline.
+ *
+ * ⚠ Must be called with the SAME amount passed to createTransaction/
+ *   checkTransaction as `nominal` (i.e. `order.totalAmount`) — TokoPay computes
+ *   its own fee on top of that nominal, so basing this on any other figure
+ *   (e.g. the pre-discount subtotal) desyncs the fee we expect from the fee
+ *   TokoPay actually charges and makes every discounted order look short-paid
+ *   (H-1, backend audit 2026-07-31).
  */
-export function computeQrisAdminFee(subtotalAmount: Decimal.Value): Decimal {
+export function computeQrisAdminFee(amountIdr: Decimal.Value): Decimal {
   return QRIS_ADMIN_FEE_FLAT
-    .plus(new Decimal(subtotalAmount).times(QRIS_ADMIN_FEE_PERCENT))
+    .plus(new Decimal(amountIdr).times(QRIS_ADMIN_FEE_PERCENT))
     .toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
 }
 
@@ -54,8 +100,8 @@ export function computeQrisAdminFee(subtotalAmount: Decimal.Value): Decimal {
  * fee-inclusive amount expected to be paid by the buyer and verified on confirm.
  * (Note: createTransaction/checkTransaction are passed the base totalAmount,
  * as TokoPay automatically computes and adds its admin fee on top of nominal). */
-export function qrisChargeAmount(totalAmount: Decimal.Value, subtotalAmount: Decimal.Value): Decimal {
-  return new Decimal(totalAmount).plus(computeQrisAdminFee(subtotalAmount));
+export function qrisChargeAmount(totalAmount: Decimal.Value): Decimal {
+  return new Decimal(totalAmount).plus(computeQrisAdminFee(totalAmount));
 }
 
 /** Create (or fetch — ref_id is idempotent) the gateway transaction for an order. */
@@ -70,11 +116,7 @@ export async function createTransaction(
     nominal: new Decimal(args.amountIdr).toFixed(0),
     metode: creds.channel,
   });
-  const res = await fetch(`${API_BASE}/v1/order?${params.toString()}`);
-  if (!res.ok) {
-    throw new Error(`TokoPay order HTTP ${res.status}`); // never log the query — it carries the secret
-  }
-  const body = (await res.json()) as {
+  const body = (await fetchTokopayJson(`${API_BASE}/v1/order?${params.toString()}`, "TokoPay order")) as {
     status?: unknown;
     data?: Record<string, unknown>;
     error_msg?: unknown;
@@ -125,11 +167,7 @@ export async function checkTransaction(
     nominal: new Decimal(args.amountIdr).toFixed(0),
     metode: creds.channel,
   });
-  const res = await fetch(`${API_BASE}/v1/order?${params.toString()}`);
-  if (!res.ok) {
-    throw new Error(`TokoPay status HTTP ${res.status}`); // never log the query — it carries the secret
-  }
-  const body = (await res.json()) as {
+  const body = (await fetchTokopayJson(`${API_BASE}/v1/order?${params.toString()}`, "TokoPay status")) as {
     status?: unknown;
     data?: Record<string, unknown>;
     error_msg?: unknown;

@@ -286,6 +286,11 @@ export default async function usersApiRoutes(app: FastifyInstance): Promise<void
     } catch {
       return reply.code(400).send({ error: "Amount must be a number." });
     }
+    // `new Decimal("NaN")`/`new Decimal("Infinity")` construct successfully
+    // (they don't throw) — reject explicitly, same error as an unparsable
+    // amount, so a NaN delta can never poison the wallet balance (M-3,
+    // backend audit 2026-07-31).
+    if (!deltaDec.isFinite()) return reply.code(400).send({ error: "Amount must be a number." });
     if (deltaDec.isZero()) return reply.code(400).send({ error: "Amount cannot be zero." });
     const currencyRaw = (body.currency ?? "IDR").toUpperCase();
     if (currencyRaw !== "IDR" && currencyRaw !== "USDT") {

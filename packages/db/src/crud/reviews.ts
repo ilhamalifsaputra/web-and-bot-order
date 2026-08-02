@@ -6,6 +6,22 @@ import { ValidationError } from "@app/core/errors";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 
+/** Reviewer projection for the `user` join on `featuredReviews`/`listReviews`
+ * — display-name fields only. These results get spread straight into
+ * web-admin's `/api/reviews` JSON response (reachable by the lowest-
+ * privilege `readonly` admin role) and rendered as public testimonials on
+ * the storefront home/product pages, so `passwordHash` and `email` must
+ * NEVER be selectable here (backend audit finding H-4; mirrors USER_SELECT
+ * in crud/users.ts). Every caller of either function only ever reads
+ * fullName/username/loginUsername off the joined user (ReviewsPage.tsx,
+ * storefront's reviewerName()/masked-author formatting in pageData.ts) —
+ * confirmed by grepping every call site before narrowing this. */
+const REVIEW_USER_SELECT = {
+  fullName: true,
+  username: true,
+  loginUsername: true,
+} as const;
+
 export async function createReview(
   db: Db,
   args: {
@@ -56,11 +72,25 @@ export async function subscribeToRestock(
   }
 }
 
+/** Subscribers waiting on restock, joined with their user (needed to DM them)
+ * and filtered to `telegramId != null` — a web-only subscriber has no chat to
+ * send to, so they're excluded here rather than left for every caller to
+ * special-case (mirrors the `telegramId: { not: null }` filter broadcasts use,
+ * see crud/broadcasts.ts / crud/notifications.ts). */
 export function listRestockSubscribers(db: Db, productId: number) {
   return db.restockSubscription.findMany({
-    where: { productId },
-    include: { product: { include: { product: true } } },
+    where: { productId, user: { telegramId: { not: null } } },
+    include: { product: { include: { product: true } }, user: true },
   });
+}
+
+/** Consumes one restock subscription. Callers should only call this AFTER the
+ * subscriber's notification DM has actually succeeded — never as a bulk
+ * pre-delete before the send loop runs — so a DM failure (rate limit, bot
+ * restart mid-loop) leaves the subscription in place to retry against the
+ * next restock instead of silently losing the subscriber. */
+export function deleteRestockSubscription(db: Db, id: number) {
+  return db.restockSubscription.delete({ where: { id } });
 }
 
 /** Number of users waiting for restock, per product id. Products with no
@@ -88,7 +118,7 @@ export function countRestockSubscribers(db: Db, productId: number): Promise<numb
 export function featuredReviews(db: Db, limit = 6) {
   return db.review.findMany({
     where: { hidden: false, rating: { gte: 4 }, comment: { not: null } },
-    include: { user: true, product: true },
+    include: { user: { select: REVIEW_USER_SELECT }, product: true },
     orderBy: { createdAt: "desc" },
     take: limit,
   });
@@ -131,7 +161,7 @@ export function listReviews(
 ) {
   return db.review.findMany({
     where: reviewWhere(opts),
-    include: { user: true, product: true },
+    include: { user: { select: REVIEW_USER_SELECT }, product: true },
     orderBy: { createdAt: "desc" },
     skip: opts.offset ?? 0,
     take: opts.limit ?? 50,

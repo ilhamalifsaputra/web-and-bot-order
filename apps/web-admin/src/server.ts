@@ -106,7 +106,7 @@ export async function buildApp(): Promise<FastifyInstance> {
 
   // Friendly error page; never log the request body (it may carry secrets).
   app.setErrorHandler((err, req, reply) => {
-    logger.error({ err, method: req.method, path: redactPath(req.url) }, "Unhandled error in a web admin request — serving the generic error page instead of crashing");
+    logger.error({ err, method: req.method, path: redactPath(req.url.split("?", 1)[0]!) }, "Unhandled error in a web admin request — serving the generic error page instead of crashing");
     if (!reply.sent) {
       const html =
         `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">` +

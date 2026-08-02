@@ -243,6 +243,63 @@ describe("POST /api/v1/auth/forgot rate limiting", () => {
   });
 });
 
+// M-17 (backend audit, 2026-07-31): registration is the most expensive
+// unauthenticated endpoint in the app (cost-12 bcrypt + a DB write) on a
+// single-process server backed by single-writer SQLite — unlike /auth/login
+// and /auth/forgot, it previously had no rate limiting at all.
+describe("POST /api/v1/auth/register rate limiting", () => {
+  it("returns 429 after WEB_LOGIN_RATE_LIMIT_MAX submissions from one IP", async () => {
+    const ip = freshIp();
+    const max = config.WEB_LOGIN_RATE_LIMIT_MAX;
+    for (let i = 0; i < max; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/auth/register",
+        headers: { "x-forwarded-for": ip },
+        // Deliberately invalid payload — still under the cap, so each
+        // attempt should fail validation (400), never the rate limit.
+        payload: {},
+      });
+      expect(res.statusCode).toBe(400);
+    }
+    const limited = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      headers: { "x-forwarded-for": ip },
+      payload: {},
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toEqual({ error: "error.rate_limited" });
+  });
+});
+
+// M-17 (backend audit, 2026-07-31): same gap on the reset-submission route —
+// the token IS the auth, but each attempt still costs a bcrypt hash + DB
+// write before the token is even checked.
+describe("POST /api/v1/auth/reset/:token rate limiting", () => {
+  it("returns 429 after WEB_LOGIN_RATE_LIMIT_MAX submissions from one IP", async () => {
+    const ip = freshIp();
+    const max = config.WEB_LOGIN_RATE_LIMIT_MAX;
+    for (let i = 0; i < max; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/auth/reset/not-a-real-token",
+        headers: { "x-forwarded-for": ip },
+        payload: { password: "irrelevant1", password2: "irrelevant1" },
+      });
+      expect(res.statusCode).toBe(400); // invalid token, still under the cap
+    }
+    const limited = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/reset/not-a-real-token",
+      headers: { "x-forwarded-for": ip },
+      payload: { password: "irrelevant1", password2: "irrelevant1" },
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toEqual({ error: "error.rate_limited" });
+  });
+});
+
 // Storefront-4 (security audit, 2026-06-23): clientIp() must only honor
 // X-Forwarded-For when the DIRECT connection comes from a trusted proxy
 // (TRUST_PROXY="127.0.0.1,::1" in apps/storefront/test/setup-env.ts) —

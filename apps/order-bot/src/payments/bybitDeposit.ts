@@ -37,6 +37,7 @@ import {
   prisma,
   listPendingBybitOrders,
   deliverPaidBybitOrder,
+  markUnderpaidBybit,
   recordUnmatchedBybitTx,
   recordBybitPollHealth,
   resolveBybitConfig,
@@ -46,7 +47,7 @@ import {
 } from "@app/db";
 import { coreT } from "../util/i18n";
 import { esc } from "../util/format";
-import { matchByAmount } from "./binanceInternal";
+import { matchByAmount, matchUnderpaidByAmount } from "./binanceInternal";
 import { createBackoffGate } from "./pollBackoff";
 import { paymentSuccessKb } from "../keyboards/customer";
 import { sendAccountFile } from "../util/delivery";
@@ -280,17 +281,35 @@ export async function pollOnce(api: Api): Promise<void> {
 
 /**
  * Match a batch of fetched deposits against pending orders and act on each.
- * Internal Transfer has no memo, so matching is by UNIQUE amount only: a
- * deposit maps to an order iff exactly one pending order expects that amount
- * (within tolerance).
- * On a collision (≥2 candidates) or no candidate it is recorded "unmatched" and
- * left for manual review — never guessed. Extracted from pollOnce so it can be
- * integration-tested against the real DB without the API/env gate.
+ * Internal Transfer has no memo, so matching is by UNIQUE amount only:
+ * `matchByAmount` picks the pending order with the LARGEST total the deposit
+ * covers (best fit, not just "any order at or below the amount") — a buyer
+ * who rounds up must still match (M-14, backend audit 2026-07-31), but only
+ * up to a capped overpayment (too far above the matched order's total is
+ * treated as unrelated money, not this order overpaid). On a tie at that
+ * best-fit total (≥2 candidates) it is refused, never guessed. A deposit
+ * that's short of every match candidate is then tried against
+ * `matchUnderpaidByAmount`'s mirrored short-side search (itself floored —
+ * only a plausibly-sized shortfall counts): if it's uniquely attributable to
+ * one pending order there, that order is flagged UNDERPAID instead of
+ * silently falling through to "unmatched". Extracted from pollOnce so it can
+ * be integration-tested against the real DB without the API/env gate.
  */
 export async function processDeposits(api: Api, deposits: BybitDeposit[], orders: PendingOrder[]): Promise<void> {
   for (const dep of deposits) {
     const order = matchByAmount({ amount: dep.amount }, orders, AMOUNT_TOLERANCE);
     if (!order) {
+      const underpaidOrder = matchUnderpaidByAmount({ amount: dep.amount }, orders, AMOUNT_TOLERANCE);
+      if (underpaidOrder) {
+        if (await markUnderpaidBybit(prisma, { orderId: underpaidOrder.id, bybitTxId: dep.txId, amount: dep.amount })) {
+          logger.warn(`Bybit order ${underpaidOrder.orderCode} underpaid — received ${dep.amount}, expected ${underpaidOrder.totalAmount}, flagged UNDERPAID for manual review`);
+          await alertAdmins(
+            api,
+            `⚠️ Underpaid Bybit order <code>${underpaidOrder.orderCode}</code>\nReceived <b>${dep.amount}</b>, expected <b>${underpaidOrder.totalAmount}</b> (tx ${esc(dep.txId)}).`,
+          );
+        }
+        continue;
+      }
       if (await recordUnmatchedBybitTx(prisma, { bybitTxId: dep.txId, amount: dep.amount })) {
         logger.info(`No pending order matched Bybit deposit ${dep.txId} (amount: ${dep.amount}) — left for manual review`);
       }

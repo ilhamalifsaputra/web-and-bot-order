@@ -13,6 +13,7 @@ import type { Bot } from "grammy";
 import {
   prisma,
   enqueueAdminPasswordReset,
+  enqueueAdminStalePayment,
   completeOrderWithWalletCredit,
   enqueueOrderDeliveredDm,
   enqueueRestockBroadcast,
@@ -184,6 +185,79 @@ describe("drainBatch channel-not-configured release (Outbox-1)", () => {
     expect(final!.status).toBe("PENDING");
     expect(final!.attempts).toBe(12);
     expect(sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * M-10 fix (backend audit 2026-07-31): ADMIN_STALE_PAYMENT must be routed as
+ * an admin DM (payload.chat_id), not a post to PUBLIC_CHANNEL_ID — the first
+ * implementation of this event omitted it from ADMIN_DM_EVENTS, which either
+ * silently dropped the alert forever (no channel configured) or leaked
+ * payment-reconciliation detail to the public channel (channel configured).
+ * This test exercises both consequences directly and asserts neither happens.
+ */
+describe("drainBatch routes ADMIN_STALE_PAYMENT as an admin DM, never a public post (M-10)", () => {
+  afterEach(() => resetBotIdentity());
+
+  // Note: this file runs many tests against one shared temp DB with no
+  // per-test reset (per the file-level comment above), and `addAdminIdToDb`
+  // is a union — every admin id ever added by an earlier test in this file
+  // is still resolved here, so `enqueueAdminStalePayment` fans out to all of
+  // them. Each test below isolates ITS OWN admin's call among however many
+  // fire, exactly like the ADMIN_MANUAL_ORDER_QUEUED test above does.
+
+  it("sends to the admin's chat_id even when a public channel IS configured", async () => {
+    await addAdminIdToDb(prisma, 900_100_001);
+    setBotIdentity({ publicChannelId: -1009876543210 });
+    const buyer = await upsertUser(prisma, { telegramId: 500_101, username: "buyer500101", fullName: "Stale Buyer 1" });
+    const denom = await makeManualDenom();
+    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    await enqueueAdminStalePayment(prisma, {
+      orderId: order!.id,
+      orderCode: order!.orderCode,
+      gateway: "tokopay",
+      trxId: "TRX-STALE-1",
+    });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 900_100_001);
+    expect(call).toBeDefined();
+    const [chatId, text] = call! as [number, string];
+    expect(chatId).not.toBe(-1009876543210); // never the public channel
+    expect(text).toContain(order!.orderCode);
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order!.id, event: NotificationEvent.ADMIN_STALE_PAYMENT },
+    });
+    expect(row!.status).toBe("SENT");
+  });
+
+  it("still sends to the admin's chat_id when NO public channel is configured (would otherwise be misrouted as a channel-post release-forever)", async () => {
+    await addAdminIdToDb(prisma, 900_100_002);
+    const buyer = await upsertUser(prisma, { telegramId: 500_102, username: "buyer500102", fullName: "Stale Buyer 2" });
+    const denom = await makeManualDenom();
+    const order = await createOrderDirect(prisma, { user: buyer, productId: denom.id, quantity: 1 });
+    await enqueueAdminStalePayment(prisma, {
+      orderId: order!.id,
+      orderCode: order!.orderCode,
+      gateway: "paydisini",
+      trxId: "TRX-STALE-2",
+    });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 900_100_002);
+    expect(call).toBeDefined();
+    const [, text] = call! as [number, string];
+    expect(text).toContain(order!.orderCode);
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { orderId: order!.id, event: NotificationEvent.ADMIN_STALE_PAYMENT },
+    });
+    expect(row!.status).toBe("SENT");
   });
 });
 

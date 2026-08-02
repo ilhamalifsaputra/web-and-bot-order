@@ -104,6 +104,53 @@ describe("checkTransaction", () => {
     stubFetchJson({}, { ok: false, status: 502 });
     await expect(checkTransaction(FULL_CREDS, { refId: "ORD-5", amountIdr: 1000 })).rejects.toThrow(/HTTP 502/);
   });
+
+  it("never leaks the api-key-bearing query string when fetch() itself rejects (M-15)", async () => {
+    // Simulate a network-level failure (DNS/connection/TLS) whose error object
+    // — as Node's fetch sometimes does — echoes the failed request URL back on
+    // its message/cause. If that raw error (or an unhandled rejection carrying
+    // it) ever reached a logger, the api key in the query string would leak.
+    // checkTransaction must catch it and rethrow a sanitized error.
+    const secretUrl = `https://api.paydisini.co.id/v1/transaction?user_key=${FULL_CREDS.userKey}&api_key=${FULL_CREDS.apiKey}&ref_id=ORD-6`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error(`fetch failed: request to ${secretUrl} failed, reason: ECONNREFUSED`)),
+    );
+    let caught: unknown;
+    try {
+      await checkTransaction(FULL_CREDS, { refId: "ORD-6", amountIdr: 1000 });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/network error/);
+    expect(message).not.toContain(FULL_CREDS.apiKey);
+    expect(message).not.toContain("http");
+  });
+
+  it("never leaks the api-key-bearing query string when the response body is unparseable JSON (M-15)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError("Unexpected token < in JSON");
+        },
+      }),
+    );
+    let caught: unknown;
+    try {
+      await checkTransaction(FULL_CREDS, { refId: "ORD-7", amountIdr: 1000 });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/unparseable/);
+    expect(message).not.toContain(FULL_CREDS.apiKey);
+  });
 });
 
 describe("createTransaction", () => {
@@ -138,5 +185,24 @@ describe("createTransaction", () => {
   it("throws when the gateway rejects the request", async () => {
     stubFetchJson({ success: false, status: "error", msg: "invalid api key" });
     await expect(createTransaction(FULL_CREDS, { refId: "ORD-12", amountIdr: 1000 })).rejects.toThrow(/rejected/);
+  });
+
+  it("never leaks the api-key-bearing query string when fetch() itself rejects (M-15)", async () => {
+    const secretUrl = `https://api.paydisini.co.id/v1/transaction?user_key=${FULL_CREDS.userKey}&api_key=${FULL_CREDS.apiKey}&ref_id=ORD-13`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new Error(`fetch failed: request to ${secretUrl} failed, reason: ECONNREFUSED`)),
+    );
+    let caught: unknown;
+    try {
+      await createTransaction(FULL_CREDS, { refId: "ORD-13", amountIdr: 1000 });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/network error/);
+    expect(message).not.toContain(FULL_CREDS.apiKey);
+    expect(message).not.toContain("http");
   });
 });

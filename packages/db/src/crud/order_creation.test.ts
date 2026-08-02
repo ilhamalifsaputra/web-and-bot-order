@@ -20,9 +20,13 @@ import {
   getCart,
   countAvailableStock,
   markStockDead,
+  createCatalogProduct,
+  createDenomination,
+  bulkAddStock,
+  MAX_CART_ORDER_UNITS,
 } from "@app/db";
 import { Decimal } from "@app/core/money";
-import { VoucherType } from "@app/core/enums";
+import { ProductType, VoucherType } from "@app/core/enums";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -102,6 +106,95 @@ describe("create order from cart", () => {
     // The pre-check fails before any row is touched — nothing reserved.
     const reserved = await prisma.stockItem.count({ where: { status: "RESERVED" } });
     expect(reserved).toBe(0);
+  });
+});
+
+// M-7 fix, backend audit 2026-07-31: createOrderFromCart used to do per-unit
+// work (allocateOneAvailableStock + an individual orderItem.create) for every
+// single unit in the cart with no cap on the TOTAL across all lines (only the
+// existing 99-per-line clamp). A large multi-line cart could turn into
+// thousands of queries inside one write transaction. The fix adds a
+// total-units cap (checked before any per-unit work, or even the order shell,
+// exists) and batches every unit's OrderItem into one createMany.
+describe("total-units cap and batched insert (M-7 fix)", () => {
+  /** A fresh active AUTO denomination under `sample.category`, no stock. */
+  async function makeDenomination(name: string) {
+    const product = await createCatalogProduct(prisma, { categoryId: sample.category.id, name });
+    return createDenomination(prisma, {
+      productId: product.id,
+      name,
+      type: ProductType.SHARED,
+      durationLabel: "1 Month",
+      price: "5.00",
+      warrantyDays: 30,
+    });
+  }
+
+  it("a cart whose total units exceed the cap is rejected before any row is touched", async () => {
+    const { user } = sample;
+    // 4 lines x 99 units = 396, over the cap — each line stays within the
+    // existing 99-per-line clamp, so only the NEW total-units cap can reject
+    // this cart. No stock is seeded: the cap check must fire before the
+    // per-line availability pre-check ever runs.
+    expect(4 * 99).toBeGreaterThan(MAX_CART_ORDER_UNITS);
+    for (let i = 0; i < 4; i++) {
+      const denom = await makeDenomination(`Bulk Item ${i}`);
+      await addToCart(prisma, user.id, denom.id, 99);
+    }
+
+    await expect(createOrderFromCart(prisma, { user })).rejects.toMatchObject({
+      key: "error.cart_too_large",
+    });
+
+    // Rejected before the order shell, or any stock reservation, was created.
+    expect(await prisma.order.count()).toBe(0);
+    expect(await prisma.stockItem.count({ where: { status: "RESERVED" } })).toBe(0);
+    // Cart is left untouched so the buyer can trim it down and retry.
+    expect((await getCart(prisma, user.id)).length).toBe(4);
+  });
+
+  it("a large-but-under-cap multi-line cart completes with one batched insert, same rows a per-unit loop would produce", async () => {
+    const { user } = sample;
+    const perLine = 90; // 3 lines x 90 = 270, under the cap
+    expect(perLine * 3).toBeLessThanOrEqual(MAX_CART_ORDER_UNITS);
+    const denomIds: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const denom = await makeDenomination(`Big Line ${i}`);
+      await bulkAddStock(
+        prisma,
+        denom.id,
+        Array.from({ length: perLine }, (_, k) => `line${i}-cred-${k}`),
+      );
+      await addToCart(prisma, user.id, denom.id, perLine);
+      denomIds.push(denom.id);
+    }
+
+    const created = await createOrderFromCart(prisma, { user });
+    const order = (await getOrder(prisma, created!.id))!;
+
+    expect(order.items.length).toBe(perLine * denomIds.length);
+    for (const productId of denomIds) {
+      const linesForProduct = order.items.filter((it) => it.productId === productId);
+      expect(linesForProduct.length).toBe(perLine);
+
+      // Every unit reserved a DISTINCT stock row — batching the INSERT must
+      // not change which stock item allocateOneAvailableStock assigned to
+      // which line/unit.
+      const stockIds = linesForProduct.map((it) => it.stockItemId);
+      expect(new Set(stockIds).size).toBe(perLine);
+      for (const it of linesForProduct) {
+        expect(it.stockItem).not.toBeNull();
+        expect(it.stockItem!.status).toBe("RESERVED");
+        expect(it.quantity).toBe(1);
+        expect(new Decimal(it.unitPrice).equals("5.00")).toBe(true);
+        expect(it.deliveryTypeSnapshot).toBe("auto");
+      }
+      // All of this product's seeded stock got consumed — none left over.
+      expect(await countAvailableStock(prisma, productId)).toBe(0);
+    }
+
+    // Cart emptied, same as the happy-path test above.
+    expect(await getCart(prisma, user.id)).toEqual([]);
   });
 });
 

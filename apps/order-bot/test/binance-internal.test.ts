@@ -28,6 +28,7 @@ import {
   classifyTx,
   noteMatches,
   matchByAmount,
+  matchUnderpaidByAmount,
   normalizeTx,
   processTransfers,
   fetchIncomingTransfers,
@@ -179,26 +180,119 @@ describe("pollWatchdogDecision (poller stuck/recover logic)", () => {
   });
 });
 
-describe("matchByAmount (note-less fallback)", () => {
+describe("matchByAmount (note-less fallback, best fit + capped overpayment)", () => {
+  // Distinct totals, unique-cents-style — the PRODUCTION configuration (both
+  // Bybit rails hard-gate on USE_UNIQUE_CENTS specifically so every order's
+  // total is distinct). All assertions below run against the FULL multi-order
+  // array unless a test is specifically about a single-order scenario, so a
+  // regression that only shows up with ≥2 distinct-total pending orders (like
+  // the one a prior version of this fix shipped) can't hide behind
+  // single-element fixtures.
   const orders = [
     { id: 1, totalAmount: "5.0000" },
     { id: 2, totalAmount: "7.5000" },
     { id: 3, totalAmount: "12.3400" },
   ];
 
-  it("returns the sole order within tolerance", () => {
-    expect(matchByAmount({ amount: 7.5 }, orders)?.id).toBe(2);
-    expect(matchByAmount({ amount: 12.3401 }, orders)?.id).toBe(3); // within 0.001
+  // THE regression test (Important #4, code-review follow-up): a payment
+  // that exactly matches a PRICIER pending order must still match that order
+  // — not get refused as "ambiguous" just because it also happens to clear a
+  // cheaper order's threshold. An earlier version of this fix filtered on
+  // "any candidate at or below the amount, refuse on ≥2" — which made every
+  // order except the single cheapest pending one unmatchable the instant a
+  // second, cheaper order existed. Best-fit (largest qualifying total) fixes
+  // this: only a genuine TIE at the top refuses.
+  it("matches the PRICIER of two distinct-total pending orders when paid exactly, not refused as ambiguous", () => {
+    expect(matchByAmount({ amount: 7.5 }, orders)?.id).toBe(2); // exact for order 2, also clears order 1's cheaper threshold
+    expect(matchByAmount({ amount: 12.3401 }, orders)?.id).toBe(3); // exact (within float tolerance) for order 3
   });
 
-  it("refuses when no order matches", () => {
-    expect(matchByAmount({ amount: 99 }, orders)).toBeNull();
-    expect(matchByAmount({ amount: 4.5 }, orders)).toBeNull(); // underpaid → no amount match
+  // Overpayment (a buyer rounding up) is accepted, but only up to a cap — see
+  // `overpaymentCap` in binanceInternal.ts. A modest overpay of the best-fit
+  // (pricier) candidate still matches even with cheaper orders present.
+  it("matches a modest overpay of the best-fit order, cheaper orders present", () => {
+    expect(matchByAmount({ amount: 13 }, orders)?.id).toBe(3); // overpays order 3 by 0.66, well under its cap (~2.47)
   });
 
-  it("refuses on a collision (≥2 candidates) rather than guessing", () => {
+  // M-14 code-review follow-up (Critical #2): an unbounded overpayment
+  // ceiling gives ZERO protection once only one order is pending — the
+  // day-to-day state for a small shop. A wildly larger amount than any
+  // pending order (an unrelated top-up, a mistyped transfer, a late payment
+  // for an expired order) must NOT auto-attribute to whichever order happens
+  // to be the best fit; it refuses (falls through to "unmatched") instead.
+  it("refuses (does not auto-match) an amount far beyond the best-fit order's overpayment cap", () => {
+    expect(matchByAmount({ amount: 99 }, orders)).toBeNull(); // best fit would be order 3 (12.34), but 99 blows its ~2.47 cap
+    expect(matchByAmount({ amount: 20 }, [orders[2]!])).toBeNull(); // same, single-candidate case: 20 vs 12.34, cap ~2.47
+  });
+
+  it("refuses when no order's total the payment covers (genuinely underpaid on the amount check)", () => {
+    expect(matchByAmount({ amount: 4.5 }, orders)).toBeNull(); // short of every order beyond tolerance
+  });
+
+  it("refuses on a genuine tie at the best-fit total, even with a cheaper non-tied order also present", () => {
+    // Two orders tied at 10.0 plus an unrelated cheaper order at 5.0 — the
+    // cheaper order must not interfere with tie detection at the top: it's
+    // excluded from the max-total group, but the tie between the two 10.0s
+    // still correctly refuses.
+    const withTie = [
+      { id: 1, totalAmount: "5.0000" },
+      { id: 2, totalAmount: "10.0000" },
+      { id: 3, totalAmount: "10.0000" },
+    ];
+    expect(matchByAmount({ amount: 10.0 }, withTie)).toBeNull();
+  });
+
+  it("refuses on a collision (all candidates tied) rather than guessing", () => {
     const dup = [{ id: 1, totalAmount: "5.0000" }, { id: 2, totalAmount: "5.0000" }];
     expect(matchByAmount({ amount: 5.0 }, dup)).toBeNull();
+  });
+});
+
+describe("matchUnderpaidByAmount (mirrored short-side search for memo-less rails, floored)", () => {
+  const orders = [
+    { id: 1, totalAmount: "5.0000" },
+    { id: 2, totalAmount: "7.5000" },
+  ];
+
+  it("returns the sole order the received amount falls short of beyond tolerance (well within the floor)", () => {
+    expect(matchUnderpaidByAmount({ amount: 4.5 }, [orders[0]!])?.id).toBe(1); // 90% of expected
+  });
+
+  it("refuses within tolerance (that's a clean match, not underpaid)", () => {
+    expect(matchUnderpaidByAmount({ amount: 4.9995 }, [orders[0]!])).toBeNull();
+  });
+
+  it("refuses on a collision — short of ≥2 candidates at once", () => {
+    // 4.0 is short of BOTH orders' totals beyond tolerance — can't tell which
+    // one the buyer was trying (and failing) to pay.
+    expect(matchUnderpaidByAmount({ amount: 4.0 }, orders)).toBeNull();
+  });
+
+  it("refuses when the amount isn't short of anything (that's matchByAmount's job)", () => {
+    expect(matchUnderpaidByAmount({ amount: 10 }, orders)).toBeNull();
+  });
+
+  // M-14 code-review follow-up (Critical #3): amount alone, with no memo,
+  // can't confirm intent — a wholly unrelated tiny stray deposit against a
+  // large pending order must NOT get attributed to it (that would flip the
+  // order UNDERPAID, pulling it out of the matcher's own pending pool, and
+  // orphan the buyer's real payment when it arrives later). The floor draws
+  // the line: below 50% of the order's total, it's "not plausibly this
+  // order", not "this order, badly underpaid".
+  describe("floor (a deposit must be at least half the order's total to count as underpaid for it)", () => {
+    const bigOrder = [{ id: 9, totalAmount: "500.0000" }];
+
+    it("refuses a stray deposit well below the floor against a large pending order", () => {
+      expect(matchUnderpaidByAmount({ amount: 50 }, bigOrder)).toBeNull(); // 10% of expected — dust, not underpaid
+    });
+
+    it("flags underpaid right at the floor boundary (inclusive)", () => {
+      expect(matchUnderpaidByAmount({ amount: 250 }, bigOrder)?.id).toBe(9); // exactly 50%
+    });
+
+    it("refuses just below the floor boundary", () => {
+      expect(matchUnderpaidByAmount({ amount: 249.99 }, bigOrder)).toBeNull(); // just under 50%
+    });
   });
 });
 
@@ -268,6 +362,49 @@ describe("deliverPaidInternalOrder (idempotency + delivery)", () => {
     const res = await deliverPaidInternalOrder(prisma, { orderId: order!.id, binanceTxId: "TX-2", amount: order!.totalAmount });
     expect(res.status).toBe("stale");
     expect(await prisma.stockItem.count({ where: { status: StockStatus.SOLD } })).toBe(1); // not re-delivered
+  });
+
+  // H-3 (backend audit 2026-07-31): the ledger claim used to survive a failed
+  // delivery transaction forever — every retry (poller cycle) hit the
+  // binance_tx_id UNIQUE constraint and was turned away as already_processed,
+  // silently losing the buyer's payment. Wiping all stock for the product
+  // forces settlePaidOrder's out-of-stock guard to throw INSIDE the delivery
+  // $transaction, rolling it back (the real-world equivalent of a SQLITE_BUSY
+  // collision or a transient failure mid-delivery).
+  it("a claim whose delivery failed is retryable — a later call with the same tx id succeeds instead of already_processed", async () => {
+    const order = await makeInternalOrder();
+
+    await prisma.stockItem.updateMany({ where: { productId: sample.product.id }, data: { status: StockStatus.DEAD } });
+
+    await expect(
+      deliverPaidInternalOrder(prisma, { orderId: order!.id, binanceTxId: "TX-retry-1", amount: order!.totalAmount }),
+    ).rejects.toThrow();
+
+    // The claim row survives the rollback, tagged delivery_failed — and the
+    // order itself rolled all the way back to PENDING_PAYMENT, not stuck
+    // mid-transition.
+    const failedLedger = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "TX-retry-1" } });
+    expect(failedLedger?.outcome).toBe("delivery_failed");
+    expect((await prisma.order.findUnique({ where: { id: order!.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+
+    // Restock, then retry with the SAME tx id — this must now succeed
+    // instead of hitting the UNIQUE constraint and returning already_processed.
+    await prisma.stockItem.create({
+      data: { productId: sample.product.id, credentials: "retry-cred@example.com:pwd", status: StockStatus.AVAILABLE },
+    });
+
+    const retry = await deliverPaidInternalOrder(prisma, { orderId: order!.id, binanceTxId: "TX-retry-1", amount: order!.totalAmount });
+    expect(retry.status).toBe("delivered");
+    if (retry.status !== "delivered") throw new Error("expected delivered");
+    expect(retry.order.status).toBe(OrderStatus.DELIVERED);
+
+    const ledgerRow = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "TX-retry-1" } });
+    expect(ledgerRow?.outcome).toBe("matched");
+    expect(ledgerRow?.orderId).toBe(order!.id);
+
+    // Still exactly one ledger row — reclaimed in place, not duplicated.
+    const rows = await prisma.processedBinanceTx.findMany({ where: { binanceTxId: "TX-retry-1" } });
+    expect(rows.length).toBe(1);
   });
 });
 

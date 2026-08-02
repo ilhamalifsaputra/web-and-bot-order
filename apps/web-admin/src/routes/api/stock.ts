@@ -242,7 +242,10 @@ export default async function stockApiRoutes(app: FastifyInstance): Promise<void
     const item = await getStockItem(prisma, stockId);
     if (!item) return reply.code(404).send({ error: "Stock item not found." });
 
-    await markStockDead(prisma, stockId, note || "marked dead via web");
+    const count = await markStockDead(prisma, stockId, note || "marked dead via web");
+    if (count === 0) {
+      return reply.code(409).send({ error: "This item is already sold or dead and can no longer be changed." });
+    }
     await logAdminAction(prisma, {
       adminId: req.admin!.userId,
       action: "stock_mark_dead",

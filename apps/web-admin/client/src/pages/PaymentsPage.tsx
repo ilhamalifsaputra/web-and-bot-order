@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
 import { FilterBar } from "../components/shared/FilterBar";
@@ -8,6 +9,7 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
 import { StatusBadge } from "../components/shared/StatusBadge";
+import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
 import { StatCard } from "../components/shared/StatCard";
 import { UrgencyDot } from "../components/shared/UrgencyDot";
 import { Pagination } from "../components/shared/Pagination";
@@ -42,9 +44,27 @@ import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 
+/** Which payment rail a ledger row came from. "bybit" covers BOTH Bybit
+ *  sub-rails (off-chain Internal Transfer and on-chain BSC deposit) — they
+ *  share one backend ledger table with no field distinguishing the two, see
+ *  `listCombinedLedger`'s doc comment (packages/db/src/crud/reports.ts). */
+type LedgerGateway = "binance" | "bybit" | "tokopay" | "paydisini" | "nowpayments";
+
+/** Maps a ledger row's `gateway` to the payment-method key `PaymentMethodBadge`
+ *  (and its `PAYMENT_METHOD_LABELS` map) already knows how to render — reusing
+ *  that existing shared component/label set instead of inventing a new one. */
+const GATEWAY_PAYMENT_METHOD: Record<LedgerGateway, string> = {
+  binance: "BINANCE_INTERNAL",
+  bybit: "BYBIT",
+  tokopay: "TOKOPAY",
+  paydisini: "PAYDISINI",
+  nowpayments: "NOWPAYMENTS",
+};
+
 interface TxRow {
   id: number;
-  binanceTxId: string;
+  gateway: LedgerGateway;
+  reference: string;
   amount: string | null;
   currency: string | null;
   outcome: string;
@@ -181,7 +201,13 @@ function healthPill(health: PaymentsHealth): { level: "ok" | "warn" | "critical"
 
 export function PaymentsPage() {
   const qc = useQueryClient();
-  const [outcome, setOutcome] = useState("");
+  const [searchParams] = useSearchParams();
+  // Seeds the outcome filter from `?outcome=` on mount (e.g. the Operation
+  // Center's "Failed Deliveries" card links here as
+  // /payments?outcome=delivery_failed) — same pattern as OrdersPage.tsx's
+  // `initialStatus`/`initialQ` reading its own deep-link params.
+  const initialOutcome = searchParams.get("outcome") ?? "";
+  const [outcome, setOutcome] = useState(initialOutcome);
   const [page, setPage] = useState(1);
   const [qDraft, setQDraft] = useState("");
   const [q, setQ] = useState("");
@@ -227,7 +253,7 @@ export function PaymentsPage() {
   });
 
   const creditToBalance = useMutation({
-    mutationFn: () => apiPost("/api/payments/credit", { binance_tx_id: pendingCredit!.binanceTxId, order_code: creditSuggestion!.code }),
+    mutationFn: () => apiPost("/api/payments/credit", { binance_tx_id: pendingCredit!.reference, order_code: creditSuggestion!.code }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["payments"] });
       toast.success("Added to the buyer's credit balance.");
@@ -265,7 +291,11 @@ export function PaymentsPage() {
   });
 
   const ledgerRows = data?.ledger ?? [];
-  const eligibleRows = ledgerRows.filter(tx => tx.outcome === "unmatched");
+  // Manual match/credit/dismiss only exist for Binance transactions — a
+  // TokoPay/PayDisini/etc. row is never "eligible" for bulk dismiss even
+  // when unmatched, since /api/payments/dismiss only understands Binance
+  // reference ids.
+  const eligibleRows = ledgerRows.filter(tx => tx.outcome === "unmatched" && tx.gateway === "binance");
   const allEligibleSelected = eligibleRows.length > 0 && eligibleRows.every(tx => selected.has(tx.id));
 
   function toggleSelected(id: number) {
@@ -290,7 +320,7 @@ export function PaymentsPage() {
   const bulkDismiss = useMutation({
     mutationFn: async (ids: number[]) => {
       const rows = ledgerRows.filter(tx => ids.includes(tx.id));
-      const results = await Promise.allSettled(rows.map(tx => apiPost("/api/payments/dismiss", { binance_tx_id: tx.binanceTxId })));
+      const results = await Promise.allSettled(rows.map(tx => apiPost("/api/payments/dismiss", { binance_tx_id: tx.reference })));
       const failed = results.filter(r => r.status === "rejected").length;
       return { succeeded: results.length - failed, failed };
     },
@@ -549,19 +579,24 @@ export function PaymentsPage() {
                 aria-label="Select all eligible transfers"
               />
             ),
-            render: tx => tx.outcome === "unmatched" ? (
+            render: tx => tx.outcome === "unmatched" && tx.gateway === "binance" ? (
               <Checkbox
                 checked={selected.has(tx.id)}
                 onCheckedChange={() => toggleSelected(tx.id)}
                 onClick={e => e.stopPropagation()}
-                aria-label={`Select transfer ${tx.binanceTxId}`}
+                aria-label={`Select transfer ${tx.reference}`}
               />
             ) : null,
           },
           {
             key: "txid",
             header: "Transfer ID",
-            render: tx => <span className="font-mono text-xs">{tx.binanceTxId}</span>,
+            render: tx => <span className="font-mono text-xs">{tx.reference}</span>,
+          },
+          {
+            key: "gateway",
+            header: "Gateway",
+            render: tx => <PaymentMethodBadge method={GATEWAY_PAYMENT_METHOD[tx.gateway] ?? tx.gateway} />,
           },
           {
             key: "amount",
@@ -598,11 +633,14 @@ export function PaymentsPage() {
           {
             key: "actions",
             header: "",
-            render: tx => tx.outcome === "unmatched" ? (
+            // Manual match/credit/dismiss are Binance-specific (the backend
+            // routes operate on processedBinanceTx directly) — other
+            // gateways never show this dropdown, even on an unmatched row.
+            render: tx => tx.outcome === "unmatched" && tx.gateway === "binance" ? (
               <div onClick={(e) => e.stopPropagation()}>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for transfer ${tx.binanceTxId}`}>
+                    <Button variant="ghost" size="icon-sm" aria-label={`Actions for transfer ${tx.reference}`}>
                       <MoreVertical className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -682,9 +720,9 @@ export function PaymentsPage() {
           open
           onOpenChange={(open) => { if (!open) setPendingDismiss(null); }}
           title="Dismiss transfer?"
-          description={`Mark transfer ${pendingDismiss.binanceTxId} as dismissed.`}
+          description={`Mark transfer ${pendingDismiss.reference} as dismissed.`}
           confirmLabel="Dismiss"
-          onConfirm={() => dismiss.mutate(pendingDismiss.binanceTxId)}
+          onConfirm={() => dismiss.mutate(pendingDismiss.reference)}
         />
       )}
       {pendingCredit && (
@@ -695,7 +733,7 @@ export function PaymentsPage() {
             </DialogHeader>
             <div className="flex flex-col gap-2">
               <p className="text-sm text-ink-soft">
-                Adds transfer {pendingCredit.binanceTxId}&apos;s amount to the matching order&apos;s buyer credit balance and cancels the order. Enter the order code this transfer belongs to.
+                Adds transfer {pendingCredit.reference}&apos;s amount to the matching order&apos;s buyer credit balance and cancels the order. Enter the order code this transfer belongs to.
               </p>
               <Input
                 placeholder="Order code"

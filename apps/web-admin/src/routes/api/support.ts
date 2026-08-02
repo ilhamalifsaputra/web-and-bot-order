@@ -299,6 +299,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       action: "ticket_reply",
       targetType: "ticket",
       targetId: ticketId,
+      details: `Replied to ticket #${ticketId}.`,
     });
     return reply.send({ ok: true });
   });
@@ -312,6 +313,7 @@ export default async function supportApiRoutes(app: FastifyInstance): Promise<vo
       action: "ticket_close",
       targetType: "ticket",
       targetId: ticketId,
+      details: `Closed ticket #${ticketId}.`,
     });
     return reply.send({ ok: true });
   });

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { NotificationStatus } from "@app/core/enums";
-import { prisma, listNotifications, countNotifications, outboxStatusCounts, retryNotification, logAdminAction } from "@app/db";
+import { prisma, listNotifications, countNotifications, outboxStatusCounts, retryNotification, getNotification, logAdminAction } from "@app/db";
 import { logger } from "@app/core/logger";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
 import { displayDateTime } from "../../dateDisplay";
@@ -36,6 +36,7 @@ export default async function outboxApiRoutes(app: FastifyInstance): Promise<voi
   // (still covered by test/web.test.ts) since nothing requires removing it.
   app.post("/api/outbox/:id/retry", { preHandler: csrfProtect }, async (req, reply) => {
     const id = Number((req.params as { id: string }).id);
+    const existing = await getNotification(prisma, id);
     const ok = await retryNotification(prisma, id);
     if (!ok) return reply.code(404).send({ error: "That notification no longer exists." });
     await logAdminAction(prisma, {
@@ -43,6 +44,7 @@ export default async function outboxApiRoutes(app: FastifyInstance): Promise<voi
       action: "outbox_retry",
       targetType: "notification",
       targetId: id,
+      details: `Requeued a ${existing?.event ?? "notification"} notification for delivery.`,
     });
     logger.info(`Admin ${req.admin!.userId} requeued outbox notification ${id} for delivery via the web panel`);
     return reply.send({ ok: true });

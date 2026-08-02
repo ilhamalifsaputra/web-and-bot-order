@@ -16,8 +16,17 @@ import {
 } from "@app/db";
 import { OrderStatus, SenderType, TicketStatus, UserRole } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { makeCtx, FakeConversation, calls, sentIncludes, offersForwardAction, type SentCall } from "./helpers/ctx";
+import {
+  makeCtx,
+  FakeConversation,
+  calls,
+  sentIncludes,
+  offersForwardAction,
+  type SentCall,
+  type MakeCtxOptions,
+} from "./helpers/ctx";
 import type { SessionData } from "../src/context";
+import { t } from "../src/util/i18n";
 import { ticketUserReplyConversation } from "../src/conversations/customer";
 import { voucherConversation } from "../src/conversations/checkout";
 import { supportConversation } from "../src/conversations/support";
@@ -221,6 +230,215 @@ describe("support + reject conversations", () => {
     expect(ticket!.orderId).toBeNull();
   });
 
+  it("support: an unrecognized tap during the order-picker wait answers error.stale_screen and the conversation keeps waiting (M-22 fix)", async () => {
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-SUPPORTSTALE-${Math.random()}`,
+        userId: sample.user.id,
+        subtotalAmount: "45000",
+        totalAmount: "45000",
+        status: OrderStatus.DELIVERED,
+      },
+    });
+    await prisma.orderItem.create({
+      data: { orderId: order.id, productId: sample.product.id, unitPrice: "45000", warrantyDaysSnapshot: 30 },
+    });
+
+    const sink: SentCall[] = [];
+    const entry = entryCust(sink, "v1:support:open");
+    const conv = new FakeConversation([
+      msg(sink, { text: "My account stopped working yesterday" }),
+      msg(sink, { callbackData: "v1:menu:main" }), // unrecognized in this wait loop
+      msg(sink, { callbackData: "v1:support:order:skip" }),
+      msg(sink, { callbackData: "v1:support:photos:done" }),
+    ]);
+    await supportConversation(conv.asMyConversation(), entry);
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
+    // Conversation was unaffected — it kept waiting and completed normally.
+    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
+    expect(ticket).toBeTruthy();
+    expect(ticket!.orderId).toBeNull(); // the picker was ultimately skipped
+  });
+
+  it("support: an unrecognized tap during the photos wait answers error.stale_screen and the conversation keeps waiting (M-22 fix)", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryCust(sink, "v1:support:open");
+    const conv = new FakeConversation([
+      msg(sink, { text: "My account stopped working yesterday" }),
+      msg(sink, { callbackData: "v1:menu:main" }), // unrecognized in this wait loop
+      msg(sink, { callbackData: "v1:support:photos:done" }),
+    ]);
+    await supportConversation(conv.asMyConversation(), entry);
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
+    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
+    expect(ticket).toBeTruthy();
+  });
+
+  it("support: the order-picker, photo-prompt, and received screens all edit the same anchor bubble instead of leaving stray keyboards (M-23 fix)", async () => {
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-SUPPORTANCHOR-${Math.random()}`,
+        userId: sample.user.id,
+        subtotalAmount: "45000",
+        totalAmount: "45000",
+        status: OrderStatus.DELIVERED,
+      },
+    });
+    await prisma.orderItem.create({
+      data: { orderId: order.id, productId: sample.product.id, unitPrice: "45000", warrantyDaysSnapshot: 30 },
+    });
+
+    const sink: SentCall[] = [];
+    // One chat = ONE session object, shared by the entry update and every
+    // resumed turn — that's how grammY + @grammyjs/conversations really
+    // behave, and it's the only way this test can observe whether the anchor
+    // id survives across waits at all. (Per-update sessions, the harness
+    // default, silently swallow every cross-wait anchor write.)
+    const shared = { ...custSession(), scratch: {} } as SessionData;
+    const chat = { id: 42, type: "private" as const };
+    const mk = (o: MakeCtxOptions) =>
+      makeCtx({ sink, from: { id: 42, username: "tester" }, sharedSession: shared, ...o }).ctx;
+
+    // Entered via a typed /support command (no callback query yet), so the
+    // anchor bubble is established by a fresh ctx.reply() and every later
+    // step must reuse it through menuAnchor — this is the strongest exercise
+    // of the M-23 fix, since pre-fix each of the three sends below (ask_order,
+    // ask_photos, received) used a bare ctx.api.sendMessage that created its
+    // own new, never-retired bubble.
+    const entry = mk({ text: "/support" });
+    // Thunks, not ready-made contexts: the skip/done buttons live ON the
+    // anchor bubble, so each tap's callbackQuery.message.message_id has to be
+    // the anchor id — which doesn't exist until the intro reply has run.
+    const conv = new FakeConversation([
+      () => mk({ text: "My account stopped working yesterday" }),
+      () => mk({ callbackData: "v1:support:order:skip", cbMessage: { message_id: shared.menuMsgId!, chat, date: 0 } }),
+      () => mk({ callbackData: "v1:support:photos:done", cbMessage: { message_id: shared.menuMsgId!, chat, date: 0 } }),
+    ]);
+    await supportConversation(conv.asMyConversation(), entry);
+
+    // Invariant 1 — exactly one anchor bubble is ever born. The intro screen
+    // has no prior anchor and no callback query to edit, so it falls through
+    // to a single fresh send; nothing afterwards may add a second bubble.
+    // (Deliberately NOT asserting how many edits of which kind happened: a
+    // typed-input step renders through editAnchor's api-level edit and a tap
+    // renders through smartEdit's ctx-level edit, and which is which is a
+    // mechanism detail, not the behavior M-23 is about.)
+    expect(calls(sink, "reply").length).toBe(1);
+
+    // Invariant 2 — the anchor never moved. Every api-level edit (the
+    // wizard-anchor path; it alone carries an explicit message id) targeted
+    // one and the same bubble, and the session still points at it after all
+    // three post-wait renders. Since the single reply above is the only thing
+    // that can seed menuMsgId, that shared id IS the intro reply's message id.
+    const anchorEdits = calls(sink, "editMessageText").filter((c) => typeof c.args[1] === "number");
+    expect(anchorEdits.length).toBeGreaterThan(0);
+    expect(new Set(anchorEdits.map((c) => c.args[1])).size).toBe(1);
+    expect(shared.menuMsgId).toBe(anchorEdits[0]!.args[1]);
+
+    // Invariant 3 — no bubble ever had to have its keyboard retired, because
+    // a second live keyboard never existed in the first place.
+    expect(calls(sink, "editMessageReplyMarkup").length).toBe(0);
+
+    // None of those three customer-facing screens were ever sent as a fresh
+    // message into the user's own chat (the bug this task fixes).
+    const strayCustomerSends = calls(sink, "sendMessage").filter((c) => c.args[0] === entry.chat!.id);
+    expect(strayCustomerSends.length).toBe(0);
+
+    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
+    expect(ticket).toBeTruthy();
+    expect(ticket!.orderId).toBeNull(); // the picker was skipped
+  });
+
+  it("support: when the anchor edit fails, the fresh-send fallback's new anchor id lands in the live session (M-23 fix)", async () => {
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `ORD-SUPPORTFALLBACK-${Math.random()}`,
+        userId: sample.user.id,
+        subtotalAmount: "45000",
+        totalAmount: "45000",
+        status: OrderStatus.DELIVERED,
+      },
+    });
+    await prisma.orderItem.create({
+      data: { orderId: order.id, productId: sample.product.id, unitPrice: "45000", warrantyDaysSnapshot: 30 },
+    });
+
+    const sink: SentCall[] = [];
+    const chat = { id: 42, type: "private" as const };
+    // The bubble the "🆘 Support" button was tapped on. The intro edits it in
+    // place, so it is the anchor when the first wait() returns.
+    const ANCHOR = 500_001;
+
+    // The live session — the one grammY actually persists, shared by every
+    // resumed turn.
+    const live = { ...custSession(), scratch: {}, menuMsgId: ANCHOR } as SessionData;
+    // The entry `ctx` parameter's session. @grammyjs/conversations replays the
+    // conversation on each resume, and from the second turn onwards that
+    // parameter is a reconstruction whose session is a detached clone of the
+    // first turn's — writes to it never reach storage. Modeled here as a
+    // separate object holding the same first-turn state.
+    const entrySnapshot = { ...custSession(), scratch: {}, menuMsgId: ANCHOR } as SessionData;
+
+    const entry = makeCtx({
+      sink,
+      from: { id: 42, username: "tester" },
+      sharedSession: entrySnapshot,
+      callbackData: "v1:support:open",
+      cbMessage: { message_id: ANCHOR, chat, date: 0 },
+    }).ctx;
+
+    const conv = new FakeConversation([
+      // The user deleted the anchor bubble before typing, so the ask_order
+      // render's edit of it fails and editAnchor must fall back to a fresh
+      // send — the one path where a post-wait render mints a NEW anchor id.
+      () =>
+        makeCtx({
+          sink,
+          from: { id: 42, username: "tester" },
+          sharedSession: live,
+          text: "My account stopped working yesterday",
+          deletedMessageIds: [ANCHOR],
+        }).ctx,
+      () =>
+        makeCtx({
+          sink,
+          from: { id: 42, username: "tester" },
+          sharedSession: live,
+          callbackData: "v1:support:order:skip",
+          cbMessage: { message_id: live.menuMsgId!, chat, date: 0 },
+        }).ctx,
+      () =>
+        makeCtx({
+          sink,
+          from: { id: 42, username: "tester" },
+          sharedSession: live,
+          callbackData: "v1:support:photos:done",
+          cbMessage: { message_id: live.menuMsgId!, chat, date: 0 },
+        }).ctx,
+    ]);
+    await supportConversation(conv.asMyConversation(), entry);
+
+    // The discriminator: the new anchor id must be written onto the context
+    // that actually gets persisted (the freshest waited one), not back onto
+    // the replayed entry ctx. If a post-wait render used the entry ctx, `live`
+    // would still point at the deleted ANCHOR while a brand-new bubble carried
+    // a live, never-retired keyboard — the exact stray-keyboard failure M-23
+    // exists to prevent.
+    expect(live.menuMsgId).toBeDefined();
+    expect(live.menuMsgId).not.toBe(ANCHOR);
+
+    // That new id came from the fallback's fresh send, and the two later taps
+    // (which ride on live.menuMsgId) kept landing on it.
+    expect(calls(sink, "reply").length).toBe(1);
+
+    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
+    expect(ticket).toBeTruthy();
+  });
+
   it("reject: admin reason rejects the order, audits, and DMs the buyer", async () => {
     const order = await pendingVerificationOrder();
     const sink: SentCall[] = [];
@@ -297,6 +515,22 @@ describe("admin conversations", () => {
 
     expect(sentIncludes(sink, "Netflix Premium - 1 Month")).toBe(true);
     expect(await prisma.restockSubscription.count({ where: { userId: subscriber.id } })).toBe(0);
+  });
+
+  it("stockUpload: an unrecognized tap during the wait answers error.stale_screen and the conversation keeps waiting (M-22 fix)", async () => {
+    const before = await prisma.stockItem.count({ where: { productId: sample.product.id } });
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, `v1:adm:stock:add:${sample.product.id}`);
+    const conv = new FakeConversation([
+      msg(sink, { callbackData: "v1:adm:junk" }), // unrecognized — not v1:adm:cancel, no document/text
+      msg(sink, { text: "new1@x.com:pw1\nnew2@x.com:pw2" }),
+    ]);
+    await stockUploadConversation(conv.asMyConversation(), entry);
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.some((c) => (c.args[0] as { text?: string } | undefined)?.text === t(entry, "error.stale_screen"))).toBe(true);
+    // Conversation was unaffected — it kept waiting and completed normally.
+    expect(await prisma.stockItem.count({ where: { productId: sample.product.id } })).toBe(before + 2);
   });
 
   it("voucherCreate: 3 steps create a voucher", async () => {
@@ -384,6 +618,47 @@ describe("admin conversations", () => {
 
     expect(calls(sink, "sendMessage").length).toBeGreaterThan(0);
     expect(await getSetting(prisma, "broadcast_inflight_at")).toBeNull();
+  });
+
+  // M-25 (backend audit 2026-07-31): a web-only registered customer has no
+  // Telegram chat to DM — before this fix they were still counted in the
+  // preview and attempted as sendMessage(0), inflating "failed" with sends
+  // that could never succeed.
+  it("broadcast: excludes a web-only user (telegramId: null) from both the preview count and the send", async () => {
+    await prisma.user.create({
+      data: { telegramId: null, referralCode: "WEBONLYBC", role: UserRole.CUSTOMER, language: "EN" },
+    });
+
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, "v1:adm:broadcast:start");
+    const conv = new FakeConversation([
+      msg(sink, { text: "Maintenance tonight" }),
+      msg(sink, { callbackData: "v1:adm:broadcast:confirm" }),
+    ]);
+    await broadcastConversation(conv.asMyConversation(), entry);
+
+    // Preview is shown before confirm — recipient count excludes the web-only user (2, not 3).
+    expect(sentIncludes(sink, "<b>2</b> users")).toBe(true);
+    // Only the two Telegram-linked users (42, 999) are actually sent to.
+    const targets = calls(sink, "sendMessage").map((c) => c.args[0]);
+    expect(targets.filter((t) => t !== 42 && t !== 999)).toHaveLength(0);
+    expect(await prisma.auditLog.findFirst({ where: { action: "broadcast" } })).toMatchObject({
+      details: expect.stringContaining("2 users"),
+    });
+  });
+
+  it("broadcast: throttles between sends (40ms per recipient, mirroring drainBroadcasts)", async () => {
+    const sink: SentCall[] = [];
+    const entry = entryAdmin(sink, "v1:adm:broadcast:start");
+    const conv = new FakeConversation([
+      msg(sink, { text: "Throttled blast" }),
+      msg(sink, { callbackData: "v1:adm:broadcast:confirm" }),
+    ]);
+    const start = Date.now();
+    await broadcastConversation(conv.asMyConversation(), entry);
+    // recipients are users 42 + 999 (2 * 40ms throttle ⇒ at least ~80ms;
+    // assert a lower bound well under the nominal value to absorb scheduling jitter).
+    expect(Date.now() - start).toBeGreaterThanOrEqual(70);
   });
 
   it("userSearch: a query renders matching users", async () => {

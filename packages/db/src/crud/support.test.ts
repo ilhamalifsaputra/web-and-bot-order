@@ -15,6 +15,7 @@ import {
   closeTicketByUser,
   reopenTicket,
   reopenTicketAdmin,
+  replyToTicket,
   resolveTicket,
   classifyTicket,
   TICKET_REOPEN_WINDOW_DAYS,
@@ -217,6 +218,8 @@ describe("closeTicketByUser", () => {
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
     expect(fresh!.status).toBe(TicketStatus.CLOSED);
     expect(fresh!.closedAt).not.toBeNull();
+    // M-29: closeTicketByUser must stamp lastStatusChangeAt too.
+    expect(fresh!.lastStatusChangeAt.getTime()).toBe(fresh!.closedAt!.getTime());
   });
 
   it("a second call on an already-CLOSED ticket returns false (no-op)", async () => {
@@ -228,16 +231,21 @@ describe("closeTicketByUser", () => {
 });
 
 describe("reopenTicket", () => {
-  it("reopens a ticket closed within the window, clearing closedAt", async () => {
+  it("reopens a ticket closed within the window, clearing closedAt and stamping lastStatusChangeAt", async () => {
     const user = await makeUser(920n);
     const ticket = await createTicket(prisma, user.id, "help");
     await closeTicket(prisma, ticket.id);
+    const closed = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
 
     const result = await reopenTicket(prisma, ticket.id);
     expect(result).toEqual({ ok: true });
     const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
     expect(fresh!.status).toBe(TicketStatus.OPEN);
     expect(fresh!.closedAt).toBeNull();
+    // M-29: reopenTicket must stamp lastStatusChangeAt (the admin queue's
+    // "Waiting since" column reads this), not just leave the stale value
+    // from the earlier close.
+    expect(fresh!.lastStatusChangeAt.getTime()).toBeGreaterThan(closed!.lastStatusChangeAt.getTime());
   });
 
   it("refuses to reopen a ticket that isn't CLOSED", async () => {
@@ -261,6 +269,50 @@ describe("reopenTicket", () => {
 
   it("returns not_closed for a non-existent ticket", async () => {
     expect(await reopenTicket(prisma, 999999)).toEqual({ ok: false, reason: "not_closed" });
+  });
+});
+
+// M-29: replyToTicket (the bot's admin-reply path) was silently leaving
+// lastStatusChangeAt/firstResponseAt stale — only addTicketMessage stamped
+// them. These assert replyToTicket is correct standalone, independent of
+// whichever caller also happens to call addTicketMessage afterward.
+describe("replyToTicket", () => {
+  it("stamps lastStatusChangeAt and sets firstResponseAt on the first reply", async () => {
+    const user = await makeUser(930n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+    expect(ticket.firstResponseAt).toBeNull();
+
+    const tgId = await replyToTicket(prisma, { ticketId: ticket.id, reply: "on it", adminDbId: admin.id });
+
+    expect(tgId).toBe(930n);
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.REPLIED);
+    expect(fresh!.repliedAt).not.toBeNull();
+    expect(fresh!.lastStatusChangeAt.getTime()).toBeGreaterThan(ticket.lastStatusChangeAt.getTime());
+    expect(fresh!.firstResponseAt).not.toBeNull();
+    expect(fresh!.firstResponseAt!.getTime()).toBe(fresh!.repliedAt!.getTime());
+  });
+
+  it("does NOT overwrite firstResponseAt on a second reply, but still bumps lastStatusChangeAt", async () => {
+    const user = await makeUser(931n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "help");
+
+    await replyToTicket(prisma, { ticketId: ticket.id, reply: "first reply", adminDbId: admin.id });
+    const afterFirst = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+
+    await replyToTicket(prisma, { ticketId: ticket.id, reply: "second reply", adminDbId: admin.id });
+    const afterSecond = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+
+    expect(afterSecond!.firstResponseAt!.getTime()).toBe(afterFirst!.firstResponseAt!.getTime());
+    expect(afterSecond!.lastStatusChangeAt.getTime()).toBeGreaterThan(afterFirst!.lastStatusChangeAt.getTime());
+    expect(afterSecond!.repliedAt!.getTime()).toBeGreaterThan(afterFirst!.repliedAt!.getTime());
+  });
+
+  it("returns null for a non-existent ticket", async () => {
+    const admin = await makeAdmin();
+    expect(await replyToTicket(prisma, { ticketId: 999999, reply: "x", adminDbId: admin.id })).toBeNull();
   });
 });
 
@@ -329,23 +381,85 @@ describe("listTicketsPaged / countTickets — filtering + pagination", () => {
     expect((await listTicketsPaged(prisma, { adminId: adminA.id })).map((t) => t.id)).toEqual([ticketA.id]);
   });
 
-  it("filters by overdue (OPEN, never replied, older than 4h)", async () => {
+  it("filters by overdue (OPEN, lastStatusChangeAt older than 4h)", async () => {
     const user = await makeUser(1005n);
     const overdue = await createTicket(prisma, user.id, "old open ticket");
     await prisma.supportTicket.update({
       where: { id: overdue.id },
-      data: { createdAt: addMinutes(new Date(), -300) }, // 5h old
+      data: { lastStatusChangeAt: addMinutes(new Date(), -300) }, // 5h since its wait-clock reset
     });
     const fresh = await createTicket(prisma, user.id, "fresh open ticket"); // just created
     const repliedOld = await createTicket(prisma, user.id, "old but replied");
     await prisma.supportTicket.update({
       where: { id: repliedOld.id },
-      data: { createdAt: addMinutes(new Date(), -300), status: TicketStatus.REPLIED, repliedAt: new Date() },
+      data: {
+        status: TicketStatus.REPLIED,
+        repliedAt: new Date(),
+        lastStatusChangeAt: new Date(), // replying resets the wait-clock — not overdue
+      },
     });
 
     const overdueList = await listTicketsPaged(prisma, { overdue: true });
     expect(overdueList.map((t) => t.id)).toEqual([overdue.id]);
     void fresh;
+  });
+
+  it("M-31: a customer follow-up on an already-answered ticket (status flips back to OPEN, repliedAt NOT cleared) becomes overdue once its wait-clock passes the cutoff — invisible under the old repliedAt-IS-NULL predicate", async () => {
+    const user = await makeUser(1051n);
+    const admin = await makeAdmin();
+
+    // Ticket created, then answered by an admin — repliedAt gets set.
+    const ticket = await createTicket(prisma, user.id, "still broken?");
+    await replyToTicket(prisma, { ticketId: ticket.id, reply: "try again", adminDbId: admin.id });
+    const afterReply = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(afterReply!.status).toBe(TicketStatus.REPLIED);
+    expect(afterReply!.repliedAt).not.toBeNull();
+
+    // Customer follows up ("still not fixed") — addTicketMessage flips status
+    // back to OPEN and resets lastStatusChangeAt (Task 38), but deliberately
+    // does NOT clear repliedAt.
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.USER,
+      senderId: user.id,
+      content: "still not fixed",
+    });
+    const afterFollowUp = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(afterFollowUp!.status).toBe(TicketStatus.OPEN);
+    expect(afterFollowUp!.repliedAt).not.toBeNull(); // NOT cleared — this is the bug's precondition
+
+    // Age it past the overdue cutoff relative to lastStatusChangeAt (the
+    // follow-up's reset point), not createdAt.
+    await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: { lastStatusChangeAt: addMinutes(new Date(), -241) }, // 1 minute past the 240-minute cutoff
+    });
+
+    // Prisma path (ticketWhere, via countTickets/listTicketsPaged default sort).
+    expect(await countTickets(prisma, { overdue: true })).toBe(1);
+    const viaPrisma = await listTicketsPaged(prisma, { overdue: true });
+    expect(viaPrisma.map((t) => t.id)).toEqual([ticket.id]);
+
+    // Raw-SQL path (ticketWhereRaw, only reachable via sort: "priority").
+    const viaRawSql = await listTicketsPaged(prisma, { overdue: true, sort: "priority" });
+    expect(viaRawSql.map((t) => t.id)).toEqual([ticket.id]);
+
+    // Companion case: a ticket that's genuinely still just "answered, no
+    // follow-up yet" (REPLIED, repliedAt old) must stay excluded — replying
+    // resets the wait-clock, so it's not overdue even though repliedAt itself
+    // is old. Proves the fix isn't simply "always OPEN-or-REPLIED".
+    const answeredNoFollowUp = await createTicket(prisma, user.id, "answered, no reply from customer yet");
+    await replyToTicket(prisma, { ticketId: answeredNoFollowUp.id, reply: "here's the fix", adminDbId: admin.id });
+    await prisma.supportTicket.update({
+      where: { id: answeredNoFollowUp.id },
+      data: { repliedAt: addMinutes(new Date(), -300), lastStatusChangeAt: addMinutes(new Date(), -300) },
+    });
+    const stillExcluded = await prisma.supportTicket.findUnique({ where: { id: answeredNoFollowUp.id } });
+    expect(stillExcluded!.status).toBe(TicketStatus.REPLIED); // not OPEN → excluded regardless of age
+
+    const finalOverdue = await listTicketsPaged(prisma, { overdue: true });
+    expect(finalOverdue.map((t) => t.id)).toEqual([ticket.id]);
+    expect(finalOverdue.map((t) => t.id)).not.toContain(answeredNoFollowUp.id);
   });
 
   it("q searches message content and the related user's fullName/username", async () => {
@@ -447,7 +561,7 @@ describe("getTicketStats", () => {
     const overdueTicket = await createTicket(prisma, user.id, "stale open");
     await prisma.supportTicket.update({
       where: { id: overdueTicket.id },
-      data: { createdAt: addMinutes(now, -300) },
+      data: { lastStatusChangeAt: addMinutes(now, -300) },
     });
 
     // waiting on customer (REPLIED), assigned
@@ -481,23 +595,24 @@ describe("getTicketStats", () => {
     const user = await makeUser(1102n);
     const now = new Date();
 
-    // OPEN + never replied + old enough → overdue by both routes.
+    // OPEN + wait-clock old enough → overdue by both routes.
     const overdueTicket = await createTicket(prisma, user.id, "stale");
     await prisma.supportTicket.update({
       where: { id: overdueTicket.id },
-      data: { createdAt: addMinutes(now, -241) }, // 1 minute past the 240-minute cutoff
+      data: { lastStatusChangeAt: addMinutes(now, -241) }, // 1 minute past the 240-minute cutoff
     });
     // OPEN but just inside the window — NOT overdue by either route.
     const freshTicket = await createTicket(prisma, user.id, "fresh");
     await prisma.supportTicket.update({
       where: { id: freshTicket.id },
-      data: { createdAt: addMinutes(now, -239) },
+      data: { lastStatusChangeAt: addMinutes(now, -239) },
     });
-    // Old but REPLIED — excluded from overdue by the "never replied" clause.
+    // Old but REPLIED — excluded from overdue by the "status = OPEN" clause
+    // (replying is itself a status transition that resets the wait-clock).
     const repliedOld = await createTicket(prisma, user.id, "old but replied");
     await prisma.supportTicket.update({
       where: { id: repliedOld.id },
-      data: { createdAt: addMinutes(now, -300), status: TicketStatus.REPLIED, repliedAt: now },
+      data: { status: TicketStatus.REPLIED, repliedAt: now, lastStatusChangeAt: addMinutes(now, -300) },
     });
 
     const viaFilter = await countTickets(prisma, { overdue: true });
@@ -711,5 +826,93 @@ describe("listTicketsPaged / countTickets — category filter", () => {
 
     const rows = await listTicketsPaged(prisma, { category: TicketCategory.PAYMENT, sort: "priority" });
     expect(rows.map((r) => r.id)).toEqual([payment.id]);
+  });
+});
+
+// M-36: ticketWhere (Prisma, used by countTickets and the default sort) and
+// ticketWhereRaw (raw SQL, used only by sort:"priority") are now both derived
+// from the single buildTicketConditions() list instead of being two
+// hand-kept-in-sync predicates, so the header count and the priority-sorted
+// page can no longer silently disagree on how many tickets match a filter.
+describe("listTicketsPaged / countTickets — unified predicate (M-36)", () => {
+  it("agree on the total for a search term containing % and _ (LIKE wildcard characters)", async () => {
+    const user = await makeUser(1340n, { fullName: "Al%ce_W", username: "user_%name" });
+    const other = await makeUser(1341n);
+    // Both % and _ act as SQL LIKE wildcards on both the Prisma `contains`
+    // path and the raw-SQL `LIKE` path (neither escapes them) — so as long as
+    // the two paths wrap/bind the term identically, they match the same set.
+    // This guards that invariant: if a future change (e.g. escaping one side
+    // but not the other) breaks it, this test catches it as a count/list
+    // mismatch rather than an admin silently seeing inconsistent numbers.
+    await createTicket(prisma, other.id, "flash sale: 50%off_code applies");
+    await createTicket(prisma, other.id, "50Xoffzcode also matches the wildcard reading");
+    await createTicket(prisma, user.id, "totally unrelated message");
+
+    const q = "50%off_";
+    const count = await countTickets(prisma, { q });
+    const priorityList = await listTicketsPaged(prisma, { q, sort: "priority", limit: 100, offset: 0 });
+    const defaultList = await listTicketsPaged(prisma, { q, sort: "newest", limit: 100, offset: 0 });
+
+    expect(count).toBe(2);
+    expect(priorityList.map((t) => t.id).sort()).toEqual(defaultList.map((t) => t.id).sort());
+    expect(priorityList.length).toBe(count);
+  });
+
+  it("agree when a search term matches via the related user's fullName/username, not just message, with % / _ present", async () => {
+    const user = await makeUser(1342n, { fullName: "Bud%get_Buyer", username: "plainname" });
+    const other = await makeUser(1343n, { fullName: "Someone Else" });
+    await createTicket(prisma, user.id, "unrelated body text");
+    await createTicket(prisma, other.id, "also unrelated");
+
+    const q = "Bud%get_Buyer";
+    const count = await countTickets(prisma, { q });
+    const priorityList = await listTicketsPaged(prisma, { q, sort: "priority", limit: 100, offset: 0 });
+
+    expect(count).toBe(1);
+    expect(priorityList.length).toBe(1);
+  });
+
+  it("an explicit status filter combined with overdue:true agrees between countTickets and sort:priority — the concrete M-36 regression: the old ticketWhere unconditionally OVERWROTE where.status/where.lastStatusChangeAt inside the {overdue:true} branch (silently discarding an explicit status filter), while ticketWhereRaw only ever ADDed an extra AND condition (producing a contradiction — 0 rows — instead), so the two paths disagreed whenever a status filter incompatible with OPEN was combined with overdue:true", async () => {
+    const user = await makeUser(1344n);
+    // OPEN and overdue (matches the {overdue:true} predicate on its own).
+    const overdueOpen = await createTicket(prisma, user.id, "old open ticket");
+    await prisma.supportTicket.update({
+      where: { id: overdueOpen.id },
+      data: { lastStatusChangeAt: addMinutes(new Date(), -300) },
+    });
+    // REPLIED (not OPEN) — explicitly filtered for below, but incompatible
+    // with overdue's implicit status=OPEN, so must NOT appear in the result
+    // under either path.
+    const repliedTicket = await createTicket(prisma, user.id, "replied ticket");
+    await prisma.supportTicket.update({
+      where: { id: repliedTicket.id },
+      data: { status: TicketStatus.REPLIED },
+    });
+
+    const filter = { status: TicketStatus.REPLIED, overdue: true };
+    const count = await countTickets(prisma, filter);
+    const priorityList = await listTicketsPaged(prisma, { ...filter, sort: "priority", limit: 100, offset: 0 });
+    const defaultList = await listTicketsPaged(prisma, { ...filter, sort: "newest", limit: 100, offset: 0 });
+
+    // status=REPLIED (explicit) AND overdue's implicit status=OPEN is a
+    // contradiction — correctly zero matches on every path, not "silently
+    // ignore the status filter and return the OPEN overdue ticket instead".
+    expect(count).toBe(0);
+    expect(priorityList).toEqual([]);
+    expect(defaultList).toEqual([]);
+  });
+
+  it("priority ordering itself is unchanged by the refactor — URGENT/HIGH/MEDIUM/LOW rank, ties newest-first, still comes from the raw SQL CASE expression, not from the (now-shared) predicate", async () => {
+    const user = await makeUser(1345n);
+    const low = await createTicket(prisma, user.id, "low");
+    await prisma.supportTicket.update({ where: { id: low.id }, data: { priority: TicketPriority.LOW } });
+    const urgent = await createTicket(prisma, user.id, "urgent");
+    await prisma.supportTicket.update({ where: { id: urgent.id }, data: { priority: TicketPriority.URGENT } });
+    const high = await createTicket(prisma, user.id, "high");
+    await prisma.supportTicket.update({ where: { id: high.id }, data: { priority: TicketPriority.HIGH } });
+    const medium = await createTicket(prisma, user.id, "medium");
+
+    const sorted = await listTicketsPaged(prisma, { sort: "priority" });
+    expect(sorted.map((t) => t.id)).toEqual([urgent.id, high.id, medium.id, low.id]);
   });
 });

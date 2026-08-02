@@ -225,6 +225,161 @@ export async function manualMatchQueueCounts(db: Db): Promise<ManualMatchQueueCo
   return { unmatched, deliveryFailed };
 }
 
+/**
+ * The five gateway ledger tables `manualMatchQueueCounts`/`listCombinedLedger`
+ * cover. There is NOT a sixth `processedBybitBscTx` table: `ProcessedBybitTx`
+ * (see its schema doc comment) is shared by BOTH Bybit payment methods —
+ * `BYBIT` (off-chain Internal Transfer, `bybit_deposit.ts`) and `BYBIT_BSC`
+ * (on-chain BEP20 deposit, `bybit_bsc_deposit.ts`) both write their ledger
+ * rows into the same table via the same `db.processedBybitTx.create(...)`
+ * calls, and the table has no column recording which of the two sub-rails a
+ * given row came from. So "five tables" was already correct and already
+ * inclusive of Bybit BSC deposits; audited while adding `listCombinedLedger`
+ * below (task 47, backend audit follow-up) and confirmed not a bug.
+ */
+export type LedgerGateway = "binance" | "bybit" | "tokopay" | "paydisini" | "nowpayments";
+
+export interface UnifiedLedgerRow {
+  id: number;
+  gateway: LedgerGateway;
+  /** The gateway's own transaction/callback reference id — `binanceTxId`,
+   *  `bybitTxId`, or `trxId` depending on the source table. */
+  reference: string;
+  amount: string | null;
+  /** None of the five ledger tables store a currency column (see each
+   *  table's schema) — always null today. Kept in the shape for parity with
+   *  the pre-existing (also-always-null) Binance-only response field rather
+   *  than inferring one, which is an unrelated pre-existing gap. */
+  currency: string | null;
+  outcome: string;
+  createdAt: Date;
+  orderId: number | null;
+}
+
+export interface CombinedLedgerFilter {
+  outcome?: string | null;
+  q?: string | null;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * Cross-gateway ledger list — normalizes all five `processed*Tx` idempotency
+ * tables (Binance, Bybit [covers both Bybit sub-rails, see the doc comment
+ * above `LedgerGateway`], TokoPay, PayDisini, NOWPayments) into one shape so
+ * the Payments page's ledger table (and the "Failed Deliveries" Operation
+ * Center card link, `?outcome=delivery_failed`) isn't structurally blind to
+ * every gateway except Binance.
+ *
+ * Each table is queried with its own `where` (outcome/`q` applied server-side
+ * per table, not fetched unfiltered and filtered in JS) via `Promise.all`,
+ * then merged, sorted by `createdAt` descending, and paginated in memory —
+ * mirroring `manualMatchQueueCounts`'s existing query-all-combine-in-JS
+ * pattern rather than a raw SQL `UNION` (no raw SQL outside the crud layer).
+ * This scales linearly with total ledger row count when no `outcome`/`q`
+ * filter narrows it (every row across all five tables is fetched and sorted
+ * for every unfiltered page) — acceptable for these ledgers' size today, but
+ * revisit with a real cross-table paginated query if any one of them grows
+ * large.
+ */
+export async function listCombinedLedger(db: Db, opts: CombinedLedgerFilter = {}): Promise<UnifiedLedgerRow[]> {
+  const q = opts.q && opts.q.trim() ? opts.q.trim() : null;
+  const outcomeWhere = opts.outcome ? { outcome: opts.outcome } : {};
+
+  const [binance, bybit, tokopay, paydisini, nowpayments] = await Promise.all([
+    db.processedBinanceTx.findMany({
+      where: { ...outcomeWhere, ...(q ? { binanceTxId: { contains: q } } : {}) },
+    }),
+    db.processedBybitTx.findMany({
+      where: { ...outcomeWhere, ...(q ? { bybitTxId: { contains: q } } : {}) },
+    }),
+    db.processedTokopayTx.findMany({
+      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) },
+    }),
+    db.processedPaydisiniTx.findMany({
+      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) },
+    }),
+    db.processedNowpaymentsTx.findMany({
+      where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) },
+    }),
+  ]);
+
+  const merged: UnifiedLedgerRow[] = [
+    ...binance.map((r) => ({
+      id: r.id,
+      gateway: "binance" as const,
+      reference: r.binanceTxId,
+      amount: r.amount != null ? r.amount.toString() : null,
+      currency: null,
+      outcome: r.outcome,
+      createdAt: r.createdAt,
+      orderId: r.orderId,
+    })),
+    ...bybit.map((r) => ({
+      id: r.id,
+      gateway: "bybit" as const,
+      reference: r.bybitTxId,
+      amount: r.amount != null ? r.amount.toString() : null,
+      currency: null,
+      outcome: r.outcome,
+      createdAt: r.createdAt,
+      orderId: r.orderId,
+    })),
+    ...tokopay.map((r) => ({
+      id: r.id,
+      gateway: "tokopay" as const,
+      reference: r.trxId,
+      amount: r.amount != null ? r.amount.toString() : null,
+      currency: null,
+      outcome: r.outcome,
+      createdAt: r.createdAt,
+      orderId: r.orderId,
+    })),
+    ...paydisini.map((r) => ({
+      id: r.id,
+      gateway: "paydisini" as const,
+      reference: r.trxId,
+      amount: r.amount != null ? r.amount.toString() : null,
+      currency: null,
+      outcome: r.outcome,
+      createdAt: r.createdAt,
+      orderId: r.orderId,
+    })),
+    ...nowpayments.map((r) => ({
+      id: r.id,
+      gateway: "nowpayments" as const,
+      reference: r.trxId,
+      amount: r.amount != null ? r.amount.toString() : null,
+      currency: null,
+      outcome: r.outcome,
+      createdAt: r.createdAt,
+      orderId: r.orderId,
+    })),
+  ];
+  merged.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+  const offset = opts.offset ?? 0;
+  const limit = opts.limit ?? 50;
+  return merged.slice(offset, offset + limit);
+}
+
+/** Total row count across all five gateway ledger tables, same filter shape
+ *  as `listCombinedLedger` — analogous to `countProcessedBinanceTx` but
+ *  cross-gateway, for the ledger's pagination total. */
+export async function countCombinedLedger(db: Db, opts: { outcome?: string | null; q?: string | null } = {}): Promise<number> {
+  const q = opts.q && opts.q.trim() ? opts.q.trim() : null;
+  const outcomeWhere = opts.outcome ? { outcome: opts.outcome } : {};
+
+  const counts = await Promise.all([
+    db.processedBinanceTx.count({ where: { ...outcomeWhere, ...(q ? { binanceTxId: { contains: q } } : {}) } }),
+    db.processedBybitTx.count({ where: { ...outcomeWhere, ...(q ? { bybitTxId: { contains: q } } : {}) } }),
+    db.processedTokopayTx.count({ where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) } }),
+    db.processedPaydisiniTx.count({ where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) } }),
+    db.processedNowpaymentsTx.count({ where: { ...outcomeWhere, ...(q ? { trxId: { contains: q } } : {}) } }),
+  ]);
+  return counts.reduce((sum, c) => sum + c, 0);
+}
+
 /** OrderItems whose warranty (delivered_at + snapshot days) falls in [start,end]. */
 export async function listOrderItemsExpiringWarranty(
   db: Db,

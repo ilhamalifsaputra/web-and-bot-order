@@ -21,12 +21,61 @@ const likeContains = (q: string) => ({ contains: q });
  * filters, and KPIs never include role=ADMIN, filtered or not. */
 const NON_ADMIN_ROLES = [UserRole.CUSTOMER, UserRole.RESELLER];
 
+/** Every User column except `passwordHash` and `email` — the general-purpose
+ * projection for `getUser`/`listUsers`, used by web-admin's Customers page and
+ * order-bot's admin/customer/checkout handlers alike. These two functions'
+ * results get spread straight into JSON responses readable by the
+ * lowest-privilege `readonly` admin role (Customers list, detail, CSV
+ * export), so `passwordHash` must NEVER be selectable here (backend audit
+ * finding H-4). `email` is dropped too: nothing that reads through this
+ * projection renders it (checked against UsersPage.tsx/UserDetailPage.tsx and
+ * every order-bot caller) — the one caller that genuinely needs the full row
+ * (email + passwordHash, for the storefront's own-account settings page) uses
+ * `getUserWithPasswordHash` in crud/webauth.ts instead. Mirrors the
+ * TICKET_USER_SELECT pattern in crud/support.ts. Add new User columns here
+ * explicitly as they're added to the schema — this list is NOT auto-synced
+ * with Prisma's model. */
+const USER_SELECT = {
+  id: true,
+  telegramId: true,
+  username: true,
+  fullName: true,
+  loginUsername: true,
+  role: true,
+  language: true,
+  walletBalance: true,
+  walletBalanceUsdt: true,
+  referralCode: true,
+  referredById: true,
+  banned: true,
+  bannedReason: true,
+  createdAt: true,
+  lastSeenAt: true,
+} as const;
+
+/** USER_SELECT plus `email` — the admin global-search projection
+ * (`/api/search`). SearchModal.tsx's `userLabel()` uses `email` as an
+ * identity fallback (fullName → username → loginUsername → email →
+ * telegramId) for a storefront-only customer with no Telegram link and no
+ * display name, so search can't drop it the way the general-purpose
+ * USER_SELECT does. Still deliberately excludes `passwordHash` —
+ * `searchUsers`'s results are spread straight into `/api/search`'s admin
+ * JSON response, reachable by the lowest-privilege `readonly` role, same
+ * threat `USER_SELECT` guards against (backend audit finding H-4). */
+const SEARCH_USER_SELECT = {
+  ...USER_SELECT,
+  email: true,
+} as const;
+
 export function getUserByTelegramId(db: Db, telegramId: number | bigint) {
   return db.user.findUnique({ where: { telegramId: BigInt(telegramId) } });
 }
 
+/** General-purpose user lookup — never returns `passwordHash` or `email` (see
+ * USER_SELECT above). Login/credential verification uses
+ * `getUserWithPasswordHash` (crud/webauth.ts) instead. */
 export function getUser(db: Db, userId: number) {
-  return db.user.findUnique({ where: { id: userId } });
+  return db.user.findUnique({ where: { id: userId }, select: USER_SELECT });
 }
 
 /**
@@ -193,7 +242,7 @@ export function searchUsers(db: Db, query: string, limit = 20) {
     { email: likeContains(q) },
   ];
   if (/^\d+$/.test(q)) or.push({ telegramId: BigInt(q) });
-  return db.user.findMany({ where: { OR: or }, take: limit });
+  return db.user.findMany({ where: { OR: or }, take: limit, select: SEARCH_USER_SELECT });
 }
 
 /** Most recently registered users — the Customers page's default browse list. */
@@ -360,9 +409,8 @@ function userOrderBy(sort?: UserSort): Prisma.UserOrderByWithRelationInput {
 /**
  * Rank a filtered set of user ids by DELIVERED-order IDR spend, descending,
  * then return the requested page of ids. A single `findMany` relation-orderBy
- * cannot sort by a child relation's `_sum`, only `_count` — this two-phase
- * approach (match ids, then `groupBy`-rank them) is required because `groupBy`
- * DOES support ordering by `_sum`.
+ * cannot sort by a child relation's `_sum`, only `_count` — this ranks via a
+ * `groupBy` on `Order` because `groupBy` DOES support ordering by `_sum`.
  *
  * IDR-only, deliberately — spend is inherently two numbers (IDR, USDT) and
  * blending them into one ranking would fabricate a single scalar
@@ -370,6 +418,25 @@ function userOrderBy(sort?: UserSort): Prisma.UserOrderByWithRelationInput {
  * DELIVERED IDR orders (including USDT-only spenders) rank as zero-IDR-
  * spenders, appended after every real IDR spender in their original
  * createdAt-desc order.
+ *
+ * Bounded, not the "materialize every matched id, then groupBy over all of
+ * them, then slice" shape this replaced (which pulled every filtered user id
+ * — unbounded on a large customer base — before ranking a single page and
+ * discarding the rest, and made `groupBy` chunk its `userId IN (...)` list
+ * around SQLite's parameter-count limit). Instead:
+ *   1. Count how many matched users have >=1 DELIVERED IDR order at all
+ *      (`rankedCount`) — an indexed EXISTS-style count, not a row pull.
+ *   2. If the requested page overlaps the ranked (real-spend) side, pull just
+ *      that slice directly from `groupBy` with `skip`/`take` — the ranking
+ *      and the pagination happen in the same bounded query, filtering by the
+ *      relation (`user: where`) instead of a materialized id list.
+ *   3. If the page still needs more rows after that, pull the remainder from
+ *      the zero-spend side directly via `orders: { none: {...} } }`,
+ *      createdAt-desc, again with `skip`/`take` doing the pagination in SQL.
+ * Every step returns at most `limit` (+ a scalar count) rows — nothing
+ * unbounded is ever materialized — while producing byte-identical ordering
+ * and pagination to the old implementation (see
+ * `packages/db/src/crud/users.test.ts`'s boundary-page assertions).
  */
 async function rankUserIdsBySpend(
   db: Db,
@@ -377,21 +444,40 @@ async function rankUserIdsBySpend(
   offset: number,
   limit: number,
 ): Promise<number[]> {
-  const matched = await db.user.findMany({ where, select: { id: true }, orderBy: { createdAt: "desc" } });
-  const matchedIds = matched.map((u) => u.id);
-  if (matchedIds.length === 0) return [];
+  if (limit <= 0) return [];
 
-  const ranked = await db.order.groupBy({
-    by: ["userId"],
-    where: { userId: { in: matchedIds }, status: OrderStatus.DELIVERED, currency: "IDR" },
-    _sum: { totalAmount: true },
-    orderBy: { _sum: { totalAmount: "desc" } },
-  });
-  const rankedIds = ranked.map((r) => r.userId);
-  const rankedSet = new Set(rankedIds);
-  const zeroSpendIds = matchedIds.filter((id) => !rankedSet.has(id)); // already createdAt-desc
-  const fullyRankedIds = [...rankedIds, ...zeroSpendIds];
-  return fullyRankedIds.slice(offset, offset + limit);
+  const hasDeliveredIdrOrder: Prisma.UserWhereInput = {
+    orders: { some: { status: OrderStatus.DELIVERED, currency: "IDR" } },
+  };
+  const rankedCount = await db.user.count({ where: { ...where, ...hasDeliveredIdrOrder } });
+
+  const result: number[] = [];
+
+  if (offset < rankedCount) {
+    const ranked = await db.order.groupBy({
+      by: ["userId"],
+      where: { status: OrderStatus.DELIVERED, currency: "IDR", user: where },
+      _sum: { totalAmount: true },
+      orderBy: { _sum: { totalAmount: "desc" } },
+      skip: offset,
+      take: Math.min(limit, rankedCount - offset),
+    });
+    result.push(...ranked.map((r) => r.userId));
+  }
+
+  const remaining = limit - result.length;
+  if (remaining > 0) {
+    const zeroSpenders = await db.user.findMany({
+      where: { ...where, orders: { none: { status: OrderStatus.DELIVERED, currency: "IDR" } } },
+      select: { id: true },
+      orderBy: { createdAt: "desc" },
+      skip: Math.max(0, offset - rankedCount),
+      take: remaining,
+    });
+    result.push(...zeroSpenders.map((u) => u.id));
+  }
+
+  return result;
 }
 
 /** Filtered, sorted, paginated user list — the Customers page's data source. */
@@ -406,12 +492,12 @@ export async function listUsers(
   if (opts.sort === "spend") {
     const pageIds = await rankUserIdsBySpend(db, where, offset, limit);
     if (pageIds.length === 0) return [];
-    const rows = await db.user.findMany({ where: { id: { in: pageIds } } });
+    const rows = await db.user.findMany({ where: { id: { in: pageIds } }, select: USER_SELECT });
     const byId = new Map(rows.map((u) => [u.id, u]));
     return pageIds.map((id) => byId.get(id)).filter((u): u is (typeof rows)[number] => u != null);
   }
 
-  return db.user.findMany({ where, orderBy: userOrderBy(opts.sort), skip: offset, take: limit });
+  return db.user.findMany({ where, orderBy: userOrderBy(opts.sort), skip: offset, take: limit, select: USER_SELECT });
 }
 
 /** Count matching `listUsers`' filter — for the Customers page's pagination total. */

@@ -6,6 +6,7 @@ import type { Api } from "grammy";
 import {
   prisma,
   createBybitBscOrder,
+  deliverPaidBybitBscOrder,
   setOrderPaymentMessage,
   setSetting,
   deleteSetting,
@@ -201,16 +202,71 @@ describe("pollOnce (confirmation tracker poll loop)", () => {
     expect(updated.status).toBe(OrderStatus.PAYMENT_DETECTED); // unchanged
   });
 
-  it("escalates to FAILED once the not-found grace period is exhausted, and enqueues an admin alert via the outbox", async () => {
-    const order = await makeTrackedOrder("0x" + "5".repeat(64));
+  it("marks tracking stale (NOT FAILED) once the not-found grace period is exhausted, and enqueues an admin alert via the outbox (M-11 fix)", async () => {
+    const txId = "0x" + "5".repeat(64);
+    const order = await makeTrackedOrder(txId);
     mockChain("0x65", null);
     for (let i = 0; i < MAX_CONSECUTIVE_LOOKUP_FAILURES; i++) await pollOnce(fakeApi);
     const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
-    expect(updated.status).toBe(OrderStatus.FAILED);
-    const failedRows = await prisma.notificationOutbox.findMany({
+    // Non-terminal: the order stays exactly where the tracker last left it
+    // (PAYMENT_DETECTED here, since fetchConfirmations never once succeeded),
+    // NOT FAILED — that used to permanently block a later genuine Bybit
+    // "Success" report from auto-delivering (M-11, backend audit 2026-07-31).
+    expect(updated.status).toBe(OrderStatus.PAYMENT_DETECTED);
+    expect(updated.trackingStaleAt).not.toBeNull();
+    const alertRows = await prisma.notificationOutbox.findMany({
       where: { orderId: order.id, event: "ORDER_PIPELINE_FAILED" },
     });
-    expect(failedRows.length).toBeGreaterThan(0);
+    expect(alertRows.length).toBeGreaterThan(0);
+  });
+
+  it("does not re-enqueue a second admin alert on further not-found cycles once already marked stale", async () => {
+    const order = await makeTrackedOrder("0x" + "5".repeat(64));
+    mockChain("0x65", null);
+    for (let i = 0; i < MAX_CONSECUTIVE_LOOKUP_FAILURES; i++) await pollOnce(fakeApi);
+    const afterFirstEscalation = await prisma.notificationOutbox.count({
+      where: { orderId: order.id, event: "ORDER_PIPELINE_FAILED" },
+    });
+    // enqueueOrderPipelineFailed fans out one row per resolved admin (2 in
+    // this test env, ADMIN_IDS="999,1000") — that's one alert EPISODE, not
+    // two. Confirm the baseline, then prove further not-found cycles don't
+    // add any more rows on top of it.
+    expect(afterFirstEscalation).toBe(2);
+
+    // Several more not-found cycles past the grace period.
+    for (let i = 0; i < 15; i++) await pollOnce(fakeApi);
+    const alertRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: "ORDER_PIPELINE_FAILED" },
+    });
+    expect(alertRows).toHaveLength(afterFirstEscalation);
+  });
+
+  it("recovers full delivery after tracking went stale, once Bybit later reports genuine success (M-11 fix)", async () => {
+    const txId = "0x" + "7".repeat(64);
+    const order = await makeTrackedOrder(txId);
+
+    // The explorer never finds the tx for MAX_CONSECUTIVE_LOOKUP_FAILURES
+    // consecutive cycles — tracking is flagged stale, but the order must
+    // stay in a state deliverPaidBybitBscOrder can still act on.
+    mockChain("0x65", null);
+    for (let i = 0; i < MAX_CONSECUTIVE_LOOKUP_FAILURES; i++) await pollOnce(fakeApi);
+    const staled = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(staled.status).toBe(OrderStatus.PAYMENT_DETECTED);
+    expect(staled.trackingStaleAt).not.toBeNull();
+
+    // Bybit's own API now genuinely reports the deposit as Success (status
+    // 3) — the deposit poller's real delivery path, independent of this
+    // flaky explorer. Before the M-11 fix this claimed the idempotency slot
+    // and immediately returned "stale" because FAILED wasn't in
+    // PRE_DELIVERY_STATUSES.
+    const result = await deliverPaidBybitBscOrder(prisma, {
+      orderId: order.id,
+      bybitTxId: txId,
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+    const delivered = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(delivered.status).toBe(OrderStatus.DELIVERED);
   });
 
   it("is a no-op with no tracked orders (no fetch call at all)", async () => {

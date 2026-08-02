@@ -7,7 +7,7 @@
  */
 import fp from "fastify-plugin";
 import type { FastifyPluginAsync, FastifyRequest, preHandlerHookHandler } from "fastify";
-import { prisma, getSetting, getUser, touchLastSeen } from "@app/db";
+import { prisma, getSetting, getUserWithPasswordHash, touchLastSeen } from "@app/db";
 import {
   readCustomerSession,
   shopSessionJtiKey,
@@ -16,9 +16,11 @@ import {
   type CustomerSession,
 } from "../auth";
 
-/** req.customer: the cookie payload + the freshly loaded user row. */
+/** req.customer: the cookie payload + the freshly loaded user row (including
+ * `passwordHash`/`email` — this is the customer's OWN row, needed by the
+ * account-settings routes; see getUserWithPasswordHash's doc comment). */
 export type Customer = CustomerSession & {
-  user: NonNullable<Awaited<ReturnType<typeof getUser>>>;
+  user: NonNullable<Awaited<ReturnType<typeof getUserWithPasswordHash>>>;
 };
 
 declare module "fastify" {
@@ -33,7 +35,7 @@ export async function optionalCustomer(req: FastifyRequest): Promise<Customer | 
   if (!data) return null;
   const storedJti = await getSetting(prisma, shopSessionJtiKey(data.userId));
   if (!storedJti || storedJti !== data.jti) return null;
-  const user = await getUser(prisma, data.userId);
+  const user = await getUserWithPasswordHash(prisma, data.userId);
   if (!user || user.banned) return null;
   void touchLastSeen(prisma, user.id);
   return { ...data, user };

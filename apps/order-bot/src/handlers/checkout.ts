@@ -46,6 +46,9 @@ import {
   getNowpaymentsCreds,
   completeOrderWithWalletCredit,
   enqueueNotification,
+  claimGatewaySlot,
+  commitGatewayResult,
+  releaseGatewaySlot,
 } from "@app/db";
 import { createTransaction, computeQrisAdminFee } from "@app/core/payments/tokopay";
 import { createTransaction as createPaydisiniTransaction } from "@app/core/payments/paydisini";
@@ -931,6 +934,25 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
   // Create the hosted invoice + cache it. order.totalAmount is ALREADY in USDT
   // (finalizeOrderPayment's USDT branch) — pass it straight through as
   // amountUsd, no second conversion.
+  //
+  // Atomic claim before the external call — this order is visible to the
+  // SAME buyer on the storefront (My Orders → Pay) the instant it's created,
+  // so its own payView (apps/storefront/src/routes/checkout.ts) could
+  // concurrently start creating a NOWPayments invoice for this exact order
+  // too. claimGatewaySlot/commitGatewayResult/releaseGatewaySlot (the
+  // storefront's existing atomic-claim helpers, packages/db/src/crud/orders.ts)
+  // make only one caller ever call the gateway (M-6 fix, backend audit
+  // 2026-07-31 — mirrors the Data-2 fix from backend audit 2026-07-07).
+  const claimSentinel = await claimGatewaySlot(prisma, order.id);
+  if (!claimSentinel) {
+    // Lost the claim — another caller (almost certainly the storefront's
+    // payView for this same order) is already creating its invoice, so it
+    // will land a valid paymentRef shortly. Leave the order alone rather
+    // than cancelling it out from under that other caller.
+    logger.warn(`Lost the gateway claim for order ${order.orderCode} to a concurrent request — leaving the order for the other caller to finish instead of creating a second NOWPayments invoice`);
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
   let gateway;
   try {
     gateway = await createNowpaymentsInvoice(creds, {
@@ -943,8 +965,12 @@ export async function buyNowNowpayments(ctx: MyContext, productId: number, quant
     // its parseCachedNowpaymentsGateway() AND the bot's reconcile poller's
     // extractInvoiceId() (payments/nowpaymentsReconcile.ts) both require this
     // discriminator before trusting the cache.
-    await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify({ gateway: "nowpayments", ...gateway }) } });
+    const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "nowpayments", ...gateway });
+    if (!committed) {
+      logger.warn(`Created a NOWPayments invoice for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
+    }
   } catch (err) {
+    await releaseGatewaySlot(prisma, order.id, claimSentinel);
     logger.error({ err }, `Failed to create a NOWPayments invoice for order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
     // The order shell exists but has no payment instructions — cancel it
     // rather than leaving an orphan PENDING_PAYMENT slot (Checkout-3 fix,
@@ -1045,18 +1071,43 @@ export async function buyNowTokopay(ctx: MyContext, productId: number, quantity:
   delete ctx.session.scratch.useWalletUsdt;
   delete ctx.session.scratch.customerData;
 
-  const adminFee = computeQrisAdminFee(order.subtotalAmount);
+  // Based on order.totalAmount (what's actually sent to the gateway as
+  // `nominal` below), NOT subtotalAmount — H-1 fix, backend audit 2026-07-31.
+  const adminFee = computeQrisAdminFee(order.totalAmount);
   const chargeAmount = new Decimal(order.totalAmount).plus(adminFee);
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.
+  //
+  // Atomic claim before the external call — this order is visible to the
+  // SAME buyer on the storefront (My Orders → Pay) the instant it's created,
+  // so its own payView (apps/storefront/src/routes/checkout.ts) could
+  // concurrently start creating a TokoPay transaction for this exact order
+  // too. claimGatewaySlot/commitGatewayResult/releaseGatewaySlot (the
+  // storefront's existing atomic-claim helpers, packages/db/src/crud/orders.ts)
+  // make only one caller ever call the gateway (M-6 fix, backend audit
+  // 2026-07-31 — mirrors the Data-2 fix from backend audit 2026-07-07).
+  const claimSentinel = await claimGatewaySlot(prisma, order.id);
+  if (!claimSentinel) {
+    // Lost the claim — another caller (almost certainly the storefront's
+    // payView for this same order) is already creating its invoice, so it
+    // will land a valid paymentRef shortly. Leave the order alone rather
+    // than cancelling it out from under that other caller.
+    logger.warn(`Lost the gateway claim for order ${order.orderCode} to a concurrent request — leaving the order for the other caller to finish instead of creating a second TokoPay transaction`);
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
   let gateway;
   try {
     gateway = await createTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
     // Tagged `gateway: "tokopay"` to match the cache shape the storefront's own
     // cache-write sites produce (apps/storefront/src/routes/checkout.ts) — its
     // parseCachedGateway() requires this discriminator before trusting the cache.
-    await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify({ gateway: "tokopay", ...gateway }) } });
+    const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "tokopay", ...gateway });
+    if (!committed) {
+      logger.warn(`Created a TokoPay transaction for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
+    }
   } catch (err) {
+    await releaseGatewaySlot(prisma, order.id, claimSentinel);
     logger.error({ err }, `Failed to create a TokoPay transaction for order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
     // The order shell exists but has no payment instructions — cancel it
     // rather than leaving an orphan PENDING_PAYMENT slot (Checkout-3 fix,
@@ -1178,14 +1229,37 @@ export async function buyNowPaydisini(ctx: MyContext, productId: number, quantit
   delete ctx.session.scratch.customerData;
 
   // Create (idempotent on ref_id) the gateway transaction + cache it.
+  //
+  // Atomic claim before the external call — this order is visible to the
+  // SAME buyer on the storefront (My Orders → Pay) the instant it's created,
+  // so its own payView (apps/storefront/src/routes/checkout.ts) could
+  // concurrently start creating a PayDisini transaction for this exact order
+  // too. claimGatewaySlot/commitGatewayResult/releaseGatewaySlot (the
+  // storefront's existing atomic-claim helpers, packages/db/src/crud/orders.ts)
+  // make only one caller ever call the gateway (M-6 fix, backend audit
+  // 2026-07-31 — mirrors the Data-2 fix from backend audit 2026-07-07).
+  const claimSentinel = await claimGatewaySlot(prisma, order.id);
+  if (!claimSentinel) {
+    // Lost the claim — another caller (almost certainly the storefront's
+    // payView for this same order) is already creating its invoice, so it
+    // will land a valid paymentRef shortly. Leave the order alone rather
+    // than cancelling it out from under that other caller.
+    logger.warn(`Lost the gateway claim for order ${order.orderCode} to a concurrent request — leaving the order for the other caller to finish instead of creating a second PayDisini transaction`);
+    await smartEdit(ctx, t(ctx, "error.generic"), ckb.backToMain(lang));
+    return;
+  }
   let gateway;
   try {
     gateway = await createPaydisiniTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
     // Tagged `gateway: "paydisini"` to match the cache shape the storefront's own
     // cache-write sites produce (apps/storefront/src/routes/checkout.ts) — its
     // parseCachedPaydisiniGateway() requires this discriminator before trusting the cache.
-    await prisma.order.update({ where: { id: order.id }, data: { paymentRef: JSON.stringify({ gateway: "paydisini", ...gateway }) } });
+    const committed = await commitGatewayResult(prisma, order.id, claimSentinel, { gateway: "paydisini", ...gateway });
+    if (!committed) {
+      logger.warn(`Created a PayDisini transaction for order ${order.orderCode} but couldn't cache it — the order's payment reference changed elsewhere during the external call.`);
+    }
   } catch (err) {
+    await releaseGatewaySlot(prisma, order.id, claimSentinel);
     logger.error({ err }, `Failed to create a PayDisini transaction for order ${order.orderCode} — cancelling the order shell so it doesn't sit as an orphaned pending payment`);
     // The order shell exists but has no payment instructions — cancel it
     // rather than leaving an orphan PENDING_PAYMENT slot (Checkout-3 fix,

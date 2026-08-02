@@ -10,8 +10,9 @@
  *
  * BEP20 carries NO memo either, so matching is by unique total amount only
  * (same as Internal Transfer) — USE_UNIQUE_CENTS keeps every order distinct.
- * There is therefore no underpaid auto-path — an amount that matches no
- * order is "unmatched" and left for manual review.
+ * An amount that's neither a clean (at-or-above-total) match nor uniquely
+ * attributable as underpaid to one pending order is "unmatched" and left for
+ * manual review (M-14, backend audit 2026-07-31 — see markUnderpaidBybitBsc).
  *
  * Idempotency: shares the SAME `processed_bybit_tx` ledger as Internal
  * Transfer. This is safe because the two methods' txId formats never
@@ -269,6 +270,10 @@ export function listTrackedBybitBscOrders(db: Db) {
  * the first time only). Display-only: NEVER transitions toward
  * PENDING_VERIFICATION/DELIVERED — that stays exclusively
  * `deliverPaidBybitBscOrder`'s job, gated on Bybit's own status-3 report.
+ * Also clears `trackingStaleAt` (M-11 fix, backend audit 2026-07-31): a
+ * successful lookup here means the explorer recovered, so any earlier
+ * "tracking is stale" flag from `recordBybitBscTrackingStale` no longer
+ * applies.
  *
  * Returns the order's status AFTER this call (so the caller can push a live
  * bubble update with the right content even when a status transition
@@ -288,7 +293,10 @@ export async function recordBybitBscConfirmationProgress(
 
   await db.order.update({
     where: { id: args.orderId },
-    data: { confirmations: args.confirmations, requiredConfirmations: args.requiredConfirmations },
+    // A successful lookup also clears any previously-set `trackingStaleAt` —
+    // the explorer recovered, so a future degradation gets its own fresh
+    // admin alert instead of staying silently suppressed by the old flag.
+    data: { confirmations: args.confirmations, requiredConfirmations: args.requiredConfirmations, trackingStaleAt: null },
   });
 
   let currentStatus: string = order.status;
@@ -318,23 +326,37 @@ export async function recordBybitBscConfirmationProgress(
 }
 
 /**
- * Escalate a tracked order to FAILED after the tracker's in-memory lookup-
- * failure grace period is exhausted (the tx genuinely seems to have
- * vanished/reorged off-chain, not just a transient explorer hiccup). Returns
- * whether the transition actually applied (false if the order already left
- * PAYMENT_DETECTED/CONFIRMING by the time this runs — e.g. delivered on the
- * same cycle by the deposit poller).
+ * Flag a tracked order's on-chain tracking as stale/uncertain once the
+ * tracker's in-memory lookup-failure grace period is exhausted (the tx
+ * genuinely seems to have vanished/reorged off-chain, or a flaky free-tier
+ * explorer API key, not just a one-off hiccup). Deliberately *non-terminal*
+ * (M-11 fix, backend audit 2026-07-31) — previously this escalated the order
+ * straight to FAILED, but FAILED is not in `PRE_DELIVERY_STATUSES`, so a later
+ * genuine Bybit "Success" report could never auto-deliver it again. Setting
+ * `trackingStaleAt` instead leaves the order in PAYMENT_DETECTED/CONFIRMING
+ * (still inside `PRE_DELIVERY_STATUSES`), so `deliverPaidBybitBscOrder` can
+ * still claim and deliver it whenever Bybit's own report comes in.
+ *
+ * Idempotent by design: returns false (no-op) both when the order already
+ * left PAYMENT_DETECTED/CONFIRMING (e.g. delivered on the same cycle by the
+ * deposit poller) AND when `trackingStaleAt` was already set from an earlier
+ * cycle — the caller uses the return value to fire its admin alert exactly
+ * once per staleness episode, not on every subsequent poll tick.
  */
-export async function recordBybitBscTrackingFailed(db: Db, args: { orderId: number; reason: string }): Promise<boolean> {
+export async function recordBybitBscTrackingStale(db: Db, args: { orderId: number; reason: string }): Promise<boolean> {
   const order = await getOrder(db, args.orderId);
   if (!order) return false;
   if (order.status !== OrderStatus.PAYMENT_DETECTED && order.status !== OrderStatus.CONFIRMING) return false;
-  return tryTransitionOrderStatus(db, {
-    orderId: args.orderId,
-    from: order.status,
-    to: OrderStatus.FAILED,
-    meta: args.reason,
+  if (order.trackingStaleAt != null) return false;
+  const res = await db.order.updateMany({
+    where: {
+      id: args.orderId,
+      status: { in: [OrderStatus.PAYMENT_DETECTED, OrderStatus.CONFIRMING] },
+      trackingStaleAt: null,
+    },
+    data: { trackingStaleAt: new Date() },
   });
+  return res.count === 1;
 }
 
 export type BybitBscDeliverResult =
@@ -429,6 +451,68 @@ export async function deliverPaidBybitBscOrder(
         }).catch(() => undefined);
       }
     }
+    throw e;
+  }
+}
+
+/**
+ * A deposit uniquely attributable to one pending order but short of its total
+ * beyond tolerance (M-14, backend audit 2026-07-31): flag UNDERPAID for admin
+ * review (idempotent), mirroring `markUnderpaidBybit` (Internal Transfer) /
+ * `markUnderpaid` (Binance Internal). There is no memo here to confirm
+ * intent, so the caller only reaches this once its own amount-only search
+ * (`matchUnderpaidByAmount`) found exactly one pending order pricier than the
+ * received amount (and within the underpaid floor) — the same ambiguity
+ * guard as the matched path, just on the short side. Only ever called for a
+ * Bybit-status-3 ("Success") deposit — a still-confirming one isn't judged
+ * on amount yet, same as the matched path.
+ *
+ * Same two-phase idempotency shape as `deliverPaidBybitBscOrder`: the ledger
+ * claim (UNIQUE gate on `bybitTxId`) happens first and is NOT rolled back on
+ * a later failure; the order mutation (bybitTxid/adminNote + the UNDERPAID
+ * transition) is wrapped in its own `$transaction` so a partial failure
+ * can't leave the order half-updated. If the transaction throws, the ledger
+ * row is tagged `underpaid_flag_failed` for ops visibility instead of
+ * staying claimed with no trace. Uses `tryTransitionOrderStatus` (not the
+ * throwing variant) so losing a status race to another poller/tracker is a
+ * benign, reported "did not apply" — and the return value reflects that:
+ * `false` whenever the order wasn't actually flagged, never a blind `true`.
+ */
+export async function markUnderpaidBybitBsc(
+  db: PrismaClient,
+  args: { orderId: number; bybitTxId: string; amount: Decimal.Value },
+): Promise<boolean> {
+  try {
+    await db.processedBybitTx.create({
+      data: { bybitTxId: args.bybitTxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "underpaid" },
+    });
+  } catch (e) {
+    if (isUniqueViolation(e)) return false;
+    throw e;
+  }
+
+  try {
+    return await db.$transaction(async (tx: Tx) => {
+      const order = await getOrder(tx, args.orderId);
+      if (!order || order.status !== OrderStatus.PENDING_PAYMENT) return false; // stale — moved on already
+      await tx.order.update({
+        where: { id: args.orderId },
+        data: {
+          bybitTxid: args.bybitTxId,
+          adminNote: `[underpaid] received ${new Decimal(args.amount).toString()} via tx ${args.bybitTxId}`,
+        },
+      });
+      return tryTransitionOrderStatus(tx, {
+        orderId: args.orderId,
+        from: OrderStatus.PENDING_PAYMENT,
+        to: OrderStatus.UNDERPAID,
+        meta: `bybitTxId=${args.bybitTxId}`,
+      });
+    });
+  } catch (e) {
+    await db.processedBybitTx
+      .update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "underpaid_flag_failed" } })
+      .catch(() => undefined);
     throw e;
   }
 }

@@ -98,6 +98,21 @@ describe("GET /api/dashboard/operations", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({ awaitingFulfillment: 1, ordersProcessing: 1 });
   });
+
+  // Task 47 audit: confirms manualMatchQueueCounts (which drives this
+  // failedDeliveries figure) already sums delivery_failed rows across every
+  // non-Binance gateway table too — there is no sixth `processedBybitBscTx`
+  // table missing from the sum; ProcessedBybitTx already covers both Bybit
+  // sub-rails (see reports.ts's LedgerGateway doc comment). This guards
+  // against that regressing, it does not fix a bug here.
+  it("failedDeliveries sums delivery_failed rows across every gateway table, not just Binance", async () => {
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-DF-1", amount: "1", outcome: "delivery_failed" } });
+    await prisma.processedBybitTx.create({ data: { bybitTxId: "BY-DF-1", amount: "1", outcome: "delivery_failed" } });
+
+    const res = await get("/api/dashboard/operations", cookie);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ failedDeliveries: 2 });
+  });
 });
 
 describe("GET /api/dashboard/inventory", () => {

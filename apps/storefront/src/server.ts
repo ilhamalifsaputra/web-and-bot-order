@@ -145,7 +145,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   // API paths get JSON errors instead — the SPA's fetch layer reads
   // `data.error`, and an HTML body would just make it throw a parse error.
   app.setErrorHandler((err, req, reply) => {
-    logger.error({ err, method: req.method, path: redactPath(req.url) }, "Unhandled error in a storefront request — serving the generic error page to the visitor");
+    logger.error({ err, method: req.method, path: redactPath(req.url.split("?", 1)[0]!) }, "Unhandled error in a storefront request — serving the generic error page to the visitor");
     if (!reply.sent) {
       if (req.url.startsWith("/api/")) {
         return reply.code(500).send({ error: "error.generic" });

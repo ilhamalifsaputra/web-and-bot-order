@@ -1,8 +1,10 @@
 /**
  * Confirmation-tracker-facing crud: listTrackedBybitBscOrders,
- * recordBybitBscConfirmationProgress, recordBybitBscTrackingFailed. These are
+ * recordBybitBscConfirmationProgress, recordBybitBscTrackingStale. These are
  * display-only — none of them ever call approveOrder/deliverPaidBybitBscOrder
- * or transition toward PENDING_VERIFICATION/DELIVERED.
+ * or transition toward PENDING_VERIFICATION/DELIVERED, and
+ * recordBybitBscTrackingStale never transitions the order's status at all
+ * (M-11 fix, backend audit 2026-07-31).
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
@@ -12,7 +14,7 @@ import {
   createBybitBscOrder,
   listTrackedBybitBscOrders,
   recordBybitBscConfirmationProgress,
-  recordBybitBscTrackingFailed,
+  recordBybitBscTrackingStale,
 } from "@app/db";
 import { OrderStatus } from "@app/core/enums";
 
@@ -111,20 +113,39 @@ describe("recordBybitBscConfirmationProgress", () => {
     expect(order.status).toBe(OrderStatus.DELIVERED);
     expect(order.confirmations).toBeNull(); // never touched
   });
+
+  it("clears a previously-set trackingStaleAt once a lookup succeeds again (M-11 fix)", async () => {
+    await prisma.order.update({ where: { id: orderId }, data: { trackingStaleAt: new Date() } });
+    await recordBybitBscConfirmationProgress(prisma, { orderId, confirmations: 1, requiredConfirmations: 15 });
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+    expect(order.trackingStaleAt).toBeNull();
+  });
 });
 
-describe("recordBybitBscTrackingFailed", () => {
-  it("transitions PAYMENT_DETECTED/CONFIRMING to FAILED and returns true", async () => {
-    const applied = await recordBybitBscTrackingFailed(prisma, { orderId, reason: "tx vanished after 10 lookups" });
+describe("recordBybitBscTrackingStale", () => {
+  it("sets trackingStaleAt WITHOUT changing status, and returns true (M-11 fix, backend audit 2026-07-31)", async () => {
+    const applied = await recordBybitBscTrackingStale(prisma, { orderId, reason: "tx vanished after 10 lookups" });
     expect(applied).toBe(true);
     const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
-    expect(order.status).toBe(OrderStatus.FAILED);
+    expect(order.status).toBe(OrderStatus.PAYMENT_DETECTED); // unchanged — still deliverable
+    expect(order.trackingStaleAt).not.toBeNull();
   });
 
   it("returns false and does not throw if the order already left PAYMENT_DETECTED/CONFIRMING", async () => {
     await prisma.order.update({ where: { id: orderId }, data: { status: OrderStatus.DELIVERED } });
-    const applied = await recordBybitBscTrackingFailed(prisma, { orderId, reason: "irrelevant by now" });
+    const applied = await recordBybitBscTrackingStale(prisma, { orderId, reason: "irrelevant by now" });
     expect(applied).toBe(false);
-    expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe(OrderStatus.DELIVERED);
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+    expect(order.status).toBe(OrderStatus.DELIVERED);
+    expect(order.trackingStaleAt).toBeNull();
+  });
+
+  it("is idempotent — returns false on a second call once already marked stale (so the caller alerts admins only once)", async () => {
+    const first = await recordBybitBscTrackingStale(prisma, { orderId, reason: "first" });
+    expect(first).toBe(true);
+    const second = await recordBybitBscTrackingStale(prisma, { orderId, reason: "second" });
+    expect(second).toBe(false);
+    const order = await prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+    expect(order.status).toBe(OrderStatus.PAYMENT_DETECTED);
   });
 });

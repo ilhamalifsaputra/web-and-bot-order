@@ -40,6 +40,7 @@ import {
   getTicket,
   replyToTicket,
   addTicketMessage,
+  resolveSegmentRecipients,
 } from "@app/db";
 import type { MyContext, MyConversation } from "../context";
 import { adminEdit, adminAnchor, consumeInput } from "../util/chat";
@@ -130,6 +131,10 @@ export async function stockUploadConversation(conversation: MyConversation, ctx:
       rawText = u.message.text;
       await consumeInput(u);
     } else {
+      // An inline tap that isn't the generic admin escape (e.g. a
+      // stale/duplicate tap) — clear its spinner instead of leaving it
+      // hanging (M-22 fix).
+      if (u.callbackQuery) await u.answerCallbackQuery({ text: t(u, "error.stale_screen") });
       continue;
     }
 
@@ -340,6 +345,13 @@ async function releaseBroadcastLock(): Promise<void> {
   await deleteSetting(prisma, BROADCAST_LOCK_KEY);
 }
 
+// Throttle between broadcast DMs — same value/rationale as drainBroadcasts'
+// BROADCAST_THROTTLE_MS (apps/order-bot/src/jobs/index.ts): stays under
+// Telegram's ~30 msg/s bulk limit, which an unthrottled loop reliably trips
+// once the recipient list passes a few dozen users.
+const BROADCAST_SEND_THROTTLE_MS = 40;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export async function broadcastConversation(conversation: MyConversation, ctx: MyContext): Promise<void> {
   if (!adminGate(ctx)) return denyAdmin(ctx);
   const lang = ctx.session.lang;
@@ -374,9 +386,11 @@ export async function broadcastConversation(conversation: MyConversation, ctx: M
     }
   }
 
-  const recipients = await conversation.external(() =>
-    prisma.user.findMany({ where: { banned: false }, select: { telegramId: true } }),
-  );
+  // "ALL" already filters to non-banned, Telegram-linked users (mirrors the
+  // web-admin's own broadcast segment) — a web-only registered customer has
+  // no chat to DM, so including them here just inflated the "failed" count
+  // with sendMessage(0) attempts (M-25, backend audit 2026-07-31).
+  const recipients = await conversation.external(() => resolveSegmentRecipients(prisma, "ALL"));
 
   const snippet = isPhoto ? `🖼 [Photo]${caption ? "\n" + caption : ""}` : text;
   const preview = t(ctx, "admin.broadcast_preview", { count: recipients.length }) + "\n\n──────────\n" + snippet;
@@ -419,6 +433,7 @@ export async function broadcastConversation(conversation: MyConversation, ctx: M
       } catch {
         failed++;
       }
+      await sleep(BROADCAST_SEND_THROTTLE_MS);
     }
     const adminTg = ctx.from!.id;
     await prisma.$transaction(async (tx) => {

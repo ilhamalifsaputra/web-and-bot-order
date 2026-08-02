@@ -14,7 +14,16 @@ vi.mock("@app/core/payments/tokopay", async (orig) => ({
   }),
 }));
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder } from "@app/db";
+// claimGatewaySlot is wrapped (delegating to the real implementation by
+// default) so the M-6 race tests below can override it once to simulate a
+// concurrent claimant — see "doesn't create a second TokoPay transaction
+// when it loses the gateway claim to a concurrent request".
+vi.mock("@app/db", async (orig) => {
+  const actual = await orig<typeof import("@app/db")>();
+  return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot) };
+});
+
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
@@ -32,9 +41,11 @@ import { denominationPickerKb, denominationDetailKb, persistentLabel, paymentSuc
 import * as customer from "../src/handlers/customer";
 import * as checkout from "../src/handlers/checkout";
 import * as verification from "../src/handlers/verification";
-import { handleAdminCallback, adminCommand, adminWalletCommand, adminEmojiIdCommand } from "../src/handlers/admin";
+import { handleAdminCallback, adminCommand, adminWalletCommand, adminEmojiIdCommand, renderUserCard, notifyRestockSubscribers } from "../src/handlers/admin";
 import { routeCallback } from "../src/handlers/callbacks";
+import { t } from "../src/util/i18n";
 import { upsertUser } from "@app/db";
+import { logger } from "@app/core/logger";
 
 let sample: SampleData;
 let adminDbId: number;
@@ -1191,7 +1202,7 @@ describe("checkout handlers", () => {
     // The gateway request is sent order.totalAmount (TokoPay adds its fee
     // automatically on top of nominal), while the caption shows the fee breakdown.
     const { computeQrisAdminFee } = await import("@app/core/payments/tokopay");
-    const fee = computeQrisAdminFee(order.subtotalAmount);
+    const fee = computeQrisAdminFee(order.totalAmount);
     const chargeAmount = new Decimal(order.totalAmount).plus(fee);
     const lastCall = vi.mocked(mockedCreateTokopayTransaction).mock.lastCall!;
     expect(new Decimal(lastCall[1].amountIdr).toString()).toBe(new Decimal(order.totalAmount).toString());
@@ -1217,6 +1228,55 @@ describe("checkout handlers", () => {
     const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
     expect(orders.length).toBe(1);
     expect(orders[0]!.status).toBe("CANCELLED");
+  });
+
+  // M-6 fix, backend audit 2026-07-31: the order this creates is visible to
+  // the same buyer on the storefront (My Orders → Pay) the instant it's
+  // created, so its own payView (apps/storefront/src/routes/checkout.ts)
+  // could concurrently claim this exact order's gateway slot first. Mirrors
+  // the storefront's own race coverage (apps/storefront/test/checkout-
+  // gateway-race.test.ts + the crud-level claimGatewaySlot/commitGatewayResult/
+  // releaseGatewaySlot tests in packages/db/src/crud/orders.test.ts) by
+  // overriding claimGatewaySlot once to simulate a concurrent competitor
+  // (the storefront) winning the SAME order's real claim before the bot's own
+  // real claim attempt runs — proving the loser (the bot) never calls TokoPay
+  // a second time and never clobbers or cancels the winner's order.
+  it("buyNowTokopay doesn't create a second TokoPay transaction when it loses the gateway claim to a concurrent request (M-6 fix)", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    vi.mocked(claimGatewaySlot).mockImplementationOnce(async (db, orderId) => {
+      // Simulate a concurrent storefront payView call that already committed
+      // its own TokoPay transaction for this exact order — real DB write, not
+      // a fake return value — so the assertions below are checking the
+      // actual persisted row.
+      await prisma.order.update({
+        where: { id: orderId },
+        data: { paymentRef: JSON.stringify({ gateway: "tokopay", trxId: "STOREFRONT-WON-RACE" }) },
+      });
+      // The bot's own real claim attempt now genuinely finds paymentRef
+      // already non-null and correctly loses.
+      return claimGatewaySlot(db, orderId);
+    });
+    // Mock call history isn't reset between tests in this file (other tests
+    // check `.mock.lastCall` rather than a total count for the same reason)
+    // — so assert no NEW call was added, rather than "never called at all".
+    const callsBefore = vi.mocked(mockedCreateTokopayTransaction).mock.calls.length;
+    const { ctx } = customerCtx();
+    await checkout.buyNowTokopay(ctx, sample.product.id, 1);
+
+    // The bot never called TokoPay a second time for this order.
+    expect(vi.mocked(mockedCreateTokopayTransaction).mock.calls.length).toBe(callsBefore);
+
+    const orders = await prisma.order.findMany({ where: { userId: sample.user.id } });
+    expect(orders.length).toBe(1);
+    // Losing the claim is NOT treated like a gateway failure — the order
+    // stays PENDING_PAYMENT (the other caller's invoice is legitimately in
+    // flight) instead of being cancelled out from under it.
+    expect(orders[0]!.status).toBe("PENDING_PAYMENT");
+    // The winner's cached invoice survives untouched.
+    const cached = JSON.parse(orders[0]!.paymentRef!) as { gateway?: string; trxId?: string };
+    expect(cached.gateway).toBe("tokopay");
+    expect(cached.trxId).toBe("STOREFRONT-WON-RACE");
   });
 
   it("buyNowTokopay keeps the voucher applied in session when order creation fails, so a retry can reuse it (Pricing-3 fix)", async () => {
@@ -1703,6 +1763,77 @@ describe("drainBroadcasts", () => {
 });
 
 // ===========================================================================
+// Restock subscriber notification (throttled send loop, per-subscription consume)
+// ===========================================================================
+
+describe("notifyRestockSubscribers", () => {
+  it("consumes only the subscription whose DM succeeded, keeping the failed one for retry", async () => {
+    const other = await upsertUser(prisma, { telegramId: 4242, username: "other", fullName: "Other User" });
+    await subscribeToRestock(prisma, sample.user.id, sample.product.id);
+    await subscribeToRestock(prisma, other.id, sample.product.id);
+
+    const { ctx } = adminCtx();
+    const sent: number[] = [];
+    // Simulate other's DM (e.g. rate limit / bot restart mid-loop) failing
+    // while sample.user's succeeds.
+    ctx.api.sendMessage = (async (chatId: number) => {
+      sent.push(chatId);
+      if (chatId === Number(other.telegramId)) throw new Error("simulated Telegram failure");
+      return { message_id: 1 };
+    }) as unknown as typeof ctx.api.sendMessage;
+
+    await notifyRestockSubscribers(ctx, sample.product.id);
+
+    expect(sent.sort()).toEqual([Number(sample.user.telegramId), Number(other.telegramId)].sort());
+    const remaining = await prisma.restockSubscription.findMany({ where: { productId: sample.product.id } });
+    // sample.user's DM succeeded -> subscription consumed (not retryable).
+    expect(remaining.some((s) => s.userId === sample.user.id)).toBe(false);
+    // other's DM failed -> subscription kept (retryable next restock).
+    expect(remaining.some((s) => s.userId === other.id)).toBe(true);
+  });
+
+  it("skips a web-only subscriber (telegramId: null) instead of sending to chat 0", async () => {
+    const webOnly = await prisma.user.create({
+      data: { telegramId: null, referralCode: "WEBONLY1", role: UserRole.CUSTOMER, language: "EN" },
+    });
+    await subscribeToRestock(prisma, sample.user.id, sample.product.id);
+    await subscribeToRestock(prisma, webOnly.id, sample.product.id);
+
+    const { ctx } = adminCtx();
+    const sent: number[] = [];
+    ctx.api.sendMessage = (async (chatId: number) => {
+      sent.push(chatId);
+      return { message_id: 1 };
+    }) as unknown as typeof ctx.api.sendMessage;
+
+    await notifyRestockSubscribers(ctx, sample.product.id);
+
+    expect(sent).toEqual([Number(sample.user.telegramId)]);
+    expect(sent).not.toContain(0);
+    const remaining = await prisma.restockSubscription.findMany({ where: { productId: sample.product.id } });
+    // The Telegram-linked subscriber was notified and consumed...
+    expect(remaining.some((s) => s.userId === sample.user.id)).toBe(false);
+    // ...the web-only one was never targeted, so its row is untouched.
+    expect(remaining.some((s) => s.userId === webOnly.id)).toBe(true);
+  });
+
+  it("throttles between sends (40ms per recipient, mirroring drainBroadcasts)", async () => {
+    const other = await upsertUser(prisma, { telegramId: 4343, username: "other2", fullName: "Other Two" });
+    await subscribeToRestock(prisma, sample.user.id, sample.product.id);
+    await subscribeToRestock(prisma, other.id, sample.product.id);
+
+    const { ctx } = adminCtx();
+    ctx.api.sendMessage = (async () => ({ message_id: 1 })) as unknown as typeof ctx.api.sendMessage;
+
+    const start = Date.now();
+    await notifyRestockSubscribers(ctx, sample.product.id);
+    // 2 recipients * 40ms throttle ⇒ at least ~80ms elapsed (minus scheduling
+    // jitter — assert a lower bound well under the nominal value).
+    expect(Date.now() - start).toBeGreaterThanOrEqual(70);
+  });
+});
+
+// ===========================================================================
 // Verification (admin approve / resend)
 // ===========================================================================
 
@@ -1765,6 +1896,32 @@ describe("verification handlers", () => {
     await verification.resendCredentials(ctx, order.id);
     expect(calls(sink, "sendDocument").some((c) => c.args[0] === 42)).toBe(true);
   });
+
+  // M-28: the delivery log used to interpolate a `redacted.join(", ")` list of
+  // per-item redacted credentials — forbidden by the logging convention
+  // (never interpolate an id/name/value list; summarize by count) and still
+  // derived-credential material regardless of redaction. A multi-item order
+  // (qty 2, so two credential sets) exercises the join path that a qty-1 test
+  // can't distinguish from a correct count-only message.
+  it("approve's delivery log summarizes multi-credential orders by count, never lists the redacted values (M-28)", async () => {
+    const order = await makeOrder(2);
+    await attachPaymentProof(prisma, order!.id, { fileId: "proof-file", txid: "TX-MULTI-CRED" });
+    const infoSpy = vi.spyOn(logger, "info");
+    const { ctx } = adminCtx({ callbackData: `v1:adm:verif:approve:${order!.id}` });
+    await verification.approve(ctx, order!.id);
+
+    const deliveredLog = infoSpy.mock.calls
+      .map((call) => call[0])
+      .find((msg): msg is string => typeof msg === "string" && msg.startsWith(`Delivered order ${order!.orderCode}`));
+    expect(deliveredLog).toBeTruthy();
+    expect(deliveredLog).toContain("(2 credential set(s))");
+    // The redacted per-item values (from sampleData's user1@example.com..user5@example.com
+    // fixture credentials) must never appear in the log message.
+    expect(deliveredLog).not.toMatch(/user\d+@example\.com/);
+    expect(deliveredLog).not.toContain(", ");
+
+    infoSpy.mockRestore();
+  });
 });
 
 // ===========================================================================
@@ -1805,6 +1962,25 @@ describe("admin handlers", () => {
     expect(offersForwardAction(sink)).toBe(true);
   });
 
+  // M-3 (backend audit 2026-07-31): `new Decimal("NaN")` constructs
+  // successfully, so an admin typing "/wallet <uid> NaN" previously sailed
+  // straight through to adjustWallet and would have poisoned the balance.
+  it("adminWalletCommand rejects a NaN amount as bad args, same as a malformed uid", async () => {
+    const { ctx, sink } = adminCtx({ match: `${sample.user.id} NaN` });
+    const before = (await getUser(prisma, sample.user.id))!.walletBalance;
+    await adminWalletCommand(ctx);
+    expect(sentIncludes(sink, "Bad arguments")).toBe(true);
+    expect((await getUser(prisma, sample.user.id))!.walletBalance.toString()).toBe(before.toString());
+  });
+
+  it("adminWalletCommand rejects an Infinity amount as bad args", async () => {
+    const { ctx, sink } = adminCtx({ match: `${sample.user.id} Infinity` });
+    const before = (await getUser(prisma, sample.user.id))!.walletBalance;
+    await adminWalletCommand(ctx);
+    expect(sentIncludes(sink, "Bad arguments")).toBe(true);
+    expect((await getUser(prisma, sample.user.id))!.walletBalance.toString()).toBe(before.toString());
+  });
+
   it("adminWalletCommand credits the wallet, localizes the result, and offers a back action", async () => {
     // An Indonesian-speaking admin must see the result in Indonesian (not a
     // hardcoded English line) — proves the success screen goes through i18n.
@@ -1816,6 +1992,90 @@ describe("admin handlers", () => {
     await adminWalletCommand(ctx);
     expect(sentIncludes(sink, "Saldo baru")).toBe(true); // localized to the admin's language
     expect(offersForwardAction(sink)).toBe(true);
+  });
+
+  // M-4 (backend audit 2026-07-31): the card used to render only
+  // walletBalance through a bare, unlabelled formatter (no "Rp"/"USDT"),
+  // and never showed walletBalanceUsdt at all — an admin resolving "where's
+  // my referral credit?" for a USDT-only customer saw "Wallet: 0" and had no
+  // way to tell which currency that even was.
+  it("renderUserCard shows both wallet balances distinctly, each with an explicit currency label", async () => {
+    await adjustWallet(prisma, sample.user.id, "1000", { reason: "test_seed" });
+    await adjustWallet(prisma, sample.user.id, "2.5", { reason: "test_seed", currency: "USDT" });
+    const { ctx, sink } = adminCtx();
+    await renderUserCard(ctx, sample.user.id);
+    expect(sentIncludes(sink, "Rp1.000")).toBe(true);
+    expect(sentIncludes(sink, "2.5 USDT")).toBe(true);
+  });
+
+  // Follow-up to the M-4 fix above: the "Adjust wallet" button's toast is the
+  // one place that teaches an admin the new [IDR|USDT] argument exists, and it
+  // must go through t() like every other admin-facing string in this file
+  // (no leaked English — see docs/ui and the bot UX skill).
+  it("userWalletPrompt's toast documents the optional currency argument via i18n", async () => {
+    const callbackData = `v1:adm:users:wallet:${sample.user.id}`;
+    const { ctx, sink } = adminCtx({ callbackData });
+    await handleAdminCallback(ctx, callbackData.split(":"));
+    const toast = calls(sink, "answerCallbackQuery").at(-1);
+    expect((toast!.args[0] as { text?: string }).text).toBe(
+      `Use /wallet ${sample.user.id} <amount> [IDR|USDT] to adjust (negative to deduct; defaults to IDR).`,
+    );
+  });
+
+  it("userWalletPrompt's toast is localized to the admin's language (proves it routes through t(), not a raw string)", async () => {
+    const callbackData = `v1:adm:users:wallet:${sample.user.id}`;
+    const { ctx, sink } = makeCtx({
+      from: { id: 999, username: "boss" },
+      callbackData,
+      session: { lang: "id", scratch: {}, dbUser: { id: adminDbId, telegramId: "999", role: UserRole.ADMIN, language: "ID", referralCode: "A", walletBalance: "0" } },
+    });
+    await handleAdminCallback(ctx, callbackData.split(":"));
+    const toast = calls(sink, "answerCallbackQuery").at(-1);
+    expect((toast!.args[0] as { text?: string }).text).toBe(
+      `Gunakan /wallet ${sample.user.id} <jumlah> [IDR|USDT] untuk menyesuaikan (negatif untuk mengurangi; default IDR).`,
+    );
+  });
+
+  // M-4 (backend audit 2026-07-31): /wallet had no currency argument and
+  // always adjusted the IDR balance via adjustWallet's default — an admin
+  // crediting a referral commission (always USDT) would silently create a
+  // second, wrong IDR balance instead.
+  it("/wallet <uid> <amount> USDT credits walletBalanceUsdt and leaves walletBalance untouched", async () => {
+    const before = (await getUser(prisma, sample.user.id))!;
+    const { ctx, sink } = adminCtx({ match: `${sample.user.id} 5 USDT` });
+    await adminWalletCommand(ctx);
+    const after = (await getUser(prisma, sample.user.id))!;
+    expect(Number(after.walletBalanceUsdt)).toBeCloseTo(Number(before.walletBalanceUsdt) + 5);
+    expect(after.walletBalance.toString()).toBe(before.walletBalance.toString());
+    expect(sentIncludes(sink, "USDT")).toBe(true); // audit-visible reply states which currency was adjusted
+  });
+
+  it("/wallet <uid> <amount> with no currency argument still defaults to IDR (no regression)", async () => {
+    const before = (await getUser(prisma, sample.user.id))!;
+    const { ctx } = adminCtx({ match: `${sample.user.id} 7` });
+    await adminWalletCommand(ctx);
+    const after = (await getUser(prisma, sample.user.id))!;
+    expect(Number(after.walletBalance)).toBeCloseTo(Number(before.walletBalance) + 7);
+    expect(after.walletBalanceUsdt.toString()).toBe(before.walletBalanceUsdt.toString());
+  });
+
+  it("/wallet <uid> <amount> IDR (explicit) behaves the same as the default", async () => {
+    const before = (await getUser(prisma, sample.user.id))!;
+    const { ctx } = adminCtx({ match: `${sample.user.id} 3 idr` }); // lower-case currency is accepted too
+    await adminWalletCommand(ctx);
+    const after = (await getUser(prisma, sample.user.id))!;
+    expect(Number(after.walletBalance)).toBeCloseTo(Number(before.walletBalance) + 3);
+    expect(after.walletBalanceUsdt.toString()).toBe(before.walletBalanceUsdt.toString());
+  });
+
+  it("/wallet rejects an unrecognized trailing currency argument as bad args", async () => {
+    const before = (await getUser(prisma, sample.user.id))!;
+    const { ctx, sink } = adminCtx({ match: `${sample.user.id} 5 EUR` });
+    await adminWalletCommand(ctx);
+    const after = (await getUser(prisma, sample.user.id))!;
+    expect(sentIncludes(sink, "Bad arguments")).toBe(true);
+    expect(after.walletBalance.toString()).toBe(before.walletBalance.toString());
+    expect(after.walletBalanceUsdt.toString()).toBe(before.walletBalanceUsdt.toString());
   });
 
   it("/emojiid explains itself when the command arrives bare", async () => {
@@ -1875,7 +2135,9 @@ describe("admin handlers", () => {
     const { ctx } = adminCtx({ callbackData: `v1:adm:ticket:close:${ticket.id}` });
     await handleAdminCallback(ctx, `v1:adm:ticket:close:${ticket.id}`.split(":"));
     expect((await prisma.supportTicket.findUnique({ where: { id: ticket.id } }))!.status).toBe(TicketStatus.CLOSED);
-    expect(await prisma.auditLog.count({ where: { action: "ticket_close", targetId: ticket.id } })).toBe(1);
+    const audit = await prisma.auditLog.findFirst({ where: { action: "ticket_close", targetId: ticket.id } });
+    expect(audit).toBeTruthy();
+    expect(audit!.details).toContain(String(ticket.id));
   });
 
   it("a double-tap ticket close never sends a second buyer DM (Bot-3 fix)", async () => {
@@ -1897,7 +2159,30 @@ describe("admin handlers", () => {
     const { ctx } = adminCtx({ callbackData: `v1:adm:stockitem:dead:${item!.id}:${sample.product.id}` });
     await handleAdminCallback(ctx, `v1:adm:stockitem:dead:${item!.id}:${sample.product.id}`.split(":"));
     expect((await prisma.stockItem.findUnique({ where: { id: item!.id } }))!.status).toBe("DEAD");
-    expect(await prisma.auditLog.count({ where: { action: "stock_mark_dead", targetId: item!.id } })).toBe(1);
+    const audit = await prisma.auditLog.findFirst({ where: { action: "stock_mark_dead", targetId: item!.id } });
+    expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("Netflix Premium 1M");
+  });
+
+  // M-8 fix, backend audit 2026-07-31: the keyboard already omits the "Dead"
+  // button for SOLD rows, but a stale button (item sold between render and
+  // tap) must still be refused rather than silently corrupting a delivered
+  // credential's status.
+  it("refuses to mark an already-SOLD stock item dead — alert toast, no status change, no audit row", async () => {
+    const item = await prisma.stockItem.update({
+      where: { id: (await prisma.stockItem.findFirst({ where: { productId: sample.product.id, status: "AVAILABLE" } }))!.id },
+      data: { status: "SOLD", soldAt: new Date() },
+    });
+    const { ctx, sink } = adminCtx({ callbackData: `v1:adm:stockitem:dead:${item.id}:${sample.product.id}` });
+    await handleAdminCallback(ctx, `v1:adm:stockitem:dead:${item.id}:${sample.product.id}`.split(":"));
+
+    expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.status).toBe("SOLD");
+    expect(await prisma.auditLog.count({ where: { action: "stock_mark_dead", targetId: item.id } })).toBe(0);
+
+    const answers = calls(sink, "answerCallbackQuery");
+    expect(answers.length).toBe(1);
+    const [answerOpts] = answers[0]!.args as [{ text?: string; show_alert?: boolean }];
+    expect(answerOpts.show_alert).toBe(true);
   });
 
   it("dashboard / product / settings menus render", async () => {
@@ -1906,6 +2191,29 @@ describe("admin handlers", () => {
       await handleAdminCallback(ctx, data.split(":"));
       expect(sink.length, data).toBeGreaterThan(0);
     }
+  });
+
+  it("unrecognized section/action in admin callback answers error.stale_screen (M-21 fix)", async () => {
+    // Unrecognized section
+    const { ctx: ctx1, sink: sink1 } = adminCtx({ callbackData: "v1:adm:bogus_section" });
+    await handleAdminCallback(ctx1, "v1:adm:bogus_section".split(":"));
+    const answers1 = calls(sink1, "answerCallbackQuery");
+    expect(answers1.length).toBe(1);
+    expect(answers1[0]!.args[0]).toHaveProperty("text", t(ctx1, "error.stale_screen"));
+
+    // Unrecognized action within a known section
+    const { ctx: ctx2, sink: sink2 } = adminCtx({ callbackData: "v1:adm:prod:bogus_action" });
+    await handleAdminCallback(ctx2, "v1:adm:prod:bogus_action".split(":"));
+    const answers2 = calls(sink2, "answerCallbackQuery");
+    expect(answers2.length).toBe(1);
+    expect(answers2[0]!.args[0]).toHaveProperty("text", t(ctx2, "error.stale_screen"));
+
+    // Unrecognized action in broadcast section (which only has conversation entry points)
+    const { ctx: ctx3, sink: sink3 } = adminCtx({ callbackData: "v1:adm:broadcast:bogus_action" });
+    await handleAdminCallback(ctx3, "v1:adm:broadcast:bogus_action".split(":"));
+    const answers3 = calls(sink3, "answerCallbackQuery");
+    expect(answers3.length).toBe(1);
+    expect(answers3[0]!.args[0]).toHaveProperty("text", t(ctx3, "error.stale_screen"));
   });
 });
 
@@ -2070,6 +2378,44 @@ describe("callback router", () => {
 
     // Verify error message was shown (the rendered text includes "Invalid quantity")
     expect(sentIncludes(sink, "Invalid quantity")).toBe(true);
+  });
+
+  // M-24 — handleQtyTextInput used to re-render invalid-quantity errors via
+  // smartEdit, which on a typed (non-callback) update always falls through to
+  // a fresh ctx.reply(). Typing two invalid quantities in a row therefore
+  // stacked two new "invalid quantity" bubbles above the original prompt.
+  // menuAnchor fixes this by editing the session-tracked anchor in place.
+  it("handleQtyTextInput edits the same anchor bubble across two consecutive invalid inputs, never stacking a new one (M-24)", async () => {
+    const sink: SentCall[] = [];
+    // One chat = ONE session object shared across every update, mirroring how
+    // grammY really keys sessions by chat id — required to observe whether
+    // ctx.session.menuMsgId (the anchor) survives across the two typed turns.
+    const shared = { ...userSession(), scratch: {} } as SessionData;
+
+    // Open the wizard via the qty:input callback (button tap) — this anchors
+    // the prompt bubble as ctx.session.menuMsgId, exactly like a real tap.
+    const start = customerCtx({ sink, sharedSession: shared, callbackData: `v1:qty:input:${sample.product.id}` });
+    await routeCallback(start.ctx);
+    const anchorId = shared.menuMsgId;
+    expect(anchorId).toBeDefined();
+
+    // Type two invalid quantities in a row (plain text updates — no callbackQuery).
+    const first = customerCtx({ sink, sharedSession: shared, text: "abc" });
+    await customer.handleProductNumber(first.ctx);
+    const second = customerCtx({ sink, sharedSession: shared, text: "xyz" });
+    await customer.handleProductNumber(second.ctx);
+
+    // Both invalid-input re-renders must have edited the SAME anchor bubble in
+    // place — never a fresh send, which is what would stack extra bubbles.
+    const anchorEdits = calls(sink, "editMessageText").filter((c) => c.args[1] === anchorId);
+    expect(anchorEdits.length).toBe(2);
+    expect(shared.menuMsgId).toBe(anchorId);
+
+    // No fresh "invalid quantity" bubble was ever sent via reply().
+    expect(calls(sink, "reply").length).toBe(0);
+
+    // The wizard is still live, still awaiting a retry.
+    expect(shared.awaitingQtyDenomId).toBe(sample.product.id);
   });
 
   // §8.6 — a dispatcher crash surfaces a quotable correlation ref to the user.

@@ -4,9 +4,10 @@
  *
  * Mirrors binance_internal.ts but simpler: internal transfers carry NO memo, so
  * an incoming deposit is matched to a PENDING order purely by its unique total
- * amount (USE_UNIQUE_CENTS keeps every order distinct). There is therefore no
- * underpaid auto-path — a deposit whose amount matches no order is "unmatched"
- * and left for manual review.
+ * amount (USE_UNIQUE_CENTS keeps every order distinct). A deposit that's
+ * neither a clean (at-or-above-total) match nor uniquely attributable as
+ * underpaid to one pending order is "unmatched" and left for manual review
+ * (M-14, backend audit 2026-07-31 — see markUnderpaidBybit).
  *
  * Idempotency on SQLite: the `processed_bybit_tx.bybit_tx_id` UNIQUE constraint
  * is the concurrency gate — claiming the internal-deposit txID is an atomic
@@ -21,7 +22,7 @@ import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, createOrderDirect, settlePaidOrder, applyUsdtWalletToOrder } from "./orders";
-import { transitionOrderStatus } from "./orderStatus";
+import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
@@ -152,14 +153,26 @@ export async function deliverPaidBybitOrder(
   db: PrismaClient,
   args: { orderId: number; bybitTxId: string; amount: Decimal.Value },
 ): Promise<BybitDeliverResult> {
-  // 1. Claim the tx id. A duplicate means another cycle already handled it.
+  // 1. Claim the tx id. A duplicate normally means another cycle already
+  //    handled it — UNLESS the prior claim's delivery transaction itself
+  //    failed (outcome "delivery_failed"): that claim never actually
+  //    delivered anything, so it must be re-claimable, or the buyer's payment
+  //    is silently lost forever behind a stuck idempotency row (H-3, backend
+  //    audit 2026-07-31). Re-claiming is a single atomic UPDATE gated on
+  //    outcome="delivery_failed" — SQLite serializes writers, so if two
+  //    retries race, exactly one `updateMany` sees count=1 and proceeds; the
+  //    other sees count=0 and correctly reports already_processed.
   try {
     await db.processedBybitTx.create({
       data: { bybitTxId: args.bybitTxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
   } catch (e) {
-    if (isUniqueViolation(e)) return { status: "already_processed" };
-    throw e;
+    if (!isUniqueViolation(e)) throw e;
+    const reclaimed = await db.processedBybitTx.updateMany({
+      where: { bybitTxId: args.bybitTxId, outcome: "delivery_failed" },
+      data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
+    });
+    if (reclaimed.count === 0) return { status: "already_processed" };
   }
 
   // 2. Deliver. On failure, flag the ledger row so we don't silently retry
@@ -191,6 +204,67 @@ export async function deliverPaidBybitOrder(
   } catch (e) {
     await db.processedBybitTx
       .update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "delivery_failed" } })
+      .catch(() => undefined);
+    throw e;
+  }
+}
+
+/**
+ * A deposit uniquely attributable to one pending order but short of its total
+ * beyond tolerance (M-14, backend audit 2026-07-31): flag UNDERPAID for admin
+ * review (idempotent), mirroring `markUnderpaid` in binance_internal.ts. There
+ * is no memo here to confirm intent, so the caller only reaches this once its
+ * own amount-only search (`matchUnderpaidByAmount`) found exactly one pending
+ * order pricier than the received amount (and within the underpaid floor) —
+ * the same ambiguity guard as the matched path, just on the short side.
+ *
+ * Same two-phase idempotency shape as `deliverPaidBybitOrder`: the ledger
+ * claim (UNIQUE gate on `bybitTxId`) happens first and is NOT rolled back on
+ * a later failure, so a retry never re-attempts a claim that already
+ * succeeded; the order mutation (bybitTxid/adminNote + the UNDERPAID
+ * transition) is wrapped in its own `$transaction` so a partial failure
+ * there can't leave the order half-updated. If the transaction throws, the
+ * ledger row is tagged `underpaid_flag_failed` (visible for ops diagnosis)
+ * instead of staying claimed with no trace of what happened. Uses
+ * `tryTransitionOrderStatus` (not the throwing variant) so losing a status
+ * race to another poller/tracker is a benign, reported "did not apply"
+ * rather than an uncaught exception — and the return value reflects that:
+ * `false` whenever the order wasn't actually flagged, never a blind `true`.
+ */
+export async function markUnderpaidBybit(
+  db: PrismaClient,
+  args: { orderId: number; bybitTxId: string; amount: Decimal.Value },
+): Promise<boolean> {
+  try {
+    await db.processedBybitTx.create({
+      data: { bybitTxId: args.bybitTxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "underpaid" },
+    });
+  } catch (e) {
+    if (isUniqueViolation(e)) return false;
+    throw e;
+  }
+
+  try {
+    return await db.$transaction(async (tx: Tx) => {
+      const order = await getOrder(tx, args.orderId);
+      if (!order || order.status !== OrderStatus.PENDING_PAYMENT) return false; // stale — moved on already
+      await tx.order.update({
+        where: { id: args.orderId },
+        data: {
+          bybitTxid: args.bybitTxId,
+          adminNote: `[underpaid] received ${new Decimal(args.amount).toString()} via tx ${args.bybitTxId}`,
+        },
+      });
+      return tryTransitionOrderStatus(tx, {
+        orderId: args.orderId,
+        from: OrderStatus.PENDING_PAYMENT,
+        to: OrderStatus.UNDERPAID,
+        meta: `bybitTxId=${args.bybitTxId}`,
+      });
+    });
+  } catch (e) {
+    await db.processedBybitTx
+      .update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "underpaid_flag_failed" } })
       .catch(() => undefined);
     throw e;
   }

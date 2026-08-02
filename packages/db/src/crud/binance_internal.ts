@@ -16,12 +16,21 @@ import { startOfDayUtc } from "@app/core/datetime";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
-import { getOrder, createOrderDirect, approveOrder, settlePaidOrder, applyUsdtWalletToOrder, type SettleResult } from "./orders";
+import {
+  getOrder,
+  createOrderDirect,
+  approveOrder,
+  settlePaidOrder,
+  applyUsdtWalletToOrder,
+  ORDER_USER_SELECT,
+  type SettleResult,
+} from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
 import { adjustWallet } from "./users";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
+import { enqueueAdminOverpaid } from "./notifications";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -156,7 +165,13 @@ export function listDeliveredOrdersAwaitingEdit(db: Db, method: PaymentMethod) {
   });
 }
 
-/** PENDING, not-yet-expired internal-transfer orders the poller should match against. */
+/** PENDING, not-yet-expired internal-transfer orders the poller should match
+ * against. Also the direct data source for web-admin's Payments page
+ * "pending internal transfers" list (apps/web-admin/src/routes/api/
+ * payments.ts spreads these straight into JSON) — `user` is therefore
+ * projected through orders.ts's ORDER_USER_SELECT, never `include: { user:
+ * true }`, so a raw passwordHash/email can't ship in that response
+ * (backend audit finding H-4). */
 export function listPendingInternalOrders(db: Db, now: Date) {
   return db.order.findMany({
     where: {
@@ -165,7 +180,7 @@ export function listPendingInternalOrders(db: Db, now: Date) {
       paymentRef: { not: null },
       expiresAt: { gt: now },
     },
-    include: { user: true },
+    include: { user: { select: ORDER_USER_SELECT } },
   });
 }
 
@@ -185,14 +200,26 @@ export async function deliverPaidInternalOrder(
   db: PrismaClient,
   args: { orderId: number; binanceTxId: string; amount: Decimal.Value },
 ): Promise<DeliverResult> {
-  // 1. Claim the tx id. A duplicate means another cycle already handled it.
+  // 1. Claim the tx id. A duplicate normally means another cycle already
+  //    handled it — UNLESS the prior claim's delivery transaction itself
+  //    failed (outcome "delivery_failed"): that claim never actually
+  //    delivered anything, so it must be re-claimable, or the buyer's payment
+  //    is silently lost forever behind a stuck idempotency row (H-3, backend
+  //    audit 2026-07-31). Re-claiming is a single atomic UPDATE gated on
+  //    outcome="delivery_failed" — SQLite serializes writers, so if two
+  //    retries race, exactly one `updateMany` sees count=1 and proceeds; the
+  //    other sees count=0 and correctly reports already_processed.
   try {
     await db.processedBinanceTx.create({
       data: { binanceTxId: args.binanceTxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
   } catch (e) {
-    if (isUniqueViolation(e)) return { status: "already_processed" };
-    throw e;
+    if (!isUniqueViolation(e)) throw e;
+    const reclaimed = await db.processedBinanceTx.updateMany({
+      where: { binanceTxId: args.binanceTxId, outcome: "delivery_failed" },
+      data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
+    });
+    if (reclaimed.count === 0) return { status: "already_processed" };
   }
 
   // 2. Deliver. On failure, flag the ledger row so we don't silently retry
@@ -214,6 +241,30 @@ export async function deliverPaidInternalOrder(
         meta: `binanceTxId=${args.binanceTxId}`,
       });
       const result = await settlePaidOrder(tx, args.orderId, { adminId: 0 });
+      // Overpayment: the buyer sent more USDT than the order total. Still
+      // deliver (handled above) but flag the ledger row and alert admins so
+      // the excess can be refunded/credited manually — never auto-refunded.
+      // Mirrors TokoPay/PayDisini/NOWPayments (M-13, backend audit
+      // 2026-07-31): Binance Internal's match tolerance already lets an
+      // overpaid transfer through to delivery, but until now it left no
+      // ledger flag and no admin alert, so the excess had no operational
+      // trail for a later refund request.
+      const paidAmount = new Decimal(args.amount);
+      const excess = paidAmount.minus(order.totalAmount);
+      if (excess.greaterThan(0)) {
+        await tx.processedBinanceTx.update({ where: { binanceTxId: args.binanceTxId }, data: { outcome: "overpaid" } });
+        await enqueueAdminOverpaid(tx, {
+          orderId: result.order.id,
+          orderCode: result.order.orderCode,
+          paid: paidAmount,
+          expected: order.totalAmount,
+          excess,
+          currency: order.currency,
+        });
+        logger.warn(
+          `Binance Internal order ${result.order.orderCode} was overpaid — got ${paidAmount.toString()}, expected ${order.totalAmount.toString()} (excess ${excess.toString()} ${order.currency}) — flagged for manual refund/credit, an admin alert was enqueued`,
+        );
+      }
       if (result.kind === "delivered") {
         logger.info(`Auto-delivered internal-transfer order ${result.order.orderCode} for Binance transaction ${args.binanceTxId}`);
         return { status: "delivered" as const, order: result.order, credentials: result.credentials };
@@ -280,6 +331,7 @@ export async function recordUnmatchedTx(db: Db, args: { binanceTxId: string; amo
 /** Known ledger outcomes, in the order the ops panel lists them. */
 export const TX_OUTCOMES = [
   "matched",
+  "overpaid",
   "underpaid",
   "unmatched",
   "delivery_failed",

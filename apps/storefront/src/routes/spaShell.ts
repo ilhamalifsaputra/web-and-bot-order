@@ -600,6 +600,14 @@ export default async function spaShellRoutes(app: FastifyInstance): Promise<void
       void reply.header("Referrer-Policy", "no-referrer");
     }
 
+    // The live CSRF token (for signed-in visitors) is baked into this HTML
+    // per-session — a caching reverse proxy sitting in front of the
+    // storefront (explicitly expected per this repo's deployment model)
+    // could serve one customer's token to a later visitor, which combined
+    // with SameSite=Lax cookies is enough to forge state-changing requests
+    // (audit finding M-20).
+    void reply.header("Cache-Control", "no-store");
+
     // apple-touch-icon is what iOS uses for a "Add to Home Screen" shortcut;
     // without it Safari screenshots the page instead. Falls back to the
     // favicon, which is the only icon this shop is guaranteed to have.

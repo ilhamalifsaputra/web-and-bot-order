@@ -97,7 +97,7 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
  */
 export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof getTokopayCreds>>, order: PendingOrder): Promise<void> {
   if (!creds) return;
-  const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
+  const expectedCharge = qrisChargeAmount(order.totalAmount);
   let status: Awaited<ReturnType<typeof checkTransaction>>;
   try {
     status = await checkTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });

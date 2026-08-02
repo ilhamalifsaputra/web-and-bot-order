@@ -112,6 +112,15 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
       next?: string;
     };
   }>("/auth/register", async (req, reply) => {
+    // Registration is the most expensive unauthenticated endpoint in the app
+    // (cost-12 bcrypt + a DB write) on a single-process server backed by
+    // single-writer SQLite — a burst of concurrent POSTs can stall checkout
+    // and the bot. Same per-IP throttle as /auth/login (M-17, backend audit
+    // 2026-07-31).
+    if (loginRateLimited(clientIp(req))) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+
     const username = (req.body?.username ?? "").trim().toLowerCase();
     const email = (req.body?.email ?? "").trim().toLowerCase();
     const password = req.body?.password ?? "";
@@ -194,6 +203,12 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
       // The single-use reset token rides in this URL — stop browsers from
       // leaking it via the Referer header (same guard as the HTML route).
       void reply.header("Referrer-Policy", "no-referrer");
+      // Same per-IP throttle as /auth/login and /auth/register — a burst of
+      // submissions here still costs a bcrypt hash + DB write per attempt
+      // (M-17, backend audit 2026-07-31).
+      if (loginRateLimited(clientIp(req))) {
+        return reply.code(429).send({ error: "error.rate_limited" });
+      }
       const password = req.body?.password ?? "";
       if (password.length < 8) return reply.code(400).send({ error: "web.register_password_short" });
       if (password !== (req.body?.password2 ?? "")) return reply.code(400).send({ error: "web.register_password_mismatch" });

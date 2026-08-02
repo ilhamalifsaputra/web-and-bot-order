@@ -56,9 +56,11 @@ import {
   getNowpaymentsCreds,
   deliverPaidNowpaymentsOrder,
   recordUnmatchedNowpaymentsTx,
+  enqueueAdminStalePayment,
   claimGatewaySlot,
   commitGatewayResult,
   releaseGatewaySlot,
+  MAX_CART_ORDER_UNITS,
 } from "@app/db";
 import { type Customer } from "../plugins/auth";
 import { clientIp, webhookRateLimited } from "../rateLimit";
@@ -73,6 +75,7 @@ import {
 import {
   createTransaction as createPaydisiniTransaction,
   verifyCallback as verifyPaydisiniCallback,
+  checkTransaction as checkPaydisiniTransaction,
   type PaydisiniOrderInfo,
 } from "@app/core/payments/paydisini";
 import {
@@ -171,8 +174,11 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
   const total = Decimal.max(new Decimal(0), subtotal.minus(bulkDiscount).minus(voucherDiscount));
   // QRIS admin fee preview (TokoPay only — @app/core/payments/tokopay is the
   // one place this formula is computed) so the checkout page can show it
-  // before the buyer has even picked a payment method.
-  const qrisAdminFee = computeQrisAdminFee(subtotal);
+  // before the buyer has even picked a payment method. Based on `total` (net
+  // of bulk discount/voucher), NOT `subtotal` — TokoPay's nominal (and so its
+  // own fee) is computed off the discounted total actually sent to the
+  // gateway, never the pre-discount gross (H-1 fix, backend audit 2026-07-31).
+  const qrisAdminFee = computeQrisAdminFee(total);
   const qrisGrandTotal = total.plus(qrisAdminFee);
   // `lines` (the already-joined CartItem rows, each with its Denomination via
   // `ci.product`) rides along so checkoutView can build its per-item array
@@ -413,6 +419,25 @@ export async function performCheckout(
     throw new ValidationError("web.pay_method_unavailable");
   }
 
+  // Fail fast on an over-cap cart BEFORE even opening the write transaction
+  // below (M-7 fix, backend audit 2026-07-31) — createOrderFromCart does
+  // per-unit stock allocation + an OrderItem insert for every unit in the
+  // cart, and doing that for thousands of units inside one $transaction would
+  // hold SQLite's single writer long enough to starve every other writer (the
+  // bot, webhooks, delivery transactions) before likely timing out. This is a
+  // read against `prisma` directly, outside any transaction, so an over-cap
+  // cart never causes a transaction to even start; createOrderFromCart
+  // enforces the same cap again once inside the transaction as a
+  // defense-in-depth backstop (e.g. for other callers, or a cart that grows
+  // between this check and the transaction opening).
+  const precheckCart = await getCart(prisma, customer.userId);
+  const precheckTotalUnits = precheckCart
+    .filter((ci) => ci.product.isActive)
+    .reduce((sum, ci) => sum + ci.quantity, 0);
+  if (precheckTotalUnits > MAX_CART_ORDER_UNITS) {
+    throw new ValidationError("error.cart_too_large", { limit: MAX_CART_ORDER_UNITS });
+  }
+
   const order = await prisma.$transaction(async (tx) => {
     if ((await countUserPendingOrders(tx, customer.userId)) >= MAX_PENDING_ORDERS) {
       throw new ValidationError("error.too_many_pending");
@@ -540,8 +565,10 @@ export async function payView(order: OrderRow) {
   // column — see the CachedGateway doc comment above parseCachedGateway.
   // QRIS admin fee — derived from immutable order fields, so it's always safe
   // to recompute (see @app/core/payments/tokopay computeQrisAdminFee doc).
-  const qrisAdminFee = isQris ? computeQrisAdminFee(order.subtotalAmount) : null;
-  const qrisGrandTotal = isQris ? qrisChargeAmount(order.totalAmount, order.subtotalAmount) : null;
+  // Based on order.totalAmount (what's actually sent to the gateway as
+  // `nominal`), NOT subtotalAmount — H-1 fix, backend audit 2026-07-31.
+  const qrisAdminFee = isQris ? computeQrisAdminFee(order.totalAmount) : null;
+  const qrisGrandTotal = isQris ? qrisChargeAmount(order.totalAmount) : null;
 
   let gateway: TokopayOrderInfo | null = null;
   let gatewayError = false;
@@ -756,7 +783,7 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       return reply.send({ status: "unmatched" });
     }
 
-    const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
+    const expectedCharge = qrisChargeAmount(order.totalAmount);
     let live;
     try {
       live = await checkTransaction(creds, { refId: cb.refId, amountIdr: order.totalAmount });
@@ -788,6 +815,18 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         shopUrl: shopPublicUrl(),
       });
       if (r.status === "delivered") nudgeOutboxDispatcher();
+      if (r.status === "stale") {
+        const trxId = live.trxId ?? cb.trxId;
+        logger.warn(
+          `TokoPay confirmed payment for order ${order.orderCode} (tx ${trxId}) but it had already left PENDING_PAYMENT — likely auto-cancelled before this webhook arrived; admin alerted to verify and deliver manually`,
+        );
+        await enqueueAdminStalePayment(prisma, {
+          orderId: order.id,
+          orderCode: order.orderCode,
+          gateway: "TokoPay",
+          trxId,
+        });
+      }
       return reply.send({ status: r.status });
     } catch (err) {
       logger.error({ err }, `Failed to deliver paid TokoPay order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);
@@ -802,6 +841,16 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
   // same response contract so PayDisini stops retrying regardless of outcome:
   // 403 disabled, 403 bad signature, 200 for every other outcome including
   // delivery-failed) ----
+  //
+  // M-9 fix (backend audit 2026-07-31): PayDisini's signature
+  // (md5(apiKey:userKey:refId:amount)) does NOT cover `status` (see the ⚠
+  // ASSUMPTION note in @app/core/payments/paydisini), so a body claiming any
+  // `status` would otherwise pass as long as the signature for that
+  // ref_id/amount is valid. Same design flaw TokoPay had — hardened the same
+  // way: re-confirm the payment live against PayDisini's API
+  // (`checkTransaction`) before trusting "paid" or using the amount for
+  // delivery — a forged/replayed callback body can't fake that
+  // server-to-server call.
   app.post("/pay/paydisini/callback", async (req, reply) => {
     // Payment-3 fix, security audit 2026-06-23 — see the TokoPay callback above.
     if (webhookRateLimited("paydisini", clientIp(req))) return reply.code(429).send({ status: "rate limited" });
@@ -820,23 +869,50 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
       await recordUnmatchedPaydisiniTx(prisma, { trxId: cb.trxId, amount: cb.amount });
       return reply.send({ status: "unmatched" });
     }
-    // Amount sanity: never deliver on a short payment.
-    if (cb.amount.lessThan(order.totalAmount)) {
+
+    let live;
+    try {
+      live = await checkPaydisiniTransaction(creds, { refId: cb.refId, amountIdr: order.totalAmount });
+    } catch (err) {
+      logger.error({ err }, `Failed to check PayDisini's live transaction status for order ${order.orderCode} — the callback will be ignored until a retry confirms payment`);
+      return reply.send({ status: "status check failed" });
+    }
+    if (!live.paid) {
       logger.warn(
-        `PayDisini callback for order ${order.orderCode} is short-paid — got ${cb.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
+        `PayDisini callback claimed paid but live status check disagrees for ${order.orderCode} — trusting the live check over the callback body, so this delivery is skipped for now; the reconcile poller will retry and deliver once PayDisini's own status catches up`,
       );
-      await recordUnmatchedPaydisiniTx(prisma, { trxId: cb.trxId, amount: cb.amount });
+      return reply.send({ status: "not confirmed live" });
+    }
+    // Amount sanity: never deliver on a short payment. Trust the LIVE amount
+    // from checkTransaction, not the unsigned callback body field.
+    if (live.amount.lessThan(order.totalAmount)) {
+      logger.warn(
+        `PayDisini callback for order ${order.orderCode} is short-paid — got ${live.amount.toString()}, expected ${order.totalAmount.toString()} — recording it as unmatched instead of delivering`,
+      );
+      await recordUnmatchedPaydisiniTx(prisma, { trxId: live.trxId ?? cb.trxId, amount: live.amount });
       return reply.send({ status: "amount mismatch" });
     }
 
     try {
       const r = await deliverPaidPaydisiniOrder(prisma, {
         orderId: order.id,
-        trxId: cb.trxId,
-        amount: cb.amount,
+        trxId: live.trxId ?? cb.trxId,
+        amount: live.amount,
         shopUrl: shopPublicUrl(),
       });
       if (r.status === "delivered") nudgeOutboxDispatcher();
+      if (r.status === "stale") {
+        const trxId = live.trxId ?? cb.trxId;
+        logger.warn(
+          `PayDisini confirmed payment for order ${order.orderCode} (tx ${trxId}) but it had already left PENDING_PAYMENT — likely auto-cancelled before this webhook arrived; admin alerted to verify and deliver manually`,
+        );
+        await enqueueAdminStalePayment(prisma, {
+          orderId: order.id,
+          orderCode: order.orderCode,
+          gateway: "PayDisini",
+          trxId,
+        });
+      }
       return reply.send({ status: r.status });
     } catch (err) {
       logger.error({ err }, `Failed to deliver paid PayDisini order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);
@@ -895,6 +971,17 @@ const checkoutRoutes: FastifyPluginAsync = async (app) => {
         shopUrl: shopPublicUrl(),
       });
       if (r.status === "delivered") nudgeOutboxDispatcher();
+      if (r.status === "stale") {
+        logger.warn(
+          `NOWPayments confirmed payment for order ${order.orderCode} (tx ${cb.trxId}) but it had already left PENDING_PAYMENT — likely auto-cancelled before this webhook arrived; admin alerted to verify and deliver manually`,
+        );
+        await enqueueAdminStalePayment(prisma, {
+          orderId: order.id,
+          orderCode: order.orderCode,
+          gateway: "NOWPayments",
+          trxId: cb.trxId,
+        });
+      }
       return reply.send({ status: r.status });
     } catch (err) {
       logger.error({ err }, `Failed to deliver paid NOWPayments order ${order.orderCode} — flagging the ledger row delivery_failed for an admin to resolve from the orders panel`);

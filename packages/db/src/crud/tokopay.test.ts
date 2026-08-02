@@ -19,7 +19,7 @@ vi.mock("@app/core/config", async () => {
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { createOrderDirect, deliverPaidTokopayOrder, recordUnmatchedTokopayTx, getTokopayCreds, setSetting, deleteSetting } from "@app/db";
-import { OrderStatus, PaymentMethod, NotificationEvent } from "@app/core/enums";
+import { OrderStatus, PaymentMethod, NotificationEvent, StockStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { qrisChargeAmount } from "@app/core/payments/tokopay";
 
@@ -109,6 +109,49 @@ describe("deliverPaidTokopayOrder", () => {
     expect(rows.length).toBe(1);
   });
 
+  // H-3 (backend audit 2026-07-31): the ledger claim used to survive a failed
+  // delivery transaction forever — every retry (webhook redelivery, reconcile
+  // poller) hit the trx_id UNIQUE constraint and was turned away as
+  // already_processed, silently losing the buyer's payment. Wiping all stock
+  // for the product forces approveOrder's out-of-stock guard to throw INSIDE
+  // the delivery $transaction, rolling it back (the real-world equivalent of
+  // a SQLITE_BUSY collision or a transient failure mid-delivery).
+  it("a claim whose delivery failed is retryable — a later call with the same trx id succeeds instead of already_processed", async () => {
+    const order = await makePendingTokopayOrder();
+
+    await prisma.stockItem.updateMany({ where: { productId: sample.product.id }, data: { status: StockStatus.DEAD } });
+
+    await expect(
+      deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: "trx-retry-1", amount: order.totalAmount }),
+    ).rejects.toThrow();
+
+    // The claim row survives the rollback, tagged delivery_failed — and the
+    // order itself rolled all the way back to PENDING_PAYMENT, not stuck
+    // mid-transition.
+    const failedLedger = await prisma.processedTokopayTx.findUnique({ where: { trxId: "trx-retry-1" } });
+    expect(failedLedger?.outcome).toBe("delivery_failed");
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+
+    // Restock, then retry with the SAME trx id — this must now succeed
+    // instead of hitting the UNIQUE constraint and returning already_processed.
+    await prisma.stockItem.create({
+      data: { productId: sample.product.id, credentials: "retry-cred@example.com:pwd", status: StockStatus.AVAILABLE },
+    });
+
+    const retry = await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: "trx-retry-1", amount: order.totalAmount });
+    expect(retry.status).toBe("delivered");
+    if (retry.status !== "delivered") throw new Error("expected delivered");
+    expect(retry.order.status).toBe(OrderStatus.DELIVERED);
+
+    const ledgerRow = await prisma.processedTokopayTx.findUnique({ where: { trxId: "trx-retry-1" } });
+    expect(ledgerRow?.outcome).toBe("matched");
+    expect(ledgerRow?.orderId).toBe(order.id);
+
+    // Still exactly one ledger row — reclaimed in place, not duplicated.
+    const rows = await prisma.processedTokopayTx.findMany({ where: { trxId: "trx-retry-1" } });
+    expect(rows.length).toBe(1);
+  });
+
   it("an order that is no longer PENDING_PAYMENT/TOKOPAY is stale", async () => {
     const order = await makePendingTokopayOrder();
     await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.CANCELLED } });
@@ -130,7 +173,7 @@ describe("deliverPaidTokopayOrder", () => {
     // number — compute the expected excess from the actual total instead of
     // assuming "5". "Expected" now includes the QRIS admin fee, since that's
     // the amount actually charged (createTransaction) and checked.
-    const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
+    const expectedCharge = qrisChargeAmount(order.totalAmount);
     const paid = expectedCharge.plus("3"); // overpay by 3
 
     const result = await deliverPaidTokopayOrder(prisma, {
@@ -157,9 +200,9 @@ describe("deliverPaidTokopayOrder", () => {
     expect(payload.currency).toBe(result.order.currency);
   });
 
-  it("paying exactly subtotal + QRIS admin fee is NOT flagged overpaid", async () => {
+  it("paying exactly total + QRIS admin fee is NOT flagged overpaid", async () => {
     const order = await makePendingTokopayOrder();
-    const expectedCharge = qrisChargeAmount(order.totalAmount, order.subtotalAmount);
+    const expectedCharge = qrisChargeAmount(order.totalAmount);
 
     const result = await deliverPaidTokopayOrder(prisma, {
       orderId: order.id,
@@ -175,6 +218,42 @@ describe("deliverPaidTokopayOrder", () => {
       where: { orderId: order.id, event: NotificationEvent.ADMIN_OVERPAID },
     });
     expect(adminRows.length).toBe(0);
+  });
+
+  // H-1 (backend audit 2026-07-31): TokoPay's createTransaction sends
+  // order.totalAmount (net of any voucher/bulk discount) as `nominal` and
+  // TokoPay adds its own fee on top of THAT — never the pre-discount gross
+  // subtotal. A voucher-discounted order must deliver (not "amount mismatch"
+  // territory / short-paid) when paid exactly totalAmount + fee(totalAmount),
+  // even though that's less than totalAmount + fee(subtotalAmount) (the old,
+  // wrong formula this test would have failed under).
+  it("delivers a voucher-discounted order paid at exactly totalAmount + fee(totalAmount)", async () => {
+    const order = (await createOrderDirect(prisma, {
+      user: sample.user,
+      productId: sample.product.id,
+      quantity: 1,
+      voucherCode: sample.voucher.code, // SAVE10 — 10% off, minPurchase 3
+    }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.TOKOPAY } });
+    // SAVE10 really discounted this order — subtotal and total must diverge,
+    // or this test would pass even with the old, buggy subtotal-based formula.
+    expect(order.totalAmount.toString()).not.toBe(order.subtotalAmount.toString());
+
+    // What a gateway billing 0.7% of the ACTUAL nominal (totalAmount) sent
+    // would charge — the exact figure the buyer's wallet/QR app would show.
+    const gatewayFee = new Decimal(100).plus(order.totalAmount.times("0.007")).toDecimalPlaces(0, Decimal.ROUND_HALF_UP);
+    const expectedCharge = qrisChargeAmount(order.totalAmount);
+    expect(expectedCharge.toString()).toBe(order.totalAmount.plus(gatewayFee).toString());
+
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-discount-exact-1",
+      amount: expectedCharge,
+    });
+    expect(result.status).toBe("delivered"); // not short-paid
+
+    const ledgerRow = await prisma.processedTokopayTx.findUnique({ where: { trxId: "trx-discount-exact-1" } });
+    expect(ledgerRow?.outcome).toBe("matched"); // not "overpaid" either — exact fee, no excess
   });
 });
 

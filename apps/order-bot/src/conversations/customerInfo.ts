@@ -103,7 +103,12 @@ export async function customerInfoConversation(conversation: MyConversation, ctx
       return;
     }
     const text = u.message?.text;
-    if (!text) continue;
+    if (!text) {
+      // An inline tap that doesn't match v1:buy: (e.g. a stale/duplicate
+      // tap) — clear its spinner instead of leaving it hanging (M-22 fix).
+      if (u.callbackQuery) await u.answerCallbackQuery({ text: coreT("error.stale_screen", lang) });
+      continue;
+    }
     if (ckb.isPersistentLabel(text)) {
       await handleProductNumber(u);
       return;

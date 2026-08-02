@@ -19,6 +19,7 @@ import {
   cancelOrder,
   listStaleRepliedTickets,
   closeTicket,
+  getUser,
   reconcileFinances,
   logAdminAction,
   getBinancePollHealth,
@@ -110,18 +111,22 @@ export async function autoCloseStaleTickets(api: Api): Promise<void> {
   const cutoff = new Date(Date.now() - 48 * 3_600_000);
   const stale = await listStaleRepliedTickets(prisma, cutoff);
   for (const ticket of stale) {
-    const user = await prisma.user.findUnique({ where: { id: ticket.userId } });
-    if (user === null) continue;
-    await closeTicket(prisma, ticket.id);
-    logger.info(`Support ticket #${ticket.id} (user ${ticket.userId}) auto-closed after 48h with no customer reply`);
     try {
-      await api.sendMessage(
-        Number(user.telegramId),
-        coreT("ticket.auto_closed", langCode(user.language), { ticket_id: ticket.id }),
-        { parse_mode: "HTML" },
-      );
+      const user = await getUser(prisma, ticket.userId);
+      if (user === null) continue;
+      await closeTicket(prisma, ticket.id);
+      logger.info(`Support ticket #${ticket.id} (user ${ticket.userId}) auto-closed after 48h with no customer reply`);
+      try {
+        await api.sendMessage(
+          Number(user.telegramId),
+          coreT("ticket.auto_closed", langCode(user.language), { ticket_id: ticket.id }),
+          { parse_mode: "HTML" },
+        );
+      } catch (err) {
+        logger.error({ err }, `Failed to notify the customer that ticket #${ticket.id} was auto-closed — ticket is closed, but they won't see it until they reopen the bot`);
+      }
     } catch (err) {
-      logger.error({ err }, `Failed to notify the customer that ticket #${ticket.id} was auto-closed — ticket is closed, but they won't see it until they reopen the bot`);
+      logger.error({ err }, `Failed to auto-close stale support ticket #${ticket.id} — ticket is still open and will be retried next tick`);
     }
   }
 }
@@ -222,6 +227,17 @@ export async function binancePollWatchdog(api: Api): Promise<void> {
       ? `${health.consecutiveFailures} consecutive cycle(s) failed (last error: ${health.lastError ?? "unknown"})`
       : `no completed cycle in ${mins} min`;
     logger.error(`Binance poller looks unhealthy (${detail}) — alerting admins and pausing auto-confirm`);
+    // Flag flips BEFORE the DM loop, not after (M-26 fix, backend audit
+    // 2026-07-31): the loop below awaits Telegram per admin, so writing the
+    // flag only once every DM was sent left a window where a crash mid-loop
+    // (or an overlapping tick, now also closed by `protect: true` on this
+    // job's registration) left the flag unset and re-triggered a full
+    // re-alert storm on the next run. Writing it first trades that storm for
+    // a narrower failure mode: a crash mid-loop can now leave some admins
+    // unpaged for this incident instead of everyone being paged repeatedly —
+    // each DM failure below is still caught and logged individually, so a
+    // single blocked/deactivated admin never aborts the rest of the loop.
+    await setSetting(prisma, POLL_ALERT_KEY, "1");
     for (const adminId of adminIds()) {
       try {
         await api.sendMessage(
@@ -234,7 +250,6 @@ export async function binancePollWatchdog(api: Api): Promise<void> {
         logger.error({ err }, `Failed to DM admin ${adminId} about the unhealthy Binance poller`);
       }
     }
-    await setSetting(prisma, POLL_ALERT_KEY, "1");
   } else if (decision === "recover") {
     await setSetting(prisma, POLL_ALERT_KEY, "0");
     logger.info("Binance poller recovered — back to completing cycles normally, alert state cleared");
@@ -260,6 +275,9 @@ export async function bybitPollWatchdog(api: Api): Promise<void> {
       ? `${health.consecutiveFailures} consecutive cycle(s) failed (last error: ${health.lastError ?? "unknown"})`
       : `no completed cycle in ${mins} min`;
     logger.error(`Bybit deposit poller looks unhealthy (${detail}) — alerting admins and pausing auto-confirm`);
+    // Flag flips before the DM loop — same reasoning as binancePollWatchdog
+    // above (M-26 fix, backend audit 2026-07-31).
+    await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "1");
     for (const adminId of adminIds()) {
       try {
         await api.sendMessage(
@@ -272,7 +290,6 @@ export async function bybitPollWatchdog(api: Api): Promise<void> {
         logger.error({ err }, `Failed to DM admin ${adminId} about the unhealthy Bybit deposit poller`);
       }
     }
-    await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "1");
   } else if (decision === "recover") {
     await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "0");
     logger.info("Bybit deposit poller recovered — back to completing cycles normally, alert state cleared");
@@ -299,6 +316,9 @@ export async function bybitBscPollWatchdog(api: Api): Promise<void> {
       ? `${health.consecutiveFailures} consecutive cycle(s) failed (last error: ${health.lastError ?? "unknown"})`
       : `no completed cycle in ${mins} min`;
     logger.error(`Bybit BSC deposit poller looks unhealthy (${detail}) — alerting admins and pausing auto-confirm`);
+    // Flag flips before the DM loop — same reasoning as binancePollWatchdog
+    // above (M-26 fix, backend audit 2026-07-31).
+    await setSetting(prisma, BYBIT_BSC_POLL_ALERT_KEY, "1");
     for (const adminId of adminIds()) {
       try {
         await api.sendMessage(
@@ -311,7 +331,6 @@ export async function bybitBscPollWatchdog(api: Api): Promise<void> {
         logger.error({ err }, `Failed to DM admin ${adminId} about the unhealthy Bybit BSC deposit poller`);
       }
     }
-    await setSetting(prisma, BYBIT_BSC_POLL_ALERT_KEY, "1");
   } else if (decision === "recover") {
     await setSetting(prisma, BYBIT_BSC_POLL_ALERT_KEY, "0");
     logger.info("Bybit BSC deposit poller recovered — back to completing cycles normally, alert state cleared");
@@ -383,13 +402,52 @@ export async function drainBroadcasts(api: Api): Promise<void> {
  * through the outbox (the bot never sends these itself either — the dispatcher
  * delivers them, throttled).
  *
- * The stamp and the enqueue share ONE short transaction, and the stamp is a
- * conditional `updateMany` on `flashAnnouncedAt` still being null: a crash
- * between them rolls both back (so the sale is simply announced on the next
- * tick), and a second worker — or an overlapping tick — that reaches the same
- * row finds count 0 and skips it. Neither ordering can therefore fan the same
- * sale out twice. Re-scheduling a SKU resets the stamp to null in
- * `setFlashSale`, which is what legitimately re-announces it.
+ * Two phases, deliberately NOT one transaction (H-7 fix, backend audit
+ * 2026-07-31 — this used to wrap the claim AND the whole-customer-base
+ * `enqueueFlashSaleBroadcast` fan-out in a single `$transaction` with an
+ * explicit 15s timeout, which held SQLite's single writer lock for however
+ * long that fan-out took, starving every other concurrent writer — checkout,
+ * settlement, cancellation, the outbox dispatcher's own claim — past their
+ * busy_timeout):
+ *
+ * 1. Claim: a short transaction does the conditional `updateMany` on
+ *    `flashAnnouncedAt` still being null. A second worker — or an overlapping
+ *    tick — that reaches the same row after this commits finds count 0 and
+ *    skips it, so the claim alone is what stops the same sale fanning out
+ *    twice; it commits (or rolls back) in milliseconds regardless of customer
+ *    count.
+ * 2. Enqueue: `enqueueFlashSaleBroadcast` runs OUTSIDE any transaction,
+ *    against the top-level `prisma` client, batching its outbox inserts into
+ *    chunks so no single write holds the lock for long.
+ *
+ * Trade-off this introduces: because the claim now commits before the
+ * fan-out runs (rather than both rolling back together), a crash or thrown
+ * error between the two leaves the sale stamped as announced with some or all
+ * of the customer base never enqueued — and since `flashAnnouncedAt` is no
+ * longer null, the next tick will NOT retry it (unlike the old design, where
+ * that failure mode was impossible because everything shared one rollback).
+ * The catch block below logs that case loudly, distinctly from a claim
+ * failure, so it surfaces as an ops alert rather than silently under-sending.
+ * This is judged an acceptable trade for no longer risking every other writer
+ * in the app on a single large broadcast.
+ *
+ * What that manual recovery actually looks like (H-7 follow-up fix, backend
+ * audit 2026-07-31/08-01 — corrected after an earlier version of this
+ * comment promised a cleaner story than the code actually delivered):
+ * `enqueueFlashSaleBroadcast` now writes its `Broadcast` row BEFORE its
+ * chunked insert loop and flips it to FAILED (with a partial `sentCount`) if
+ * a chunk throws, so Broadcast History WILL show a row for a partial
+ * failure — it is no longer silently empty. But there is still no
+ * de-duplication: re-scheduling the SKU resets `flashAnnouncedAt` to null in
+ * `setFlashSale`, and the next tick's `enqueueFlashSaleBroadcast` run then
+ * fans out to the ENTIRE eligible customer base again, with no check against
+ * who the failed run's `sentCount` already reached. An admin re-announcing
+ * after a partial failure WILL double-DM every customer the partial run
+ * already got to. Building real de-duplication (tracking exactly which
+ * customers a given announcement run already reached, across enqueue
+ * attempts) is out of scope here; until that exists, the honest guidance is:
+ * check the FAILED row's `sentCount` first, and treat re-announcing as a
+ * "some customers get this DM twice" action, not a clean retry.
  */
 export async function announceStartedFlashSales(): Promise<void> {
   const started = await listUnannouncedStartedFlashSales(prisma);
@@ -408,27 +466,44 @@ export async function announceStartedFlashSales(): Promise<void> {
       logger.warn(`Flash sale on denomination ${denom.id} has an unusable discount percent — skipping its announcement; an admin should re-save the sale`);
       continue;
     }
+
+    let claimed: boolean;
     try {
-      const sent = await prisma.$transaction(async (tx) => {
-        const claimed = await tx.denomination.updateMany({
+      claimed = await prisma.$transaction(async (tx) => {
+        const claim = await tx.denomination.updateMany({
           where: { id: denom.id, flashAnnouncedAt: null },
           data: { flashAnnouncedAt: new Date() },
         });
-        if (claimed.count !== 1) return null; // already announced elsewhere
-        return enqueueFlashSaleBroadcast(tx, {
-          productName: denom.product.name,
-          denominationName: denom.name,
-          discountPercent: percent.toString(),
-          oldPrice: formatIdr(denom.price),
-          newPrice: formatIdr(discounted),
-          endsAt: localize(endsAt, "yyyy-LL-dd HH:mm ZZZZ"),
-        });
-      }, { timeout: 15000 });
-      if (sent === null) continue;
+        return claim.count === 1;
+      });
+    } catch (err) {
+      logger.error({ err }, `Failed to claim the announcement stamp for the flash sale on denomination ${denom.id} — nothing was enqueued and it stays unannounced, so it will be retried on the next tick`);
+      continue;
+    }
+    if (!claimed) continue; // already announced elsewhere
+
+    try {
+      const sent = await enqueueFlashSaleBroadcast(prisma, {
+        productName: denom.product.name,
+        denominationName: denom.name,
+        discountPercent: percent.toString(),
+        oldPrice: formatIdr(denom.price),
+        newPrice: formatIdr(discounted),
+        endsAt: localize(endsAt, "yyyy-LL-dd HH:mm ZZZZ"),
+      });
       announced++;
       recipients += sent;
     } catch (err) {
-      logger.error({ err }, `Failed to announce the flash sale on denomination ${denom.id} — nothing was enqueued and it stays unannounced, so it will be retried on the next tick`);
+      // The claim above already committed, so this sale will NOT be retried —
+      // unlike the claim-failure branch, this is not self-healing. Log it as
+      // an ops alert. enqueueFlashSaleBroadcast has already flipped its
+      // Broadcast row to FAILED with a partial sentCount before re-throwing,
+      // so Broadcast History does show this run — but re-announcing (e.g. by
+      // re-scheduling the SKU) is NOT a clean retry: it fans out to the whole
+      // customer base again with no de-duplication against whoever the
+      // partial run's sentCount already reached, so those customers get the
+      // DM twice. Say that plainly rather than implying a clean recovery.
+      logger.error({ err }, `The flash sale on denomination ${denom.id} was stamped as announced, but enqueueing the customer fan-out failed partway through — check Broadcast History for a FAILED row on this sale to see how many customers (sentCount) were already reached before it failed. Re-announcing this sale (e.g. re-scheduling it) will re-notify the WHOLE customer base with no de-duplication, so those already-reached customers will receive the DM twice; an admin should weigh that before deciding whether to re-announce`);
     }
   }
   if (announced > 0) {
@@ -488,10 +563,17 @@ export function scheduleJobs(api: Api): Cron[] {
     // already guards against.
     new Cron("*/1 * * * *", { protect: true }, wrap("autoCancelExpiredOrders", autoCancelExpiredOrders)),
     new Cron("0 * * * *", { protect: true }, wrap("autoCloseStaleTickets", autoCloseStaleTickets)),
-    new Cron("0 */6 * * *", wrap("reconcileFinancesJob", reconcileFinancesJob)),
-    new Cron("*/2 * * * *", wrap("binancePollWatchdog", binancePollWatchdog)),
-    new Cron("*/2 * * * *", wrap("bybitPollWatchdog", bybitPollWatchdog)),
-    new Cron("*/2 * * * *", wrap("bybitBscPollWatchdog", bybitBscPollWatchdog)),
+    new Cron("0 */6 * * *", { protect: true }, wrap("reconcileFinancesJob", reconcileFinancesJob)),
+    // { protect: true } (M-26 fix, backend audit 2026-07-31): these three
+    // watchdogs were the one group of jobs in this list missing it. A slow
+    // Telegram API call during the admin DM loop below can let a tick overlap
+    // with the next one; without protect, the overlapping run reads the same
+    // still-unset alert flag and every admin gets paged twice for the same
+    // incident. See the flag-write reordering inside each watchdog function
+    // for the other half of this fix.
+    new Cron("*/2 * * * *", { protect: true }, wrap("binancePollWatchdog", binancePollWatchdog)),
+    new Cron("*/2 * * * *", { protect: true }, wrap("bybitPollWatchdog", bybitPollWatchdog)),
+    new Cron("*/2 * * * *", { protect: true }, wrap("bybitBscPollWatchdog", bybitBscPollWatchdog)),
     // Offset 20s/40s past the minute (croner's optional leading seconds field) so
     // these two don't fire in the same SQLite write-lock instant as
     // autoCancelExpiredOrders above — all three land on second 0 otherwise, and

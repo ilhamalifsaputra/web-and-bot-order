@@ -77,6 +77,7 @@ describe("POST /api/broadcast/:id/queue", () => {
     expect(row!.status).toBe("PENDING");
     const audit = await prisma.auditLog.findFirst({ where: { action: "broadcast_queue_draft", targetId: broadcast.id } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("ALL");
   });
 
   it("409 on a non-draft (e.g. already PENDING)", async () => {
@@ -122,6 +123,7 @@ describe("POST /api/broadcast/:id/delete", () => {
     expect(await prisma.broadcast.findUnique({ where: { id: broadcast.id } })).toBeNull();
     const audit = await prisma.auditLog.findFirst({ where: { action: "broadcast_delete_draft", targetId: broadcast.id } });
     expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("ALL");
   });
 
   it("409 on a non-draft, row untouched", async () => {

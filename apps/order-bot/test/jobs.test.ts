@@ -2,11 +2,24 @@
 import "./setup-db";
 
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { prisma, createOrderDirect, finalizeOrderPayment, setOrderPaymentMessage, createBroadcast } from "@app/db";
+import {
+  prisma,
+  createOrderDirect,
+  finalizeOrderPayment,
+  setOrderPaymentMessage,
+  createBroadcast,
+  createTicket,
+  getSetting,
+  setSetting,
+  BINANCE_UID_KEY,
+  BINANCE_API_KEY_KEY,
+  BINANCE_API_SECRET_KEY,
+  BINANCE_POLL_HEALTH_KEY,
+} from "@app/db";
 import type { Api } from "grammy";
-import { OrderStatus, OrderCurrency } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, TicketStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { autoCancelExpiredOrders, scheduleJobs, drainBroadcasts, announceStartedFlashSales } from "../src/jobs";
+import { autoCancelExpiredOrders, autoCloseStaleTickets, scheduleJobs, drainBroadcasts, announceStartedFlashSales, binancePollWatchdog } from "../src/jobs";
 import { NotificationEvent } from "@app/core/enums";
 
 let sample: SampleData;
@@ -98,6 +111,57 @@ describe("autoCancelExpiredOrders", () => {
     await autoCancelExpiredOrders(api);
 
     expect(api.sendMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("autoCloseStaleTickets", () => {
+  const HOUR = 3_600_000;
+
+  /** A REPLIED ticket whose repliedAt is already past the 48h cutoff. */
+  async function makeStaleTicket(userId: number) {
+    const ticket = await createTicket(prisma, userId, "help please");
+    await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: { status: TicketStatus.REPLIED, repliedAt: new Date(Date.now() - 49 * HOUR) },
+    });
+    return ticket;
+  }
+
+  // M-27 fix (backend audit 2026-07-31): closing one stale ticket used to run
+  // bare inside the loop (no per-iteration try/catch, only the DM was
+  // guarded), so a single row's failure threw out of the whole `for` loop and
+  // every other stale ticket in that tick stayed open. This mirrors
+  // autoCancelExpiredOrders's per-row try/catch: one failing row is logged
+  // and skipped, the rest of the batch still drains.
+  it("keeps closing the rest of the batch when one ticket's closure throws", async () => {
+    const secondUser = await prisma.user.create({
+      data: { telegramId: BigInt(9001), referralCode: "stale-ticket-2", role: "CUSTOMER" },
+    });
+    const failing = await makeStaleTicket(sample.user.id);
+    const healthy = await makeStaleTicket(secondUser.id);
+    const api = fakeApi();
+
+    const originalUpdateMany = prisma.supportTicket.updateMany.bind(prisma.supportTicket);
+    const spy = vi
+      .spyOn(prisma.supportTicket, "updateMany")
+      .mockImplementation(((args: { where?: { id?: number } }) => {
+        if (args.where?.id === failing.id) {
+          return Promise.reject(new Error("simulated write-lock timeout"));
+        }
+        return originalUpdateMany(args as Parameters<typeof originalUpdateMany>[0]);
+      }) as typeof prisma.supportTicket.updateMany);
+
+    await autoCloseStaleTickets(api);
+    spy.mockRestore();
+
+    const failingRow = await prisma.supportTicket.findUnique({ where: { id: failing.id } });
+    expect(failingRow!.status).toBe(TicketStatus.REPLIED); // untouched — closeTicket threw
+
+    const healthyRow = await prisma.supportTicket.findUnique({ where: { id: healthy.id } });
+    expect(healthyRow!.status).toBe(TicketStatus.CLOSED); // still processed despite the earlier failure
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(1);
+    expect(api.sendMessage).toHaveBeenCalledWith(9001, expect.any(String), expect.anything());
   });
 });
 
@@ -264,6 +328,45 @@ describe("announceStartedFlashSales", () => {
     expect(await prisma.broadcast.count()).toBe(1);
   });
 
+  // H-7 fix (backend audit 2026-07-31): the `flashAnnouncedAt` claim and the
+  // customer fan-out used to share one `$transaction`, holding SQLite's
+  // single writer lock for however long the whole-customer-base enqueue
+  // took. They're now two phases — a short claim transaction, then a
+  // chunked enqueue outside any transaction — and this test's job is to
+  // prove that split still delivers to a customer base large enough to need
+  // multiple chunks (500 rows/chunk internally), and that the claim alone
+  // still correctly stops a second run from double-sending to any of them.
+  it("announces a started sale to a large customer base across the two-phase claim-then-chunked-enqueue, still stamping flashAnnouncedAt so a re-run doesn't double-send", async () => {
+    const now = Date.now();
+    await scheduleFlash(sample.product.id, new Date(now - HOUR), new Date(now + HOUR));
+    const EXTRA_RECIPIENTS = 1100; // comfortably more than one 500-row chunk
+    await prisma.user.createMany({
+      data: Array.from({ length: EXTRA_RECIPIENTS }, (_, i) => ({
+        telegramId: BigInt(8_000_000 + i),
+        referralCode: `flash-job-${i}`,
+        banned: false,
+      })),
+    });
+    const expectedRecipients = EXTRA_RECIPIENTS + 1; // + the sample user (telegramId 42)
+
+    await announceStartedFlashSales();
+
+    const afterFirst = await flashRows();
+    expect(afterFirst.length).toBe(expectedRecipients);
+    const broadcastRow = await prisma.broadcast.findFirst({ orderBy: { id: "desc" } });
+    expect(broadcastRow!.totalCount).toBe(expectedRecipients);
+
+    const stamped = await prisma.denomination.findUnique({ where: { id: sample.product.id } });
+    expect(stamped!.flashAnnouncedAt).not.toBeNull();
+
+    // Re-run: the claim (not the enqueue) is what prevents a double-send, so
+    // this must still hold even though the fan-out is no longer in the same
+    // transaction as the claim.
+    await announceStartedFlashSales();
+    expect((await flashRows()).length).toBe(expectedRecipients);
+    expect(await prisma.broadcast.count()).toBe(1);
+  });
+
   it("skips sales that have not started yet, have already ended, or sit on an inactive SKU", async () => {
     const now = Date.now();
     const future = await makeDenomination("not-yet");
@@ -299,6 +402,18 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       expect(crons[0]!.options.protect).toBe(true);
       expect(crons[1]!.getPattern()).toBe("0 * * * *"); // autoCloseStaleTickets
       expect(crons[1]!.options.protect).toBe(true);
+      // reconcileFinancesJob + the three poller watchdogs (M-26 fix, backend
+      // audit 2026-07-31): these were the one group in this list missing
+      // protect:true, letting a slow Telegram call overlap the next tick and
+      // double-page admins on the same incident.
+      expect(crons[2]!.getPattern()).toBe("0 */6 * * *"); // reconcileFinancesJob
+      expect(crons[2]!.options.protect).toBe(true);
+      expect(crons[3]!.getPattern()).toBe("*/2 * * * *"); // binancePollWatchdog
+      expect(crons[3]!.options.protect).toBe(true);
+      expect(crons[4]!.getPattern()).toBe("*/2 * * * *"); // bybitPollWatchdog
+      expect(crons[4]!.options.protect).toBe(true);
+      expect(crons[5]!.getPattern()).toBe("*/2 * * * *"); // bybitBscPollWatchdog
+      expect(crons[5]!.options.protect).toBe(true);
       // drainBroadcasts — offset to :20 past the minute (not :00, same as
       // autoCancelExpiredOrders above) so the two don't contend for SQLite's
       // single write-lock in the same instant every tick; still protected.
@@ -316,5 +431,82 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
     } finally {
       for (const c of crons) c.stop();
     }
+  });
+});
+
+// M-26 fix (backend audit 2026-07-31): binancePollWatchdog (and its Bybit /
+// Bybit-BSC twins, which share the exact same shape) used to write its
+// "already alerted" flag only AFTER the admin DM loop finished. That left a
+// window — a slow Telegram call, or an overlapping tick before `protect:
+// true` was added to the Cron registration above — where a second run still
+// read the flag as unset and paged every admin again for the same incident.
+// croner's `protect: true` (asserted above) is the scheduler-level guard;
+// these tests exercise the OTHER half of the fix directly — the flag write
+// itself now happens before the loop starts, not just before it finishes —
+// since croner's internal overlap lock isn't something a unit test can
+// trigger without a real timer-based race.
+describe("binancePollWatchdog alert-flag ordering (M-26 fix)", () => {
+  const STALE_MS = 10 * 60_000; // > POLL_STALE_MINUTES (5), well into "alert"
+
+  /** Enable the Binance Internal method and stamp a stale (unhealthy) heartbeat. */
+  async function makeUnhealthy() {
+    await setSetting(prisma, BINANCE_UID_KEY, "12345");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "test-key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "test-secret");
+    await setSetting(
+      prisma,
+      BINANCE_POLL_HEALTH_KEY,
+      JSON.stringify({ lastRun: new Date(Date.now() - STALE_MS).toISOString(), backoffUntil: null, consecutiveFailures: 0 }),
+    );
+  }
+
+  it("writes the alert flag before the admin DM loop, so an invocation that overlaps mid-loop already sees it and sends nothing", async () => {
+    await makeUnhealthy();
+    // ADMIN_IDS is "999,1000" (test/setup-db.ts) — two admins to page.
+    const flagSeenDuringEachDm: (string | null)[] = [];
+    const nestedApi = fakeApi();
+    let nestedTriggered = false;
+    const api = fakeApi({
+      sendMessage: vi.fn(async () => {
+        flagSeenDuringEachDm.push(await getSetting(prisma, "binance_poll_alert_sent"));
+        if (!nestedTriggered) {
+          nestedTriggered = true;
+          // Simulate a second tick firing while this run is still mid-loop —
+          // exactly what `protect: true` on the Cron registration now stops
+          // in production. Calling the job function directly here proves the
+          // flag write ALONE (independent of the scheduler lock) also stops
+          // it from re-alerting.
+          await binancePollWatchdog(nestedApi);
+        }
+        return undefined;
+      }),
+    });
+
+    await binancePollWatchdog(api);
+
+    expect(flagSeenDuringEachDm).toEqual(["1", "1"]); // already "1" for every DM, including the very first
+    expect(api.sendMessage).toHaveBeenCalledTimes(2); // both admins paged once by the original run
+    expect(nestedApi.sendMessage).not.toHaveBeenCalled(); // the overlapping run saw alerted=true and paged no one
+  });
+
+  it("does not re-alert on the next tick after a run whose DM loop had a failure partway through", async () => {
+    await makeUnhealthy();
+    const firstRunApi = fakeApi({
+      sendMessage: vi
+        .fn()
+        .mockResolvedValueOnce(undefined) // admin 999: delivered
+        .mockRejectedValueOnce(new Error("bot was blocked by this admin")), // admin 1000: failed, caught per-admin
+    });
+
+    await binancePollWatchdog(firstRunApi);
+    expect(firstRunApi.sendMessage).toHaveBeenCalledTimes(2);
+    expect(await getSetting(prisma, "binance_poll_alert_sent")).toBe("1");
+
+    // Next tick, still unhealthy (heartbeat untouched) — must see the flag
+    // already set and skip alerting entirely, not just skip the admin who
+    // already got the DM.
+    const secondRunApi = fakeApi();
+    await binancePollWatchdog(secondRunApi);
+    expect(secondRunApi.sendMessage).not.toHaveBeenCalled();
   });
 });

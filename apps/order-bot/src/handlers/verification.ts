@@ -60,10 +60,10 @@ export async function showQueue(ctx: MyContext): Promise<void> {
   const lang = ctx.session.lang;
   const orders = await listPendingVerifications(prisma);
   if (!orders.length) {
-    await adminEdit(ctx, "✅ No pending verifications.", akb.backToAdminKb(lang));
+    await adminEdit(ctx, t(ctx, "admin.no_pending_verifications"), akb.backToAdminKb(lang));
     return;
   }
-  const text = `🔎 <b>Pending Verifications</b> (${orders.length})\n\nTap an order to review:`;
+  const text = t(ctx, "admin.hdr_pending_verifications", { count: orders.length });
   await adminEdit(ctx, text, akb.verificationQueueKb(orders, lang));
 }
 
@@ -196,7 +196,7 @@ export async function approve(ctx: MyContext, orderId: number): Promise<void> {
       await sendAccountFile(ctx.api, Number(buyerTgId), { orderCode, items: buyerItems }, buyerLang);
       dmOk = true;
       const redacted = credGroups.flatMap(([, creds]) => creds.map(redactCredentials));
-      logger.info(`Delivered order ${orderCode} to user ${buyerTgId} (creds redacted: ${redacted.join(", ")})`);
+      logger.info(`Delivered order ${orderCode} to user ${buyerTgId} (${redacted.length} credential set(s))`);
     } catch (err) {
       logger.error(
         { err },
@@ -210,7 +210,7 @@ export async function approve(ctx: MyContext, orderId: number): Promise<void> {
   try {
     const replyKb = dmOk ? akb.backToAdminKb(adminLang) : akb.approvedResendKb(orderId, adminLang);
     const resultText =
-      `✅ Order <code>${orderCode}</code> approved.` +
+      coreT("admin.approved_bubble", adminLang, { code: orderCode }) +
       (dmOk ? "" : "\n\n⚠️ " + coreT("admin.resend_needed", adminLang));
     await adminEdit(ctx, resultText, replyKb);
   } catch {
@@ -280,9 +280,14 @@ async function maybeAlertLowStock(ctx: MyContext, _userId: number): Promise<void
     if (!denomination) continue;
     for (const adminId of adminIds()) {
       try {
+        // DM each admin in THEIR own language, not a hardcoded "en" (same
+        // per-recipient lookup pattern as notifyRestockSubscribers/
+        // closeTicketAdmin in handlers/admin.ts).
+        const adminUser = await getUserByTelegramId(prisma, adminId);
+        const recipientLang = adminUser ? langCode(adminUser.language) : "en";
         await ctx.api.sendMessage(
           adminId,
-          coreT("admin.low_stock_alert", "en", { product: esc(denomination.name), count: available }),
+          coreT("admin.low_stock_alert", recipientLang, { product: esc(denomination.name), count: available }),
           { parse_mode: "HTML" },
         );
       } catch (err) {

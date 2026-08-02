@@ -7,7 +7,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { config } from "@app/core/config";
 import { localize } from "@app/core/datetime";
-import { ProductType, UserRole, DeliveryType } from "@app/core/enums";
+import { ProductType, UserRole, DeliveryType, OrderStatus, PaymentMethod } from "@app/core/enums";
 import {
   prisma,
   initDb,
@@ -41,6 +41,7 @@ import {
   listAuditLogs,
   setUserRole,
   setUserBanned,
+  __clearSettingsCacheForTests,
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
@@ -222,6 +223,20 @@ function postMultipart(url: string, cookie: string | null, mp: ReturnType<typeof
   return app.inject({ method: "POST", url, headers: mp.headers, cookies: cookie ? { [COOKIE]: cookie } : {}, payload: mp.payload });
 }
 
+/** True if `key` appears anywhere in `value` (object or array), at any
+ * depth — the H-4 regression tests below use this to prove a JSON response
+ * never carries a raw User row's `passwordHash`/`email`, however deeply
+ * nested (e.g. under `orders[].user`, not just top-level `user`). */
+function containsKeyDeep(value: unknown, key: string): boolean {
+  if (value === null || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some((v) => containsKeyDeep(v, key));
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (k === key) return true;
+    if (containsKeyDeep(v, key)) return true;
+  }
+  return false;
+}
+
 async function makePendingOrder(): Promise<number> {
   const user = (await getUser(prisma, seed.customerId))!;
   const order = (await createOrderDirect(prisma, { user, productId: seed.productId, quantity: 1 }))!;
@@ -265,6 +280,11 @@ describe("auth", () => {
     expect(res.headers["content-type"]).toContain("text/html");
     expect(res.body).toContain(`name="csrf-token" content="${seed.csrf}"`);
     expect(res.body).not.toContain("__CSRF_TOKEN__");
+  });
+
+  it("SPA shell sends Cache-Control: no-store so a reverse proxy never caches a session's CSRF token (M-20)", async () => {
+    const res = await get("/", seed.cookie);
+    expect(res.headers["cache-control"]).toBe("no-store");
   });
 
   it("login happy path sets a working cookie", async () => {
@@ -679,17 +699,29 @@ describe("orders", () => {
   // order (paid manual SKU an admin can't source) previously had no
   // reject/refund path at all — rejectOrder hard-guarded PENDING_VERIFICATION
   // only, even though PROCESSING -> REJECTED is legal in LEGAL_TRANSITIONS.
-  it("reject also works on a PROCESSING order (paid manual SKU an admin can't source)", async () => {
+  //
+  // H-2 (backend audit, 2026-07-31): that "legal" reject turned out to strand
+  // the buyer's already-paid money — a PROCESSING order is always paid
+  // (settlePaidOrder stamps paidAt on the same transition), and REJECTED is
+  // terminal, so creditOrderToBalance could never touch it again afterward.
+  // rejectOrder now refuses a paid order outright; credit-balance (now
+  // canCredit-eligible for PROCESSING too) is the way to actually recover it.
+  it("reject refuses a paid PROCESSING order — credit-balance is the recovery path instead (H-2)", async () => {
     const orderId = await makeProcessingOrder();
     const res = await post(`/api/orders/${orderId}/reject`, seed.cookie, {
       csrf_token: seed.csrf,
       reason: "out of stock, can't source",
     });
-    expect(res.statusCode).toBe(200);
-    const order = (await getOrder(prisma, orderId))!;
-    expect(order.status).toBe("REJECTED");
+    expect(res.statusCode).toBe(422);
+    const body = JSON.parse(res.body) as { error: string };
+    expect(body.error).toBe("error.order_paid_needs_credit");
+    expect((await getOrder(prisma, orderId))!.status).toBe("PROCESSING");
     const audit = await prisma.auditLog.findMany({ where: { action: "reject_order", targetId: orderId } });
-    expect(audit.length).toBe(1);
+    expect(audit.length).toBe(0);
+
+    const creditRes = await post(`/api/orders/${orderId}/credit-balance`, seed.cookie, { csrf_token: seed.csrf });
+    expect(creditRes.statusCode).toBe(200);
+    expect((await getOrder(prisma, orderId))!.status).toBe("CANCELLED");
   });
 
   it("GET order detail: canReject is true for both PENDING_VERIFICATION and PROCESSING, but canAct (Approve) stays PENDING_VERIFICATION-only", async () => {
@@ -710,6 +742,9 @@ describe("orders", () => {
     });
     expect(processingRes.json().canReject).toBe(true);
     expect(processingRes.json().canAct).toBe(false);
+    // H-2 (backend audit, 2026-07-31): canCredit now covers PROCESSING too —
+    // reject alone can no longer recover a paid PROCESSING order's money.
+    expect(processingRes.json().canCredit).toBe(true);
   });
 
   it("approve requires auth (anon → 303 /login)", async () => {
@@ -2701,6 +2736,21 @@ describe("stock JSON API — bulk-dead, bulk-delete, item note/dead, download", 
       expect(res.statusCode).toBe(404);
     });
 
+    // M-8 fix, backend audit 2026-07-31: bulkMarkStockDead already refused to
+    // touch SOLD rows; the single-item route had no such guard, so a mis-tap
+    // on a delivered credential in the list view could flip it to DEAD.
+    it("refuses to mark a SOLD (delivered) item dead — 409, status unchanged, no audit row", async () => {
+      const item = await prisma.stockItem.update({
+        where: { id: (await prisma.stockItem.findFirst({ where: { productId: seed.productId, status: "AVAILABLE" } }))!.id },
+        data: { status: "SOLD", soldAt: new Date() },
+      });
+      const res = await postJson(`/api/stock/item/${item.id}/dead`, seed.cookie, seed.csrf, { note: "mis-tap" });
+      expect(res.statusCode).toBe(409);
+      expect((await prisma.stockItem.findUnique({ where: { id: item.id } }))!.status).toBe("SOLD");
+      const audit = await prisma.auditLog.findFirst({ where: { action: "stock_mark_dead", targetId: item.id } });
+      expect(audit).toBeNull();
+    });
+
     it("rejects missing auth (anon -> 303 /login)", async () => {
       const item = (await prisma.stockItem.findFirst({ where: { productId: seed.productId } }))!;
       const res = await postJson(`/api/stock/item/${item.id}/dead`, null, "x", {});
@@ -3872,6 +3922,31 @@ describe("settings", () => {
     expect(verifyPassword("newpassword1", stored!)).toBe(true);
   });
 
+  it("password change rotates the session jti — old cookie stops authenticating, re-issued cookie keeps this device logged in", async () => {
+    await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("oldpassword"));
+
+    // Sanity: the pre-change cookie authenticates before the password change.
+    expect((await get("/api/settings", seed.cookie)).statusCode).toBe(200);
+
+    const res = await post("/api/settings/password", seed.cookie, {
+      csrf_token: seed.csrf, current_password: "oldpassword", new_password: "newpassword1", confirm_password: "newpassword1",
+    });
+    expect(res.statusCode).toBe(200);
+
+    // The old cookie (minted before the change) must no longer authenticate.
+    const stale = await get("/api/settings", seed.cookie);
+    expect(stale.statusCode).toBe(303);
+    expect(stale.headers.location).toBe("/login");
+
+    // The response's own re-issued cookie must still authenticate this device.
+    const setCookie = res.headers["set-cookie"];
+    expect(setCookie).toBeDefined();
+    const rawHeader = Array.isArray(setCookie) ? setCookie[0]! : setCookie!;
+    const value = decodeURIComponent(rawHeader.split(";")[0]!.split("=").slice(1).join("="));
+    const fresh = await get("/api/settings", value);
+    expect(fresh.statusCode).toBe(200);
+  });
+
   it("password change with wrong current rejected", async () => {
     await setSetting(prisma, passwordHashKey(ADMIN_TG), hashPassword("realpw12"));
     const res = await post("/api/settings/password", seed.cookie, {
@@ -4278,11 +4353,15 @@ describe("payments", () => {
     expect(after - before).toBeCloseTo(3);
   });
 
-  it("cancel underpaid → CANCELLED", async () => {
+  it("cancel underpaid → CANCELLED + audit", async () => {
     const id = await makeUnderpaidOrder();
+    const orderCode = (await getOrder(prisma, id))!.orderCode;
     const res = await post(`/api/payments/order/${id}/cancel`, seed.cookie, { csrf_token: seed.csrf });
     expect(res.statusCode).toBe(200);
     expect((await getOrder(prisma, id))!.status).toBe("CANCELLED");
+    const audit = await prisma.auditLog.findFirst({ where: { action: "underpaid_cancel", targetId: id } });
+    expect(audit).toBeTruthy();
+    expect(audit!.details).toContain(orderCode);
   });
 
   it("manual match unmatched tx → delivered + ledger updated", async () => {
@@ -4362,8 +4441,8 @@ describe("payments", () => {
     await recordUnmatchedTx(prisma, { binanceTxId: "RENDTX", amount: "1.00" });
     const res = await get("/api/payments", seed.cookie);
     expect(res.statusCode).toBe(200);
-    const data = JSON.parse(res.body) as { ledger: Array<{ binanceTxId: string }> };
-    expect(data.ledger.some((tx) => tx.binanceTxId === "RENDTX")).toBe(true);
+    const data = JSON.parse(res.body) as { ledger: Array<{ reference: string }> };
+    expect(data.ledger.some((tx) => tx.reference === "RENDTX")).toBe(true);
   });
 
   it("GET /api/payments returns todayCount and honors the q search param", async () => {
@@ -4376,8 +4455,35 @@ describe("payments", () => {
     expect(data.todayCount).toBeGreaterThanOrEqual(2);
 
     const filtered = await get("/api/payments?q=SEARCHABLE", seed.cookie);
-    const filteredData = JSON.parse(filtered.body) as { ledger: Array<{ binanceTxId: string }> };
-    expect(filteredData.ledger.map((tx) => tx.binanceTxId)).toEqual(["SEARCHABLE-1"]);
+    const filteredData = JSON.parse(filtered.body) as { ledger: Array<{ reference: string }> };
+    expect(filteredData.ledger.map((tx) => tx.reference)).toEqual(["SEARCHABLE-1"]);
+  });
+
+  // Task 47 (backend audit follow-up): the ledger used to come exclusively
+  // from listProcessedBinanceTx, so a delivery_failed row on any other
+  // gateway was structurally invisible on this page even though the
+  // Operation Center's "Failed Deliveries" card links straight to
+  // /payments?outcome=delivery_failed. Pre-fix, this test's TokoPay row
+  // would be silently missing from `ledger`.
+  it("GET /api/payments?outcome=delivery_failed returns rows from every gateway, not just Binance", async () => {
+    await prisma.processedBinanceTx.create({ data: { binanceTxId: "BN-FAIL-1", amount: "1.00", outcome: "delivery_failed" } });
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-FAIL-1", amount: "50000", outcome: "delivery_failed" } });
+    // A matched TokoPay row (wrong outcome) must NOT show up under the filter.
+    await prisma.processedTokopayTx.create({ data: { trxId: "TP-OK-1", amount: "50000", outcome: "matched" } });
+
+    const res = await get("/api/payments?outcome=delivery_failed", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { ledger: Array<{ reference: string; gateway: string; outcome: string }>; total: number };
+
+    const references = data.ledger.map((tx) => tx.reference);
+    expect(references).toContain("BN-FAIL-1");
+    expect(references).toContain("TP-FAIL-1");
+    expect(references).not.toContain("TP-OK-1");
+
+    const tokopayRow = data.ledger.find((tx) => tx.reference === "TP-FAIL-1");
+    expect(tokopayRow?.gateway).toBe("tokopay");
+    const binanceRow = data.ledger.find((tx) => tx.reference === "BN-FAIL-1");
+    expect(binanceRow?.gateway).toBe("binance");
   });
 
   it("dismiss unmatched tx → outcome dismissed + audit", async () => {
@@ -4456,6 +4562,128 @@ describe("payments", () => {
   });
 });
 
+// ---- H-4 (backend audit 2026-07-31): the Users/Orders/Payments JSON APIs
+// used to spread whole Prisma User rows (`...u`, `...user`, an order's
+// `user: true` include) straight into the response body — reachable by the
+// lowest-privilege `readonly` admin role. getUser/listUsers and
+// fullInclude/listOrders now project a fixed field set that never includes
+// passwordHash or email, so these prove the leak is actually closed rather
+// than just "the endpoint still works." Distinctive passwordHash AND email
+// values make a false negative (e.g. either landing under some other key)
+// visible too, not just a key-name check — every assertion pair below covers
+// both leaked-value classes, not just passwordHash.
+describe("H-4 — passwordHash never leaks into admin JSON responses", () => {
+  const LEAK_HASH = "hash-must-never-leave-the-server-h4";
+  const LEAK_EMAIL = "h4-leak-check@shop.test";
+
+  function expectNoLeak(res: { body: string }) {
+    const parsed = JSON.parse(res.body);
+    expect(res.body).not.toContain(LEAK_HASH);
+    expect(containsKeyDeep(parsed, "passwordHash")).toBe(false);
+    expect(res.body).not.toContain(LEAK_EMAIL);
+    expect(containsKeyDeep(parsed, "email")).toBe(false);
+  }
+
+  async function makeWebBuyer(loginUsername: string) {
+    return createWebUser(prisma, {
+      loginUsername,
+      email: LEAK_EMAIL,
+      passwordHash: LEAK_HASH,
+      fullName: "H4 Leak Check",
+    });
+  }
+
+  it("GET /api/users never exposes passwordHash or email", async () => {
+    await makeWebBuyer("h4users1");
+    const res = await get("/api/users", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expectNoLeak(res);
+  });
+
+  it("GET /api/users/:userId never exposes passwordHash or email", async () => {
+    const web = await makeWebBuyer("h4users2");
+    const res = await get(`/api/users/${web.id}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expectNoLeak(res);
+  });
+
+  it("GET /api/orders never exposes the buyer's passwordHash or email", async () => {
+    const web = await makeWebBuyer("h4orders1");
+    await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 });
+    const res = await get("/api/orders", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expectNoLeak(res);
+  });
+
+  it("GET /api/orders/:orderId never exposes the buyer's passwordHash or email", async () => {
+    const web = await makeWebBuyer("h4orders2");
+    const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
+    const res = await get(`/api/orders/${order.id}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expectNoLeak(res);
+  });
+
+  it("GET /api/payments never exposes an underpaid buyer's passwordHash or email", async () => {
+    const web = await makeWebBuyer("h4pay1");
+    const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
+    await markUnderpaid(prisma, { orderId: order.id, binanceTxId: `H4TX-${order.id}`, amount: "1.00" });
+    const res = await get("/api/payments", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expectNoLeak(res);
+  });
+
+  // Covers payments.ts's OTHER raw order list — pendingInternal, sourced from
+  // binance_internal.ts's listPendingInternalOrders, not listOrders — so this
+  // exercises a different crud query than the "underpaid" test above.
+  it("GET /api/payments never exposes a pending-internal-transfer buyer's passwordHash or email", async () => {
+    const web = await makeWebBuyer("h4pay2");
+    const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
+    await prisma.order.update({
+      where: { id: order.id },
+      data: {
+        status: OrderStatus.PENDING_PAYMENT,
+        paymentMethod: PaymentMethod.BINANCE_INTERNAL,
+        paymentRef: `H4REF-${order.id}`,
+        expiresAt: new Date(Date.now() + 3_600_000),
+      },
+    });
+    const res = await get("/api/payments", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expectNoLeak(res);
+  });
+
+  // Follow-up leaks flagged (but not actioned) by Task 6's own report: the
+  // Reviews moderation list spreads `listReviews`'s joined `user` straight
+  // into JSON (reviews.ts:23), and global search returns raw `searchUsers`
+  // rows with no projection at all (search.ts:32) — both reachable by the
+  // lowest-privilege `readonly` admin role, same as the leaks above.
+  it("GET /api/reviews never exposes the reviewer's passwordHash or email", async () => {
+    const web = await makeWebBuyer("h4reviews1");
+    const order = (await createOrderDirect(prisma, { user: web, productId: seed.productId, quantity: 1 }))!;
+    await prisma.review.create({
+      data: { userId: web.id, orderId: order.id, productId: seed.productId, rating: 5, comment: "great" },
+    });
+    const res = await get("/api/reviews", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    expectNoLeak(res);
+  });
+
+  // Search intentionally keeps `email` (SearchModal.tsx's userLabel() uses it
+  // as an identity fallback for storefront-only customers with no display
+  // name) — so this checks passwordHash absence specifically, and proves the
+  // email assertion below isn't vacuous by confirming the email IS present.
+  it("GET /api/search never exposes a user hit's passwordHash, but keeps email as an identity fallback", async () => {
+    await makeWebBuyer("h4search1");
+    const res = await get(`/api/search?q=${encodeURIComponent("h4search1")}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const parsed = JSON.parse(res.body) as { users: Array<{ email: string | null }> };
+    expect(res.body).not.toContain(LEAK_HASH);
+    expect(containsKeyDeep(parsed, "passwordHash")).toBe(false);
+    expect(res.body).toContain(LEAK_EMAIL);
+    expect(parsed.users.some((u) => u.email === LEAK_EMAIL)).toBe(true);
+  });
+});
+
 // ---- outbox monitor (acceptance #5) ---------------------------------------
 
 describe("outbox", () => {
@@ -4476,6 +4704,7 @@ describe("outbox", () => {
     expect(row!.lastError).toBeNull();
     const audit = await prisma.auditLog.findMany({ where: { action: "outbox_retry", targetId: id } });
     expect(audit.length).toBe(1);
+    expect(audit[0]!.details).toContain("ORDER_DELIVERED");
   });
 
   it("retry requires auth", async () => {
@@ -4542,6 +4771,8 @@ describe("reviews moderation", () => {
     expect((await prisma.review.findUnique({ where: { id } }))!.hidden).toBe(true);
     const audit = await prisma.auditLog.findMany({ where: { action: "review_hide", targetId: id } });
     expect(audit.length).toBe(1);
+    const product = await prisma.denomination.findUnique({ where: { id: seed.productId } });
+    expect(audit[0]!.details).toContain(product!.name);
   });
 
   it("unhide restores the review", async () => {
@@ -4968,6 +5199,9 @@ describe("broadcast", () => {
     const ok = await post(`/api/broadcast/${bc.id}/cancel`, seed.cookie, { csrf_token: seed.csrf });
     expect(ok.statusCode).toBe(200);
     expect((await prisma.broadcast.findUnique({ where: { id: bc.id } }))!.status).toBe("CANCELLED");
+    const audit = await prisma.auditLog.findFirst({ where: { action: "broadcast_cancel", targetId: bc.id } });
+    expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("RESELLERS");
     expect((await post(`/api/broadcast/${bc.id}/cancel`, seed.cookie, { csrf_token: seed.csrf })).statusCode).toBe(409);
   });
 
@@ -5113,7 +5347,13 @@ describe("setup wizard — step 1 (connect bot)", () => {
 });
 
 describe("setup wizard — restart trigger", () => {
-  it("writes the Passenger restart file best-effort", async () => {
+  it("rejects a POST from an unauthenticated caller (H-5: no more anonymous reboot loop)", async () => {
+    // Modeled as a fully configured deploy (setup_completed=true) — the real
+    // scenario the H-5 finding described: an anonymous caller looping this
+    // route to reboot the process. currentAdmin rejects it with a 303 to
+    // /login before the handler body (and the restart-file write) ever runs,
+    // same as every other currentAdmin-gated route in this app.
+    await setSetting(prisma, "setup_completed", "true");
     await setSetting(prisma, "bot_token", "123:test-token");
     const target = join(tmpdir(), `restart-${Date.now()}.txt`);
     process.env.RESTART_TRIGGER_FILE = target;
@@ -5123,7 +5363,62 @@ describe("setup wizard — restart trigger", () => {
         url: "/setup/restart",
         payload: form({}),
         headers: { "content-type": "application/x-www-form-urlencoded" },
+        // No session cookie attached — this is the anonymous caller case.
       });
+      expect(res.statusCode).toBe(303);
+      expect(res.headers.location).toBe("/login");
+      expect(existsSync(target)).toBe(false);
+    } finally {
+      if (existsSync(target)) rmSync(target);
+      delete process.env.RESTART_TRIGGER_FILE;
+    }
+  });
+
+  it("succeeds for the real caller: the owner's session right after finishing the wizard", async () => {
+    // Reproduces the ONLY real production path to this route: SetupDonePage's
+    // "Restart server" button fires POST /setup/restart from the Done screen,
+    // which is only reachable after /setup/shop's finish handler has already
+    // called markSetupComplete() and auto-logged the owner in with a real
+    // session cookie (setup.ts's step-3 handler, ~lines 168-187). So by the
+    // time this button is legitimately clicked, setup_completed is already
+    // true and a valid admin session already exists — exactly what this test
+    // sets up before calling /setup/restart.
+    const RESTART_OWNER_TG = 7000999;
+    await deleteSetting(prisma, "setup_completed");
+    await deleteSetting(prisma, "setup_owner_tg");
+    resetAccountFailures(RESTART_OWNER_TG);
+    setAdminIds([...config.ADMIN_IDS]);
+
+    await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({
+        telegram_id: String(RESTART_OWNER_TG),
+        username: "restart-owner",
+        password: "supersecret",
+        password_confirm: "supersecret",
+      }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+
+    const finishRes = await app.inject({
+      method: "POST",
+      url: "/setup/shop",
+      payload: form({ shop_name: "Toko Demo" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(finishRes.statusCode).toBe(303);
+    expect(finishRes.headers.location).toBe("/setup/done");
+    const setCookie = finishRes.headers["set-cookie"];
+    expect(setCookie).toBeDefined();
+    const raw = Array.isArray(setCookie) ? setCookie[0]! : setCookie!;
+    const ownerCookie = decodeURIComponent(raw.split(";")[0]!.split("=").slice(1).join("="));
+
+    await setSetting(prisma, "bot_token", "123:test-token");
+    const target = join(tmpdir(), `restart-${Date.now()}.txt`);
+    process.env.RESTART_TRIGGER_FILE = target;
+    try {
+      const res = await post("/setup/restart", ownerCookie, {});
       expect(res.statusCode).toBe(200);
       expect(existsSync(target)).toBe(true);
       const data = JSON.parse(res.body) as { ok: boolean; restarted: boolean; bot_configured: boolean };
@@ -5133,6 +5428,7 @@ describe("setup wizard — restart trigger", () => {
     } finally {
       if (existsSync(target)) rmSync(target);
       delete process.env.RESTART_TRIGGER_FILE;
+      await setSetting(prisma, "setup_completed", "true"); // restore suite default
     }
   });
 });
@@ -5205,6 +5501,159 @@ describe("setup wizard — step 2/3/finish", () => {
     // stay reachable, not get self-healed into a premature lock.
     const shopPage = await app.inject({ method: "GET", url: "/setup/shop" });
     expect(shopPage.statusCode).toBe(200);
+  });
+
+  it("expires an abandoned OWNER_TG_KEY after the setup window (M-30): a second, attacker-supplied telegram_id is refused", async () => {
+    // Simulate the real abandonment scenario: step 2 succeeds (owner password
+    // hashed + OWNER_TG_KEY written), then the operator's browser/deploy is
+    // interrupted before step 3 ever runs — setup_completed stays unset.
+    const ownerRes = await createOwner();
+    expect(ownerRes.statusCode).toBe(303); // step 2 succeeded, owner exists
+    expect(isAdmin(OWNER_TG)).toBe(true);
+
+    // Simulate time passing well past the 30-minute window by backdating the
+    // OWNER_TG_KEY timestamp directly (no need to fake global Date/timers —
+    // the expiry check reads this setting, not the wall clock at write time).
+    await setSetting(prisma, "setup_owner_tg_at", String(Date.now() - 31 * 60 * 1000));
+
+    // An attacker now hits the still-reachable, pre-auth, no-CSRF POST
+    // /setup/owner with their OWN telegram_id, trying to mint a second
+    // super-admin account.
+    const ATTACKER_TG = 6660001;
+    const attackerRes = await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: String(ATTACKER_TG), username: "attacker", password: "attackerpw", password_confirm: "attackerpw" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+
+    // Locked out — redirected to /login instead of processing the body.
+    expect(attackerRes.statusCode).toBe(303);
+    expect(attackerRes.headers.location).toBe("/login");
+    // The escalation itself is what must be prevented, not just the response
+    // shape: the attacker's telegram_id must NOT have become an admin.
+    expect(isAdmin(ATTACKER_TG)).toBe(false);
+    expect(adminIds()).not.toContain(ATTACKER_TG);
+    // The window's expiry self-heals setup_completed (same mechanism as the
+    // bootstrap-takeover case below), permanently closing the wizard.
+    expect(await getSetting(prisma, "setup_completed")).toBe("true");
+    // The legitimate owner from step 2 is unaffected.
+    expect(isAdmin(OWNER_TG)).toBe(true);
+  });
+
+  it("does NOT expire OWNER_TG_KEY inside the setup window (legitimate mid-wizard continue still works)", async () => {
+    await createOwner();
+    // Backdate, but stay just inside the 30-minute window.
+    await setSetting(prisma, "setup_owner_tg_at", String(Date.now() - 29 * 60 * 1000));
+    const shopPage = await app.inject({ method: "GET", url: "/setup/shop" });
+    expect(shopPage.statusCode).toBe(200); // still open — not locked
+  });
+
+  it("does NOT extend the expiry window on a re-POST inside it (anti sliding-window), and replaces the mistyped owner instead of minting a second admin", async () => {
+    // Round 1: operator completes step 2, but (say) fat-fingered the Telegram
+    // ID. OWNER_TG_KEY's timestamp starts the clock.
+    const firstRes = await createOwner();
+    expect(firstRes.statusCode).toBe(303);
+    expect(isAdmin(OWNER_TG)).toBe(true);
+    const originalSetAt = await getSetting(prisma, "setup_owner_tg_at");
+    expect(originalSetAt).not.toBeNull();
+
+    // 25 minutes pass (still inside the 30-minute window) before the operator
+    // notices the typo and retries with the corrected Telegram ID.
+    const backdated = String(Date.now() - 25 * 60 * 1000);
+    await setSetting(prisma, "setup_owner_tg_at", backdated);
+    const CORRECTED_TG = 7000456;
+    resetAccountFailures(CORRECTED_TG);
+    const retryRes = await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: String(CORRECTED_TG), username: "owner", password: "supersecret2", password_confirm: "supersecret2" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(retryRes.statusCode).toBe(303);
+    expect(retryRes.headers.location).toBe("/setup/shop");
+
+    // The corrected id replaced the mistyped one — exactly one wizard-granted
+    // admin exists at a time, not two.
+    expect(isAdmin(CORRECTED_TG)).toBe(true);
+    expect(isAdmin(OWNER_TG)).toBe(false);
+    expect(adminIds()).toContain(CORRECTED_TG);
+    expect(adminIds()).not.toContain(OWNER_TG);
+    expect(await getSetting(prisma, "setup_owner_tg")).toBe(String(CORRECTED_TG));
+    expect(await getSetting(prisma, passwordHashKey(OWNER_TG))).toBeNull(); // old credential retracted
+
+    // The critical assertion: the retry did NOT reset the clock. The
+    // timestamp is still the backdated value from round 1, not "now".
+    expect(await getSetting(prisma, "setup_owner_tg_at")).toBe(backdated);
+
+    // Push past the ORIGINAL 30-minute window (from round 1's real start) —
+    // regardless of the intervening retry, the wizard must now lock for
+    // good. A further attacker-supplied id must be refused.
+    await setSetting(prisma, "setup_owner_tg_at", String(Date.now() - 31 * 60 * 1000));
+    const ATTACKER_TG = 6660003;
+    const attackerRes = await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: String(ATTACKER_TG), username: "attacker", password: "attackerpw", password_confirm: "attackerpw" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(attackerRes.statusCode).toBe(303);
+    expect(attackerRes.headers.location).toBe("/login");
+    expect(isAdmin(ATTACKER_TG)).toBe(false);
+    expect(await getSetting(prisma, "setup_completed")).toBe("true");
+    // The corrected owner from the retry is unaffected by the later lock.
+    expect(isAdmin(CORRECTED_TG)).toBe(true);
+  });
+
+  it("legitimate retry: re-POSTing /setup/owner with the SAME Telegram ID (mistyped password fixed) updates the owner in place without minting a second admin", async () => {
+    await createOwner(); // password "supersecret"
+    expect(isAdmin(OWNER_TG)).toBe(true);
+    const originalSetAt = await getSetting(prisma, "setup_owner_tg_at");
+
+    const retryRes = await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: String(OWNER_TG), username: "owner", password: "correctedpassword1", password_confirm: "correctedpassword1" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(retryRes.statusCode).toBe(303);
+    expect(retryRes.headers.location).toBe("/setup/shop");
+
+    // The retry wrote the new password hash inside a $transaction — a Db
+    // object distinct from `prisma` per settings.ts's cache-scoping comment
+    // — so a `prisma`-scoped getSetting moments later can still see the
+    // pre-retry cached value for up to its 30s TTL. Clear it (same escape
+    // hatch tests/helpers/sampleData.ts's resetDb uses) so this assertion
+    // reads real persisted state, not a stale in-process cache entry.
+    __clearSettingsCacheForTests(prisma);
+
+    // Still exactly one admin (the same id) — and the corrected password now
+    // verifies while the original mistyped one no longer does.
+    expect(isAdmin(OWNER_TG)).toBe(true);
+    expect(await getSetting(prisma, "setup_owner_tg")).toBe(String(OWNER_TG));
+    const storedHash = await getSetting(prisma, passwordHashKey(OWNER_TG));
+    expect(storedHash).not.toBeNull();
+    expect(verifyPassword("correctedpassword1", storedHash!)).toBe(true);
+    expect(verifyPassword("supersecret", storedHash!)).toBe(false);
+    // Recovery works, and the window is untouched by the correction.
+    expect(await getSetting(prisma, "setup_owner_tg_at")).toBe(originalSetAt);
+  });
+
+  it("fails CLOSED on a future/skewed OWNER_TG_SET_AT_KEY timestamp instead of treating it as fresh forever", async () => {
+    await createOwner();
+    // A clock correction, restored backup, or hand-edited row could leave
+    // this timestamp in the future — must not be read as "just created".
+    await setSetting(prisma, "setup_owner_tg_at", String(Date.now() + 60 * 60 * 1000));
+    const ATTACKER_TG = 6660004;
+    const res = await app.inject({
+      method: "POST",
+      url: "/setup/owner",
+      payload: form({ telegram_id: String(ATTACKER_TG), username: "attacker", password: "attackerpw", password_confirm: "attackerpw" }),
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+    });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+    expect(isAdmin(ATTACKER_TG)).toBe(false);
   });
 
   it("locks /setup/owner once an admin password exists outside the wizard (bootstrap takeover)", async () => {

@@ -1,10 +1,15 @@
 /**
  * Reviews + restock subscriptions — port of those sections of crud.py.
  */
-import { OrderStatus } from "@app/core/enums";
+import { OrderStatus, ReviewStatus, ReviewSentiment } from "@app/core/enums";
+import { classifyReviewSentiment } from "@app/core/reviews";
 import { ValidationError } from "@app/core/errors";
+import type { Prisma } from "@prisma/client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
+
+/** Same OR-contains search shape as crud/users.ts's `likeContains`. */
+const likeContains = (q: string) => ({ contains: q });
 
 /** Reviewer projection for the `user` join on `featuredReviews`/`listReviews`
  * — display-name fields only. These results get spread straight into
@@ -47,6 +52,11 @@ export async function createReview(
         productId: args.productId,
         rating: args.rating,
         comment: args.comment,
+        // status/source keep their Prisma defaults (PENDING_REPLY/CUSTOMER),
+        // already correct for a real customer review. sentiment has no
+        // meaningful schema default (it's a migration-time placeholder), so
+        // it's always set explicitly here.
+        sentiment: classifyReviewSentiment(args.rating),
       },
     });
   } catch (e) {
@@ -144,13 +154,43 @@ export interface ReviewFilter {
   productId?: number | number[] | null;
   hidden?: boolean | null;
   userId?: number | null;
+  status?: string | null;
+  sentiment?: string | null;
+  source?: string | null;
+  /** Exact star rating (1-5), not a >= threshold. */
+  rating?: number | null;
+  /** Same OR-contains shape as crud/users.ts's UserFilter.q — matches
+   * `comment` or the joined user's fullName/username/loginUsername. */
+  search?: string | null;
+  since?: Date | null; // createdAt >=
+  until?: Date | null; // createdAt <=
 }
 
-function reviewWhere(f: ReviewFilter) {
-  const where: Record<string, unknown> = {};
+function reviewWhere(f: ReviewFilter): Prisma.ReviewWhereInput {
+  const where: Prisma.ReviewWhereInput = {};
   if (f.productId != null) where.productId = Array.isArray(f.productId) ? { in: f.productId } : f.productId;
   if (f.hidden != null) where.hidden = f.hidden;
   if (f.userId != null) where.userId = f.userId;
+  if (f.status != null) where.status = f.status;
+  if (f.sentiment != null) where.sentiment = f.sentiment;
+  if (f.source != null) where.source = f.source;
+  if (f.rating != null) where.rating = f.rating;
+  if (f.since != null || f.until != null) {
+    where.createdAt = {};
+    if (f.since != null) where.createdAt.gte = f.since;
+    if (f.until != null) where.createdAt.lte = f.until;
+  }
+  if (f.search) {
+    const term = f.search.trim();
+    if (term) {
+      where.OR = [
+        { comment: likeContains(term) },
+        { user: { fullName: likeContains(term) } },
+        { user: { username: likeContains(term) } },
+        { user: { loginUsername: likeContains(term) } },
+      ];
+    }
+  }
   return where;
 }
 
@@ -201,6 +241,52 @@ export function setReviewHidden(db: Db, reviewId: number, hidden: boolean) {
   return db.review.update({ where: { id: reviewId }, data: { hidden } });
 }
 
+/** Save (or overwrite) the admin's reply and flip the review to REPLIED.
+ * Single-message reply, not a thread — doubles as create-and-edit, so there
+ * is no separate "edit reply" function. Audit-agnostic: the route layer logs
+ * the admin action after this succeeds. */
+export function replyToReview(
+  db: Db,
+  reviewId: number,
+  args: { reply: string; adminId: number },
+) {
+  return db.review.update({
+    where: { id: reviewId },
+    data: {
+      adminReply: args.reply,
+      repliedAt: new Date(),
+      repliedByAdminId: args.adminId,
+      status: ReviewStatus.REPLIED,
+    },
+  });
+}
+
+/** Clear a review's reply and revert it to PENDING_REPLY. Audit-agnostic —
+ * see replyToReview. */
+export function deleteReviewReply(db: Db, reviewId: number) {
+  return db.review.update({
+    where: { id: reviewId },
+    data: {
+      adminReply: null,
+      repliedAt: null,
+      repliedByAdminId: null,
+      status: ReviewStatus.PENDING_REPLY,
+    },
+  });
+}
+
+/** Manual CLOSED/PENDING_REPLY transition. The route layer must reject
+ * `REPLIED` here — that value is only ever set via replyToReview.
+ * Audit-agnostic — see replyToReview. */
+export function setReviewStatus(db: Db, reviewId: number, status: string) {
+  return db.review.update({ where: { id: reviewId }, data: { status } });
+}
+
+/** Hard delete. Audit-agnostic — see replyToReview. */
+export function deleteReview(db: Db, reviewId: number) {
+  return db.review.delete({ where: { id: reviewId } });
+}
+
 export interface ProductRatingSummary {
   productId: number;
   productName: string;
@@ -234,4 +320,46 @@ export async function productRatingSummaries(db: Db): Promise<ProductRatingSumma
     byProduct.set(g.productId, s);
   }
   return [...byProduct.values()].sort((a, b) => b.count - a.count);
+}
+
+export interface ReviewsKpis {
+  totalReviews: number;
+  avgRating: number | null;
+  pendingReplyCount: number;
+  negativeCount: number;
+  hiddenCount: number;
+  ratingDistribution: Record<1 | 2 | 3 | 4 | 5, number>;
+}
+
+/**
+ * Reviews moderation page KPI row. Every figure is scoped to VISIBLE
+ * (hidden: false) reviews except `hiddenCount` itself, which is the count of
+ * suppressed reviews — mirroring `productRating`'s hidden-exclusion
+ * discipline and `customersKpis`' parallel-`Promise.all` shape.
+ */
+export async function reviewsKpis(db: Db): Promise<ReviewsKpis> {
+  const visible = { hidden: false };
+  const [agg, pendingReplyCount, negativeCount, hiddenCount, ratingGroups] = await Promise.all([
+    db.review.aggregate({ where: visible, _count: { id: true }, _avg: { rating: true } }),
+    db.review.count({ where: { ...visible, status: ReviewStatus.PENDING_REPLY } }),
+    db.review.count({ where: { ...visible, sentiment: ReviewSentiment.NEGATIVE } }),
+    db.review.count({ where: { hidden: true } }),
+    db.review.groupBy({ by: ["rating"], where: visible, _count: { _all: true } }),
+  ]);
+
+  const ratingDistribution: Record<1 | 2 | 3 | 4 | 5, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+  for (const g of ratingGroups) {
+    if (g.rating >= 1 && g.rating <= 5) {
+      ratingDistribution[g.rating as 1 | 2 | 3 | 4 | 5] = g._count._all;
+    }
+  }
+
+  return {
+    totalReviews: agg._count.id,
+    avgRating: agg._avg.rating,
+    pendingReplyCount,
+    negativeCount,
+    hiddenCount,
+    ratingDistribution,
+  };
 }

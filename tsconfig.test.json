@@ -9,6 +9,8 @@
     "tests/**/*.ts",
     "packages/**/*.test.ts",
     "apps/**/*.test.ts",
+    "scripts/lib/**/*.ts",
+    "scripts/check-migration-rebuild-quoting.ts",
     "vitest.config.ts"
   ]
 }

@@ -17,6 +17,7 @@ export default defineConfig({
       "apps/**/*.test.ts",
       "apps/**/*.test.tsx",
       "tests/**/*.test.ts",
+      "scripts/**/*.test.ts",
     ],
     environment: "node",
     // bcryptjs at the production work factor (12) costs ~450ms per hash and

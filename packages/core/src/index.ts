@@ -10,4 +10,4 @@ export * from "./formatters";
 export * from "./customEmoji";
 export * from "./flash";
 export * from "./bulk";
-export * from "./bulk";
+export * from "./reviews";

@@ -131,37 +131,37 @@ model Category {
 /// NO price, NO stock — those live on each child Denomination (the sellable SKU).
 /// Physically the old `product_groups` table, renamed to `products`.
 model Product {
-  id           Int      @id @default(autoincrement())
-  categoryId   Int      @map("category_id")
-  name         String
+  id          Int      @id @default(autoincrement())
+  categoryId  Int      @map("category_id")
+  name        String
   /// URL-safe handle (storefront `/p/:slug`). UNIQUE + NOT NULL.
-  slug         String   @unique(map: "ix_products_slug")
-  emoji        String?
-  description  String?
+  slug        String   @unique(map: "ix_products_slug")
+  emoji       String?
+  description String?
   /// Storefront-only detail blocks, rendered under `description` on the
   /// product page and folded into its structured data. All optional — a
   /// product created before these existed simply shows fewer blocks.
   /// What the buyer actually receives ("Akun private, 1 device…").
-  whatYouGet   String?  @map("what_you_get")
+  whatYouGet   String? @map("what_you_get")
   /// Product-specific rules ("jangan ganti email — garansi hangus").
   terms        String?
   /// Warranty detail for this product, overriding the generic warranty copy.
-  warrantyNote String?  @map("warranty_note")
+  warrantyNote String? @map("warranty_note")
   /// Web-facing product photo URL (admin-set, storefront only). Telegram
   /// imageFileId can't be used as an <img src>; when this is null the
   /// storefront falls back to its curated Unsplash map (plan.md §8).
-  webImageUrl  String?  @map("web_image_url")
-  imageFileId  String?  @map("image_file_id")
-  sortOrder    Int      @default(0) @map("sort_order")
-  isActive     Boolean  @default(true) @map("is_active")
+  webImageUrl String?  @map("web_image_url")
+  imageFileId String?  @map("image_file_id")
+  sortOrder   Int      @default(0) @map("sort_order")
+  isActive    Boolean  @default(true) @map("is_active")
   /// Soft-hide independent of isActive: an archived product drops out of the
   /// admin's default catalog list and every customer-facing surface, but
   /// keeps its data (denominations, order history) intact — unlike a hard
   /// Delete, which is refused once it has denominations.
-  isArchived   Boolean  @default(false) @map("is_archived")
-  createdAt    DateTime @default(now()) @map("created_at")
+  isArchived  Boolean  @default(false) @map("is_archived")
+  createdAt   DateTime @default(now()) @map("created_at")
 
-  category        Category         @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
+  category        Category       @relation(fields: [categoryId], references: [id], onUpdate: NoAction)
   denominations   Denomination[]
   voucherProducts VoucherProduct[]
 
@@ -468,9 +468,9 @@ model Voucher {
   startAt     DateTime? @map("start_at")
   createdAt   DateTime  @default(now()) @map("created_at")
 
-  orders          Order[]
-  redemptions     VoucherRedemption[]
-  voucherProducts VoucherProduct[]
+  orders           Order[]
+  redemptions      VoucherRedemption[]
+  voucherProducts  VoucherProduct[]
 
   @@map("vouchers")
 }
@@ -578,30 +578,30 @@ model Referral {
 }
 
 model SupportTicket {
-  id                 Int       @id @default(autoincrement())
-  userId             Int       @map("user_id")
-  message            String
-  photoFileIds       String?   @map("photo_file_ids")
-  attachmentUrls     String?   @map("attachment_urls")
-  status             String    @default("OPEN")
+  id             Int       @id @default(autoincrement())
+  userId         Int       @map("user_id")
+  message        String
+  photoFileIds   String?   @map("photo_file_ids")
+  attachmentUrls String?   @map("attachment_urls")
+  status         String    @default("OPEN")
   /// LOW | MEDIUM | HIGH | URGENT — admin-set triage field, defaults MEDIUM.
-  priority           String    @default("MEDIUM") @map("priority")
+  priority       String    @default("MEDIUM") @map("priority")
   /// ORDER | PAYMENT | ACCOUNT | PRODUCT | OTHER — admin-set triage field, null until classified.
-  category           String?   @map("category")
-  adminReply         String?   @map("admin_reply")
-  adminId            Int?      @map("admin_id")
-  createdAt          DateTime  @default(now()) @map("created_at")
-  repliedAt          DateTime? @map("replied_at")
+  category       String?   @map("category")
+  adminReply     String?   @map("admin_reply")
+  adminId        Int?      @map("admin_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  repliedAt      DateTime? @map("replied_at")
   /// Set once, the first time an admin message lands on the ticket — true
   /// first-response time, unlike repliedAt which is overwritten on every reply.
-  firstResponseAt    DateTime? @map("first_response_at")
+  firstResponseAt DateTime? @map("first_response_at")
   /// Set once, when an admin marks the ticket RESOLVED (distinct from CLOSED).
-  resolvedAt         DateTime? @map("resolved_at")
+  resolvedAt     DateTime? @map("resolved_at")
   /// Optional link to the order this ticket is about — customer-picked at
   /// creation time. Null for general-purpose tickets (account issues,
   /// pre-purchase questions). Unlocks the storefront ticket page's Order/
   /// Product Summary sidebar and warranty/credential context.
-  orderId            Int?      @map("order_id")
+  orderId        Int?      @map("order_id")
   /// Bumped on every status transition (open/replied/resolved/closed/reopened)
   /// — the operational queue's "waiting time" and overdue calc read this, not
   /// createdAt, so a reopened ticket's wait clock resets correctly. NOT NULL
@@ -616,7 +616,7 @@ model SupportTicket {
   /// write-up because `support_tickets` is a cascade parent (child:
   /// ticket_messages). See that file's header for the empirical verification
   /// of when this kind of rebuild is/isn't safe to run.
-  lastStatusChangeAt DateTime  @default(now()) @map("last_status_change_at")
+  lastStatusChangeAt DateTime @default(now()) @map("last_status_change_at")
   /// Set once, when `closeTicket` flips status -> CLOSED. Drives the storage
   /// cleanup job's "delete evidence N days after close" eligibility check.
   /// Nullable, no default, so on its own this column is a zero-risk plain
@@ -643,7 +643,7 @@ model SupportTicket {
   /// this schema, not the SQL text/mechanism used to reach it, so this is
   /// unaffected by the rebuild 20260801000001 still needs for
   /// lastStatusChangeAt + the FK.
-  closedAt           DateTime? @map("closed_at")
+  closedAt       DateTime? @map("closed_at")
 
   user     User            @relation("TicketUser", fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
   admin    User?           @relation("TicketAdmin", fields: [adminId], references: [id], onDelete: NoAction, onUpdate: NoAction)
@@ -787,21 +787,21 @@ model NotificationOutbox {
 /// Broadcast queue — the web ENQUEUES here; the order-bot drains and sends
 /// (the web never calls Telegram). One row = one broadcast to a segment.
 model Broadcast {
-  id            Int       @id @default(autoincrement())
-  message       String
-  segment       String // ALL | RESELLERS | RECENT_BUYERS
-  status        String    @default("PENDING") // DRAFT | PENDING | SENDING | SENT | CANCELLED | FAILED
-  scheduledAt   DateTime? @map("scheduled_at") // null = send asap
-  createdById   Int?      @map("created_by_id") // acting web admin (user id)
-  totalCount    Int       @default(0) @map("total_count") // recipients at enqueue (display)
-  sentCount     Int       @default(0) @map("sent_count")
-  failedCount   Int       @default(0) @map("failed_count")
-  webImageUrl   String?   @map("web_image_url") // optional attached image, /uploads/broadcasts/... path
-  imageFileId   String?   @map("image_file_id") // cached Telegram file_id, resolved on first sendPhoto
-  claimedAt     DateTime? @map("claimed_at") // NEW — set when claimNextDueBroadcast flips PENDING→SENDING
-  failureReason String?   @map("failure_reason") // NEW — set when a row is marked FAILED
-  createdAt     DateTime  @default(now()) @map("created_at")
-  sentAt        DateTime? @map("sent_at")
+  id          Int       @id @default(autoincrement())
+  message     String
+  segment     String // ALL | RESELLERS | RECENT_BUYERS
+  status      String    @default("PENDING") // DRAFT | PENDING | SENDING | SENT | CANCELLED | FAILED
+  scheduledAt DateTime? @map("scheduled_at") // null = send asap
+  createdById Int?      @map("created_by_id") // acting web admin (user id)
+  totalCount  Int       @default(0) @map("total_count") // recipients at enqueue (display)
+  sentCount   Int       @default(0) @map("sent_count")
+  failedCount Int       @default(0) @map("failed_count")
+  webImageUrl String?   @map("web_image_url") // optional attached image, /uploads/broadcasts/... path
+  imageFileId String?   @map("image_file_id") // cached Telegram file_id, resolved on first sendPhoto
+  claimedAt     DateTime? @map("claimed_at")      // NEW — set when claimNextDueBroadcast flips PENDING→SENDING
+  failureReason String?   @map("failure_reason")  // NEW — set when a row is marked FAILED
+  createdAt   DateTime  @default(now()) @map("created_at")
+  sentAt      DateTime? @map("sent_at")
 
   @@index([status], map: "ix_broadcasts_status")
   @@map("broadcasts")

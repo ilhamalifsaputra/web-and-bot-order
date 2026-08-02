@@ -67,8 +67,17 @@ const SEARCH_USER_SELECT = {
   email: true,
 } as const;
 
+/** Never returns `passwordHash` or `email` (see USER_SELECT above). Verified
+ * (backend audit follow-up, 2026-08-02) that every caller only reads
+ * `id`/`role`/`banned`/`fullName`/`username`/`language`/`telegramId` off the
+ * result — storefront's `establishSession` (routes/auth.ts) reads
+ * `telegramId` to mint the customer session (`makeCustomerSession`).
+ * Telegram-linked admin/bot accounts authenticate via a separate
+ * settings-store hash (`passwordHashKey`, checked in web-admin's
+ * `routes/auth.ts`), never `User.passwordHash`, so projecting this out does
+ * not touch any login path. */
 export function getUserByTelegramId(db: Db, telegramId: number | bigint) {
-  return db.user.findUnique({ where: { telegramId: BigInt(telegramId) } });
+  return db.user.findUnique({ where: { telegramId: BigInt(telegramId) }, select: USER_SELECT });
 }
 
 /** General-purpose user lookup — never returns `passwordHash` or `email` (see
@@ -243,11 +252,6 @@ export function searchUsers(db: Db, query: string, limit = 20) {
   ];
   if (/^\d+$/.test(q)) or.push({ telegramId: BigInt(q) });
   return db.user.findMany({ where: { OR: or }, take: limit, select: SEARCH_USER_SELECT });
-}
-
-/** Most recently registered users — the Customers page's default browse list. */
-export function listRecentUsers(db: Db, limit = 20) {
-  return db.user.findMany({ orderBy: { createdAt: "desc" }, take: limit });
 }
 
 /** This user's DELIVERED-order totals, split per transaction currency (orders

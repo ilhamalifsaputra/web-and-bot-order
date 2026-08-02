@@ -42,19 +42,23 @@
  * FROM "denominations" WHERE ...)`. That is exactly the shape
  * 20260801000002_add_order_item_delivery_type_snapshot originally shipped
  * with (bare `"delivery_type"`, at a point in the migration chain where
- * `denominations.delivery_type` didn't exist yet) — a live instance of this
- * guard's own hazard that the original `REBUILD_COPY`-only version below
- * reported clean on, because it only ever looked at the `INSERT INTO
- * "new_x" (...) SELECT ... FROM "x"` shape. `SUBQUERY_SELECT` below covers
- * every other `SELECT ... FROM "table"`, reusing the same
- * `findUnqualifiedSources` helper; matches already accounted for by
- * `REBUILD_COPY` are skipped so nothing is reported twice.
+ * `denominations.delivery_type` didn't exist yet).
+ *
+ * NOT LIMITED TO SELECT LISTS EITHER (audit follow-up, 2026-08-02): the same
+ * hazard lives in a `WHERE`/`JOIN ... ON` clause that follows the `FROM` —
+ * a correlated backfill's `WHERE` is exactly where a bare reference to a
+ * not-yet-existing column realistically lives — and the source table can be
+ * written unquoted (`FROM orders`) just as validly as quoted. The actual
+ * scanning logic now lives in scripts/lib/sqlQuoting.ts (also unit-tested
+ * there); this file is a thin CLI wrapper: read every migration.sql, run the
+ * scan, apply the grandfather list, report.
  *
  * Run standalone: `pnpm run check-migration-rebuild-quoting`
  * Also runs automatically as part of `pretest`, next to the drift check.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { scanMigrationSql, type SourceReference } from "./lib/sqlQuoting";
 
 interface GrandfatheredFolder {
   /**
@@ -89,66 +93,6 @@ const GRANDFATHERED: Record<string, GrandfatheredFolder> = {
   },
 };
 
-/**
- * Matches one rebuild copy: `INSERT INTO "new_x" (<targets>) SELECT <sources> FROM "x"`.
- * The source list is captured non-greedily up to the single `FROM "..."` that
- * closes the statement.
- */
-const REBUILD_COPY =
-  /INSERT\s+INTO\s+"(new_\w+)"\s*\([^)]*\)\s*SELECT\s+([\s\S]*?)\s+FROM\s+"(\w+)"/gi;
-
-/**
- * Matches any OTHER `SELECT <sources> FROM "table"` in the file — most
- * realistically a correlated subquery inside an `UPDATE ... SET col =
- * (SELECT ... FROM "table" WHERE ...)` backfill, but this also catches a
- * bare standalone SELECT. Same non-greedy capture up to the first `FROM
- * "..."`, same hazard, same fix (qualify the source columns). Matches that
- * fall inside an already-counted `REBUILD_COPY` span are skipped by the
- * caller so the same statement is never reported twice.
- */
-const SUBQUERY_SELECT = /SELECT\s+([\s\S]*?)\s+FROM\s+"(\w+)"/gi;
-
-/**
- * Strips `-- line` and `/* block *\/` SQL comments before either regex above
- * ever sees the text. Required once `SUBQUERY_SELECT` exists: unlike
- * `REBUILD_COPY`'s narrow multi-token shape, a bare `SELECT ... FROM
- * "table"` is exactly the kind of thing this file's own prose comments
- * quote as an example when explaining the hazard (see the header above, or
- * 20260801000001's write-up) — without stripping comments first, those
- * examples would themselves get flagged, and worse, a `SELECT` mentioned in
- * one comment paired with an unrelated `FROM "table"` mentioned in a later
- * comment or in the real SQL below it would be captured as one giant fake
- * "source list" spanning everything in between. Comments never contain
- * executable SQL this guard needs to check, so removing them first is safe.
- */
-function stripSqlComments(sql: string): string {
-  return sql.replace(/--[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
-}
-
-/** Every double-quoted identifier, so each can be classified in context. */
-const QUOTED_IDENTIFIER = /"([^"]+)"/g;
-
-/**
- * Returns the source columns in `selectList` that are written bare rather than
- * table-qualified. Skips the qualifier and column halves of `"t"."c"` pairs,
- * and skips aliases introduced by `AS`.
- */
-function findUnqualifiedSources(selectList: string): string[] {
-  const bare: string[] = [];
-  for (const match of selectList.matchAll(QUOTED_IDENTIFIER)) {
-    const start = match.index;
-    const end = start + match[0].length;
-    // `"table"."column"` — the qualifier is followed by a dot, the column
-    // preceded by one. Either half means this reference is qualified.
-    if (selectList[end] === "." || selectList[start - 1] === ".") continue;
-    // `... AS "alias"` names an output column; it never resolves against the
-    // source table, so the string-literal fallback cannot apply to it.
-    if (/\bAS\s*$/i.test(selectList.slice(0, start))) continue;
-    bare.push(match[1]);
-  }
-  return bare;
-}
-
 const migrationsDir = join(process.cwd(), "prisma", "migrations");
 
 const offenders = new Map<string, { table: string; columns: string[] }[]>();
@@ -168,29 +112,16 @@ for (const entry of readdirSync(migrationsDir, { withFileTypes: true })) {
   folderCount += 1;
   let sql: string;
   try {
-    sql = stripSqlComments(readFileSync(join(migrationsDir, entry.name, "migration.sql"), "utf8"));
+    sql = readFileSync(join(migrationsDir, entry.name, "migration.sql"), "utf8");
   } catch {
     continue; // a folder without migration.sql has nothing to check
   }
 
-  const rebuildSpans: Array<[number, number]> = [];
-  for (const copy of sql.matchAll(REBUILD_COPY)) {
-    rebuildCount += 1;
-    const start = copy.index;
-    rebuildSpans.push([start, start + copy[0].length]);
-    record(entry.name, copy[3], findUnqualifiedSources(copy[2]));
-  }
-
-  for (const sub of sql.matchAll(SUBQUERY_SELECT)) {
-    const start = sub.index;
-    const end = start + sub[0].length;
-    // Already accounted for as (part of) a REBUILD_COPY match — the same
-    // "SELECT ... FROM ..." text nests inside that larger "INSERT INTO
-    // "new_x" (...) SELECT ... FROM "x"" span. Skip it so it isn't reported
-    // twice under two different categories.
-    if (rebuildSpans.some(([s, e]) => start >= s && end <= e)) continue;
-    subqueryCount += 1;
-    record(entry.name, sub[2], findUnqualifiedSources(sub[1]));
+  const references: SourceReference[] = scanMigrationSql(sql);
+  for (const ref of references) {
+    if (ref.kind === "rebuild") rebuildCount += 1;
+    else subqueryCount += 1;
+    record(entry.name, ref.table, ref.unqualifiedColumns);
   }
 }
 

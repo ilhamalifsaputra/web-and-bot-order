@@ -28,8 +28,27 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
     const counts: Record<string, number> = {};
     for (const s of BROADCAST_SEGMENTS) counts[s] = await countSegment(prisma, s);
     const history = await listBroadcasts(prisma, 30);
-    const historyWithDisplay = history.map((b) => ({ ...b, scheduledAtDisplay: displayDateTime(b.scheduledAt) }));
-    return reply.send({ segments: BROADCAST_SEGMENTS, counts, history: historyWithDisplay });
+    // Shape rows explicitly rather than spreading the raw Prisma row: the
+    // model's counters are named totalCount/sentCount/failedCount, but the
+    // client renders `${sent}/${total}` — spreading the row used to send
+    // those under the wrong names, so the History table's "Sent" column and
+    // the Send Now dialog both read undefined. Only totalCount and sentCount
+    // are ever displayed (failedCount isn't shown anywhere yet), and raw
+    // scheduledAt/createdAt are dropped in favor of the pre-formatted
+    // display string the page actually renders — same pattern as
+    // stock.ts's itemsWithDisplay and support.ts's ticketPartyUser.
+    const historyShaped = history.map((b) => ({
+      id: b.id,
+      message: b.message,
+      segment: b.segment,
+      status: b.status,
+      total: b.totalCount,
+      sent: b.sentCount,
+      scheduledAtDisplay: displayDateTime(b.scheduledAt),
+      webImageUrl: b.webImageUrl,
+      failureReason: b.failureReason,
+    }));
+    return reply.send({ segments: BROADCAST_SEGMENTS, counts, history: historyShaped });
   });
 
   app.post("/api/broadcast", { preHandler: csrfProtect }, async (req, reply) => {

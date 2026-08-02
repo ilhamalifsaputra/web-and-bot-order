@@ -20,7 +20,10 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
-const BROADCAST = { id: 1, message: "Hello customers!", segment: "ALL", status: "SENT", total: 100, sent: 100, scheduledAt: null, scheduledAtDisplay: null, createdAt: "2026-06-26T10:00:00.000Z", webImageUrl: null, failureReason: null };
+// Shape matches what GET /api/broadcast actually sends (see broadcast.ts's
+// historyShaped) — total/sent, not the raw Prisma totalCount/sentCount, and
+// no scheduledAt/createdAt since the page only ever renders scheduledAtDisplay.
+const BROADCAST = { id: 1, message: "Hello customers!", segment: "ALL", status: "SENT", total: 200, sent: 12, scheduledAtDisplay: null, webImageUrl: null, failureReason: null };
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -44,11 +47,14 @@ describe("BroadcastPage", () => {
     render(<BroadcastPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/Hello customers!/)).toBeInTheDocument());
     expect(screen.getAllByText("Sent").length).toBeGreaterThan(0);
+    // Regression guard for the totalCount/sentCount vs total/sent naming bug:
+    // the Sent column must render real numbers, not "undefined/undefined".
+    expect(screen.getByText("12/200")).toBeInTheDocument();
     expect(screen.getByText("immediate")).toBeInTheDocument(); // null scheduledAtDisplay fallback
   });
 
   it("shows the server-formatted schedule time for a scheduled broadcast", async () => {
-    const scheduled = { ...BROADCAST, id: 3, status: "PENDING", scheduledAt: "2026-07-01T03:00:00.000Z", scheduledAtDisplay: "2026-07-01 10:00" };
+    const scheduled = { ...BROADCAST, id: 3, status: "PENDING", scheduledAtDisplay: "2026-07-01 10:00" };
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify({ segments: ["ALL"], counts: { ALL: 200 }, history: [scheduled] }), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
@@ -163,6 +169,10 @@ describe("BroadcastPage", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Send this broadcast now?")).toBeInTheDocument();
+    // Regression guard: the recipient count in this dialog reads from the
+    // same row object as the Sent column, so it used to say "undefined
+    // recipient(s)" too.
+    expect(within(dialog).getByText(/to 200 recipient\(s\)/)).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Send Now" }));
 
     await waitFor(() =>

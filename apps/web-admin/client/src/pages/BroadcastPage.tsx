@@ -36,9 +36,7 @@ interface BroadcastRow {
   status: string;
   total: number;
   sent: number;
-  scheduledAt: string | null;
   scheduledAtDisplay: string | null;
-  createdAt: string;
   webImageUrl: string | null;
   failureReason: string | null;
 }

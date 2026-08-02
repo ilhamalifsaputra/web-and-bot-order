@@ -69,7 +69,9 @@ const SEARCH_USER_SELECT = {
 
 /** Never returns `passwordHash` or `email` (see USER_SELECT above). Verified
  * (backend audit follow-up, 2026-08-02) that every caller only reads
- * `id`/`role`/`banned`/`fullName`/`username`/`language` off the result —
+ * `id`/`role`/`banned`/`fullName`/`username`/`language`/`telegramId` off the
+ * result — storefront's `establishSession` (routes/auth.ts) reads
+ * `telegramId` to mint the customer session (`makeCustomerSession`).
  * Telegram-linked admin/bot accounts authenticate via a separate
  * settings-store hash (`passwordHashKey`, checked in web-admin's
  * `routes/auth.ts`), never `User.passwordHash`, so projecting this out does

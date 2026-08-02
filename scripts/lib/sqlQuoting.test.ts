@@ -100,6 +100,24 @@ describe("findUnqualifiedSources", () => {
       findUnqualifiedSources('JOIN "orders" ON "orders"."id" = "x"."order_id"'),
     ).toEqual([]);
   });
+
+  it("exempts a table name immediately after a nested FROM", () => {
+    // A second, nested FROM (a correlated `IN (SELECT ... FROM "t")`
+    // subquery, or a UNION arm) names a source table, not a column read —
+    // mirrors the JOIN exemption above.
+    expect(
+      findUnqualifiedSources('IN (SELECT "users"."id" FROM "users")'),
+    ).toEqual([]);
+  });
+
+  it("still flags a bare column inside a nested FROM's own select list", () => {
+    // The FROM exemption above must be scoped to the table-name position
+    // only — a genuine bare column in the nested subquery's select list
+    // (here "id", which is not table-qualified) still has to be caught.
+    expect(
+      findUnqualifiedSources('IN (SELECT "id" FROM "users")'),
+    ).toEqual(["id"]);
+  });
 });
 
 describe("scanMigrationSql", () => {
@@ -204,6 +222,67 @@ describe("scanMigrationSql", () => {
     const sql = `SELECT "src"."a" AS "alias_a", "src"."b" "alias_b" FROM "src";`;
     const refs = scanMigrationSql(sql);
     expect(refs).toHaveLength(1);
+    expect(refs[0]?.unqualifiedColumns).toEqual([]);
+  });
+
+  it("does not misread a nested IN (SELECT ... FROM) subquery's table name as a bare column (false positive fix)", () => {
+    // Before the FROM exemption, widening the inspected region to
+    // end-of-statement (weakness 3) meant this nested subquery's `FROM
+    // "users"` landed in the tail scan and "users" was misreported as an
+    // unqualified column, even though every real column here is
+    // table-qualified.
+    const sql = `INSERT INTO "new_orders" ("id") SELECT "orders"."id" FROM "orders"
+      WHERE "orders"."user_id" IN (SELECT "users"."id" FROM "users" WHERE "users"."banned" = 0);`;
+    const refs = scanMigrationSql(sql);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ kind: "rebuild", table: "orders" });
+    expect(refs[0]?.unqualifiedColumns).toEqual([]);
+  });
+
+  it("does not misread a UNION ALL second arm's table name as a bare column (false positive fix)", () => {
+    // Same root cause as above: the tail scan now reaches the second
+    // SELECT's `FROM "b"`, whose table name must not be flagged as a bare
+    // column when every real column is qualified.
+    const sql = `INSERT INTO "new_x" ("v") SELECT "a"."x" FROM "a" UNION ALL SELECT "b"."x" FROM "b";`;
+    const refs = scanMigrationSql(sql);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ kind: "rebuild", table: "a" });
+    expect(refs[0]?.unqualifiedColumns).toEqual([]);
+  });
+
+  it("still flags a bare column inside a nested subquery's select list (proves the FROM exemption is scoped to the table position only)", () => {
+    // Distinguishes "exempt the FROM target" from "exempt everything past a
+    // FROM": "users" (the nested subquery's table) must be exempt, but "id"
+    // (a genuine bare column in that same nested subquery's select list)
+    // must still be caught.
+    const sql = `INSERT INTO "new_x" ("a") SELECT "a"."x" FROM "a" WHERE "a"."y" IN (SELECT "id" FROM "users");`;
+    const refs = scanMigrationSql(sql);
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({ kind: "rebuild", table: "a" });
+    expect(refs[0]?.unqualifiedColumns).toEqual(["id"]);
+  });
+
+  it("KNOWN LIMITATION (pre-existing, not fixed here): misses a bare column when the select list itself contains a correlated subquery", () => {
+    // Pins current behavior, does not assert desired behavior. REBUILD_HEAD's
+    // lazy select-list capture binds to the FIRST FROM it finds, which here
+    // is the inner correlated subquery's "FROM \"denominations\" \"d\"" —
+    // not the outer statement's "FROM \"order_items\"". `findClauseEnd` then
+    // walks from that inner match and stops at the inner subquery's own
+    // closing paren, so the outer select list's bare "status" and the outer
+    // table are never inspected: `table` is misreported as "denominations"
+    // and the real hazard (bare "status", which resolves against
+    // "order_items") is silently missed. This is a real gap (see
+    // `scanMigrationSql`'s doc-comment) but predates the FROM-exemption fix
+    // this test file otherwise covers, and fixing it needs a real tokenizer
+    // rather than a regex head — out of scope here. If this test ever starts
+    // failing because someone fixed the gap, update it to assert the correct
+    // (fixed) behavior instead of reverting the fix.
+    const sql = `INSERT INTO "new_oi" ("a","b")
+      SELECT (SELECT "d"."x" FROM "denominations" "d"), "status" FROM "order_items";`;
+    const refs = scanMigrationSql(sql);
+    expect(refs).toHaveLength(1);
+    // Should be "order_items" with unqualifiedColumns ["status"]; instead:
+    expect(refs[0]).toMatchObject({ kind: "rebuild", table: "denominations" });
     expect(refs[0]?.unqualifiedColumns).toEqual([]);
   });
 });

@@ -198,6 +198,11 @@ export function findUnqualifiedSources(sqlFragment: string): string[] {
     if (/\bAS\s*$/i.test(before)) continue;
     // `JOIN "table"` names a join target, not a column read.
     if (/\bJOIN\s*$/i.test(before)) continue;
+    // `FROM "table"` names a source table, not a column read — the tail scan
+    // (`findClauseEnd`) routinely contains a second, nested FROM (a
+    // correlated `IN (SELECT ... FROM "t")` subquery, or a UNION's second
+    // arm), and that table name must not be misread as a bare column.
+    if (/\bFROM\s*$/i.test(before)) continue;
     if (isImplicitAlias(before)) continue;
     const identifier = match[1];
     if (identifier !== undefined) bare.push(identifier);
@@ -246,6 +251,20 @@ export interface SourceReference {
  * to the end of the enclosing statement or subquery (via `findClauseEnd`),
  * not just up to the first `FROM` — so a bare column read in a `WHERE` or
  * `JOIN ... ON` clause is caught, not just ones in the select list.
+ *
+ * KNOWN GAP (pre-existing, not fixed by the FROM-exemption follow-up,
+ * 2026-08-02): `REBUILD_HEAD`/`SUBQUERY_HEAD`'s `[\s\S]*?` select-list capture
+ * is lazy, so when a select list *itself* contains a correlated subquery
+ * (`SELECT (SELECT ... FROM "inner") , "col" FROM "outer"`), the head regex
+ * binds to the innermost/earliest `FROM` — the inner subquery's — not the
+ * outer statement's. `findClauseEnd` then walks from that inner table
+ * reference and stops at the inner subquery's own closing paren, so the
+ * outer statement's remaining select-list items and its `WHERE`/`JOIN`
+ * clauses are never inspected (and `table` is misreported as the inner
+ * table). See `sqlQuoting.test.ts`'s pinned-limitation test for a concrete
+ * missed case. Not fixed here — the regex-head approach would need
+ * a real tokenizer to track select-list nesting correctly; out of scope for
+ * this guard's current design.
  */
 export function scanMigrationSql(rawSql: string): SourceReference[] {
   const sql = sanitizeSql(rawSql);

@@ -233,6 +233,36 @@ export const TicketCategory = {
 export type TicketCategory = (typeof TicketCategory)[keyof typeof TicketCategory];
 export const zTicketCategory = z.nativeEnum(TicketCategory);
 
+/** Review reply-workflow state — orthogonal to `hidden` (visibility) on
+ * reviews.status. PENDING_REPLY | REPLIED | CLOSED (spec §11). */
+export const ReviewStatus = {
+  PENDING_REPLY: "PENDING_REPLY",
+  REPLIED: "REPLIED",
+  CLOSED: "CLOSED",
+} as const;
+export type ReviewStatus = (typeof ReviewStatus)[keyof typeof ReviewStatus];
+export const zReviewStatus = z.nativeEnum(ReviewStatus);
+
+/** Review provenance — reviews.source. Every Phase-A row is CUSTOMER;
+ * SYSTEM_AUTO is reserved for the deferred auto-review job (Phase B). */
+export const ReviewSource = {
+  CUSTOMER: "CUSTOMER",
+  SYSTEM_AUTO: "SYSTEM_AUTO",
+} as const;
+export type ReviewSource = (typeof ReviewSource)[keyof typeof ReviewSource];
+export const zReviewSource = z.nativeEnum(ReviewSource);
+
+/** Review sentiment — reviews.sentiment. Computed once at creation time and
+ * persisted (not derived on read), so it stays filterable/aggregatable. */
+export const ReviewSentiment = {
+  POSITIVE: "POSITIVE",
+  NEUTRAL: "NEUTRAL",
+  NEGATIVE: "NEGATIVE",
+} as const;
+export type ReviewSentiment =
+  (typeof ReviewSentiment)[keyof typeof ReviewSentiment];
+export const zReviewSentiment = z.nativeEnum(ReviewSentiment);
+
 export const SenderType = {
   USER: "USER",
   ADMIN: "ADMIN",

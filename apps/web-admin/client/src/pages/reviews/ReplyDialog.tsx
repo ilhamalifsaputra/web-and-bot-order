@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Star } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import { apiPost } from "../../api/client";
 import { describeError } from "../../lib/errorMessages";
+import { Stars } from "../../components/shared/Stars";
 
 export interface ReplyDialogReview {
   id: number;
@@ -25,16 +25,6 @@ interface ReplyDialogProps {
    *  `open`, but it may briefly linger `null`-less during the close
    *  animation, which is harmless since the dialog is no longer visible. */
   review: ReplyDialogReview | null;
-}
-
-function ReviewStars({ n }: { n: number }) {
-  return (
-    <span className="inline-flex items-center gap-0.5">
-      {[1, 2, 3, 4, 5].map((i) => (
-        <Star key={i} className={i <= n ? "h-4 w-4 fill-amberx text-amberx" : "h-4 w-4 text-ink-faint"} />
-      ))}
-    </span>
-  );
 }
 
 /**
@@ -84,7 +74,7 @@ export function ReplyDialog({ open, onOpenChange, review }: ReplyDialogProps): J
         {review && (
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2">
-              <ReviewStars n={review.rating} />
+              <Stars rating={review.rating} />
               <span className="text-xs text-ink-soft">{review.rating}/5</span>
             </div>
             {review.comment && <p className="text-sm text-ink-soft">{review.comment}</p>}

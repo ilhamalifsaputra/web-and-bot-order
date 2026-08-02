@@ -110,4 +110,24 @@ describe("StatusBadge", () => {
     const { container } = render(<StatusBadge status="URGENT" />);
     expect(container.querySelector(".bg-rust-tint")).not.toBeNull();
   });
+
+  it("uses the amber tone for a review pending reply", () => {
+    const { container } = render(<StatusBadge status="PENDING_REPLY" />);
+    expect(container.querySelector(".bg-amberx-tint")).not.toBeNull();
+  });
+
+  it("uses the red tone for a hidden review", () => {
+    const { container } = render(<StatusBadge status="HIDDEN" />);
+    expect(container.querySelector(".bg-rust-tint")).not.toBeNull();
+  });
+
+  it("uses the green tone for positive review sentiment", () => {
+    const { container } = render(<StatusBadge status="POSITIVE" />);
+    expect(container.querySelector(".bg-grass-tint")).not.toBeNull();
+  });
+
+  it("uses the red tone for negative review sentiment", () => {
+    const { container } = render(<StatusBadge status="NEGATIVE" />);
+    expect(container.querySelector(".bg-rust-tint")).not.toBeNull();
+  });
 });

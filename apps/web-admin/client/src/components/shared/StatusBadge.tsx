@@ -57,6 +57,13 @@ const TONE: Record<string, Tone> = {
   MEDIUM: "neutral",
   HIGH: "warning",
   URGENT: "danger",
+  // ReviewStatus / ReviewSentiment (Reviews dashboard, Phase A) — REPLIED and
+  // CLOSED already fall back to neutral; NEUTRAL sentiment falls back to
+  // neutral too, so only the tone-bearing values need an explicit entry.
+  PENDING_REPLY: "warning",
+  HIDDEN: "danger",
+  POSITIVE: "success",
+  NEGATIVE: "danger",
 };
 
 const TONE_CLASS: Record<Tone, string> = {

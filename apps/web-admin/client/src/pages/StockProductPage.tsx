@@ -127,7 +127,30 @@ export function StockProductPage() {
         `/api/stock/${productId}/broadcast`,
         { enabled },
       ),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: ["stock", productId] }),
+    // Optimistic flip: this is a single boolean on an otherwise-static page,
+    // so ticking it shouldn't wait on a POST round-trip or pay for a refetch
+    // of the whole (up to 500-row, credential-bearing) stock payload. Cancel
+    // any in-flight refetch first so it can't race the optimistic write and
+    // clobber it with stale data.
+    onMutate: async (enabled): Promise<{ previous: StockProductData | undefined }> => {
+      await qc.cancelQueries({ queryKey: ["stock", productId] });
+      const previous = qc.getQueryData<StockProductData>(["stock", productId]);
+      qc.setQueryData<StockProductData>(["stock", productId], (old) =>
+        old ? { ...old, product: { ...old.product, broadcastOnRestock: enabled } } : old,
+      );
+      return { previous };
+    },
+    onError: (err: Error, _enabled, ctx) => {
+      if (ctx) qc.setQueryData(["stock", productId], ctx.previous);
+      toast.error(describeError(err.message));
+    },
+    // Patch with the server's authoritative value instead of invalidating —
+    // this toggle doesn't change anything else on the page worth refetching.
+    onSuccess: (result) => {
+      qc.setQueryData<StockProductData>(["stock", productId], (old) =>
+        old ? { ...old, product: { ...old.product, broadcastOnRestock: result.broadcastOnRestock } } : old,
+      );
+    },
   });
 
   function toggleSelected(id: number) {
@@ -416,6 +439,7 @@ export function StockProductPage() {
             <Checkbox
               checked={product.broadcastOnRestock}
               onCheckedChange={(checked) => toggleBroadcast.mutate(checked === true)}
+              disabled={toggleBroadcast.isPending}
               aria-label="Broadcast to all customers when I add stock to this product"
             />
             Broadcast to all customers when I add stock to this product

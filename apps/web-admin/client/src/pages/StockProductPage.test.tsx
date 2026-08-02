@@ -4,6 +4,7 @@ import { render, screen, waitFor, fireEvent, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Routes, Route } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { Toaster } from "@/components/ui/sonner";
 import { StockProductPage, maskCredential } from "./StockProductPage";
 
 function Wrapper({ children }: { children: React.ReactNode }) {
@@ -14,6 +15,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
         <Routes>
           <Route path="/stock/:productId" element={children} />
         </Routes>
+        <Toaster />
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -235,7 +237,7 @@ describe("StockProductPage", () => {
     expect(await screen.findByRole("link", { name: /download credentials/i })).toBeInTheDocument();
   });
 
-  it("toggles the restock broadcast checkbox", async () => {
+  it("ticks the restock broadcast checkbox optimistically, before the POST resolves", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(
       new Response(JSON.stringify(STOCK_PRODUCT_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),
@@ -248,26 +250,57 @@ describe("StockProductPage", () => {
     });
     expect(checkbox).not.toBeChecked();
 
-    fetchSpy.mockResolvedValueOnce(
+    // The POST response never resolves during this assertion window — the
+    // checkbox must already read checked from the optimistic cache patch,
+    // not from a round-trip.
+    let resolvePost!: (value: Response) => void;
+    fetchSpy.mockReturnValueOnce(new Promise<Response>((resolve) => { resolvePost = resolve; }));
+    fireEvent.click(checkbox);
+
+    await waitFor(() => expect(checkbox).toBeChecked());
+    expect(checkbox).toBeDisabled();
+
+    resolvePost(
       new Response(JSON.stringify({ ok: true, broadcastOnRestock: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       }),
     );
-    fetchSpy.mockResolvedValueOnce(
-      new Response(JSON.stringify({ ...STOCK_PRODUCT_DATA, product: { ...STOCK_PRODUCT_DATA.product, broadcastOnRestock: true } }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
+
+    await waitFor(() => expect(checkbox).not.toBeDisabled());
+    expect(checkbox).toBeChecked();
+
+    // Exactly one fetch beyond the initial page load — no invalidation refetch.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/stock/10/broadcast",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ enabled: true }) }),
     );
+  });
+
+  it("rolls the broadcast checkbox back and shows a toast when the POST is rejected", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(STOCK_PRODUCT_DATA), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<StockProductPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Available")).toBeInTheDocument());
+
+    const checkbox = screen.getByRole("checkbox", {
+      name: /broadcast to all customers when i add stock to this product/i,
+    });
+    expect(checkbox).not.toBeChecked();
+
+    // The rejection settles too fast to reliably observe the transient
+    // optimistic "checked" state here (that's covered by the optimistic-tick
+    // test above via a manually held-open promise) — what matters for a
+    // rollback is that it lands back at unchecked, with an error toast.
+    fetchSpy.mockRejectedValueOnce(new Error("network"));
     fireEvent.click(checkbox);
 
-    await waitFor(() =>
-      expect(fetchSpy).toHaveBeenCalledWith(
-        "/api/stock/10/broadcast",
-        expect.objectContaining({ method: "POST", body: JSON.stringify({ enabled: true }) }),
-      ),
-    );
+    await waitFor(() => expect(checkbox).not.toBeChecked());
+    expect(checkbox).not.toBeDisabled();
+    expect(await screen.findByText("network")).toBeInTheDocument();
   });
 
   it("masks the account credential until the row is revealed", async () => {

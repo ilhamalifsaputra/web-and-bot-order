@@ -5,7 +5,11 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@
 
 export interface ProductRatingSummary {
   productName: string;
-  avg: number;
+  /** Null when every review for this product is hidden (see
+   *  `productRatingSummaries` in `packages/db/src/crud/reviews.ts`) — a
+   *  product can appear in `summaries` with a review count but no visible
+   *  average. */
+  avg: number | null;
   count: number;
 }
 
@@ -17,10 +21,21 @@ const SORT_LABEL: Record<SortMode, string> = {
   lowest_rated: "Lowest Rated",
 };
 
+/** Products with no visible average (`avg === null`) always sort to the end,
+ *  regardless of direction — null isn't a real "highest" or "lowest" rating,
+ *  just an absence of one, so it must never outrank a product with a real
+ *  average in either sort mode. */
+function compareByAvg(a: ProductRatingSummary, b: ProductRatingSummary, direction: "desc" | "asc"): number {
+  if (a.avg == null && b.avg == null) return 0;
+  if (a.avg == null) return 1;
+  if (b.avg == null) return -1;
+  return direction === "desc" ? b.avg - a.avg : a.avg - b.avg;
+}
+
 const SORTERS: Record<SortMode, (a: ProductRatingSummary, b: ProductRatingSummary) => number> = {
   most_reviewed: (a, b) => b.count - a.count,
-  highest_rated: (a, b) => b.avg - a.avg,
-  lowest_rated: (a, b) => a.avg - b.avg,
+  highest_rated: (a, b) => compareByAvg(a, b, "desc"),
+  lowest_rated: (a, b) => compareByAvg(a, b, "asc"),
 };
 
 interface ProductRatingsCardProps {
@@ -68,7 +83,7 @@ export function ProductRatingsCard({ summaries, isLoading }: ProductRatingsCardP
               <span className="truncate text-sm text-ink">{s.productName}</span>
               <span className="flex shrink-0 items-center gap-1 text-xs text-ink-soft">
                 <Star className="h-4 w-4 fill-amberx text-amberx" />
-                {s.avg.toFixed(1)} · {s.count}
+                {s.avg != null ? s.avg.toFixed(1) : "—"} · {s.count}
               </span>
             </div>
           ))}

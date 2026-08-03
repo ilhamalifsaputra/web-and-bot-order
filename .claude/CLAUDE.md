@@ -44,6 +44,25 @@ subagents or making edits, for any implementation task — trivial one-line/
 config edits are the only exception. Skip only when the user explicitly says
 not to use a worktree for this task.
 
+## Graphify knowledge graph
+
+This project has a graphify knowledge graph at `graphify-out/` (committed to
+git, kept fresh by a `Stop` hook in `.claude/settings.json` that runs
+`graphify update .` in the background after any turn with uncommitted
+changes — no manual update needed).
+
+**For codebase/architecture questions, consult it before grepping or reading
+raw files** — it returns a scoped answer instead of burning tokens on raw
+file contents:
+- `graphify query "<question>"` — general codebase/architecture questions
+- `graphify path "<A>" "<B>"` — how two things relate
+- `graphify explain "<concept>"` — focused explanation of one concept/symbol
+- `graphify-out/GRAPH_REPORT.md` — only for broad architecture review, or
+  when query/path/explain don't surface enough
+
+Fall back to Glob/Grep/Read when the question is about exact current file
+contents (e.g. verifying a specific line before editing), not architecture.
+
 ## Task tracking
 
 **Use the native CLI todo list (`TodoWrite`) for every non-trivial task in this

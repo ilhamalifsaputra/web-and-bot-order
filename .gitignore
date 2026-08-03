@@ -52,6 +52,10 @@ apps/storefront/static/shop-app/
 # --- subagent-driven-development scratch (task briefs, reports, progress ledger) ---
 /.superpowers/
 
+# --- graphify auto-update hook scratch (lock dir + run log, see .claude/settings.json) ---
+graphify-out/.update.lock
+graphify-out/.update.log
+
 # --- OS / editor ---
 .DS_Store
 Thumbs.db

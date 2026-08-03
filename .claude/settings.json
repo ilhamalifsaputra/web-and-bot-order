@@ -4,5 +4,20 @@
   },
   "enabledPlugins": {
     "superpowers@superpowers-dev": true
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"$(git status --porcelain -- . ':!graphify-out' 2>/dev/null)\" ] || exit 0; mkdir graphify-out/.update.lock 2>/dev/null && { graphify update . >graphify-out/.update.log 2>&1; rmdir graphify-out/.update.lock; } || exit 0",
+            "async": true,
+            "timeout": 300,
+            "statusMessage": "Updating graphify knowledge graph in the background..."
+          }
+        ]
+      }
+    ]
   }
 }

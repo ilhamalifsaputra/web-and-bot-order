@@ -1,1363 +1,1476 @@
-# Graph Report - .  (2026-07-28)
+# Graph Report - web-and-bot-order  (2026-08-04)
 
 ## Corpus Check
-- Large corpus: 942 files · ~1,043,156 words. Semantic extraction will be expensive (many Claude tokens). Consider running on a subfolder.
+- 880 files · ~1,149,459 words
+- Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1722 nodes · 555 edges · 1172 communities (32 shown, 1140 thin omitted)
-- Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS
+- 6619 nodes · 16820 edges · 312 communities (280 shown, 32 thin omitted)
+- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 171 edges (avg confidence: 0.69)
 - Token cost: 0 input · 0 output
 
+## Graph Freshness
+- Built from commit: `bcde1638`
+- Run `git rev-parse HEAD` and compare to check if the graph is stale.
+- Run `graphify update .` after code changes (no API cost).
+
 ## Community Hubs (Navigation)
-- Core Package Config
-- Web Admin Client Dependencies
-- Order Bot App
-- Web Admin Client Dev
-- Storefront App
-- App Entry Points
-- Storefront Client Dependencies
-- Root Package Config
-- Storefront Client Dev
-- Web Admin Components
-- Web Admin Server Dependencies
-- Production Build Config
-- Web Admin Client TypeScript
-- DB Package Config
-- Base TypeScript Config
-- Storefront Client TypeScript
-- Root Dev Dependencies
-- Web Admin Package
-- Core Shared Libraries
-- Outbox Dispatcher Package
-- Test Config
-- Order Bot TypeScript
-- Storefront TypeScript
-- Web Admin TypeScript
-- Core Package TypeScript
-- DB Package TypeScript
-- Outbox Dispatcher TypeScript
-- Server TypeScript
-- Storefront Page Data Types
-- Cart and Checkout Types
-- Module Group 30
-- Module Group 31
-- Module Group 32
-- Module Group 33
-- Module Group 34
-- Module Group 35
-- Module Group 36
-- Module Group 37
-- Module Group 38
-- Module Group 39
-- Module Group 40
-- Module Group 41
-- Module Group 42
-- Module Group 43
-- Module Group 44
-- Module Group 45
-- Module Group 46
-- Module Group 47
-- Module Group 48
-- Module Group 49
-- Module Group 50
-- Module Group 51
-- Module Group 52
-- Module Group 53
-- Module Group 54
-- Module Group 55
-- Module Group 56
-- Module Group 57
-- Module Group 58
-- Module Group 59
-- Module Group 60
-- Module Group 61
-- Module Group 62
-- Module Group 63
-- Module Group 64
-- Module Group 65
-- Module Group 66
-- Module Group 67
-- Module Group 68
-- Module Group 69
-- Module Group 70
-- Module Group 71
-- Module Group 72
-- Module Group 73
-- Module Group 74
-- Module Group 75
-- Module Group 76
-- Module Group 77
-- Module Group 78
-- Module Group 79
-- Module Group 80
-- Module Group 81
-- Module Group 82
-- Module Group 83
-- Module Group 84
-- Module Group 85
-- Module Group 86
-- Module Group 87
-- Module Group 88
-- Module Group 89
-- Module Group 90
-- Module Group 91
-- Module Group 92
-- Module Group 93
-- Module Group 94
-- Module Group 95
-- Module Group 96
-- Module Group 97
-- Module Group 98
-- Module Group 99
-- Module Group 100
-- Module Group 101
-- Module Group 102
-- Module Group 103
-- Module Group 104
-- Module Group 105
-- Module Group 106
-- Module Group 107
-- Module Group 108
-- Module Group 109
-- Module Group 110
-- Module Group 111
-- Module Group 112
-- Module Group 113
-- Module Group 114
-- Module Group 115
-- Module Group 116
-- Module Group 117
-- Module Group 118
-- Module Group 119
-- Module Group 120
-- Module Group 121
-- Module Group 122
-- Module Group 123
-- Module Group 124
-- Module Group 125
-- Module Group 126
-- Module Group 127
-- Module Group 128
-- Module Group 129
-- Module Group 130
-- Module Group 131
-- Module Group 132
-- Module Group 133
-- Module Group 134
-- Module Group 135
-- Module Group 136
-- Module Group 137
-- Module Group 138
-- Module Group 139
-- Module Group 140
-- Module Group 141
-- Module Group 142
-- Module Group 143
-- Module Group 144
-- Module Group 145
-- Module Group 146
-- Module Group 147
-- Module Group 148
-- Module Group 149
-- Module Group 150
-- Module Group 151
-- Module Group 152
-- Module Group 153
-- Module Group 154
-- Module Group 155
-- Module Group 156
-- Module Group 157
-- Module Group 158
-- Module Group 159
-- Module Group 160
-- Module Group 161
-- Module Group 162
-- Module Group 163
-- Module Group 164
-- Module Group 165
-- Module Group 166
-- Module Group 167
-- Module Group 168
-- Module Group 169
-- Module Group 170
-- Module Group 171
-- Module Group 172
-- Module Group 173
-- Module Group 174
-- Module Group 175
-- Module Group 176
-- Module Group 177
-- Module Group 178
-- Module Group 179
-- Module Group 180
-- Module Group 181
-- Module Group 182
-- Module Group 183
-- Module Group 184
-- Module Group 185
-- Module Group 186
-- Module Group 187
-- Module Group 188
-- Module Group 189
-- Module Group 190
-- Module Group 191
-- Module Group 192
-- Module Group 193
-- Module Group 194
-- Module Group 195
-- Module Group 196
-- Module Group 197
-- Module Group 198
-- Module Group 199
-- Module Group 200
-- Module Group 201
-- Module Group 202
-- Module Group 203
-- Module Group 204
-- Module Group 205
-- Module Group 206
-- Module Group 207
-- Module Group 208
-- Module Group 209
-- Module Group 210
-- Module Group 211
-- Module Group 212
-- Module Group 213
-- Module Group 214
-- Module Group 215
-- Module Group 216
-- Module Group 217
-- Module Group 218
-- Module Group 219
-- Module Group 220
-- Module Group 221
-- Module Group 222
-- Module Group 223
-- Module Group 224
-- Module Group 225
-- Module Group 226
-- Module Group 227
-- Module Group 228
-- Module Group 229
-- Module Group 230
-- Module Group 231
-- Module Group 232
-- Module Group 233
-- Module Group 234
-- Module Group 235
-- Module Group 236
-- Module Group 237
-- Module Group 238
-- Module Group 239
-- Module Group 240
-- Module Group 241
-- Module Group 242
-- Module Group 243
-- Module Group 244
-- Module Group 245
-- Module Group 246
-- Module Group 247
-- Module Group 248
-- Module Group 249
-- Module Group 250
-- Module Group 251
-- Module Group 252
-- Module Group 253
-- Module Group 254
-- Module Group 255
-- Module Group 256
-- Module Group 257
-- Module Group 258
-- Module Group 259
-- Module Group 260
-- Module Group 261
-- Module Group 262
-- Module Group 263
-- Module Group 264
-- Module Group 265
-- Module Group 266
-- Module Group 267
-- Module Group 268
-- Module Group 269
-- Module Group 270
-- Module Group 271
-- Module Group 272
-- Module Group 273
-- Module Group 274
-- Module Group 275
-- Module Group 276
-- Module Group 277
-- Module Group 278
-- Module Group 279
-- Module Group 280
-- Module Group 281
-- Module Group 282
-- Module Group 283
-- Module Group 284
-- Module Group 285
-- Module Group 286
-- Module Group 287
-- Module Group 288
-- Module Group 289
-- Module Group 290
-- Module Group 291
-- Module Group 292
-- Module Group 293
-- Module Group 294
-- Module Group 295
-- Module Group 296
-- Module Group 297
-- Module Group 298
-- Module Group 299
-- Module Group 300
-- Module Group 301
-- Module Group 302
-- Module Group 303
-- Module Group 304
-- Module Group 305
-- Module Group 306
-- Module Group 307
-- Module Group 308
-- Module Group 309
-- Module Group 310
-- Module Group 311
-- Module Group 312
-- Module Group 313
-- Module Group 314
-- Module Group 315
-- Module Group 316
-- Module Group 317
-- Module Group 318
-- Module Group 319
-- Module Group 320
-- Module Group 321
-- Module Group 322
-- Module Group 323
-- Module Group 324
-- Module Group 325
-- Module Group 326
-- Module Group 327
-- Module Group 328
-- Module Group 329
-- Module Group 330
-- Module Group 331
-- Module Group 332
-- Module Group 333
-- Module Group 334
-- Module Group 335
-- Module Group 336
-- Module Group 337
-- Module Group 338
-- Module Group 339
-- Module Group 340
-- Module Group 341
-- Module Group 342
-- Module Group 343
-- Module Group 344
-- Module Group 345
-- Module Group 346
-- Module Group 347
-- Module Group 348
-- Module Group 349
-- Module Group 350
-- Module Group 351
-- Module Group 352
-- Module Group 353
-- Module Group 354
-- Module Group 355
-- Module Group 356
-- Module Group 357
-- Module Group 358
-- Module Group 359
-- Module Group 360
-- Module Group 361
-- Module Group 362
-- Module Group 363
-- Module Group 364
-- Module Group 365
-- Module Group 366
-- Module Group 367
-- Module Group 368
-- Module Group 369
-- Module Group 370
-- Module Group 371
-- Module Group 372
-- Module Group 373
-- Module Group 374
-- Module Group 375
-- Module Group 376
-- Module Group 377
-- Module Group 378
-- Module Group 379
-- Module Group 380
-- Module Group 381
-- Module Group 382
-- Module Group 383
-- Module Group 384
-- Module Group 385
-- Module Group 386
-- Module Group 387
-- Module Group 388
-- Module Group 389
-- Module Group 390
-- Module Group 391
-- Module Group 392
-- Module Group 393
-- Module Group 394
-- Module Group 395
-- Module Group 396
-- Module Group 397
-- Module Group 398
-- Module Group 399
-- Module Group 400
-- Module Group 401
-- Module Group 402
-- Module Group 403
-- Module Group 404
-- Module Group 405
-- Module Group 406
-- Module Group 407
-- Module Group 408
-- Module Group 409
-- Module Group 410
-- Module Group 411
-- Module Group 412
-- Module Group 413
-- Module Group 414
-- Module Group 415
-- Module Group 416
-- Module Group 417
-- Module Group 418
-- Module Group 419
-- Module Group 420
-- Module Group 421
-- Module Group 422
-- Module Group 423
-- Module Group 424
-- Module Group 425
-- Module Group 426
-- Module Group 427
-- Module Group 428
-- Module Group 429
-- Module Group 430
-- Module Group 431
-- Module Group 432
-- Module Group 433
-- Module Group 434
-- Module Group 435
-- Module Group 436
-- Module Group 437
-- Module Group 438
-- Module Group 439
-- Module Group 440
-- Module Group 441
-- Module Group 442
-- Module Group 443
-- Module Group 444
-- Module Group 445
-- Module Group 446
-- Module Group 447
-- Module Group 448
-- Module Group 449
-- Module Group 450
-- Module Group 451
-- Module Group 452
-- Module Group 453
-- Module Group 454
-- Module Group 455
-- Module Group 456
-- Module Group 457
-- Module Group 458
-- Module Group 459
-- Module Group 460
-- Module Group 461
-- Module Group 462
-- Module Group 463
-- Module Group 464
-- Module Group 465
-- Module Group 466
-- Module Group 467
-- Module Group 468
-- Module Group 469
-- Module Group 470
-- Module Group 471
-- Module Group 472
-- Module Group 473
-- Module Group 474
-- Module Group 475
-- Module Group 476
-- Module Group 477
-- Module Group 478
-- Module Group 479
-- Module Group 480
-- Module Group 481
-- Module Group 482
-- Module Group 483
-- Module Group 484
-- Module Group 485
-- Module Group 486
-- Module Group 487
-- Module Group 488
-- Module Group 489
-- Module Group 490
-- Module Group 491
-- Module Group 492
-- Module Group 493
-- Module Group 494
-- Module Group 495
-- Module Group 496
-- Module Group 497
-- Module Group 498
-- Module Group 499
-- Module Group 500
-- Module Group 501
-- Module Group 502
-- Module Group 503
-- Module Group 504
-- Module Group 505
-- Module Group 506
-- Module Group 507
-- Module Group 508
-- Module Group 509
-- Module Group 510
-- Module Group 511
-- Module Group 512
-- Module Group 513
-- Module Group 514
-- Module Group 515
-- Module Group 516
-- Module Group 517
-- Module Group 518
-- Module Group 519
-- Module Group 520
-- Module Group 521
-- Module Group 522
-- Module Group 523
-- Module Group 524
-- Module Group 525
-- Module Group 526
-- Module Group 527
-- Module Group 528
-- Module Group 529
-- Module Group 530
-- Module Group 531
-- Module Group 532
-- Module Group 533
-- Module Group 534
-- Module Group 535
-- Module Group 536
-- Module Group 537
-- Module Group 538
-- Module Group 539
-- Module Group 540
-- Module Group 541
-- Module Group 542
-- Module Group 543
-- Module Group 544
-- Module Group 545
-- Module Group 546
-- Module Group 547
-- Module Group 548
-- Module Group 549
-- Module Group 550
-- Module Group 551
-- Module Group 552
-- Module Group 553
-- Module Group 554
-- Module Group 555
-- Module Group 556
-- Module Group 557
-- Module Group 558
-- Module Group 559
-- Module Group 560
-- Module Group 561
-- Module Group 562
-- Module Group 563
-- Module Group 564
-- Module Group 565
-- Module Group 566
-- Module Group 567
-- Module Group 568
-- Module Group 569
-- Module Group 570
-- Module Group 571
-- Module Group 572
-- Module Group 573
-- Module Group 574
-- Module Group 575
-- Module Group 576
-- Module Group 577
-- Module Group 578
-- Module Group 579
-- Module Group 580
-- Module Group 581
-- Module Group 582
-- Module Group 583
-- Module Group 584
-- Module Group 585
-- Module Group 586
-- Module Group 587
-- Module Group 588
-- Module Group 589
-- Module Group 590
-- Module Group 591
-- Module Group 592
-- Module Group 593
-- Module Group 594
-- Module Group 595
-- Module Group 596
-- Module Group 597
-- Module Group 598
-- Module Group 599
-- Module Group 600
-- Module Group 601
-- Module Group 602
-- Module Group 603
-- Module Group 604
-- Module Group 605
-- Module Group 606
-- Module Group 607
-- Module Group 608
-- Module Group 609
-- Module Group 610
-- Module Group 611
-- Module Group 612
-- Module Group 613
-- Module Group 614
-- Module Group 615
-- Module Group 616
-- Module Group 617
-- Module Group 618
-- Module Group 619
-- Module Group 620
-- Module Group 621
-- Module Group 622
-- Module Group 623
-- Module Group 624
-- Module Group 625
-- Module Group 626
-- Module Group 627
-- Module Group 628
-- Module Group 629
-- Module Group 630
-- Module Group 631
-- Module Group 632
-- Module Group 633
-- Module Group 634
-- Module Group 635
-- Module Group 636
-- Module Group 637
-- Module Group 638
-- Module Group 639
-- Module Group 640
-- Module Group 641
-- Module Group 642
-- Module Group 643
-- Module Group 644
-- Module Group 645
-- Module Group 646
-- Module Group 647
-- Module Group 648
-- Module Group 649
-- Module Group 650
-- Module Group 651
-- Module Group 652
-- Module Group 653
-- Module Group 654
-- Module Group 655
-- Module Group 656
-- Module Group 657
-- Module Group 658
-- Module Group 659
-- Module Group 660
-- Module Group 661
-- Module Group 662
-- Module Group 663
-- Module Group 664
-- Module Group 665
-- Module Group 666
-- Module Group 667
-- Module Group 668
-- Module Group 669
-- Module Group 670
-- Module Group 671
-- Module Group 672
-- Module Group 673
-- Module Group 674
-- Module Group 675
-- Module Group 676
-- Module Group 677
-- Module Group 678
-- Module Group 679
-- Module Group 680
-- Module Group 681
-- Module Group 682
-- Module Group 683
-- Module Group 684
-- Module Group 685
-- Module Group 686
-- Module Group 687
-- Module Group 688
-- Module Group 689
-- Module Group 690
-- Module Group 691
-- Module Group 692
-- Module Group 693
-- Module Group 694
-- Module Group 695
-- Module Group 696
-- Module Group 697
-- Module Group 698
-- Module Group 699
-- Module Group 700
-- Module Group 701
-- Module Group 702
-- Module Group 703
-- Module Group 704
-- Module Group 705
-- Module Group 706
-- Module Group 707
-- Module Group 708
-- Module Group 709
-- Module Group 710
-- Module Group 711
-- Module Group 712
-- Module Group 713
-- Module Group 714
-- Module Group 715
-- Module Group 716
-- Module Group 717
-- Module Group 718
-- Module Group 719
-- Module Group 720
-- Module Group 721
-- Module Group 722
-- Module Group 723
-- Module Group 724
-- Module Group 725
-- Module Group 726
-- Module Group 727
-- Module Group 728
-- Module Group 729
-- Module Group 730
-- Module Group 731
-- Module Group 732
-- Module Group 733
-- Module Group 734
-- Module Group 735
-- Module Group 736
-- Module Group 737
-- Module Group 738
-- Module Group 739
-- Module Group 740
-- Module Group 741
-- Module Group 742
-- Module Group 743
-- Module Group 744
-- Module Group 745
-- Module Group 746
-- Module Group 747
-- Module Group 748
-- Module Group 749
-- Module Group 750
-- Module Group 751
-- Module Group 752
-- Module Group 753
-- Module Group 754
-- Module Group 755
-- Module Group 756
-- Module Group 757
-- Module Group 758
-- Module Group 759
-- Module Group 760
-- Module Group 761
-- Module Group 762
-- Module Group 763
-- Module Group 764
-- Module Group 765
-- Module Group 766
-- Module Group 767
-- Module Group 768
-- Module Group 769
-- Module Group 770
-- Module Group 771
-- Module Group 772
-- Module Group 773
-- Module Group 774
-- Module Group 775
-- Module Group 776
-- Module Group 777
-- Module Group 778
-- Module Group 779
-- Module Group 780
-- Module Group 781
-- Module Group 782
-- Module Group 783
-- Module Group 784
-- Module Group 785
-- Module Group 786
-- Module Group 787
-- Module Group 788
-- Module Group 789
-- Module Group 790
-- Module Group 791
-- Module Group 792
-- Module Group 793
-- Module Group 794
-- Module Group 795
-- Module Group 796
-- Module Group 797
-- Module Group 798
-- Module Group 799
-- Module Group 800
-- Module Group 801
-- Module Group 802
-- Module Group 803
-- Module Group 804
-- Module Group 805
-- Module Group 806
-- Module Group 807
-- Module Group 808
-- Module Group 809
-- Module Group 810
-- Module Group 811
-- Module Group 812
-- Module Group 813
-- Module Group 814
-- Module Group 815
-- Module Group 816
-- Module Group 817
-- Module Group 818
-- Module Group 819
-- Module Group 820
-- Module Group 821
-- Module Group 822
-- Module Group 823
-- Module Group 824
-- Module Group 825
-- Module Group 826
-- Module Group 827
-- Module Group 828
-- Module Group 829
-- Module Group 830
-- Module Group 831
-- Module Group 832
-- Module Group 833
-- Module Group 834
-- Module Group 835
-- Module Group 836
-- Module Group 837
-- Module Group 838
-- Module Group 839
-- Module Group 840
-- Module Group 841
-- Module Group 842
-- Module Group 843
-- Module Group 844
-- Module Group 845
-- Module Group 846
-- Module Group 847
-- Module Group 848
-- Module Group 849
-- Module Group 850
-- Module Group 851
-- Module Group 852
-- Module Group 853
-- Module Group 854
-- Module Group 855
-- Module Group 856
-- Module Group 857
-- Module Group 858
-- Module Group 859
-- Module Group 860
-- Module Group 861
-- Module Group 862
-- Module Group 863
-- Module Group 864
-- Module Group 865
-- Module Group 866
-- Module Group 867
-- Module Group 868
-- Module Group 869
-- Module Group 870
-- Module Group 871
-- Module Group 872
-- Module Group 873
-- Module Group 874
-- Module Group 875
-- Module Group 876
-- Module Group 877
-- Module Group 878
-- Module Group 879
-- Module Group 880
-- Module Group 881
-- Module Group 882
-- Module Group 883
-- Module Group 884
-- Module Group 885
-- Module Group 886
-- Module Group 887
-- Module Group 888
-- Module Group 889
-- Module Group 890
-- Module Group 891
-- Module Group 892
-- Module Group 893
-- Module Group 894
-- Module Group 895
-- Module Group 896
-- Module Group 897
-- Module Group 898
-- Module Group 899
-- Module Group 900
-- Module Group 901
-- Module Group 902
-- Module Group 903
-- Module Group 904
-- Module Group 905
-- Module Group 906
-- Module Group 907
-- Module Group 908
-- Module Group 909
-- Module Group 910
-- Module Group 911
-- Module Group 912
-- Module Group 913
-- Module Group 914
-- Module Group 915
-- Module Group 916
-- Module Group 917
-- Module Group 918
-- Module Group 919
-- Module Group 920
-- Module Group 921
-- Module Group 922
-- Module Group 923
-- Module Group 924
-- Module Group 925
-- Module Group 926
-- Module Group 927
-- Module Group 928
-- Module Group 929
-- Module Group 930
-- Module Group 931
-- Module Group 932
-- Module Group 933
-- Module Group 934
-- Module Group 935
-- Module Group 936
-- Module Group 937
-- Module Group 938
-- Module Group 939
-- Module Group 940
-- Module Group 941
-- Module Group 942
-- Module Group 943
-- Module Group 944
-- Module Group 945
-- Module Group 946
-- Module Group 947
-- Module Group 948
-- Module Group 949
-- Module Group 950
-- Module Group 951
-- Module Group 952
-- Module Group 953
-- Module Group 954
-- Module Group 955
-- Module Group 956
-- Module Group 957
-- Module Group 958
-- Module Group 959
-- Module Group 960
-- Module Group 961
-- Module Group 962
-- Module Group 963
-- Module Group 964
-- Module Group 965
-- Module Group 966
-- Module Group 967
-- Module Group 968
-- Module Group 969
-- Module Group 970
-- Module Group 971
-- Module Group 972
-- Module Group 973
-- Module Group 974
-- Module Group 975
-- Module Group 976
-- Module Group 977
-- Module Group 978
-- Module Group 979
-- Module Group 980
-- Module Group 981
-- Module Group 982
-- Module Group 983
-- Module Group 984
-- Module Group 985
-- Module Group 986
-- Module Group 987
-- Module Group 988
-- Module Group 989
-- Module Group 990
-- Module Group 991
-- Module Group 992
-- Module Group 993
-- Module Group 994
-- Module Group 995
-- Module Group 996
-- Module Group 997
-- Module Group 998
-- Module Group 999
-- Module Group 1000
-- Module Group 1001
-- Module Group 1002
-- Module Group 1003
-- Module Group 1004
-- Module Group 1005
-- Module Group 1006
-- Module Group 1007
-- Module Group 1008
-- Module Group 1009
-- Module Group 1010
-- Module Group 1011
-- Module Group 1012
-- Module Group 1013
-- Module Group 1014
-- Module Group 1015
-- Module Group 1016
-- Module Group 1017
-- Module Group 1018
-- Module Group 1019
-- Module Group 1020
-- Module Group 1021
-- Module Group 1022
-- Module Group 1023
-- Module Group 1024
-- Module Group 1025
-- Module Group 1026
-- Module Group 1027
-- Module Group 1028
-- Module Group 1029
-- Module Group 1030
-- Module Group 1031
-- Module Group 1032
-- Module Group 1033
-- Module Group 1034
-- Module Group 1035
-- Module Group 1036
-- Module Group 1037
-- Module Group 1038
-- Module Group 1039
-- Module Group 1040
-- Module Group 1041
-- Module Group 1042
-- Module Group 1043
-- Module Group 1044
-- Module Group 1045
-- Module Group 1046
-- Module Group 1047
-- Module Group 1048
-- Module Group 1049
-- Module Group 1050
-- Module Group 1051
-- Module Group 1052
-- Module Group 1053
-- Module Group 1054
-- Module Group 1055
-- Module Group 1056
-- Module Group 1057
-- Module Group 1058
-- Module Group 1059
-- Module Group 1060
-- Module Group 1061
-- Module Group 1062
-- Module Group 1063
-- Module Group 1064
-- Module Group 1065
-- Module Group 1066
-- Module Group 1067
-- Module Group 1068
-- Module Group 1069
-- Module Group 1070
-- Module Group 1071
-- Module Group 1072
-- Module Group 1073
-- Module Group 1074
-- Module Group 1075
-- Module Group 1076
-- Module Group 1077
-- Module Group 1078
-- Module Group 1079
-- Module Group 1080
-- Module Group 1081
-- Module Group 1082
-- Module Group 1083
-- Module Group 1084
-- Module Group 1085
-- Module Group 1086
-- Module Group 1087
-- Module Group 1088
-- Module Group 1089
-- Module Group 1090
-- Module Group 1091
-- Module Group 1092
-- Module Group 1093
-- Module Group 1094
-- Module Group 1095
-- Module Group 1096
-- Module Group 1097
-- Module Group 1098
-- Module Group 1099
-- Module Group 1100
-- Module Group 1101
-- Module Group 1102
-- Module Group 1103
-- Module Group 1104
-- Module Group 1105
-- Module Group 1106
-- Module Group 1107
-- Module Group 1108
-- Module Group 1109
-- Module Group 1110
-- Module Group 1111
-- Module Group 1112
-- Module Group 1113
-- Module Group 1114
-- Module Group 1115
-- Module Group 1116
-- Module Group 1117
-- Module Group 1118
-- Module Group 1119
-- Module Group 1120
-- Module Group 1121
-- Module Group 1122
-- Module Group 1123
-- Module Group 1124
-- Module Group 1125
-- Module Group 1126
-- Module Group 1127
-- Module Group 1128
-- Module Group 1129
-- Module Group 1130
-- Module Group 1131
-- Module Group 1132
-- Module Group 1133
-- Module Group 1134
-- Module Group 1135
-- Module Group 1136
-- Module Group 1137
-- Module Group 1138
-- Module Group 1139
-- Module Group 1140
-- Module Group 1141
-- Module Group 1142
-- Module Group 1143
-- Module Group 1144
-- Module Group 1145
-- Module Group 1146
-- Module Group 1147
-- Module Group 1148
-- Module Group 1149
-- Module Group 1150
-- Module Group 1151
-- Module Group 1152
-- Module Group 1153
-- Module Group 1154
-- Module Group 1155
-- Module Group 1156
-- Module Group 1157
-- Module Group 1158
-- Module Group 1159
-- Module Group 1160
-- Module Group 1161
-- Module Group 1162
-- Module Group 1163
-- Module Group 1164
-- Module Group 1165
-- Module Group 1166
-- Module Group 1167
-- Module Group 1168
-- Module Group 1169
-- Module Group 1170
-- Module Group 1171
+- exports
+- dependencies
+- exports
+- devDependencies
+- dependencies
+- dependencies
+- dependencies
+- scripts
+- devDependencies
+- components.json
+- dependencies
+- package.prod.json
+- compilerOptions
+- db/package.json
+- compilerOptions
+- storefront/client/tsconfig.json
+- 5. Logging & auditability
+- Backend Audit — Delta since 2026-07-06 + Full Pass on High-Risk Areas
+- dependencies
+- outbox-dispatcher/package.json
+- include
+- order-bot/tsconfig.json
+- storefront/tsconfig.json
+- web-admin/tsconfig.json
+- core/tsconfig.json
+- db/tsconfig.json
+- outbox-dispatcher/tsconfig.json
+- server/tsconfig.json
+- storefront/client/src/api/types.ts
+- ProductPage.tsx
+- crud/support.ts
+- t
+- restore.sh
+- t
+- VouchersPage.tsx
+- order-bot/src/main.ts
+- HomePage.tsx
+- StaticPage.tsx
+- server/src/index.ts
+- crud/catalog.ts
+- backup.sh
+- docker-entrypoint.sh
+- db/src/index.ts
+- crud/users.ts
+- 03 — Component Library
+- t
+- 11. MICRO-AND-MOTION-INTERACTIONS.md
+- conversations/admin.ts
+- REQUIRED INTERACTION DOMAINS
+- Changelog
+- Dokumentasi Teknis — `telegram-order-bot`
+- Before / After
+- Comprehensive Project Architecture Report
+- Dashboard SPA Full Migration (Phase 4)
+- Yang masih harus dikerjakan
+- 5. FEATURE SYSTEM.md
+- 8. CONTENT-STRATEGY.md
+- 9. INDIVIDUAL-PAGES.md
+- Audit UX/UI — Storefront + Web-Admin
+- Troubleshooting
+- Before / After
+- Medium
+- 3. LAYOUT-SYSTEM.md
+- 4. PAGE-TEMPLATE-SYSTEM.md
+- 7. DESIGN-LANGUAGE.md
+- Design
+- WHEN DISCUSSING ANY FEATURE
+- Scope notes (decided during planning, not in the original spec)
+- Storefront UI/UX Findings
+- Audit: Per-SKU Delivery Flows — Ultra Code Review
+- Migrasi Database
+- Phase 1: Bybit BSC Confirmation Tracking (status model + live tracking screen)
+- handlers/checkout.ts
+- Plan: Admin Panel SaaS Redesign
+- 1. PRODUCT-ARCHITECTURE.md
+- File Structure
+- 3. Section-by-section rules
+- 08 — UX Rules
+- 10. COMPONENT-LIBRARY.md
+- Bagian 2 — Web-Admin (`apps/web-admin`)
+- Plan — Integrasi NOWPayments (USDT) & PayDisini (IDR) sebagai metode bayar baru
+- File Structure
+- handlers/customer.ts
+- 01 — Design System (Tokens & Foundations)
+- Findings — Web Admin UI/UX Audit
+- File Structure
+- 10 — UI Review Checklist
+- telegram-shop-ux-auditor.md
+- check-migration-rebuild-quoting.ts
+- Phase checklist
+- Audit UI/UX Functional Fixes Implementation Plan
+- Spec — Web Setup Wizard (onboarding pembeli, near-zero config)
+- Referensi Variabel Environment
+- Langkah instalasi
+- Payments Page Redesign Implementation Plan
+- Public channel ID editable in web admin — design
+- Upload UX: foto produk yang terlihat + upload QR Binance
+- util/format.ts
+- Model per domain
+- Fase 0 — Pondasi Postgres Implementation Plan
+- Dual credit balance (IDR + USDT) + credit-on-unfulfilled-order
+- 06 — Settings Guidelines
+- web-admin/client/src/pages/SupportPage.test.tsx
+- Audit `fitur.md` — 2026-07-04
+- §1 Findings
+- Refactor catalog to Category → Product → Denomination
+- File Structure
+- Global Constraints
+- Branding controls — favicon, hero, bot banner & identity
+- Spec: Group-aware Home & Search (storefront) + admin "Denominasi" wording
+- Migrasi Web (web-admin + storefront) ke Next.js + Postgres — Design
+- Product Denominations (Product Groups) — Design
+- 02 — Admin Layout
+- Customer Journey Walkthrough
+- SearchModal.tsx
+- faqCommand
+- howtopayCommand
+- termsCommand
+- jobs/index.ts
+- customEmoji.ts
+- web-admin/client/src/pages/OrdersPage.test.tsx
+- VouchersPage.test.tsx
+- Money & Data Integrity
+- Arsitektur
+- Payment Gateway
+- Release Notes
+- Security
+- Customers Module Upgrade — Task Plan
+- StatCard.tsx
+- Batch 6 — Data layer and schema
+- Storefront Auth: Username+Password Login, Web Registration, Forgot Password, Telegram Linking
+- Binance Internal Transfer → DB-driven config (like Bybit)
+- Payment-method on/off toggle (web admin) — design
+- Design
+- keyboards/customer.ts
+- Storefront homepage — visual polish design
+- 07 — Dashboard Guidelines
+- Design System / Component Consistency
+- getSetting
+- Plan: Admin Panel UX Pass v2 — adjusted from `ui.txt`
+- H. Slice Infrastruktur, Secrets, DB Schema & Composition Root
+- File Structure
+- Batch 5 — Order bot
+- Spec — Bybit di storefront + QRIS di bot (metode bayar lintas-front)
+- Catalog — Create Product Flow
+- 05 — Table Guidelines
+- 09 — Code Style
+- UX Recommendations
+- Order Bot — Bot Telegram + Panel Admin + Toko Web
+- Bot UX (grammY)
+- Backup & Restore — SQLite WAL (execution/06, M-5)
+- Audit Keamanan & Business-Logic — Full Repo
+- E. Slice Admin Web Security (`apps/web-admin`)
+- G. Slice Bot Concurrency, Idempotency & Admin Bot Security
+- 2. Temuan per halaman
+- Sistem Inventori (Stok)
+- Admin UI Consistency Design
+- callbacks.ts
+- Design: Storefront Support Ticket Workspace (Phase 1)
+- 00 — AI Development Rules
+- Design System / Component Consistency
+- Accessibility Findings
+- Implementation Plan
+- Performance UX Findings
+- Responsive Findings
+- storefront/client/package.json
+- web-admin/client/package.json
+- admin-ui.js
+- UI Development Dispatch
+- Web Conventions (Fastify + React SPA)
+- Deployment — public release (execution/02)
+- A. Slice Checkout & Order Creation (Ghost Orders)
+- F. Slice Storefront Customer Auth & Checkout
+- Backup & Restore
+- chat.ts
+- Sistem Antrian (`notification_outbox`)
+- Fase 1 — Migrasi web-admin ke Next.js (Planning Document)
+- Plan: Perbaikan UX/UI Storefront + Web-Admin
+- Storefront Homepage Visual Polish Implementation Plan
+- Conversion Rate Optimization (CRO)
+- Storefront UI/UX Audit — Overview
+- FlashSalesPage.test.tsx
+- backfill-catalog-slugs.ts
+- StockPage.test.tsx
+- CLAUDE.md
+- C. Slice Pricing, Voucher, Wallet & FX
+- Rollback
+- Fase 2 — Migrasi storefront ke Next.js (Planning Document)
+- Catalog — Create Product Flow Implementation Plan
+- Global Constraints
+- Global Constraints
+- Batch 2 — Auth, CSRF, route security
+- Batch 4 — Payment gateways and webhooks
+- Hero: replace default Unsplash photo with a brand gradient
+- Accessibility Findings
+- binanceInternal.ts
+- Checkout
+- Navigation
+- General UX Recommendations
+- Panduan Update
+- ReportsPage.test.tsx
+- API Reference
+- B. Slice Payment Gateway & Callback Security
+- Batch 3 — Orders, checkout, stock, delivery
+- core/package.json
+- devDependencies
+- bybitBscConfirmationTracker.ts
+- Security Patch
+- Konfigurasi
+- Logging
+- Fase 3 — Bersih-bersih & finalisasi (Planning Document)
+- Global Constraints
+- Batch 1 — Money, pricing, reconciliation
+- Navigation Analysis
+- Web Admin UI/UX Audit — Phase 1 (Audit & Document Only)
+- Responsive Findings
+- bybit-internal-probe.ts
+- check-migration-timestamps.ts
+- Order State Machine
+- crud/audit.ts
+- Panduan Patch (Bugfix)
+- Backend Audit Fixes — High + Medium (2026-07-31)
+- Homepage
+- Product Listing and Product Detail
+- Versioning
+- locales.test.ts
+- build-bundle.ts
+- Dokumentasi `telegram-order-bot` — Indeks
+- rules/graphify.md
+- paydisiniReconcile.ts
+- workflows/graphify.md
+- lucide-react
+- @testing-library/user-event
+- @types/react-dom
+- typescript
+- storefront/client/vite.config.ts
+- @fontsource/jetbrains-mono
+- @fontsource/manrope
+- lucide-react
+- radix-ui
+- react-router-dom
+- recharts
+- shadcn
+- sonner
+- audit-backend-2026-07-31-execution-ledger.md
+- BackoffGate
+- dispatcher.ts
+- qr.ts
+- FakeConversation
+- TMP_DIR
+- server/test/setup-env.ts
+- TMP_DIR
+- apiGet
+- lib/i18n.ts
+- storefront/client/src/pages/TicketDetailPage.tsx
+- storefront/client/src/api/client.ts
+- AccountPage.tsx
+- storefront/client/src/pages/ReviewsPage.tsx
+- TicketMessageThread.tsx
+- storefront/client/src/App.tsx
+- shop/StatusBadge.tsx
+- shop.ts
+- pageData.ts
+- storefront/src/server.ts
+- apiAccount.ts
+- apiAuth.ts
+- routes/checkout.ts
+- spa-api.test.ts
+- TMP_DIR
+- BroadcastPage.tsx
+- web-admin/client/src/App.tsx
+- apiPost
+- apiGet
+- UsersPage.tsx
+- web-admin/client/src/lib/motion.ts
+- web-admin/client/src/pages/TicketDetailPage.tsx
+- PaymentsPage.tsx
+- AppShell.tsx
+- OrderStatusBadge.tsx
+- web-admin/client/src/pages/ReviewsPage.tsx
+- web-admin/client/src/pages/OrdersPage.tsx
+- web-admin/client/src/pages/SettingsPage.tsx
+- SettingsNav.tsx
+- Sidebar.tsx
+- cn
+- sonner.tsx
+- ImageUploadField.test.tsx
+- config.ts
+- enums.ts
+- web-admin/src/plugins/auth.ts
+- nowpaymentsReconcile.ts
+- telegramCheck.ts
+- crud/orders.ts
+- crud/reviews.ts
+- api/stock.ts
+- api/support.ts
+- crud/vouchers.ts
+- TMP_DIR
+- binance_internal.ts
+- money.ts
+- web.test.ts
+- handlers.test.ts
+- runtime.ts
+- n
+- storageMaintenance.test.ts
+- catalogRename.ts
+- TMP_DIR
 
 ## God Nodes (most connected - your core abstractions)
-1. `exports` - 23 edges
-2. `scripts` - 18 edges
-3. `compilerOptions` - 15 edges
-4. `exports` - 11 edges
-5. `compilerOptions` - 7 edges
-6. `tailwind` - 6 edges
-7. `aliases` - 6 edges
-8. `include` - 5 edges
-9. `ProductCardData` - 5 edges
-10. `scripts` - 4 edges
+1. `cn()` - 117 edges
+2. `getSetting()` - 107 edges
+3. `t()` - 105 edges
+4. `t()` - 100 edges
+5. `setSetting()` - 98 edges
+6. `MyContext` - 90 edges
+7. `createOrderDirect()` - 87 edges
+8. `Config` - 80 edges
+9. `createDenomination()` - 78 edges
+10. `createCatalogProduct()` - 76 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `ImportRow` --references--> `ProductType`  [EXTRACTED]
-  apps/web-admin/src/lib/catalogImport.ts → packages/core/src/enums.ts
-- `HomePageData` --references--> `ProductCardData`  [EXTRACTED]
-  apps/storefront/client/src/api/types.ts → apps/storefront/client/src/components/shop/ProductCard.tsx
-- `CategoryPageData` --references--> `ProductCardData`  [EXTRACTED]
-  apps/storefront/client/src/api/types.ts → apps/storefront/client/src/components/shop/ProductCard.tsx
-- `SearchPageData` --references--> `ProductCardData`  [EXTRACTED]
-  apps/storefront/client/src/api/types.ts → apps/storefront/client/src/components/shop/ProductCard.tsx
-- `ShelfPageData` --references--> `ProductCardData`  [EXTRACTED]
-  apps/storefront/client/src/api/types.ts → apps/storefront/client/src/components/shop/ProductCard.tsx
+- `stockUploadConversation()` --indirect_call--> `n()`  [INFERRED]
+  apps/order-bot/src/conversations/admin.ts → packages/db/src/migrate/catalogRename.test.ts
+- `browseProduct()` --indirect_call--> `unitPrice()`  [INFERRED]
+  apps/order-bot/src/handlers/customer.ts → packages/db/src/crud/orders.ts
+- `makeInternalOrder()` --calls--> `createInternalOrder()`  [EXTRACTED]
+  apps/order-bot/test/binance-internal.test.ts → packages/db/src/crud/binance_internal.ts
+- `makeBybitOrder()` --calls--> `createBybitOrder()`  [EXTRACTED]
+  apps/order-bot/test/bybit-bsc-deposit.test.ts → packages/db/src/crud/bybit_deposit.ts
+- `makeBybitOrder()` --calls--> `createBybitOrder()`  [EXTRACTED]
+  apps/order-bot/test/bybit-deposit.test.ts → packages/db/src/crud/bybit_deposit.ts
 
 ## Import Cycles
-- None detected.
+- 3-file cycle: `packages/db/src/crud/orders.ts -> packages/db/src/crud/referrals.ts -> packages/db/src/crud/pricing.ts -> packages/db/src/crud/orders.ts`
 
-## Communities (1172 total, 1140 thin omitted)
+## Communities (312 total, 32 thin omitted)
 
-### Community 0 - "Core Package Config"
-Cohesion: 0.05
-Nodes (36): devDependencies, @types/bcryptjs, @types/luxon, @types/nodemailer, exports, ./bulk, ./config, ./customEmoji (+28 more)
+### Community 0 - "exports"
+Cohesion: 0.08
+Nodes (24): exports, ./bulk, ./config, ./customEmoji, ./datetime, ./delivery, ./deliveryFields, ./enums (+16 more)
 
-### Community 1 - "Web Admin Client Dependencies"
-Cohesion: 0.06
-Nodes (35): dependencies, class-variance-authority, clsx, @fontsource/jetbrains-mono, @fontsource/manrope, @fontsource/outfit, framer-motion, lucide-react (+27 more)
+### Community 1 - "dependencies"
+Cohesion: 0.11
+Nodes (19): dependencies, class-variance-authority, clsx, @fontsource/outfit, framer-motion, react, react-dom, tailwind-merge (+11 more)
 
-### Community 2 - "Order Bot App"
+### Community 2 - "exports"
 Cohesion: 0.06
 Nodes (32): dependencies, @app/core, @app/db, croner, grammy, @grammyjs/conversations, @grammyjs/runner, exports (+24 more)
 
-### Community 3 - "Web Admin Client Dev"
-Cohesion: 0.06
-Nodes (31): devDependencies, jsdom, tailwindcss, @tailwindcss/vite, @testing-library/jest-dom, @testing-library/react, @testing-library/user-event, @types/react (+23 more)
-
-### Community 4 - "Storefront App"
-Cohesion: 0.06
-Nodes (30): dependencies, @app/core, @app/db, fastify, @fastify/compress, @fastify/cookie, @fastify/formbody, @fastify/multipart (+22 more)
-
-### Community 5 - "App Entry Points"
-Cohesion: 0.07
-Nodes (27): @app/order-bot, @app/outbox-dispatcher, @app/storefront, @app/web-admin, dependencies, @app/core, @app/db, @app/order-bot (+19 more)
-
-### Community 6 - "Storefront Client Dependencies"
-Cohesion: 0.07
-Nodes (27): dependencies, @fontsource/jetbrains-mono, @fontsource/manrope, @fontsource/outfit, framer-motion, lucide-react, react, react-dom (+19 more)
-
-### Community 7 - "Root Package Config"
-Cohesion: 0.07
-Nodes (27): dependencies, @prisma/client, engines, node, @prisma/client, name, packageManager, private (+19 more)
-
-### Community 8 - "Storefront Client Dev"
+### Community 3 - "devDependencies"
 Cohesion: 0.09
 Nodes (23): devDependencies, jsdom, tailwindcss, @tailwindcss/vite, @testing-library/jest-dom, @testing-library/react, @testing-library/user-event, @types/react (+15 more)
 
-### Community 9 - "Web Admin Components"
+### Community 4 - "dependencies"
+Cohesion: 0.06
+Nodes (30): dependencies, @app/core, @app/db, fastify, @fastify/compress, @fastify/cookie, @fastify/formbody, @fastify/multipart (+22 more)
+
+### Community 5 - "dependencies"
+Cohesion: 0.07
+Nodes (27): @app/order-bot, @app/outbox-dispatcher, @app/storefront, @app/web-admin, dependencies, @app/core, @app/db, @app/order-bot (+19 more)
+
+### Community 6 - "dependencies"
+Cohesion: 0.12
+Nodes (17): dependencies, @fontsource/jetbrains-mono, @fontsource/manrope, @fontsource/outfit, framer-motion, react, react-dom, react-router-dom (+9 more)
+
+### Community 7 - "scripts"
+Cohesion: 0.04
+Nodes (48): esbuild, dependencies, @prisma/client, devDependencies, @app/core, @app/db, esbuild, prisma (+40 more)
+
+### Community 8 - "devDependencies"
+Cohesion: 0.12
+Nodes (17): devDependencies, jsdom, tailwindcss, @tailwindcss/vite, @testing-library/jest-dom, @testing-library/react, @types/react, vite (+9 more)
+
+### Community 9 - "components.json"
 Cohesion: 0.09
 Nodes (21): aliases, components, hooks, lib, ui, utils, iconLibrary, menuAccent (+13 more)
 
-### Community 10 - "Web Admin Server Dependencies"
-Cohesion: 0.10
-Nodes (21): dependencies, @app/core, @app/db, bcryptjs, fastify, @fastify/cookie, @fastify/formbody, @fastify/multipart (+13 more)
+### Community 10 - "dependencies"
+Cohesion: 0.06
+Nodes (35): dependencies, @app/core, @app/db, bcryptjs, fastify, @fastify/cookie, @fastify/formbody, @fastify/multipart (+27 more)
 
-### Community 11 - "Production Build Config"
+### Community 11 - "package.prod.json"
 Cohesion: 0.10
 Nodes (20): nunjucks, dependencies, nunjucks, pino, prisma, @prisma/client, thread-stream, description (+12 more)
 
-### Community 12 - "Web Admin Client TypeScript"
+### Community 12 - "compilerOptions"
 Cohesion: 0.10
 Nodes (19): compilerOptions, baseUrl, jsx, lib, paths, rootDir, types, exclude (+11 more)
 
-### Community 13 - "DB Package Config"
+### Community 13 - "db/package.json"
 Cohesion: 0.11
 Nodes (18): dependencies, @app/core, decimal.js, @prisma/client, devDependencies, prisma, exports, ./client (+10 more)
 
-### Community 14 - "Base TypeScript Config"
+### Community 14 - "compilerOptions"
 Cohesion: 0.11
 Nodes (18): compilerOptions, esModuleInterop, forceConsistentCasingInFileNames, isolatedModules, lib, module, moduleResolution, noEmit (+10 more)
 
-### Community 15 - "Storefront Client TypeScript"
+### Community 15 - "storefront/client/tsconfig.json"
 Cohesion: 0.12
 Nodes (16): compilerOptions, jsx, lib, types, exclude, extends, include, DOM (+8 more)
 
-### Community 16 - "Root Dev Dependencies"
-Cohesion: 0.12
-Nodes (17): esbuild, devDependencies, @app/core, @app/db, esbuild, prisma, tsx, @types/node (+9 more)
+### Community 16 - "5. Logging & auditability"
+Cohesion: 0.04
+Nodes (45): 1. Money and financial correctness, 2. Data integrity & transactions, 3. Security, 4. Outbox / notification delivery, 5. Logging & auditability, 6. Schema & deploy discipline, Backend Audit — Data, Money, Security, Logging, Cross-cutting pattern (+37 more)
 
-### Community 17 - "Web Admin Package"
-Cohesion: 0.13
-Nodes (14): devDependencies, @types/bcryptjs, exports, ./auth, ./server, @types/bcryptjs, name, private (+6 more)
+### Community 17 - "Backend Audit — Delta since 2026-07-06 + Full Pass on High-Risk Areas"
+Cohesion: 0.05
+Nodes (38): 0. Status of prior audit findings, 1. Money, pricing, FX, reconciliation, 2. Orders, checkout, stock, delivery, 3. Payment gateways and webhooks, 4. Auth, CSRF, route security, 5. Order bot (delta since 2026-07-06), 6. Data layer and schema (delta since 2026-07-06), 7. Outbox, notifications, composition root (+30 more)
 
-### Community 18 - "Core Shared Libraries"
+### Community 18 - "dependencies"
 Cohesion: 0.13
 Nodes (15): dotenv, luxon, nodemailer, dependencies, bcryptjs, decimal.js, dotenv, luxon (+7 more)
 
-### Community 19 - "Outbox Dispatcher Package"
+### Community 19 - "outbox-dispatcher/package.json"
 Cohesion: 0.13
 Nodes (14): dependencies, @app/core, @app/db, grammy, exports, @app/core, @app/db, grammy (+6 more)
 
-### Community 20 - "Test Config"
-Cohesion: 0.15
-Nodes (12): apps/**/*.test.ts, packages/**/*.test.ts, tests/**/*.ts, vitest.config.ts, compilerOptions, jsx, noEmit, types (+4 more)
+### Community 20 - "include"
+Cohesion: 0.13
+Nodes (14): apps/**/*.test.ts, packages/**/*.test.ts, scripts/check-migration-rebuild-quoting.ts, scripts/lib/**/*.ts, tests/**/*.ts, vitest.config.ts, compilerOptions, jsx (+6 more)
 
-### Community 21 - "Order Bot TypeScript"
+### Community 21 - "order-bot/tsconfig.json"
 Cohesion: 0.22
 Nodes (8): compilerOptions, rootDir, exclude, extends, include, src/**/*.test.ts, src/**/*.ts, ../../tsconfig.base.json
 
-### Community 22 - "Storefront TypeScript"
+### Community 22 - "storefront/tsconfig.json"
 Cohesion: 0.22
 Nodes (8): compilerOptions, rootDir, exclude, extends, include, src/**/*.test.ts, src/**/*.ts, ../../tsconfig.base.json
 
-### Community 23 - "Web Admin TypeScript"
+### Community 23 - "web-admin/tsconfig.json"
 Cohesion: 0.22
 Nodes (8): compilerOptions, rootDir, exclude, extends, include, src/**/*.test.ts, src/**/*.ts, ../../tsconfig.base.json
 
-### Community 24 - "Core Package TypeScript"
+### Community 24 - "core/tsconfig.json"
 Cohesion: 0.22
 Nodes (8): compilerOptions, rootDir, exclude, extends, include, src/**/*.test.ts, src/**/*.ts, ../../tsconfig.base.json
 
-### Community 25 - "DB Package TypeScript"
+### Community 25 - "db/tsconfig.json"
 Cohesion: 0.22
 Nodes (8): compilerOptions, rootDir, exclude, extends, include, src/**/*.test.ts, src/**/*.ts, ../../tsconfig.base.json
 
-### Community 26 - "Outbox Dispatcher TypeScript"
+### Community 26 - "outbox-dispatcher/tsconfig.json"
 Cohesion: 0.22
 Nodes (8): compilerOptions, rootDir, exclude, extends, include, src/**/*.test.ts, src/**/*.ts, ../../tsconfig.base.json
 
-### Community 27 - "Server TypeScript"
+### Community 27 - "server/tsconfig.json"
 Cohesion: 0.29
 Nodes (6): compilerOptions, rootDir, extends, include, src/**/*.ts, ../../tsconfig.base.json
 
-### Community 28 - "Storefront Page Data Types"
+### Community 28 - "storefront/client/src/api/types.ts"
+Cohesion: 0.04
+Nodes (39): AccountData, Category, CategoryPageData, CheckoutData, CustomerInfo, HomeCategory, HomePageData, HomeStats (+31 more)
+
+### Community 29 - "ProductPage.tsx"
+Cohesion: 0.08
+Nodes (32): CartLineView, CartPageData, CheckoutItem, ProductDenomination, BreadcrumbItem, BreadcrumbProps, DenominationCard(), DenominationCardData (+24 more)
+
+### Community 30 - "crud/support.ts"
+Cohesion: 0.17
+Nodes (20): TicketCategory, TicketPriority, buildTicketConditions(), bulkAssignTickets(), bulkCloseTickets(), bulkSetTicketPriority(), closeTicket(), countTickets() (+12 more)
+
+### Community 31 - "t"
+Cohesion: 0.07
+Nodes (28): PayData, PayState, PayStatusData, SupportTicketSummary, TicketOrderSummary, AttachmentPicker(), AttachmentPickerProps, IMAGE_TYPES (+20 more)
+
+### Community 33 - "t"
+Cohesion: 0.18
+Nodes (39): MyContext, adminCommand(), adminEmojiIdCommand(), adminMarkStockDead(), adminWalletCommand(), closeTicketAdmin(), collectCustomEmoji(), deleteBulkPricingHandler() (+31 more)
+
+### Community 34 - "VouchersPage.tsx"
+Cohesion: 0.08
+Nodes (31): CurrencyStack(), formatCurrencyDisplay(), formatCurrencyParts(), formatUsdtAmount(), trimTrailingZeros(), EXT_MIME, ImageUploadField(), saveButtonContent() (+23 more)
+
+### Community 35 - "order-bot/src/main.ts"
+Cohesion: 0.19
+Nodes (14): initialSession(), CONVERSATIONS, routeCallback(), buildBot(), adminOnly(), bindUpdateId(), buckets, rateLimit() (+6 more)
+
+### Community 36 - "HomePage.tsx"
+Cohesion: 0.07
+Nodes (42): CategoriesPageData, SORT_KEYS, SortKey, EmptyStateAction, EmptyStateProps, MotionLink, ProductCard(), ProductCardProps (+34 more)
+
+### Community 37 - "StaticPage.tsx"
+Cohesion: 0.11
+Nodes (9): CalloutProps, CalloutVariant, VARIANTS, StaticPage(), StaticPageProps, StaticPageStep, StepItem, StepTimelineProps (+1 more)
+
+### Community 38 - "server/src/index.ts"
+Cohesion: 0.11
+Nodes (19): stopPolling(), stopPolling(), stopPolling(), stopPolling(), stopPolling(), stopPolling(), ALLOWED_UPDATES, AppInstance (+11 more)
+
+### Community 39 - "crud/catalog.ts"
+Cohesion: 0.08
+Nodes (51): categoryNameMap(), ImportRow, isNum(), parseDenominationCsv(), resolveOrCreateProduct(), catalogApiRoutes(), parseDecimal(), storefrontDetailFields() (+43 more)
+
+### Community 42 - "db/src/index.ts"
+Cohesion: 0.10
+Nodes (39): pendingVerificationOrder(), makeProcessingOrder(), deliverOrder(), makeProcessingOrder(), makeTokopayPendingOrder(), makeExpiredOrder(), makePendingOrder(), makeProcessingOrder() (+31 more)
+
+### Community 43 - "crud/users.ts"
+Cohesion: 0.08
+Nodes (43): buildUserFilter(), csvField(), csvRow(), PAGE_SIZE_OPTIONS, parseBannedFilter(), parseDate(), parseIdsFilter(), parseRoleFilter() (+35 more)
+
+### Community 44 - "03 — Component Library"
+Cohesion: 0.05
+Nodes (38): 03 — Component Library, Alert, Avatar, Badge, Breadcrumb, Button, Card, Charts (+30 more)
+
+### Community 45 - "t"
+Cohesion: 0.11
+Nodes (33): BaseContext, BotState, DbUserSnap, isCmd(), voucherConversation(), customerInfoConversation(), fieldPrompt(), isCmd() (+25 more)
+
+### Community 46 - "11. MICRO-AND-MOTION-INTERACTIONS.md"
+Cohesion: 0.06
+Nodes (33): Accessibility, COLLABORATION STYLE, Commerce Motion, Content Motion, CONTEXT, CURRENT GOAL, Data Updates, DESIGN SYSTEM INTEGRATION (+25 more)
+
+### Community 47 - "conversations/admin.ts"
+Cohesion: 0.15
+Nodes (47): MyConversation, adminGate(), answerStaleTap(), broadcastConversation(), bulkPricingConversation(), denyAdmin(), downloadTgText(), handledEscape() (+39 more)
+
+### Community 48 - "REQUIRED INTERACTION DOMAINS"
+Cohesion: 0.06
+Nodes (33): Accessibility, Checkout Interaction, COLLABORATION STYLE, Confirmation, CONTEXT, CURRENT GOAL, Drawer Strategy, Empty States (+25 more)
+
+### Community 49 - "Changelog"
+Cohesion: 0.06
+Nodes (32): Added, Added, Added, Added, Added, Added, Added, Added (+24 more)
+
+### Community 50 - "Dokumentasi Teknis — `telegram-order-bot`"
+Cohesion: 0.06
+Nodes (31): 10. Tiket dukungan (support), 11. Ulasan & rating produk, 12.1 Health check, 12.2 Webhook Telegram, 12.3 Webhook gateway pembayaran (storefront, public), 12.4 Endpoint internal lain (bukan API publik), 12. Langganan restock, 13. Desain storefront (+23 more)
+
+### Community 51 - "Before / After"
+Cohesion: 0.06
+Nodes (30): Batch 1 — Critical, Batch 2 — High, Batch 3 — Checkout/cart friction, Batch 4 — Homepage resilience, Batch 5 — Product listing & detail scaffolding, Batch 6 — Design-system primitives, Batch 7 — Polish, Before / After (+22 more)
+
+### Community 52 - "Comprehensive Project Architecture Report"
+Cohesion: 0.07
+Nodes (29): 10. External Integrations & Payment Gateways, 11. Admin Panel Workflow, 12. User Storefront Workflow, 13. Potential Dead Code, 14. Architectural Inconsistencies & Weaknesses, 1. Tech Stack & Core Dependencies, 2. Monorepo Folder Structure, 3. Application Entry Points (+21 more)
+
+### Community 53 - "Dashboard SPA Full Migration (Phase 4)"
+Cohesion: 0.07
+Nodes (29): Dashboard SPA Full Migration (Phase 4), File Structure, Foundation additions, Global Constraints, Migration Pattern (applied to every page), Notes on the pattern, Out of scope (future work), PATTERN: Migrate `/<page>` to React (+21 more)
+
+### Community 54 - "Yang masih harus dikerjakan"
+Cohesion: 0.07
+Nodes (29): Apa yang sudah selesai, Cara melanjutkan sesi ini, Catatan teknis penting, Final verification results (2026-06-26), Hutang test frontend (kerjakan sebelum lanjut task baru), Migration Complete, SPA Migration Progress — Phase 4 Continuation, State saat ini (+21 more)
+
+### Community 55 - "5. FEATURE SYSTEM.md"
+Cohesion: 0.07
+Nodes (26): COLLABORATION STYLE, CONTEXT, CURRENT GOAL, Customer Goal, Customer Journey, Dependencies, Edge Cases, FEATURE DISCOVERY (+18 more)
+
+### Community 56 - "8. CONTENT-STRATEGY.md"
+Cohesion: 0.07
+Nodes (26): ACCESSIBILITY, BUTTON LANGUAGE, COLLABORATION STYLE, CONTENT FRAMEWORK, CONTENT PHILOSOPHY, CONTEXT, CURRENT GOAL, DEFINE CONTENT PERSONALITY (+18 more)
+
+### Community 57 - "9. INDIVIDUAL-PAGES.md"
+Cohesion: 0.07
+Nodes (26): Account, COLLABORATION STYLE, Commerce, CONTEXT, CURRENT GOAL, CUSTOMER JOURNEYS, Discovery, FIRST TASK (+18 more)
+
+### Community 58 - "Audit UX/UI — Storefront + Web-Admin"
+Cohesion: 0.08
+Nodes (25): 1.1 [HIGH] Login storefront tidak ter-center secara vertikal dan bisa overflow, 1.2 [INFO] Login admin sudah benar — jadikan acuan, 2.1 [MEDIUM] Input dengan `min-width` bisa memaksa overflow horizontal di HP, 2.2 [LOW] Tabel lebar — sudah dimitigasi, bisa ditingkatkan, 2.3 [INFO] Storefront umumnya sehat secara tinggi, 3.1 [MEDIUM] Widget terasa "tempelan", tidak menyatu dengan design system, 3.2 [INFO → KOREKSI BRIEF] "Avatar bentrok saat tertaut" tidak terjadi di settings, 3.3 [LOW] State "terhubung" di settings bisa lebih kaya (+17 more)
+
+### Community 59 - "Troubleshooting"
+Cohesion: 0.08
+Nodes (26): 502/504 dari nginx, Baris `FAILED` permanen, Baris `notification_outbox` stuck `SENDING`, Bot crash: `String must contain at least 20 character(s)`, Bot Telegram, Bot tidak membalas `/start`, Bybit/Binance tidak auto-confirm, Channel testimoni tidak pernah posting (+18 more)
+
+### Community 60 - "Before / After"
+Cohesion: 0.08
+Nodes (25): Audit closing summary, Before / After, F-001 — Removed duplicate "Awaiting Fulfillment" sidebar entry, F-002 — Logout was completely broken, F-003 — Human-readable order status labels, F-004 — Audit Log "Admin" column shows a name instead of a raw ID, F-005 — Audit Log Action column: humanized instead of raw backend codes, F-006 — Standardized "simple record" inline-create pattern (Admins ↔ Vouchers) (+17 more)
+
+### Community 61 - "Medium"
+Cohesion: 0.08
+Nodes (25): 10. F-007 — Fix Denomination breadcrumb product-name bug, 11. F-010 — Semantic headings on Dashboard, 12. F-011 — Fix low-contrast muted text token, 13. F-013 — Settings gateway toggle/status display fix, 14. F-014 — Add labels to Voucher inline-create form, 15. F-008 — Remove redundant "← Back" button, 16. F-015 — Rename "Pwd" column header, 17. F-017 — Search returns no results for an existing product (+17 more)
+
+### Community 62 - "3. LAYOUT-SYSTEM.md"
+Cohesion: 0.08
+Nodes (25): Accessibility, Cognitive Load, COLLABORATION STYLE, CONTENT CONTAINERS, Content Priority, CURRENT GOAL, Customer Goal, FIRST TASK (+17 more)
+
+### Community 63 - "4. PAGE-TEMPLATE-SYSTEM.md"
+Cohesion: 0.08
+Nodes (25): CHALLENGE THIS ASSUMPTION, COLLABORATION STYLE, Content Hierarchy, CTA Strategy, CURRENT GOAL, Customer Goal, FIRST TASK, IMPORTANT (+17 more)
+
+### Community 64 - "7. DESIGN-LANGUAGE.md"
+Cohesion: 0.08
+Nodes (24): ACCESSIBILITY, COLLABORATION STYLE, COLOR PHILOSOPHY, CONTENT LANGUAGE, CONTEXT, CURRENT GOAL, DEFINE THE VISUAL LANGUAGE, DESIGN LANGUAGE FRAMEWORK (+16 more)
+
+### Community 65 - "Design"
+Cohesion: 0.08
+Nodes (22): 1. Backend — accept a currency on wallet adjustment, 2. Frontend types — match the real API shape, 3. Profile card — show both balances, 4. Wallet Adjustment form — currency toggle, 5. Wallet Ledger table — show currency, fix field mismatch, Admin panel: split wallet balance into IDR and USDT, Context, Design (+14 more)
+
+### Community 66 - "WHEN DISCUSSING ANY FEATURE"
+Cohesion: 0.08
+Nodes (23): COLLABORATION STYLE, CURRENT GOAL, DESIGN PHILOSOPHY, Desktop Experience, Edge Cases, Empty State, Error State, Final Recommendation (+15 more)
+
+### Community 68 - "Scope notes (decided during planning, not in the original spec)"
+Cohesion: 0.09
+Nodes (22): Admin UI Consistency Implementation Plan, Global Constraints, Scope notes (decided during planning, not in the original spec), Self-Review, Task 10: Migrate VouchersPage onto StatusBadge and Switch, Task 11: Migrate SettingsPage banners onto Sonner toast and fix the raw checkbox, Task 12: Migrate OutboxPage onto DataTable and StatusBadge, Task 13: Migrate ReportsPage onto Card/DataTable and fix hardcoded colors (+14 more)
+
+### Community 69 - "Storefront UI/UX Findings"
+Cohesion: 0.09
+Nodes (22): Environment blocker (not a numbered finding), STO-001 — "Out of stock" badge misrepresents purchasable manual-delivery products, STO-002 — Blank "Signed in as" name for password-registered customers, STO-003 — Keyboard focus ring invisible on hero CTA buttons, STO-004 — Language switcher unreachable on mobile, STO-005 — Voucher error message disconnected from its input on desktop, STO-006 — Reveal-on-scroll leaves homepage sections invisible without an organic scroll, STO-007 — No sort, filter, or pagination on product listings (+14 more)
+
+### Community 70 - "Audit: Per-SKU Delivery Flows — Ultra Code Review"
+Cohesion: 0.09
+Nodes (21): 10. `editCustomerInfo`'s `/skip` + narrow error handling can crash the wizard, 11. Hardcoded English string in the bot's admin approve flow, 12. Raw untranslated error key shown to admin on underpaid-manual-SKU delivery attempt, 13. Same raw-error-key pattern on the new manual-fulfillment route, 14. Admin's client-side "at least one field" check is weaker than the server's validation, 15. Two new notification-enqueue functions reimplement an existing helper, 1. Admin "Resend to Telegram" sends an empty file for manually-fulfilled orders, 2. No refund/reject/cancel path for a stuck `PROCESSING` order (+13 more)
+
+### Community 71 - "Migrasi Database"
+Cohesion: 0.09
+Nodes (22): Apa arti kedua error itu, Boot-time drift check hanya menangkap TABEL hilang, bukan KOLOM hilang, Cara membuat migrasi (sebagai dokumentasi SQL, opsional), Cara menerapkan migrasi (yang sungguhan dipakai), Cara rollback migrasi, Catatan: sebagian folder migrasi dibuat manual, bukan via Prisma, Cek drift migrasi-vs-schema di CI, Cek tabrakan timestamp antar folder migrasi (+14 more)
+
+### Community 72 - "Phase 1: Bybit BSC Confirmation Tracking (status model + live tracking screen)"
+Cohesion: 0.09
+Nodes (21): 1. Status model (`packages/core/src/enums.ts`, `prisma/schema.prisma`), 2. Deposit poller — sekarang menangkap status 1/2 juga (`packages/db/src/crud/bybit_bsc_deposit.ts`, `apps/order-bot/src/payments/bybitBscDeposit.ts`), 3. Confirmation tracker — poller baru (`apps/order-bot/src/payments/bybitBscConfirmationTracker.ts`), 4. Live tracking screen (bot + storefront), 5. Notifikasi, locale, settings, docs, Alternatif yang dipertimbangkan dan TIDAK dipilih, Bug yang ditemukan setelah Phase 1 merge (belum di-fix), Catatan deploy (+13 more)
+
+### Community 73 - "handlers/checkout.ts"
+Cohesion: 0.19
+Nodes (32): buyNowBybit(), buyNowBybitBsc(), buyNowInternal(), buyNowNowpayments(), buyNowPaydisini(), buyNowTokopay(), cancelPendingOrder(), completeOrderWithWallet() (+24 more)
+
+### Community 74 - "Plan: Admin Panel SaaS Redesign"
+Cohesion: 0.09
+Nodes (21): Context, Dark mode, Existing Assets to Reuse (Do Not Rewrite), File Change Summary, Modified files (~30), Modify existing files, New files, New files (~10) (+13 more)
+
+### Community 75 - "1. PRODUCT-ARCHITECTURE.md"
+Cohesion: 0.09
+Nodes (21): Business Impact, COLLABORATION STYLE, CURRENT ASSUMPTION, CURRENT GOAL, Customer Expectations, Customer Goal, Edge Cases, FIRST TASK (+13 more)
+
+### Community 76 - "File Structure"
+Cohesion: 0.10
+Nodes (20): File Structure, Global Constraints, Storefront Support Ticket Workspace Implementation Plan, Task 10: TicketMessageThread component, Task 11: TicketComposer component, Task 12: TicketOrderSummaryCard component, Task 13: OrderDetailPage — credentials anchor + scroll-to-hash, Task 14: TicketSidebar component (+12 more)
+
+### Community 77 - "3. Section-by-section rules"
+Cohesion: 0.10
+Nodes (20): 04 — CRUD Template, 1. Two list-page tiers, 2. Full-tier page structure (annotated), 3. Section-by-section rules, 4. Create/Edit pattern, Bulk Actions, Choosing full-page vs. dialog, Empty State (+12 more)
+
+### Community 78 - "08 — UX Rules"
+Cohesion: 0.10
+Nodes (20): 08 — UX Rules, 10. Scroll behavior, 11. Sticky elements, 12. Drawer usage, 13. Modal (Dialog) usage, 14. Hover, 15. Animation & transitions, 16. Reduced motion (+12 more)
+
+### Community 79 - "10. COMPONENT-LIBRARY.md"
+Cohesion: 0.10
+Nodes (20): ACCESSIBILITY, COLLABORATION STYLE, COMPONENT CATEGORIES, COMPONENT DISCOVERY, COMPONENT GOVERNANCE, COMPONENT PHILOSOPHY, CONTEXT, CURRENT GOAL (+12 more)
+
+### Community 80 - "Bagian 2 — Web-Admin (`apps/web-admin`)"
+Cohesion: 0.10
+Nodes (19): 1.1 [HIGH] "My Orders → Pay" menampilkan instruksi pembayaran yang salah/basi untuk semua metode pembayaran aktif, 1.2 [MEDIUM] Kegagalan re-validasi voucher ditelan diam-diam, subtotal berubah tanpa penjelasan, 1.3 [LOW/INFO] Locale key untuk resolusi order underpaid hilang dari kedua bahasa, 2.1 [HIGH] Tombol "Retry" Outbox dan "Hide/Unhide" Reviews gagal senyap — aksi sukses di server tapi UI tidak pernah update, 2.2 [HIGH] Resolusi order underpaid (deliver/refund/cancel) tidak punya UI sama sekali, 2.3 [MEDIUM] Ganti role customer tidak punya UI, 2.4 [MEDIUM] Fitur denomination baru: bisa create + toggle-active, tapi tidak ada edit/delete, 2.5 [LOW] `STORE_KEYS` di SettingsPage adalah kunci hantu — card "Store" tidak pernah render (+11 more)
+
+### Community 81 - "Plan — Integrasi NOWPayments (USDT) & PayDisini (IDR) sebagai metode bayar baru"
+Cohesion: 0.10
+Nodes (19): Context, Global Constraints (berlaku di SEMUA task — reviewer pakai ini sebagai lensa), Plan — Integrasi NOWPayments (USDT) & PayDisini (IDR) sebagai metode bayar baru, Task 10: NOWPayments DB crud — `packages/db/src/crud/nowpayments.ts`, Task 11: NOWPayments reconcile poller + registrasi di DUA composition root, Task 12: NOWPayments di storefront — checkout, pay page, webhook IPN, Task 13: NOWPayments — admin settings whitelist + card UI, Task 14: NOWPayments — bot UI (keyboard, handler, dispatcher) + i18n (+11 more)
+
+### Community 82 - "File Structure"
+Cohesion: 0.10
+Nodes (19): Backend response shapes (already merged — the contract every hook/type mirrors), Context, Dashboard Remaining Sections Implementation Plan (Phase 3), File Structure, Global Constraints, Out of scope (future work), Task 10: Quick Actions bar, Task 11: Assemble the full dashboard in App.tsx (+11 more)
+
+### Community 83 - "handlers/customer.ts"
+Cohesion: 0.08
+Nodes (66): computeConfirmation(), showOrderConfirmation(), showUsdtMethods(), showWalletCreditMenu(), toggleWalletCredit(), backToHome(), bannerArg(), browseDenomination() (+58 more)
+
+### Community 84 - "01 — Design System (Tokens & Foundations)"
+Cohesion: 0.10
+Nodes (19): 01 — Design System (Tokens & Foundations), 10. Component size tokens (cross-reference), 11. Responsive breakpoints, 12. Dark mode — not supported (by design, not by omission), 1. Design philosophy, 2. Stack (what actually renders this), 3.1 Semantic layer (shadcn tokens), 3.2 Named palette (the tokens you'll use most in page code) (+11 more)
+
+### Community 85 - "Findings — Web Admin UI/UX Audit"
+Cohesion: 0.10
+Nodes (19): F-001 — Duplicate nav item: "Orders" and "Awaiting Fulfillment" are the same page, F-002 — Logout is broken at both entry points (404, session stays active), F-003 — Orders status filter shows raw backend enum values, F-004 — Audit Log "Admin" column shows raw numeric user ID, F-005 — Audit Log "Action" column duplicates the readable Details sentence, F-006 — Three different "create new record" UI patterns across similar pages, F-007 — Denomination-create breadcrumb shows literal word "Product" instead of product name, F-008 — Redundant "Back" button duplicates the breadcrumb's job (+11 more)
+
+### Community 86 - "File Structure"
+Cohesion: 0.11
+Nodes (18): Dashboard Backend API Implementation Plan, File Structure, Global Constraints, Task 10: `ordersByDay` and `combinedRevenueByDay`, Task 11: route scaffold + `GET /api/dashboard/kpis`, Task 12: `GET /api/dashboard/operations`, `/inventory`, `/expirations`, Task 13: `GET /api/dashboard/orders/recent`, `/health`, `/top-products`, Task 14: `GET /api/dashboard/analytics` (+10 more)
+
+### Community 87 - "10 — UI Review Checklist"
+Cohesion: 0.11
+Nodes (18): 10 — UI Review Checklist, Accessibility (`08_UX_RULES.md` §8), Animation (`01_DESIGN_SYSTEM.md` §8, `08_UX_RULES.md` §15–16), Consistency / Component Reuse (`00_AI_RULES.md` §3, `09_CODE_STYLE.md` §8), CRUD Rules (`04_CRUD_TEMPLATE.md`), Dashboard Rules (`07_DASHBOARD_GUIDELINES.md`), Design Tokens (`01_DESIGN_SYSTEM.md`), Empty State (`03_COMPONENT_LIBRARY.md` §Empty State, `08_UX_RULES.md` §2) (+10 more)
+
+### Community 88 - "telegram-shop-ux-auditor.md"
+Cohesion: 0.11
+Nodes (17): Before recommending from memory, Decision & Escalation Rules, How to save memories, Mandatory Workflow (do NOT skip or reorder), Marketplace UX Checklist (apply to every flow above), Memory and other forms of persistence, MEMORY.md, Out of Scope (never change without explicit confirmation) (+9 more)
+
+### Community 89 - "check-migration-rebuild-quoting.ts"
+Cohesion: 0.19
+Nodes (14): GRANDFATHERED, grandfatheredCopies, GrandfatheredFolder, migrationsDir, offenders, problems, findClauseEnd(), findUnqualifiedSources() (+6 more)
+
+### Community 90 - "Phase checklist"
+Cohesion: 0.12
+Nodes (16): API endpoints (all under `/api/v1`), Decisions (locked 2026-07-04), Migration complete 2026-07-05, Phase 0 — this doc, Phase 1 — client scaffolding (additive) — DONE 2026-07-04, Phase 2 — JSON API + SPA shell (additive; Nunjucks still serves all pages) — DONE 2026-07-04, Phase 3 — pixel harness — N/A, superseded 2026-07-04, Phase 4 — Cluster A: catalog + cart (React pages → verify → delete NJK) — DONE 2026-07-04 (+8 more)
+
+### Community 91 - "Audit UI/UX Functional Fixes Implementation Plan"
+Cohesion: 0.12
+Nodes (16): Audit UI/UX Functional Fixes Implementation Plan, Bot Telegram (`apps/order-bot`), Global Constraints, Post-Execution Verification, Storefront (`apps/storefront`), Task 10: Fix restock form defaulting to a 404 action when JS hasn't set the denomination id yet, Task 1: Fix "My Orders → Pay" showing wrong payment instructions, Task 2: Fix voucher re-validation swallowing all errors silently (+8 more)
+
+### Community 92 - "Spec — Web Setup Wizard (onboarding pembeli, near-zero config)"
+Cohesion: 0.12
+Nodes (16): 10. Testing (ikut CLAUDE.md), 11. Keputusan (FINAL — dikonfirmasi 2026-06-14), 1. Masalah & tujuan, 2. Ruang lingkup perubahan (ringkas), 3. Deteksi "belum di-setup" (setup mode), 4. Alur wizard (3 langkah, di web-admin), 5. Admin berbasis DB (perubahan inti), 6. Prasyarat env yang dilonggarkan (+8 more)
+
+### Community 93 - "Referensi Variabel Environment"
+Cohesion: 0.13
+Nodes (15): Behaviour / Tuning, Database, Hanya di Settings (TIDAK ada di `.env`), Logging, Notifier (outbox dispatcher), Payment — Binance Internal Transfer (UID, auto-confirm), Payment — Binance Pay (manual, legacy fallback), Payment — Bybit Internal Transfer (UID, off-chain instant) (+7 more)
+
+### Community 94 - "Langkah instalasi"
+Cohesion: 0.13
+Nodes (15): Build aplikasi, CI, Generate Prisma client, Instalasi, Jalur A — Docker (disarankan untuk produksi), Jalur B — tanpa Docker (dev lokal / VPS manual), Langkah instalasi, Migrasi/schema (+7 more)
+
+### Community 95 - "Payments Page Redesign Implementation Plan"
+Cohesion: 0.13
+Nodes (14): Final verification (after Task 11), Global Constraints, Payments Page Redesign Implementation Plan, Task 10: Frontend — Ledger row actions as DropdownMenu + "Add to buyer's credit balance", Task 11: Frontend — swap hand-rolled pagination for the shared `Pagination` component, Task 1: Backend — `countProcessedBinanceTxToday` crud helper, Task 2: Backend — `q` search param on the ledger listing, Task 3: Backend route — wire `todayCount` and `q` into `GET /api/payments` (+6 more)
+
+### Community 96 - "Public channel ID editable in web admin — design"
+Cohesion: 0.13
+Nodes (14): 1. Resolution (`packages/db/src/crud/credentials.ts`), 2. Runtime stamp (`packages/core/src/runtime.ts`), 3. Consumers stop reading `config.PUBLIC_CHANNEL_ID` directly, 4. Web admin field (`apps/web-admin/src/routes/settings.ts`), 5. Channel resolver (`apps/web-admin/src/lib/telegramCheck.ts`), Architecture, Data flow, Decisions (from brainstorming) (+6 more)
+
+### Community 97 - "Upload UX: foto produk yang terlihat + upload QR Binance"
+Cohesion: 0.13
+Nodes (14): B1. Route web baru — `POST /settings/qr`, B2. Whitelist & cache key, B3. UI — kartu USDT/Binance, B4. Util bot — resolusi QR, B5. Checkout memakai util + cache, B6. Jalur lama tetap hidup, Bagian A — Foto produk mudah ditemukan (frontend saja), Bagian B — Upload QR Binance (full-stack, meniru pola banner) (+6 more)
+
+### Community 98 - "util/format.ts"
+Cohesion: 0.13
+Nodes (17): BybitBscTrackedOrder, mixedAmount(), OrderItemGroup, OrderItemLike, progressBar(), renderBybitBscTrackingScreen(), STATUS_EMOJI, TicketOrderLike (+9 more)
+
+### Community 99 - "Model per domain"
+Cohesion: 0.14
+Nodes (14): Database, ERD — inti Order/Stok/Pembayaran, Foreign key & cascade policy, Generate ERD penuh, Idempotency ledger pembayaran, Identitas & sesi, Index signifikan, Katalog (3 tier) (+6 more)
+
+### Community 100 - "Fase 0 — Pondasi Postgres Implementation Plan"
+Cohesion: 0.14
+Nodes (13): Fase 0 — Pondasi Postgres Implementation Plan, File Structure, Global Constraints, Self-Review, Task 1: Switch Prisma datasource ke Postgres + presisi Decimal, Task 2: Buat Postgres tersedia + baseline migration, Task 3: `initDb()` aman-Postgres, Task 4: Test harness Postgres (schema unik per-run) (+5 more)
+
+### Community 101 - "Dual credit balance (IDR + USDT) + credit-on-unfulfilled-order"
+Cohesion: 0.14
+Nodes (13): Component 1 — currency-aware `adjustWallet`, Component 2 — spend routing, Component 3 — credit-on-unfulfilled-order (the trigger), Component 4 — surfaces (display), Current system (facts the design builds on), Data model (Approach A — two columns + currency-tagged ledger), Dual credit balance (IDR + USDT) + credit-on-unfulfilled-order, Error handling / edge cases (+5 more)
+
+### Community 102 - "06 — Settings Guidelines"
+Cohesion: 0.14
+Nodes (13): 06 — Settings Guidelines, 10. Progressive disclosure, 11. Save status, restart, and quick actions, 12. Never do, 1. Navigation, 2. Grouping, 3. Field display — `FieldRow`, 4. Save indicator / confirmation (+5 more)
+
+### Community 103 - "web-admin/client/src/pages/SupportPage.test.tsx"
+Cohesion: 0.19
+Nodes (10): ADMIN_ROW, jsonResponse(), makeWrapper(), mockFetchRouter(), STATS, supportData(), TICKET_CLOSED, TICKET_OPEN (+2 more)
+
+### Community 104 - "Audit `fitur.md` — 2026-07-04"
+Cohesion: 0.15
+Nodes (12): 1–2. Bot Telegram (`apps/order-bot`) — 24 + 13 + 6 item, 3. Panel Admin Web (`apps/web-admin`) — 38 item, 4. Toko Web Pelanggan (`apps/storefront`) — 17 item, 5. Lintas-Aplikasi / Infrastruktur — 26 item, Audit `fitur.md` — 2026-07-04, Fitur backend-lengkap tapi tidak ada tombol UI (BROKEN secara discoverability), Rekomendasi prioritas (jika ingin ditindaklanjuti), Ringkasan (+4 more)
+
+### Community 105 - "§1 Findings"
+Cohesion: 0.15
+Nodes (12): §1 Findings, §2 Verified clean, §3 Files changed, Executive summary, F1 [HIGH] — the storefront quoted a total it would not charge, F2 [MEDIUM] — asymmetric zero-clamp between the two order creators, F3 [MEDIUM] — bulk-pricing rules were trusted at read time, F4 [MEDIUM] — the bulk discount had two spellings (+4 more)
+
+### Community 106 - "Refactor catalog to Category → Product → Denomination"
+Cohesion: 0.15
+Nodes (12): 1a. Prisma schema (`prisma/schema.prisma`), 1b. Migration (`prisma/migrations/<ts>_catalog_rename/migration.sql` + cutover scripts), 1c. crud refactor (`packages/db/src/crud/`), Context, Implementation note (deviation accepted 2026-06-19), Phase 1 — Database schema + migration + crud (foundation), Phase 2 — Admin panel (`apps/web-admin`), Phase 3 — Storefront (`apps/storefront`) (+4 more)
+
+### Community 107 - "File Structure"
+Cohesion: 0.15
+Nodes (12): Dashboard Frontend Foundation Implementation Plan, File Structure, Global Constraints, Task 1: Vite + React + TypeScript scaffold, Task 2: shadcn/ui CLI init + Card/Badge + ported theme tokens, Task 3: Vitest jsdom environment for the client package, Task 4: serve the SPA shell at `GET /`, replacing the Nunjucks dashboard, Task 5: CSRF header bridging (+4 more)
+
+### Community 108 - "Global Constraints"
+Cohesion: 0.15
+Nodes (12): Final verification (after Task 9), Global Constraints, Task 1: `deriveVoucherStatus` + `listVouchersPaged` crud, Task 2: `getVoucherStats` crud, Task 3: `bulkSetVouchersActive` + `bulkDeleteVouchers` crud, Task 4: Wire `GET /api/vouchers` to pagination/search/status/stats, Task 5: `POST /api/vouchers/bulk-action` route, Task 6: Frontend — KPI row + PageHeader description (+4 more)
+
+### Community 109 - "Branding controls — favicon, hero, bot banner & identity"
+Cohesion: 0.15
+Nodes (12): Bot: banner rendering, Branding controls — favicon, hero, bot banner & identity, File storage, Goals, Non-goals, Open questions, Problem, Security (+4 more)
+
+### Community 110 - "Spec: Group-aware Home & Search (storefront) + admin "Denominasi" wording"
+Cohesion: 0.15
+Nodes (12): 1. Data layer — `packages/db/src/crud/catalog.ts`, 2. Routes — `apps/storefront/src/routes/`, 3. Templates — `apps/storefront/views/`, 4. Admin wording — `apps/web-admin/views/catalog.njk` (text only), Approach, Deploy, Edge cases, Goal (+4 more)
+
+### Community 111 - "Migrasi Web (web-admin + storefront) ke Next.js + Postgres — Design"
+Cohesion: 0.15
+Nodes (12): Bagian 1 — Arsitektur target, Bagian 2 — Struktur monorepo, Bagian 3 — Data layer & migrasi Postgres, Bagian 4 — Auth (Auth.js / NextAuth), Bagian 5 — Design system (shadcn) + redesign panel produk (14 poin), Bagian 6 — Pemetaan fitur/endpoint (paritas, tanpa ubah logika), Bagian 7 — Urutan kerja (big-bang per app) & testing, Bagian 8 — Risiko (+4 more)
+
+### Community 112 - "Product Denominations (Product Groups) — Design"
+Cohesion: 0.15
+Nodes (12): Bot (`apps/order-bot`), CRUD helpers (`packages/db/src/crud/catalog.ts`), Decisions (from brainstorming), Edge cases, Non-goals, Problem, Product Denominations (Product Groups) — Design, Schema (+4 more)
+
+### Community 113 - "02 — Admin Layout"
+Cohesion: 0.15
+Nodes (12): 02 — Admin Layout, 1. The shell, 2. Sidebar, 3. TopBar, 4. Standard page hierarchy, 5. `PageHeader` and `PageLayout`, 6. Responsive behavior summary, 7. Never do (+4 more)
+
+### Community 114 - "Customer Journey Walkthrough"
+Cohesion: 0.15
+Nodes (12): 1. Landing (`/`), 2. Browse products, 3. Search products, 4. Filter products, 5. Open product / View details (`/p/capcut-pro-1-month`), 6. Add to Cart / Buy Now, 7. Checkout gate (sign-in), 8. Checkout (`/checkout`) (+4 more)
+
+### Community 115 - "SearchModal.tsx"
+Cohesion: 0.20
+Nodes (7): SearchApiResponse, SearchModal(), SearchModalProps, SearchResult, TYPE_ICONS, TYPE_LABELS, userLabel()
+
+### Community 119 - "jobs/index.ts"
+Cohesion: 0.14
+Nodes (31): allOrderHistory(), approve(), buildCredSections(), maybeAlertLowStock(), resendCredentials(), viewOrder(), announceStartedFlashSales(), autoCancelExpiredOrders() (+23 more)
+
+### Community 120 - "customEmoji.ts"
+Cohesion: 0.21
+Nodes (14): HTML_FIELD, htmlDefaultsTransformer(), isCustomEmojiRejection(), rewriteBody(), MAP, ok(), applyCustomEmoji(), emojiToId (+6 more)
+
+### Community 121 - "web-admin/client/src/pages/OrdersPage.test.tsx"
+Cohesion: 0.18
+Nodes (8): ELIGIBILITY_NONE, jsonResponse(), KPIS_DATA, mockFetchRouter(), ORDER_CAN_ACT, ORDER_CAN_FULFILL, ORDER_CAN_RESEND, ORDERS_DATA
+
+### Community 122 - "VouchersPage.test.tsx"
+Cohesion: 0.18
+Nodes (9): EXPIRED_VOUCHER, EXPIRING_SOON_VOUCHER, FAR_FUTURE_VOUCHER, jsonResponse(), listResponse(), SELECTED_SCOPE_VOUCHER, STATS, USED_UP_VOUCHER (+1 more)
+
+### Community 123 - "Money & Data Integrity"
+Cohesion: 0.17
+Nodes (11): Audit every state change, Money & Data Integrity, Money is always Decimal, Never log secrets, No raw SQL in routes or handlers, Overview, Pino logs are a separate, developer-facing channel, Schema changes on deploy (+3 more)
+
+### Community 124 - "Arsitektur"
+Cohesion: 0.17
+Nodes (12): Alur order & state machine, Alur pembayaran, Apa yang TIDAK ada di stack ini, Arsitektur, Backend, Catatan desain yang diketahui (bukan bug, tapi batasan sadar), Database, Frontend (+4 more)
+
+### Community 125 - "Payment Gateway"
+Cohesion: 0.17
+Nodes (12): Alert kegagalan delivery — "Manual action needed", Binance Internal Transfer (UID, USDT), Bybit BSC On-chain (BEP20, USDT), Bybit Internal Transfer (UID, USDT), Kontrak respons webhook (TokoPay/PayDisini/NOWPayments), NOWPayments (hosted invoice, USDT), PayDisini (QRIS/e-wallet, IDR), Payment Gateway (+4 more)
+
+### Community 126 - "Release Notes"
+Cohesion: 0.17
+Nodes (12): Release Notes, v1.0.0 — 2026-05-30 s/d 2026-05-31, v1.10.0 — 2026-06-23, v1.1.0 — 2026-06-12, v1.2.0 — 2026-06-13, v1.3.0 — 2026-06-14 s/d 2026-06-16, v1.4.0 — 2026-06-17, v1.5.0 — 2026-06-18 (+4 more)
+
+### Community 127 - "Security"
+Cohesion: 0.17
+Nodes (12): Bot Telegram, CSRF, Idempotensi & konkurensi pembayaran, Melaporkan temuan baru, Model otorisasi, Network/transport, Secrets handling, Security (+4 more)
+
+### Community 128 - "Customers Module Upgrade — Task Plan"
+Cohesion: 0.17
+Nodes (11): Context, Customers Module Upgrade — Task Plan, Final Verification (after all tasks, whole-branch review), Global Constraints (binding on every task), Task 1: Customers list/count/sort/KPI/order-stats crud functions, Task 2: `touchLastSeen` + wire into the storefront, Task 3: `apps/web-admin/src/routes/api/users.ts` — list/export/kpis routes, Task 4: Frontend infra — relative time, Customers KPI hook/row, StatusBadge, Tooltip mount (+3 more)
+
+### Community 129 - "StatCard.tsx"
+Cohesion: 0.18
+Nodes (9): StatCard(), StatCardProps, StatCardTone, TONE_BORDER_CLASS, TONE_ICON_CLASS, ReviewsKpis, useReviewsKpis(), ReviewsKpiRow() (+1 more)
+
+### Community 130 - "Batch 6 — Data layer and schema"
+Cohesion: 0.17
+Nodes (12): Batch 6 — Data layer and schema, Task 36: H-8 — Generate the missing catch-up migration for 12 columns and 2 indexes that exist only in `schema.prisma`, Task 37: H-9 — Fix the unrunnable ticket-priority migration and its timestamp collision, Task 38: M-29 — Stamp `lastStatusChangeAt`/`firstResponseAt` on every ticket status transition, Task 39: M-30 — Expire the pre-auth `OWNER_TG_KEY` setup state so `/setup/owner` can't stay open indefinitely, Task 40: M-31 — Fix the overdue-ticket predicate to catch reopened/follow-up tickets, Task 41: M-32 — Add indexes for the new revenue/flash-sale queries' filter columns, Task 42: M-33 — Replace `topProducts`'s full-table scan with a bounded, grouped query (+4 more)
+
+### Community 131 - "Storefront Auth: Username+Password Login, Web Registration, Forgot Password, Telegram Linking"
+Cohesion: 0.17
+Nodes (11): 1. Schema changes (additive, nullable — safe for the shared SQLite DB), 2. Login flow (`/login` reworked), 3. Web registration (`/register`, new), 4. Forgot password (`/forgot`, `/reset/:token`, new), 5. Member settings (`/account/settings`, new; linked from /account), 6. Session & system adjustments, 7. Security requirements, 8. Testing (+3 more)
+
+### Community 132 - "Binance Internal Transfer → DB-driven config (like Bybit)"
+Cohesion: 0.17
+Nodes (11): 1. Resolver baru — `packages/db/src/crud/binance_internal.ts`, 2. Poller pakai resolver — `apps/order-bot/src/payments/binanceInternal.ts`, 3. Pemanggil lain `isBinanceInternalEnabled()` (sync → resolver async), 4. Web admin Settings — whitelist + UI, 5. Tes, Binance Internal Transfer → DB-driven config (like Bybit), Konteks penting — JANGAN keliru dua metode "Binance", Latar belakang (+3 more)
+
+### Community 133 - "Payment-method on/off toggle (web admin) — design"
+Cohesion: 0.17
+Nodes (11): Caveat (surfaced in UI copy), Data layer, Design decisions (confirmed with user), Files touched (anticipated), Goal, Payment-method on/off toggle (web admin) — design, Problem, Scope (+3 more)
+
+### Community 134 - "Design"
+Cohesion: 0.17
+Nodes (11): 1. Page composition (top to bottom), 2. Backend changes, 3. Frontend changes (`PaymentsPage.tsx`), 4. Error handling, 5. Testing, Design, Goals, Non-goals (+3 more)
+
+### Community 135 - "keyboards/customer.ts"
+Cohesion: 0.06
+Nodes (76): ADM_TICKET_ICONS, adminMenu(), approvedResendKb(), backToAdminKb(), bannerRemovedUndoKb(), broadcastConfirmKb(), Btn, bulkPricingKb() (+68 more)
+
+### Community 136 - "Storefront homepage — visual polish design"
+Cohesion: 0.17
+Nodes (11): A. Hero background — layered depth, no new colors, B. Hero right side — real product composition, C. CTA hierarchy, Current state (baseline), D. Below-the-fold card depth — interactive vs. decorative split, E. Color balance, Explicitly out of scope, F. Motion additions (+3 more)
+
+### Community 137 - "07 — Dashboard Guidelines"
+Cohesion: 0.17
+Nodes (11): 07 — Dashboard Guidelines, 1. The three questions a dashboard answers, 2. Live composition (the canonical order), 3. KPI row, 4. Operational attention (`OperationCenter`), 5. Charts, 6. Recent activity, 7. Quick actions (+3 more)
+
+### Community 138 - "Design System / Component Consistency"
+Cohesion: 0.17
+Nodes (11): Accordions, Alerts / Flash messages, Badges, Buttons, Cards, Design System / Component Consistency, Inputs, Modals / Drawers (+3 more)
+
+### Community 139 - "getSetting"
+Cohesion: 0.05
+Nodes (61): acquireBroadcastLock(), cacheBannerFileId(), dbMockState, makeStaleTicket(), makeUnhealthy(), base32Encode(), generateTotpSecret(), otpauthUri() (+53 more)
+
+### Community 140 - "Plan: Admin Panel UX Pass v2 — adjusted from `ui.txt`"
+Cohesion: 0.18
+Nodes (10): 1. Product active/inactive toggle (`ui.txt` Catalog #10), 2. Add Category (`ui.txt` Catalog #9), 3. `apiGet` error parsing consistency, Already shipped — no work needed (cross-checked against `ui.txt`), Context, Explicitly descoped (not in this plan), Phase 1 — Catalog/Product real gaps (highest priority), Phase 2 — Per-page quick wins (existing data only, no new schema) (+2 more)
+
+### Community 141 - "H. Slice Infrastruktur, Secrets, DB Schema & Composition Root"
+Cohesion: 0.18
+Nodes (11): H. Slice Infrastruktur, Secrets, DB Schema & Composition Root, Infra-10 [LOW], Infra-1 [HIGH] — lihat Admin-2 (digabung), Infra-2 [HIGH] ✅ DIPERBAIKI 2026-06-23, Infra-3 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Infra-4 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Infra-5 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Infra-6 [MEDIUM] ✅ DIPERBAIKI 2026-06-23 (+3 more)
+
+### Community 142 - "File Structure"
+Cohesion: 0.18
+Nodes (10): File Structure, Global Constraints, Order-Bot Support Ticket Parity Implementation Plan, Task 1: Locale keys, Task 2: `summarizeTicketOrder` — order-summary formatter, Task 3: Keyboard changes — `ticketViewKb` reopen button + `orderPickerKb`, Task 4: `viewMyTicket` — show linked order, compute reopenable, Task 5: `callbacks.ts` — fix self-close, add reopen (+2 more)
+
+### Community 143 - "Batch 5 — Order bot"
+Cohesion: 0.18
+Nodes (11): Batch 5 — Order bot, Task 26: H-6 — Don't consume restock subscriptions until each notification DM succeeds, and throttle the send loop, Task 27: H-7 — Stop the flash-sale announcement from holding one write transaction across a whole-customer-base enqueue, Task 28: M-21 — Answer `error.stale_screen` for unrecognized `v1:adm:*` admin callbacks, Task 29: M-22 — Answer unrecognized inline taps during conversation wait loops instead of leaving the button spinning, Task 30: M-23 — Route the support order-picker step through `menuAnchor` instead of leaving stray keyboards, Task 31: M-24 — Use `menuAnchor` (not `smartEdit`) for the quantity-input wizard's typed-input path, Task 32: M-25 — Exclude web-only users from the bot broadcast, and throttle it (+3 more)
+
+### Community 144 - "Spec — Bybit di storefront + QRIS di bot (metode bayar lintas-front)"
+Cohesion: 0.18
+Nodes (10): 1. Masalah & tujuan, 2. Arsitektur & ekstraksi bersama (Approach A), 3. Storefront — Bybit sebagai opsi ke-3, 4. Bot — QRIS sebagai opsi ke-4, 5. Pengantaran kredensial untuk pembeli QRIS Telegram (perbaikan celah), 6. Gating, i18n, keamanan, 7. Ketergantungan webhook (ditandai), 8. Testing (ikut CLAUDE.md) (+2 more)
+
+### Community 145 - "Catalog — Create Product Flow"
+Cohesion: 0.18
+Nodes (10): 1. Backend — `POST /api/catalog/products`, 2. Frontend — `ProductCreatePage`, 3. Router — `App.tsx`, 4. Tests, Architecture, Backend (`apps/web-admin/src/routes/api/catalog.test.ts` or similar), Background, Catalog — Create Product Flow (+2 more)
+
+### Community 146 - "05 — Table Guidelines"
+Cohesion: 0.18
+Nodes (10): 05 — Table Guidelines, 1. Why one table component, 2. `DataTable` contract, 3. Built-in behaviors (don't reimplement these), 4. Columns, 5. Selection, 6. Row actions ("context menu"), 7. Keyboard navigation & accessibility (+2 more)
+
+### Community 147 - "09 — Code Style"
+Cohesion: 0.18
+Nodes (10): 09 — Code Style, 1. Folder structure, 2. Naming conventions, 3. Composition patterns, 4. State management, 5. Design tokens in code, 6. CSS strategy, 7. Animation strategy (+2 more)
+
+### Community 148 - "UX Recommendations"
+Cohesion: 0.18
+Nodes (10): 1. Fix the two broken core actions first, 2. Replace raw backend identifiers with human labels, everywhere, 3. Make empty states context-aware, not just "present", 4. Pick one "add a new record" pattern and use it consistently, 5. Settings needs wayfinding, not more content, 6. Small-viewport icon-only controls need names, not just icons, 7. Breadcrumb correctness and redundancy, 8. Search reliability (+2 more)
+
+### Community 149 - "Order Bot — Bot Telegram + Panel Admin + Toko Web"
+Cohesion: 0.18
+Nodes (11): 1. Sebelum Mulai, 2. File `.env`, 3. Jalur A — Docker (disarankan), 4. Jalur B — tanpa Docker, 5. Buat Admin Pertama, 6. Pembayaran & Branding, 7. Update, Backup, Perawatan, 8. Masalah Umum (+3 more)
+
+### Community 150 - "Bot UX (grammY)"
+Cohesion: 0.20
+Nodes (9): Bot UX (grammY), Edit the bubble, don't just toast, Never strand the user, No leaked English, One active keyboard per chat, Overview, Toast vs alert, When to Use (+1 more)
+
+### Community 151 - "Backup & Restore — SQLite WAL (execution/06, M-5)"
+Cohesion: 0.20
+Nodes (9): Backup, Backup & Restore — SQLite WAL (execution/06, M-5), Disiplin migrasi aman (D-01 — konteks, bukan bagian skrip), Jadwal (cron, tiap 6 jam), Off-box (aturan 3-2-1), Prasyarat (host VPS), Restore (juga = rollback deploy/migrasi buruk), RTO / RPO (+1 more)
+
+### Community 152 - "Audit Keamanan & Business-Logic — Full Repo"
+Cohesion: 0.20
+Nodes (9): 5 hal yang harus diperbaiki SEGERA (urutan dampak finansial), Audit Keamanan & Business-Logic — Full Repo, Catatan lintas-domain (root cause yang sama, muncul di >1 slice), D. Slice Stock, Delivery & Digital Product Security, Rekomendasi Urutan Perbaikan, Ringkasan Eksekutif, Stock-1 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Stock-2 [LOW] (+1 more)
+
+### Community 153 - "E. Slice Admin Web Security (`apps/web-admin`)"
+Cohesion: 0.20
+Nodes (10): Admin-1 [HIGH] ✅ DIPERBAIKI 2026-06-23, Admin-2 [HIGH] — digabung (admin-web + infra) ✅ DIPERBAIKI 2026-06-23, Admin-3 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Admin-4 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Admin-5 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Admin-6 [LOW], Admin-7 [LOW], Admin-8 [LOW] — lihat juga Storefront-4 (+2 more)
+
+### Community 154 - "G. Slice Bot Concurrency, Idempotency & Admin Bot Security"
+Cohesion: 0.20
+Nodes (10): Bot-1 [CRITICAL] ✅ DIPERBAIKI 2026-06-23, Bot-2 [HIGH] ✅ DIPERBAIKI 2026-06-23, Bot-3 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Bot-4 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Bot-5 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Bot-6 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Bot-7 [LOW], Bot-8 [LOW] (+2 more)
+
+### Community 155 - "2. Temuan per halaman"
+Cohesion: 0.20
+Nodes (9): 1. Rubrik referensi (ringkasan), 2.1 Halaman List/Index (pola referensi berlaku penuh), 2.2 Halaman Detail (pola referensi sebagian besar tidak berlaku by design), 2.3 Halaman Form/Settings (pola `06_SETTINGS_GUIDELINES.md`, bukan pola list), 2.4 Dashboard, 2. Temuan per halaman, 3. Backlog terprioritaskan, 4. Pendekatan eksekusi yang disarankan (+1 more)
+
+### Community 156 - "Sistem Inventori (Stok)"
+Cohesion: 0.20
+Nodes (10): Agregat status (`stockStatusCounts`), Dedup saat tambah stok massal (`bulkAddStock`), Download stok tersisa, Hapus stok (`bulkDeleteStock`) vs tandai rusak (`markStockDead`/`bulkMarkStockDead`), ⚠️ Limitasi yang diketahui: belum ada reaper TTL, Pelepasan reservasi (`releaseOrderHolds`), Reservasi atomik saat checkout (bukan saat approve), Restock subscription (+2 more)
+
+### Community 157 - "Admin UI Consistency Design"
+Cohesion: 0.20
+Nodes (9): 1. Spacing convention, 2. Root fix: Dashboard's double-gap bug, 3. Component changes, 4. Page-by-page fixes, Admin UI Consistency Design, Context, Non-goals, Scope decisions (confirmed with user) (+1 more)
+
+### Community 158 - "callbacks.ts"
+Cohesion: 0.07
+Nodes (8): closeTicketUser(), dispatchAdmin(), dispatchTicket(), DOMAIN_ROUTES, DomainDispatcher, Parts, reopenTicketUser(), getTicket()
+
+### Community 159 - "Design: Storefront Support Ticket Workspace (Phase 1)"
+Cohesion: 0.20
+Nodes (9): Backend Changes, Context, Data Model Change, Deferred to Phase 2 (needs its own spec), Design: Storefront Support Ticket Workspace (Phase 1), Error Handling, Existing Assets to Reuse (Do Not Rewrite), Information Architecture (+1 more)
+
+### Community 160 - "00 — AI Development Rules"
+Cohesion: 0.20
+Nodes (9): 00 — AI Development Rules, 1. Before you touch any UI code, 2. Decision tree — which doc(s) govern this task, 3. Always reuse — never invent, 4. Components that are specified but not yet built, 5. Never do, 6. Reference implementations — read these before writing similar code, 7. Consistency over creativity (+1 more)
+
+### Community 161 - "Design System / Component Consistency"
+Cohesion: 0.20
+Nodes (9): 1. Three different "create a new record" patterns (Finding F-006), 2. Breadcrumb + Back button redundancy (Finding F-008), 3. Breadcrumb label bug (Finding F-007), 4. Raw backend strings surfaced without a label map, 5. Table column header clarity, 6. Empty-state copy: contextual vs. generic, 7. Settings "Enabled" toggle + "not configured" label pairing, Design System / Component Consistency (+1 more)
+
+### Community 162 - "Accessibility Findings"
+Cohesion: 0.20
+Nodes (9): Accessibility Findings, Accessible error messages, Color contrast, Form labels, Heading hierarchy, Images / alt text, Keyboard navigation, Recommendation summary (+1 more)
+
+### Community 163 - "Implementation Plan"
+Cohesion: 0.20
+Nodes (9): Batch 1 — Critical correctness fix (do first, alone), Batch 2 — High-severity access/trust fixes (small, independent, safe to parallelize), Batch 3 — Checkout/cart friction pass (one PR, same files), Batch 4 — Homepage resilience (one PR), Batch 5 — Product listing & detail scaffolding (larger, plan ahead of catalog growth), Batch 6 — Design-system primitives (unlocks several Low findings at once), Batch 7 — Low-priority polish (bundle into a single cleanup PR), Implementation Plan (+1 more)
+
+### Community 164 - "Performance UX Findings"
+Cohesion: 0.20
+Nodes (9): Image optimization, Interaction latency, Layout shift, Lazy loading, Loading indicators, Performance UX Findings, Recommendation summary, Skeleton loading (+1 more)
+
+### Community 165 - "Responsive Findings"
+Cohesion: 0.20
+Nodes (9): Checkout, Footer, Forms, Hero, Navbar, Product grid, Responsive Findings, Summary (+1 more)
+
+### Community 166 - "storefront/client/package.json"
+Cohesion: 0.22
+Nodes (8): name, private, scripts, build, dev, typecheck, type, version
+
+### Community 167 - "web-admin/client/package.json"
+Cohesion: 0.22
+Nodes (8): name, private, scripts, build, dev, typecheck, type, version
+
+### Community 168 - "admin-ui.js"
 Cohesion: 0.33
-Nodes (6): CategoryPageData, HomePageData, ProductPageData, SearchPageData, ShelfPageData, ProductCardData
+Nodes (5): initAll(), initConfirm(), initDropzones(), initTabs(), refreshIcons()
 
-### Community 29 - "Cart and Checkout Types"
+### Community 169 - "UI Development Dispatch"
+Cohesion: 0.22
+Nodes (8): Functional-First Admin UX, Overview, Progressive Disclosure, The one rule worth repeating here, UI Development Dispatch, UI Implementation Priority, What to do, When to Use
+
+### Community 170 - "Web Conventions (Fastify + React SPA)"
+Cohesion: 0.22
+Nodes (8): CSRF on every mutating route, Exposure and auth posture, Never send Telegram from the web, Overview, Settings are whitelist-only, The client is a build artifact, not source served directly, Web Conventions (Fastify + React SPA), When to Use
+
+### Community 171 - "Deployment — public release (execution/02)"
+Cohesion: 0.22
+Nodes (8): 502 runbook, Access log (L-01), Deployment checklist (public release), Deployment — public release (execution/02), H-2 — TLS + reverse proxy, M-8 — container surfaces, Rollback, Topology
+
+### Community 172 - "A. Slice Checkout & Order Creation (Ghost Orders)"
+Cohesion: 0.22
+Nodes (9): A. Slice Checkout & Order Creation (Ghost Orders), Checkout-1 [HIGH] ✅ DIPERBAIKI 2026-06-23, Checkout-2 [HIGH] — digabung dengan Stock-1 ✅ DIPERBAIKI 2026-06-23, Checkout-3 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Checkout-4 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Checkout-5 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Checkout-6 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Checkout-7 [LOW] (+1 more)
+
+### Community 173 - "F. Slice Storefront Customer Auth & Checkout"
+Cohesion: 0.22
+Nodes (9): F. Slice Storefront Customer Auth & Checkout, Storefront-1 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Storefront-2 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Storefront-3 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Storefront-4 [MEDIUM] — lihat juga Admin-8 ✅ DIPERBAIKI 2026-06-23, Storefront-5 [LOW], Storefront-6 [LOW], Storefront-7 [LOW] (+1 more)
+
+### Community 174 - "Backup & Restore"
+Cohesion: 0.22
+Nodes (9): Backup & Restore, Database backup, Disaster recovery, Off-box (aturan 3-2-1), Restore procedure, RTO / RPO, Uji restore (wajib berkala, bukan sekali saat setup), Uploads backup (+1 more)
+
+### Community 175 - "chat.ts"
+Cohesion: 0.42
+Nodes (7): editAnchor(), isInline(), isNotModified(), Markup, renderMenu(), retireKeyboard(), truncateText()
+
+### Community 176 - "Sistem Antrian (`notification_outbox`)"
+Cohesion: 0.22
+Nodes (9): Backoff eksponensial (anti head-of-line blocking), Enqueue, Kapan baris outbox tidak terkirim — diagnosis cepat, Klaim atomik sebelum kirim (anti double-send), Loop dispatcher, Memantau & operasi manual, Penanganan error per jenis, Sistem Antrian (`notification_outbox`) (+1 more)
+
+### Community 177 - "Fase 1 — Migrasi web-admin ke Next.js (Planning Document)"
+Cohesion: 0.22
+Nodes (8): Fase 1 — Migrasi web-admin ke Next.js (Planning Document), File structure (target), Global Constraints (warisan, berlaku untuk semua task), Inventory route lama → target (paritas), Paritas perilaku yang wajib direplika, Risiko, Testing, Urutan task (altitude tinggi)
+
+### Community 178 - "Plan: Perbaikan UX/UI Storefront + Web-Admin"
+Cohesion: 0.22
+Nodes (8): Global Constraints (WAJIB dipatuhi semua task), Konteks teknis, Penyelesaian, Plan: Perbaikan UX/UI Storefront + Web-Admin, Task 1 — Login storefront muat 1 layar (HIGH), Task 2 — Telegram di settings: framing + state terhubung lebih kaya (Medium), Task 3 — Token desain: hilangkan hardcoded, tambah token radius (Medium, aman visual), Task 4 — Touch target & overflow input (Low)
+
+### Community 179 - "Storefront Homepage Visual Polish Implementation Plan"
+Cohesion: 0.22
+Nodes (8): Global Constraints, Storefront Homepage Visual Polish Implementation Plan, Task 1: Shared `hoverLift` motion variant, Task 2: Hero background depth + CTA hover hierarchy, Task 3: Hero right-side product-preview composition, Task 4: Standardize interactive-card hover depth (category + contact cards), Task 5: Distinguish "coming soon" teaser cards as non-interactive, Task 6: Full verification and visual QA
+
+### Community 180 - "Conversion Rate Optimization (CRO)"
+Cohesion: 0.22
+Nodes (8): Checkout friction affecting conversion, Conversion Rate Optimization (CRO), Cross-sell / upsell, CTA placement and clarity, Direct conversion blockers, Exit points, Recommendation summary (priority order), Trust and social proof
+
+### Community 181 - "Storefront UI/UX Audit — Overview"
+Cohesion: 0.22
+Nodes (8): Catalog state at time of audit, Deliverables, Environment note (not a UI defect), Headline findings by severity, Most important issues, Scope, Storefront UI/UX Audit — Overview, What was tested
+
+### Community 182 - "FlashSalesPage.test.tsx"
+Cohesion: 0.25
+Nodes (3): AUTO_FLASH_ROW, MANUAL_FLASH_ROW, NO_FLASH_ROW
+
+### Community 183 - "backfill-catalog-slugs.ts"
+Cohesion: 0.32
+Nodes (5): uniqueSlug(), backfill(), db, path, Row
+
+### Community 184 - "StockPage.test.tsx"
+Cohesion: 0.25
+Nodes (4): DENOM_HEALTHY, DENOM_LOW, DENOM_OUT, STOCK_DATA
+
+### Community 185 - "CLAUDE.md"
+Cohesion: 0.22
+Nodes (8): Graphify knowledge graph, Logging, Money, data, audit, Never do, Superpowers skill, Task tracking, Tests, Worktree isolation
+
+### Community 186 - "C. Slice Pricing, Voucher, Wallet & FX"
+Cohesion: 0.25
+Nodes (8): C. Slice Pricing, Voucher, Wallet & FX, Pricing-1 [HIGH] ✅ DIPERBAIKI 2026-06-23, Pricing-2 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Pricing-3 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Pricing-4 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Pricing-5 [LOW], Pricing-6 [LOW], Pricing-7 [LOW]
+
+### Community 187 - "Rollback"
+Cohesion: 0.25
+Nodes (8): Recovery dari deployment yang gagal, Restore dari backup (ringkasan — detail penuh di BACKUP_AND_RESTORE.md), Rollback, Rollback database, Rollback kode, Rollback migrasi skema, Rollback skrip migrasi data sekali-jalan, Verifikasi pasca-rollback
+
+### Community 188 - "Fase 2 — Migrasi storefront ke Next.js (Planning Document)"
+Cohesion: 0.25
+Nodes (7): Fase 2 — Migrasi storefront ke Next.js (Planning Document), Global Constraints, Inventory route lama → target (paritas), Paritas perilaku yang wajib direplika, Risiko, Testing, Urutan task (altitude tinggi)
+
+### Community 189 - "Catalog — Create Product Flow Implementation Plan"
+Cohesion: 0.25
+Nodes (7): Catalog — Create Product Flow Implementation Plan, File Map, Global Constraints, Self-Review, Task 1: Backend — `POST /api/catalog/products` + integration tests, Task 2: Frontend — `ProductCreatePage` + unit tests, Task 3: Register `/catalog/new` route in App.tsx + full suite run
+
+### Community 190 - "Global Constraints"
+Cohesion: 0.25
+Nodes (7): Admin Wallet IDR/USDT Split Implementation Plan, Global Constraints, Task 1: Backend — accept and validate `currency` on wallet adjustment, Task 2: Frontend — fix wallet types and show both balances on the Profile card, Task 3: Frontend — currency toggle on the Wallet Adjustment form, Task 4: Frontend — Currency column on the Wallet Ledger table, Task 5: Full verification
+
+### Community 191 - "Global Constraints"
+Cohesion: 0.25
+Nodes (7): Global Constraints, Manual Verification (after Task 4), Task 1: `PaymentMethod.WALLET` + `finalizeOrderPayment` support, Task 2: `completeOrderWithWalletCredit` crud function, Task 3: Locale fixes — duplicate "USDT" + new wallet-credit strings, Task 4: Bot UI — wallet-credit submenu, zero-total Complete Order, routing, Wallet-Credit Checkout Submenu + Zero-Total Completion Implementation Plan
+
+### Community 192 - "Batch 2 — Auth, CSRF, route security"
+Cohesion: 0.25
+Nodes (8): Batch 2 — Auth, CSRF, route security, Task 10: M-18 — Validate ticket attachments before writing them to disk, Task 11: M-19 — Strip the query string before logging the request URL in both error handlers, Task 12: M-20 — Add `Cache-Control: no-store` to the SPA shell responses, Task 6: H-4 — Stop serializing password hashes and emails into admin API responses, Task 7: H-5 — Lock `POST /setup/restart` after setup completes, Task 8: M-16 — Rotate the admin session jti on password change, Task 9: M-17 — Rate-limit storefront registration and password-reset submission
+
+### Community 193 - "Batch 4 — Payment gateways and webhooks"
+Cohesion: 0.25
+Nodes (8): Batch 4 — Payment gateways and webhooks, Task 19: M-9 — Add a live re-check before delivering on a PayDisini callback, Task 20: M-10 — Alert admins when a webhook delivery outcome is `"stale"`, Task 21: M-11 — Stop the BSC confirmation tracker from permanently blocking delivery, Task 22: M-12 — Treat a blank NOWPayments `payment_id` as a verification failure, not a valid (empty) idempotency key, Task 23: M-13 — Flag and alert on Binance Internal overpayment, matching the other three rails, Task 24: M-14 — Make Bybit's amount-matching tolerance asymmetric so overpayment doesn't orphan the deposit, Task 25: M-15 — Move TokoPay/PayDisini credentials out of GET query strings
+
+### Community 194 - "Hero: replace default Unsplash photo with a brand gradient"
+Cohesion: 0.25
+Nodes (7): Design, Docs, Goals, Hero: replace default Unsplash photo with a brand gradient, Non-goals, Problem, Testing
+
+### Community 195 - "Accessibility Findings"
+Cohesion: 0.25
+Nodes (7): 1. Icon-only Search button loses its accessible name below `sm` (Finding F-009 — High), 2. Dashboard section titles are not real headings (Finding F-010 — Medium), 3. Low text contrast on muted/secondary text (Finding F-011 — Medium), Accessibility Findings, Confirmed issues, Not fully assessed (needs phase 2 follow-up), Spot-checked and passing
+
+### Community 196 - "binanceInternal.ts"
+Cohesion: 0.05
+Nodes (80): paymentSuccessKb(), alertAdmins(), backoff, BinanceTx, classifyTx(), DeliveredOrder, editBubbleToProcessing(), fallThroughMirrors() (+72 more)
+
+### Community 197 - "Checkout"
+Cohesion: 0.25
+Nodes (7): Checkout, Form usability / required fields, Mobile experience, Payment selection, Recommendation summary, Steps and structure, Validation and error handling
+
+### Community 198 - "Navigation"
+Cohesion: 0.25
+Nodes (7): Breadcrumbs, Categories, Footer, Header, Navigation, Recommendation summary, Search as navigation
+
+### Community 199 - "General UX Recommendations"
+Cohesion: 0.25
+Nodes (7): Confirmations / toasts, Copy accuracy, Empty states (general), Forms, General UX Recommendations, Third-party integration leakage, What's already working well (worth protecting, not changing)
+
+### Community 200 - "Panduan Update"
+Cohesion: 0.25
+Nodes (8): Breaking changes & restart order per jenis perubahan, Cache & "Redis", Jika update gagal, Mengapa urutannya kaku, Migrasi data sekali-jalan (`scripts/migrate-*.ts`), Panduan Update, Prosedur standar, Verifikasi pasca-update
+
+### Community 202 - "API Reference"
+Cohesion: 0.29
+Nodes (7): API Reference, Mekanisme guard, storefront (`apps/storefront/src/plugins/auth.ts`), storefront — semua route, web-admin (`apps/web-admin/src/plugins/auth.ts`), web-admin — semua route, Webhook publik (di luar kedua app HTML)
+
+### Community 203 - "B. Slice Payment Gateway & Callback Security"
+Cohesion: 0.29
+Nodes (7): B. Slice Payment Gateway & Callback Security, Payment-1 [HIGH] ✅ DIPERBAIKI 2026-06-23, Payment-2 [HIGH] ✅ DIPERBAIKI 2026-06-23, Payment-3 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Payment-4 [MEDIUM] ✅ DIPERBAIKI 2026-06-23, Payment-5 [LOW], Payment-6 [LOW]
+
+### Community 204 - "Batch 3 — Orders, checkout, stock, delivery"
+Cohesion: 0.29
+Nodes (7): Batch 3 — Orders, checkout, stock, delivery, Task 13: H-2 — Let paid `PROCESSING` orders be credited to balance instead of only rejected, Task 14: H-3 — Let a failed gateway delivery be retried instead of permanently consuming its idempotency claim, Task 15: M-5 — Guard denomination `deliveryType` edits against in-flight orders, Task 16: M-6 — Wrap the bot's TokoPay/PayDisini/NOWPayments invoice caching in the existing atomic claim helpers, Task 17: M-7 — Cap storefront cart size and batch stock allocation into one insert, Task 18: M-8 — Guard `markStockDead` against altering delivered credentials
+
+### Community 205 - "core/package.json"
+Cohesion: 0.29
+Nodes (6): name, private, scripts, typecheck, type, version
+
+### Community 206 - "devDependencies"
+Cohesion: 0.29
+Nodes (7): devDependencies, @types/bcryptjs, @types/luxon, @types/nodemailer, @types/bcryptjs, @types/luxon, @types/nodemailer
+
+### Community 207 - "bybitBscConfirmationTracker.ts"
+Cohesion: 0.12
+Nodes (22): backoff, BscScanProxyResponse, bscscanRpc(), computeConfirmations(), fetchConfirmations(), fetchLatestBlock(), fetchTxBlockNumber(), lookupFailureCounts (+14 more)
+
+### Community 208 - "Security Patch"
+Cohesion: 0.33
+Nodes (5): Overview, Patch process, Security Patch, When to Use, Where this project is actually exposed
+
+### Community 209 - "Konfigurasi"
+Cohesion: 0.33
+Nodes (6): Dua sumber konfigurasi, Konfigurasi, Multi-toko di satu VPS, Profil Development, Profil Produksi, Validasi (`packages/core/src/config.ts`)
+
+### Community 210 - "Logging"
+Cohesion: 0.33
+Nodes (5): 1. Audit log — kalimat untuk admin toko, 2. Log Pino — pesan deskriptif untuk developer/ops, 3. Checklist singkat sebelum commit, Di mana kode-nya, Logging
+
+### Community 211 - "Fase 3 — Bersih-bersih & finalisasi (Planning Document)"
+Cohesion: 0.33
+Nodes (5): Fase 3 — Bersih-bersih & finalisasi (Planning Document), Global Constraints, Risiko, Urutan task (altitude tinggi), Yang dihapus / diubah
+
+### Community 212 - "Global Constraints"
+Cohesion: 0.33
+Nodes (5): Final verification (after Task 2), Global Constraints, Search Page Redesign Implementation Plan, Task 1: Replace the manual form with `FilterBar`+`SearchBar` (debounced), Task 2: Real per-table `empty` props (remove the length-guard hiding pattern)
+
+### Community 213 - "Batch 1 — Money, pricing, reconciliation"
+Cohesion: 0.33
+Nodes (6): Batch 1 — Money, pricing, reconciliation, Task 1: H-1 — Fix TokoPay's QRIS fee base so discounted orders aren't rejected as short-paid, Task 2: M-1 — Prorate order-level discounts across line items so dashboard profit/margin reflect what the shop actually banked, Task 3: M-2 — Delete the VoucherRedemption row when an order holding it is released, Task 4: M-3 — Reject non-finite (`NaN`, `Infinity`) values in voucher/wallet amount guards, Task 5: M-4 — Show both wallet currencies in the bot's admin user card, and add a currency argument to `/wallet`
+
+### Community 214 - "Navigation Analysis"
+Cohesion: 0.33
+Nodes (5): Current sidebar structure, Issue: duplicate page (Finding F-001), Navigation Analysis, Other IA observations, Summary recommendation for phase 2
+
+### Community 215 - "Web Admin UI/UX Audit — Phase 1 (Audit & Document Only)"
+Cohesion: 0.33
+Nodes (5): Documents in this folder, Findings summary, How the app was run, Web Admin UI/UX Audit — Phase 1 (Audit & Document Only), What was covered
+
+### Community 216 - "Responsive Findings"
+Cohesion: 0.33
+Nodes (5): Coverage gaps to close in phase 2, Desktop (1440×900), Mobile (375×812), Responsive Findings, Tablet (768×1024)
+
+### Community 217 - "bybit-internal-probe.ts"
+Cohesion: 0.53
+Nodes (5): BybitResp, get(), internalStatusLabel(), main(), rowsOf()
+
+### Community 218 - "check-migration-timestamps.ts"
+Cohesion: 0.33
+Nodes (5): foldersByTimestamp, GRANDFATHERED, GrandfatheredCollision, migrationsDir, problems
+
+### Community 219 - "Order State Machine"
 Cohesion: 0.40
-Nodes (5): CartLineView, CheckoutItem, ProductDenomination, DenominationCardData, FlashInfo
+Nodes (5): Diagram transisi, Invariant penting, Order State Machine, Siapa yang memicu transisi, Status & makna
 
-### Community 30 - "Module Group 30"
-Cohesion: 0.50
-Nodes (4): TicketCategory, TicketPriority, TicketStatus, TicketFilter
+### Community 220 - "crud/audit.ts"
+Cohesion: 0.48
+Nodes (4): AuditFilter, auditWhere(), countAuditLogs(), listAuditLogs()
 
-### Community 31 - "Module Group 31"
+### Community 221 - "Panduan Patch (Bugfix)"
+Cohesion: 0.40
+Nodes (5): Contoh terisi — insiden `claimed_at` (2026-06-24), Kapan migrasi dianggap "required", Outbox notification gagal: `P2022 column claimed_at does not exist`, Panduan Patch (Bugfix), Template
+
+### Community 222 - "Backend Audit Fixes — High + Medium (2026-07-31)"
+Cohesion: 0.40
+Nodes (4): Backend Audit Fixes — High + Medium (2026-07-31), Batch 7 — Operations Center cross-gateway payments visibility (added mid-execution), Global Constraints, Task 47: Make the "Failed Deliveries" Operation Center card show data from every payment gateway, not just Binance
+
+### Community 223 - "Homepage"
+Cohesion: 0.40
+Nodes (4): Hero, Homepage, Recommendation summary, Sections below the fold
+
+### Community 224 - "Product Listing and Product Detail"
+Cohesion: 0.40
+Nodes (4): Product detail (`/p/capcut-pro-1-month`), Product Listing and Product Detail, Product listing (Category `/c/premium-apps`, Search `/search`), Recommendation summary
+
+### Community 225 - "Versioning"
+Cohesion: 0.40
+Nodes (5): Cara menandai rilis ke depan, Riwayat versi (rekonstruksi retroaktif dari git log), Skema: Semantic Versioning (MAJOR.MINOR.PATCH), Status saat ini, Versioning
+
+### Community 229 - "Dokumentasi `telegram-order-bot` — Indeks"
 Cohesion: 0.67
-Nodes (3): SupportTicketSummary, TicketOrderSummary, TicketSidebarProps
+Nodes (3): Daftar dokumen, Dokumentasi `telegram-order-bot` — Indeks, Sumber kebenaran
+
+### Community 231 - "paydisiniReconcile.ts"
+Cohesion: 0.06
+Nodes (41): alertAdmins(), AnchoredOrder, editBubbleToSuccess(), PendingOrder, pollOnce(), reconcileOrder(), startPolling(), sweepDeliveredAwaitingEdit() (+33 more)
+
+### Community 259 - "dispatcher.ts"
+Cohesion: 0.05
+Nodes (70): broadcastFloodWaitMs(), drainBroadcasts(), sleep(), cacheBroadcastPhotoFileId(), DeliverableOrder, sendAccountFile(), broadcastApiRoutes(), accountFileName() (+62 more)
+
+### Community 280 - "qr.ts"
+Cohesion: 0.53
+Nodes (4): HERE, qrPhotoArg(), QrValue, resolveQrValue()
+
+### Community 306 - "server/test/setup-env.ts"
+Cohesion: 0.40
+Nodes (3): dir, file, ROOT
+
+### Community 308 - "apiGet"
+Cohesion: 0.08
+Nodes (24): apiGet(), ReferralData, APP_VERSION, DRAWER_ICON, DrawerRow(), drawerRowClass(), FOOTER_LINKS, Layout() (+16 more)
+
+### Community 309 - "lib/i18n.ts"
+Cohesion: 0.12
+Nodes (19): apiPatch(), AdditionalField, OrderDetailData, DeliveryFieldInput(), allFieldsValid(), fieldError(), emailField, numberField (+11 more)
+
+### Community 310 - "storefront/client/src/pages/TicketDetailPage.tsx"
+Cohesion: 0.08
+Nodes (24): apiPost(), apiPostFormWithProgress(), csrfToken(), SupportData, TicketDetailData, ProgressBar(), ProgressBarProps, TicketComposer() (+16 more)
+
+### Community 312 - "storefront/client/src/api/client.ts"
+Cohesion: 0.08
+Nodes (23): publicPost(), SettingsData, FlashProps, PasswordInput(), PasswordInputProps, Spinner(), TelegramWidgetOptions, useTelegramWidget() (+15 more)
+
+### Community 314 - "AccountPage.tsx"
+Cohesion: 0.08
+Nodes (34): AccountOrdersData, AccountOrderSummary, Price(), PriceProps, formatIdr(), formatNativeUsdt(), formatUsdt(), formatUsdtAmount() (+26 more)
+
+### Community 316 - "storefront/client/src/pages/ReviewsPage.tsx"
+Cohesion: 0.14
+Nodes (8): AccountReview, PendingReview, ReviewsData, StarsProps, PendingReviewCard(), ReviewsPage(), ReviewSubmission, reviewsData
+
+### Community 342 - "TicketMessageThread.tsx"
+Cohesion: 0.15
+Nodes (14): TicketMessage, AttachmentGallery(), extOf(), VIDEO_EXT, dateGroupLabel(), MessageBubble(), SYSTEM_ICON, SystemEventRow() (+6 more)
+
+### Community 346 - "storefront/client/src/App.tsx"
+Cohesion: 0.06
+Nodes (28): AboutPage, AccountPage, CartPage, CheckoutPage, ForgotPage, HowToOrderPage, LoginPage, OrderDetailPage (+20 more)
+
+### Community 378 - "shop/StatusBadge.tsx"
+Cohesion: 0.36
+Nodes (8): AMBER, GRASS, PINE, RUST, STATUS_LABELS, StatusBadge(), StatusBadgeProps, titleCase()
+
+### Community 413 - "shop.ts"
+Cohesion: 0.08
+Nodes (52): b64url(), constantTimeEqual(), cookieSecret(), CustomerSession, makeCustomerSession(), newJti(), readCustomerSession(), sign() (+44 more)
+
+### Community 422 - "pageData.ts"
+Cohesion: 0.10
+Nodes (46): BulkMap, isSortKey(), ProductCard, RatingMap, shapeProducts(), SORT_KEYS, SortKey, sortProductCards() (+38 more)
+
+### Community 431 - "storefront/src/server.ts"
+Cohesion: 0.10
+Nodes (37): esc(), HERE, renderSpecialShell(), SPA_INDEX_PATH, SpecialShellOpts, staticFallbackHtml(), EXCLUDED, isExcluded() (+29 more)
+
+### Community 434 - "apiAccount.ts"
+Cohesion: 0.15
+Nodes (21): shopSessionJtiKey(), parseTicketMultipart(), apiAccountRoutes(), csrfHeaderOk(), dt(), requireCustomer(), splitAttachments(), loginAs() (+13 more)
+
+### Community 444 - "apiAuth.ts"
+Cohesion: 0.15
+Nodes (25): accountFailures, accountLockedOut(), attempts, clientIp(), forgotEmailHits, forgotEmailRateLimited(), loginRateLimited(), pruneFailures() (+17 more)
+
+### Community 458 - "routes/checkout.ts"
+Cohesion: 0.07
+Nodes (58): apiRoutes(), CategoryJson, clampJsonQty(), DenominationJson, ProductJson, CachedGateway, checkoutRoutes(), checkoutView() (+50 more)
+
+### Community 464 - "spa-api.test.ts"
+Cohesion: 0.06
+Nodes (19): disableNowpayments(), enableNowpayments(), signedIpn(), disablePaydisini(), enablePaydisini(), mockCheckTransaction, cleanupTestDb(), dir (+11 more)
+
+### Community 475 - "BroadcastPage.tsx"
+Cohesion: 0.07
+Nodes (36): PageHeader(), PageHeaderProps, PageLayout(), describeError(), KNOWN_ERROR_MESSAGES, BroadcastData, BroadcastPage(), BroadcastRow (+28 more)
+
+### Community 480 - "web-admin/client/src/App.tsx"
+Cohesion: 0.04
+Nodes (52): publicPost(), DateInput(), Button, buttonVariants, MotionButton, MotionSlot, Input(), Label() (+44 more)
+
+### Community 481 - "apiPost"
+Cohesion: 0.08
+Nodes (41): apiDelete(), apiPatch(), apiPost(), csrfToken(), logout(), throwForResponse(), AdditionalField, AdditionalFieldDraft (+33 more)
+
+### Community 483 - "apiGet"
+Cohesion: 0.03
+Nodes (71): apiGet(), AnalyticsCurrency, AnalyticsMetric, AnalyticsPoint, AnalyticsRange, CurrencyProfit, DashboardKpis, ExpirationRow (+63 more)
+
+### Community 496 - "UsersPage.tsx"
+Cohesion: 0.07
+Nodes (31): App(), Tooltip(), TooltipContent(), TooltipProvider(), TooltipTrigger(), useDebouncedValue(), formatRelativeTime(), queryClient (+23 more)
+
+### Community 498 - "web-admin/client/src/lib/motion.ts"
+Cohesion: 0.16
+Nodes (9): QUICK_ACTIONS, TopBar(), TopBarProps, EASE, fadeIn, fadeUp, pressable, staggerContainer (+1 more)
+
+### Community 499 - "web-admin/client/src/pages/TicketDetailPage.tsx"
+Cohesion: 0.08
+Nodes (28): CardRow(), CardRowProps, TicketPriorityBadge(), TicketPriorityBadgeProps, TONE_CLASS, TicketStatusBadge(), TicketStatusBadgeProps, TONE_CLASS (+20 more)
+
+### Community 500 - "PaymentsPage.tsx"
+Cohesion: 0.08
+Nodes (39): ConfirmDialog(), ConfirmDialogProps, Phase, SaveConfirmDialog(), SaveConfirmDialogProps, Dialog(), DialogClose(), DialogContent() (+31 more)
+
+### Community 507 - "AppShell.tsx"
+Cohesion: 0.22
+Nodes (5): AppShell(), ErrorBoundary, ErrorBoundaryProps, ErrorBoundaryState, PageTransition()
+
+### Community 508 - "OrderStatusBadge.tsx"
+Cohesion: 0.27
+Nodes (7): BUCKET_STYLE, BucketStyle, FALLBACK_STYLE, OrderStatusBadge(), OrderStatusBadgeProps, ORDER_STATUS_LABELS, orderStatusLabel()
+
+### Community 509 - "web-admin/client/src/pages/ReviewsPage.tsx"
+Cohesion: 0.05
+Nodes (58): FilterBar(), FilterBarProps, buildPageWindow(), Pagination(), PaginationProps, StatusBadge(), titleCase(), Tone (+50 more)
+
+### Community 511 - "web-admin/client/src/pages/OrdersPage.tsx"
+Cohesion: 0.10
+Nodes (27): FAMILY_CLASS, PaymentMethodBadge(), PaymentMethodBadgeProps, RAIL_FAMILY, RailFamily, OrdersKpis, useOrdersKpis(), PAYMENT_METHOD_LABELS (+19 more)
+
+### Community 512 - "web-admin/client/src/pages/SettingsPage.tsx"
+Cohesion: 0.08
+Nodes (32): relativeTime(), SettingsSaveStatus(), SettingsSaveStatusProps, highlightMatch(), matchesQuery(), SettingsSearch(), SettingsSearchProps, BybitPollHealth (+24 more)
+
+### Community 515 - "SettingsNav.tsx"
+Cohesion: 0.13
+Nodes (13): prefersReducedMotion(), readExpandedStorage(), SettingsNav(), SettingsNavGroup, SettingsNavLink, SettingsNavProps, BOTTOM, GROUP (+5 more)
+
+### Community 553 - "Sidebar.tsx"
+Cohesion: 0.19
+Nodes (8): NAV_GROUPS, NavGroup, NavItemConfig, Sidebar(), SidebarContent(), SidebarProps, ShopInfo, useShopInfo()
+
+### Community 566 - "cn"
+Cohesion: 0.03
+Nodes (111): Column, DataTable(), DataTableProps, MotionCardRow, MotionTableBody, MotionTableRow, COLUMNS, Row (+103 more)
+
+### Community 575 - "sonner.tsx"
+Cohesion: 0.06
+Nodes (21): Toaster(), ROW, PENDING_INTERNAL, TX, UNDERPAID, jsonResponse(), KPIS_DATA, mockFetchRouter() (+13 more)
+
+### Community 578 - "ImageUploadField.test.tsx"
+Cohesion: 0.13
+Nodes (3): FILE, BROADCAST, FakeXHR
+
+### Community 579 - "config.ts"
+Cohesion: 0.07
+Nodes (27): makeSession(), newJti(), sessionJtiKey(), HERE, broadcastPhotoRoutes(), esc(), HERE, unauthShellRoutes() (+19 more)
+
+### Community 597 - "enums.ts"
+Cohesion: 0.07
+Nodes (34): outboxApiRoutes(), STATUS_VALUES, customerStatusLabel(), NotificationStatus, IMPORTANT: SQLAlchemy `Enum(native_enum=False)` stores the enum MEMBER NAME, ReviewSource, zBroadcastStatus, zDeliveryType (+26 more)
+
+### Community 599 - "web-admin/src/plugins/auth.ts"
+Cohesion: 0.04
+Nodes (74): HERE, IMAGE_MIME, ParsedAttachment, TICKET_DIR, TicketSubmission, validateAttachment(), VIDEO_MIME, writeAttachment() (+66 more)
+
+### Community 607 - "nowpaymentsReconcile.ts"
+Cohesion: 0.10
+Nodes (22): alertAdmins(), extractInvoiceId(), PendingOrder, pollOnce(), reconcileOrder(), startPolling(), stopPolling(), CREDS (+14 more)
+
+### Community 613 - "telegramCheck.ts"
+Cohesion: 0.21
+Nodes (8): ChannelCheck, checkChannelWithTelegram(), checkTokenWithTelegram(), FileResolution, normalizeChannelInput(), setChannelValidator(), setFileResolver(), TokenCheck
+
+### Community 643 - "crud/orders.ts"
+Cohesion: 0.04
+Nodes (107): displayDateTime(), auditApiRoutes(), parseDate(), dashboardApiRoutes(), shapeRevenue(), trendPct(), buildOrderFilter(), BULK_ACTIONS (+99 more)
+
+### Community 649 - "crud/reviews.ts"
+Cohesion: 0.14
+Nodes (28): buildReviewFilter(), MANUAL_STATUS_VALUES, reviewsApiRoutes(), SENTIMENT_VALUES, SOURCE_VALUES, STATUS_VALUES, ReviewSentiment, ReviewStatus (+20 more)
+
+### Community 652 - "api/stock.ts"
+Cohesion: 0.22
+Nodes (17): displayDate(), csvField(), csvRow(), stockApiRoutes(), stockStatusLabel(), RFC-4180, listAllDenominations(), countRestockSubscribers() (+9 more)
+
+### Community 654 - "api/support.ts"
+Cohesion: 0.11
+Nodes (31): getFileResolver(), buildTicketFilter(), BULK_ACTIONS, BulkAction, CATEGORY_VALUES, classifyDetails(), csvField(), csvRow() (+23 more)
+
+### Community 656 - "crud/vouchers.ts"
+Cohesion: 0.17
+Nodes (26): VOUCHER_SCOPES, VOUCHER_STATUSES, VOUCHER_TYPES, vouchersApiRoutes(), VoucherScope, quantizeMoney(), applyVoucherToSubtotal(), bulkDeleteVouchers() (+18 more)
+
+### Community 677 - "binance_internal.ts"
+Cohesion: 0.08
+Nodes (67): NotFoundError, paymentsApiRoutes(), OrderCurrency, OrderStatus, PaymentMethod, generatePaymentRef(), logger, updateCtx (+59 more)
+
+### Community 727 - "money.ts"
+Cohesion: 0.11
+Nodes (21): hideIfZero(), OrderMoneyInput, orderMoneyView, base, activeBulkPercent(), bulkDiscountFor(), BulkRuleFields, isBulkActive() (+13 more)
+
+### Community 770 - "web.test.ts"
+Cohesion: 0.06
+Nodes (56): accountFailures, accountLockedOut(), attempts, b64url(), base32Decode(), constantTimeEqual(), consumeResetCode(), cookieSecret() (+48 more)
+
+### Community 865 - "handlers.test.ts"
+Cohesion: 0.07
+Nodes (64): SessionData, cache, invalidateRateCache(), entryAdmin(), customerCtx(), EMAIL_FIELD, GAME_ID_FIELD, makeManualDenom() (+56 more)
+
+### Community 906 - "runtime.ts"
+Cohesion: 0.10
+Nodes (22): scheduleFxRefresh(), guardRunnerTask(), setupCommandMenu(), start(), start(), addAdminId(), resetBotIdentity(), Resolved (+14 more)
+
+### Community 908 - "n"
+Cohesion: 0.53
+Nodes (4): missingTables(), PAYMENT_LEDGER_TABLES, stubDb(), n()
+
+### Community 1056 - "storageMaintenance.test.ts"
+Cohesion: 0.24
+Nodes (14): TicketStatus, checkpointWal(), clearBroadcastImage(), clearTicketAttachments(), listBroadcastsForImageCleanup(), listTicketsForAttachmentCleanup(), pruneExpiredPasswordResetTokens(), pruneSentOutbox() (+6 more)
+
+### Community 1157 - "catalogRename.ts"
+Cohesion: 0.18
+Nodes (15): Cell, DEP_COLUMNS, DEP_DDL, hasColumn(), hasTable(), migrateCatalogRename(), POST_INDEXES, Row (+7 more)
 
 ## Knowledge Gaps
-- **1504 isolated node(s):** `name`, `version`, `private`, `type`, `./main` (+1499 more)
+- **2956 isolated node(s):** `name`, `version`, `private`, `type`, `./main` (+2951 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **1140 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **32 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `dependencies` connect `Core Shared Libraries` to `Core Package Config`?**
-  _High betweenness centrality (0.001) - this node is a cross-community bridge._
-- **Why does `dependencies` connect `Web Admin Client Dependencies` to `Web Admin Client Dev`?**
-  _High betweenness centrality (0.001) - this node is a cross-community bridge._
+- **Why does `msg()` connect `conversations/admin.ts` to `web-admin/client/src/App.tsx`, `handlers.test.ts`?**
+  _High betweenness centrality (0.071) - this node is a cross-community bridge._
+- **Why does `LoginPage()` connect `web-admin/client/src/App.tsx` to `conversations/admin.ts`?**
+  _High betweenness centrality (0.071) - this node is a cross-community bridge._
+- **Why does `t()` connect `t` to `HomePage.tsx`, `StaticPage.tsx`, `storefront/client/src/App.tsx`, `apiGet`, `lib/i18n.ts`, `storefront/client/src/pages/TicketDetailPage.tsx`, `TicketMessageThread.tsx`, `storefront/client/src/api/client.ts`, `AccountPage.tsx`, `storefront/client/src/pages/ReviewsPage.tsx`, `ProductPage.tsx`?**
+  _High betweenness centrality (0.050) - this node is a cross-community bridge._
 - **What connects `name`, `version`, `private` to the rest of the system?**
-  _1504 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `Core Package Config` be split into smaller, more focused modules?**
-  _Cohesion score 0.05405405405405406 - nodes in this community are weakly interconnected._
-- **Should `Web Admin Client Dependencies` be split into smaller, more focused modules?**
-  _Cohesion score 0.05714285714285714 - nodes in this community are weakly interconnected._
-- **Should `Order Bot App` be split into smaller, more focused modules?**
+  _2956 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `exports` be split into smaller, more focused modules?**
+  _Cohesion score 0.08333333333333333 - nodes in this community are weakly interconnected._
+- **Should `dependencies` be split into smaller, more focused modules?**
+  _Cohesion score 0.10526315789473684 - nodes in this community are weakly interconnected._
+- **Should `exports` be split into smaller, more focused modules?**
   _Cohesion score 0.06060606060606061 - nodes in this community are weakly interconnected._
-- **Should `Web Admin Client Dev` be split into smaller, more focused modules?**
-  _Cohesion score 0.0625 - nodes in this community are weakly interconnected._

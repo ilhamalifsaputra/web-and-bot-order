@@ -44,6 +44,76 @@ function postJson(url: string, c: string | null, csrfToken: string, body: Record
   });
 }
 
+function getJson(url: string, c: string | null) {
+  return app.inject({ method: "GET", url, cookies: c ? { [COOKIE]: c } : {} });
+}
+
+describe("GET /api/broadcast", () => {
+  it("history rows expose total/sent (not the raw Prisma totalCount/sentCount), so the client's Sent column can't silently regress to undefined", async () => {
+    const draftRes = await postJson("/api/broadcast", cookie, csrf, {
+      message: "hi", segment: "ALL", scheduled_at: "", image_url: "", draft: true,
+    });
+    const { broadcast } = draftRes.json() as { broadcast: { id: number } };
+    // Simulate a broadcast the drainer has partially delivered — there's no
+    // route for this, so update the counters directly, same as the drainer would.
+    await prisma.broadcast.update({
+      where: { id: broadcast.id },
+      data: { totalCount: 200, sentCount: 12 },
+    });
+
+    const res = await getJson("/api/broadcast", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { history: Array<Record<string, unknown>> };
+    const row = body.history.find((h) => h.id === broadcast.id);
+    expect(row).toBeTruthy();
+    expect(row!.total).toBe(200);
+    expect(row!.sent).toBe(12);
+    expect(row!.totalCount).toBeUndefined();
+    expect(row!.sentCount).toBeUndefined();
+  });
+
+  // The client polls this (heaviest-read) endpoint every few seconds while
+  // anything is "in flight". Without isDue, a PENDING row scheduled for next
+  // week counted as in flight and kept an open tab re-running three segment
+  // counts — one a correlated EXISTS over orders per user — for days.
+  it("marks a PENDING row due only when its schedule has come round", async () => {
+    const enqueue = async (scheduled_at: string) => {
+      const res = await postJson("/api/broadcast", cookie, csrf, {
+        message: "hi", segment: "ALL", scheduled_at, image_url: "",
+      });
+      return (res.json() as { broadcast: { id: number } }).broadcast.id;
+    };
+    const immediateId = await enqueue("");
+    const pastId = await enqueue(new Date(Date.now() - 60_000).toISOString());
+    const futureId = await enqueue(new Date(Date.now() + 7 * 24 * 3_600_000).toISOString());
+
+    const body = (await getJson("/api/broadcast", cookie)).json() as {
+      history: Array<{ id: number; status: string; isDue: boolean }>;
+    };
+    const byId = (id: number) => body.history.find((h) => h.id === id)!;
+
+    expect(byId(immediateId).status).toBe("PENDING");
+    expect(byId(immediateId).isDue).toBe(true); // no schedule at all
+    expect(byId(pastId).isDue).toBe(true); // scheduled time already passed
+    expect(byId(futureId).isDue).toBe(false); // a week out — nothing to poll for
+  });
+
+  it("never reports a non-PENDING row as not-due, so a SENDING row always keeps the page polling", async () => {
+    const res = await postJson("/api/broadcast", cookie, csrf, {
+      message: "hi", segment: "ALL", scheduled_at: new Date(Date.now() + 7 * 24 * 3_600_000).toISOString(), image_url: "",
+    });
+    const { broadcast } = res.json() as { broadcast: { id: number } };
+    // Same far-future schedule, but the drainer has claimed it: the schedule is
+    // now history and the row can change from under the page at any moment.
+    await prisma.broadcast.update({ where: { id: broadcast.id }, data: { status: "SENDING" } });
+
+    const body = (await getJson("/api/broadcast", cookie)).json() as {
+      history: Array<{ id: number; isDue: boolean }>;
+    };
+    expect(body.history.find((h) => h.id === broadcast.id)!.isDue).toBe(true);
+  });
+});
+
 describe("POST /api/broadcast", () => {
   it("draft:true creates a DRAFT row, not PENDING", async () => {
     const res = await postJson("/api/broadcast", cookie, csrf, {

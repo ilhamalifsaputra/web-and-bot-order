@@ -16,8 +16,28 @@ import {
   BINANCE_API_SECRET_KEY,
   BINANCE_POLL_HEALTH_KEY,
 } from "@app/db";
-import type { Api } from "grammy";
+/**
+ * Lets a single test make the drainer's mid-flight progress flush fail — the
+ * SQLITE_BUSY-past-busy_timeout case — without disturbing any other DB write.
+ * Everything else in `@app/db` is the real implementation; `vi.hoisted` is
+ * needed because `vi.mock` factories run before ordinary module-level `let`s
+ * are initialised.
+ */
+const dbMockState = vi.hoisted(() => ({ progressFlushError: null as Error | null }));
+vi.mock("@app/db", async () => {
+  const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
+  return {
+    ...actual,
+    updateBroadcastProgress: async (...args: Parameters<typeof actual.updateBroadcastProgress>) => {
+      if (dbMockState.progressFlushError) throw dbMockState.progressFlushError;
+      return actual.updateBroadcastProgress(...args);
+    },
+  };
+});
+
+import { GrammyError, type Api } from "grammy";
 import { OrderStatus, OrderCurrency, TicketStatus } from "@app/core/enums";
+import { logger } from "@app/core/logger";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { autoCancelExpiredOrders, autoCloseStaleTickets, scheduleJobs, drainBroadcasts, announceStartedFlashSales, binancePollWatchdog } from "../src/jobs";
 import { NotificationEvent } from "@app/core/enums";
@@ -25,6 +45,7 @@ import { NotificationEvent } from "@app/core/enums";
 let sample: SampleData;
 
 beforeEach(async () => {
+  dbMockState.progressFlushError = null;
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
 });
@@ -250,8 +271,18 @@ describe("drainBroadcasts", () => {
       total: 0,
       webImageUrl: "/uploads/broadcasts/broadcast-test.jpg",
     });
+    // A real blocked user, i.e. a GrammyError — not a bare Error, which the
+    // loop now (correctly) treats as an unexpected non-Telegram failure and
+    // logs loudly.
     const sendPhoto = vi.fn()
-      .mockRejectedValueOnce(new Error("blocked"))
+      .mockRejectedValueOnce(
+        new GrammyError(
+          "Call to 'sendPhoto' failed!",
+          { ok: false, error_code: 403, description: "Forbidden: bot was blocked by the user" },
+          "sendPhoto",
+          {},
+        ),
+      )
       .mockResolvedValueOnce({ photo: [{ file_id: "fid" }] });
     const api = fakeApi({ sendPhoto });
 
@@ -261,6 +292,442 @@ describe("drainBroadcasts", () => {
     const done = await prisma.broadcast.findUnique({ where: { id: bc.id } });
     expect(done!.sentCount).toBe(1);
     expect(done!.failedCount).toBe(1);
+  });
+
+  // Sub-item (c): sentCount used to be written exactly once, by
+  // finishBroadcast, after the whole loop — so Broadcast History showed a
+  // frozen 0 that jumped straight to the final number. The drainer now flushes
+  // its running counters every BROADCAST_PROGRESS_FLUSH_EVERY (25) recipients.
+  it("flushes running counters to the row every 25 recipients while still SENDING", async () => {
+    for (let i = 0; i < 26; i++) await addRecipient(5100 + i);
+    const bc = await createBroadcast(prisma, { message: "long one", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+
+    // Snapshot the persisted row from INSIDE the send loop: once just before
+    // the 25th recipient (no flush yet) and once just before the 26th (the
+    // first flush has landed).
+    const snapshots: Record<number, { status: string; sentCount: number; failedCount: number }> = {};
+    let call = 0;
+    const sendMessage = vi.fn(async () => {
+      call++;
+      if (call === 25 || call === 26) {
+        const row = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+        snapshots[call] = { status: row.status, sentCount: row.sentCount, failedCount: row.failedCount };
+      }
+    });
+
+    await drainBroadcasts(fakeApi({ sendMessage }));
+
+    expect(sendMessage).toHaveBeenCalledTimes(26);
+    // Nothing flushed yet at recipient 25 — the counter is still the initial 0.
+    expect(snapshots[25]).toEqual({ status: "SENDING", sentCount: 0, failedCount: 0 });
+    // ...and the flush after recipient 25 is visible to the admin BEFORE the
+    // broadcast finishes, which is the whole point of the change.
+    expect(snapshots[26]).toEqual({ status: "SENDING", sentCount: 25, failedCount: 0 });
+
+    // finishBroadcast still writes the authoritative final numbers over it.
+    const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+    expect(done.status).toBe("SENT");
+    expect(done.sentCount).toBe(26);
+    expect(done.totalCount).toBe(26);
+  });
+
+  // The flush is cosmetic, but its `await` sits outside every try/catch in the
+  // send loop. A SQLITE_BUSY past the client's busy_timeout used to escape
+  // drainBroadcasts entirely: the row stayed SENDING, finishBroadcast never
+  // ran, and 15 minutes later the reaper marked it FAILED with "the sender
+  // process restarted" — a reason that is simply untrue, on a broadcast that
+  // silently stopped part-way through its segment.
+  it("keeps sending when a mid-flight progress flush fails, rather than aborting the whole broadcast", async () => {
+    for (let i = 0; i < 30; i++) await addRecipient(5300 + i);
+    const bc = await createBroadcast(prisma, { message: "busy db", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+    dbMockState.progressFlushError = new Error("SQLITE_BUSY: database is locked");
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const warn = vi.spyOn(logger, "warn");
+
+    let flushWarnings: unknown[] = [];
+    try {
+      await drainBroadcasts(fakeApi({ sendMessage }));
+    } finally {
+      flushWarnings = warn.mock.calls.filter((c) => String(c[1]).includes("mid-flight progress counters"));
+      warn.mockRestore();
+    }
+
+    // Every recipient after the failed flush at #25 still got their message.
+    expect(sendMessage).toHaveBeenCalledTimes(30);
+    // ...and the failure was reported rather than swallowed silently.
+    expect(flushWarnings).toHaveLength(1);
+
+    // The broadcast completed normally: SENT with the authoritative final
+    // numbers, no stuck SENDING row for the reaper to mislabel.
+    const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+    expect(done.status).toBe("SENT");
+    expect(done.sentCount).toBe(30);
+    expect(done.failedCount).toBe(0);
+    expect(done.totalCount).toBe(30);
+  });
+
+  // M4: totalCount is stamped at enqueue from a segment count taken then, but
+  // the recipient list is only resolved when the drain starts. If the segment
+  // grew in between, History showed e.g. 25/2 mid-flight until finishBroadcast
+  // corrected it, so the flush writes the live recipient count too.
+  it("flushes the live recipient count, so a segment that grew since enqueue can't render a nonsense fraction", async () => {
+    for (let i = 0; i < 26; i++) await addRecipient(5400 + i);
+    // Enqueued when the segment held only 2 users.
+    const bc = await createBroadcast(prisma, { message: "grew", segment: "ALL", scheduledAt: null, createdById: null, total: 2 });
+
+    let midFlight: { sentCount: number; totalCount: number } | null = null;
+    let call = 0;
+    const sendMessage = vi.fn(async () => {
+      call++;
+      if (call === 26) {
+        const row = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+        midFlight = { sentCount: row.sentCount, totalCount: row.totalCount };
+      }
+    });
+
+    await drainBroadcasts(fakeApi({ sendMessage }));
+
+    expect(midFlight).toEqual({ sentCount: 25, totalCount: 26 });
+  });
+
+  // Sub-item (b): the loop used to `await sleep(40)` flat AFTER the send, so
+  // the real rate was 1/(latency + 40ms) rather than the ~25 msg/s the 40ms
+  // throttle was sized for. The wait is now the REMAINDER of that budget.
+  describe("latency-aware throttle", () => {
+    /** Record every sleep the drainer asks for while letting the real timer
+     *  run, and drive a virtual clock so a "slow" Telegram call can consume
+     *  the send budget without the test actually waiting for it. */
+    function instrumentClock() {
+      const requested: number[] = [];
+      const realSetTimeout = globalThis.setTimeout;
+      let now = Date.now();
+      const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+      const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, ms?: number) => {
+        requested.push(ms ?? 0);
+        // Advance the virtual clock by what was asked for, but fire straight
+        // away so the suite doesn't spend real seconds sleeping.
+        now += ms ?? 0;
+        return realSetTimeout(fn, 0);
+      }) as typeof globalThis.setTimeout);
+      return {
+        requested,
+        advance: (ms: number) => { now += ms; },
+        restore: () => { timerSpy.mockRestore(); nowSpy.mockRestore(); },
+      };
+    }
+
+    it("sleeps only the remainder of the 40ms budget after a fast send", async () => {
+      await addRecipient(6001);
+      await createBroadcast(prisma, { message: "fast", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+      const clock = instrumentClock();
+      // 10ms of latency leaves 30ms of the 40ms budget still to wait out.
+      const sendMessage = vi.fn(async () => { clock.advance(10); });
+
+      try {
+        await drainBroadcasts(fakeApi({ sendMessage }));
+      } finally {
+        clock.restore();
+      }
+
+      expect(clock.requested).toEqual([30]);
+    });
+
+    it("does not sleep at all when the send already took longer than the budget", async () => {
+      await addRecipient(6002);
+      await addRecipient(6003);
+      await createBroadcast(prisma, { message: "slow", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+      const clock = instrumentClock();
+      // 100ms latency > the 40ms budget: the old flat sleep(40) would have
+      // added 40ms on top of each of these, dropping the rate to ~7 msg/s.
+      const sendMessage = vi.fn(async () => { clock.advance(100); });
+
+      try {
+        await drainBroadcasts(fakeApi({ sendMessage }));
+      } finally {
+        clock.restore();
+      }
+
+      expect(sendMessage).toHaveBeenCalledTimes(2);
+      expect(clock.requested).toEqual([]);
+    });
+  });
+
+  // Telegram flood control (429 + retry_after) used to fall into the bare
+  // `catch { failed++ }` alongside "user blocked the bot", permanently writing
+  // those recipients off with no retry.
+  describe("Telegram flood control (retry_after)", () => {
+    const floodError = (retryAfter: number) =>
+      new GrammyError(
+        "Call to 'sendMessage' failed!",
+        { ok: false, error_code: 429, description: "Too Many Requests: retry after " + retryAfter, parameters: { retry_after: retryAfter } },
+        "sendMessage",
+        {},
+      );
+
+    /** Fire every sleep immediately but remember how long was asked for. */
+    function captureSleeps() {
+      const requested: number[] = [];
+      const realSetTimeout = globalThis.setTimeout;
+      const spy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((fn: () => void, ms?: number) => {
+        requested.push(ms ?? 0);
+        return realSetTimeout(fn, 0);
+      }) as typeof globalThis.setTimeout);
+      return { requested, restore: () => spy.mockRestore() };
+    }
+
+    it("waits out retry_after and re-sends to the SAME recipient instead of failing them", async () => {
+      await addRecipient(7001);
+      const bc = await createBroadcast(prisma, { message: "throttled", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+      const sendMessage = vi.fn()
+        .mockRejectedValueOnce(floodError(2))
+        .mockResolvedValueOnce(undefined);
+      const sleeps = captureSleeps();
+
+      try {
+        await drainBroadcasts(fakeApi({ sendMessage }));
+      } finally {
+        sleeps.restore();
+      }
+
+      // Same chat id, twice — the retry is a retry, not a skip.
+      expect(sendMessage).toHaveBeenCalledTimes(2);
+      expect(sendMessage.mock.calls[0]![0]).toBe(7001);
+      expect(sendMessage.mock.calls[1]![0]).toBe(7001);
+      // retry_after 2s honoured with the dispatcher's +1s of headroom.
+      expect(sleeps.requested).toContain(3000);
+
+      const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+      expect(done.sentCount).toBe(1);
+      expect(done.failedCount).toBe(0);
+    });
+
+    // `retry_after: 0` ("you may retry immediately") is a real 429. A
+    // truthiness check on it read 0 as "not flood control at all" and wrote the
+    // recipient off as permanently failed, with no retry.
+    it("treats retry_after: 0 as flood control to retry, not as a permanent failure", async () => {
+      await addRecipient(7006);
+      const bc = await createBroadcast(prisma, { message: "zero wait", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+      const sendMessage = vi.fn()
+        .mockRejectedValueOnce(floodError(0))
+        .mockResolvedValueOnce(undefined);
+      const sleeps = captureSleeps();
+
+      try {
+        await drainBroadcasts(fakeApi({ sendMessage }));
+      } finally {
+        sleeps.restore();
+      }
+
+      expect(sendMessage).toHaveBeenCalledTimes(2);
+      expect(sleeps.requested).toContain(1_000); // 0s + the dispatcher's 1s of headroom
+      const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+      expect(done.sentCount).toBe(1);
+      expect(done.failedCount).toBe(0);
+    });
+
+    it("clamps an absurd retry_after instead of parking the drainer for hours", async () => {
+      await addRecipient(7002);
+      await createBroadcast(prisma, { message: "hostile", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+      const sendMessage = vi.fn()
+        .mockRejectedValueOnce(floodError(86_400)) // a full day
+        .mockResolvedValueOnce(undefined);
+      const sleeps = captureSleeps();
+
+      try {
+        await drainBroadcasts(fakeApi({ sendMessage }));
+      } finally {
+        sleeps.restore();
+      }
+
+      // Capped at BROADCAST_MAX_RETRY_AFTER_S (60s) + 1s of headroom.
+      expect(Math.max(...sleeps.requested)).toBe(61_000);
+    });
+
+    it("gives up on a recipient that is flood-controlled forever, and keeps draining the rest", async () => {
+      await addRecipient(7003);
+      await addRecipient(7004);
+      const bc = await createBroadcast(prisma, { message: "endless", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+      const sendMessage = vi.fn(async (chatId: number) => {
+        if (chatId === 7003) throw floodError(1); // never recovers
+      });
+      const sleeps = captureSleeps();
+
+      try {
+        await drainBroadcasts(fakeApi({ sendMessage }));
+      } finally {
+        sleeps.restore();
+      }
+
+      // 1 initial attempt + BROADCAST_MAX_FLOOD_RETRIES (3) for 7003, then the
+      // loop moves on and delivers to 7004 — it must terminate, not spin.
+      expect(sendMessage.mock.calls.filter((c) => c[0] === 7003)).toHaveLength(4);
+      expect(sendMessage.mock.calls.filter((c) => c[0] === 7004)).toHaveLength(1);
+
+      const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+      expect(done.status).toBe("SENT");
+      expect(done.sentCount).toBe(1);
+      expect(done.failedCount).toBe(1);
+    });
+
+    // The per-recipient bounds (3 retries, 60s clamp) bound ONE recipient at
+    // ~3x61s but do NOT bound the tick: N recipients each paying that is
+    // N x 183s, roughly 50 hours for a 1,000-recipient segment, all of it with
+    // protect:true holding off every other drain tick and the last 49 of those
+    // hours past BROADCAST_STALE_CLAIM_MS, where the row can be reaped as
+    // FAILED underneath a send that is still delivering.
+    it("stops retrying once the whole broadcast has spent its flood-back-off budget", async () => {
+      // 61s clamped back-off each, so the 5-minute budget allows 4 pauses
+      // (4x61s = 244s; a 5th would exceed 300s).
+      for (let i = 0; i < 8; i++) await addRecipient(7100 + i);
+      const bc = await createBroadcast(prisma, { message: "throttled hard", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+      const sendMessage = vi.fn().mockRejectedValue(floodError(600)); // clamped to 60s
+      const sleeps = captureSleeps();
+
+      try {
+        await drainBroadcasts(fakeApi({ sendMessage }));
+      } finally {
+        sleeps.restore();
+      }
+
+      // Recipient 1 burns 3 retries (3x61s = 183s) and is abandoned; recipient
+      // 2 gets one more pause (244s) and then the budget refuses the next one,
+      // which cuts the whole broadcast short.
+      const floodPauses = sleeps.requested.filter((ms) => ms === 61_000);
+      expect(floodPauses).toHaveLength(4);
+      expect(floodPauses.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(5 * 60_000);
+      // Only two recipients were ever contacted; the other six were dropped.
+      expect(new Set(sendMessage.mock.calls.map((c) => c[0])).size).toBe(2);
+
+      // Every recipient is still accounted for — the six never attempted are
+      // counted as failed, so sent + failed == total and the admin's numbers
+      // do not silently lose people.
+      //
+      // And the row is FAILED, not SENT: a broadcast that never reached part of
+      // its segment used to show a green "Sent" badge over 0/8 with the reason
+      // living only in a Pino line no shop admin reads. Broadcast History
+      // renders failureReason under the badge for FAILED rows, which is what
+      // actually tells the admin to re-send.
+      const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+      expect(done.status).toBe("FAILED");
+      expect(done.failureReason).toContain("6 recipient(s) were never contacted");
+      expect(done.failureReason).toMatch(/rate limiting/i);
+      expect(done.sentCount).toBe(0);
+      expect(done.failedCount).toBe(8);
+      expect(done.totalCount).toBe(8);
+    }, 20_000);
+
+    // The counters-only write that precedes failBroadcast is as cosmetic as the
+    // in-loop flush, and must fail as softly: if it threw, failBroadcast would
+    // be skipped and the row would sit SENDING until the reaper relabelled it
+    // with the wrong reason — costing the admin exactly the explanation this
+    // branch exists to give them.
+    it("still records the cut-short reason when the final counter flush fails on a contended write", async () => {
+      for (let i = 0; i < 8; i++) await addRecipient(7500 + i);
+      const bc = await createBroadcast(prisma, { message: "throttled, busy db", segment: "ALL", scheduledAt: null, createdById: null, total: 8 });
+      // Cut short at recipient 2, well before the 25-recipient in-loop flush,
+      // so the only flush this test can trip is the cut-short one.
+      dbMockState.progressFlushError = new Error("SQLITE_BUSY: database is locked");
+      const sendMessage = vi.fn().mockRejectedValue(floodError(600));
+      const sleeps = captureSleeps();
+      const warn = vi.spyOn(logger, "warn");
+
+      let flushWarnings: unknown[] = [];
+      try {
+        await drainBroadcasts(fakeApi({ sendMessage }));
+      } finally {
+        sleeps.restore();
+        flushWarnings = warn.mock.calls.filter((c) => String(c[1]).includes("final counters before marking itself cut short"));
+        warn.mockRestore();
+      }
+
+      const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+      expect(done.status).toBe("FAILED");
+      expect(done.failureReason).toContain("6 recipient(s) were never contacted");
+      expect(flushWarnings).toHaveLength(1);
+      // The numbers are what lags behind, not the status or the reason.
+      expect(done.sentCount).toBe(0);
+    }, 20_000);
+
+    it("logs the flood pause once per broadcast rather than once per back-off", async () => {
+      await addRecipient(7200);
+      await addRecipient(7201);
+      await createBroadcast(prisma, { message: "noisy", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+      // Both recipients flood-control twice before succeeding: 4 back-offs.
+      const sendMessage = vi.fn()
+        .mockRejectedValueOnce(floodError(1)).mockRejectedValueOnce(floodError(1)).mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(floodError(1)).mockRejectedValueOnce(floodError(1)).mockResolvedValueOnce(undefined);
+      const warn = vi.spyOn(logger, "warn");
+      const sleeps = captureSleeps();
+
+      let floodWarnings: unknown[] = [];
+      try {
+        await drainBroadcasts(fakeApi({ sendMessage }));
+      } finally {
+        sleeps.restore();
+        // Read the recorded calls BEFORE restoring — mockRestore() clears them.
+        floodWarnings = warn.mock.calls.filter((c) => String(c[0]).includes("flood-controlled"));
+        warn.mockRestore();
+      }
+
+      // Four back-offs actually happened...
+      expect(sleeps.requested.filter((ms) => ms === 2_000)).toHaveLength(4);
+      // ...and produced exactly one log line between them.
+      expect(floodWarnings).toHaveLength(1);
+    });
+
+    it("still fails a non-flood error immediately, with no retry", async () => {
+      await addRecipient(7005);
+      const bc = await createBroadcast(prisma, { message: "blocked", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+      const sendMessage = vi.fn().mockRejectedValue(
+        new GrammyError(
+          "Call to 'sendMessage' failed!",
+          { ok: false, error_code: 403, description: "Forbidden: bot was blocked by the user" },
+          "sendMessage",
+          {},
+        ),
+      );
+
+      await drainBroadcasts(fakeApi({ sendMessage }));
+
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+      expect(done.failedCount).toBe(1);
+    });
+
+    // A failure that is NOT a Telegram API error is the signature of the one
+    // way this loop can miscount a DELIVERED message as failed: the file_id
+    // cache write inside `deliver` throwing after a successful sendPhoto. The
+    // miscount is left as-is, but it must not be invisible in production.
+    it("logs a non-Telegram failure with its error object, unlike an ordinary blocked user", async () => {
+      await addRecipient(7300);
+      await createBroadcast(prisma, { message: "db trouble", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+      const cause = new Error("SQLITE_BUSY: database is locked");
+      const warn = vi.spyOn(logger, "warn");
+
+      await drainBroadcasts(fakeApi({ sendMessage: vi.fn().mockRejectedValue(cause) }));
+
+      const lines = warn.mock.calls.filter((c) => String(c[1]).includes("not a Telegram API error"));
+      expect(lines).toHaveLength(1);
+      expect((lines[0]![0] as { err: unknown }).err).toBe(cause);
+      warn.mockRestore();
+    });
+
+    it("does not log a line per recipient for ordinary blocked users", async () => {
+      for (let i = 0; i < 3; i++) await addRecipient(7400 + i);
+      await createBroadcast(prisma, { message: "all blocked", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+      const blocked = new GrammyError(
+        "Call to 'sendMessage' failed!",
+        { ok: false, error_code: 403, description: "Forbidden: bot was blocked by the user" },
+        "sendMessage",
+        {},
+      );
+      const warn = vi.spyOn(logger, "warn");
+
+      await drainBroadcasts(fakeApi({ sendMessage: vi.fn().mockRejectedValue(blocked) }));
+
+      expect(warn.mock.calls.filter((c) => String(c[1]).includes("could not deliver"))).toHaveLength(0);
+      warn.mockRestore();
+    });
   });
 });
 
@@ -414,10 +881,13 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       expect(crons[4]!.options.protect).toBe(true);
       expect(crons[5]!.getPattern()).toBe("*/2 * * * *"); // bybitBscPollWatchdog
       expect(crons[5]!.options.protect).toBe(true);
-      // drainBroadcasts — offset to :20 past the minute (not :00, same as
-      // autoCancelExpiredOrders above) so the two don't contend for SQLite's
-      // single write-lock in the same instant every tick; still protected.
-      expect(crons[6]!.getPattern()).toBe("20 * * * * *");
+      // drainBroadcasts — four ticks a minute so a queued broadcast starts
+      // within ~15s instead of up to a full minute, on seconds that dodge both
+      // second 0 (autoCancelExpiredOrders and the hourly/6-hourly jobs) and
+      // second 40 (announceStartedFlashSales) so they never contend for
+      // SQLite's single write-lock in the same instant; still protected.
+      // "*/15" is deliberately NOT used — it would put a tick back on second 0.
+      expect(crons[6]!.getPattern()).toBe("5,20,35,50 * * * * *");
       expect(crons[6]!.options.protect).toBe(true);
       // announceStartedFlashSales — offset to :40 past the minute for the same
       // reason, protected so an overlapping tick can't race the
@@ -428,6 +898,37 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       // other job's minutely/hourly ticks.
       expect(crons[8]!.getPattern()).toBe("30 15 3 * * *");
       expect(crons[8]!.options.protect).toBe(true);
+
+      // The write-lock collision guard itself, rather than just the literal
+      // patterns above: no second-resolution job may share a firing second
+      // with another, and none may land on second 0 where every
+      // minute/hour-resolution job in this list fires (P1008/P2028 in
+      // production, 2026-07-20). Derived from the whole registered list rather
+      // than a hand-picked pair, so a newly added (or re-timed) second-
+      // resolution job — storageCleanupJob's "30 15 3 * * *" is already a third
+      // one — is covered the moment it appears.
+      const secondsOf = (pattern: string) => {
+        const fields = pattern.split(" ");
+        // 5 fields = minute resolution, i.e. it always fires on second 0 and is
+        // covered by the "must not contain 0" rule applied to the others.
+        return fields.length >= 6 ? fields[0]!.split(",").map(Number) : null;
+      };
+      const secondResolution = crons
+        .map((c) => ({ pattern: c.getPattern()!, seconds: secondsOf(c.getPattern()!) }))
+        .filter((c): c is { pattern: string; seconds: number[] } => c.seconds !== null);
+      expect(secondResolution.length).toBeGreaterThanOrEqual(3);
+      for (const job of secondResolution) {
+        // A wildcard ("*", "*/15") parses to NaN here and is rejected: both
+        // would put a tick back on second 0.
+        expect(job.seconds.every(Number.isInteger)).toBe(true);
+        expect(job.seconds).not.toContain(0);
+      }
+      for (let a = 0; a < secondResolution.length; a++) {
+        for (let b = a + 1; b < secondResolution.length; b++) {
+          const shared = secondResolution[a]!.seconds.filter((s) => secondResolution[b]!.seconds.includes(s));
+          expect(shared).toEqual([]);
+        }
+      }
     } finally {
       for (const c of crons) c.stop();
     }

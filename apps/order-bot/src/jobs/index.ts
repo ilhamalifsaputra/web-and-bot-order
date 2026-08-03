@@ -9,7 +9,7 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Cron } from "croner";
-import type { Api } from "grammy";
+import { GrammyError, type Api } from "grammy";
 import { adminIds } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
@@ -33,8 +33,10 @@ import {
   claimNextDueBroadcast,
   resolveSegmentRecipients,
   finishBroadcast,
+  updateBroadcastProgress,
   isBroadcastSegment,
   reapStaleBroadcasts,
+  BROADCAST_STALE_CLAIM_MS,
   failBroadcast,
   refreshUsdIdrRate,
   listUnannouncedStartedFlashSales,
@@ -341,6 +343,69 @@ export async function bybitBscPollWatchdog(api: Api): Promise<void> {
 const BROADCAST_THROTTLE_MS = 40;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Flush the running sent/failed counters to the broadcast row every this many
+ *  recipients, so the admin's History table shows real progress instead of a
+ *  frozen 0. For 1,000 recipients that is 40 tiny scattered writes — cheap even
+ *  for a single-writer SQLite file. */
+const BROADCAST_PROGRESS_FLUSH_EVERY = 25;
+
+/**
+ * Bounds on the flood-control retry path below. Three of them, at two levels,
+ * because the per-recipient bounds alone do NOT bound the tick:
+ *
+ * 1. How LONG one back-off may be. Telegram's `retry_after` is normally a few
+ *    seconds, but the drainer must not park for hours on a bogus or hostile
+ *    value (croner's `protect: true` means no other drain tick can run while
+ *    this one sleeps). Anything larger is clamped to this ceiling.
+ * 2. How MANY times a single RECIPIENT may be retried. Clamping alone is not
+ *    enough — a server that answered 429 forever would still loop for ever, so
+ *    after this many consecutive flood-control responses that recipient is
+ *    counted as failed and the loop moves on.
+ * 3. How much total back-off the whole BROADCAST may spend. (1) and (2)
+ *    together bound one recipient at roughly 3 x 61s, but N recipients each
+ *    paying that is N x 183s — about 50 hours for a 1,000-recipient segment,
+ *    with `protect: true` holding off every other drain tick throughout. That
+ *    is not a hypothetical: the latency-aware throttle above is what finally
+ *    lets this bot reach the ~25 msg/s it was sized for, and 25 msg/s sits
+ *    right against Telegram's ~30 msg/s bulk ceiling, so sustained partial
+ *    throttling is the expected case rather than a freak one.
+ *
+ *    The ceiling is deliberately set well under `BROADCAST_STALE_CLAIM_MS`
+ *    (15 min, packages/db/src/crud/broadcasts.ts), which is the point at which
+ *    a still-running drain's claim looks abandoned. Past that line
+ *    `reapStaleBroadcasts` would flip the row to FAILED underneath the drainer
+ *    that is still happily sending, and both the progress flushes and
+ *    `finishBroadcast` would silently no-op on their `status: SENDING` guard —
+ *    leaving the admin looking at a FAILED broadcast that actually delivered.
+ *    Today only `protect: true` plus the reaper running solely at the top of
+ *    this same job prevents that, which holds for the single-process
+ *    `apps/server` deployment and stops holding the moment a second bot
+ *    process shares the DB. 5 minutes is a third of that window, leaving the
+ *    rest as headroom for the sends themselves (a 1,000-recipient segment
+ *    needs ~40s of throttle at the designed rate). Once the budget is spent
+ *    the broadcast stops retrying, counts everyone it never reached as failed,
+ *    and says so in its finish log.
+ */
+const BROADCAST_MAX_RETRY_AFTER_S = 60;
+const BROADCAST_MAX_FLOOD_RETRIES = 3;
+const BROADCAST_MAX_TOTAL_FLOOD_MS = 5 * 60_000;
+
+/**
+ * How long Telegram's flood control wants us to wait, in milliseconds, or null
+ * when this error is not flood control at all (a blocked bot, a deactivated
+ * account, a network blip — none of which get a retry). Mirrors the outbox
+ * dispatcher's handling, including its +1s of headroom on top of the value
+ * Telegram asked for.
+ */
+function broadcastFloodWaitMs(e: unknown): number | null {
+  // `=== undefined`, not a truthiness check: Telegram may answer 429 with
+  // `retry_after: 0` ("you may retry immediately"), and treating that as
+  // "not flood control" would write the recipient off as permanently failed.
+  if (!(e instanceof GrammyError) || e.parameters?.retry_after === undefined) return null;
+  const seconds = Math.min(Math.max(e.parameters.retry_after, 0), BROADCAST_MAX_RETRY_AFTER_S);
+  return (seconds + 1) * 1000;
+}
+
 /**
  * Drain ONE due broadcast queued by the web admin and DM the segment. This is
  * the bot half of the broadcast feature — the web only enqueues, it never calls
@@ -367,30 +432,178 @@ export async function drainBroadcasts(api: Api): Promise<void> {
   const photoArg = broadcastPhotoArg(bc);
   let cachedFileId = bc.imageFileId;
   const cacheFileId = cacheBroadcastPhotoFileId(bc.id);
-  for (const r of recipients) {
-    try {
-      if (photoArg) {
-        // No parse_mode on the caption either — same reasoning as the plain-text
-        // branch below: the operator types raw content, unescaped.
-        const photo = cachedFileId ?? photoArg.photo;
-        const msg = await api.sendPhoto(Number(r.telegramId), photo, { caption: bc.message });
-        if (!cachedFileId && photoArg.needsCache && msg.photo?.length) {
-          cachedFileId = msg.photo[msg.photo.length - 1]!.file_id;
-          await cacheFileId(cachedFileId);
-        }
-      } else {
-        // Plain text — the operator types raw content; no parse_mode so '<' / '&'
-        // can't break the message.
-        await api.sendMessage(Number(r.telegramId), bc.message);
+  /** One delivery attempt at one recipient. Throws whatever grammY throws so
+   *  the loop below can tell flood control apart from a permanent failure. */
+  const deliver = async (telegramId: bigint | null) => {
+    if (photoArg) {
+      // No parse_mode on the caption either — same reasoning as the plain-text
+      // branch below: the operator types raw content, unescaped.
+      const photo = cachedFileId ?? photoArg.photo;
+      const msg = await api.sendPhoto(Number(telegramId), photo, { caption: bc.message });
+      if (!cachedFileId && photoArg.needsCache && msg.photo?.length) {
+        cachedFileId = msg.photo[msg.photo.length - 1]!.file_id;
+        await cacheFileId(cachedFileId);
       }
-      sent++;
-    } catch {
-      failed++; // user blocked the bot / deactivated — counted, not fatal
+    } else {
+      // Plain text — the operator types raw content; no parse_mode so '<' / '&'
+      // can't break the message.
+      await api.sendMessage(Number(telegramId), bc.message);
     }
-    await sleep(BROADCAST_THROTTLE_MS);
+  };
+
+  let processed = 0;
+  let floodedRecipients = 0; // hit flood control at least once (and so was retried)
+  let floodAbandoned = 0; // ...and still never got through before its own retry budget ran out
+  let floodSpentMs = 0; // total time this broadcast has spent in flood back-off
+  let cutShort = 0; // recipients never attempted because the flood budget ran out
+  for (let i = 0; i < recipients.length; i++) {
+    const r = recipients[i]!;
+    // Measured around the WHOLE recipient (all its attempts included), so the
+    // throttle below sleeps only the remainder of the send budget rather than
+    // stacking a flat 40ms on top of however long Telegram took. A flat sleep
+    // made the real rate 1/(latency+40ms) — roughly 7 msg/s at 100ms latency,
+    // against the ~25 msg/s the throttle was sized for. This can only ever
+    // shorten the wait, never push the rate above the designed ceiling.
+    const startedAt = Date.now();
+    let floodRetries = 0;
+    let budgetExhausted = false;
+    for (;;) {
+      try {
+        await deliver(r.telegramId);
+        sent++;
+        break;
+      } catch (e) {
+        const waitMs = broadcastFloodWaitMs(e);
+        if (waitMs === null) {
+          // A GrammyError here is the expected, common case — the user blocked
+          // the bot or deleted their account — already summarised by the failed
+          // count in the finish log, so it does not earn a line per recipient.
+          // Anything else is NOT expected, and the most plausible candidate is
+          // the image file_id cache write inside `deliver` failing on SQLite
+          // write contention AFTER an otherwise successful sendPhoto, which
+          // miscounts a delivered message as a failure. That is rare enough to
+          // always be worth a line, and undiagnosable without one.
+          if (e instanceof GrammyError) {
+            logger.debug({ err: e }, `Broadcast #${bc.id} could not deliver to one recipient — counting it as failed and continuing with the rest`);
+          } else {
+            logger.warn(
+              { err: e },
+              `Broadcast #${bc.id} failed on one recipient with something that is not a Telegram API error — counting it as failed and continuing, ` +
+                `but if this came from the image file_id cache write then the message itself was actually delivered and the failed count overstates the damage`,
+            );
+          }
+          failed++;
+          break;
+        }
+        // Tick-level bound (3): stop retrying once the whole broadcast has
+        // spent its flood budget, rather than letting every recipient pay its
+        // own worst case and dragging the tick past BROADCAST_STALE_CLAIM_MS.
+        if (floodSpentMs + waitMs > BROADCAST_MAX_TOTAL_FLOOD_MS) {
+          failed++;
+          budgetExhausted = true;
+          break;
+        }
+        if (floodRetries >= BROADCAST_MAX_FLOOD_RETRIES) {
+          failed++;
+          floodAbandoned++;
+          break;
+        }
+        floodRetries++;
+        if (floodRetries === 1) floodedRecipients++;
+        // Logged once per broadcast, not once per back-off: at up to
+        // BROADCAST_MAX_FLOOD_RETRIES pauses for each of N recipients this was
+        // good for thousands of near-identical lines. The totals land in the
+        // finish log below instead.
+        if (floodedRecipients === 1 && floodRetries === 1) {
+          logger.warn(
+            `Telegram flood-controlled broadcast #${bc.id} — pausing ${Math.round(waitMs / 1000)}s and retrying the same recipient rather than writing them off as failed. ` +
+              `Each recipient gets up to ${BROADCAST_MAX_FLOOD_RETRIES} retries and the broadcast as a whole may spend ${BROADCAST_MAX_TOTAL_FLOOD_MS / 60_000} minutes waiting before it gives up on the rest; ` +
+              `further pauses are counted rather than logged, and the totals appear in this broadcast's finish line`,
+          );
+        }
+        floodSpentMs += waitMs;
+        await sleep(waitMs);
+      }
+    }
+
+    if (budgetExhausted) {
+      cutShort = recipients.length - (i + 1);
+      failed += cutShort;
+      logger.error(
+        `Broadcast #${bc.id} was cut short by sustained Telegram flood control after spending its ${BROADCAST_MAX_TOTAL_FLOOD_MS / 60_000}-minute back-off budget — ` +
+          `${cutShort} recipient(s) were never attempted and are counted as failed. Continuing would have pushed this drain past the ${BROADCAST_STALE_CLAIM_MS / 60_000}-minute stale-claim window, ` +
+          `at which point the broadcast row can be reaped as FAILED underneath this still-running send. Re-send to the remaining recipients once the throttling clears`,
+      );
+      break;
+    }
+
+    processed++;
+    // Mid-flight progress so the admin's Broadcast History counter actually
+    // creeps up; finishBroadcast still writes the authoritative final numbers.
+    // No-ops (by its SENDING guard) if the row was reaped or cancelled under us.
+    // Purely cosmetic, so it must NEVER abort a send that is already under way:
+    // this `await` sits outside the per-recipient try/catch, and a SQLITE_BUSY
+    // past the client's busy_timeout would otherwise escape all the way out of
+    // drainBroadcasts, leaving the row stuck on SENDING until the reaper flips
+    // it to FAILED 15 minutes later with a restart message that isn't true.
+    // A lost flush costs nothing — the next one (or finishBroadcast) writes the
+    // correct running totals anyway.
+    if (processed % BROADCAST_PROGRESS_FLUSH_EVERY === 0) {
+      await updateBroadcastProgress(prisma, bc.id, { sent, failed, total: recipients.length }).catch((err) =>
+        logger.warn(
+          { err },
+          `Broadcast #${bc.id} could not write its mid-flight progress counters, so the admin's History table will show a stale count for a while — ` +
+            `the send itself is unaffected and the final numbers are still written when it completes`,
+        ),
+      );
+    }
+
+    const elapsed = Date.now() - startedAt;
+    if (elapsed < BROADCAST_THROTTLE_MS) await sleep(BROADCAST_THROTTLE_MS - elapsed);
   }
-  await finishBroadcast(prisma, bc.id, { sent, failed, total: recipients.length });
-  logger.info(`Broadcast #${bc.id} finished — sent to ${sent} recipient(s), ${failed} failed (blocked the bot or deactivated)`);
+  if (cutShort > 0) {
+    // A send that never reached part of its segment is NOT a success, and the
+    // logger.error above is read by developers, not by the shop admin who has
+    // to decide whether to re-send. Marking the row FAILED with a plain-English
+    // reason is what puts that decision in front of them: Broadcast History
+    // renders `failureReason` under the status badge, but only for FAILED rows.
+    // Deliberately scoped to the cut-short case — recipients individually given
+    // up on after their own retry budget ran out still leave a broadcast that
+    // made a full pass over its segment, which is what the visible sent/total
+    // fraction already reports (and what an ordinary blocked user looks like).
+    // Same counters-only cosmetic write as the in-loop flush above, so it gets
+    // the same treatment: no delivery is at stake here (the send loop has
+    // already ended), but letting it throw would skip the failBroadcast below
+    // and leave the row SENDING until the reaper relabels it 15 minutes later
+    // with the factually wrong "the sender process restarted" reason — losing
+    // the very explanation this branch exists to give the admin.
+    await updateBroadcastProgress(prisma, bc.id, { sent, failed, total: recipients.length }).catch((err) =>
+      logger.warn(
+        { err },
+        `Broadcast #${bc.id} could not write its final counters before marking itself cut short — ` +
+          `the status and the admin-facing reason are still written, only the sent/failed numbers may lag behind`,
+      ),
+    );
+    // Deliberately NOT guarded: this is the authoritative status write, and
+    // `reapStaleBroadcasts` is the correct backstop if it fails — the same
+    // contract `finishBroadcast` has always had.
+    await failBroadcast(
+      prisma,
+      bc.id,
+      `Telegram's rate limiting cut this broadcast short — ${cutShort} recipient(s) were never contacted. Send it again in a few minutes to reach them.`,
+    );
+  } else {
+    await finishBroadcast(prisma, bc.id, { sent, failed, total: recipients.length });
+  }
+  logger.info(
+    `Broadcast #${bc.id} finished — sent to ${sent} recipient(s), ${failed} failed (blocked the bot, deactivated, or unreachable)` +
+      (floodedRecipients > 0
+        ? `; Telegram flood-controlled ${floodedRecipients} recipient(s) along the way, of which ${floodAbandoned} never got through before their retry budget ran out`
+        : "") +
+      (cutShort > 0
+        ? `; the broadcast was cut short by sustained throttling with ${cutShort} recipient(s) never attempted, so it under-delivered and should be re-sent to them`
+        : ""),
+  );
 }
 
 /**
@@ -574,12 +787,21 @@ export function scheduleJobs(api: Api): Cron[] {
     new Cron("*/2 * * * *", { protect: true }, wrap("binancePollWatchdog", binancePollWatchdog)),
     new Cron("*/2 * * * *", { protect: true }, wrap("bybitPollWatchdog", bybitPollWatchdog)),
     new Cron("*/2 * * * *", { protect: true }, wrap("bybitBscPollWatchdog", bybitBscPollWatchdog)),
-    // Offset 20s/40s past the minute (croner's optional leading seconds field) so
-    // these two don't fire in the same SQLite write-lock instant as
-    // autoCancelExpiredOrders above — all three land on second 0 otherwise, and
-    // one of them ends up waiting out the 5s busy_timeout (P1008/P2028 in
-    // production, 2026-07-20).
-    new Cron("20 * * * * *", { protect: true }, wrap("drainBroadcasts", drainBroadcasts)),
+    // Both offset off second 0 (croner's optional leading seconds field) so
+    // neither fires in the same SQLite write-lock instant as
+    // autoCancelExpiredOrders and the hourly/6-hourly jobs above — they all
+    // land on second 0 otherwise, and one of them ends up waiting out the 5s
+    // busy_timeout (P1008/P2028 in production, 2026-07-20).
+    //
+    // drainBroadcasts ticks four times a minute rather than once: a broadcast
+    // queued by the web admin used to wait up to a full minute before the bot
+    // even picked it up, which is most of the "broadcasts are slow" complaint
+    // for small segments. The seconds are listed explicitly instead of using
+    // "*/15" precisely because "*/15" would put one of those ticks back on
+    // second 0; :05/:20/:35/:50 stay 5s clear of second 0 and of
+    // announceStartedFlashSales on second 40 below. The added cost is one
+    // indexed findFirst per tick when the queue is empty.
+    new Cron("5,20,35,50 * * * * *", { protect: true }, wrap("drainBroadcasts", drainBroadcasts)),
     new Cron("40 * * * * *", { protect: true }, wrap("announceStartedFlashSales", announceStartedFlashSales)),
     // Once daily, off-peak (03:15) — well clear of every other job's
     // minutely/hourly ticks, and unlike those it's a single sweep rather

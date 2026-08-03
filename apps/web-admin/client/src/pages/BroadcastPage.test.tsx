@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -20,7 +20,10 @@ function Wrapper({ children }: { children: React.ReactNode }) {
   );
 }
 
-const BROADCAST = { id: 1, message: "Hello customers!", segment: "ALL", status: "SENT", total: 100, sent: 100, scheduledAt: null, scheduledAtDisplay: null, createdAt: "2026-06-26T10:00:00.000Z", webImageUrl: null, failureReason: null };
+// Shape matches what GET /api/broadcast actually sends (see broadcast.ts's
+// historyShaped) — total/sent, not the raw Prisma totalCount/sentCount, and
+// no scheduledAt/createdAt since the page only ever renders scheduledAtDisplay.
+const BROADCAST = { id: 1, message: "Hello customers!", segment: "ALL", status: "SENT", total: 200, sent: 12, isDue: true, scheduledAtDisplay: null, webImageUrl: null, failureReason: null };
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -44,11 +47,14 @@ describe("BroadcastPage", () => {
     render(<BroadcastPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/Hello customers!/)).toBeInTheDocument());
     expect(screen.getAllByText("Sent").length).toBeGreaterThan(0);
+    // Regression guard for the totalCount/sentCount vs total/sent naming bug:
+    // the Sent column must render real numbers, not "undefined/undefined".
+    expect(screen.getByText("12/200")).toBeInTheDocument();
     expect(screen.getByText("immediate")).toBeInTheDocument(); // null scheduledAtDisplay fallback
   });
 
   it("shows the server-formatted schedule time for a scheduled broadcast", async () => {
-    const scheduled = { ...BROADCAST, id: 3, status: "PENDING", scheduledAt: "2026-07-01T03:00:00.000Z", scheduledAtDisplay: "2026-07-01 10:00" };
+    const scheduled = { ...BROADCAST, id: 3, status: "PENDING", isDue: false, scheduledAtDisplay: "2026-07-01 10:00" };
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify({ segments: ["ALL"], counts: { ALL: 200 }, history: [scheduled] }), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
@@ -163,6 +169,10 @@ describe("BroadcastPage", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Send this broadcast now?")).toBeInTheDocument();
+    // Regression guard: the recipient count in this dialog reads from the
+    // same row object as the Sent column, so it used to say "undefined
+    // recipient(s)" too.
+    expect(within(dialog).getByText(/to 200 recipient\(s\)/)).toBeInTheDocument();
     await user.click(within(dialog).getByRole("button", { name: "Send Now" }));
 
     await waitFor(() =>
@@ -238,6 +248,107 @@ describe("BroadcastPage", () => {
     render(<BroadcastPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Failed")).toBeInTheDocument());
     expect(screen.getByText(/sender process restarted/i)).toBeInTheDocument();
+  });
+
+  // The order-bot process does the actual sending and flushes its counters
+  // straight to the DB, so nothing pushes those numbers at this page — without
+  // polling the Sent column sits frozen until a manual reload.
+  describe("auto-refresh while a broadcast is in flight", () => {
+    // A FRESH Response per call. A single Response handed to mockResolvedValue
+    // is a one-shot body: the second poll would get the same already-consumed
+    // object and res.json() would reject.
+    const load = (history: unknown[]) =>
+      new Response(JSON.stringify({ segments: ["ALL"], counts: { ALL: 200 }, history }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+
+    it("polls while a row is SENDING and shows the counter climbing without a reload", async () => {
+      const sending = { ...BROADCAST, id: 7, status: "SENDING", sent: 25 };
+      let sent = 25;
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      // Every poll gets its own Response, and the counter moves between them,
+      // so a stale-body regression surfaces as a failure rather than passing
+      // on the first render alone.
+      fetchSpy.mockImplementation(async () => {
+        const body = load([{ ...sending, sent }]);
+        sent = 50;
+        return body;
+      });
+
+      render(<BroadcastPage />, { wrapper: Wrapper });
+      await waitFor(() => expect(screen.getByText("25/200")).toBeInTheDocument());
+
+      // Real timers on purpose: the interval is scheduled by React Query
+      // during render, so swapping in fake timers afterwards would not control
+      // it, and RTL cannot auto-advance vitest's fake timers (its detection
+      // looks for a `jest` global). One real poll interval it is.
+      await waitFor(() => expect(screen.getByText("50/200")).toBeInTheDocument(), { timeout: 8_000 });
+    }, 15_000);
+
+    it("stops polling once every row has settled", async () => {
+      // Fake timers installed BEFORE render, so React Query's scheduling sees
+      // them from the start. waitFor is deliberately not used here — RTL only
+      // auto-advances a fake clock when a `jest` global exists — so the clock
+      // is driven explicitly inside act() instead.
+      vi.useFakeTimers();
+      try {
+        const fetchSpy = vi.spyOn(globalThis, "fetch");
+        // BROADCAST is SENT — nothing left that can change on its own.
+        fetchSpy.mockImplementation(async () => load([BROADCAST]));
+
+        render(<BroadcastPage />, { wrapper: Wrapper });
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(screen.getByText("12/200")).toBeInTheDocument();
+        const afterFirstLoad = fetchSpy.mock.calls.length;
+
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); }); // many poll intervals
+        expect(fetchSpy.mock.calls.length).toBe(afterFirstLoad);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // A broadcast scheduled for next week is PENDING for days. Treating PENDING
+    // alone as "in flight" made an open, focused tab re-run GET /api/broadcast
+    // — three segment counts, one a correlated EXISTS over orders per user,
+    // plus a 30-row history — every 4 seconds for that entire week.
+    it("does not poll for a PENDING row whose schedule is still days away", async () => {
+      vi.useFakeTimers();
+      try {
+        const farFuture = { ...BROADCAST, id: 8, status: "PENDING", isDue: false, scheduledAtDisplay: "2099-01-01 10:00" };
+        const fetchSpy = vi.spyOn(globalThis, "fetch");
+        fetchSpy.mockImplementation(async () => load([farFuture]));
+
+        render(<BroadcastPage />, { wrapper: Wrapper });
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(screen.getByText("2099-01-01 10:00")).toBeInTheDocument();
+        const afterFirstLoad = fetchSpy.mock.calls.length;
+
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(fetchSpy.mock.calls.length).toBe(afterFirstLoad);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does poll for a PENDING row that is already due, since the drainer is about to pick it up", async () => {
+      vi.useFakeTimers();
+      try {
+        const due = { ...BROADCAST, id: 9, status: "PENDING", isDue: true, scheduledAtDisplay: null };
+        const fetchSpy = vi.spyOn(globalThis, "fetch");
+        fetchSpy.mockImplementation(async () => load([due]));
+
+        render(<BroadcastPage />, { wrapper: Wrapper });
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        const afterFirstLoad = fetchSpy.mock.calls.length;
+
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(fetchSpy.mock.calls.length).toBeGreaterThan(afterFirstLoad);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it("live-updates the Telegram-style preview as the message is typed", async () => {

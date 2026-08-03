@@ -42,6 +42,13 @@ async function pickFile() {
   return user;
 }
 
+/** The shared ProgressBar renders a plain div with no accessible role, so
+ *  match it by its distinctive track classes — it's the only `h-1.5` /
+ *  `bg-sand` element this component ever renders. */
+function progressBar(): Element | null {
+  return document.querySelector('div[class*="h-1.5"][class*="bg-sand"]');
+}
+
 async function saveAndGetXhr(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole("button", { name: "Save" }));
   await waitFor(() => expect(FakeXHR.instances).toHaveLength(1));
@@ -78,6 +85,9 @@ describe("ImageUploadField", () => {
     expect(xhr.url).toBe("/catalog/product/1/photo");
     expect(xhr.sentBody?.get("photo")).toBe(FILE);
     expect(xhr.sentBody?.has("csrf_token")).toBe(true);
+    // 120s, not 60s: 5MB (the documented ceiling) at ordinary mobile uplink
+    // speeds is ~80s of transfer before the server does any work at all.
+    expect(xhr.timeout).toBe(120_000);
 
     xhr.respond(200, JSON.stringify({ url: "/uploads/products/product-abc123.png" }));
     await waitFor(() => expect(onUploaded).toHaveBeenCalledWith("/uploads/products/product-abc123.png"));
@@ -92,9 +102,51 @@ describe("ImageUploadField", () => {
     expect(screen.getByRole("button", { name: "Saving…" })).toBeInTheDocument();
     act(() => xhr.progress(50, 100));
     await waitFor(() => expect(screen.getByRole("button", { name: "Saving… 50%" })).toBeInTheDocument());
+    // The bar is determinate and meaningful during this leg — it's measuring
+    // real bytes leaving the browser.
+    expect(progressBar()).toBeInTheDocument();
 
     xhr.respond(200, JSON.stringify({ url: "/uploads/products/product-abc123.png" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: /^Saving/ })).not.toBeInTheDocument());
+  });
+
+  it("flips to a distinct processing state once the upload finishes but the response is still pending", async () => {
+    // This is the exact reported bug: bytes finish leaving the browser (100%)
+    // long before the server (sniffing, a DB read, file unlinks, a
+    // writeFile, and sequential SQLite writes) actually responds. Without the
+    // phase split, the button would still read "Saving… 100%" here — visually
+    // identical to a genuine hang.
+    renderField();
+    const user = await pickFile();
+    const xhr = await saveAndGetXhr(user);
+
+    expect(progressBar()).toBeInTheDocument();
+    act(() => xhr.progress(100, 100));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Finishing up…" })).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /^Saving/ })).not.toBeInTheDocument();
+    // The bar must be GONE, not parked at 100%: there is no ratio left to
+    // report once the bytes have landed, and a full-but-frozen bar is exactly
+    // the "is it done or is it hung?" ambiguity this phase split exists to
+    // remove. The plan also rules out an indeterminate ProgressBar variant.
+    expect(progressBar()).not.toBeInTheDocument();
+
+    // The response hasn't arrived yet, so this assertion only holds if the
+    // component reacted to the upload finishing rather than to the response.
+    xhr.respond(200, JSON.stringify({ url: "/uploads/products/product-abc123.png" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Finishing up…" })).not.toBeInTheDocument());
+  });
+
+  it("surfaces a clear error instead of hanging when the request times out", async () => {
+    const { onUploaded } = renderField();
+    const user = await pickFile();
+    const xhr = await saveAndGetXhr(user);
+
+    act(() => xhr.triggerTimeout());
+    await waitFor(() =>
+      expect(screen.getByText(/took too long to respond/i)).toBeInTheDocument(),
+    );
+    expect(onUploaded).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
   });
 
   it("shows the server error and keeps the pending file when Save fails", async () => {

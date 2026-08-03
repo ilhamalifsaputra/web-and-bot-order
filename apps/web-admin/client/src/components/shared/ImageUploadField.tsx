@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CircleCheckIcon, Upload, X } from "lucide-react";
+import { CircleCheckIcon, Loader2, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ProgressBar } from "@/components/shared/ProgressBar";
 
@@ -18,24 +18,67 @@ function csrfToken(): string {
 const CSRF_FAILURE_BODY = "CSRF check failed";
 const STALE_SESSION_MESSAGE = "Your session was refreshed in another tab. Reload this page to continue.";
 
+/** The two phases a Save actually goes through: bytes leaving the browser
+ * (`sending`, driven by real upload progress), then the server doing its own
+ * work — sniffing, a DB read, file unlinks, a `writeFile`, and a couple of
+ * sequential writes against the shared single-writer SQLite (`processing`,
+ * which has no progress signal at all). Collapsing both into one "uploading"
+ * boolean is what made a frozen `Saving… 100%` indistinguishable from a
+ * genuine hang. */
+type UploadPhase = "idle" | "sending" | "processing";
+
+/** Sized off the documented 5MB ceiling on an ordinary mobile uplink: at
+ * ~500 kbps that is roughly 80 seconds of transfer before the server has done
+ * any work at all, so a 60s cap would abort legitimate uploads and hand the
+ * user advice ("check your connection") that fails identically on retry. 120s
+ * covers that transfer plus the server-side work described above, while still
+ * turning a truly stuck request into a clear error instead of leaving the
+ * button spinning forever. */
+const UPLOAD_TIMEOUT_MS = 120_000;
+const TIMEOUT_MESSAGE = "The server took too long to respond. Check your connection and try again.";
+
 /** `fetch` has no reliable cross-browser way to report request-upload
  * progress; `XMLHttpRequest.upload.onprogress` does. */
 function uploadWithProgress(
   url: string,
   form: FormData,
   onProgress: (pct: number) => void,
+  onPhaseChange: (phase: UploadPhase) => void,
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
     xhr.withCredentials = true;
+    xhr.timeout = UPLOAD_TIMEOUT_MS;
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
     };
+    // Fires once every byte has left the browser — well before the server
+    // has even started working — so this is the honest point to switch the
+    // UI from "here's real progress" to "please wait, no progress to show".
+    xhr.upload.onload = () => onPhaseChange("processing");
     xhr.onload = () => resolve({ status: xhr.status, body: xhr.responseText });
     xhr.onerror = () => reject(new Error("Network error during upload."));
+    xhr.ontimeout = () => reject(new Error(TIMEOUT_MESSAGE));
     xhr.send(form);
   });
+}
+
+/** Save button label/content for each phase — shared by both the `row` and
+ * `dropzone` variants so they can't drift apart on this. */
+function saveButtonContent(phase: UploadPhase, uploadProgress: number): React.ReactNode {
+  if (phase === "processing") {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+        Finishing up…
+      </span>
+    );
+  }
+  if (phase === "sending") {
+    return `Saving…${uploadProgress > 0 ? ` ${uploadProgress}%` : ""}`;
+  }
+  return "Save";
 }
 
 /**
@@ -103,11 +146,12 @@ export function ImageUploadField({
 }) {
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
+  const [phase, setPhase] = useState<UploadPhase>("idle");
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [staleSession, setStaleSession] = useState(false);
   const [justSaved, setJustSaved] = useState(false);
+  const uploading = phase !== "idle";
 
   useEffect(() => {
     return () => {
@@ -147,7 +191,7 @@ export function ImageUploadField({
 
   async function confirmUpload() {
     if (!pendingFile) return;
-    setUploading(true);
+    setPhase("sending");
     setUploadProgress(0);
     setUploadError(null);
     setStaleSession(false);
@@ -155,7 +199,7 @@ export function ImageUploadField({
     form.append(fieldName, pendingFile);
     form.append("csrf_token", csrfToken());
     try {
-      const { status, body } = await uploadWithProgress(uploadPath, form, setUploadProgress);
+      const { status, body } = await uploadWithProgress(uploadPath, form, setUploadProgress, setPhase);
       if (status < 200 || status >= 300) {
         if (status === 403 && body === CSRF_FAILURE_BODY) {
           setStaleSession(true);
@@ -175,7 +219,7 @@ export function ImageUploadField({
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : "Upload failed");
     } finally {
-      setUploading(false);
+      setPhase("idle");
     }
   }
 
@@ -216,11 +260,11 @@ export function ImageUploadField({
             <div className="mt-2">
               <div className="flex gap-2">
                 <Button size="sm" disabled={uploading} onClick={() => void confirmUpload()}>
-                  {uploading ? `Saving…${uploadProgress > 0 ? ` ${uploadProgress}%` : ""}` : "Save"}
+                  {saveButtonContent(phase, uploadProgress)}
                 </Button>
                 <Button size="sm" variant="ghost" disabled={uploading} onClick={cancelPending}>Cancel</Button>
               </div>
-              {uploading && <ProgressBar value={uploadProgress} tone="grass" className="mt-2" />}
+              {phase === "sending" && <ProgressBar value={uploadProgress} tone="grass" className="mt-2" />}
             </div>
           )
         )}
@@ -271,13 +315,13 @@ export function ImageUploadField({
           <div className="mt-2">
             <div className="flex gap-2">
               <Button size="sm" disabled={uploading} onClick={() => void confirmUpload()}>
-                {uploading ? `Saving…${uploadProgress > 0 ? ` ${uploadProgress}%` : ""}` : "Save"}
+                {saveButtonContent(phase, uploadProgress)}
               </Button>
               <Button size="sm" variant="ghost" disabled={uploading} onClick={cancelPending}>
                 Cancel
               </Button>
             </div>
-            {uploading && <ProgressBar value={uploadProgress} tone="grass" className="mt-2" />}
+            {phase === "sending" && <ProgressBar value={uploadProgress} tone="grass" className="mt-2" />}
           </div>
         )
       )}

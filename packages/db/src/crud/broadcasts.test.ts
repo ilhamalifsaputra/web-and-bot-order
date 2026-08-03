@@ -14,6 +14,7 @@ import {
   reapStaleBroadcasts,
   failBroadcast,
   getBroadcast,
+  updateBroadcastProgress,
 } from "./broadcasts";
 
 let db: TestDb;
@@ -218,6 +219,78 @@ describe("broadcast draft/failed lifecycle", () => {
     await finishBroadcast(prisma, bc2.id, { sent: 3, failed: 0, total: 3 });
     await failBroadcast(prisma, bc2.id, "should not apply");
     expect((await prisma.broadcast.findUnique({ where: { id: bc2.id } }))!.status).toBe("SENT");
+  });
+});
+
+describe("updateBroadcastProgress", () => {
+  const make = (over: Record<string, unknown> = {}) =>
+    createBroadcast(prisma, { message: "hi", segment: "ALL", scheduledAt: null, createdById: null, total: 3, ...over });
+
+  it("writes mid-flight counters onto a SENDING row without ending it", async () => {
+    const bc = await make();
+    await claimNextDueBroadcast(prisma, new Date());
+
+    await updateBroadcastProgress(prisma, bc.id, { sent: 1, failed: 0 });
+    let row = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+    expect(row.status).toBe("SENDING"); // still in flight — this is progress, not completion
+    expect(row.sentCount).toBe(1);
+    expect(row.sentAt).toBeNull();
+
+    // A later flush overwrites the earlier one with the newer running totals.
+    await updateBroadcastProgress(prisma, bc.id, { sent: 2, failed: 1 });
+    row = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+    expect(row.sentCount).toBe(2);
+    expect(row.failedCount).toBe(1);
+    expect(row.totalCount).toBe(3); // untouched by a progress flush
+  });
+
+  it("writes totalCount too when the caller passes a live recipient count", async () => {
+    // totalCount is stamped at enqueue (3 here) from a segment count taken
+    // then; the drainer only resolves the real recipient list when it starts.
+    // Without flushing the live count, History would read "5/3" mid-flight.
+    const bc = await make();
+    await claimNextDueBroadcast(prisma, new Date());
+
+    await updateBroadcastProgress(prisma, bc.id, { sent: 5, failed: 0, total: 6 });
+    const row = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+    expect(row.status).toBe("SENDING");
+    expect(row.sentCount).toBe(5);
+    expect(row.totalCount).toBe(6);
+  });
+
+  it("finishBroadcast still overrides the last flushed progress with the final numbers", async () => {
+    const bc = await make();
+    await claimNextDueBroadcast(prisma, new Date());
+    await updateBroadcastProgress(prisma, bc.id, { sent: 2, failed: 0 });
+    await finishBroadcast(prisma, bc.id, { sent: 2, failed: 1, total: 3 });
+
+    const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+    expect(done.status).toBe("SENT");
+    expect(done.sentCount).toBe(2);
+    expect(done.failedCount).toBe(1);
+  });
+
+  it("no-ops on a row that already left SENDING (reaped, cancelled or finished)", async () => {
+    // Reaped mid-loop: a late flush from the still-running drainer must not
+    // write counters back onto the FAILED row or resurrect its status.
+    const reaped = await make();
+    await claimNextDueBroadcast(prisma, new Date());
+    await prisma.broadcast.update({
+      where: { id: reaped.id },
+      data: { claimedAt: new Date(Date.now() - 20 * 60_000) },
+    });
+    expect(await reapStaleBroadcasts(prisma, new Date())).toBe(1);
+    await updateBroadcastProgress(prisma, reaped.id, { sent: 9, failed: 9 });
+    const stale = (await prisma.broadcast.findUnique({ where: { id: reaped.id } }))!;
+    expect(stale.status).toBe("FAILED");
+    expect(stale.sentCount).toBe(0);
+
+    // Never claimed at all → still PENDING, equally untouched.
+    const pending = await make();
+    await updateBroadcastProgress(prisma, pending.id, { sent: 5, failed: 0 });
+    const untouched = (await prisma.broadcast.findUnique({ where: { id: pending.id } }))!;
+    expect(untouched.status).toBe("PENDING");
+    expect(untouched.sentCount).toBe(0);
   });
 });
 

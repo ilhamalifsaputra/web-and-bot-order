@@ -84,13 +84,13 @@ graph TD
 | Cron jobs | `apps/order-bot/src/jobs/index.ts` (croner) | Lihat tabel di bawah | Auto-cancel, auto-close, broadcast, watchdog, FX refresh |
 
 ```text
-*/1 * * * *   autoCancelExpiredOrders   { protect: true }
-0 * * * *     autoCloseStaleTickets     { protect: true }
-0 */6 * * *   reconcileFinancesJob
-*/2 * * * *   binancePollWatchdog
-*/2 * * * *   bybitPollWatchdog
-20 * * * * *  drainBroadcasts           { protect: true }
-5 * * * *     scheduleFxRefresh (terpisah — jalan walau bot OFF)
+*/1 * * * *           autoCancelExpiredOrders   { protect: true }
+0 * * * *             autoCloseStaleTickets     { protect: true }
+0 */6 * * *           reconcileFinancesJob
+*/2 * * * *           binancePollWatchdog
+*/2 * * * *           bybitPollWatchdog
+5,20,35,50 * * * * *  drainBroadcasts           { protect: true }
+5 * * * *             scheduleFxRefresh (terpisah — jalan walau bot OFF)
 ```
 
 `{ protect: true }` (croner) mencegah tick yang sama overlap dengan dirinya

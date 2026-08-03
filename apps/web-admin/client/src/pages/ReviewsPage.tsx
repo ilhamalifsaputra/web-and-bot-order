@@ -38,6 +38,7 @@ import {
   XCircle,
   RotateCcw,
   EyeOff,
+  CircleCheck,
   Trash2,
 } from "lucide-react";
 import { formatRelativeTime } from "../lib/relativeTime";
@@ -480,21 +481,33 @@ export function ReviewsPage() {
           {
             key: "activity",
             header: "Activity",
-            render: (row) => (
-              <div className="flex flex-col gap-0.5">
-                <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>
-                {row.adminReply != null && row.repliedAt != null && (
-                  // No repliedAtDisplay from the API (only createdAtDisplay
-                  // is server-formatted) — pass the raw ISO string as the
-                  // >30-day fallback too. formatRelativeTime's <30-day path
-                  // (the common case for a recently-replied review) is
-                  // purely elapsed-time-based and timezone-safe regardless.
-                  <span className="text-xs text-ink-faint">
-                    Replied {formatRelativeTime(row.repliedAt, row.repliedAt)}
-                  </span>
-                )}
-              </div>
-            ),
+            render: (row) => {
+              // No repliedAtDisplay from the API (only createdAtDisplay is
+              // server-formatted), so there's no correct absolute string to
+              // fall back on here. formatRelativeTime(iso, display) only
+              // reads `display` once the gap exceeds 30 days (or the date is
+              // invalid) — every other branch is purely elapsed-time-based
+              // and timezone-safe. Passing the raw ISO as `display` and then
+              // comparing the result back against it detects exactly that
+              // fallback path (reusing formatRelativeTime's own threshold
+              // instead of duplicating the "30 days" constant here), so a
+              // reply older than 30 days omits the line rather than ever
+              // rendering a raw ISO timestamp to the admin.
+              const repliedRelative =
+                row.adminReply != null && row.repliedAt != null
+                  ? formatRelativeTime(row.repliedAt, row.repliedAt)
+                  : null;
+              const repliedLabel =
+                repliedRelative != null && repliedRelative !== row.repliedAt ? repliedRelative : null;
+              return (
+                <div className="flex flex-col gap-0.5">
+                  <span className="text-xs text-ink-soft">{row.createdAtDisplay ?? "—"}</span>
+                  {repliedLabel != null && (
+                    <span className="text-xs text-ink-faint">Replied {repliedLabel}</span>
+                  )}
+                </div>
+              );
+            },
           },
           {
             key: "actions",
@@ -543,7 +556,11 @@ export function ReviewsPage() {
                       </DropdownMenuItem>
                     )}
                     <DropdownMenuItem onSelect={() => toggleHide.mutate({ id: row.id, hide: !row.hidden })}>
-                      {row.hidden ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+                      {/* CircleCheck for Unhide (not Eye — Eye is already
+                          "View Customer" above in this same menu; CircleCheck
+                          mirrors UsersPage.tsx's Unban, the same shape of
+                          reversing a suppression state). */}
+                      {row.hidden ? <CircleCheck className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
                       {row.hidden ? "Unhide" : "Hide"}
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />

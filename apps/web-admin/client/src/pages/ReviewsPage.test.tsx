@@ -124,6 +124,42 @@ describe("ReviewsPage", () => {
     expect(within(row).getByText("Netflix 1 Month")).toBeInTheDocument();
   });
 
+  it("shows a relative 'Replied …' line in the Activity column for a recently-replied review", async () => {
+    const recentReply = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2 hours ago
+    mockFetchRouter({
+      reviews: () => ({
+        ...REVIEWS_DATA,
+        reviews: [{ ...REVIEW, adminReply: "Thanks!", repliedAt: recentReply, status: "REPLIED" }],
+      }),
+    });
+    render(<ReviewsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Bagus banget!")).toBeInTheDocument());
+
+    expect(screen.getByText("Replied 2 hours ago")).toBeInTheDocument();
+  });
+
+  it("omits the Activity 'Replied …' line rather than rendering a raw ISO timestamp once a reply is over 30 days old", async () => {
+    const oldReply = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+    mockFetchRouter({
+      reviews: () => ({
+        ...REVIEWS_DATA,
+        reviews: [{ ...REVIEW, adminReply: "Thanks!", repliedAt: oldReply, status: "REPLIED" }],
+      }),
+    });
+    render(<ReviewsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Bagus banget!")).toBeInTheDocument());
+
+    // formatRelativeTime falls back to its `display` argument past 30 days —
+    // this page has no server-formatted repliedAtDisplay to pass, so the old
+    // (buggy) code rendered the raw ISO string here. The fix omits the line
+    // entirely in that case instead. Match on "Replied " (trailing space, a
+    // real prefix with content after it) rather than bare /replied/i, which
+    // would also match the row's own REPLIED reply-status StatusBadge
+    // ("Replied" with no trailing text) and false-positive.
+    expect(screen.queryByText(/^Replied /)).not.toBeInTheDocument();
+    expect(screen.queryByText(oldReply)).not.toBeInTheDocument();
+  });
+
   it("shows 'No reviews yet' when genuinely empty", async () => {
     mockFetchRouter({ reviews: () => ({ reviews: [], total: 0, page: 1, hasNext: false, summaries: [] }) });
     render(<ReviewsPage />, { wrapper: Wrapper });

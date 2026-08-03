@@ -29,6 +29,23 @@ export default defineConfig({
     // honoured when running under Vitest — see packages/core/src/password.ts,
     // where the production cost is a hard constant.
     env: { BCRYPT_COST: "4" },
+    // Vitest's 5s default is a unit-test budget, but most of this suite is
+    // real-SQLite integration tests: tests/helpers/testdb.ts gives every test
+    // file its own temp DB (so there is no cross-file lock contention to
+    // hide here) and each one pays a synchronous `prisma db push` plus real
+    // fsync-bound writes. The heavy ones therefore cost seconds of honest
+    // work — the 270-unit cart in packages/db/src/crud/order_creation.test.ts
+    // takes ~3.0s on its own and the /setup/owner retry in
+    // apps/web-admin/test/web.test.ts ~2.3s — leaving under 2x headroom
+    // against 5s. That margin is spent by CPU/IO contention as soon as the
+    // suite grows: adding the Reviews-dashboard and broadcast test files
+    // tipped both of those past 5s in a full parallel run while each still
+    // passed comfortably in isolation. Two tests in UsersPage.test.tsx had
+    // already been hand-patched with `}, 10000)` for the same reason, so
+    // budget it once here instead of re-discovering it per test. 20s is
+    // ~6x the slowest known test: still short enough that a genuine hang
+    // fails the run rather than hanging CI.
+    testTimeout: 20_000,
     environmentMatchGlobs: [
       ["apps/web-admin/client/**", "jsdom"],
       ["apps/storefront/client/**", "jsdom"],

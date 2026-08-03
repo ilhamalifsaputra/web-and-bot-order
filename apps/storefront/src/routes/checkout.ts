@@ -17,14 +17,14 @@
  * (checkoutView / performCheckout / payView / payState) and registers the
  * three payment webhooks below — no HTTP routes of its own for the buyer UI.
  */
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 import { DeliveryType, OrderCurrency, OrderStatus, PaymentMethod } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
-import { effectiveUnitPrice } from "@app/core/flash";
+import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
 import { bulkDiscountFor } from "@app/core/bulk";
 import { ensureUtc } from "@app/core/datetime";
 import { formatIdr, formatUsdt } from "@app/core/formatters";
@@ -85,7 +85,7 @@ import {
 } from "@app/core/payments/nowpayments";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { usdtFromIdr } from "../pricing";
-import { flashViewFor } from "./cart";
+import { flashViewFor, loadGuestCartItems } from "./cart";
 import { resolveBotUsername } from "../shop";
 
 const MAX_PENDING_ORDERS = 10;
@@ -96,10 +96,38 @@ type OrderRow = NonNullable<Awaited<ReturnType<typeof getOrderByCode>>>;
 const shopPublicUrl = (): string | null =>
   config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null;
 
-/** Totals preview for the checkout page (mirrors createOrderFromCart math). */
-async function computeTotals(customer: Customer, voucherCode: string | null) {
-  const cart = await getCart(prisma, customer.userId);
-  const isReseller = customer.user.role === "RESELLER";
+/**
+ * One cart line as computeTotals needs it — either a signed-in buyer's
+ * CartItem row (getCart, `product` = the joined Denomination) or a guest
+ * cookie line resolved to the same shape (loadGuestCartItems, routes/cart.ts)
+ * — only the fields actually read below are required, so both sources
+ * satisfy this structurally with no cast.
+ */
+type CartLine = {
+  productId: number;
+  quantity: number;
+  product: FlashFields & {
+    price: Decimal.Value;
+    resellerPrice: Decimal.Value | null;
+    isActive: boolean;
+    deliveryType: string;
+    additionalFields: string | null;
+    // The Denomination's own FK to the parent catalog Product (voucher scope
+    // and bulk-rule lookups match against THIS id, not the Denomination's
+    // own id) — both getCart and loadGuestCartItems already select it.
+    productId: number;
+  };
+};
+
+/** Totals preview for the checkout page (mirrors createOrderFromCart math).
+ * `customer` null means an anonymous visitor — their cart lines come from
+ * the guest cookie (loadGuestCartItems) instead of a CartItem query, and
+ * they're never a reseller (same assumption loadCartLines' guest branch
+ * already makes). Every other step of the math is identical for guests and
+ * signed-in buyers — one implementation, per CLAUDE.md. */
+async function computeTotals(req: FastifyRequest, customer: Customer | null, voucherCode: string | null) {
+  const cart: CartLine[] = customer ? await getCart(prisma, customer.userId) : await loadGuestCartItems(req);
+  const isReseller = customer ? customer.user.role === "RESELLER" : false;
   // Price the whole preview against one instant, mirroring createOrderFromCart
   // — otherwise a flash sale ending mid-request could discount some lines but
   // not others and the preview would not match what checkout actually charges.
@@ -202,14 +230,22 @@ async function computeTotals(customer: Customer, voucherCode: string | null) {
 }
 
 /** View context shared by GET /checkout, the failed-POST re-render, and the
- * JSON API (routes/apiCheckout.ts) — one totals implementation. */
+ * JSON API (routes/apiCheckout.ts) — one totals implementation. `customer`
+ * null serves an anonymous visitor (guest checkout, Task 2): their cart comes
+ * from the `req` cookie via computeTotals, they have no wallet balance
+ * (wallet_idr/wallet_usdt = "0", wallet_idr_enabled/wallet_usdt_enabled =
+ * false so the UI never offers a balance payment method with nothing behind
+ * it), and `is_guest: true` tells the SPA to collect an email at checkout
+ * (a later task). The auth gate on every route calling this stays unchanged
+ * — this only makes the view layer *able* to serve a guest. */
 export async function checkoutView(
-  customer: Customer,
+  req: FastifyRequest,
+  customer: Customer | null,
   voucherCode: string | null,
   errorKey: string | null,
 ) {
   const [totals, fxRate, tokopay, bybit, bybitBsc, binance, paydisini, nowpayments] = await Promise.all([
-    computeTotals(customer, voucherCode),
+    computeTotals(req, customer, voucherCode),
     getUsdIdrRate(prisma),
     getTokopayCreds(prisma),
     resolveBybitConfig(prisma),
@@ -253,8 +289,16 @@ export async function checkoutView(
     idr_enabled: Boolean(tokopay),
     paydisini_enabled: Boolean(paydisini),
     nowpayments_enabled: haveRate && Boolean(nowpayments),
-    wallet_idr: new Decimal(customer.user.walletBalance).toString(),
-    wallet_usdt: new Decimal(customer.user.walletBalanceUsdt).toString(),
+    wallet_idr: customer ? new Decimal(customer.user.walletBalance).toString() : "0",
+    wallet_usdt: customer ? new Decimal(customer.user.walletBalanceUsdt).toString() : "0",
+    // Balance payment methods are only ever offered to signed-in buyers — a
+    // guest has no wallet to pay from (§17.1 #5 never touches the wallet
+    // anyway). The route/UI still decides whether the balance is SUFFICIENT;
+    // this flag only gates whether the option can appear at all.
+    wallet_idr_enabled: customer !== null,
+    wallet_usdt_enabled: customer !== null,
+    // Tells the SPA to collect a contact email at checkout (Task 3+).
+    is_guest: customer === null,
   };
 }
 

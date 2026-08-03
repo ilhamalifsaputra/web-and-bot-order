@@ -40,7 +40,7 @@ const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
   app.get("/checkout", async (req, reply) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
-    return reply.send(await checkoutView(customer, null, null));
+    return reply.send(await checkoutView(req, customer, null, null));
   });
 
   // ---- Voucher preview: recompute totals WITHOUT creating an order ----
@@ -51,7 +51,7 @@ const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(403).send({ error: "csrf_failed" });
     }
     const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
-    return reply.send(await checkoutView(customer, voucherCode, null));
+    return reply.send(await checkoutView(req, customer, voucherCode, null));
   });
 
   // ---- Pay page data (gateway payloads, state flags, countdown anchor) ----

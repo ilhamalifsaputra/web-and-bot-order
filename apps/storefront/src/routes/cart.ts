@@ -98,6 +98,33 @@ export function flashViewFor(
   };
 }
 
+/**
+ * Guest cookie cart shaped like the CartItem rows `getCart` returns, so the
+ * checkout totals math (computeTotals/checkoutView, routes/checkout.ts) has
+ * ONE implementation for guests and signed-in buyers alike — unlike
+ * loadCartLines below, this returns the raw joined Denomination row rather
+ * than the pre-formatted CartLineView the cart page renders. Order follows
+ * the cookie's own order (Promise.all preserves input order), so the
+ * checkout summary lists guest lines deterministically.
+ */
+export type GuestCartItem = {
+  productId: number;
+  quantity: number;
+  product: NonNullable<Awaited<ReturnType<typeof getDenominationWithProduct>>>;
+};
+
+export async function loadGuestCartItems(req: FastifyRequest): Promise<GuestCartItem[]> {
+  const lines = readGuestCart(req);
+  const resolved = await Promise.all(
+    lines.map(async (l) => {
+      const denom = await getDenominationWithProduct(prisma, l.p);
+      if (!denom || !denom.isActive) return null;
+      return { productId: l.p, quantity: l.q, product: denom } satisfies GuestCartItem;
+    }),
+  );
+  return resolved.filter((l): l is GuestCartItem => l !== null);
+}
+
 /** Shared shape for the cart page + checkout summary. */
 export async function loadCartLines(
   req: FastifyRequest,

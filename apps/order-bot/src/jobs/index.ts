@@ -571,7 +571,22 @@ export async function drainBroadcasts(api: Api): Promise<void> {
     // up on after their own retry budget ran out still leave a broadcast that
     // made a full pass over its segment, which is what the visible sent/total
     // fraction already reports (and what an ordinary blocked user looks like).
-    await updateBroadcastProgress(prisma, bc.id, { sent, failed, total: recipients.length });
+    // Same counters-only cosmetic write as the in-loop flush above, so it gets
+    // the same treatment: no delivery is at stake here (the send loop has
+    // already ended), but letting it throw would skip the failBroadcast below
+    // and leave the row SENDING until the reaper relabels it 15 minutes later
+    // with the factually wrong "the sender process restarted" reason — losing
+    // the very explanation this branch exists to give the admin.
+    await updateBroadcastProgress(prisma, bc.id, { sent, failed, total: recipients.length }).catch((err) =>
+      logger.warn(
+        { err },
+        `Broadcast #${bc.id} could not write its final counters before marking itself cut short — ` +
+          `the status and the admin-facing reason are still written, only the sent/failed numbers may lag behind`,
+      ),
+    );
+    // Deliberately NOT guarded: this is the authoritative status write, and
+    // `reapStaleBroadcasts` is the correct backstop if it fails — the same
+    // contract `finishBroadcast` has always had.
     await failBroadcast(
       prisma,
       bc.id,

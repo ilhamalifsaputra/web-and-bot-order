@@ -616,6 +616,38 @@ describe("drainBroadcasts", () => {
       expect(done.totalCount).toBe(8);
     }, 20_000);
 
+    // The counters-only write that precedes failBroadcast is as cosmetic as the
+    // in-loop flush, and must fail as softly: if it threw, failBroadcast would
+    // be skipped and the row would sit SENDING until the reaper relabelled it
+    // with the wrong reason — costing the admin exactly the explanation this
+    // branch exists to give them.
+    it("still records the cut-short reason when the final counter flush fails on a contended write", async () => {
+      for (let i = 0; i < 8; i++) await addRecipient(7500 + i);
+      const bc = await createBroadcast(prisma, { message: "throttled, busy db", segment: "ALL", scheduledAt: null, createdById: null, total: 8 });
+      // Cut short at recipient 2, well before the 25-recipient in-loop flush,
+      // so the only flush this test can trip is the cut-short one.
+      dbMockState.progressFlushError = new Error("SQLITE_BUSY: database is locked");
+      const sendMessage = vi.fn().mockRejectedValue(floodError(600));
+      const sleeps = captureSleeps();
+      const warn = vi.spyOn(logger, "warn");
+
+      let flushWarnings: unknown[] = [];
+      try {
+        await drainBroadcasts(fakeApi({ sendMessage }));
+      } finally {
+        sleeps.restore();
+        flushWarnings = warn.mock.calls.filter((c) => String(c[1]).includes("final counters before marking itself cut short"));
+        warn.mockRestore();
+      }
+
+      const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+      expect(done.status).toBe("FAILED");
+      expect(done.failureReason).toContain("6 recipient(s) were never contacted");
+      expect(flushWarnings).toHaveLength(1);
+      // The numbers are what lags behind, not the status or the reason.
+      expect(done.sentCount).toBe(0);
+    }, 20_000);
+
     it("logs the flood pause once per broadcast rather than once per back-off", async () => {
       await addRecipient(7200);
       await addRecipient(7201);

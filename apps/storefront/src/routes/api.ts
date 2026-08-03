@@ -12,7 +12,7 @@
  * global handlers; only the success and named expected-failure paths below
  * return JSON here.
  */
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { Decimal } from "@app/core/money";
 import { config } from "@app/core/config";
 import { ValidationError } from "@app/core/errors";
@@ -26,14 +26,17 @@ import {
   getDenomination,
   addToCart,
   countAvailableStock,
+  createGuestUser,
   type CatalogProduct,
 } from "@app/db";
 import type { Category, Denomination } from "@prisma/client";
-import { optionalCustomer } from "../plugins/auth";
+import { optionalCustomer, type Customer } from "../plugins/auth";
 import { productImage } from "../images";
 import { readGuestCart, writeGuestCart, CART_COOKIE, CART_COOKIE_VERSION, type GuestCartLine } from "../shop";
-import { loadCartLines } from "./cart";
+import { loadCartLines, loadGuestCartItems } from "./cart";
 import { performCheckout, performWalletCheckout } from "./checkout";
+import { establishSession } from "./auth";
+import { clientIp, guestCheckoutRateLimited } from "../rateLimit";
 import { constantTimeEqual } from "../auth";
 
 interface CategoryJson {
@@ -106,6 +109,86 @@ function clampJsonQty(raw: unknown): number {
   const n = Number(raw);
   if (!Number.isInteger(n)) return 1;
   return Math.max(1, Math.min(n, 99));
+}
+
+/** Longest address RFC 5321 allows on the wire — anything past it is junk, and
+ * checking it before the shape regex keeps a pathological input cheap. */
+const MAX_EMAIL_LENGTH = 254;
+
+/**
+ * Deliberately permissive shape check: one `@`, a dot-bearing domain, no
+ * whitespace. The address is a contact/tracking handle, never an auth factor,
+ * so the cost of wrongly rejecting a legitimate exotic address is higher than
+ * the cost of accepting a syntactically odd one.
+ */
+const GUEST_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Turn an anonymous POST /checkout into a real (guest) `User` + session, or
+ * send the failure response and return null. Split out of the route so the
+ * order in which the cheap validations run is visible in one place: EVERY
+ * check that can reject the request without touching the database happens
+ * before `createGuestUser`, so a malformed or throttled request never leaves
+ * an orphan user row behind.
+ *
+ * Payment-method tokens are NOT re-validated here beyond rejecting the wallet
+ * ones — performCheckout owns that list and throws `web.pay_method_unavailable`
+ * itself. The accepted consequence is that a request naming a gateway that
+ * happens to be switched off creates one guest user row and then fails; the
+ * per-IP rate limit bounds how many of those an abuser can make.
+ */
+async function establishGuestCustomer(req: FastifyRequest, reply: FastifyReply): Promise<Customer | null> {
+  const body = req.body as { method?: string; guest_email?: string } | undefined;
+
+  // (a) Contact email. NOT cross-checked against registered accounts on
+  // purpose: rejecting an address because someone already signed up with it
+  // would turn this endpoint into an account-existence oracle. A guest row
+  // keeps `User.email` null and stores the address in `guestEmail`, so it can
+  // never collide with the unique index on a registered account's email.
+  const email = (body?.guest_email ?? "").trim().toLowerCase();
+  if (!email || email.length > MAX_EMAIL_LENGTH || !GUEST_EMAIL_RE.test(email)) {
+    void reply.code(400).send({ error: "web.guest_email_invalid" });
+    return null;
+  }
+
+  // (b) Balance payment methods need a wallet, and a guest has none.
+  const method = (body?.method ?? "").toLowerCase();
+  if (method === "wallet_idr" || method === "wallet_usdt") {
+    void reply.code(400).send({ error: "web.pay_method_unavailable" });
+    return null;
+  }
+
+  // (c) There has to be something to buy. Resolving the cookie lines against
+  // the catalog (rather than just counting cookie entries) means a cart made
+  // up entirely of deactivated SKUs is rejected here too, instead of after a
+  // user row has already been written.
+  const guestCart = await loadGuestCartItems(req);
+  if (guestCart.length === 0) {
+    void reply.code(400).send({ error: "error.cart_empty" });
+    return null;
+  }
+
+  // (d) Per-IP throttle. Guest checkout mints a fresh user per order, so the
+  // per-user MAX_PENDING_ORDERS cap in performCheckout can never bite for a
+  // guest — this is the only thing standing between an abuser and unbounded
+  // user/order rows plus tied-up stock reservations.
+  if (guestCheckoutRateLimited(clientIp(req))) {
+    void reply.code(429).send({ error: "error.rate_limited" });
+    return null;
+  }
+
+  // (e)+(f) Write the row, then issue the session — which also migrates the
+  // cookie cart into CartItem rows owned by the new user (performCheckout
+  // reads the cart from the database) and clears the cookie.
+  const guestUser = await createGuestUser(prisma, { email });
+  const session = await establishSession(req, reply, { id: guestUser.id, telegramId: guestUser.telegramId });
+
+  // Intentional: the buyer holds a session from this point on. If
+  // performCheckout then fails (out of stock, gateway down) and they retry,
+  // the retry takes the SIGNED-IN branch above and reuses this same guest
+  // row — so `guestEmail` stays attached and the eventual order remains
+  // trackable. That is the desired property, not a leak.
+  return { ...session, user: guestUser };
 }
 
 const apiRoutes: FastifyPluginAsync = async (app) => {
@@ -216,16 +299,27 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
       method?: string;
       voucher_code?: string;
       customer_data?: unknown;
+      /** Guest checkout only — the contact address the order is tracked by.
+       * Ignored entirely for a signed-in buyer. */
+      guest_email?: string;
     };
   }>("/checkout", async (req, reply) => {
-    const customer = await optionalCustomer(req);
-    if (!customer) {
-      return reply.code(401).send({ error: "unauthorized" });
+    const signedIn = await optionalCustomer(req);
+    if (signedIn) {
+      const token = req.headers["x-csrf-token"];
+      if (typeof token !== "string" || !constantTimeEqual(token, signedIn.csrf)) {
+        return reply.code(403).send({ error: "csrf_failed" });
+      }
     }
-    const token = req.headers["x-csrf-token"];
-    if (typeof token !== "string" || !constantTimeEqual(token, customer.csrf)) {
-      return reply.code(403).send({ error: "csrf_failed" });
-    }
+    // Guest checkout (Task 4): an anonymous buyer is turned into a real
+    // `User` + session here, then falls through to the SAME performCheckout /
+    // ValidationError / 201 tail as a signed-in buyer below. Everything cheap
+    // is validated BEFORE the user row is written, so a junk request never
+    // leaves an orphan row behind. Guests are not CSRF-checked above for the
+    // same reason the guest cart isn't (routes/cart.ts `csrfOk`): they have
+    // no session to ride, and the cart cookie is SameSite=Lax.
+    const customer = signedIn ?? (await establishGuestCustomer(req, reply));
+    if (!customer) return; // the guest branch already sent its 4xx/429
 
     const method = (req.body?.method ?? "").toLowerCase();
     const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;

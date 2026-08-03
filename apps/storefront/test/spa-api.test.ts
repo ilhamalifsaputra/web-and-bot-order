@@ -813,10 +813,14 @@ describe("/api/v1/cart twins", () => {
 
 // ---------------------------------------------------------------- /checkout
 describe("/api/v1/checkout + orders", () => {
-  it("GET /checkout 401s anonymously (JSON, not a redirect)", async () => {
+  // Guest checkout (Task 4) opened this read to anonymous visitors — it used
+  // to 401. The guest-specific contract (cookie-cart pricing, wallet flags
+  // off) is pinned in guest-checkout-api.test.ts; here we only hold the line
+  // that anonymous no longer means unauthorized.
+  it("GET /checkout 200s anonymously with is_guest true (no session required)", async () => {
     const res = await app.inject({ method: "GET", url: "/api/v1/checkout" });
-    expect(res.statusCode).toBe(401);
-    expect(res.json()).toEqual({ error: "unauthorized" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().is_guest).toBe(true);
   });
 
   describe("signed-in buyer", () => {
@@ -876,8 +880,12 @@ describe("/api/v1/checkout + orders", () => {
     });
 
     it("voucher preview: trio + unknown voucher key in error_key", async () => {
+      // Anonymous callers are served (guest checkout, Task 4) — CSRF is the
+      // shared csrfOk rule, which exempts guests exactly as it does for the
+      // guest cart. A SIGNED-IN caller still needs a valid token (below).
       const anon = await app.inject({ method: "POST", url: "/api/v1/checkout/voucher/preview", payload: { voucher_code: "X" } });
-      expect(anon.statusCode).toBe(401);
+      expect(anon.statusCode).toBe(200);
+      expect(anon.json().is_guest).toBe(true);
       const bad = await app.inject({
         method: "POST",
         url: "/api/v1/checkout/voucher/preview",

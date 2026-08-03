@@ -7,17 +7,23 @@
  * wallet flags); the three payment webhooks stay in routes/checkout.ts
  * untouched.
  *
- * Auth: cookie session. Reads 401 as JSON (the SPA redirects to /login);
- * mutations additionally require the x-csrf-token header — the same
- * currentCustomer/csrfCheck semantics as the HTML routes, but JSON-shaped
- * instead of a 303 redirect.
+ * Auth: cookie session, JSON-shaped (401 body, not the HTML routes' 303
+ * redirect). Guest checkout (Task 4) splits these routes in two:
+ *   - the two read-only checkout routes (summary + voucher preview) serve
+ *     anonymous visitors, whose cart comes from the `shop_cart_v2` cookie;
+ *     CSRF is delegated to `csrfOk` (./cart), the one repo-wide rule.
+ *   - the three order routes (pay / status / cancel) stay session-locked with
+ *     an ownership check, deliberately: a guest buyer holds a real session
+ *     from the moment their order is created (routes/api.ts mints one), so
+ *     they reach these through exactly the same door as a registered buyer
+ *     and nothing here needs loosening.
  */
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { ValidationError } from "@app/core/errors";
 import { prisma, getOrderByCode, cancelOrder } from "@app/db";
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { checkoutView, payView, payState } from "./checkout";
-import { constantTimeEqual } from "../auth";
+import { csrfOk } from "./cart";
 
 /** JSON-flavored auth gate: 401 body instead of the HTML routes' 303. */
 async function requireCustomer(req: FastifyRequest, reply: FastifyReply): Promise<Customer | null> {
@@ -29,25 +35,25 @@ async function requireCustomer(req: FastifyRequest, reply: FastifyReply): Promis
   return customer;
 }
 
-/** x-csrf-token header check for signed-in JSON mutations. */
-function csrfHeaderOk(req: FastifyRequest, customer: Customer): boolean {
-  const token = req.headers["x-csrf-token"];
-  return typeof token === "string" && constantTimeEqual(token, customer.csrf);
-}
-
 const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
   // ---- Checkout summary + method availability ----
+  // Guest checkout (Task 4): anonymous visitors get the summary too, priced
+  // from their cart cookie, with `is_guest: true` telling the SPA to collect
+  // a contact email. The order-creating POST (routes/api.ts) is where a guest
+  // is actually validated and given a session.
   app.get("/checkout", async (req, reply) => {
-    const customer = await requireCustomer(req, reply);
-    if (!customer) return;
+    const customer = await optionalCustomer(req);
     return reply.send(await checkoutView(req, customer, null, null));
   });
 
   // ---- Voucher preview: recompute totals WITHOUT creating an order ----
+  // Also open to guests. CSRF is `csrfOk` from ./cart — the single repo-wide
+  // rule (guests are covered by the cart cookie's SameSite=Lax, signed-in
+  // callers must present the session token), so there is exactly one place
+  // that decides it rather than a second copy living here.
   app.post<{ Body: { voucher_code?: string } }>("/checkout/voucher/preview", async (req, reply) => {
-    const customer = await requireCustomer(req, reply);
-    if (!customer) return;
-    if (!csrfHeaderOk(req, customer)) {
+    const customer = await optionalCustomer(req);
+    if (!csrfOk(req, customer)) {
       return reply.code(403).send({ error: "csrf_failed" });
     }
     const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
@@ -87,7 +93,7 @@ const apiCheckoutRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Params: { code: string } }>("/orders/:code/cancel", async (req, reply) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
-    if (!csrfHeaderOk(req, customer)) {
+    if (!csrfOk(req, customer)) {
       return reply.code(403).send({ error: "csrf_failed" });
     }
     const order = await getOrderByCode(prisma, req.params.code);

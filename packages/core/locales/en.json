@@ -511,6 +511,7 @@
   "web.categories_empty": "No categories yet — check back soon.",
   "web.from_price": "from",
   "web.group_options": "{count} options",
+  "web.guest_email_invalid": "Enter a valid email address — we send your order details there.",
   "web.hero_cta": "Browse products",
   "web.continue_shopping": "Continue shopping",
   "web.hero_sub": "Pay with QRIS or USDT — verified automatically, and your credentials appear on the order page within minutes.",

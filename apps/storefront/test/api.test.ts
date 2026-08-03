@@ -432,10 +432,15 @@ describe("POST /api/v1/cart — cart guard (single-SKU-per-non-auto-cart)", () =
 });
 
 describe("POST /api/v1/checkout", () => {
-  it("401s when logged out", async () => {
+  // Guest checkout (Task 4) replaced the blanket 401 with a validated guest
+  // branch: no session is required, but a contact email is, and it is checked
+  // before any user row is written. The full guest contract lives in
+  // guest-checkout-api.test.ts; this just pins that the gate moved rather
+  // than disappeared.
+  it("400s (not 401) when logged out without a guest email", async () => {
     const res = await app.inject({ method: "POST", url: "/api/v1/checkout", payload: { method: "qris" } });
-    expect(res.statusCode).toBe(401);
-    expect(res.json()).toEqual({ error: "unauthorized" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: "web.guest_email_invalid" });
   });
 
   describe("signed-in customer", () => {

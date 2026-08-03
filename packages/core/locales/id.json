@@ -511,6 +511,7 @@
   "web.categories_empty": "Belum ada kategori — cek lagi nanti ya.",
   "web.from_price": "mulai",
   "web.group_options": "{count} pilihan",
+  "web.guest_email_invalid": "Masukkan alamat email yang valid — detail pesanan kami kirim ke sana.",
   "web.hero_cta": "Lihat produk",
   "web.continue_shopping": "Lanjut belanja",
   "web.hero_sub": "Bayar pakai QRIS atau USDT — diverifikasi otomatis, dan kredensialmu muncul di halaman pesanan dalam hitungan menit.",

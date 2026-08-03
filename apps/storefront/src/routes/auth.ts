@@ -25,6 +25,7 @@ import {
   verifyTelegramLoginResult,
   SHOP_COOKIE_NAME,
   SHOP_SESSION_TTL_HOURS,
+  type CustomerSession,
 } from "../auth";
 import { readGuestCart, writeGuestCart, resolveBotToken } from "../shop";
 
@@ -36,12 +37,21 @@ export const safeNext = (raw: unknown): string => {
 
 type SessionUser = { id: number; telegramId: bigint | null };
 
-/** Shared sign-in tail: merge guest cart, rotate jti, set the cookie. */
+/**
+ * Shared sign-in tail: merge guest cart, rotate jti, set the cookie.
+ *
+ * Returns the session payload it just minted. Most callers (the Telegram
+ * widget callback below, the JSON login/register endpoints) only care about
+ * the cookie side effect and ignore it; guest checkout (routes/api.ts POST
+ * /checkout) needs the freshly issued `csrf` to build the `Customer` it hands
+ * to performCheckout, and the cookie it just set is not readable back off
+ * `req` within the same request.
+ */
 export async function establishSession(
   req: FastifyRequest,
   reply: FastifyReply,
   user: SessionUser,
-): Promise<void> {
+): Promise<CustomerSession> {
   const guestCart = readGuestCart(req);
   for (const line of guestCart) {
     const denom = await getDenomination(prisma, line.p);
@@ -51,7 +61,7 @@ export async function establishSession(
 
   const jti = newJti();
   await setSetting(prisma, shopSessionJtiKey(user.id), jti);
-  const { raw } = makeCustomerSession(user.id, user.telegramId, jti);
+  const { raw, data } = makeCustomerSession(user.id, user.telegramId, jti);
   void reply.setCookie(SHOP_COOKIE_NAME, raw, {
     path: "/",
     httpOnly: true,
@@ -59,6 +69,7 @@ export async function establishSession(
     secure: config.WEB_COOKIE_SECURE,
     maxAge: SHOP_SESSION_TTL_HOURS * 3600,
   });
+  return data;
 }
 
 const authRoutes: FastifyPluginAsync = async (app) => {

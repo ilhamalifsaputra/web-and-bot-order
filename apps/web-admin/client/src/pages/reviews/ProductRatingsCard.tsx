@@ -4,6 +4,7 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from "@/components/ui/select";
 
 export interface ProductRatingSummary {
+  productId: number;
   productName: string;
   /** Null when every review for this product is hidden (see
    *  `productRatingSummaries` in `packages/db/src/crud/reviews.ts`) — a
@@ -79,7 +80,7 @@ export function ProductRatingsCard({ summaries, isLoading }: ProductRatingsCardP
         )}
         {!isLoading &&
           top5.map((s) => (
-            <div key={s.productName} className="flex items-center justify-between gap-2 py-2">
+            <div key={s.productId} className="flex items-center justify-between gap-2 py-2">
               <span className="truncate text-sm text-ink">{s.productName}</span>
               <span className="flex shrink-0 items-center gap-1 text-xs text-ink-soft">
                 <Star className="h-4 w-4 fill-amberx text-amberx" />

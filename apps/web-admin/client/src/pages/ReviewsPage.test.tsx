@@ -185,8 +185,32 @@ describe("ReviewsPage", () => {
     fetchSpy.mockClear();
     await user.click(screen.getByRole("button", { name: /pending reply/i }));
 
+    // Also constrains hidden=0 (visible-only) — reviewsKpis scopes
+    // pendingReplyCount/negativeCount to visible reviews, so the quick-filter
+    // must match that scope or the resulting row count can exceed the number
+    // shown on the KPI card the admin clicked.
     await waitFor(() =>
-      expect(fetchSpy).toHaveBeenCalledWith("/api/reviews?status=PENDING_REPLY", { credentials: "include" }),
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/reviews?status=PENDING_REPLY&hidden=0",
+        { credentials: "include" },
+      ),
+    );
+  });
+
+  it("quick-filters Negative Reviews to hidden=0 as well, matching the KPI's visible-only scope", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockFetchRouter();
+    render(<ReviewsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Bagus banget!")).toBeInTheDocument());
+
+    fetchSpy.mockClear();
+    await user.click(screen.getByRole("button", { name: /negative reviews/i }));
+
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        "/api/reviews?sentiment=NEGATIVE&hidden=0",
+        { credentials: "include" },
+      ),
     );
   });
 
@@ -238,7 +262,7 @@ describe("ReviewsPage", () => {
     expect(await screen.findByText("Review not found.")).toBeInTheDocument();
   });
 
-  it("Reply dialog happy path: sends a reply via POST /api/reviews/:id/reply and shows a success toast", async () => {
+  it("Reply dialog happy path: saves a reply via POST /api/reviews/:id/reply and shows a success toast", async () => {
     const user = userEvent.setup();
     const fetchSpy = mockFetchRouter({
       onPost: (url, body) => {
@@ -259,12 +283,16 @@ describe("ReviewsPage", () => {
     expect(within(dialog).getByText("Reply to Review")).toBeInTheDocument();
     const textarea = within(dialog).getByPlaceholderText("Write a reply…");
     await user.type(textarea, "Thanks for the feedback!");
-    await user.click(within(dialog).getByRole("button", { name: /^send reply$/i }));
+    await user.click(within(dialog).getByRole("button", { name: /^save reply$/i }));
 
     await waitFor(() =>
       expect(fetchSpy).toHaveBeenCalledWith("/api/reviews/1/reply", expect.objectContaining({ method: "POST" })),
     );
-    await waitFor(() => expect(screen.getByText("Reply sent.")).toBeInTheDocument());
+    // "Save Reply" / "Reply saved." — not "Send"/"sent": Phase A only
+    // persists adminReply to the DB, there is no customer-facing delivery
+    // yet (storefront/bot don't read it), so the copy must not imply the
+    // reply was delivered.
+    await waitFor(() => expect(screen.getByText("Reply saved.")).toBeInTheDocument());
   });
 
   it("Delete Review opens a destructive confirm dialog and, on confirm, calls DELETE /api/reviews/:id", async () => {

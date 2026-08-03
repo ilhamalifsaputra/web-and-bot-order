@@ -52,7 +52,7 @@ export function ReplyDialog({ open, onOpenChange, review }: ReplyDialogProps): J
     mutationFn: (reply: string) => apiPost<{ ok: boolean }>(`/api/reviews/${review!.id}/reply`, { reply }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["reviews"] });
-      toast.success(isEditing ? "Reply updated." : "Reply sent.");
+      toast.success(isEditing ? "Reply updated." : "Reply saved.");
       onOpenChange(false);
     },
     onError: (e: Error) => toast.error(describeError(e.message)),
@@ -93,7 +93,7 @@ export function ReplyDialog({ open, onOpenChange, review }: ReplyDialogProps): J
             Cancel
           </Button>
           <Button onClick={handleSend} disabled={!text.trim() || sendReply.isPending}>
-            {sendReply.isPending ? "Saving…" : isEditing ? "Update Reply" : "Send Reply"}
+            {sendReply.isPending ? "Saving…" : isEditing ? "Update Reply" : "Save Reply"}
           </Button>
         </DialogFooter>
       </DialogContent>

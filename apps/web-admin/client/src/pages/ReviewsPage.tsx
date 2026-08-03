@@ -293,8 +293,8 @@ export function ReviewsPage() {
       />
 
       <ReviewsKpiRow
-        onPendingReplyClick={() => quickFilter({ status: "PENDING_REPLY" })}
-        onNegativeClick={() => quickFilter({ sentiment: "NEGATIVE" })}
+        onPendingReplyClick={() => quickFilter({ status: "PENDING_REPLY", hidden: "0" })}
+        onNegativeClick={() => quickFilter({ sentiment: "NEGATIVE", hidden: "0" })}
         onHiddenClick={() => quickFilter({ hidden: "1" })}
       />
 

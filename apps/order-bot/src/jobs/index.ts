@@ -398,7 +398,10 @@ const BROADCAST_MAX_TOTAL_FLOOD_MS = 5 * 60_000;
  * Telegram asked for.
  */
 function broadcastFloodWaitMs(e: unknown): number | null {
-  if (!(e instanceof GrammyError) || !e.parameters?.retry_after) return null;
+  // `=== undefined`, not a truthiness check: Telegram may answer 429 with
+  // `retry_after: 0` ("you may retry immediately"), and treating that as
+  // "not flood control" would write the recipient off as permanently failed.
+  if (!(e instanceof GrammyError) || e.parameters?.retry_after === undefined) return null;
   const seconds = Math.min(Math.max(e.parameters.retry_after, 0), BROADCAST_MAX_RETRY_AFTER_S);
   return (seconds + 1) * 1000;
 }
@@ -538,14 +541,45 @@ export async function drainBroadcasts(api: Api): Promise<void> {
     // Mid-flight progress so the admin's Broadcast History counter actually
     // creeps up; finishBroadcast still writes the authoritative final numbers.
     // No-ops (by its SENDING guard) if the row was reaped or cancelled under us.
+    // Purely cosmetic, so it must NEVER abort a send that is already under way:
+    // this `await` sits outside the per-recipient try/catch, and a SQLITE_BUSY
+    // past the client's busy_timeout would otherwise escape all the way out of
+    // drainBroadcasts, leaving the row stuck on SENDING until the reaper flips
+    // it to FAILED 15 minutes later with a restart message that isn't true.
+    // A lost flush costs nothing — the next one (or finishBroadcast) writes the
+    // correct running totals anyway.
     if (processed % BROADCAST_PROGRESS_FLUSH_EVERY === 0) {
-      await updateBroadcastProgress(prisma, bc.id, { sent, failed });
+      await updateBroadcastProgress(prisma, bc.id, { sent, failed, total: recipients.length }).catch((err) =>
+        logger.warn(
+          { err },
+          `Broadcast #${bc.id} could not write its mid-flight progress counters, so the admin's History table will show a stale count for a while — ` +
+            `the send itself is unaffected and the final numbers are still written when it completes`,
+        ),
+      );
     }
 
     const elapsed = Date.now() - startedAt;
     if (elapsed < BROADCAST_THROTTLE_MS) await sleep(BROADCAST_THROTTLE_MS - elapsed);
   }
-  await finishBroadcast(prisma, bc.id, { sent, failed, total: recipients.length });
+  if (cutShort > 0) {
+    // A send that never reached part of its segment is NOT a success, and the
+    // logger.error above is read by developers, not by the shop admin who has
+    // to decide whether to re-send. Marking the row FAILED with a plain-English
+    // reason is what puts that decision in front of them: Broadcast History
+    // renders `failureReason` under the status badge, but only for FAILED rows.
+    // Deliberately scoped to the cut-short case — recipients individually given
+    // up on after their own retry budget ran out still leave a broadcast that
+    // made a full pass over its segment, which is what the visible sent/total
+    // fraction already reports (and what an ordinary blocked user looks like).
+    await updateBroadcastProgress(prisma, bc.id, { sent, failed, total: recipients.length });
+    await failBroadcast(
+      prisma,
+      bc.id,
+      `Telegram's rate limiting cut this broadcast short — ${cutShort} recipient(s) were never contacted. Send it again in a few minutes to reach them.`,
+    );
+  } else {
+    await finishBroadcast(prisma, bc.id, { sent, failed, total: recipients.length });
+  }
   logger.info(
     `Broadcast #${bc.id} finished — sent to ${sent} recipient(s), ${failed} failed (blocked the bot, deactivated, or unreachable)` +
       (floodedRecipients > 0

@@ -130,15 +130,26 @@ export async function claimNextDueBroadcast(db: Db, now: Date) {
  * (or any other transition off SENDING) quietly no-ops rather than writing
  * counters onto a row that has already moved on. Called every N recipients,
  * not every recipient — SQLite is single-writer and shared across processes.
+ *
+ * `total` is optional but the drainer always passes it: `totalCount` is written
+ * at enqueue time from a segment count taken then, while the recipient list is
+ * only resolved when the drain actually starts. If the segment grew in between,
+ * the History cell would read something like `225/200` until `finishBroadcast`
+ * corrected it at the very end. Flushing the live recipient count alongside the
+ * running totals keeps the fraction sane the whole way through.
  */
 export async function updateBroadcastProgress(
   db: Db,
   id: number,
-  r: { sent: number; failed: number },
+  r: { sent: number; failed: number; total?: number },
 ): Promise<void> {
   await db.broadcast.updateMany({
     where: { id, status: BroadcastStatus.SENDING },
-    data: { sentCount: r.sent, failedCount: r.failed },
+    data: {
+      sentCount: r.sent,
+      failedCount: r.failed,
+      ...(r.total === undefined ? {} : { totalCount: r.total }),
+    },
   });
 }
 

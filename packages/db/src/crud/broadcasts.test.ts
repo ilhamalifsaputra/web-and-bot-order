@@ -244,6 +244,20 @@ describe("updateBroadcastProgress", () => {
     expect(row.totalCount).toBe(3); // untouched by a progress flush
   });
 
+  it("writes totalCount too when the caller passes a live recipient count", async () => {
+    // totalCount is stamped at enqueue (3 here) from a segment count taken
+    // then; the drainer only resolves the real recipient list when it starts.
+    // Without flushing the live count, History would read "5/3" mid-flight.
+    const bc = await make();
+    await claimNextDueBroadcast(prisma, new Date());
+
+    await updateBroadcastProgress(prisma, bc.id, { sent: 5, failed: 0, total: 6 });
+    const row = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+    expect(row.status).toBe("SENDING");
+    expect(row.sentCount).toBe(5);
+    expect(row.totalCount).toBe(6);
+  });
+
   it("finishBroadcast still overrides the last flushed progress with the final numbers", async () => {
     const bc = await make();
     await claimNextDueBroadcast(prisma, new Date());

@@ -16,6 +16,25 @@ import {
   BINANCE_API_SECRET_KEY,
   BINANCE_POLL_HEALTH_KEY,
 } from "@app/db";
+/**
+ * Lets a single test make the drainer's mid-flight progress flush fail — the
+ * SQLITE_BUSY-past-busy_timeout case — without disturbing any other DB write.
+ * Everything else in `@app/db` is the real implementation; `vi.hoisted` is
+ * needed because `vi.mock` factories run before ordinary module-level `let`s
+ * are initialised.
+ */
+const dbMockState = vi.hoisted(() => ({ progressFlushError: null as Error | null }));
+vi.mock("@app/db", async () => {
+  const actual = await vi.importActual<typeof import("@app/db")>("@app/db");
+  return {
+    ...actual,
+    updateBroadcastProgress: async (...args: Parameters<typeof actual.updateBroadcastProgress>) => {
+      if (dbMockState.progressFlushError) throw dbMockState.progressFlushError;
+      return actual.updateBroadcastProgress(...args);
+    },
+  };
+});
+
 import { GrammyError, type Api } from "grammy";
 import { OrderStatus, OrderCurrency, TicketStatus } from "@app/core/enums";
 import { logger } from "@app/core/logger";
@@ -26,6 +45,7 @@ import { NotificationEvent } from "@app/core/enums";
 let sample: SampleData;
 
 beforeEach(async () => {
+  dbMockState.progressFlushError = null;
   await resetDb(prisma);
   sample = await buildSampleData(prisma);
 });
@@ -311,6 +331,65 @@ describe("drainBroadcasts", () => {
     expect(done.totalCount).toBe(26);
   });
 
+  // The flush is cosmetic, but its `await` sits outside every try/catch in the
+  // send loop. A SQLITE_BUSY past the client's busy_timeout used to escape
+  // drainBroadcasts entirely: the row stayed SENDING, finishBroadcast never
+  // ran, and 15 minutes later the reaper marked it FAILED with "the sender
+  // process restarted" — a reason that is simply untrue, on a broadcast that
+  // silently stopped part-way through its segment.
+  it("keeps sending when a mid-flight progress flush fails, rather than aborting the whole broadcast", async () => {
+    for (let i = 0; i < 30; i++) await addRecipient(5300 + i);
+    const bc = await createBroadcast(prisma, { message: "busy db", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+    dbMockState.progressFlushError = new Error("SQLITE_BUSY: database is locked");
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const warn = vi.spyOn(logger, "warn");
+
+    let flushWarnings: unknown[] = [];
+    try {
+      await drainBroadcasts(fakeApi({ sendMessage }));
+    } finally {
+      flushWarnings = warn.mock.calls.filter((c) => String(c[1]).includes("mid-flight progress counters"));
+      warn.mockRestore();
+    }
+
+    // Every recipient after the failed flush at #25 still got their message.
+    expect(sendMessage).toHaveBeenCalledTimes(30);
+    // ...and the failure was reported rather than swallowed silently.
+    expect(flushWarnings).toHaveLength(1);
+
+    // The broadcast completed normally: SENT with the authoritative final
+    // numbers, no stuck SENDING row for the reaper to mislabel.
+    const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+    expect(done.status).toBe("SENT");
+    expect(done.sentCount).toBe(30);
+    expect(done.failedCount).toBe(0);
+    expect(done.totalCount).toBe(30);
+  });
+
+  // M4: totalCount is stamped at enqueue from a segment count taken then, but
+  // the recipient list is only resolved when the drain starts. If the segment
+  // grew in between, History showed e.g. 25/2 mid-flight until finishBroadcast
+  // corrected it, so the flush writes the live recipient count too.
+  it("flushes the live recipient count, so a segment that grew since enqueue can't render a nonsense fraction", async () => {
+    for (let i = 0; i < 26; i++) await addRecipient(5400 + i);
+    // Enqueued when the segment held only 2 users.
+    const bc = await createBroadcast(prisma, { message: "grew", segment: "ALL", scheduledAt: null, createdById: null, total: 2 });
+
+    let midFlight: { sentCount: number; totalCount: number } | null = null;
+    let call = 0;
+    const sendMessage = vi.fn(async () => {
+      call++;
+      if (call === 26) {
+        const row = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+        midFlight = { sentCount: row.sentCount, totalCount: row.totalCount };
+      }
+    });
+
+    await drainBroadcasts(fakeApi({ sendMessage }));
+
+    expect(midFlight).toEqual({ sentCount: 25, totalCount: 26 });
+  });
+
   // Sub-item (b): the loop used to `await sleep(40)` flat AFTER the send, so
   // the real rate was 1/(latency + 40ms) rather than the ~25 msg/s the 40ms
   // throttle was sized for. The wait is now the REMAINDER of that budget.
@@ -422,6 +501,30 @@ describe("drainBroadcasts", () => {
       expect(done.failedCount).toBe(0);
     });
 
+    // `retry_after: 0` ("you may retry immediately") is a real 429. A
+    // truthiness check on it read 0 as "not flood control at all" and wrote the
+    // recipient off as permanently failed, with no retry.
+    it("treats retry_after: 0 as flood control to retry, not as a permanent failure", async () => {
+      await addRecipient(7006);
+      const bc = await createBroadcast(prisma, { message: "zero wait", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
+      const sendMessage = vi.fn()
+        .mockRejectedValueOnce(floodError(0))
+        .mockResolvedValueOnce(undefined);
+      const sleeps = captureSleeps();
+
+      try {
+        await drainBroadcasts(fakeApi({ sendMessage }));
+      } finally {
+        sleeps.restore();
+      }
+
+      expect(sendMessage).toHaveBeenCalledTimes(2);
+      expect(sleeps.requested).toContain(1_000); // 0s + the dispatcher's 1s of headroom
+      const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
+      expect(done.sentCount).toBe(1);
+      expect(done.failedCount).toBe(0);
+    });
+
     it("clamps an absurd retry_after instead of parking the drainer for hours", async () => {
       await addRecipient(7002);
       await createBroadcast(prisma, { message: "hostile", segment: "ALL", scheduledAt: null, createdById: null, total: 0 });
@@ -498,8 +601,16 @@ describe("drainBroadcasts", () => {
       // Every recipient is still accounted for — the six never attempted are
       // counted as failed, so sent + failed == total and the admin's numbers
       // do not silently lose people.
+      //
+      // And the row is FAILED, not SENT: a broadcast that never reached part of
+      // its segment used to show a green "Sent" badge over 0/8 with the reason
+      // living only in a Pino line no shop admin reads. Broadcast History
+      // renders failureReason under the badge for FAILED rows, which is what
+      // actually tells the admin to re-send.
       const done = (await prisma.broadcast.findUnique({ where: { id: bc.id } }))!;
-      expect(done.status).toBe("SENT");
+      expect(done.status).toBe("FAILED");
+      expect(done.failureReason).toContain("6 recipient(s) were never contacted");
+      expect(done.failureReason).toMatch(/rate limiting/i);
       expect(done.sentCount).toBe(0);
       expect(done.failedCount).toBe(8);
       expect(done.totalCount).toBe(8);
@@ -760,14 +871,32 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       // patterns above: no second-resolution job may share a firing second
       // with another, and none may land on second 0 where every
       // minute/hour-resolution job in this list fires (P1008/P2028 in
-      // production, 2026-07-20).
-      const secondsOf = (pattern: string | undefined) =>
-        pattern!.split(" ")[0]!.split(",").map(Number);
-      const drainSeconds = secondsOf(crons[6]!.getPattern());
-      const flashSeconds = secondsOf(crons[7]!.getPattern());
-      expect(drainSeconds).not.toContain(0);
-      expect(flashSeconds).not.toContain(0);
-      expect(drainSeconds.filter((s) => flashSeconds.includes(s))).toEqual([]);
+      // production, 2026-07-20). Derived from the whole registered list rather
+      // than a hand-picked pair, so a newly added (or re-timed) second-
+      // resolution job — storageCleanupJob's "30 15 3 * * *" is already a third
+      // one — is covered the moment it appears.
+      const secondsOf = (pattern: string) => {
+        const fields = pattern.split(" ");
+        // 5 fields = minute resolution, i.e. it always fires on second 0 and is
+        // covered by the "must not contain 0" rule applied to the others.
+        return fields.length >= 6 ? fields[0]!.split(",").map(Number) : null;
+      };
+      const secondResolution = crons
+        .map((c) => ({ pattern: c.getPattern()!, seconds: secondsOf(c.getPattern()!) }))
+        .filter((c): c is { pattern: string; seconds: number[] } => c.seconds !== null);
+      expect(secondResolution.length).toBeGreaterThanOrEqual(3);
+      for (const job of secondResolution) {
+        // A wildcard ("*", "*/15") parses to NaN here and is rejected: both
+        // would put a tick back on second 0.
+        expect(job.seconds.every(Number.isInteger)).toBe(true);
+        expect(job.seconds).not.toContain(0);
+      }
+      for (let a = 0; a < secondResolution.length; a++) {
+        for (let b = a + 1; b < secondResolution.length; b++) {
+          const shared = secondResolution[a]!.seconds.filter((s) => secondResolution[b]!.seconds.includes(s));
+          expect(shared).toEqual([]);
+        }
+      }
     } finally {
       for (const c of crons) c.stop();
     }

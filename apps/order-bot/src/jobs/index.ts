@@ -36,6 +36,7 @@ import {
   updateBroadcastProgress,
   isBroadcastSegment,
   reapStaleBroadcasts,
+  BROADCAST_STALE_CLAIM_MS,
   failBroadcast,
   refreshUsdIdrRate,
   listUnannouncedStartedFlashSales,
@@ -349,21 +350,45 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const BROADCAST_PROGRESS_FLUSH_EVERY = 25;
 
 /**
- * Infinite-loop protection for the flood-control retry path below, in two
- * independent dimensions:
+ * Bounds on the flood-control retry path below. Three of them, at two levels,
+ * because the per-recipient bounds alone do NOT bound the tick:
  *
  * 1. How LONG one back-off may be. Telegram's `retry_after` is normally a few
  *    seconds, but the drainer must not park for hours on a bogus or hostile
  *    value (croner's `protect: true` means no other drain tick can run while
  *    this one sleeps). Anything larger is clamped to this ceiling.
- * 2. How MANY times a single recipient may be retried. Clamping alone is not
+ * 2. How MANY times a single RECIPIENT may be retried. Clamping alone is not
  *    enough — a server that answered 429 forever would still loop for ever, so
- *    after this many consecutive flood-control responses the recipient is
- *    counted as failed and the loop moves on. Worst case per recipient is
- *    therefore bounded at roughly 3 x 61s.
+ *    after this many consecutive flood-control responses that recipient is
+ *    counted as failed and the loop moves on.
+ * 3. How much total back-off the whole BROADCAST may spend. (1) and (2)
+ *    together bound one recipient at roughly 3 x 61s, but N recipients each
+ *    paying that is N x 183s — about 50 hours for a 1,000-recipient segment,
+ *    with `protect: true` holding off every other drain tick throughout. That
+ *    is not a hypothetical: the latency-aware throttle above is what finally
+ *    lets this bot reach the ~25 msg/s it was sized for, and 25 msg/s sits
+ *    right against Telegram's ~30 msg/s bulk ceiling, so sustained partial
+ *    throttling is the expected case rather than a freak one.
+ *
+ *    The ceiling is deliberately set well under `BROADCAST_STALE_CLAIM_MS`
+ *    (15 min, packages/db/src/crud/broadcasts.ts), which is the point at which
+ *    a still-running drain's claim looks abandoned. Past that line
+ *    `reapStaleBroadcasts` would flip the row to FAILED underneath the drainer
+ *    that is still happily sending, and both the progress flushes and
+ *    `finishBroadcast` would silently no-op on their `status: SENDING` guard —
+ *    leaving the admin looking at a FAILED broadcast that actually delivered.
+ *    Today only `protect: true` plus the reaper running solely at the top of
+ *    this same job prevents that, which holds for the single-process
+ *    `apps/server` deployment and stops holding the moment a second bot
+ *    process shares the DB. 5 minutes is a third of that window, leaving the
+ *    rest as headroom for the sends themselves (a 1,000-recipient segment
+ *    needs ~40s of throttle at the designed rate). Once the budget is spent
+ *    the broadcast stops retrying, counts everyone it never reached as failed,
+ *    and says so in its finish log.
  */
 const BROADCAST_MAX_RETRY_AFTER_S = 60;
 const BROADCAST_MAX_FLOOD_RETRIES = 3;
+const BROADCAST_MAX_TOTAL_FLOOD_MS = 5 * 60_000;
 
 /**
  * How long Telegram's flood control wants us to wait, in milliseconds, or null
@@ -424,9 +449,12 @@ export async function drainBroadcasts(api: Api): Promise<void> {
   };
 
   let processed = 0;
-  let floodedRecipients = 0; // hit flood control at least once (retried)
-  let floodAbandoned = 0; // ...and still never got through before the retry budget ran out
-  for (const r of recipients) {
+  let floodedRecipients = 0; // hit flood control at least once (and so was retried)
+  let floodAbandoned = 0; // ...and still never got through before its own retry budget ran out
+  let floodSpentMs = 0; // total time this broadcast has spent in flood back-off
+  let cutShort = 0; // recipients never attempted because the flood budget ran out
+  for (let i = 0; i < recipients.length; i++) {
+    const r = recipients[i]!;
     // Measured around the WHOLE recipient (all its attempts included), so the
     // throttle below sleeps only the remainder of the send budget rather than
     // stacking a flat 40ms on top of however long Telegram took. A flat sleep
@@ -435,6 +463,7 @@ export async function drainBroadcasts(api: Api): Promise<void> {
     // shorten the wait, never push the rate above the designed ceiling.
     const startedAt = Date.now();
     let floodRetries = 0;
+    let budgetExhausted = false;
     for (;;) {
       try {
         await deliver(r.telegramId);
@@ -443,26 +472,66 @@ export async function drainBroadcasts(api: Api): Promise<void> {
       } catch (e) {
         const waitMs = broadcastFloodWaitMs(e);
         if (waitMs === null) {
-          failed++; // user blocked the bot / deactivated — counted, not fatal
+          // A GrammyError here is the expected, common case — the user blocked
+          // the bot or deleted their account — already summarised by the failed
+          // count in the finish log, so it does not earn a line per recipient.
+          // Anything else is NOT expected, and the most plausible candidate is
+          // the image file_id cache write inside `deliver` failing on SQLite
+          // write contention AFTER an otherwise successful sendPhoto, which
+          // miscounts a delivered message as a failure. That is rare enough to
+          // always be worth a line, and undiagnosable without one.
+          if (e instanceof GrammyError) {
+            logger.debug({ err: e }, `Broadcast #${bc.id} could not deliver to one recipient — counting it as failed and continuing with the rest`);
+          } else {
+            logger.warn(
+              { err: e },
+              `Broadcast #${bc.id} failed on one recipient with something that is not a Telegram API error — counting it as failed and continuing, ` +
+                `but if this came from the image file_id cache write then the message itself was actually delivered and the failed count overstates the damage`,
+            );
+          }
+          failed++;
+          break;
+        }
+        // Tick-level bound (3): stop retrying once the whole broadcast has
+        // spent its flood budget, rather than letting every recipient pay its
+        // own worst case and dragging the tick past BROADCAST_STALE_CLAIM_MS.
+        if (floodSpentMs + waitMs > BROADCAST_MAX_TOTAL_FLOOD_MS) {
+          failed++;
+          budgetExhausted = true;
           break;
         }
         if (floodRetries >= BROADCAST_MAX_FLOOD_RETRIES) {
-          logger.error(
-            `Broadcast #${bc.id} gave up on one recipient after ${BROADCAST_MAX_FLOOD_RETRIES} consecutive Telegram flood-control responses — ` +
-              `counting it as failed and continuing with the rest, but the whole broadcast is likely being throttled and will run slowly`,
-          );
           failed++;
           floodAbandoned++;
           break;
         }
         floodRetries++;
         if (floodRetries === 1) floodedRecipients++;
-        logger.warn(
-          `Telegram flood-controlled broadcast #${bc.id} — pausing ${Math.round(waitMs / 1000)}s, then retrying the same recipient ` +
-            `(attempt ${floodRetries} of ${BROADCAST_MAX_FLOOD_RETRIES}) so they still receive the message instead of being written off as failed`,
-        );
+        // Logged once per broadcast, not once per back-off: at up to
+        // BROADCAST_MAX_FLOOD_RETRIES pauses for each of N recipients this was
+        // good for thousands of near-identical lines. The totals land in the
+        // finish log below instead.
+        if (floodedRecipients === 1 && floodRetries === 1) {
+          logger.warn(
+            `Telegram flood-controlled broadcast #${bc.id} — pausing ${Math.round(waitMs / 1000)}s and retrying the same recipient rather than writing them off as failed. ` +
+              `Each recipient gets up to ${BROADCAST_MAX_FLOOD_RETRIES} retries and the broadcast as a whole may spend ${BROADCAST_MAX_TOTAL_FLOOD_MS / 60_000} minutes waiting before it gives up on the rest; ` +
+              `further pauses are counted rather than logged, and the totals appear in this broadcast's finish line`,
+          );
+        }
+        floodSpentMs += waitMs;
         await sleep(waitMs);
       }
+    }
+
+    if (budgetExhausted) {
+      cutShort = recipients.length - (i + 1);
+      failed += cutShort;
+      logger.error(
+        `Broadcast #${bc.id} was cut short by sustained Telegram flood control after spending its ${BROADCAST_MAX_TOTAL_FLOOD_MS / 60_000}-minute back-off budget — ` +
+          `${cutShort} recipient(s) were never attempted and are counted as failed. Continuing would have pushed this drain past the ${BROADCAST_STALE_CLAIM_MS / 60_000}-minute stale-claim window, ` +
+          `at which point the broadcast row can be reaped as FAILED underneath this still-running send. Re-send to the remaining recipients once the throttling clears`,
+      );
+      break;
     }
 
     processed++;
@@ -481,6 +550,9 @@ export async function drainBroadcasts(api: Api): Promise<void> {
     `Broadcast #${bc.id} finished — sent to ${sent} recipient(s), ${failed} failed (blocked the bot, deactivated, or unreachable)` +
       (floodedRecipients > 0
         ? `; Telegram flood-controlled ${floodedRecipients} recipient(s) along the way, of which ${floodAbandoned} never got through before their retry budget ran out`
+        : "") +
+      (cutShort > 0
+        ? `; the broadcast was cut short by sustained throttling with ${cutShort} recipient(s) never attempted, so it under-delivered and should be re-sent to them`
         : ""),
   );
 }

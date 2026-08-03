@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor, fireEvent, within } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -254,6 +254,9 @@ describe("BroadcastPage", () => {
   // straight to the DB, so nothing pushes those numbers at this page — without
   // polling the Sent column sits frozen until a manual reload.
   describe("auto-refresh while a broadcast is in flight", () => {
+    // A FRESH Response per call. A single Response handed to mockResolvedValue
+    // is a one-shot body: the second poll would get the same already-consumed
+    // object and res.json() would reject.
     const load = (history: unknown[]) =>
       new Response(JSON.stringify({ segments: ["ALL"], counts: { ALL: 200 }, history }), {
         status: 200,
@@ -262,9 +265,16 @@ describe("BroadcastPage", () => {
 
     it("polls while a row is SENDING and shows the counter climbing without a reload", async () => {
       const sending = { ...BROADCAST, id: 7, status: "SENDING", sent: 25 };
+      let sent = 25;
       const fetchSpy = vi.spyOn(globalThis, "fetch");
-      fetchSpy.mockResolvedValueOnce(load([sending]));
-      fetchSpy.mockResolvedValue(load([{ ...sending, sent: 50 }]));
+      // Every poll gets its own Response, and the counter moves between them,
+      // so a stale-body regression surfaces as a failure rather than passing
+      // on the first render alone.
+      fetchSpy.mockImplementation(async () => {
+        const body = load([{ ...sending, sent }]);
+        sent = 50;
+        return body;
+      });
 
       render(<BroadcastPage />, { wrapper: Wrapper });
       await waitFor(() => expect(screen.getByText("25/200")).toBeInTheDocument());
@@ -277,17 +287,27 @@ describe("BroadcastPage", () => {
     }, 15_000);
 
     it("stops polling once every row has settled", async () => {
-      const fetchSpy = vi.spyOn(globalThis, "fetch");
-      // BROADCAST is SENT — nothing left that can change on its own.
-      fetchSpy.mockResolvedValue(load([BROADCAST]));
+      // Fake timers installed BEFORE render, so React Query's scheduling sees
+      // them from the start. waitFor is deliberately not used here — RTL only
+      // auto-advances a fake clock when a `jest` global exists — so the clock
+      // is driven explicitly inside act() instead.
+      vi.useFakeTimers();
+      try {
+        const fetchSpy = vi.spyOn(globalThis, "fetch");
+        // BROADCAST is SENT — nothing left that can change on its own.
+        fetchSpy.mockImplementation(async () => load([BROADCAST]));
 
-      render(<BroadcastPage />, { wrapper: Wrapper });
-      await waitFor(() => expect(screen.getByText("12/200")).toBeInTheDocument());
-      const afterFirstLoad = fetchSpy.mock.calls.length;
+        render(<BroadcastPage />, { wrapper: Wrapper });
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(screen.getByText("12/200")).toBeInTheDocument();
+        const afterFirstLoad = fetchSpy.mock.calls.length;
 
-      await new Promise((resolve) => setTimeout(resolve, 6_000)); // > one poll interval
-      expect(fetchSpy.mock.calls.length).toBe(afterFirstLoad);
-    }, 15_000);
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); }); // many poll intervals
+        expect(fetchSpy.mock.calls.length).toBe(afterFirstLoad);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it("live-updates the Telegram-style preview as the message is typed", async () => {

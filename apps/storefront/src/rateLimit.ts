@@ -24,6 +24,34 @@ import type { FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 
 /**
+ * Shared sliding-window check used by every per-key throttle in this module.
+ * Prunes hits older than `windowSeconds` out of `store`'s deque for `key`,
+ * then: if the pruned deque is already at `maxHits`, returns `true` WITHOUT
+ * recording a new hit (an over-limit caller shouldn't get to keep pushing
+ * its window forward); otherwise records this call as a hit and returns
+ * `false`. One `Map` per throttle — callers must never share a `store`
+ * between two logically different caps, or one cap's hits would count
+ * against the other's quota.
+ */
+function slidingWindowLimited(
+  store: Map<string, number[]>,
+  key: string,
+  windowSeconds: number,
+  maxHits: number,
+): boolean {
+  const now = Date.now() / 1000;
+  const dq = store.get(key) ?? [];
+  while (dq.length && now - dq[0]! > windowSeconds) dq.shift();
+  if (dq.length >= maxHits) {
+    store.set(key, dq);
+    return true;
+  }
+  dq.push(now);
+  store.set(key, dq);
+  return false;
+}
+
+/**
  * The request's real client IP. Delegates to Fastify's own `req.ip`, which is
  * computed from `X-Forwarded-For` ONLY when `trustProxy` is configured
  * (`TRUST_PROXY` env — see server.ts/config.ts) to the actual reverse proxy's
@@ -44,18 +72,12 @@ export function clientIp(req: FastifyRequest): string {
 const attempts = new Map<string, number[]>();
 
 export function loginRateLimited(ip: string): boolean {
-  const window = config.WEB_LOGIN_RATE_LIMIT_WINDOW_SECONDS;
-  const maxHits = config.WEB_LOGIN_RATE_LIMIT_MAX;
-  const now = Date.now() / 1000;
-  const dq = attempts.get(ip) ?? [];
-  while (dq.length && now - dq[0]! > window) dq.shift();
-  if (dq.length >= maxHits) {
-    attempts.set(ip, dq);
-    return true;
-  }
-  dq.push(now);
-  attempts.set(ip, dq);
-  return false;
+  return slidingWindowLimited(
+    attempts,
+    ip,
+    config.WEB_LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+    config.WEB_LOGIN_RATE_LIMIT_MAX,
+  );
 }
 
 export function resetLoginAttempts(ip: string): void {
@@ -109,16 +131,7 @@ export const WEBHOOK_RATE_LIMIT_MAX = 30;
 /** True if `${route}:${ip}` has exceeded the webhook rate limit this window. */
 export function webhookRateLimited(route: string, ip: string): boolean {
   const key = `${route}:${ip}`;
-  const now = Date.now() / 1000;
-  const dq = webhookHits.get(key) ?? [];
-  while (dq.length && now - dq[0]! > WEBHOOK_RATE_LIMIT_WINDOW_SECONDS) dq.shift();
-  if (dq.length >= WEBHOOK_RATE_LIMIT_MAX) {
-    webhookHits.set(key, dq);
-    return true;
-  }
-  dq.push(now);
-  webhookHits.set(key, dq);
-  return false;
+  return slidingWindowLimited(webhookHits, key, WEBHOOK_RATE_LIMIT_WINDOW_SECONDS, WEBHOOK_RATE_LIMIT_MAX);
 }
 
 // ---------------------------------------------------------------------------
@@ -134,16 +147,55 @@ const forgotEmailHits = new Map<string, number[]>();
 
 export function forgotEmailRateLimited(email: string): boolean {
   if (!email) return false;
-  const window = config.WEB_LOGIN_RATE_LIMIT_WINDOW_SECONDS;
-  const maxHits = config.WEB_LOGIN_RATE_LIMIT_MAX;
-  const now = Date.now() / 1000;
-  const dq = forgotEmailHits.get(email) ?? [];
-  while (dq.length && now - dq[0]! > window) dq.shift();
-  if (dq.length >= maxHits) {
-    forgotEmailHits.set(email, dq);
-    return true;
-  }
-  dq.push(now);
-  forgotEmailHits.set(email, dq);
-  return false;
+  return slidingWindowLimited(
+    forgotEmailHits,
+    email,
+    config.WEB_LOGIN_RATE_LIMIT_WINDOW_SECONDS,
+    config.WEB_LOGIN_RATE_LIMIT_MAX,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Guest checkout rate limit (per IP, in-process) — Task 3, guest checkout.
+// Guest checkout creates a brand-new `User` row for every order, so the
+// existing MAX_PENDING_ORDERS=10 per-user cap in checkout.ts
+// (countUserPendingOrders) never bites for a guest: each checkout starts a
+// fresh user whose pending-order count is always 0. Without a per-IP cap,
+// one attacker could flood the `users` and `orders` tables and tie up stock
+// via reservations, all with that cap never once engaging.
+// ---------------------------------------------------------------------------
+
+const guestCheckoutHits = new Map<string, number[]>();
+export const GUEST_CHECKOUT_RATE_LIMIT_WINDOW_SECONDS = 600; // 10 minutes
+export const GUEST_CHECKOUT_RATE_LIMIT_MAX = 5;
+
+/** True if `ip` has exceeded its guest-checkout quota within the window. */
+export function guestCheckoutRateLimited(ip: string): boolean {
+  return slidingWindowLimited(
+    guestCheckoutHits,
+    ip,
+    GUEST_CHECKOUT_RATE_LIMIT_WINDOW_SECONDS,
+    GUEST_CHECKOUT_RATE_LIMIT_MAX,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Order-tracking lookup rate limit (per IP, in-process) — Task 3, guest
+// checkout. The order-tracking endpoint (a later task) validates an order
+// code + email pair with no login required; without a throttle it's an
+// oracle an attacker can hammer to brute-force valid order codes.
+// ---------------------------------------------------------------------------
+
+const trackLookupHits = new Map<string, number[]>();
+export const TRACK_LOOKUP_RATE_LIMIT_WINDOW_SECONDS = 600; // 10 minutes
+export const TRACK_LOOKUP_RATE_LIMIT_MAX = 10;
+
+/** True if `ip` has exceeded its order-lookup quota within the window. */
+export function trackLookupRateLimited(ip: string): boolean {
+  return slidingWindowLimited(
+    trackLookupHits,
+    ip,
+    TRACK_LOOKUP_RATE_LIMIT_WINDOW_SECONDS,
+    TRACK_LOOKUP_RATE_LIMIT_MAX,
+  );
 }

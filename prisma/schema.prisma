@@ -40,6 +40,15 @@ model User {
   bannedReason      String?   @map("banned_reason")
   createdAt         DateTime  @default(now()) @map("created_at")
   lastSeenAt        DateTime? @map("last_seen_at")
+  /// True for guest-checkout user rows: no telegramId / loginUsername /
+  /// passwordHash. Used as a security gate at /api/v1/track — only orders
+  /// belonging to a guest user may be opened with code+email. Can be
+  /// upgraded to a full account later (set false).
+  isGuest    Boolean @default(false) @map("is_guest")
+  /// Contact email a guest shopper enters at checkout. NOT unique (unlike
+  /// the registered account's `email`) — one guest row per checkout
+  /// session, and the same email may be used repeatedly.
+  guestEmail String? @map("guest_email")
 
   referredBy User?  @relation("UserReferral", fields: [referredById], references: [id], onUpdate: NoAction)
   referees   User[] @relation("UserReferral")

@@ -246,7 +246,13 @@ export async function releaseGatewaySlot(db: Db, orderId: number, sentinel: stri
  * Orders/Payments routes actually read off `order.user`: telegramId +
  * language for notification dispatch, fullName/username/loginUsername for
  * CSV export and eligibility labels. Mirrors the TICKET_USER_SELECT pattern
- * in crud/support.ts. */
+ * in crud/support.ts.
+ *
+ * `isGuest` + `guestEmail` are a deliberate, narrower exception to the same
+ * H-4 note in webauth.ts (which bans leaking a registered account's `email`
+ * into admin-facing JSON): `guestEmail` is not an account credential, it's
+ * the contact address a guest shopper typed in at checkout, and the shop
+ * admin needs it to reach that buyer about a manually-handled order. */
 export const ORDER_USER_SELECT = {
   id: true,
   telegramId: true,
@@ -254,6 +260,8 @@ export const ORDER_USER_SELECT = {
   fullName: true,
   loginUsername: true,
   language: true,
+  isGuest: true,
+  guestEmail: true,
 } as const;
 
 /** Eager-load shape matching the Python get_order selectinload set. */

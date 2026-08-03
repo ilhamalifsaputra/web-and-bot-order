@@ -70,6 +70,48 @@ export async function createWebUser(
 }
 
 /**
+ * Creates a synthetic guest-checkout user row: no telegramId, loginUsername,
+ * email, or passwordHash, just a contact `guestEmail` for the order. Order
+ * requires a non-null `userId`, so guest checkout (no login) attaches the
+ * order to one of these rows instead. Mirrors createWebUser's referral-code
+ * retry loop and unique-violation handling; `guestEmail` is intentionally
+ * NOT unique (see the schema doc comment), so unlike createWebUser this can
+ * never hit an email-based unique violation — only a referralCode collision
+ * can trigger a retry here.
+ */
+export async function createGuestUser(db: Db, args: { email: string }) {
+  const guestEmail = args.email.trim().toLowerCase();
+
+  const now = new Date();
+  for (let i = 0; i < 5; i++) {
+    try {
+      const user = await db.user.create({
+        data: {
+          telegramId: null,
+          loginUsername: null,
+          email: null,
+          passwordHash: null,
+          fullName: null,
+          role: UserRole.CUSTOMER,
+          language: config.DEFAULT_LANGUAGE.toUpperCase() as Language,
+          referralCode: generateReferralCode(),
+          isGuest: true,
+          guestEmail,
+          createdAt: now,
+          lastSeenAt: now,
+        },
+      });
+      logger.info(`Registered new guest user ${user.id}`);
+      return user;
+    } catch (e) {
+      if (isUniqueViolation(e) && mapUniqueViolation(e) === "retry") continue;
+      throw e;
+    }
+  }
+  throw new Error("Could not generate a unique referral code");
+}
+
+/**
  * Full user row INCLUDING `passwordHash` (and `email`) — for the storefront's
  * own-account session load (`apps/storefront/src/plugins/auth.ts`'s
  * `optionalCustomer`), which needs `passwordHash` to answer "does this

@@ -4,6 +4,7 @@ import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { ValidationError } from "@app/core/errors";
 import {
   createWebUser,
+  createGuestUser,
   findUserByLoginIdentifier,
   setLoginCredentials,
   linkTelegram,
@@ -84,6 +85,45 @@ describe("createWebUser", () => {
     await expect(
       createWebUser(prisma, { loginUsername: "fresh", email: "a@b.c", passwordHash: "x", fullName: "Fresh Name" }),
     ).rejects.toThrowError(/web.register_email_taken/);
+  });
+});
+
+describe("createGuestUser", () => {
+  it("creates a guest row with no login identity fields, lowercased/trimmed guestEmail", async () => {
+    const u = await createGuestUser(prisma, { email: "  Guest@Mail.com  " });
+    expect(u.isGuest).toBe(true);
+    expect(u.guestEmail).toBe("guest@mail.com");
+    expect(u.telegramId).toBeNull();
+    expect(u.loginUsername).toBeNull();
+    expect(u.email).toBeNull();
+    expect(u.passwordHash).toBeNull();
+  });
+
+  it("assigns the CUSTOMER role and a non-empty referral code", async () => {
+    const u = await createGuestUser(prisma, { email: "role-check@mail.com" });
+    expect(u.role).toBe("CUSTOMER");
+    expect(u.referralCode).toMatch(/\w+/);
+  });
+
+  it("allows two guest rows with the same email (guestEmail is not unique)", async () => {
+    const a = await createGuestUser(prisma, { email: "dup-guest@mail.com" });
+    const b = await createGuestUser(prisma, { email: "dup-guest@mail.com" });
+    expect(a.id).not.toBe(b.id);
+    expect(a.guestEmail).toBe("dup-guest@mail.com");
+    expect(b.guestEmail).toBe("dup-guest@mail.com");
+  });
+
+  it("succeeds even when the email matches a registered account's unique email", async () => {
+    await createWebUser(prisma, {
+      loginUsername: "registered",
+      email: "shared@mail.com",
+      passwordHash: "x",
+      fullName: "Registered Person",
+    });
+    const guest = await createGuestUser(prisma, { email: "shared@mail.com" });
+    expect(guest.isGuest).toBe(true);
+    expect(guest.guestEmail).toBe("shared@mail.com");
+    expect(guest.email).toBeNull();
   });
 });
 

@@ -36,6 +36,9 @@ interface BroadcastRow {
   status: string;
   total: number;
   sent: number;
+  /** Server-computed: this row is PENDING and its schedule has come round (or
+   *  it never had one), so the drainer should be picking it up any moment. */
+  isDue: boolean;
   scheduledAtDisplay: string | null;
   webImageUrl: string | null;
   failureReason: string | null;
@@ -82,9 +85,13 @@ function TelegramPreview({ message, imageUrl }: { message: string; imageUrl: str
 /** Poll cadence while a broadcast is still queued or mid-send. */
 const IN_FLIGHT_POLL_MS = 4_000;
 
-/** Statuses that can still change on their own — the actual sending happens in
- *  the order-bot process, so nothing tells this page about it. */
-const isInFlight = (status: string) => status === "PENDING" || status === "SENDING";
+/** Rows that can still change on their own within seconds — the actual sending
+ *  happens in the order-bot process, so nothing tells this page about it.
+ *  A PENDING row only counts once it is DUE: a broadcast scheduled for next
+ *  week is PENDING for days, and polling this page's (expensive) endpoint every
+ *  few seconds that whole time buys nothing. */
+const isInFlight = (row: BroadcastRow) =>
+  row.status === "SENDING" || (row.status === "PENDING" && row.isDue);
 
 function useBroadcast() {
   return useQuery<BroadcastData>({
@@ -99,7 +106,7 @@ function useBroadcast() {
     // reload — and so an idle History table costs nothing once everything has
     // settled to SENT/FAILED/CANCELLED/DRAFT.
     refetchInterval: (query) =>
-      query.state.data?.history.some((row) => isInFlight(row.status)) ? IN_FLIGHT_POLL_MS : false,
+      query.state.data?.history.some(isInFlight) ? IN_FLIGHT_POLL_MS : false,
   });
 }
 

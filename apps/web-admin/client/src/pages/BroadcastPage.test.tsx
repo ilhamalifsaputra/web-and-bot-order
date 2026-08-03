@@ -23,7 +23,7 @@ function Wrapper({ children }: { children: React.ReactNode }) {
 // Shape matches what GET /api/broadcast actually sends (see broadcast.ts's
 // historyShaped) — total/sent, not the raw Prisma totalCount/sentCount, and
 // no scheduledAt/createdAt since the page only ever renders scheduledAtDisplay.
-const BROADCAST = { id: 1, message: "Hello customers!", segment: "ALL", status: "SENT", total: 200, sent: 12, scheduledAtDisplay: null, webImageUrl: null, failureReason: null };
+const BROADCAST = { id: 1, message: "Hello customers!", segment: "ALL", status: "SENT", total: 200, sent: 12, isDue: true, scheduledAtDisplay: null, webImageUrl: null, failureReason: null };
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -54,7 +54,7 @@ describe("BroadcastPage", () => {
   });
 
   it("shows the server-formatted schedule time for a scheduled broadcast", async () => {
-    const scheduled = { ...BROADCAST, id: 3, status: "PENDING", scheduledAtDisplay: "2026-07-01 10:00" };
+    const scheduled = { ...BROADCAST, id: 3, status: "PENDING", isDue: false, scheduledAtDisplay: "2026-07-01 10:00" };
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(JSON.stringify({ segments: ["ALL"], counts: { ALL: 200 }, history: [scheduled] }), { status: 200, headers: { "Content-Type": "application/json" } }),
     );
@@ -304,6 +304,47 @@ describe("BroadcastPage", () => {
 
         await act(async () => { await vi.advanceTimersByTimeAsync(30_000); }); // many poll intervals
         expect(fetchSpy.mock.calls.length).toBe(afterFirstLoad);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // A broadcast scheduled for next week is PENDING for days. Treating PENDING
+    // alone as "in flight" made an open, focused tab re-run GET /api/broadcast
+    // — three segment counts, one a correlated EXISTS over orders per user,
+    // plus a 30-row history — every 4 seconds for that entire week.
+    it("does not poll for a PENDING row whose schedule is still days away", async () => {
+      vi.useFakeTimers();
+      try {
+        const farFuture = { ...BROADCAST, id: 8, status: "PENDING", isDue: false, scheduledAtDisplay: "2099-01-01 10:00" };
+        const fetchSpy = vi.spyOn(globalThis, "fetch");
+        fetchSpy.mockImplementation(async () => load([farFuture]));
+
+        render(<BroadcastPage />, { wrapper: Wrapper });
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        expect(screen.getByText("2099-01-01 10:00")).toBeInTheDocument();
+        const afterFirstLoad = fetchSpy.mock.calls.length;
+
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(fetchSpy.mock.calls.length).toBe(afterFirstLoad);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does poll for a PENDING row that is already due, since the drainer is about to pick it up", async () => {
+      vi.useFakeTimers();
+      try {
+        const due = { ...BROADCAST, id: 9, status: "PENDING", isDue: true, scheduledAtDisplay: null };
+        const fetchSpy = vi.spyOn(globalThis, "fetch");
+        fetchSpy.mockImplementation(async () => load([due]));
+
+        render(<BroadcastPage />, { wrapper: Wrapper });
+        await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+        const afterFirstLoad = fetchSpy.mock.calls.length;
+
+        await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+        expect(fetchSpy.mock.calls.length).toBeGreaterThan(afterFirstLoad);
       } finally {
         vi.useRealTimers();
       }

@@ -141,7 +141,11 @@ export function StockProductPage() {
       return { previous };
     },
     onError: (err: Error, _enabled, ctx) => {
-      if (ctx) qc.setQueryData(["stock", productId], ctx.previous);
+      // `previous` is undefined only when the cache was empty at onMutate time,
+      // in which case onMutate itself wrote nothing either — and setQueryData
+      // with an undefined updater returns early without writing, so this
+      // rollback is a deliberate no-op rather than a cache-clearing bug.
+      if (ctx) qc.setQueryData<StockProductData>(["stock", productId], ctx.previous);
       toast.error(describeError(err.message));
     },
     // Patch with the server's authoritative value instead of invalidating —

@@ -37,6 +37,7 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
     // scheduledAt/createdAt are dropped in favor of the pre-formatted
     // display string the page actually renders — same pattern as
     // stock.ts's itemsWithDisplay and support.ts's ticketPartyUser.
+    const now = new Date();
     const historyShaped = history.map((b) => ({
       id: b.id,
       message: b.message,
@@ -44,6 +45,15 @@ export default async function broadcastApiRoutes(app: FastifyInstance): Promise<
       status: b.status,
       total: b.totalCount,
       sent: b.sentCount,
+      // Whether a PENDING row is actually waiting on the drainer right now, as
+      // opposed to sitting on a schedule days away. The page polls this
+      // endpoint while anything is in flight, and this endpoint is the heaviest
+      // read in the admin (three segment counts, one of them a correlated
+      // EXISTS over orders per user, plus a 30-row history) — without this a
+      // broadcast scheduled for next week would keep an open tab re-running all
+      // of that every few seconds for a week. A boolean rather than the raw
+      // scheduledAt keeps the "only the fields the page uses" shape above.
+      isDue: b.status !== "PENDING" || b.scheduledAt === null || b.scheduledAt <= now,
       scheduledAtDisplay: displayDateTime(b.scheduledAt),
       webImageUrl: b.webImageUrl,
       failureReason: b.failureReason,

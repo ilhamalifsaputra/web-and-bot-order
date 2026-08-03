@@ -27,10 +27,14 @@ const STALE_SESSION_MESSAGE = "Your session was refreshed in another tab. Reload
  * genuine hang. */
 type UploadPhase = "idle" | "sending" | "processing";
 
-/** 60s comfortably covers a ≤5MB upload plus the server-side work described
- * above, while still turning a truly stuck request into a clear error
- * instead of leaving the button spinning forever. */
-const UPLOAD_TIMEOUT_MS = 60_000;
+/** Sized off the documented 5MB ceiling on an ordinary mobile uplink: at
+ * ~500 kbps that is roughly 80 seconds of transfer before the server has done
+ * any work at all, so a 60s cap would abort legitimate uploads and hand the
+ * user advice ("check your connection") that fails identically on retry. 120s
+ * covers that transfer plus the server-side work described above, while still
+ * turning a truly stuck request into a clear error instead of leaving the
+ * button spinning forever. */
+const UPLOAD_TIMEOUT_MS = 120_000;
 const TIMEOUT_MESSAGE = "The server took too long to respond. Check your connection and try again.";
 
 /** `fetch` has no reliable cross-browser way to report request-upload

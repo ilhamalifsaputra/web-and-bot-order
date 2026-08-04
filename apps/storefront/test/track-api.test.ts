@@ -244,6 +244,55 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
     }
   });
 
+  it("an UPGRADED former-guest account (isGuest: false, but guestEmail still set) is refused — pins the isGuest guard itself", async () => {
+    // prisma/schema.prisma documents that a guest User row "can be upgraded
+    // to a full account later (set false)". After that upgrade the row has
+    // isGuest: false AND a non-null guestEmail (the old guest contact email
+    // lingers) AND a real loginUsername/passwordHash. That state must still
+    // be refused: by then the buyer has a password, so opening the order via
+    // code + the old guestEmail would bypass it entirely.
+    //
+    // This is NOT redundant with "an order owned by a REGISTERED account"
+    // above: that helper (makeAccountOrder) never sets guestEmail, so that
+    // test's rejection is actually driven by the `!order.user.guestEmail`
+    // guard — it would still pass even if the `isGuest` check were deleted
+    // from apiTrack.ts. This test constructs a row where guestEmail IS set
+    // and the submitted email matches it exactly, so only the isGuest guard
+    // stands between this request and a minted session. Do not delete this
+    // as "the same thing" as the test above.
+    const orderCode = await makeAccountOrder("trackupgraded1", "trackupgraded1-pw-1", "TRKUP1");
+    const upgradedEmail = "track.upgraded@example.com";
+    await prisma.user.update({
+      where: { loginUsername: "trackupgraded1" },
+      data: { isGuest: false, guestEmail: upgradedEmail },
+    });
+
+    // Baseline captured from another rejection case (wrong email against a
+    // fresh guest order), the same generic shape every rejection in this
+    // file must match — not a hard-coded literal.
+    const baseline = await app.inject({
+      method: "POST",
+      url: "/api/v1/track",
+      headers: { "x-forwarded-for": freshIp() },
+      payload: { order_code: await makeGuestOrder("track.upgraded.baseline@example.com"), email: "nope@example.com" },
+    });
+    expect(baseline.statusCode).toBe(404);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/track",
+      headers: { "x-forwarded-for": freshIp() },
+      // The exact guestEmail left on the row after upgrade — every other
+      // guard (order exists, guestEmail present, email matches) is
+      // satisfied here, so only isGuest can still reject this.
+      payload: { order_code: orderCode, email: upgradedEmail },
+    });
+
+    expect(res.statusCode).toBe(baseline.statusCode);
+    expect(res.body).toBe(baseline.body);
+    expect(res.headers["set-cookie"]).toBeUndefined();
+  });
+
   it("empty body / missing fields get the same generic rejection", async () => {
     for (const payload of [{}, { order_code: "" }, { email: "" }, { order_code: "   ", email: "   " }]) {
       const res = await app.inject({

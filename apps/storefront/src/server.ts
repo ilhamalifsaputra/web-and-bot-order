@@ -26,6 +26,7 @@ import apiPagesRoutes from "./routes/apiPages";
 import apiAuthRoutes from "./routes/apiAuth";
 import apiCartRoutes from "./routes/apiCart";
 import apiCheckoutRoutes from "./routes/apiCheckout";
+import apiTrackRoutes from "./routes/apiTrack";
 import apiAccountRoutes from "./routes/apiAccount";
 import seoRoutes from "./routes/seo";
 import spaShellRoutes from "./routes/spaShell";
@@ -175,6 +176,7 @@ export async function buildApp(): Promise<FastifyInstance> {
   await app.register(apiAuthRoutes, { prefix: "/api/v1" });
   await app.register(apiCartRoutes, { prefix: "/api/v1" });
   await app.register(apiCheckoutRoutes, { prefix: "/api/v1" });
+  await app.register(apiTrackRoutes, { prefix: "/api/v1" });
   await app.register(apiAccountRoutes, { prefix: "/api/v1" });
   await app.register(seoRoutes);
 

@@ -141,6 +141,8 @@ const TITLE_KEYS: Array<[RegExp, string]> = [
   [/^\/cart$/, "web.cart_title"],
   [/^\/checkout$/, "web.checkout_title"],
   [/^\/checkout\/[^/]+\/pay$/, "web.pay_title"],
+  // Guest order tracking — anonymous by nature (see apiTrack.ts).
+  [/^\/track$/, "web.track_title"],
   [/^\/account$/, "web.account_title"],
   [/^\/account\/orders$/, "web.account_orders"],
   [/^\/account\/referral$/, "web.account_referral"],
@@ -153,7 +155,7 @@ const TITLE_KEYS: Array<[RegExp, string]> = [
  * sync with apps/storefront/client/src/App.tsx. */
 const KNOWN_PATHS = new RegExp(
   "^(/|/search|/products|/categories|/flash|/cart|/checkout|/login|/register|/forgot" +
-    "|/reset/[^/]+|/checkout/[^/]+/pay" +
+    "|/reset/[^/]+|/checkout/[^/]+/pay|/track" +
     "|/account|/account/orders|/account/orders/[^/]+|/account/referral" +
     "|/account/reviews|/account/support|/account/support/\\d+|/account/settings" +
     "|/about|/how-to-order|/terms|/privacy|/refund)$",

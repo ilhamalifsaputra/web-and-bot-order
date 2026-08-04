@@ -45,6 +45,10 @@ const checkoutData: CheckoutData = {
   nowpayments_enabled: false,
   wallet_idr: "0",
   wallet_usdt: "0",
+  // Signed-in buyer by default; the guest block below overrides all three.
+  wallet_idr_enabled: true,
+  wallet_usdt_enabled: true,
+  is_guest: false,
 };
 
 function renderCheckout(respond: (path: string) => unknown) {
@@ -187,9 +191,40 @@ describe("CheckoutPage", () => {
     expect(await screen.findByText("That payment method isn't available right now — pick another one.")).toBeInTheDocument();
   });
 
-  it("navigates to /cart when the cart is empty", async () => {
+  // Guest checkout: an empty cart used to bounce to /cart, which for an
+  // anonymous visitor is an equally empty screen one navigation away. The
+  // page now states the situation where the buyer already is and names the
+  // way out, and never renders a payment form for a cart with nothing in it.
+  it("renders an empty state with a way out — not the payment form — when the cart is empty", async () => {
     renderCheckout(() => ({ ...checkoutData, items_empty: true }));
-    expect(await screen.findByText("cart-page-stub")).toBeInTheDocument();
+    expect(await screen.findByText("There's nothing to check out yet")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Browse products" })).toHaveAttribute("href", "/products");
+    expect(screen.queryByRole("button", { name: /Place order/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("How would you like to pay?")).not.toBeInTheDocument();
+  });
+
+  // A 429 on the checkout GET (anonymous read throttle) used to leave the
+  // page permanently blank — no spinner, no text, nothing to act on.
+  it("renders an explained state with a way out when the checkout payload fails to load", async () => {
+    renderCheckout(() => {
+      const err = new Error("error.rate_limited") as Error & { status?: number };
+      err.status = 429;
+      throw err;
+    });
+    expect(await screen.findByText("We couldn't load your checkout")).toBeInTheDocument();
+    expect(screen.getByText("Too many requests. Please wait a moment.")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to cart" })).toHaveAttribute("href", "/cart");
+  });
+
+  // apiGet's fallback message for a body with no `error` key is a developer
+  // string ("/api/v1/checkout responded 500"). It must never reach a shopper.
+  it("apologises in plain language when the failure carries no i18n key", async () => {
+    renderCheckout(() => {
+      throw new Error("/api/v1/checkout responded 500");
+    });
+    expect(await screen.findByText("We couldn't load your checkout")).toBeInTheDocument();
+    expect(screen.getByText("Something went wrong. Please try again.")).toBeInTheDocument();
+    expect(screen.queryByText("/api/v1/checkout responded 500")).not.toBeInTheDocument();
   });
 
   // STO-005: the voucher error used to render in #checkout-summary, a full
@@ -437,6 +472,144 @@ describe("CheckoutPage", () => {
       await waitFor(() => expect(document.querySelector(".fixed.bottom-0")).toBeNull());
       const placeOrder = screen.getByRole("button", { name: /Place order/ });
       expect(placeOrder.closest("#checkout-summary")).not.toBeNull();
+    });
+  });
+
+  // Guest checkout (Task 6): an anonymous visitor completes the purchase from
+  // this page without ever being sent to /login. The server decides — the page
+  // reads `is_guest` and the two wallet_*_enabled flags off the payload rather
+  // than inferring anything from the absence of a customer.
+  describe("guest mode", () => {
+    const guestData: CheckoutData = {
+      ...checkoutData,
+      is_guest: true,
+      // Server sends "0"/false for a guest; the balances are set non-zero here
+      // on purpose, to prove the radios are gated on the *_enabled flags and
+      // not on whether the numbers happen to cover the total.
+      wallet_idr: "200000",
+      wallet_usdt: "10",
+      wallet_idr_enabled: false,
+      wallet_usdt_enabled: false,
+    };
+
+    it("asks for an email, explains why, and offers sign-in as an option rather than a gate", async () => {
+      renderCheckout(() => guestData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      expect(screen.getByLabelText("Email address")).toBeInTheDocument();
+      expect(screen.getByText(/look the order up later/)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Already have an account? Sign in" })).toHaveAttribute(
+        "href",
+        "/login?next=/checkout",
+      );
+    });
+
+    it("hides both wallet-credit methods for a guest even when the balances would cover the total", async () => {
+      renderCheckout(() => guestData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      expect(screen.queryByText("Wallet Credit (IDR)")).not.toBeInTheDocument();
+      expect(screen.queryByText("Wallet Credit (USDT)")).not.toBeInTheDocument();
+    });
+
+    it("shows no email field for a signed-in buyer (regression: their page is unchanged)", async () => {
+      renderCheckout(() => checkoutData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      expect(screen.queryByLabelText("Email address")).not.toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: /Already have an account/ })).not.toBeInTheDocument();
+    });
+
+    it("sends guest_email with the order and leaves the page for pay_url on success", async () => {
+      const assign = vi.fn();
+      const originalLocation = Object.getOwnPropertyDescriptor(window, "location");
+      Object.defineProperty(window, "location", { configurable: true, writable: true, value: { assign } });
+      try {
+        renderCheckout(() => guestData);
+        await screen.findByRole("heading", { name: "Checkout" });
+        fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "guest@example.com" } });
+
+        (apiPost as Mock).mockResolvedValue({
+          order_code: "ORD900",
+          pay_url: "/checkout/ORD900/pay",
+          csrf_token: "guest-token",
+        });
+        fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+
+        await waitFor(() =>
+          expect(apiPost).toHaveBeenCalledWith("/api/v1/checkout", {
+            method: "binance",
+            voucher_code: "",
+            guest_email: "guest@example.com",
+          }),
+        );
+        // Full page load, not navigate(): the shell has to re-render so the
+        // whole app (account menu, CSRF meta) sees the new guest session.
+        await waitFor(() => expect(assign).toHaveBeenCalledWith("/checkout/ORD900/pay"));
+      } finally {
+        if (originalLocation) Object.defineProperty(window, "location", originalLocation);
+      }
+    });
+
+    it("keeps the buyer on the page with a readable message when the server rejects the email", async () => {
+      renderCheckout(() => guestData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "typo@example.com" } });
+      (apiPost as Mock).mockRejectedValue(new Error("web.guest_email_invalid"));
+      fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+
+      expect(
+        await screen.findByText("Enter a valid email address — we send your order details there."),
+      ).toBeInTheDocument();
+      // Still on checkout, with the field editable, so the retry the adopted
+      // CSRF token makes possible is actually reachable.
+      expect(screen.getByLabelText("Email address")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Place order/ })).not.toBeDisabled();
+    });
+
+    it("translates a 429 into plain language instead of showing the raw error key", async () => {
+      renderCheckout(() => guestData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "guest@example.com" } });
+      (apiPost as Mock).mockRejectedValue(new Error("error.rate_limited"));
+      fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+      expect(await screen.findByText("Too many requests. Please wait a moment.")).toBeInTheDocument();
+      expect(screen.queryByText("error.rate_limited")).not.toBeInTheDocument();
+    });
+
+    it("apologises in plain language when a rejected order carries no i18n key", async () => {
+      renderCheckout(() => guestData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "guest@example.com" } });
+      (apiPost as Mock).mockRejectedValue(new Error("/api/v1/checkout responded 500"));
+      fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+      expect(await screen.findByText("Something went wrong. Please try again.")).toBeInTheDocument();
+      expect(screen.queryByText("/api/v1/checkout responded 500")).not.toBeInTheDocument();
+    });
+
+    it("holds Place order back until the email looks like an email (client-side courtesy only)", async () => {
+      renderCheckout(() => guestData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      const placeOrder = screen.getByRole("button", { name: /Place order/ });
+      expect(placeOrder).toBeDisabled();
+      fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "not-an-email" } });
+      expect(placeOrder).toBeDisabled();
+      fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "guest@example.com" } });
+      expect(placeOrder).not.toBeDisabled();
+    });
+
+    it("never redirects an anonymous visitor to /login on a 401", async () => {
+      const assign = vi.fn();
+      const originalLocation = Object.getOwnPropertyDescriptor(window, "location");
+      Object.defineProperty(window, "location", { configurable: true, writable: true, value: { assign } });
+      try {
+        renderCheckout(() => {
+          const err = new Error("unauthorized") as Error & { status?: number };
+          err.status = 401;
+          throw err;
+        });
+        expect(await screen.findByText("We couldn't load your checkout")).toBeInTheDocument();
+        expect(assign).not.toHaveBeenCalled();
+      } finally {
+        if (originalLocation) Object.defineProperty(window, "location", originalLocation);
+      }
     });
   });
 

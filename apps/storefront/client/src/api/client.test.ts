@@ -39,6 +39,59 @@ describe("apiPost", () => {
   });
 });
 
+// Guest checkout and /track mint a session in the MIDDLE of the request that
+// asks for it, so the page that made the call is still holding the empty
+// token an anonymous shell rendered. Without adopting the `csrf_token` those
+// responses carry, every follow-up request from that page 403s — which is
+// exactly the buyer who just had a checkout fail and wants to retry.
+describe("csrf_token adoption", () => {
+  it("uses a csrf_token from an ERROR response on the next request, replacing the empty meta token", async () => {
+    document.head.innerHTML = '<meta name="csrf-token" content="">';
+    const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: "web.pay_method_unavailable", csrf_token: "guest-session-token" }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(apiPost("/api/v1/checkout", { method: "qris" })).rejects.toThrow("web.pay_method_unavailable");
+    // The failed attempt itself went out with the empty shell token.
+    expect(new Headers(fetchMock.mock.calls[0]![1].headers).get("X-CSRF-Token")).toBe("");
+
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({}) } as never);
+    await apiPost("/api/v1/checkout", { method: "binance" });
+    expect(new Headers(fetchMock.mock.calls[1]![1].headers).get("X-CSRF-Token")).toBe("guest-session-token");
+    // The page's own token store — the meta tag — is what was updated, so
+    // every other caller (including a later apiPatch/upload) agrees.
+    expect(document.querySelector('meta[name="csrf-token"]')?.getAttribute("content")).toBe("guest-session-token");
+  });
+
+  it("adopts a csrf_token from a SUCCESS response too (POST /api/v1/track)", async () => {
+    document.head.innerHTML = '<meta name="csrf-token" content="">';
+    const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ redirect: "/account/orders/ORD1", csrf_token: "track-session-token" }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await publicPost("/api/v1/track", { order_code: "ORD1", email: "a@b.com" });
+    await apiPost("/api/v1/cart", {});
+    expect(new Headers(fetchMock.mock.calls[1]![1].headers).get("X-CSRF-Token")).toBe("track-session-token");
+  });
+
+  it("leaves the meta-tag token in charge when no response ever carried one", async () => {
+    const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    await apiPost("/api/v1/cart", {});
+    expect(new Headers(fetchMock.mock.calls[0]![1].headers).get("X-CSRF-Token")).toBe("test-token");
+  });
+});
+
 describe("publicPost", () => {
   it("sends no CSRF header (pre-session auth endpoints)", async () => {
     const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({ ok: true, json: async () => ({ redirect: "/" }) }));

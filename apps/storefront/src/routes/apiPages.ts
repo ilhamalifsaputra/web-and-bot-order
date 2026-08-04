@@ -59,6 +59,14 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
             telegram_linked: customer.user.telegramId != null,
           }
         : null,
+      // Whether the signed-in customer is a synthetic guest account (bought
+      // without registering — guest checkout). They have a real session, so
+      // they reach the account area, but no password, referral code, reviews
+      // or tickets sit behind it; the SPA shows them only their orders. Rides
+      // on this existing payload rather than a new endpoint, since Layout and
+      // AccountPage already read it. Always false for anonymous visitors:
+      // there is no account to describe yet.
+      is_guest: customer?.user.isGuest === true,
       favicon_url: favicon || "/static/favicon.svg",
       logo_url: logo || "",
       bot_username: botUsername,

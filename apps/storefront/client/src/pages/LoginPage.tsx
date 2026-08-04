@@ -153,6 +153,15 @@ export default function LoginPage() {
                 {t("web.register_cta")}
               </Link>
             </div>
+            {/* Guest checkout leaves buyers with no password to sign in with,
+                and this is the page they come to when they go looking for
+                their order. Quiet by design — an offer for the minority who
+                need it, not a third thing competing with Sign in. */}
+            <p className="text-center text-sm text-ink-soft">
+              <Link to="/track" className="text-pine hover:underline">
+                {t("web.track_link")}
+              </Link>
+            </p>
           </form>
 
           {widget?.bot_username && (

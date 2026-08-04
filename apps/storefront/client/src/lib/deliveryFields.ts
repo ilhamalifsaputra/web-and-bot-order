@@ -22,6 +22,17 @@ import type { AdditionalField } from "../api/types";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/**
+ * True for a syntactically plausible email address. Exported so the guest
+ * checkout's contact-email field applies the SAME rule as a manual_with_info
+ * `email` field instead of growing a second regex — and, like everything else
+ * here, it only saves a wasted round trip: the server's own validation
+ * (routes/api.ts, `web.guest_email_invalid`) remains the authority.
+ */
+export function isValidEmail(raw: string): boolean {
+  return EMAIL_RE.test((raw ?? "").trim());
+}
+
 /** Validate one answer against its field spec. Returns an i18n error key, or
  * null when the (trimmed) value is valid. */
 export function fieldError(field: AdditionalField, rawValue: string): string | null {

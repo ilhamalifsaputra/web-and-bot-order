@@ -34,6 +34,27 @@ function renderAccount(respond: () => unknown = () => account) {
   );
 }
 
+/** Guest checkout (Task 6): a guest has a real session, so they reach this
+ * page — but no password, referral code, reviews or tickets sit behind it.
+ * The marker rides on the context payload the page already fetches. */
+function renderGuestAccount() {
+  (apiGet as Mock).mockImplementation(async (path: string) =>
+    path === "/api/v1/pages/context"
+      ? { lang: "en", fx: null, customer: { username: null, email: null, telegram_linked: false }, is_guest: true }
+      : { ...account, referral_code: "", wallet_idr: "0", wallet_usdt: "0" },
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={["/account"]}>
+        <Routes>
+          <Route path="/account" element={<AccountPage />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
 describe("AccountPage", () => {
   let originalLocation: PropertyDescriptor | undefined;
 
@@ -130,5 +151,42 @@ describe("AccountPage", () => {
     renderAccount(() => ({ ...account, name: "🐉 Dragon" }));
     await screen.findByRole("heading", { name: "My account" });
     expect(screen.getByText("🐉")).toBeInTheDocument();
+  });
+
+  describe("guest account", () => {
+    it("shows a guest only their orders — no referral, reviews, tickets or settings", async () => {
+      renderGuestAccount();
+      await screen.findByRole("heading", { name: "My account" });
+
+      // The summary tile and the menu row both point there — that's the point.
+      const orderLinks = screen.getAllByRole("link", { name: /My orders/ });
+      expect(orderLinks.length).toBeGreaterThan(0);
+      for (const link of orderLinks) expect(link).toHaveAttribute("href", "/account/orders");
+      for (const name of [/My reviews/, /Settings/, /Referral/, /Help & support/]) {
+        expect(screen.queryByRole("link", { name })).not.toBeInTheDocument();
+      }
+      // The wallet and referral summary cards go too: a guest account has no
+      // balance to spend and no referral code to share.
+      expect(screen.queryByText("IDR credit balance")).not.toBeInTheDocument();
+      expect(screen.queryByText("USDT credit balance")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Referral/ })).not.toBeInTheDocument();
+    });
+
+    it("keeps every destination for a registered customer (regression)", async () => {
+      renderAccount();
+      await screen.findByRole("heading", { name: "My account" });
+      for (const name of [/My orders/, /My reviews/, /Settings/, /Referral/, /Help & support/]) {
+        expect(screen.getAllByRole("link", { name }).length).toBeGreaterThan(0);
+      }
+    });
+
+    // Signing out of a guest session is not the reversible thing it is for a
+    // registered customer — there is no password to sign back in with.
+    it("spells out what signing out costs a guest", async () => {
+      renderGuestAccount();
+      await screen.findByRole("heading", { name: "My account" });
+      expect(screen.getByRole("button", { name: /Sign out/ })).toBeInTheDocument();
+      expect(screen.getByText(/you'll need your order code and email to get back in/)).toBeInTheDocument();
+    });
   });
 });

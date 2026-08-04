@@ -319,6 +319,18 @@ describe("SPA shell wildcard", () => {
     expect(res.body).toContain("<title>Checkout — SPA Test Shop</title>");
   });
 
+  // Guest checkout's recovery page. It is reached by people typing/pasting
+  // the URL out of a confirmation message, so a 404 here (the fate of any
+  // path missing from KNOWN_PATHS) would break the exact journey it exists
+  // for — and it must serve an ANONYMOUS visitor, since not being signed in
+  // is the whole reason they are here.
+  it("200s GET /track for an anonymous visitor with the tracking title", async () => {
+    const res = await app.inject({ method: "GET", url: "/track" });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/html");
+    expect(res.body).toContain("<title>Track your order — SPA Test Shop</title>");
+  });
+
   it("200s GET /checkout/:code/pay with the payment title", async () => {
     const res = await app.inject({ method: "GET", url: "/checkout/SOMECODE/pay" });
     expect(res.statusCode).toBe(200);
@@ -497,7 +509,29 @@ describe("GET /api/v1/pages/context", () => {
     const res = await app.inject({ method: "GET", url: "/api/v1/pages/context", headers: { cookie } });
     const body = res.json();
     expect(body.customer).toMatchObject({ username: "ctxuser", telegram_linked: false });
+    expect(body.is_guest).toBe(false);
     expect(JSON.stringify(body)).not.toContain("csrf");
+  });
+
+  // Guest checkout: the SPA account area shows a guest only their orders, and
+  // it reads that off this payload rather than a new endpoint of its own.
+  it("marks a synthetic guest account with is_guest, so the SPA can trim the account menu", async () => {
+    // A real guest row has no password — one is set here only because
+    // loginAs() is this file's way of getting a session cookie. What's under
+    // test is that the flag is read off `User.isGuest`, nothing else.
+    await prisma.user.create({
+      data: {
+        loginUsername: "ctxguest",
+        email: "ctxguest@u.test",
+        passwordHash: hashPassword("ctxguest-pw-1"),
+        referralCode: "CTXGUEST",
+        isGuest: true,
+        guestEmail: "ctx.guest@example.com",
+      },
+    });
+    const { cookie } = await loginAs("ctxguest", "ctxguest-pw-1");
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/context", headers: { cookie } });
+    expect(res.json().is_guest).toBe(true);
   });
 
   // Migrated from storefront.test.ts's "shop logo" describe (dropped on the

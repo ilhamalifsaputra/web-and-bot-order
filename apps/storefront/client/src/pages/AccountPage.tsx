@@ -102,6 +102,20 @@ const MENU_GROUPS: MenuGroup[] = [
   },
 ];
 
+/**
+ * What a guest account actually has behind it. A guest checked out without
+ * registering: the account is synthetic, has no password, no referral code,
+ * no reviews and no support tickets — so every other destination would open a
+ * screen that can only be empty or refuse them. Orders are the one real thing
+ * there, and the reason they have a session at all.
+ */
+const GUEST_MENU_GROUPS: MenuGroup[] = [
+  {
+    headingKey: "web.account_group_orders",
+    items: MENU_GROUPS[0]!.items.filter((item) => item.href === "/account/orders"),
+  },
+];
+
 interface QuickAction {
   href: string;
   icon: LucideIcon;
@@ -269,6 +283,13 @@ export default function AccountPage() {
     retry: false,
   });
   const { data: shopCtx } = useShopContext();
+  // Guest checkout (Task 6). The marker rides on the context payload this
+  // page already fetches — no extra endpoint. An older/mocked payload without
+  // the field reads as a normal registered customer, which keeps the full
+  // menu: the safe direction to be wrong in for someone who really is signed
+  // in.
+  const isGuest = shopCtx?.is_guest === true;
+  const menuGroups = isGuest ? GUEST_MENU_GROUPS : MENU_GROUPS;
 
   useEffect(() => {
     if ((error as (Error & { status?: number }) | null)?.status === 401) {
@@ -383,22 +404,36 @@ export default function AccountPage() {
             </div>
           </div>
         </div>
-        <button
-          type="button"
-          className="btn btn-ghost w-full shrink-0 sm:w-auto"
-          disabled={logoutMutation.isPending}
-          onClick={() => logoutMutation.mutate()}
-        >
-          {logoutMutation.isPending && <Spinner />}
-          <LogOut className="w-4 h-4" aria-hidden="true" /> {t("web.nav_logout")}
-        </button>
+        {/* Signing out costs a guest more than it costs a registered
+            customer — there is no password to come back with, only the order
+            code and email. Say so next to the button rather than letting them
+            find out afterwards. */}
+        <div className="flex shrink-0 flex-col gap-2 sm:items-end">
+          <button
+            type="button"
+            className="btn btn-ghost w-full shrink-0 sm:w-auto"
+            disabled={logoutMutation.isPending}
+            onClick={() => logoutMutation.mutate()}
+          >
+            {logoutMutation.isPending && <Spinner />}
+            <LogOut className="w-4 h-4" aria-hidden="true" /> {t("web.nav_logout")}
+          </button>
+          {isGuest && (
+            <p className="max-w-xs text-xs leading-relaxed text-ink-soft sm:text-right">
+              {t("web.guest_account_note")}
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Summary grid: 2x2 below `lg`, one row of 4 at `lg`. Orders before
           referral, and both wallet balances carry heavier (pine-tint)
           styling than orders/referral so the numbers customers check most
           often read as the priority. */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+      {/* A guest has no wallet to spend and no referral code to share, so
+          three of the four tiles would read "Rp0"/blank — one honest card
+          beats four, three of which are about things they don't have. */}
+      <div className={isGuest ? "grid grid-cols-1 gap-4 sm:max-w-xs" : "grid grid-cols-2 gap-4 lg:grid-cols-4"}>
         <SummaryCard
           as="link"
           href="/account/orders"
@@ -407,30 +442,34 @@ export default function AccountPage() {
           value={String(data.order_count)}
           helperKey="web.account_view_history"
         />
-        <SummaryCard
-          as="static"
-          emphasized
-          icon={Wallet}
-          labelKey="web.account_credit_idr"
-          value={formatIdr(data.wallet_idr)}
-          helperKey="web.account_balance_available"
-        />
-        <SummaryCard
-          as="button"
-          onClick={copyReferral}
-          icon={Gift}
-          labelKey="web.account_referral"
-          value={data.referral_code}
-          helperKey="web.account_tap_to_copy"
-        />
-        <SummaryCard
-          as="static"
-          emphasized
-          icon={Coins}
-          labelKey="web.account_credit_usdt"
-          value={formatNativeUsdt(data.wallet_usdt)}
-          helperKey="web.account_balance_available"
-        />
+        {!isGuest && (
+          <>
+            <SummaryCard
+              as="static"
+              emphasized
+              icon={Wallet}
+              labelKey="web.account_credit_idr"
+              value={formatIdr(data.wallet_idr)}
+              helperKey="web.account_balance_available"
+            />
+            <SummaryCard
+              as="button"
+              onClick={copyReferral}
+              icon={Gift}
+              labelKey="web.account_referral"
+              value={data.referral_code}
+              helperKey="web.account_tap_to_copy"
+            />
+            <SummaryCard
+              as="static"
+              emphasized
+              icon={Coins}
+              labelKey="web.account_credit_usdt"
+              value={formatNativeUsdt(data.wallet_usdt)}
+              helperKey="web.account_balance_available"
+            />
+          </>
+        )}
       </div>
 
       {/* Below `lg`: quick actions + grouped menu stack full-width, exactly
@@ -441,15 +480,19 @@ export default function AccountPage() {
       <div className="space-y-8 lg:grid lg:grid-cols-12 lg:items-start lg:gap-6 lg:space-y-0">
         <div className="space-y-8 lg:col-span-4">
           {/* Quick Actions: shortcuts to the destinations that don't already
-              have a dedicated summary card above. */}
-          <div className="space-y-2">
-            <h2 className="stat-label px-1">{t("web.account_quick_actions")}</h2>
-            <div className="grid grid-cols-3 gap-3">
-              {QUICK_ACTIONS.map((action) => (
-                <QuickActionTile key={action.href} action={action} />
-              ))}
+              have a dedicated summary card above. All three are closed to a
+              guest, which would leave an empty row of tiles — so the whole
+              section goes rather than being rendered hollow. */}
+          {!isGuest && (
+            <div className="space-y-2">
+              <h2 className="stat-label px-1">{t("web.account_quick_actions")}</h2>
+              <div className="grid grid-cols-3 gap-3">
+                {QUICK_ACTIONS.map((action) => (
+                  <QuickActionTile key={action.href} action={action} />
+                ))}
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Grouped destinations. Each group is a labelled <nav> so
               assistive tech gets the same "these three things are about
@@ -462,7 +505,7 @@ export default function AccountPage() {
               assistive tech/tests, so only one ever mounts). */}
           {isDashboard ? (
             <div className="card overflow-hidden">
-              {MENU_GROUPS.map((group) => (
+              {menuGroups.map((group) => (
                 <nav key={group.headingKey} aria-label={t(group.headingKey)}>
                   <div className="bg-sand/60 px-4 py-2 text-xs font-semibold tracking-wide text-ink-soft uppercase">
                     {t(group.headingKey)}
@@ -477,7 +520,7 @@ export default function AccountPage() {
             </div>
           ) : (
             <div className="space-y-6">
-              {MENU_GROUPS.map((group) => (
+              {menuGroups.map((group) => (
                 <nav key={group.headingKey} aria-label={t(group.headingKey)} className="space-y-2">
                   <h2 className="stat-label px-1">{t(group.headingKey)}</h2>
                   <div className="card divide-y divide-line overflow-hidden">
@@ -531,6 +574,9 @@ export default function AccountPage() {
             )}
           </div>
 
+          {/* Both panels below are about things a guest account doesn't have
+              (a balance, a referral code), so they don't render for one. */}
+          {!isGuest && (
           <div className="card card-pad">
             <h2 className="section-title mb-4">{t("web.account_wallet_overview")}</h2>
             <div className="grid grid-cols-2 gap-4">
@@ -545,7 +591,9 @@ export default function AccountPage() {
             </div>
             <p className="stat-sub mt-4">{t("web.account_wallet_note")}</p>
           </div>
+          )}
 
+          {!isGuest && (
           <div className="card card-pad">
             <h2 className="section-title mb-1">{t("web.account_referral")}</h2>
             <p className="page-lead mb-4">{t("web.referral_hint")}</p>
@@ -556,6 +604,7 @@ export default function AccountPage() {
               </button>
             </div>
           </div>
+          )}
         </div>
       </div>
     </div>

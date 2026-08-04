@@ -33,27 +33,35 @@
 import { useEffect, useState, type ReactNode, type KeyboardEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { AlertTriangle, ChevronRight, Wallet } from "lucide-react";
+import { AlertTriangle, ChevronRight, ShoppingCart, Wallet } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { AdditionalField, CheckoutData, PlaceOrderResponse } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { formatIdr, formatNativeUsdt } from "../lib/format";
-import { allFieldsValid } from "../lib/deliveryFields";
+import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
 import { useIsDesktop } from "../lib/useMediaQuery";
+import EmptyState from "../components/shop/EmptyState";
 import FlashBadge, { flashPercentLabel } from "../components/shop/FlashBadge";
 import Price from "../components/shop/Price";
+import Skeleton from "../components/shop/Skeleton";
 import Stepper from "../components/shop/Stepper";
 import DeliveryFieldInput from "../components/shop/DeliveryFieldInput";
 import Spinner from "../components/shop/Spinner";
 
 /** All-or-nothing wallet-credit gates: only "sufficient" when the balance
- * covers the live total outright — never offered as a partial discount. */
+ * covers the live total outright — never offered as a partial discount.
+ * `wallet_*_enabled` comes first because it answers a different question: may
+ * this shop offer a balance payment to THIS visitor at all (it is false for a
+ * guest, who has no wallet behind the number). Reading the server's flag
+ * rather than `is_guest` keeps that decision on the server side. */
 function isIdrWalletSufficient(data: CheckoutData): boolean {
-  return Number(data.total) > 0 && Number(data.wallet_idr) >= Number(data.total);
+  return data.wallet_idr_enabled && Number(data.total) > 0 && Number(data.wallet_idr) >= Number(data.total);
 }
 function isUsdtWalletSufficient(data: CheckoutData): boolean {
-  return data.total_usdt != null && Number(data.wallet_usdt) >= Number(data.total_usdt);
+  return (
+    data.wallet_usdt_enabled && data.total_usdt != null && Number(data.wallet_usdt) >= Number(data.total_usdt)
+  );
 }
 
 /** checkout.njk's default-selection cascade: the first enabled method wins,
@@ -92,6 +100,21 @@ function cartFlashSummary(data: CheckoutData | undefined): { percent: number; en
     if (lineEnd && (endsAt === null || lineEnd > endsAt)) endsAt = lineEnd;
   }
   return percent === null ? null : { percent, endsAt };
+}
+
+/**
+ * Turn whatever an API rejection carried into something a shopper can read.
+ *
+ * The server's own failures arrive as i18n keys ("error.rate_limited",
+ * "web.guest_email_invalid"), which `t()` renders. Anything else is the API
+ * client's developer-facing fallback ("/api/v1/checkout responded 500") or a
+ * network error, and `t()` would hand that string straight back — so those
+ * become the generic apology instead. Guest checkout widened the set of
+ * failures this page can hit (throttles on an anonymous read, a session
+ * minted mid-request), which is what makes the distinction worth making.
+ */
+function humanError(message: string): string {
+  return message.startsWith("web.") || message.startsWith("error.") ? t(message) : t("web.error_message");
 }
 
 function anyMethodEnabled(data: CheckoutData): boolean {
@@ -235,6 +258,54 @@ function InfoStepCard({
   );
 }
 
+/**
+ * Guest checkout's one extra question. Deliberately not a gate: the sign-in
+ * link is an offer sitting beside the field, not a door in front of it, and
+ * the hint says what the address is FOR rather than just demanding it.
+ */
+function GuestContactCard({
+  email,
+  onChange,
+  invalid,
+}: {
+  email: string;
+  onChange: (value: string) => void;
+  invalid: boolean;
+}) {
+  return (
+    <div className="card card-pad">
+      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="section-title">{t("web.guest_contact_title")}</h2>
+        <Link
+          to="/login?next=/checkout"
+          className="text-sm font-medium text-pine underline transition-colors hover:text-pine-dark"
+        >
+          {t("web.guest_have_account")}
+        </Link>
+      </div>
+      <label className="field-label" htmlFor="guest_email">
+        {t("web.guest_email_label")}
+      </label>
+      <input
+        id="guest_email"
+        type="email"
+        className="field"
+        value={email}
+        onChange={(e) => onChange(e.target.value)}
+        autoComplete="email"
+        inputMode="email"
+        placeholder="you@example.com"
+        aria-describedby="guest_email_hint"
+        aria-invalid={invalid ? true : undefined}
+        required
+      />
+      <p id="guest_email_hint" className="mt-2 text-xs leading-relaxed text-ink-soft">
+        {t("web.guest_email_hint")}
+      </p>
+    </div>
+  );
+}
+
 export default function CheckoutPage() {
   const navigate = useNavigate();
   const { data: ctx } = useShopContext();
@@ -251,17 +322,18 @@ export default function CheckoutPage() {
   const [voucherInput, setVoucherInput] = useState("");
   const [method, setMethod] = useState<string | null>(null);
   const [placeOrderErrorKey, setPlaceOrderErrorKey] = useState<string | null>(null);
+  // Guest checkout only — a registered buyer never sees the field, and the
+  // value is never sent for them (the server ignores it anyway).
+  const [guestEmail, setGuestEmail] = useState("");
   // One answer-map per unit for the manual_with_info info step — [] when the
   // cart has no such line (the section then renders nothing).
   const [answers, setAnswers] = useState<Array<Record<string, string>>>([]);
 
-  // currentCustomer's 401 → a full page load to /login, matching every other
-  // ported page's redirect (not navigate(), so the shell re-serves fresh CSRF).
-  useEffect(() => {
-    if ((error as (Error & { status?: number }) | null)?.status === 401) {
-      window.location.assign("/login?next=/checkout");
-    }
-  }, [error]);
+  // No 401 redirect to /login any more: GET /api/v1/checkout serves anonymous
+  // visitors (guest checkout), so being signed out is a normal state of this
+  // page rather than an error to bounce out of. Any failure that DOES happen
+  // (a 429 from the anonymous read throttle, a network blip) is rendered
+  // below instead of leaving the visitor on a blank page.
 
   // First load only: seed both halves of the split state, the voucher input,
   // and the default method selection. Never re-runs once `page` is set —
@@ -277,11 +349,6 @@ export default function CheckoutPage() {
       if (infoItem) setAnswers(Array.from({ length: infoItem.qty }, () => ({})));
     }
   }, [data, page]);
-
-  // Empty cart → the server's 303 to /cart, ported as a client-side redirect.
-  useEffect(() => {
-    if (data?.items_empty) navigate("/cart");
-  }, [data, navigate]);
 
   const previewMutation = useMutation({
     mutationFn: (voucherCode: string) =>
@@ -310,12 +377,90 @@ export default function CheckoutPage() {
         method,
         voucher_code: voucherInput,
         customer_data: page?.items.some((i) => i.delivery_type === "manual_with_info") ? answers : undefined,
+        // Sent only in guest mode. The server treats it as the guest account's
+        // contact address and ignores it entirely for a signed-in buyer.
+        guest_email: page?.is_guest ? guestEmail.trim() : undefined,
       }),
-    onSuccess: (resp) => navigate(resp.pay_url),
+    onSuccess: (resp) => {
+      // A `csrf_token` in the response means this request MINTED a session
+      // (guest checkout). The whole shell has to be re-rendered for the app to
+      // see it — account menu, cart ownership, the CSRF meta tag — so leave
+      // the SPA the way LoginPage does rather than route client-side. A
+      // signed-in buyer gets no token and keeps the instant client-side
+      // navigation they have today.
+      if (resp.csrf_token) window.location.assign(resp.pay_url);
+      else navigate(resp.pay_url);
+    },
     onError: (err) => setPlaceOrderErrorKey((err as Error).message),
   });
 
-  if (!page || !totals) return null;
+  // Nothing loaded yet, and nothing went wrong: a placeholder shaped like the
+  // page, not the blank screen this used to render while the query was in
+  // flight (STO-006 / performance.md, same treatment as OrdersPage).
+  if (!page || !totals) {
+    if (!error) {
+      return (
+        <div aria-busy="true" aria-label={t("web.loading")}>
+          <Skeleton className="mb-5 h-8 w-48" />
+          <div className="grid items-start gap-6 lg:grid-cols-3">
+            <div className="space-y-6 lg:col-span-2">
+              <div className="card card-pad space-y-3">
+                <Skeleton className="h-5 w-40" />
+                {[0, 1, 2].map((i) => (
+                  <Skeleton key={i} className="h-14 w-full rounded-xl" />
+                ))}
+              </div>
+              <div className="card card-pad space-y-3">
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-10 w-full" />
+              </div>
+            </div>
+            <div className="card card-pad space-y-3">
+              <Skeleton className="h-5 w-28" />
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-2/3" />
+              <Skeleton className="h-10 w-full" />
+            </div>
+          </div>
+        </div>
+      );
+    }
+    // The checkout payload never arrived — most likely the anonymous read
+    // throttle (429). Say so in words the buyer can act on and give them
+    // somewhere to go, rather than leaving an empty page or a bare error key.
+    return (
+      <>
+        <Stepper step={2} />
+        <h1 className="page-title text-2xl! mb-5">{t("web.checkout_title")}</h1>
+        <EmptyState
+          icon={AlertTriangle}
+          title={t("web.checkout_unavailable")}
+          description={humanError((error as Error).message)}
+          action={{ label: t("web.back_to_cart"), to: "/cart" }}
+          secondaryAction={{ label: t("web.nav_products"), to: "/products" }}
+        />
+      </>
+    );
+  }
+
+  // An empty cart used to bounce to /cart. For a guest that is one navigation
+  // to an equally empty screen — say it here, where they are, and name the way
+  // forward. Never render a payment form for a cart with nothing in it.
+  if (page.items_empty) {
+    return (
+      <>
+        <Stepper step={2} />
+        <h1 className="page-title text-2xl! mb-5">{t("web.checkout_title")}</h1>
+        <EmptyState
+          icon={ShoppingCart}
+          title={t("web.checkout_empty_title")}
+          description={t("web.cart_empty_desc")}
+          action={{ label: t("web.nav_products"), to: "/products" }}
+          secondaryAction={{ label: t("web.back_to_cart"), to: "/cart" }}
+        />
+      </>
+    );
+  }
 
   // Wallet-credit radios — only offered when credit fully covers the live
   // total (post-voucher); hidden (not disabled) otherwise.
@@ -332,7 +477,10 @@ export default function CheckoutPage() {
   // Both submit controls share one set of gates so neither can offer an order
   // the other refuses: `blocked` is the permanent "not payable yet" state the
   // dimmed styling explains, `disabled` adds the transient in-flight state.
-  const placeOrderBlocked = !anyMethod || !infoValid;
+  // Client-side courtesy only — it saves a wasted round trip; the server
+  // re-validates and owns `web.guest_email_invalid`.
+  const guestEmailValid = !page.is_guest || isValidEmail(guestEmail);
+  const placeOrderBlocked = !anyMethod || !infoValid || !guestEmailValid;
   const placeOrderDisabled = placeOrderBlocked || placeOrderMutation.isPending;
 
   function setAnswer(unitIdx: number, key: string, value: string): void {
@@ -350,7 +498,7 @@ export default function CheckoutPage() {
 
       {placeOrderErrorKey && (
         <div className="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mb-5">
-          <AlertTriangle className="w-4 h-4" /> {t(placeOrderErrorKey)}
+          <AlertTriangle className="w-4 h-4" /> {humanError(placeOrderErrorKey)}
         </div>
       )}
 
@@ -363,6 +511,16 @@ export default function CheckoutPage() {
         style={isDesktop ? undefined : { paddingBottom: "calc(env(safe-area-inset-bottom) + 5.5rem)" }}
       >
         <div className="lg:col-span-2 space-y-6">
+          {/* First card in the column for a guest: the shop needs to know
+              where the order goes before anything about paying for it. */}
+          {page.is_guest && (
+            <GuestContactCard
+              email={guestEmail}
+              onChange={setGuestEmail}
+              invalid={placeOrderErrorKey === "web.guest_email_invalid"}
+            />
+          )}
+
           {infoItem && (
             <InfoStepCard fields={infoItem.additional_fields} qty={infoItem.qty} answers={answers} onChange={setAnswer} />
           )}

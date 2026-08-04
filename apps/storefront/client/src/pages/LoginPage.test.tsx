@@ -43,6 +43,17 @@ describe("LoginPage", () => {
     expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
   });
 
+  // A guest buyer has no password, so this page is a dead end for them — and
+  // it is where they land when they go looking for an order. One quiet link
+  // out to /track is all that's needed.
+  it("offers guest buyers a way to their order without an account", () => {
+    renderLogin();
+    expect(screen.getByRole("link", { name: "Bought as a guest? Track your order" })).toHaveAttribute(
+      "href",
+      "/track",
+    );
+  });
+
   it("renders the web.login_failed copy via Flash on a 403 response", async () => {
     renderLogin();
     (publicPost as Mock).mockRejectedValue(new Error("web.login_failed"));

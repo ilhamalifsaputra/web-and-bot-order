@@ -24,6 +24,9 @@ import FlashPage from "./pages/FlashPage";
 const CartPage = lazy(() => import("./pages/CartPage"));
 const CheckoutPage = lazy(() => import("./pages/CheckoutPage"));
 const PayPage = lazy(() => import("./pages/PayPage"));
+// Guest order tracking — reached from a confirmation message or the sign-in
+// page, never on the way to a purchase.
+const TrackOrderPage = lazy(() => import("./pages/TrackOrderPage"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const RegisterPage = lazy(() => import("./pages/RegisterPage"));
 const ForgotPage = lazy(() => import("./pages/ForgotPage"));
@@ -71,6 +74,7 @@ export default function App() {
           <Route path="/cart" element={<CartPage />} />
           <Route path="/checkout" element={<CheckoutPage />} />
           <Route path="/checkout/:code/pay" element={<PayPage />} />
+          <Route path="/track" element={<TrackOrderPage />} />
           <Route path="/account" element={<AccountPage />} />
           <Route path="/account/orders" element={<OrdersPage />} />
           <Route path="/account/orders/:code" element={<OrderDetailPage />} />

@@ -7,6 +7,35 @@ function csrfToken(): string {
 }
 
 /**
+ * Take over the `csrf_token` a response carries, if it carries one.
+ *
+ * Guest checkout (POST /api/v1/checkout) and order tracking (POST
+ * /api/v1/track) mint a session in the MIDDLE of the request that asks for
+ * them, so the page holding the conversation was rendered by the shell as an
+ * anonymous visitor and its `<meta name="csrf-token">` is empty. Every
+ * follow-up request from that page would then fail the server's CSRF check —
+ * most painfully for a buyer whose checkout just failed and who wants to fix
+ * the email and try again.
+ *
+ * The token is written back into the meta tag rather than kept in a module
+ * variable so the page keeps ONE source of truth for it: `csrfToken()` above,
+ * `apiPatch`, and the XHR upload path all read the same place, and a later
+ * full page load simply overwrites it with the shell's own value. Pages never
+ * touch the tag themselves — they only ever call the API helpers below.
+ */
+function adoptCsrfToken(data: unknown): void {
+  const token = (data as { csrf_token?: unknown } | null | undefined)?.csrf_token;
+  if (typeof token !== "string" || token === "") return;
+  let meta = document.querySelector('meta[name="csrf-token"]');
+  if (!meta) {
+    meta = document.createElement("meta");
+    meta.setAttribute("name", "csrf-token");
+    document.head.appendChild(meta);
+  }
+  meta.setAttribute("content", token);
+}
+
+/**
  * POST without a CSRF token — for the pre-session auth endpoints
  * (/api/v1/auth/login, register, forgot, reset: no customer session exists
  * yet, and the HTML routes they replace carried no CSRF either).
@@ -18,11 +47,14 @@ export async function publicPost<T>(path: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  const data = (await res.json().catch(() => ({}))) as { error?: string };
+  // POST /api/v1/track answers here, and its 200 carries the freshly minted
+  // guest session's CSRF token.
+  adoptCsrfToken(data);
   if (!res.ok) {
-    const data = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(data.error ?? `${path} failed ${res.status}`);
   }
-  return res.json() as Promise<T>;
+  return data as T;
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
@@ -47,13 +79,17 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
     body: JSON.stringify(body),
   });
+  const data = (await res.json().catch(() => ({}))) as { error?: string };
+  // Guest checkout answers here — its 201 AND its 4xx both carry the guest
+  // session's CSRF token once that session exists, so a failed attempt still
+  // leaves the page able to retry.
+  adoptCsrfToken(data);
   if (!res.ok) {
-    const data = (await res.json().catch(() => ({}))) as { error?: string };
     const err = new Error(data.error ?? `${path} responded ${res.status}`);
     (err as Error & { status?: number }).status = res.status;
     throw err;
   }
-  return res.json() as Promise<T>;
+  return data as T;
 }
 
 /** Same CSRF-header contract as `apiPost`, for a multipart `FormData` body

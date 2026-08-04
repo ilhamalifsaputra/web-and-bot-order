@@ -246,12 +246,36 @@ export interface CheckoutData {
   nowpayments_enabled: boolean;
   wallet_idr: string;
   wallet_usdt: string;
+  /** Whether a balance payment method may be offered AT ALL. The server says
+   * no for anonymous visitors (a guest has no wallet); the page still decides
+   * whether the balance is big enough. Gate the radios on these rather than on
+   * `is_guest` — which of the two questions is being answered stays the
+   * server's call. */
+  wallet_idr_enabled: boolean;
+  wallet_usdt_enabled: boolean;
+  /** True for an anonymous visitor: the checkout collects a contact email and
+   * the order is placed against a synthetic guest account (guest checkout). */
+  is_guest: boolean;
 }
 
 /** 201 response of POST /api/v1/checkout (order created). */
 export interface PlaceOrderResponse {
   order_code: string;
   pay_url: string;
+  /** Present only when this request MINTED a guest session — the page was
+   * rendered anonymously, so its CSRF meta is empty until the API client
+   * adopts this (see api/client.ts). Also present on the 4xx bodies of a
+   * guest checkout that failed after the session was issued. */
+  csrf_token?: string;
+}
+
+/** 200 response of POST /api/v1/track — an order code + email pair that
+ * matched a guest order, exchanged for a live session. Every failure is one
+ * indistinguishable 404 `{ error: "web.track_not_found" }` by design, so
+ * there is no "reason" field here to render. */
+export interface TrackOrderResponse {
+  redirect: string;
+  csrf_token?: string;
 }
 
 /** Cached TokoPay gateway payload (server: TokopayOrderInfo). */
@@ -346,6 +370,12 @@ export interface ShopContext {
    * shelf. Optional so an older/mocked payload reads as "no sale running",
    * which is the safe direction to be wrong in. */
   flash_active?: boolean;
+  /** True when `customer` is a synthetic guest account (bought without
+   * registering). Guests have no password, referral code, reviews or tickets,
+   * so the account area shows them only their orders. Optional so an
+   * older/mocked payload reads as "a normal registered customer", which keeps
+   * the full menu — the safe direction to be wrong in for a signed-in user. */
+  is_guest?: boolean;
 }
 
 /** GET /api/v1/account — account.njk's overview stats + logout button

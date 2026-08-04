@@ -187,8 +187,29 @@ async function establishGuestCustomer(req: FastifyRequest, reply: FastifyReply):
   // performCheckout then fails (out of stock, gateway down) and they retry,
   // the retry takes the SIGNED-IN branch above and reuses this same guest
   // row — so `guestEmail` stays attached and the eventual order remains
-  // trackable. That is the desired property, not a leak.
+  // trackable — BUT ONLY once the retry actually presents THIS session's
+  // CSRF token. The SPA reads its token from the shell's
+  // `<meta name="csrf-token">`, which routes/spaShell.ts renders empty for
+  // the anonymous page load that made this very request — so without help
+  // the browser would be holding a valid session cookie with no way to prove
+  // it, and the retry (or a cancel) would 403 forever. That's why the route
+  // below hands this session's `csrf` back as `csrf_token` on the 201 AND on
+  // every guest 4xx raised after this point (fix pass 1, review finding I-1)
+  // — the SPA adopts it immediately, and the "retry takes the signed-in
+  // branch" property above actually holds in practice.
   return { ...session, user: guestUser };
+}
+
+/**
+ * Attaches `csrf_token` to a guest response body — the freshly minted
+ * session's CSRF token (fix pass 1, review finding I-1) — and leaves a
+ * signed-in caller's body untouched. Signed-in callers already hold their
+ * token from login/register, so adding it there would just be a new key the
+ * SPA never asked for; the checked-in test for the signed-in 201 asserts the
+ * body is EXACTLY `{ order_code, pay_url }`.
+ */
+function withGuestCsrf<T extends object>(body: T, isGuest: boolean, customer: Customer): T & { csrf_token?: string } {
+  return isGuest ? { ...body, csrf_token: customer.csrf } : body;
 }
 
 const apiRoutes: FastifyPluginAsync = async (app) => {
@@ -318,8 +339,21 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
     // leaves an orphan row behind. Guests are not CSRF-checked above for the
     // same reason the guest cart isn't (routes/cart.ts `csrfOk`): they have
     // no session to ride, and the cart cookie is SameSite=Lax.
+    //
+    // Minor (fix pass 1 review finding): `optionalCustomer` returns null for
+    // a BANNED account's cookie, same as it does for no session at all — so a
+    // banned user's request falls through to this guest branch and gets a
+    // fresh guest checkout instead of a 401. That's inherent to offering
+    // guest checkout at all (anyone anonymous can already reach this branch);
+    // noted here so it isn't surprising to the next reader, not treated as a
+    // new hole opened by the banned check.
     const customer = signedIn ?? (await establishGuestCustomer(req, reply));
     if (!customer) return; // the guest branch already sent its 4xx/429
+    // True only when `customer` came from establishGuestCustomer above — used
+    // to decide whether the response needs to carry the freshly minted
+    // session's CSRF token (fix pass 1, review finding I-1: see the
+    // "Intentional" comment in establishGuestCustomer for why).
+    const isGuest = !signedIn;
 
     const method = (req.body?.method ?? "").toLowerCase();
     const voucherCode = (req.body?.voucher_code ?? "").trim().toUpperCase() || null;
@@ -335,10 +369,12 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
           voucherCode,
           req.body?.customer_data,
         );
-        return reply.code(201).send({ order_code: orderCode, pay_url: `/account/orders/${orderCode}` });
+        return reply
+          .code(201)
+          .send(withGuestCsrf({ order_code: orderCode, pay_url: `/account/orders/${orderCode}` }, isGuest, customer));
       } catch (e) {
         if (e instanceof ValidationError) {
-          return reply.code(400).send({ error: e.key });
+          return reply.code(400).send(withGuestCsrf({ error: e.key }, isGuest, customer));
         }
         throw e;
       }
@@ -346,10 +382,12 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const { orderCode } = await performCheckout(customer, method, voucherCode, req.body?.customer_data);
-      return reply.code(201).send({ order_code: orderCode, pay_url: `/checkout/${orderCode}/pay` });
+      return reply
+        .code(201)
+        .send(withGuestCsrf({ order_code: orderCode, pay_url: `/checkout/${orderCode}/pay` }, isGuest, customer));
     } catch (e) {
       if (e instanceof ValidationError) {
-        return reply.code(400).send({ error: e.key });
+        return reply.code(400).send(withGuestCsrf({ error: e.key }, isGuest, customer));
       }
       throw e;
     }

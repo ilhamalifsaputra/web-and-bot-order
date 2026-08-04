@@ -180,6 +180,46 @@ export function guestCheckoutRateLimited(ip: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Anonymous checkout-read rate limit (per IP, in-process) — guest checkout,
+// fix pass 1. Opening `GET /api/v1/checkout` and
+// `POST /api/v1/checkout/voucher/preview` to anonymous callers created two
+// problems this cap closes:
+//  - the voucher preview answers "does this code exist?" for ANY code,
+//    whatever the cart holds (computeTotals in routes/checkout.ts looks the
+//    code up before it looks at eligibility), so without a cap it is a
+//    voucher-code oracle an attacker can hammer at line rate;
+//  - the summary fans out to eight settings/credential lookups per call, so
+//    it is also the heaviest unauthenticated read in the storefront.
+// Both routes share ONE quota deliberately — an attacker must not be able to
+// reset the oracle by alternating between them.
+//
+// 30 requests / 60 s: a real shopper opens checkout once, maybe reloads a
+// couple of times and tries a handful of voucher codes — under ten requests
+// in any minute, so the cap has roughly 3x headroom even for an impatient
+// one and for a few shoppers sharing an office/carrier NAT. An attacker, in
+// exchange, drops from thousands of guesses per second to 43 200 per day per
+// IP, which makes guessing a random voucher code hopeless.
+//
+// Signed-in callers are NOT throttled by this (see routes/apiCheckout.ts):
+// they are already bounded by having had to register and log in, and the
+// checkout page is one a paying customer legitimately reloads.
+// ---------------------------------------------------------------------------
+
+const checkoutPreviewHits = new Map<string, number[]>();
+export const CHECKOUT_PREVIEW_RATE_LIMIT_WINDOW_SECONDS = 60;
+export const CHECKOUT_PREVIEW_RATE_LIMIT_MAX = 30;
+
+/** True if `ip` has exceeded its anonymous checkout-read quota this window. */
+export function checkoutPreviewRateLimited(ip: string): boolean {
+  return slidingWindowLimited(
+    checkoutPreviewHits,
+    ip,
+    CHECKOUT_PREVIEW_RATE_LIMIT_WINDOW_SECONDS,
+    CHECKOUT_PREVIEW_RATE_LIMIT_MAX,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Order-tracking lookup rate limit (per IP, in-process) — Task 3, guest
 // checkout. The order-tracking endpoint (a later task) validates an order
 // code + email pair with no login required; without a throttle it's an

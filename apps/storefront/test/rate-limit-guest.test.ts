@@ -20,10 +20,13 @@ import { cleanupTestDb } from "./setup-env";
 import {
   guestCheckoutRateLimited,
   trackLookupRateLimited,
+  checkoutPreviewRateLimited,
   GUEST_CHECKOUT_RATE_LIMIT_WINDOW_SECONDS,
   GUEST_CHECKOUT_RATE_LIMIT_MAX,
   TRACK_LOOKUP_RATE_LIMIT_WINDOW_SECONDS,
   TRACK_LOOKUP_RATE_LIMIT_MAX,
+  CHECKOUT_PREVIEW_RATE_LIMIT_WINDOW_SECONDS,
+  CHECKOUT_PREVIEW_RATE_LIMIT_MAX,
 } from "../src/rateLimit";
 
 beforeEach(() => {
@@ -99,6 +102,64 @@ describe("trackLookupRateLimited", () => {
     }
     expect(trackLookupRateLimited(ipA)).toBe(true); // ipA capped
     expect(trackLookupRateLimited(ipB)).toBe(false); // ipB untouched
+  });
+});
+
+// Fix pass 1: the anonymous checkout summary + voucher preview are read-only
+// but unauthenticated, and the preview answers "is this voucher code real?"
+// regardless of cart contents — a code oracle without this cap.
+describe("checkoutPreviewRateLimited", () => {
+  it("allows CHECKOUT_PREVIEW_RATE_LIMIT_MAX calls then blocks the next one", () => {
+    const ip = "7.7.7.1";
+    for (let i = 0; i < CHECKOUT_PREVIEW_RATE_LIMIT_MAX; i++) {
+      expect(checkoutPreviewRateLimited(ip)).toBe(false);
+    }
+    expect(checkoutPreviewRateLimited(ip)).toBe(true);
+  });
+
+  it("lets the IP through again once the window has fully elapsed", () => {
+    const ip = "7.7.7.2";
+    for (let i = 0; i < CHECKOUT_PREVIEW_RATE_LIMIT_MAX; i++) {
+      expect(checkoutPreviewRateLimited(ip)).toBe(false);
+    }
+    expect(checkoutPreviewRateLimited(ip)).toBe(true); // now capped
+
+    vi.advanceTimersByTime((CHECKOUT_PREVIEW_RATE_LIMIT_WINDOW_SECONDS + 1) * 1000);
+
+    expect(checkoutPreviewRateLimited(ip)).toBe(false); // window has shifted
+  });
+
+  it("gives a second IP its own, unexhausted quota", () => {
+    const ipA = "7.7.7.3";
+    const ipB = "7.7.7.4";
+    for (let i = 0; i < CHECKOUT_PREVIEW_RATE_LIMIT_MAX; i++) {
+      expect(checkoutPreviewRateLimited(ipA)).toBe(false);
+    }
+    expect(checkoutPreviewRateLimited(ipA)).toBe(true); // ipA capped
+    expect(checkoutPreviewRateLimited(ipB)).toBe(false); // ipB untouched
+  });
+});
+
+describe("checkoutPreviewRateLimited is independent of the other throttles", () => {
+  it("exhausting the preview quota for an IP doesn't touch that IP's checkout or track-lookup quota", () => {
+    const ip = "9.9.9.3";
+    for (let i = 0; i < CHECKOUT_PREVIEW_RATE_LIMIT_MAX; i++) {
+      expect(checkoutPreviewRateLimited(ip)).toBe(false);
+    }
+    expect(checkoutPreviewRateLimited(ip)).toBe(true); // preview quota exhausted
+
+    expect(guestCheckoutRateLimited(ip)).toBe(false);
+    expect(trackLookupRateLimited(ip)).toBe(false);
+  });
+
+  it("exhausting the guest-checkout quota for an IP doesn't touch that IP's preview quota", () => {
+    const ip = "9.9.9.4";
+    for (let i = 0; i < GUEST_CHECKOUT_RATE_LIMIT_MAX; i++) {
+      expect(guestCheckoutRateLimited(ip)).toBe(false);
+    }
+    expect(guestCheckoutRateLimited(ip)).toBe(true); // checkout quota exhausted
+
+    expect(checkoutPreviewRateLimited(ip)).toBe(false);
   });
 });
 

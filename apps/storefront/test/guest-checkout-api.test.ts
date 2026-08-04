@@ -22,7 +22,7 @@ import { hashPassword } from "@app/core/password";
 import { buildApp } from "../src/server";
 import { CART_COOKIE, CART_COOKIE_VERSION } from "../src/shop";
 import { SHOP_COOKIE_NAME } from "../src/auth";
-import { GUEST_CHECKOUT_RATE_LIMIT_MAX } from "../src/rateLimit";
+import { GUEST_CHECKOUT_RATE_LIMIT_MAX, CHECKOUT_PREVIEW_RATE_LIMIT_MAX } from "../src/rateLimit";
 
 let app: FastifyInstance;
 let denomId: number;
@@ -63,6 +63,16 @@ async function makeUser(username: string, password: string, refCode: string): Pr
     },
   });
   return u.id;
+}
+
+/** The storefront session cookie (name=value only, attributes stripped) out of
+ * a response's Set-Cookie list — what a browser would send back on the next
+ * request. */
+function sessionCookieFrom(setCookie: string | string[] | undefined): string {
+  const cookies = Array.isArray(setCookie) ? setCookie : [String(setCookie)];
+  const found = cookies.find((c) => c.startsWith(`${SHOP_COOKIE_NAME}=`));
+  expect(found).toBeDefined();
+  return found!.split(";")[0]!;
 }
 
 const countUsers = () => prisma.user.count();
@@ -286,8 +296,118 @@ describe("POST /api/v1/checkout — guest happy path (Task 4c)", () => {
   });
 });
 
+// ------------------------------------------- CSRF handoff (fix pass 1, I-1)
+// The SPA reads its CSRF token from the shell's <meta name="csrf-token">,
+// which is EMPTY for an anonymous visitor (routes/spaShell.ts). The guest
+// branch mints a session mid-request, so the page that sent the request is
+// left holding an empty token and every later mutation would 403. The guest
+// branch therefore hands the freshly minted token back in the response body.
+describe("POST /api/v1/checkout — guest responses carry the new CSRF token", () => {
+  it("returns csrf_token on the 201, and that token is accepted by a later mutation", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie: cartCookie([{ p: denomId, q: 1 }]), "x-forwarded-for": freshIp() },
+      payload: { method: "bybit", guest_email: "csrf.guest@example.com" },
+    });
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(typeof body.csrf_token).toBe("string");
+    expect(body.csrf_token.length).toBeGreaterThan(0);
+
+    // The token really is this session's — a follow-up authenticated mutation
+    // from the same page must be accepted, not rejected with csrf_failed.
+    const cookie = sessionCookieFrom(res.headers["set-cookie"]);
+    const cancel = await app.inject({
+      method: "POST",
+      url: `/api/v1/orders/${body.order_code}/cancel`,
+      headers: { cookie, "x-csrf-token": body.csrf_token },
+    });
+    expect(cancel.statusCode).toBe(200);
+    expect(cancel.json()).toEqual({ ok: true });
+
+    // Same mutation without the handed-back token is still refused, so the
+    // 200 above proves the token, not a loosened gate.
+    const withoutToken = await app.inject({
+      method: "POST",
+      url: `/api/v1/orders/${body.order_code}/cancel`,
+      headers: { cookie },
+    });
+    expect(withoutToken.statusCode).toBe(403);
+  });
+
+  it("returns csrf_token on a 4xx raised AFTER the session was minted, so the retry works", async () => {
+    // `qris` needs TokoPay creds, which this suite never sets — performCheckout
+    // throws web.pay_method_unavailable, but only after the guest user and
+    // session already exist. This is exactly the retry case.
+    const failed = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie: cartCookie([{ p: denomId, q: 1 }]), "x-forwarded-for": freshIp() },
+      payload: { method: "qris", guest_email: "retry.guest@example.com" },
+    });
+    expect(failed.statusCode).toBe(400);
+    expect(failed.json().error).toBe("web.pay_method_unavailable");
+    expect(typeof failed.json().csrf_token).toBe("string");
+    expect(failed.json().csrf_token.length).toBeGreaterThan(0);
+
+    // Retry with a live gateway, using the session + token the failure handed
+    // back. It takes the signed-in branch, reuses the same guest row, and must
+    // NOT 403. (The cart lives in CartItem rows now — establishSession
+    // migrated it — so no cart cookie is needed.)
+    const cookie = sessionCookieFrom(failed.headers["set-cookie"]);
+    const retry = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-csrf-token": failed.json().csrf_token },
+      payload: { method: "bybit" },
+    });
+    expect(retry.statusCode).toBe(201);
+    const guest = await prisma.user.findFirst({ where: { guestEmail: "retry.guest@example.com" } });
+    expect(guest).not.toBeNull();
+    const order = await prisma.order.findFirst({ where: { orderCode: retry.json().order_code } });
+    expect(order!.userId).toBe(guest!.id);
+  });
+
+  it("does NOT return csrf_token on a guest 4xx raised BEFORE any session exists", async () => {
+    const badEmail = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie: cartCookie([{ p: denomId, q: 1 }]), "x-forwarded-for": freshIp() },
+      payload: { method: "bybit", guest_email: "not-an-email" },
+    });
+    expect(badEmail.statusCode).toBe(400);
+    expect(badEmail.json()).toEqual({ error: "web.guest_email_invalid" });
+    expect(badEmail.headers["set-cookie"]).toBeUndefined(); // no session was minted
+
+    const emptyCart = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { "x-forwarded-for": freshIp() },
+      payload: { method: "bybit", guest_email: "nocart.guest@example.com" },
+    });
+    expect(emptyCart.statusCode).toBe(400);
+    expect(emptyCart.json()).toEqual({ error: "error.cart_empty" });
+  });
+});
+
 // ------------------------------------- signed-in regressions stay untouched
 describe("POST /api/v1/checkout — signed-in path is unchanged (Task 4c)", () => {
+  it("does not add csrf_token to a signed-in 201 — that client already has one", async () => {
+    const uid = await makeUser("guestapinocsrf", "guestapinocsrf-pw-1", "GAPINC");
+    const { cookie, csrf } = await loginAs("guestapinocsrf", "guestapinocsrf-pw-1");
+    await addToCart(prisma, uid, denomId, 1);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: { method: "bybit" },
+    });
+    expect(res.statusCode).toBe(201);
+    expect(Object.keys(res.json()).sort()).toEqual(["order_code", "pay_url"]);
+  });
+
   it("still 403s csrf_failed without an x-csrf-token header", async () => {
     const uid = await makeUser("guestapicsrf", "guestapicsrf-pw-1", "GAPICS");
     const { cookie } = await loginAs("guestapicsrf", "guestapicsrf-pw-1");
@@ -319,6 +439,90 @@ describe("POST /api/v1/checkout — signed-in path is unchanged (Task 4c)", () =
     expect(await countUsers()).toBe(before); // no guest row minted
     const order = await prisma.order.findFirst({ where: { orderCode: res.json().order_code } });
     expect(order!.userId).toBe(uid);
+  });
+});
+
+// ------------------------------------- anonymous read throttle (fix pass 1, I-2)
+// Opening the two read routes to anonymous callers turned the voucher preview
+// into an unauthenticated code oracle (computeTotals looks a code up whatever
+// the cart holds) and made the checkout summary an unauthenticated fan-out to
+// eight settings/credential lookups. A per-IP cap covers the anonymous path of
+// both; signed-in callers are never throttled.
+describe("anonymous checkout reads are throttled per IP (fix pass 1)", () => {
+  it("429s both reads once one IP exceeds the shared preview quota, without touching signed-in callers", async () => {
+    const ip = freshIp();
+    const anonHeaders = { cookie: cartCookie([{ p: denomId, q: 1 }]), "x-forwarded-for": ip };
+
+    for (let i = 0; i < CHECKOUT_PREVIEW_RATE_LIMIT_MAX; i++) {
+      const res = await app.inject({ method: "GET", url: "/api/v1/checkout", headers: anonHeaders });
+      expect(res.statusCode).toBe(200); // still under the cap
+    }
+
+    const cappedGet = await app.inject({ method: "GET", url: "/api/v1/checkout", headers: anonHeaders });
+    expect(cappedGet.statusCode).toBe(429);
+    expect(cappedGet.json()).toEqual({ error: "error.rate_limited" });
+
+    // The voucher preview draws on the SAME quota — an attacker can't reset
+    // the oracle by switching routes.
+    const cappedPreview = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout/voucher/preview",
+      headers: anonHeaders,
+      payload: { voucher_code: "GUESS1" },
+    });
+    expect(cappedPreview.statusCode).toBe(429);
+    expect(cappedPreview.json()).toEqual({ error: "error.rate_limited" });
+
+    // A signed-in shopper on that same exhausted IP is unaffected.
+    const uid = await makeUser("guestapithrottle", "guestapithrottle-pw-1", "GAPITH");
+    const { cookie, csrf } = await loginAs("guestapithrottle", "guestapithrottle-pw-1");
+    await addToCart(prisma, uid, denomId, 1);
+    const signedInGet = await app.inject({
+      method: "GET",
+      url: "/api/v1/checkout",
+      headers: { cookie, "x-forwarded-for": ip },
+    });
+    expect(signedInGet.statusCode).toBe(200);
+    expect(signedInGet.json().is_guest).toBe(false);
+    const signedInPreview = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout/voucher/preview",
+      headers: { cookie, "x-csrf-token": csrf, "x-forwarded-for": ip },
+      payload: { voucher_code: "GUESS1" },
+    });
+    expect(signedInPreview.statusCode).toBe(200);
+  });
+
+  it("429s the voucher preview once the quota is exhausted through the preview alone", async () => {
+    const ip = freshIp();
+    const headers = { cookie: cartCookie([{ p: denomId, q: 1 }]), "x-forwarded-for": ip };
+    for (let i = 0; i < CHECKOUT_PREVIEW_RATE_LIMIT_MAX; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/checkout/voucher/preview",
+        headers,
+        payload: { voucher_code: `GUESS${i}` },
+      });
+      expect(res.statusCode).toBe(200);
+    }
+    const capped = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout/voucher/preview",
+      headers,
+      payload: { voucher_code: "GUESSLAST" },
+    });
+    expect(capped.statusCode).toBe(429);
+    expect(capped.json()).toEqual({ error: "error.rate_limited" });
+
+    // The guest-checkout quota is a separate cap — exhausting the read quota
+    // must not stop this IP from actually checking out.
+    const checkout = await app.inject({
+      method: "POST",
+      url: "/api/v1/checkout",
+      headers,
+      payload: { method: "bybit", guest_email: "quota.guest@example.com" },
+    });
+    expect(checkout.statusCode).toBe(201);
   });
 });
 

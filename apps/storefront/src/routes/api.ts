@@ -282,7 +282,14 @@ async function sendGuestOrderCodeEmail(req: FastifyRequest, to: string, orderCod
       `Browser ini hilang, atau kamu pindah perangkat? Buka lagi pakai kode di atas dan alamat email ini:\n${trackLink}\n\n` +
       `Simpan email ini — kode pesanan adalah satu-satunya cara masuk kembali ke pesanan ini. Barang yang kamu beli tidak pernah dikirim lewat email; kamu membacanya di halaman pesanan.`;
 
-    const send = sendMail(smtp, { to, subject: `${shopName} — order code ${orderCode}`, text });
+    // Subject deliberately omits the order code: it's half the /track
+    // credential (code + email), and a subject line lands in lock-screen
+    // notification previews and every relay's logs along the way — including
+    // this app's own (sendMail logs its subject). The code itself only ever
+    // appears in the body, which is where the buyer actually reads it. Shop
+    // serves Indonesian by default, so the subject is Indonesian even though
+    // the body below is bilingual.
+    const send = sendMail(smtp, { to, subject: `${shopName} — kode pesanan kamu`, text });
     // Attached before the race so a rejection that lands AFTER the timeout is
     // already handled and can never surface as an unhandled rejection.
     const sent = send.then(
@@ -295,10 +302,21 @@ async function sendGuestOrderCodeEmail(req: FastifyRequest, to: string, orderCod
         return false;
       },
     );
+    // The timer is cleared once the race settles either way, so a fast send
+    // doesn't leave a dangling timer running for the rest of its 8s. Cleared
+    // in `finally` (not inline in each branch) so it fires whichever promise
+    // wins the race, without disturbing `sent`'s rejection handler above,
+    // which stays attached to `send` directly and unconditionally.
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<boolean>((resolve) => {
-      setTimeout(() => resolve(false), GUEST_ORDER_EMAIL_TIMEOUT_MS).unref?.();
+      timeoutHandle = setTimeout(() => resolve(false), GUEST_ORDER_EMAIL_TIMEOUT_MS);
+      timeoutHandle.unref?.();
     });
-    return await Promise.race([sent, timedOut]);
+    try {
+      return await Promise.race([sent, timedOut]);
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
   } catch (e) {
     // Reading the SMTP settings failed — the order is already paid for and must
     // not be held hostage by a settings read.

@@ -679,7 +679,7 @@
   "web.place_order": "Buat pesanan & bayar",
   "web.back_to_cart": "Kembali ke keranjang",
   "web.pay_title": "Pembayaran",
-  "web.pay_code_emailed": "Kode pesanan ini sudah kami kirim ke {email} — kode itu plus email ini yang kamu pakai untuk masuk lagi ke pesanan ini kalau browser ini hilang.",
+  "web.pay_code_emailed": "Kode pesanan ini sudah kami kirim ke {email} — kode itu plus alamat email tadi yang kamu pakai untuk masuk lagi ke pesanan ini kalau kamu pindah perangkat atau data browser-nya kehapus.",
   "web.binance_step_open": "Buka aplikasi Binance lalu pilih Pay → Transfer ke Pengguna Binance (UID).",
   "web.binance_step_uid": "Kirim ke UID ini:",
   "web.binance_step_amount": "Kirim persis sejumlah ini:",

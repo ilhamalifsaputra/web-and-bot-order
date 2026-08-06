@@ -26,7 +26,18 @@ export async function sendMail(creds: SmtpCreds, args: { to: string; subject: st
     subject: args.subject,
     text: args.text,
   });
-  logger.info(`Sent email to ${args.to} with subject "${args.subject}"`);
+  // The recipient address is deliberately NOT in the message string: this is
+  // the one function every outgoing email passes through, so interpolating
+  // `args.to` here wrote a customer's address into the logs on every send —
+  // password resets, and now a guest's order-code mail for every guest order.
+  // Callers take care not to leak the address (the guest-checkout path keeps
+  // it out of URLs and out of its own log lines for exactly this reason), and
+  // that care is worth nothing if this layer logs it anyway. Callers are also
+  // expected to keep other secrets — like a guest's order code, half of the
+  // /track credential — out of the subject for the same reason: whatever's in
+  // the subject ends up here. What's left (shop name, mail kind) is what an
+  // operator reading these lines actually needs.
+  logger.info(`Sent an email with subject "${args.subject}"`);
 }
 
 /** Checks the SMTP connection/auth without sending an email — backs the

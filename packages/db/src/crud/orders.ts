@@ -1398,6 +1398,34 @@ export function channelMaskedBuyerId(user: {
 }
 
 /**
+ * Human-readable "who bought this" label for admin surfaces that render
+ * plain text rather than the Orders/Order Detail pages' badge + email
+ * layout — currently the orders CSV export. A guest buyer's `fullName`,
+ * `username`, and `loginUsername` are all always null (only `guestEmail`
+ * identifies them), so the old inline `fullName ?? username ?? loginUsername
+ * ?? ""` fallback silently emitted a blank Customer cell for every guest
+ * order — the same "unexplained blank surface" defect the admin pages were
+ * fixed for. Unlike `channelMaskedBuyerId`, this is for an
+ * authenticated-admin-only surface, not a public channel post, so the full
+ * email is safe to show here.
+ */
+export function customerLabel(
+  user: {
+    fullName: string | null;
+    username: string | null;
+    loginUsername: string | null;
+    isGuest?: boolean;
+    guestEmail?: string | null;
+  } | null,
+): string {
+  if (!user) return "";
+  if (user.isGuest) {
+    return user.guestEmail ? `Guest (${user.guestEmail})` : "Guest (no contact email)";
+  }
+  return user.fullName ?? user.username ?? user.loginUsername ?? "";
+}
+
+/**
  * Post-delivery side effects shared by the AUTO path (approveOrder) and the
  * MANUAL path (fulfillManualOrder): pay the referee's referral commission and
  * enqueue the public-channel testimonial. Runs AFTER the atomic DELIVERED claim
@@ -1740,6 +1768,12 @@ function orderWhere(f: OrderFilter): Prisma.OrderWhereInput {
       { user: { fullName: { contains: term } } },
       { user: { loginUsername: { contains: term } } },
       { user: { email: { contains: term } } },
+      // Guest buyers have no username/fullName/loginUsername/email — only
+      // guestEmail — and Task 7 now shows that address in the Customer
+      // column, so pasting it back into this search box has to find the
+      // order. Same `contains` shape as the other identity fields above, so
+      // it inherits the same (SQLite-default) case-insensitivity.
+      { user: { guestEmail: { contains: term } } },
       { items: { some: { product: { name: { contains: term } } } } },
     ];
     if (cleanTerm !== term) {

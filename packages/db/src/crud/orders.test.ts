@@ -25,6 +25,7 @@ import {
   countOrders,
   computeOrderEligibility,
   channelMaskedBuyerId,
+  customerLabel,
 } from "./orders";
 import { addToCart, upsertBulkPricing, createVoucher, setFlashSale, bulkAddStock } from "@app/db";
 import { VoucherType, VoucherScope } from "@app/core/enums";
@@ -247,6 +248,41 @@ describe("listOrders/countOrders — q search + array status + paymentMethod + i
     const order = await makeOrder("PENDING_VERIFICATION", { userId: buyer.id });
 
     for (const term of ["searchuname", "Search Fullname", "searchlogin", "search@example.com", "778899"]) {
+      const results = await listOrders(prisma, { q: term });
+      expect(results.map((o) => o.id), `q="${term}" should match`).toContain(order.id);
+    }
+  });
+
+  // Review fix (Task 7 follow-up): the Customer column now shows a guest's
+  // guestEmail, so an admin's natural next move — copy it, paste it into this
+  // same search box — used to return nothing because orderWhere() only
+  // matched the registered-account identity fields, never guestEmail.
+  it("q matches a guest buyer's guestEmail, case-insensitively like the other identity fields", async () => {
+    const guest = await createGuestUser(prisma, { email: "SearchGuest@Example.com" });
+    const order = await makeOrder("PENDING_VERIFICATION", { userId: guest.id });
+
+    for (const term of ["SearchGuest@Example.com", "searchguest@example.com", "SearchGuest"]) {
+      const results = await listOrders(prisma, { q: term });
+      expect(results.map((o) => o.id), `q="${term}" should match`).toContain(order.id);
+    }
+  });
+
+  // Regression: adding the guestEmail clause to the OR list must not disturb
+  // matching on the pre-existing identity fields for non-guest buyers.
+  it("q still matches username/fullName/loginUsername/email for a non-guest buyer after the guestEmail clause was added", async () => {
+    const buyer = await prisma.user.create({
+      data: {
+        telegramId: BigInt(998877),
+        referralCode: `r${Math.random()}`,
+        username: "regressionuname",
+        fullName: "Regression Fullname",
+        loginUsername: "regressionlogin",
+        email: "regression@example.com",
+      },
+    });
+    const order = await makeOrder("PENDING_VERIFICATION", { userId: buyer.id });
+
+    for (const term of ["regressionuname", "Regression Fullname", "regressionlogin", "regression@example.com"]) {
       const results = await listOrders(prisma, { q: term });
       expect(results.map((o) => o.id), `q="${term}" should match`).toContain(order.id);
     }
@@ -1075,5 +1111,65 @@ describe("guest buyer fields on admin-facing order reads", () => {
     const detail = await getOrder(prisma, order.id);
     expect(detail!.user.isGuest).toBe(true);
     expect(detail!.user.guestEmail).toBe("tamu@mail.com");
+  });
+});
+
+/**
+ * Review fix (Task 7 follow-up): the admin orders CSV export used to read
+ * `fullName ?? username ?? loginUsername ?? ""` directly, which is blank for
+ * every guest (all three are always null for a guest row) — the exact same
+ * "unexplained blank surface" defect the Orders/Order Detail pages were
+ * fixed for. Pulled out as a standalone, DB-free helper so it's unit-tested
+ * once here and reusable by the CSV export (and any future plain-text admin
+ * surface) instead of re-inlining the guest branch at each call site.
+ */
+describe("customerLabel", () => {
+  it("labels a guest with a contact email as 'Guest (<email>)'", () => {
+    expect(
+      customerLabel({
+        fullName: null,
+        username: null,
+        loginUsername: null,
+        isGuest: true,
+        guestEmail: "tamu@mail.com",
+      }),
+    ).toBe("Guest (tamu@mail.com)");
+  });
+
+  it("labels a guest with no contact email as 'Guest (no contact email)', not a blank string", () => {
+    expect(
+      customerLabel({
+        fullName: null,
+        username: null,
+        loginUsername: null,
+        isGuest: true,
+        guestEmail: null,
+      }),
+    ).toBe("Guest (no contact email)");
+  });
+
+  it("keeps the pre-existing fullName ?? username ?? loginUsername fallback for a non-guest buyer", () => {
+    expect(
+      customerLabel({
+        fullName: "Budi Wibowo",
+        username: "budiw",
+        loginUsername: "budiwibowo",
+        isGuest: false,
+        guestEmail: null,
+      }),
+    ).toBe("Budi Wibowo");
+    expect(
+      customerLabel({ fullName: null, username: "budiw", loginUsername: "budiwibowo", isGuest: false, guestEmail: null }),
+    ).toBe("budiw");
+    expect(
+      customerLabel({ fullName: null, username: null, loginUsername: "budiwibowo", isGuest: false, guestEmail: null }),
+    ).toBe("budiwibowo");
+    expect(customerLabel({ fullName: null, username: null, loginUsername: null, isGuest: false, guestEmail: null })).toBe(
+      "",
+    );
+  });
+
+  it("returns an empty string for a null user, matching the CSV export's prior behavior", () => {
+    expect(customerLabel(null)).toBe("");
   });
 });

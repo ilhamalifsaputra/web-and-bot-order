@@ -679,6 +679,7 @@
   "web.place_order": "Place order & pay",
   "web.back_to_cart": "Back to cart",
   "web.pay_title": "Payment",
+  "web.pay_code_emailed": "We've emailed this order code to {email} — that code and this address are how you get back into this order if you lose this browser.",
   "web.binance_step_open": "Open the Binance app and choose Pay → Transfer to Binance User (UID).",
   "web.binance_step_uid": "Send to this UID:",
   "web.binance_step_amount": "Send exactly this amount:",

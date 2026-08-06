@@ -41,21 +41,27 @@ describe("locale parity (en ↔ id)", () => {
 });
 
 /**
- * Guest checkout sends NO mail. `mailer.ts` exists, but it is wired only to
- * password reset, and docs/PROJECT_ARCHITECTURE.md records the silence as
- * deliberate: guests read their delivered content on the web.
+ * Guest checkout DOES email the order code now — but only where the shop has
+ * SMTP configured, which is per-deployment (`getSmtpCreds` → null turns the
+ * feature off silently), and only when the send actually succeeds.
  *
- * Copy that points a guest at an inbox therefore strands them. The order code
- * lives on the order page and nowhere else, and without it `POST
- * /api/v1/track` cannot let them back in — so "check your confirmation email"
- * is not a small inaccuracy, it is the difference between recovering an order
- * and being locked out of a paid one forever.
+ * So no string that is written BEFORE the answer is known may promise an
+ * inbox. Every key below is exactly that: checkout-time and recovery-time copy
+ * rendered while `email_sent` is still unknowable. Copy that points such a
+ * shopper at an inbox that may never receive anything strands them — the order
+ * code is otherwise on one screen only, and without it `POST /api/v1/track`
+ * cannot let them back in, so "check your confirmation email" is not a small
+ * inaccuracy but the difference between recovering an order and being locked
+ * out of a paid one forever.
+ *
+ * The one place the shop may say it sent an email is the pay page, off the
+ * server's `email_sent: true` (`web.pay_code_emailed`) — a statement of fact
+ * about a send that already happened, which is why that key is not listed here.
  *
  * The property is pinned, not the wording: rewrite these strings freely, just
- * never re-promise the email. If mail sending is actually implemented later,
- * delete the offending pattern here in the SAME change that sends it.
+ * never let one of them promise mail on a deployment that sends none.
  */
-describe("guest-facing copy never promises an email the shop does not send", () => {
+describe("guest-facing copy never promises an email the shop may not send", () => {
   const GUEST_KEYS = [
     "web.guest_email_invalid",
     "web.guest_contact_title",

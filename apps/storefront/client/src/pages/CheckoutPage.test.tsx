@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import CheckoutPage from "./CheckoutPage";
 import { apiGet, apiPost } from "../api/client";
+import { readCodeEmailed } from "../lib/orderCodeEmailed";
 import type { AdditionalField, CheckoutData, PlaceOrderResponse, ShopContext } from "../api/types";
 
 vi.mock("../api/client", () => ({
@@ -482,8 +483,9 @@ describe("CheckoutPage", () => {
   describe("guest mode", () => {
     // The rendered `web.guest_email_invalid` string, named once so a copy
     // rewrite touches one line here instead of five. The wording itself is
-    // guarded in packages/core/src/locales.test.ts (it must never promise a
-    // confirmation email — guest checkout sends no mail).
+    // guarded in packages/core/src/locales.test.ts: checkout-time copy is
+    // written before anyone knows whether the order-code email will go out
+    // (SMTP is optional per deployment), so it must never promise an inbox.
     const GUEST_EMAIL_INVALID = "Enter a valid email address — it's how the shop reaches you about this order.";
 
     const guestData: CheckoutData = {
@@ -707,6 +709,71 @@ describe("CheckoutPage", () => {
         ).not.toBeInTheDocument(),
       );
       expect(email).not.toHaveAttribute("aria-invalid", "true");
+    });
+
+    // The server mails a guest their order code and reports whether the mail
+    // actually went out (`email_sent` — SMTP is optional per deployment). This
+    // page can render nothing about it: the success path is a full page load,
+    // so anything shown here is torn down before it can be read. It hands the
+    // fact to the destination instead, and PayPage.test.tsx covers the
+    // rendering. Only `true` may ever produce a promise of an email.
+    describe("order-code email notice handoff", () => {
+      interface FakeStorage {
+        getItem(key: string): string | null;
+        setItem(key: string, value: string): void;
+        removeItem(key: string): void;
+      }
+      function installStorage(): void {
+        const entries = new Map<string, string>();
+        const storage: FakeStorage = {
+          getItem: (key) => (entries.has(key) ? entries.get(key)! : null),
+          setItem: (key, value) => {
+            entries.set(key, value);
+          },
+          removeItem: (key) => {
+            entries.delete(key);
+          },
+        };
+        Object.defineProperty(window, "sessionStorage", { value: storage, configurable: true });
+      }
+
+      /** Place a guest order whose 201 carries `email_sent`, and report what
+       * the pay page would find waiting for it. */
+      async function placeGuestOrder(emailSent: boolean | undefined): Promise<string | null> {
+        installStorage();
+        const originalLocation = Object.getOwnPropertyDescriptor(window, "location");
+        Object.defineProperty(window, "location", { configurable: true, writable: true, value: { assign: vi.fn() } });
+        try {
+          renderCheckout(() => guestData);
+          await screen.findByRole("heading", { name: "Checkout" });
+          fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "guest@example.com" } });
+          (apiPost as Mock).mockResolvedValue({
+            order_code: "ORD902",
+            pay_url: "/checkout/ORD902/pay",
+            csrf_token: "guest-token",
+            ...(emailSent === undefined ? {} : { email_sent: emailSent }),
+          });
+          fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+          await waitFor(() => expect((window.location.assign as Mock).mock.calls.length).toBe(1));
+          return readCodeEmailed("ORD902");
+        } finally {
+          if (originalLocation) Object.defineProperty(window, "location", originalLocation);
+        }
+      }
+
+      it("hands the pay page the address when the server actually sent the mail", async () => {
+        expect(await placeGuestOrder(true)).toBe("guest@example.com");
+      });
+
+      it("hands over nothing when the server did not send the mail", async () => {
+        expect(await placeGuestOrder(false)).toBeNull();
+      });
+
+      it("hands over nothing when the response says nothing about mail at all", async () => {
+        // A signed-in 201 carries no `email_sent` key; neither may an older
+        // server. Absent is not "sent".
+        expect(await placeGuestOrder(undefined)).toBeNull();
+      });
     });
 
     it("never redirects an anonymous visitor to /login on a 401", async () => {

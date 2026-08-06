@@ -15,11 +15,15 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { Decimal } from "@app/core/money";
 import { config } from "@app/core/config";
+import { logger } from "@app/core/logger";
+import { sendMail } from "@app/core/mailer";
 import { ValidationError } from "@app/core/errors";
 import { DeliveryType, OrderCurrency } from "@app/core/enums";
 import {
   prisma,
   getCategoryBySlug,
+  getSetting,
+  getSmtpCreds,
   listActiveCategories,
   listCatalogProducts,
   getCatalogProductBySlugWithDenominations,
@@ -32,7 +36,14 @@ import {
 import type { Category, Denomination } from "@prisma/client";
 import { optionalCustomer, type Customer } from "../plugins/auth";
 import { productImage } from "../images";
-import { readGuestCart, writeGuestCart, CART_COOKIE, CART_COOKIE_VERSION, type GuestCartLine } from "../shop";
+import {
+  readGuestCart,
+  writeGuestCart,
+  publicBase,
+  CART_COOKIE,
+  CART_COOKIE_VERSION,
+  type GuestCartLine,
+} from "../shop";
 import { loadCartLines, loadGuestCartItems } from "./cart";
 import { performCheckout, performWalletCheckout } from "./checkout";
 import { establishSession } from "./auth";
@@ -212,6 +223,93 @@ function withGuestCsrf<T extends object>(body: T, isGuest: boolean, customer: Cu
   return isGuest ? { ...body, csrf_token: customer.csrf } : body;
 }
 
+/**
+ * How long the guest's `201` will wait on SMTP before giving up on the mail.
+ *
+ * The send IS awaited (see sendGuestOrderCodeEmail) — but nodemailer's own
+ * connection/greeting timeouts run into minutes, and by this point the order
+ * exists and the buyer is staring at a spinner on a page they are about to pay
+ * from. Past this cap we stop waiting, answer `email_sent: false`, and let the
+ * original send finish (or fail) in the background with its rejection already
+ * handled. Under-promising is safe here; making the buyer wait is not.
+ */
+const GUEST_ORDER_EMAIL_TIMEOUT_MS = 8_000;
+
+/**
+ * Mail a guest their order code, and report whether it actually went out.
+ *
+ * WHY THIS EXISTS: a guest's only two ways back into a paid order are the
+ * 30-day session cookie and `POST /api/v1/track` (order code + email). The code
+ * used to live on screen and nowhere else, so closing the tab and then losing
+ * the cookie — new device, private window, a browser clean-up — lost the order
+ * permanently. This is the durable second copy.
+ *
+ * WHY IT IS AWAITED: the `201` body carries `email_sent`, and the SPA only
+ * promises an email when that flag is true (SMTP is optional per deployment).
+ * A fire-and-forget send could only ever report "we tried", which is exactly
+ * the dishonest copy this feature was written to avoid. Awaiting is bounded by
+ * GUEST_ORDER_EMAIL_TIMEOUT_MS above, and EVERY failure below resolves to
+ * `false` — this function never throws, so the order can never fail because of
+ * mail.
+ *
+ * WHAT IT MAY CONTAIN: the order code and links, nothing else. Delivered
+ * product content and credentials NEVER go in here — email is unencrypted and
+ * sits in an inbox forever; the buyer reads what they bought on the order page.
+ */
+async function sendGuestOrderCodeEmail(req: FastifyRequest, to: string, orderCode: string): Promise<boolean> {
+  try {
+    const smtp = await getSmtpCreds(prisma);
+    // SMTP isn't configured on this deployment — the feature is simply off, and
+    // the SPA's copy falls back to pointing at the code on screen.
+    if (!smtp) return false;
+
+    const shopName = (await getSetting(prisma, "shop_name")) ?? "Toko Digital";
+    const base = publicBase(req);
+    const orderLink = `${base}/checkout/${orderCode}/pay`;
+    const trackLink = `${base}/track`;
+
+    // Bilingual in one body (English then Indonesian), same shape as the
+    // password-reset mail in apiAuth.ts — the shop serves both languages and an
+    // email has no session to read a language preference from.
+    const text =
+      `Your order code is:\n\n${orderCode}\n\n` +
+      `Open your order:\n${orderLink}\n\n` +
+      `Lost this browser, or on another device? Open it again with the code above and this email address:\n${trackLink}\n\n` +
+      `Keep this email — the order code is the only way back into this order. What you bought is never sent by email; you read it on the order page.\n\n` +
+      `--\n\n` +
+      `Kode pesanan kamu:\n\n${orderCode}\n\n` +
+      `Buka pesanan kamu:\n${orderLink}\n\n` +
+      `Browser ini hilang, atau kamu pindah perangkat? Buka lagi pakai kode di atas dan alamat email ini:\n${trackLink}\n\n` +
+      `Simpan email ini — kode pesanan adalah satu-satunya cara masuk kembali ke pesanan ini. Barang yang kamu beli tidak pernah dikirim lewat email; kamu membacanya di halaman pesanan.`;
+
+    const send = sendMail(smtp, { to, subject: `${shopName} — order code ${orderCode}`, text });
+    // Attached before the race so a rejection that lands AFTER the timeout is
+    // already handled and can never surface as an unhandled rejection.
+    const sent = send.then(
+      () => true,
+      (e: unknown) => {
+        logger.error(
+          { err: e, orderCode },
+          "Failed to email a guest buyer the code for their new order. They have no signal to retry, so unless they saved the code from the order page they will not be able to reopen this order after their session cookie expires.",
+        );
+        return false;
+      },
+    );
+    const timedOut = new Promise<boolean>((resolve) => {
+      setTimeout(() => resolve(false), GUEST_ORDER_EMAIL_TIMEOUT_MS).unref?.();
+    });
+    return await Promise.race([sent, timedOut]);
+  } catch (e) {
+    // Reading the SMTP settings failed — the order is already paid for and must
+    // not be held hostage by a settings read.
+    logger.error(
+      { err: e, orderCode },
+      "Could not prepare the order-code email for a guest buyer, so none was sent. The order itself is unaffected, but the buyer has only the code shown on screen.",
+    );
+    return false;
+  }
+}
+
 const apiRoutes: FastifyPluginAsync = async (app) => {
   // ---- 1. GET /categories ----
   app.get("/categories", async (_req, reply) => {
@@ -382,9 +480,28 @@ const apiRoutes: FastifyPluginAsync = async (app) => {
 
     try {
       const { orderCode } = await performCheckout(customer, method, voucherCode, req.body?.customer_data);
-      return reply
-        .code(201)
-        .send(withGuestCsrf({ order_code: orderCode, pay_url: `/checkout/${orderCode}/pay` }, isGuest, customer));
+
+      // Mail the recovery code to guests only — a registered buyer has an
+      // account and a "My orders" page, so mailing them would be a behaviour
+      // change outside this feature.
+      //
+      // Keyed on the BUYER'S ROW (`user.isGuest`), not on `isGuest` above.
+      // `isGuest` means "this request minted the session", which is the right
+      // question for the CSRF handoff but the wrong one here: the retry after a
+      // guest checkout that failed mid-flight arrives WITH the session the
+      // failed attempt minted, so it takes the signed-in branch — and that
+      // shopper, who has no account and no password, is precisely the one this
+      // email exists for. `setLoginCredentials` clears `isGuest`/`guestEmail`
+      // the moment a guest upgrades to a real account, so an upgraded row
+      // correctly stops receiving it.
+      const guestEmail = customer.user.isGuest ? customer.user.guestEmail : null;
+      const emailSent = guestEmail ? await sendGuestOrderCodeEmail(req, guestEmail, orderCode) : false;
+
+      const body = { order_code: orderCode, pay_url: `/checkout/${orderCode}/pay` };
+      // `email_sent` is added for guests only: the checked-in test for the
+      // signed-in 201 asserts that body is EXACTLY `{ order_code, pay_url }`,
+      // and a registered buyer has no use for a flag about mail they never get.
+      return reply.code(201).send(withGuestCsrf(guestEmail ? { ...body, email_sent: emailSent } : body, isGuest, customer));
     } catch (e) {
       if (e instanceof ValidationError) {
         return reply.code(400).send(withGuestCsrf({ error: e.key }, isGuest, customer));

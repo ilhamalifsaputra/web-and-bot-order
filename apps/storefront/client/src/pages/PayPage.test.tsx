@@ -5,6 +5,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import PayPage from "./PayPage";
 import { apiGet, apiPost } from "../api/client";
+import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import type { PayData, PayStatusData } from "../api/types";
 
 vi.mock("../api/client", () => ({
@@ -187,6 +188,72 @@ describe("PayPage", () => {
       throw err;
     });
     expect(await screen.findByText("404")).toBeInTheDocument();
+  });
+
+  // Guest checkout's order-code email (docs/PROJECT_ARCHITECTURE.md §Guest
+  // Checkout). CheckoutPage cannot show this itself — a successful guest
+  // checkout leaves the SPA via a full page load — so the notice lands here,
+  // beside the very code that was mailed, carried over by lib/orderCodeEmailed.
+  describe("guest order-code email notice", () => {
+    interface FakeStorage {
+      getItem(key: string): string | null;
+      setItem(key: string, value: string): void;
+      removeItem(key: string): void;
+    }
+    /** jsdom under this repo's Vitest config exposes no sessionStorage. */
+    function installStorage(): void {
+      const entries = new Map<string, string>();
+      const storage: FakeStorage = {
+        getItem: (key) => (entries.has(key) ? entries.get(key)! : null),
+        setItem: (key, value) => {
+          entries.set(key, value);
+        },
+        removeItem: (key) => {
+          entries.delete(key);
+        },
+      };
+      Object.defineProperty(window, "sessionStorage", { value: storage, configurable: true });
+    }
+
+    const NOTICE = /We've emailed this order code to guest@example\.com/;
+
+    beforeEach(() => {
+      installStorage();
+    });
+
+    it("names the address the code was emailed to when the mail actually went out", async () => {
+      rememberCodeEmailed("ORD1", "guest@example.com");
+      renderPay(respondFor({ ...basePay, state: "waiting", is_qris: true }));
+      await screen.findByRole("heading", { name: "Payment" });
+      expect(screen.getByText(NOTICE)).toBeInTheDocument();
+    });
+
+    it("promises nothing when no mail was sent (SMTP off, or a send that failed)", async () => {
+      // Nothing handed over — `email_sent: false` writes no entry at all.
+      renderPay(respondFor({ ...basePay, state: "waiting", is_qris: true }));
+      await screen.findByRole("heading", { name: "Payment" });
+      expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+      expect(screen.queryByText(/emailed/i)).not.toBeInTheDocument();
+    });
+
+    it("still says it after a refresh — it is a fact about the order, not a toast", async () => {
+      rememberCodeEmailed("ORD1", "guest@example.com");
+      const first = renderPay(respondFor({ ...basePay, state: "waiting", is_qris: true }));
+      await screen.findByRole("heading", { name: "Payment" });
+      expect(screen.getByText(NOTICE)).toBeInTheDocument();
+      first.unmount();
+
+      renderPay(respondFor({ ...basePay, state: "waiting", is_qris: true }));
+      await screen.findByRole("heading", { name: "Payment" });
+      expect(screen.getByText(NOTICE)).toBeInTheDocument();
+    });
+
+    it("never shows one order's notice on a different order's page", async () => {
+      rememberCodeEmailed("ORD1", "guest@example.com");
+      renderPay(respondFor({ ...basePay, order: { ...basePay.order, code: "ORD2" }, state: "waiting", is_qris: true }), "ORD2");
+      await screen.findByRole("heading", { name: "Payment" });
+      expect(screen.queryByText(NOTICE)).not.toBeInTheDocument();
+    });
   });
 
   it("renders stepper outside the max-w-2xl container (njk parity)", async () => {

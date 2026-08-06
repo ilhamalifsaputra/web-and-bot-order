@@ -34,6 +34,23 @@ export async function resolveBotToken(): Promise<string | undefined> {
   return v || undefined;
 }
 
+/**
+ * Absolute origin for links that leave the browser — the ones we put in an
+ * OUTGOING EMAIL, where a relative path has nothing to resolve against. The
+ * configured public URL wins; the request's own scheme+host is the fallback so
+ * a deployment that never set SHOP_PUBLIC_URL still mails a link that works.
+ *
+ * Deliberately different from `baseUrl()` in seo.ts / spaShell.ts / checkout.ts,
+ * which return `null` when nothing is configured: those callers can legitimately
+ * omit a canonical tag or refuse a gateway, while an email with no link in it is
+ * simply a broken email.
+ */
+export function publicBase(req: FastifyRequest): string {
+  const fromConfig = config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL;
+  if (fromConfig) return fromConfig.replace(/\/+$/, "");
+  return `${req.protocol}://${req.headers.host ?? "localhost"}`;
+}
+
 export const LANG_COOKIE = "shop_lang";
 /**
  * Guest cart cookie — VERSIONED at the catalog 3-tier cutover (Phase 3). Before

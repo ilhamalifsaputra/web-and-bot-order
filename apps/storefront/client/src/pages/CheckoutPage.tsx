@@ -39,6 +39,7 @@ import type { AdditionalField, CheckoutData, PlaceOrderResponse } from "../api/t
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { formatIdr, formatNativeUsdt } from "../lib/format";
+import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import EmptyState from "../components/shop/EmptyState";
@@ -413,6 +414,20 @@ export default function CheckoutPage() {
         guest_email: page?.is_guest ? guestEmail.trim() : undefined,
       }),
     onSuccess: (resp) => {
+      // The server mails a guest their order code and reports, in
+      // `email_sent`, whether the mail actually went out (SMTP is optional per
+      // deployment, and a send can fail). Strictly `=== true`: an absent flag
+      // is a signed-in 201, and the one thing this notice must never do is
+      // promise an email nobody received.
+      //
+      // It is HANDED OVER rather than rendered, because the guest success path
+      // below leaves the page entirely — anything rendered here would be torn
+      // down before it could be read. PayPage picks it up beside the very code
+      // that was mailed. The address travels through sessionStorage and not
+      // the URL: it is the buyer's email, and a query parameter would leak it
+      // into access logs, `Referer` headers, history and shared links.
+      if (resp.email_sent === true) rememberCodeEmailed(resp.order_code, guestEmail.trim());
+
       // Anyone checking out in guest mode leaves the SPA entirely, the way
       // LoginPage does, instead of routing client-side: the shell was rendered
       // for an anonymous visitor, so the account menu, cart ownership and the

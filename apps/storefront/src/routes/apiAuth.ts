@@ -10,8 +10,7 @@
  * The Telegram Login Widget callback stays a server-side GET (routes/auth.ts
  * /auth/telegram) — the widget redirects the whole page, not an XHR.
  */
-import type { FastifyPluginAsync, FastifyRequest } from "fastify";
-import { config } from "@app/core/config";
+import type { FastifyPluginAsync } from "fastify";
 import { logger } from "@app/core/logger";
 import { sendMail } from "@app/core/mailer";
 import { hashPassword, verifyPassword } from "@app/core/password";
@@ -39,16 +38,10 @@ import {
   resetAccountFailures,
   forgotEmailRateLimited,
 } from "../rateLimit";
-import { resolveBotUsername } from "../shop";
+import { publicBase, resolveBotUsername } from "../shop";
 import { establishSession, safeNext } from "./auth";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function publicBase(req: FastifyRequest): string {
-  const fromConfig = config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL;
-  if (fromConfig) return fromConfig.replace(/\/+$/, "");
-  return `${req.protocol}://${req.headers.host ?? "localhost"}`;
-}
 
 const apiAuthRoutes: FastifyPluginAsync = async (app) => {
   // ---- Telegram Login Widget parameters for the React login/settings pages ----

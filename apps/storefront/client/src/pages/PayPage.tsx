@@ -27,6 +27,7 @@ import {
   ChevronRight,
   Clock,
   Loader,
+  Mail,
   MessageCircle,
   RefreshCw,
   Send,
@@ -39,6 +40,7 @@ import { apiGet, apiPost } from "../api/client";
 import type { PayData, PayState, PayStatusData } from "../api/types";
 import { t } from "../lib/i18n";
 import { formatIdr } from "../lib/format";
+import { readCodeEmailed } from "../lib/orderCodeEmailed";
 import Stepper from "../components/shop/Stepper";
 import ErrorPage from "./ErrorPage";
 import Spinner from "../components/shop/Spinner";
@@ -189,6 +191,18 @@ export default function PayPage() {
 
   const countdownText = useCountdown(data?.order.expires_at_iso ?? null);
 
+  // "We emailed this code to <address>" — the guest order-code mail
+  // (routes/api.ts sendGuestOrderCodeEmail). The notice belongs HERE and not
+  // on the checkout page: a successful guest checkout leaves the SPA by full
+  // page load, so the only screen the buyer can actually read it on is this
+  // one, where the code it is about is already printed.
+  //
+  // `null` — SMTP not configured, a send that failed, a signed-in buyer, or
+  // simply arriving at this page any other way — renders nothing at all. The
+  // shop never promises an email it did not send; without one, the copy stands
+  // as it always has and points at the code on screen.
+  const emailedTo = code ? readCodeEmailed(code) : null;
+
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
     return null;
@@ -210,9 +224,19 @@ export default function PayPage() {
       <Stepper step={state === "delivered" ? 3 : 2} />
       <div className="max-w-2xl mx-auto">
         <h1 className="page-title text-2xl! mb-1">{t("web.pay_title")}</h1>
-      <p className="text-sm text-ink-soft mb-5">
+      <p className={emailedTo ? "text-sm text-ink-soft mb-2" : "text-sm text-ink-soft mb-5"}>
         {t("web.order_code")}: <span className="codeish">{order.code}</span>
       </p>
+
+      {/* Directly under the code it is about, so the sentence and its subject
+          are read together. Quiet by design — it is reassurance, not an action
+          competing with the payment instructions below it. */}
+      {emailedTo && (
+        <p className="mb-5 flex items-start gap-1.5 text-xs leading-relaxed text-ink-soft">
+          <Mail className="mt-0.5 w-3.5 h-3.5 shrink-0 text-grass" />
+          <span>{t("web.pay_code_emailed", { email: emailedTo })}</span>
+        </p>
+      )}
 
       <div id="pay-status" className="mb-5">
         <StatusStrip state={stripState} />

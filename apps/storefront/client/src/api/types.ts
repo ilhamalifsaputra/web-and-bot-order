@@ -267,6 +267,12 @@ export interface PlaceOrderResponse {
    * adopts this (see api/client.ts). Also present on the 4xx bodies of a
    * guest checkout that failed after the session was issued. */
   csrf_token?: string;
+  /** Guest checkouts only, and only ever `true` when the order-code email
+   * ACTUALLY went out — SMTP is optional per deployment, and a send can fail.
+   * A signed-in buyer's 201 omits the field entirely (they get no such mail).
+   * Absent must be read as "no mail", never as "probably sent": the UI's only
+   * job with this flag is to avoid promising an email nobody received. */
+  email_sent?: boolean;
 }
 
 /** 200 response of POST /api/v1/track — an order code + email pair that

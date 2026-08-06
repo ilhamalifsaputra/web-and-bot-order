@@ -34,5 +34,6 @@ export * from "./crud/admins";
 export * from "./crud/web_secret";
 export * from "./crud/setup";
 export * from "./crud/smtp";
+export * from "./crud/ownerEmail";
 export * from "./crud/integrity";
 export * from "./crud/storageMaintenance";

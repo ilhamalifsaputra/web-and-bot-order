@@ -70,6 +70,24 @@ async function makeFailedNotif(): Promise<number> {
   return row.id;
 }
 
+describe("GET /api/outbox", () => {
+  it("includes channel in every row, defaulting to TELEGRAM and passing EMAIL through unchanged", async () => {
+    await prisma.notificationOutbox.create({
+      data: { event: "ORDER_DELIVERED", payloadJson: JSON.stringify({ x: 1 }), status: "SENT" },
+    });
+    await prisma.notificationOutbox.create({
+      data: { event: "OWNER_EMAIL_NEW_TICKET", payloadJson: JSON.stringify({ to: "owner@example.com" }), status: "SENT", channel: "EMAIL" },
+    });
+    const res = await app.inject({ method: "GET", url: "/api/outbox", cookies: { [COOKIE]: cookie } });
+    expect(res.statusCode).toBe(200);
+    const rows = res.json().rows as { event: string; channel: string }[];
+    const telegramRow = rows.find((r) => r.event === "ORDER_DELIVERED");
+    const emailRow = rows.find((r) => r.event === "OWNER_EMAIL_NEW_TICKET");
+    expect(telegramRow?.channel).toBe("TELEGRAM");
+    expect(emailRow?.channel).toBe("EMAIL");
+  });
+});
+
 describe("POST /api/outbox/:id/retry", () => {
   it("happy path: requeues a FAILED notification back to PENDING and audits", async () => {
     const id = await makeFailedNotif();

@@ -1,3 +1,16 @@
+// Mocked before any real import so no test in this file ever opens a real
+// SMTP connection — same pattern the storefront test suites use for
+// `@app/core/mailer` (e.g. apps/storefront/test/storefront.test.ts). vi.mock
+// calls are hoisted above imports by vitest regardless of source position, so
+// this doesn't disturb dispatcher.test-setup's requirement to run first: the
+// factory below is pure (no side effects, no eager import of the real
+// module), it only takes effect once "@app/core/mailer" is actually imported
+// further down. `vi` itself comes from the named-imports block below —
+// hoisted the same way, so it's already bound by the time this call runs.
+vi.mock("@app/core/mailer", () => ({
+  sendMail: vi.fn().mockResolvedValue(undefined),
+}));
+
 // dispatcher.test-setup MUST be first — temp DB + push before any @app import.
 import { cleanupTestDb } from "./dispatcher.test-setup";
 
@@ -28,9 +41,14 @@ import {
   updateDenomination,
   upsertUser,
   addAdminIdToDb,
+  setSetting,
+  SMTP_HOST_KEY,
+  SMTP_FROM_KEY,
 } from "@app/db";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
-import { NotificationEvent, OrderCurrency, DeliveryType } from "@app/core/enums";
+import { NotificationEvent, NotificationChannel, OrderCurrency, DeliveryType } from "@app/core/enums";
+import { config } from "@app/core/config";
+import { sendMail } from "@app/core/mailer";
 import { buildSampleData } from "../../../tests/helpers/sampleData";
 import { drainBatch } from "./dispatcher";
 
@@ -522,6 +540,198 @@ describe("PRODUCT_RESTOCKED_BROADCAST", () => {
       where: { event: NotificationEvent.PRODUCT_RESTOCKED_BROADCAST },
       orderBy: { id: "desc" },
     });
+    expect(row!.status).toBe("SENT");
+  });
+});
+
+/**
+ * Task 7: the dispatcher's EMAIL lane (owner-email-notifications feature).
+ * `row.channel === "EMAIL"` rows never touch `bot.api.sendMessage` — they go
+ * through `renderEmail`/`sendMail` instead. Rows are hand-crafted directly
+ * against the outbox table (same pattern the Outbox-1/M-10 describe blocks
+ * above use) rather than routed through the enqueueOwner*Email helpers, so
+ * each test doesn't also need to configure the owner-email master/per-event
+ * Settings toggles those helpers gate on — the dispatcher doesn't care how a
+ * row got there, only what's in it.
+ *
+ * Ordering matters within this block: the very first test relies on SMTP
+ * being unconfigured, which is only true before any later test in this file
+ * calls `setSetting` for smtp_host/smtp_from — those Settings persist for the
+ * rest of the file (this suite runs against one shared temp DB with no
+ * per-test reset, same as every other describe block here).
+ */
+describe("drainBatch EMAIL lane (owner email notifications)", () => {
+  afterEach(() => {
+    vi.mocked(sendMail).mockReset().mockResolvedValue(undefined);
+  });
+
+  it("leaves the row PENDING with a backoff nextRetryAt (never FAILED) when SMTP is unconfigured, and never calls sendMail", async () => {
+    await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.OWNER_EMAIL_NEW_TICKET,
+        channel: NotificationChannel.EMAIL,
+        orderId: null,
+        payloadJson: JSON.stringify({ to: "owner@example.com", ticket_id: 4001, message: "Need help with my order" }),
+      },
+    });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    expect(sendMail).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET, orderId: null },
+      orderBy: { id: "desc" },
+    });
+    expect(row!.status).toBe("PENDING");
+    expect(row!.status).not.toBe("FAILED");
+    expect(row!.nextRetryAt).not.toBeNull();
+    expect(row!.nextRetryAt!.getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("fails an EMAIL row at once (maxAttempts=1) when the event has no email template, without calling sendMail", async () => {
+    await prisma.notificationOutbox.create({
+      data: {
+        event: "OWNER_EMAIL_NOT_A_REAL_EVENT",
+        channel: NotificationChannel.EMAIL,
+        orderId: null,
+        payloadJson: JSON.stringify({ to: "owner@example.com" }),
+      },
+    });
+
+    const { bot } = fakeBot();
+    await drainBatch(bot);
+
+    expect(sendMail).not.toHaveBeenCalled();
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: "OWNER_EMAIL_NOT_A_REAL_EVENT" },
+      orderBy: { id: "desc" },
+    });
+    expect(row!.status).toBe("FAILED");
+    expect(row!.attempts).toBe(1);
+    expect(row!.lastError).toContain("no email template for event");
+  });
+
+  it("fails an EMAIL row at once (maxAttempts=1) when payload.to is missing, without calling sendMail", async () => {
+    await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.OWNER_EMAIL_NEW_TICKET,
+        channel: NotificationChannel.EMAIL,
+        orderId: null,
+        payloadJson: JSON.stringify({ ticket_id: 4002, message: "No recipient on this row" }),
+      },
+    });
+
+    const { bot } = fakeBot();
+    await drainBatch(bot);
+
+    expect(sendMail).not.toHaveBeenCalled();
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET, orderId: null, payloadJson: { contains: "4002" } },
+      orderBy: { id: "desc" },
+    });
+    expect(row!.status).toBe("FAILED");
+    expect(row!.attempts).toBe(1);
+    expect(row!.lastError).toContain("missing to address");
+  });
+
+  it("once SMTP is configured, sends a valid EMAIL row via sendMail with the rendered {to, subject, text} and marks it SENT, never touching bot.api.sendMessage", async () => {
+    await setSetting(prisma, SMTP_HOST_KEY, "smtp.test.invalid");
+    await setSetting(prisma, SMTP_FROM_KEY, "Shop <shop@test.invalid>");
+
+    await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.OWNER_EMAIL_ORDER_PAID,
+        channel: NotificationChannel.EMAIL,
+        orderId: null,
+        payloadJson: JSON.stringify({
+          to: "owner@example.com",
+          order_code: "ORD-EMAIL-1",
+          total: "10.00",
+          currency: "USDT",
+          item_count: 2,
+        }),
+      },
+    });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    const [, args] = vi.mocked(sendMail).mock.calls[0]!;
+    expect(args).toEqual({
+      to: "owner@example.com",
+      subject: "New paid order",
+      text: expect.stringContaining("ORD-EMAIL-1"),
+    });
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.OWNER_EMAIL_ORDER_PAID, orderId: null },
+      orderBy: { id: "desc" },
+    });
+    expect(row!.status).toBe("SENT");
+  });
+
+  it("marks an EMAIL row FAILED once sendMail failures reach NOTIF_MAX_ATTEMPTS, backing off between each attempt like the Telegram generic-failure path", async () => {
+    // SMTP is already configured by the previous test (persists — no
+    // per-test DB reset in this file).
+    vi.mocked(sendMail).mockRejectedValue(new Error("smtp connection refused"));
+
+    await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY,
+        channel: NotificationChannel.EMAIL,
+        orderId: null,
+        payloadJson: JSON.stringify({ to: "owner@example.com", ticket_id: 4003, message: "A reply that will fail to send" }),
+      },
+    });
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY, orderId: null },
+      orderBy: { id: "desc" },
+    });
+
+    const { bot } = fakeBot();
+    await drainBatch(bot);
+
+    const after1 = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+    expect(after1!.status).toBe("PENDING");
+    expect(after1!.attempts).toBe(1);
+    expect(after1!.nextRetryAt).not.toBeNull();
+
+    // Drive the remaining attempts by clearing the backoff window each time,
+    // same technique the Outbox-1 describe block above uses.
+    for (let i = 1; i < config.NOTIF_MAX_ATTEMPTS; i++) {
+      await prisma.notificationOutbox.update({
+        where: { id: row!.id },
+        data: { nextRetryAt: new Date(Date.now() - 1000) },
+      });
+      await drainBatch(bot);
+    }
+
+    const final = await prisma.notificationOutbox.findUnique({ where: { id: row!.id } });
+    expect(final!.status).toBe("FAILED");
+    expect(final!.attempts).toBe(config.NOTIF_MAX_ATTEMPTS);
+    expect(final!.lastError).toContain("smtp connection refused");
+  });
+
+  it("a TELEGRAM-channel row (schema default channel, no channel set) is unaffected by the EMAIL lane — still sent via bot.api.sendMessage, and sendMail is never called", async () => {
+    await enqueueAdminPasswordReset(prisma, { telegramId: 777888, code: "TG-STILL-WORKS", ttlMinutes: 10 });
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    const call = sendMessage.mock.calls.find((c) => c[0] === 777888);
+    expect(call).toBeDefined();
+    expect(sendMail).not.toHaveBeenCalled();
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: "ADMIN_PW_RESET", payloadJson: { contains: "TG-STILL-WORKS" } },
+      orderBy: { id: "desc" },
+    });
+    expect(row!.channel).toBe("TELEGRAM");
     expect(row!.status).toBe("SENT");
   });
 });

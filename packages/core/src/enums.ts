@@ -341,10 +341,53 @@ export const NotificationEvent = {
   // `chat_id` (the admin's telegram id) plus order_code/gateway/trx_id, same
   // fan-out-per-admin shape as ADMIN_OVERPAID.
   ADMIN_STALE_PAYMENT: "ADMIN_STALE_PAYMENT",
+  // EMAIL-channel event (channel=EMAIL, not a Telegram DM): the shop owner,
+  // at the single `owner_email` address configured in Settings — receives
+  // this when an AUTO-delivery order is paid (settlePaidOrder's AUTO branch,
+  // beside approveOrder). payload carries `to` (the resolved owner address)
+  // plus order_code/total/currency for the email body, NOT `chat_id`. Gated
+  // by resolveOwnerEmailRecipient: the master toggle, the per-event toggle,
+  // and a valid address must all be set, or nothing is enqueued.
+  OWNER_EMAIL_ORDER_PAID: "OWNER_EMAIL_ORDER_PAID",
+  // EMAIL-channel event (channel=EMAIL, not a Telegram DM): the shop owner
+  // receives this when a paid order routes to the hand-fulfilment queue
+  // (settlePaidOrder's MANUAL branch, beside enqueueManualOrderAdminAlert) —
+  // same trigger as ADMIN_MANUAL_ORDER_QUEUED, but a distinct event so the
+  // Telegram render() if-chain and the email renderer never need to handle
+  // each other's payload shape. payload carries `to` plus
+  // order_code/items/total/currency, NOT `chat_id`. Gated by
+  // resolveOwnerEmailRecipient, same as OWNER_EMAIL_ORDER_PAID.
+  OWNER_EMAIL_MANUAL_ORDER_QUEUED: "OWNER_EMAIL_MANUAL_ORDER_QUEUED",
+  // EMAIL-channel event (channel=EMAIL, not a Telegram DM): the shop owner
+  // receives this when a new SupportTicket is created — from either the
+  // storefront (apiAccount.ts) or the bot (conversations/support.ts), both
+  // routed through the single createTicket CRUD helper so no call site can
+  // skip it. payload carries `to` plus ticket subject/category and the
+  // opening message, NOT `chat_id`. Gated by resolveOwnerEmailRecipient.
+  OWNER_EMAIL_NEW_TICKET: "OWNER_EMAIL_NEW_TICKET",
+  // EMAIL-channel event (channel=EMAIL, not a Telegram DM): the shop owner
+  // receives this when a customer (SenderType.USER, never ADMIN) replies to
+  // an existing ticket via addTicketMessage — an admin's own reply must
+  // never trigger this. payload carries `to` plus ticket subject and the
+  // reply body, NOT `chat_id`. Gated by resolveOwnerEmailRecipient.
+  OWNER_EMAIL_TICKET_REPLY: "OWNER_EMAIL_TICKET_REPLY",
 } as const;
 export type NotificationEvent =
   (typeof NotificationEvent)[keyof typeof NotificationEvent];
 export const zNotificationEvent = z.nativeEnum(NotificationEvent);
+
+/** Transport for a NotificationOutbox row — notification_outbox.channel.
+ * Explicit row data rather than inferred from the event name (see
+ * NotificationEvent's OWNER_EMAIL_* entries and the dispatcher's
+ * ADMIN_DM_EVENTS set, which only ever distinguished Telegram DM from
+ * channel post). Defaults to TELEGRAM at the schema level. */
+export const NotificationChannel = {
+  TELEGRAM: "TELEGRAM",
+  EMAIL: "EMAIL",
+} as const;
+export type NotificationChannel =
+  (typeof NotificationChannel)[keyof typeof NotificationChannel];
+export const zNotificationChannel = z.nativeEnum(NotificationChannel);
 
 export const NotificationStatus = {
   PENDING: "PENDING",

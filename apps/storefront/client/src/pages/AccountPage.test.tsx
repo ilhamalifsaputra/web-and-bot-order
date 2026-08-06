@@ -3,7 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vite
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import AccountPage from "./AccountPage";
+import AccountPage, { guestMenuGroups, type MenuGroup } from "./AccountPage";
 import { apiGet, apiPost } from "../api/client";
 import type { AccountData } from "../api/types";
 
@@ -187,6 +187,33 @@ describe("AccountPage", () => {
       await screen.findByRole("heading", { name: "My account" });
       expect(screen.getByRole("button", { name: /Sign out/ })).toBeInTheDocument();
       expect(screen.getByText(/you'll need your order code and email to get back in/)).toBeInTheDocument();
+    });
+
+    // The guest menu used to be built by filtering MENU_GROUPS[0], which only
+    // works while Orders happens to live in the first group. Moving it — a
+    // plausible reshuffle of an account menu — would have left a guest with an
+    // empty nav and no way to reach the one thing they have, silently.
+    describe("guestMenuGroups is position-independent", () => {
+      const item = (href: string) => ({ href, icon: (() => null) as never, labelKey: href, descriptionKey: href });
+
+      it("finds the orders destination wherever its group sits", () => {
+        const reshuffled: MenuGroup[] = [
+          { headingKey: "web.account_group_help", items: [item("/account/support")] },
+          { headingKey: "web.account_group_profile", items: [item("/account/settings")] },
+          { headingKey: "web.account_group_orders", items: [item("/account/orders"), item("/account/reviews")] },
+        ];
+        const result = guestMenuGroups(reshuffled);
+        expect(result.flatMap((g) => g.items.map((i) => i.href))).toEqual(["/account/orders"]);
+        expect(result.map((g) => g.headingKey)).toEqual(["web.account_group_orders"]);
+      });
+
+      it("drops groups that keep nothing rather than rendering an empty heading", () => {
+        const groups: MenuGroup[] = [
+          { headingKey: "web.account_group_orders", items: [item("/account/orders")] },
+          { headingKey: "web.account_group_help", items: [item("/account/support")] },
+        ];
+        expect(guestMenuGroups(groups)).toHaveLength(1);
+      });
     });
   });
 });

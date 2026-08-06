@@ -32,7 +32,7 @@
  */
 import { useEffect, useState, type ReactNode, type KeyboardEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ChevronRight, ShoppingCart, Wallet } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { AdditionalField, CheckoutData, PlaceOrderResponse } from "../api/types";
@@ -338,6 +338,7 @@ function GuestContactCard({
 
 export default function CheckoutPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { data: ctx } = useShopContext();
   // Decides which of the two submit controls exists — see the sticky bar below.
   const isDesktop = useIsDesktop();
@@ -412,16 +413,37 @@ export default function CheckoutPage() {
         guest_email: page?.is_guest ? guestEmail.trim() : undefined,
       }),
     onSuccess: (resp) => {
-      // A `csrf_token` in the response means this request MINTED a session
-      // (guest checkout). The whole shell has to be re-rendered for the app to
-      // see it — account menu, cart ownership, the CSRF meta tag — so leave
-      // the SPA the way LoginPage does rather than route client-side. A
-      // signed-in buyer gets no token and keeps the instant client-side
-      // navigation they have today.
-      if (resp.csrf_token) window.location.assign(resp.pay_url);
+      // Anyone checking out in guest mode leaves the SPA entirely, the way
+      // LoginPage does, instead of routing client-side: the shell was rendered
+      // for an anonymous visitor, so the account menu, cart ownership and the
+      // CSRF meta tag are all wrong until it is re-served.
+      //
+      // `page.is_guest` and not just `resp.csrf_token`: the token comes back
+      // only on the request that MINTS the session. On a retry (a first
+      // attempt that failed after minting) the server takes its signed-in
+      // branch and sends none, so keying on the token alone left the shopper
+      // navigating client-side under a shell that still offered "Sign in".
+      //
+      // A genuinely signed-in buyer matches neither condition and keeps the
+      // instant client-side navigation they have today.
+      if (resp.csrf_token || page?.is_guest) window.location.assign(resp.pay_url);
       else navigate(resp.pay_url);
     },
-    onError: (err) => setPlaceOrderErrorKey((err as Error).message),
+    onError: (err) => {
+      setPlaceOrderErrorKey((err as Error).message);
+      // Guest checkout establishes the session BEFORE it tries to place the
+      // order, and establishing it migrates the cookie cart into CartItem rows
+      // and clears the cookie (routes/auth.ts establishSession). That ordering
+      // is deliberate — performCheckout reads the cart from the database — but
+      // it means a failure here leaves the cached /pages/context describing a
+      // visitor who no longer exists: anonymous, with a cookie-counted cart of
+      // zero. The header would offer "Sign in" and the cart badge would read 0
+      // while a live session and a full server-side cart sat behind them.
+      // Re-reading the context fixes both without disturbing that ordering.
+      // Signed-in buyers minted nothing and moved nothing, so they skip the
+      // extra request.
+      if (page?.is_guest) void queryClient.invalidateQueries({ queryKey: ["context"] });
+    },
   });
 
   // Nothing loaded yet, and nothing went wrong: a placeholder shaped like the

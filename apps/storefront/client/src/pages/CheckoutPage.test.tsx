@@ -554,6 +554,69 @@ describe("CheckoutPage", () => {
       }
     });
 
+    it("still full-reloads on a RETRY, where the response carries no csrf_token", async () => {
+      // The retry after a failed guest checkout takes the server's signed-in
+      // branch (the first attempt already minted the session), so no
+      // `csrf_token` comes back. Keying the reload on that field alone left
+      // the shopper on a client-side navigation with the shell still rendered
+      // from the anonymous page load — header saying "Sign in" while a live
+      // session sat in the cookie jar. `page.is_guest` is the durable signal.
+      const assign = vi.fn();
+      const originalLocation = Object.getOwnPropertyDescriptor(window, "location");
+      Object.defineProperty(window, "location", { configurable: true, writable: true, value: { assign } });
+      try {
+        renderCheckout(() => guestData);
+        await screen.findByRole("heading", { name: "Checkout" });
+        fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "guest@example.com" } });
+
+        (apiPost as Mock).mockResolvedValue({ order_code: "ORD901", pay_url: "/checkout/ORD901/pay" });
+        fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+
+        await waitFor(() => expect(assign).toHaveBeenCalledWith("/checkout/ORD901/pay"));
+        // Not a client-side route change: the stub for that path must not render.
+        expect(screen.queryByText("pay-page-stub")).not.toBeInTheDocument();
+      } finally {
+        if (originalLocation) Object.defineProperty(window, "location", originalLocation);
+      }
+    });
+
+    it("refreshes the shop context after a FAILED guest attempt, so the header and cart badge catch up", async () => {
+      // Guest checkout mints the session before it tries to place the order,
+      // and establishing it migrates the cookie cart into CartItem rows and
+      // clears the cookie. When the order then fails, the cached
+      // /pages/context still describes an anonymous visitor with a
+      // cookie-counted cart — header on "Sign in", badge on 0 — even though
+      // the buyer now holds a live session and a full server-side cart.
+      // Invalidating the query re-reads both from the server.
+      renderCheckout(() => guestData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      const contextCallsBefore = (apiGet as Mock).mock.calls.filter((c) => c[0] === "/api/v1/pages/context").length;
+
+      fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "guest@example.com" } });
+      (apiPost as Mock).mockRejectedValue(new Error("/api/v1/checkout responded 500"));
+      fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+
+      await waitFor(() => {
+        const after = (apiGet as Mock).mock.calls.filter((c) => c[0] === "/api/v1/pages/context").length;
+        expect(after).toBeGreaterThan(contextCallsBefore);
+      });
+    });
+
+    it("does not refresh the shop context when a SIGNED-IN buyer's order fails", async () => {
+      // No session was minted and no cart moved, so there is nothing stale to
+      // re-read — a refetch here would just be an extra request per failure.
+      renderCheckout(() => checkoutData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      const contextCallsBefore = (apiGet as Mock).mock.calls.filter((c) => c[0] === "/api/v1/pages/context").length;
+
+      (apiPost as Mock).mockRejectedValue(new Error("/api/v1/checkout responded 500"));
+      fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
+
+      await screen.findByText("Something went wrong. Please try again.");
+      const after = (apiGet as Mock).mock.calls.filter((c) => c[0] === "/api/v1/pages/context").length;
+      expect(after).toBe(contextCallsBefore);
+    });
+
     it("keeps the buyer on the page with a readable message when the server rejects the email", async () => {
       renderCheckout(() => guestData);
       await screen.findByRole("heading", { name: "Checkout" });

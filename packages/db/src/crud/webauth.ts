@@ -136,15 +136,51 @@ export function findUserByLoginIdentifier(db: Db, identifier: string) {
   });
 }
 
+/**
+ * Set a user's login identity fields. Also the one place a guest row stops
+ * being a guest row.
+ *
+ * **Security — the guest-marker clearing is load-bearing.** `POST
+ * /api/v1/track` mints a full session from (order code + `guestEmail`) with no
+ * password involved, gated only on `isGuest`. That trade is only acceptable
+ * while the account has no password to bypass: a guest's contact address IS
+ * their whole identity. The moment a password exists, the same shortcut would
+ * let anyone holding the order code and the old contact address walk past that
+ * password AND rotate the real owner's session out (establishSession rotates
+ * the jti).
+ *
+ * Both routes that can give an account its first password land here — the
+ * storefront's `POST /api/v1/account/settings/credentials` (which skips the
+ * current-password re-auth precisely because `passwordHash` is still null) and
+ * `POST /api/v1/auth/reset` — so clearing the markers here closes the gap for
+ * both at once rather than in each caller.
+ *
+ * Keyed on `passwordHash`, not on any credential change: a guest who fills in
+ * only a username or email still cannot sign in (login requires a
+ * `passwordHash`), so `/track` remains their only route back to their own
+ * order and clearing `isGuest` there would lock them out for nothing.
+ *
+ * `guestEmail` is nulled alongside `isGuest` rather than kept: once `isGuest`
+ * is false every reader of the field (channelMaskedBuyerId, customerLabel, the
+ * admin order pages) already ignores it, so leaving it would only preserve a
+ * stale contact address that the admin order search can still match — an
+ * address the buyer has, by upgrading, replaced with `User.email`.
+ */
 export async function setLoginCredentials(
   db: Db,
   userId: number,
   args: { loginUsername?: string; email?: string; passwordHash?: string },
 ) {
-  const data: Record<string, string> = {};
+  const data: Record<string, string | boolean | null> = {};
   if (args.loginUsername !== undefined) data.loginUsername = args.loginUsername.toLowerCase();
   if (args.email !== undefined) data.email = args.email.toLowerCase();
-  if (args.passwordHash !== undefined) data.passwordHash = args.passwordHash;
+  if (args.passwordHash !== undefined) {
+    data.passwordHash = args.passwordHash;
+    // Idempotent for an account that was never a guest: both fields already
+    // hold exactly these values there.
+    data.isGuest = false;
+    data.guestEmail = null;
+  }
   if (Object.keys(data).length === 0) return;
   try {
     await db.user.update({ where: { id: userId }, data });

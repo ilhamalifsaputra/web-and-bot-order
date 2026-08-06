@@ -54,8 +54,12 @@ async function makeUser(username: string, password: string, refCode: string): Pr
   return u.id;
 }
 
-/** Creates a guest order via POST /api/v1/checkout and returns its code. */
-async function makeGuestOrder(email: string): Promise<string> {
+/**
+ * Creates a guest order via POST /api/v1/checkout. Returns the order code
+ * plus the session the checkout minted mid-request (cookie + the `csrf_token`
+ * the 201 hands back), which is what a real guest browser walks away with.
+ */
+async function makeGuestCheckout(email: string): Promise<{ orderCode: string; cookie: string; csrf: string }> {
   const res = await app.inject({
     method: "POST",
     url: "/api/v1/checkout",
@@ -63,7 +67,15 @@ async function makeGuestOrder(email: string): Promise<string> {
     payload: { method: "bybit", guest_email: email },
   });
   expect(res.statusCode).toBe(201);
-  return res.json().order_code;
+  const setCookies = res.headers["set-cookie"];
+  const cookies = Array.isArray(setCookies) ? setCookies : [String(setCookies)];
+  const cookie = cookies.find((c) => c.startsWith(`${SHOP_COOKIE_NAME}=`))!.split(";")[0]!;
+  return { orderCode: res.json().order_code, cookie, csrf: res.json().csrf_token };
+}
+
+/** Creates a guest order via POST /api/v1/checkout and returns its code. */
+async function makeGuestOrder(email: string): Promise<string> {
+  return (await makeGuestCheckout(email)).orderCode;
 }
 
 /** Creates an order owned by a REGISTERED (non-guest) account and returns its code. */
@@ -244,13 +256,62 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
     }
   });
 
-  it("an UPGRADED former-guest account (isGuest: false, but guestEmail still set) is refused — pins the isGuest guard itself", async () => {
-    // prisma/schema.prisma documents that a guest User row "can be upgraded
-    // to a full account later (set false)". After that upgrade the row has
-    // isGuest: false AND a non-null guestEmail (the old guest contact email
-    // lingers) AND a real loginUsername/passwordHash. That state must still
-    // be refused: by then the buyer has a password, so opening the order via
-    // code + the old guestEmail would bypass it entirely.
+  it("THE attack: a guest who sets a password can no longer be session-rotated via order code + old guest email", async () => {
+    // Reachable end-to-end, no hand-built DB state. /account/settings is a
+    // registered route in the SPA (only the account-menu LINK is hidden for
+    // guests), and POST /account/settings/credentials skips the
+    // current-password re-auth while passwordHash is null — so a guest can
+    // walk in and turn their synthetic row into a password-protected
+    // account. Before the fix, setLoginCredentials left `isGuest: true` and
+    // `guestEmail` in place, so /track still opened that now-protected
+    // account from (order code + the old guest address) and rotated the
+    // owner's live session out. This test walks exactly that path.
+    const guestEmail = "attack.upgrade@example.com";
+    const { orderCode, cookie, csrf } = await makeGuestCheckout(guestEmail);
+
+    const upgrade = await app.inject({
+      method: "POST",
+      url: "/api/v1/account/settings/credentials",
+      headers: { cookie, "x-csrf-token": csrf },
+      payload: {
+        username: "attackupgrade",
+        email: "attack.upgrade.real@example.com",
+        new_password: "a-real-password-1",
+      },
+    });
+    expect(upgrade.statusCode).toBe(200);
+    expect(upgrade.json().password_changed).toBe(true);
+
+    // Sanity: the account really is password-protected now.
+    const upgraded = (await prisma.user.findFirst({ where: { loginUsername: "attackupgrade" } }))!;
+    expect(upgraded.passwordHash).not.toBeNull();
+
+    const baseline = await app.inject({
+      method: "POST",
+      url: "/api/v1/track",
+      headers: { "x-forwarded-for": freshIp() },
+      payload: { order_code: await makeGuestOrder("attack.baseline@example.com"), email: "nope@example.com" },
+    });
+    expect(baseline.statusCode).toBe(404);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/track",
+      headers: { "x-forwarded-for": freshIp() },
+      payload: { order_code: orderCode, email: guestEmail },
+    });
+
+    expect(res.statusCode).toBe(baseline.statusCode);
+    expect(res.body).toBe(baseline.body);
+    expect(res.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it("a synthetic isGuest:false-with-guestEmail row is refused — pins the isGuest guard itself", async () => {
+    // Defence in depth. setLoginCredentials now nulls `guestEmail` alongside
+    // `isGuest` on upgrade, so this exact combination is no longer produced
+    // by any code path — but the row shape is still writable (a migration, a
+    // future importer, a manual DB fix), and the `isGuest` guard in
+    // apiTrack.ts is the only thing that refuses it.
     //
     // This is NOT redundant with "an order owned by a REGISTERED account"
     // above: that helper (makeAccountOrder) never sets guestEmail, so that

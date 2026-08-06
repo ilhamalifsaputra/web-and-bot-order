@@ -146,6 +146,62 @@ describe("setLoginCredentials", () => {
       setLoginCredentials(prisma, a.id, { loginUsername: "beta" }),
     ).rejects.toThrowError(/web.register_username_taken/);
   });
+
+  it("clears the guest markers when a guest row is given a password", async () => {
+    // The security property behind POST /api/v1/track: that endpoint mints a
+    // full session from (order code + guestEmail) alone, gated only on
+    // `isGuest`. The moment a guest sets a password, the account is
+    // password-protected and that shortcut must stop working — otherwise the
+    // password they just chose is bypassable by anyone holding the order code
+    // and the old contact address.
+    const guest = await createGuestUser(prisma, { email: "upgrade-me@mail.com" });
+    await setLoginCredentials(prisma, guest.id, {
+      loginUsername: "upgrademe",
+      email: "upgrade-me@mail.com",
+      passwordHash: "hashed",
+    });
+    const row = (await prisma.user.findUnique({ where: { id: guest.id } }))!;
+    expect(row.isGuest).toBe(false);
+    expect(row.guestEmail).toBeNull();
+    expect(row.passwordHash).toBe("hashed");
+    expect(row.loginUsername).toBe("upgrademe");
+  });
+
+  it("clears the guest markers on a password-only change (the password-reset path)", async () => {
+    // POST /api/v1/auth/reset also lands here with just a passwordHash
+    // (routes/apiAuth.ts). Same conclusion: a row with a password is no
+    // longer a guest row.
+    const guest = await createGuestUser(prisma, { email: "reset-me@mail.com" });
+    await setLoginCredentials(prisma, guest.id, { passwordHash: "hashed2" });
+    const row = (await prisma.user.findUnique({ where: { id: guest.id } }))!;
+    expect(row.isGuest).toBe(false);
+    expect(row.guestEmail).toBeNull();
+  });
+
+  it("leaves the guest markers alone when no password is set", async () => {
+    // A guest who fills in only a username/email still has no way to sign in
+    // (login requires a passwordHash), so /track is still their ONLY route
+    // back into their own order. Clearing `isGuest` here would lock them out
+    // of it for nothing.
+    const guest = await createGuestUser(prisma, { email: "half-upgrade@mail.com" });
+    await setLoginCredentials(prisma, guest.id, { loginUsername: "halfupgrade" });
+    const row = (await prisma.user.findUnique({ where: { id: guest.id } }))!;
+    expect(row.isGuest).toBe(true);
+    expect(row.guestEmail).toBe("half-upgrade@mail.com");
+  });
+
+  it("does not touch isGuest/guestEmail of a normal registered account", async () => {
+    const u = await createWebUser(prisma, {
+      loginUsername: "normalpw",
+      email: "normalpw@a.a",
+      passwordHash: "x",
+      fullName: "Normal Pw",
+    });
+    await setLoginCredentials(prisma, u.id, { passwordHash: "y" });
+    const row = (await prisma.user.findUnique({ where: { id: u.id } }))!;
+    expect(row.isGuest).toBe(false);
+    expect(row.guestEmail).toBeNull();
+  });
 });
 
 describe("linkTelegram", () => {

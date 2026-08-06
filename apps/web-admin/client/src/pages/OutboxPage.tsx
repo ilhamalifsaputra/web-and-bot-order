@@ -19,9 +19,15 @@ import { toast } from "sonner";
 import { apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 
-/** All 11 NotificationEvent values from packages/core/src/enums.ts. Mirrors
- * AuditPage.tsx's ACTION_LABELS pattern: unknown/future values fall back to
- * humanizeEventCode() instead of showing the raw enum. */
+/** NotificationEvent values from packages/core/src/enums.ts, labeled
+ * explicitly here (pre-existing Telegram events plus the 4 EMAIL-channel
+ * owner-notification events added alongside owner email notifications).
+ * Mirrors AuditPage.tsx's ACTION_LABELS pattern: unknown/future values
+ * (including any pre-existing event not yet added here) fall back to
+ * humanizeEventCode() instead of showing the raw enum — still readable,
+ * just not an explicit label. The "Owner email: ..." prefix keeps the four
+ * EMAIL-channel events visually distinguishable from the Telegram-oriented
+ * labels at a glance. */
 const EVENT_LABELS: Record<string, string> = {
   ORDER_DELIVERED: "Order delivered",
   ADMIN_OVERPAID: "Admin overpaid alert",
@@ -34,6 +40,11 @@ const EVENT_LABELS: Record<string, string> = {
   FLASH_SALE_BROADCAST: "Flash sale broadcast",
   ADMIN_MANUAL_ORDER_QUEUED: "Manual order queued",
   BULK_PURCHASE_BROADCAST: "Bulk purchase broadcast",
+  ADMIN_STALE_PAYMENT: "Admin stale payment alert",
+  OWNER_EMAIL_ORDER_PAID: "Owner email: order paid",
+  OWNER_EMAIL_MANUAL_ORDER_QUEUED: "Owner email: manual order queued",
+  OWNER_EMAIL_NEW_TICKET: "Owner email: new ticket",
+  OWNER_EMAIL_TICKET_REPLY: "Owner email: ticket reply",
 };
 
 function humanizeEventCode(event: string): string {
@@ -48,10 +59,30 @@ function eventLabel(event: string): string {
   return EVENT_LABELS[event] ?? humanizeEventCode(event);
 }
 
+/** Two-value transport badge (TELEGRAM | EMAIL, see NotificationOutbox.channel).
+ * Deliberately a plain inline span rather than an extension of `StatusBadge` —
+ * that component's TONE map is keyed by status vocabulary (SENT/FAILED/...),
+ * and folding an unrelated two-value dimension into it would blur what each
+ * color means there. Follows the same pill styling as `StatusBadge` and
+ * `PaymentMethodBadge`: EMAIL gets the `pine` accent (unused by StatusBadge's
+ * success/warning/danger palette, so it reads as a distinct "channel" cue
+ * rather than a status), TELEGRAM stays the neutral `sand` tone since it's
+ * the long-standing default transport. */
+function ChannelBadge({ channel }: { channel: string }) {
+  const isEmail = channel === "EMAIL";
+  const cls = isEmail ? "bg-pine-tint text-pine-dark" : "bg-sand text-ink-soft";
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold ${cls}`}>
+      {isEmail ? "Email" : "Telegram"}
+    </span>
+  );
+}
+
 interface OutboxRow {
   id: number;
   event: string;
   orderId: number | null;
+  channel: string;
   status: string;
   attempts: number;
   lastError: string | null;
@@ -147,6 +178,7 @@ export function OutboxPage() {
             columns={[
               { key: "id", header: "ID", render: (row) => <span className="font-mono text-xs text-ink-soft">{row.id}</span> },
               { key: "event", header: "Event", render: (row) => <span className="text-ink" title={row.event}>{eventLabel(row.event)}</span> },
+              { key: "channel", header: "Channel", render: (row) => <ChannelBadge channel={row.channel} /> },
               { key: "status", header: "Status", render: (row) => <StatusBadge status={row.status} /> },
               { key: "attempts", header: "Attempts", render: (row) => <span className="text-ink-soft">{row.attempts}</span> },
               { key: "created", header: "Created", render: (row) => <span className="whitespace-nowrap text-ink-soft">{row.createdAtDisplay ?? "—"}</span> },

@@ -14,6 +14,7 @@ panel & storefront hanya menulis baris ke tabel ini; bot/dispatcher
 | Kolom | Tipe | Fungsi |
 |---|---|---|
 | `event` | string | `ORDER_DELIVERED`, `ORDER_DELIVERED_DM`, `ADMIN_OVERPAID`, `ADMIN_PW_RESET` |
+| `channel` | string | `TELEGRAM` (default) atau `EMAIL` — menentukan jalur mana yang diambil dispatcher (lihat "Jalur email" di bawah) |
 | `payloadJson` | string (JSON) | Data event — **tidak pernah** berisi kredensial (dibaca live dari DB saat kirim) |
 | `orderId` | int? | Tautan ke order (null untuk `ADMIN_PW_RESET`) |
 | `status` | string | `PENDING` → `SENDING` → `SENT`/`FAILED` |
@@ -103,6 +104,40 @@ proses satu per satu:
    → `releaseNotificationClaim` (balik `PENDING` tanpa hitung attempt) —
    baris menunggu sampai admin set channel, bukan gagal permanen.
 
+## Jalur email (`channel = EMAIL`)
+
+Di `drainBatch`, baris dengan `channel === "EMAIL"` dicabang **sebelum**
+jalur `render()`/Telegram di atas — baris email tidak pernah MEMICU bailout
+rate-limit Telegram. Tapi isolasinya cuma satu arah: kalau baris Telegram
+yang kena flood control muncul lebih dulu dalam batch (maks 50 baris) yang
+sama, baris email sesudahnya tetap ikut tertunda satu tick karena bailout
+itu `return` dari seluruh `drainBatch`, bukan `continue` per baris.
+
+Jalur ini mengirim notifikasi ke **pemilik toko** (bukan customer), untuk
+empat event: order terbayar (`OWNER_EMAIL_ORDER_PAID`), order terbayar yang
+masuk antrian kirim manual (`OWNER_EMAIL_MANUAL_ORDER_QUEUED`), tiket support
+baru (`OWNER_EMAIL_NEW_TICKET`), dan balasan customer di tiket
+(`OWNER_EMAIL_TICKET_REPLY`). Semua digerbangi oleh
+`resolveOwnerEmailRecipient` (`packages/db/src/crud/ownerEmail.ts`) —
+master toggle, toggle per-event, dan alamat `owner_email` yang valid harus
+semuanya terpenuhi, atau baris ini sama sekali tidak pernah dibuat.
+
+Isi email dirender oleh `renderEmail(event, payload)`
+(`packages/outbox-dispatcher/src/emailTemplates.ts`), dikirim lewat
+`sendMail()` (`packages/core/src/mailer.ts`) memakai kredensial SMTP dari
+`getSmtpCreds()`. Jika SMTP **belum dikonfigurasi**, baris **dilepas dengan
+backoff** (`releaseNotificationClaimWithBackoff`), bukan langsung `FAILED` —
+persis seperti channel post tanpa `PUBLIC_CHANNEL_ID` di atas: ini
+kesalahan konfigurasi toko, bukan kesalahan baris ini, jadi email tetap
+terkirim begitu admin mengisi SMTP, alih-alih gagal permanen.
+
+**Aturan subjek email: kode order tidak boleh muncul di subjek.** `sendMail`
+mencatat (log) setiap subjek yang dikirim, dan kode order adalah separuh dari
+kredensial guest `/track`. Karena itu subjek email selalu generik (mis. "New
+paid order", "New support ticket") — kode order dan detail tiket hanya ada
+di body, tidak pernah di subjek. Diverifikasi lewat test
+(`emailTemplates.test.ts`).
+
 ## Penanganan error per jenis
 
 | Kondisi | Aksi |
@@ -111,6 +146,8 @@ proses satu per satu:
 | `GrammyError` dengan `retry_after` (flood control Telegram) | `sleep(retry_after+1)`, `releaseNotificationClaim` (BUKAN dihitung gagal — transient, bukan salah baris ini), **bailout tick** (baris sisanya tunggu tick berikutnya) |
 | `GrammyError` 403 Forbidden (bot diblokir/bukan admin channel) | `markNotificationFailed` dengan `maxAttempts=1` — langsung `FAILED`, retry tidak akan membantu |
 | Error lain | `markNotificationFailed` dengan `config.NOTIF_MAX_ATTEMPTS` (default 5) — backoff eksponensial sampai mencapai limit |
+| (Jalur email) `renderEmail` mengembalikan `null` (event tanpa template) | `markNotificationFailed` dengan `maxAttempts=1` — langsung `FAILED`, retry tidak akan membantu |
+| (Jalur email) `payload.to` hilang/bukan string | `markNotificationFailed` dengan `maxAttempts=1` — langsung `FAILED`, retry tidak akan membantu |
 
 ## Memantau & operasi manual
 

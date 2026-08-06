@@ -1,7 +1,10 @@
 /**
- * Polling loop that drains notification_outbox -> Telegram.
+ * Polling loop that drains notification_outbox -> Telegram or -> email,
+ * decided per row by `row.channel` (NotificationChannel.TELEGRAM, the
+ * default, or NotificationChannel.EMAIL — added by the owner-email-
+ * notifications feature).
  *
- * Two kinds of rows:
+ * TELEGRAM lane — two kinds of rows:
  *  - Direct messages to a buyer/admin (payload.chat_id): ORDER_DELIVERED_DM,
  *    ORDER_MANUAL_DELIVERED_DM, ORDER_PROCESSING_DM, ADMIN_PW_RESET. These
  *    deliver regardless of whether a public channel is configured — the loop
@@ -16,6 +19,15 @@
  * delivery flows) as the admin-typed `Order.deliveredContent` sent as one or
  * more plain messages. Credentials/content NEVER ride in the outbox payload
  * (CLAUDE.md).
+ *
+ * EMAIL lane — the shop owner's OWNER_EMAIL_* rows (Task 3's enqueueOwner*Email
+ * helpers). payload carries `to` (never `chat_id`); the body/subject come from
+ * `renderEmail` (emailTemplates.ts) and go out via SMTP creds resolved from
+ * Settings (getSmtpCreds). SMTP being unconfigured is the shop's configuration,
+ * not the row's fault, so those rows back off and retry forever rather than
+ * failing — the same treatment a channel post gets when PUBLIC_CHANNEL_ID is
+ * unset. There's no email analogue of Telegram flood control, so the EMAIL
+ * lane never bails out of the tick early.
  *
  * Each pending row is sent independently; status is updated in short writes to
  * keep the SQLite write lock held only briefly. Telegram flood control
@@ -32,12 +44,14 @@ import {
   markNotificationSent,
   markNotificationFailed,
   getOrderByCodeFull,
+  getSmtpCreds,
 } from "@app/db";
 import { config } from "@app/core/config";
 import { registerOutboxNudge } from "@app/core/nudge";
 import { publicChannelId } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
-import { NotificationEvent, langCode } from "@app/core/enums";
+import { NotificationEvent, NotificationChannel, langCode } from "@app/core/enums";
+import { sendMail } from "@app/core/mailer";
 import {
   buildAccountFileContent,
   buildDeliveryCaption,
@@ -45,6 +59,7 @@ import {
   accountFileName,
 } from "@app/core/delivery";
 import { render, escape } from "./templates";
+import { renderEmail } from "./emailTemplates";
 
 // Events delivered as a direct message (payload.chat_id), not as a post to
 // PUBLIC_CHANNEL_ID. DMs only work from a bot the recipient has started —
@@ -127,6 +142,15 @@ export async function drainBatch(bot: Bot): Promise<void> {
       payload = JSON.parse(row.payloadJson);
     } catch (e) {
       await markNotificationFailed(prisma, row.id, `bad payload json: ${e}`, 1);
+      continue;
+    }
+
+    // Owner email lane — decided by channel, not event name (checking channel
+    // first is clearer/cheaper than relying on the OWNER_EMAIL_* events never
+    // colliding with the Telegram-only special cases below). No rate-limit
+    // concept for email, so just move on to the next row either way.
+    if (row.channel === NotificationChannel.EMAIL) {
+      await deliverOwnerEmail(row, payload);
       continue;
     }
 
@@ -320,5 +344,57 @@ async function trySend(bot: Bot, row: PendingRow, send: () => Promise<unknown>):
     logger.error({ err: e }, `Failed to send notification ${row.id} — recording the attempt, it will retry until it hits the max attempt limit`);
     await markNotificationFailed(prisma, row.id, String(e), config.NOTIF_MAX_ATTEMPTS);
     return "ok";
+  }
+}
+
+/**
+ * Deliver one EMAIL-channel row (an OWNER_EMAIL_* event) to the shop owner.
+ * Mirrors the Telegram render()/chatId-resolution steps above, but for mail:
+ * unknown event or missing `to` fail the row at once (maxAttempts=1), same as
+ * the Telegram "no template"/"missing chat_id" drops; SMTP being unconfigured
+ * releases the claim with backoff instead of failing — this is the shop's
+ * configuration, not the row's fault, exactly like a channel post left
+ * PENDING when PUBLIC_CHANNEL_ID is unset. Never returns a rate-limit signal
+ * — there's no email analogue of Telegram flood control.
+ */
+async function deliverOwnerEmail(row: PendingRow, payload: Record<string, unknown>): Promise<void> {
+  const rendered = renderEmail(row.event, payload);
+  if (!rendered) {
+    await markNotificationFailed(prisma, row.id, `no email template for event ${row.event}`, 1);
+    return;
+  }
+
+  const to = payload.to;
+  if (typeof to !== "string" || !to) {
+    await markNotificationFailed(prisma, row.id, "missing to address", 1);
+    return;
+  }
+
+  const creds = await getSmtpCreds(prisma);
+  if (!creds) {
+    // SMTP unconfigured — the shop's configuration, not this row's fault.
+    // Back off and retry forever instead of failing away; the mail goes out
+    // once the owner fills in SMTP.
+    await releaseNotificationClaimWithBackoff(prisma, row.id);
+    return;
+  }
+
+  await trySendEmail(row, () => sendMail(creds, { to, subject: rendered.subject, text: rendered.text }));
+}
+
+/**
+ * Run one email send and update the outbox row. No "ratelimited" state to
+ * return — unlike `trySend`, email has no transport-level flood-control or
+ * forbidden-recipient concept to special-case, so a failure always just
+ * records the attempt for the standard backoff/retry cycle.
+ */
+async function trySendEmail(row: PendingRow, send: () => Promise<void>): Promise<void> {
+  try {
+    await send();
+    await markNotificationSent(prisma, row.id);
+    logger.info(`Sent notification ${row.id} (${row.event}) by email`);
+  } catch (e) {
+    logger.error({ err: e }, `Failed to send notification ${row.id} — recording the attempt, it will retry until it hits the max attempt limit`);
+    await markNotificationFailed(prisma, row.id, String(e), config.NOTIF_MAX_ATTEMPTS);
   }
 }

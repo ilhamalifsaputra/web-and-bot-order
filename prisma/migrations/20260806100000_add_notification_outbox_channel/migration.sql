@@ -1,0 +1,15 @@
+-- Task 1 of owner-email-notifications: NotificationOutbox needs an explicit
+-- `channel` column (TELEGRAM | EMAIL) so the dispatcher decides transport
+-- from row data instead of inferring it from the event name via the
+-- ADMIN_DM_EVENTS Set (packages/outbox-dispatcher/src/dispatcher.ts), which
+-- has no notion of a second transport — see packages/core/src/enums.ts's
+-- NotificationChannel doc comment. schema.prisma picked this up in
+-- d5157f9 (feat(notifications): add channel column and owner-email event
+-- enums) without a matching migration; this file closes that gap.
+--
+-- Plain ADD COLUMN (not a table rebuild): the column takes a constant
+-- default and adds no foreign key or unique constraint — same pattern as
+-- prisma/migrations/20260804000000_add_user_guest_fields's `is_guest`
+-- column. Every existing row backfills to 'TELEGRAM', so every pre-existing
+-- enqueue* call site and outbox row keeps working untouched.
+ALTER TABLE "notification_outbox" ADD COLUMN "channel" TEXT NOT NULL DEFAULT 'TELEGRAM';

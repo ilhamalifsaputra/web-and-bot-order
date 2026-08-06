@@ -450,6 +450,81 @@ describe("SettingsPage", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: "Restart Bot" })).not.toBeInTheDocument());
   });
 
+  it("renders the six owner-email fields inside the Email (SMTP) card, after the SMTP fields", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...SETTINGS_DATA,
+          fields: [
+            ...SETTINGS_DATA.fields,
+            { key: "smtp_host", label: "SMTP host", secret: false, hasValue: true, value: "smtp.example.com", needsRestart: false },
+            { key: "owner_email", label: "Owner notification email", secret: false, hasValue: true, value: "owner@example.com", needsRestart: false },
+            { key: "owner_email_enabled", label: "Owner email notifications enabled", secret: false, hasValue: true, value: "true", needsRestart: false },
+            { key: "owner_email_on_paid_order", label: "Email owner on paid orders", secret: false, hasValue: true, value: "true", needsRestart: false },
+            { key: "owner_email_on_manual_queue", label: "Email owner on manual-fulfilment orders", secret: false, hasValue: true, value: "true", needsRestart: false },
+            { key: "owner_email_on_new_ticket", label: "Email owner on new support tickets", secret: false, hasValue: true, value: "true", needsRestart: false },
+            { key: "owner_email_on_ticket_reply", label: "Email owner on ticket replies", secret: false, hasValue: true, value: "true", needsRestart: false },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    const emailCard = document.getElementById("settings-email") as HTMLElement;
+    expect(emailCard).not.toBeNull();
+    const rowLabels = within(emailCard)
+      .getAllByText(/^(SMTP host|Owner notification email|Owner email notifications enabled|Email owner on paid orders|Email owner on manual-fulfilment orders|Email owner on new support tickets|Email owner on ticket replies)$/)
+      .map((el) => el.textContent);
+    // All six new fields land inside the same card as the SMTP fields, and
+    // in server-declared order (SMTP fields first, owner-email fields after).
+    expect(rowLabels).toEqual([
+      "SMTP host",
+      "Owner notification email",
+      "Owner email notifications enabled",
+      "Email owner on paid orders",
+      "Email owner on manual-fulfilment orders",
+      "Email owner on new support tickets",
+      "Email owner on ticket replies",
+    ]);
+  });
+
+  it("owner_email field can be edited and saved via the same FieldRow flow as SMTP fields", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const dataWithOwnerEmail = {
+      ...SETTINGS_DATA,
+      fields: [
+        ...SETTINGS_DATA.fields,
+        { key: "owner_email", label: "Owner notification email", secret: false, hasValue: true, value: "owner@example.com", needsRestart: false },
+      ],
+    };
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(dataWithOwnerEmail), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Owner notification email")).toBeInTheDocument());
+
+    const emailCard = document.getElementById("settings-email") as HTMLElement;
+    const user = userEvent.setup();
+    await user.click(within(emailCard).getAllByRole("button", { name: "Edit" })[0]!);
+    const input = screen.getByDisplayValue("owner@example.com");
+    await user.clear(input);
+    await user.type(input, "new-owner@example.com");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText('Save "Owner notification email"?')).toBeInTheDocument();
+
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    fetchSpy.mockResolvedValueOnce(
+      new Response(JSON.stringify(dataWithOwnerEmail), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
+
+    expect(await screen.findByText("Saved successfully")).toBeInTheDocument();
+  });
+
   it("Export Configuration downloads the exported fields", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockResolvedValueOnce(

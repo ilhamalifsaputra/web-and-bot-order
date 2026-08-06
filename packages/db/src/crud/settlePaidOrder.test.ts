@@ -27,6 +27,8 @@ import {
   AdditionalFieldType,
   type AdditionalField,
 } from "@app/core/deliveryFields";
+import { setSetting } from "./settings";
+import { addAdminIdToDb } from "./admins";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -233,6 +235,98 @@ describe("settlePaidOrder", () => {
       where: { orderId: order.id, event: NotificationEvent.ORDER_PROCESSING_DM },
     });
     expect(outboxRow).not.toBeNull();
+  });
+});
+
+// Task 5: settlePaidOrder now enqueues the owner-email notifications added in
+// Task 3 (packages/db/src/crud/notifications.ts) — OWNER_EMAIL_ORDER_PAID from
+// the AUTO branch, OWNER_EMAIL_MANUAL_ORDER_QUEUED from the MANUAL branch,
+// never both for the same order. resetDb (this file's beforeEach) wipes both
+// Setting and NotificationOutbox before every test, so — unlike
+// support.test.ts's owner-email suite — these tests assert absolute counts
+// rather than before/after deltas.
+describe("settlePaidOrder — owner-email triggers", () => {
+  async function configureOwnerEmail(event: "paid_order" | "manual_queue") {
+    await setSetting(prisma, "owner_email_enabled", "true");
+    await setSetting(prisma, "owner_email", "owner@example.com");
+    await setSetting(prisma, `owner_email_on_${event}`, "true");
+  }
+
+  it("AUTO settlement: enqueues exactly one OWNER_EMAIL_ORDER_PAID row with orderCode/total/currency/itemCount, and no OWNER_EMAIL_MANUAL_ORDER_QUEUED row", async () => {
+    await configureOwnerEmail("paid_order");
+    const order = await makePendingVerificationOrder(sample.product.id, 1);
+
+    await settlePaidOrder(prisma, order.id, { adminId });
+
+    const paidRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.OWNER_EMAIL_ORDER_PAID },
+    });
+    expect(paidRows).toHaveLength(1);
+    expect(paidRows[0]!.channel).toBe("EMAIL");
+    const payload = JSON.parse(paidRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({
+      to: "owner@example.com",
+      order_code: order.orderCode,
+      total: order.totalAmount.toString(),
+      currency: order.currency,
+      item_count: 1,
+    });
+
+    const manualQueueRows = await prisma.notificationOutbox.count({
+      where: { orderId: order.id, event: NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED },
+    });
+    expect(manualQueueRows).toBe(0);
+  });
+
+  it("MANUAL settlement: enqueues exactly one OWNER_EMAIL_MANUAL_ORDER_QUEUED row with the correct payload, no OWNER_EMAIL_ORDER_PAID row, and still enqueues the existing ADMIN_MANUAL_ORDER_QUEUED Telegram alert", async () => {
+    await configureOwnerEmail("manual_queue");
+    await addAdminIdToDb(prisma, 5001);
+    const manualDenom = await makeManualDenom(DeliveryType.MANUAL);
+    const order = await makePendingVerificationOrder(manualDenom.id, 1);
+
+    await settlePaidOrder(prisma, order.id, { adminId });
+
+    const queueRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED },
+    });
+    expect(queueRows).toHaveLength(1);
+    expect(queueRows[0]!.channel).toBe("EMAIL");
+    const payload = JSON.parse(queueRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({
+      to: "owner@example.com",
+      order_code: order.orderCode,
+      items: [{ name: "Manual Denom", qty: 1 }],
+      total: order.totalAmount.toString(),
+      currency: order.currency,
+    });
+
+    // Mutual exclusivity: the AUTO branch's email must never fire alongside this one.
+    const paidRows = await prisma.notificationOutbox.count({
+      where: { orderId: order.id, event: NotificationEvent.OWNER_EMAIL_ORDER_PAID },
+    });
+    expect(paidRows).toBe(0);
+
+    // This task must not disturb the pre-existing Telegram admin alert.
+    const adminAlertRows = await prisma.notificationOutbox.count({
+      where: { orderId: order.id, event: NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED },
+    });
+    expect(adminAlertRows).toBe(1);
+  });
+
+  it("owner-email not configured: neither OWNER_EMAIL_ORDER_PAID nor OWNER_EMAIL_MANUAL_ORDER_QUEUED is enqueued, in either branch", async () => {
+    const autoOrder = await makePendingVerificationOrder(sample.product.id, 1);
+    await settlePaidOrder(prisma, autoOrder.id, { adminId });
+
+    const manualDenom = await makeManualDenom(DeliveryType.MANUAL);
+    const manualOrder = await makePendingVerificationOrder(manualDenom.id, 1);
+    await settlePaidOrder(prisma, manualOrder.id, { adminId });
+
+    const ownerEmailCount = await prisma.notificationOutbox.count({
+      where: {
+        event: { in: [NotificationEvent.OWNER_EMAIL_ORDER_PAID, NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED] },
+      },
+    });
+    expect(ownerEmailCount).toBe(0);
   });
 });
 

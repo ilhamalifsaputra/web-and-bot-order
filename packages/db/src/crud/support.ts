@@ -5,8 +5,14 @@ import { Prisma } from "@prisma/client";
 import { TicketStatus, TicketPriority, TicketCategory, SenderType } from "@app/core/enums";
 import { addDays, addMinutes, startOfDayUtc } from "@app/core/datetime";
 import type { Db } from "./_types";
+import { enqueueOwnerNewTicketEmail, enqueueOwnerTicketReplyEmail } from "./notifications";
 
-export function createTicket(
+/** Creates the ticket, then enqueues the shop owner's "new ticket" email
+ * (no-op unless owner-email is configured — see enqueueOwnerNewTicketEmail).
+ * Covers both the storefront and the bot's ticket-creation paths from this
+ * one call site — `category` is always null here since it's an admin-set
+ * triage field (classifyTicket), never set at creation time. */
+export async function createTicket(
   db: Db,
   userId: number,
   message: string,
@@ -14,7 +20,11 @@ export function createTicket(
   attachmentUrls: string | null = null,
   orderId: number | null = null,
 ) {
-  return db.supportTicket.create({ data: { userId, message, photoFileIds, attachmentUrls, orderId } });
+  const ticket = await db.supportTicket.create({
+    data: { userId, message, photoFileIds, attachmentUrls, orderId },
+  });
+  await enqueueOwnerNewTicketEmail(db, { ticketId: ticket.id, userId, category: null, message });
+  return ticket;
 }
 
 /** Fields of the linked customer surfaced in ticket JSON responses (web-admin
@@ -207,6 +217,15 @@ export async function addTicketMessage(
     content: string;
     photoFileIds?: string | null;
     attachmentUrls?: string | null;
+    /** Set to `false` ONLY when this call is mirroring a ticket's own
+     * opening message into the thread (the bot's ticket-creation flow calls
+     * `createTicket` then immediately `addTicketMessage` with the same
+     * content, purely so it shows up in the `TicketMessage` thread table) —
+     * `createTicket` already enqueued the "new ticket" owner email for that
+     * same content, so the USER-sender branch below must not enqueue a
+     * second "customer replied" email for it. Every genuine reply call site
+     * omits this (defaults to `true`, i.e. notify as before). */
+    notifyOwner?: boolean;
   },
 ) {
   const msg = await db.ticketMessage.create({
@@ -229,6 +248,19 @@ export async function addTicketMessage(
         where: { id: args.ticketId },
         data: { status: TicketStatus.OPEN, lastStatusChangeAt: now },
       });
+      // Owner "customer replied" email — ONLY for the customer's own
+      // messages. An admin's own reply (the `else` branch below) must never
+      // reach this: that would mail the owner about their own admin's
+      // action. No-op unless owner-email is configured (see
+      // enqueueOwnerTicketReplyEmail). Also skipped when `notifyOwner` is
+      // explicitly `false` — see that field's doc comment above.
+      if (args.notifyOwner !== false) {
+        await enqueueOwnerTicketReplyEmail(db, {
+          ticketId: args.ticketId,
+          userId: args.senderId,
+          message: args.content,
+        });
+      }
     } else {
       await db.supportTicket.update({
         where: { id: args.ticketId },

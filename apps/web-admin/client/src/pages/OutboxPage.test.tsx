@@ -22,6 +22,7 @@ const ROW = {
   id: 7,
   event: "ORDER_DELIVERED",
   orderId: 42,
+  channel: "TELEGRAM",
   status: "SENT",
   attempts: 1,
   lastError: null,
@@ -46,6 +47,49 @@ describe("OutboxPage", () => {
     expect(screen.getByText("Order delivered")).toHaveAttribute("title", "ORDER_DELIVERED");
     expect(screen.getAllByText("Sent").length).toBeGreaterThan(0);
     expect(screen.getAllByText("2026-06-26 17:00").length).toBeGreaterThan(0); // createdAtDisplay/sentAtDisplay
+  });
+
+  it("renders a distinct channel badge for TELEGRAM vs EMAIL rows", async () => {
+    const telegramRow = { ...ROW, id: 1, channel: "TELEGRAM" };
+    const emailRow = { ...ROW, id: 2, event: "OWNER_EMAIL_NEW_TICKET", channel: "EMAIL" };
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ rows: [telegramRow, emailRow], total: 2, page: 1, hasNext: false, counts: { SENT: 2 } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OutboxPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Telegram")).toBeInTheDocument());
+    const telegramBadge = screen.getByText("Telegram");
+    const emailBadge = screen.getByText("Email");
+    expect(telegramBadge).toBeInTheDocument();
+    expect(emailBadge).toBeInTheDocument();
+    // Visibly different tone classes, not just different text.
+    expect(telegramBadge.className).toContain("bg-sand");
+    expect(emailBadge.className).toContain("bg-pine-tint");
+    expect(telegramBadge.className).not.toEqual(emailBadge.className);
+  });
+
+  it("renders readable labels for the four owner-email events instead of falling back to humanizeEventCode", async () => {
+    const rows = [
+      { ...ROW, id: 1, event: "OWNER_EMAIL_ORDER_PAID", channel: "EMAIL" },
+      { ...ROW, id: 2, event: "OWNER_EMAIL_MANUAL_ORDER_QUEUED", channel: "EMAIL" },
+      { ...ROW, id: 3, event: "OWNER_EMAIL_NEW_TICKET", channel: "EMAIL" },
+      { ...ROW, id: 4, event: "OWNER_EMAIL_TICKET_REPLY", channel: "EMAIL" },
+    ];
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ rows, total: 4, page: 1, hasNext: false, counts: { SENT: 4 } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OutboxPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Owner email: order paid")).toBeInTheDocument());
+    expect(screen.getByText("Owner email: manual order queued")).toBeInTheDocument();
+    expect(screen.getByText("Owner email: new ticket")).toBeInTheDocument();
+    expect(screen.getByText("Owner email: ticket reply")).toBeInTheDocument();
+    // None of these should have fallen back to the raw enum via humanizeEventCode.
+    expect(screen.queryByText("Owner Email Order Paid")).not.toBeInTheDocument();
   });
 
   it("shows empty state when no rows", async () => {

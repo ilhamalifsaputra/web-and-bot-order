@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 
 // resolveAdminIds merges config.ADMIN_IDS (env) with DB-persisted IDs. The
 // enqueueOrderPipelineFailed tests need a predictable baseline (no env admins),
@@ -17,6 +17,10 @@ import {
   enqueueAdminPasswordReset,
   enqueueRestockBroadcast,
   enqueueFlashSaleBroadcast,
+  enqueueOwnerOrderPaidEmail,
+  enqueueOwnerManualQueueEmail,
+  enqueueOwnerNewTicketEmail,
+  enqueueOwnerTicketReplyEmail,
   FLASH_SALE_BROADCAST_CHUNK_SIZE,
   fetchPendingNotifications,
   claimNotification,
@@ -33,6 +37,7 @@ import {
 } from "./notifications";
 import { addAdminIdToDb } from "./admins";
 import { reapStaleBroadcasts, BROADCAST_STALE_CLAIM_MS } from "./broadcasts";
+import { setSetting, deleteSetting } from "./settings";
 import { NotificationEvent } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 
@@ -885,5 +890,245 @@ describe("fetchPendingNotifications priority (urgent DMs before bulk broadcasts)
     const fullBatch = await fetchPendingNotifications(prisma, totalPending);
     expect(fullBatch.some((r) => r.event === NotificationEvent.ADMIN_PW_RESET)).toBe(true);
     expect(fullBatch.some((r) => r.event === NotificationEvent.PRODUCT_RESTOCKED_BROADCAST)).toBe(true);
+  });
+});
+
+// enqueueOwner*Email — the EMAIL-channel owner-notification enqueue layer
+// (design doc: docs/superpowers/specs/2026-08-06-owner-email-notifications-design.md).
+// Each wrapper is gated by resolveOwnerEmailRecipient (ownerEmail.ts, already
+// unit-tested against a stub Db in ownerEmail.test.ts): the master toggle, the
+// event's own toggle, and a valid `owner_email` address must ALL be set, or
+// nothing is enqueued at all — not a PENDING row that never gets a `to`. These
+// tests exercise that gate against the real Setting table (via setSetting),
+// not a stub, since notifications.test.ts already runs against makeTestDb().
+const OWNER_EMAIL_SETTING_KEYS = [
+  "owner_email_enabled",
+  "owner_email",
+  "owner_email_on_paid_order",
+  "owner_email_on_manual_queue",
+  "owner_email_on_new_ticket",
+  "owner_email_on_ticket_reply",
+];
+
+/** Master toggle + address on, plus the one event's own toggle on. */
+async function configureOwnerEmail(event: "paid_order" | "manual_queue" | "new_ticket" | "ticket_reply") {
+  await setSetting(prisma, "owner_email_enabled", "true");
+  await setSetting(prisma, "owner_email", "owner@example.com");
+  await setSetting(prisma, `owner_email_on_${event}`, "true");
+}
+
+/** Strip every owner-email Setting so the feature is unconfigured/off. */
+async function disableOwnerEmail() {
+  for (const key of OWNER_EMAIL_SETTING_KEYS) await deleteSetting(prisma, key);
+}
+
+describe("enqueueOwner*Email (EMAIL-channel owner notifications)", () => {
+  afterEach(async () => {
+    await disableOwnerEmail();
+  });
+
+  it("enqueueOwnerOrderPaidEmail writes nothing when owner email is unconfigured", async () => {
+    await disableOwnerEmail();
+    const orderId = await seedOrder();
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_ORDER_PAID } });
+
+    await enqueueOwnerOrderPaidEmail(prisma, {
+      orderId,
+      orderCode: "ORD-OWNERPAID-OFF",
+      total: new Decimal("10"),
+      currency: "IDR",
+      itemCount: 1,
+    });
+
+    expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_ORDER_PAID } })).toBe(before);
+  });
+
+  it("enqueueOwnerOrderPaidEmail writes one EMAIL row with to/order_code/total(string)/currency/item_count when configured", async () => {
+    await configureOwnerEmail("paid_order");
+    const orderId = await seedOrder();
+
+    await enqueueOwnerOrderPaidEmail(prisma, {
+      orderId,
+      orderCode: "ORD-OWNERPAID-ON",
+      total: new Decimal("199.90"),
+      currency: "USDT",
+      itemCount: 3,
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_ORDER_PAID, orderId },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.channel).toBe("EMAIL");
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({
+      to: "owner@example.com",
+      order_code: "ORD-OWNERPAID-ON",
+      total: "199.9",
+      currency: "USDT",
+      item_count: 3,
+    });
+    expect(typeof payload.total).toBe("string");
+  });
+
+  it("enqueueOwnerManualQueueEmail writes nothing when owner email is unconfigured", async () => {
+    await disableOwnerEmail();
+    const orderId = await seedOrder();
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED } });
+
+    await enqueueOwnerManualQueueEmail(prisma, {
+      orderId,
+      orderCode: "ORD-OWNERMANUAL-OFF",
+      items: [{ name: "Netflix Premium", qty: 1 }],
+      total: new Decimal("15.5"),
+      currency: "USDT",
+    });
+
+    expect(
+      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED } }),
+    ).toBe(before);
+  });
+
+  it("enqueueOwnerManualQueueEmail writes one EMAIL row with to/order_code/items/total(string)/currency when configured", async () => {
+    await configureOwnerEmail("manual_queue");
+    const orderId = await seedOrder();
+
+    await enqueueOwnerManualQueueEmail(prisma, {
+      orderId,
+      orderCode: "ORD-OWNERMANUAL-ON",
+      items: [{ name: "Netflix Premium", qty: 2 }],
+      total: new Decimal("15.50"),
+      currency: "USDT",
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED, orderId },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.channel).toBe("EMAIL");
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({
+      to: "owner@example.com",
+      order_code: "ORD-OWNERMANUAL-ON",
+      items: [{ name: "Netflix Premium", qty: 2 }],
+      total: "15.5",
+      currency: "USDT",
+    });
+    expect(typeof payload.total).toBe("string");
+  });
+
+  it("enqueueOwnerNewTicketEmail writes nothing when owner email is unconfigured", async () => {
+    await disableOwnerEmail();
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET } });
+
+    await enqueueOwnerNewTicketEmail(prisma, {
+      ticketId: 1,
+      userId: 1,
+      category: "ORDER",
+      message: "Where is my order?",
+    });
+
+    expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET } })).toBe(before);
+  });
+
+  it("enqueueOwnerNewTicketEmail writes one EMAIL row with orderId null and category/message when configured", async () => {
+    await configureOwnerEmail("new_ticket");
+
+    await enqueueOwnerNewTicketEmail(prisma, {
+      ticketId: 42,
+      userId: 7,
+      category: "PAYMENT",
+      message: "My payment was deducted twice.",
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET },
+      orderBy: { id: "desc" },
+      take: 1,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.channel).toBe("EMAIL");
+    expect(rows[0]!.orderId).toBeNull();
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({
+      to: "owner@example.com",
+      ticket_id: 42,
+      user_id: 7,
+      category: "PAYMENT",
+      message: "My payment was deducted twice.",
+    });
+  });
+
+  it("enqueueOwnerNewTicketEmail defaults category to null and truncates a long message to 500 chars", async () => {
+    await configureOwnerEmail("new_ticket");
+
+    await enqueueOwnerNewTicketEmail(prisma, {
+      ticketId: 43,
+      userId: 7,
+      message: "x".repeat(1000),
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET },
+      orderBy: { id: "desc" },
+      take: 1,
+    });
+    const payload = JSON.parse(rows[0]!.payloadJson) as { category: unknown; message: string };
+    expect(payload.category).toBeNull();
+    expect(payload.message.length).toBe(500);
+  });
+
+  it("enqueueOwnerTicketReplyEmail writes nothing when owner email is unconfigured", async () => {
+    await disableOwnerEmail();
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } });
+
+    await enqueueOwnerTicketReplyEmail(prisma, {
+      ticketId: 1,
+      userId: 1,
+      message: "Any update?",
+    });
+
+    expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } })).toBe(before);
+  });
+
+  it("enqueueOwnerTicketReplyEmail writes one EMAIL row with orderId null, and truncates a long message to 500 chars, when configured", async () => {
+    await configureOwnerEmail("ticket_reply");
+
+    await enqueueOwnerTicketReplyEmail(prisma, {
+      ticketId: 55,
+      userId: 9,
+      message: "y".repeat(700),
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY },
+      orderBy: { id: "desc" },
+      take: 1,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.channel).toBe("EMAIL");
+    expect(rows[0]!.orderId).toBeNull();
+    const payload = JSON.parse(rows[0]!.payloadJson) as { to: string; ticket_id: number; user_id: number; message: string };
+    expect(payload.to).toBe("owner@example.com");
+    expect(payload.ticket_id).toBe(55);
+    expect(payload.user_id).toBe(9);
+    expect(payload.message.length).toBe(500);
+  });
+
+  it("enabling one event's owner-email toggle does not enable the others", async () => {
+    await configureOwnerEmail("paid_order");
+    const orderId = await seedOrder();
+
+    const beforeManual = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED } });
+    await enqueueOwnerManualQueueEmail(prisma, {
+      orderId,
+      orderCode: "ORD-CROSSCHECK",
+      items: [{ name: "X", qty: 1 }],
+      total: new Decimal("1"),
+      currency: "IDR",
+    });
+    expect(
+      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED } }),
+    ).toBe(beforeManual);
   });
 });

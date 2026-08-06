@@ -14,11 +14,13 @@ import { logger } from "@app/core/logger";
 import {
   NotificationEvent,
   NotificationStatus,
+  NotificationChannel,
   BroadcastStatus,
   langCode,
 } from "@app/core/enums";
 import type { Decimal } from "@app/core/money";
 import { resolveAdminIds } from "./admins";
+import { resolveOwnerEmailRecipient, type OwnerEmailEvent } from "./ownerEmail";
 
 type Db = PrismaClient | Tx;
 
@@ -200,6 +202,121 @@ export async function enqueueAdminStalePayment(
       },
     });
   }
+}
+
+/**
+ * Write one EMAIL-channel outbox row addressed to the shop owner, or nothing
+ * at all. Resolves the recipient via `resolveOwnerEmailRecipient` — the
+ * master toggle, the per-event toggle, and a valid `owner_email` address must
+ * all be set, or this returns without writing a row (no PENDING row that then
+ * never gets a `to`; the feature stays completely inert until configured,
+ * same as `getSmtpCreds` returning null leaves the forgot-password mail off
+ * today). Internal — the four `enqueueOwner*Email` wrappers below are the
+ * public surface, each pinned to its own `NotificationEvent`/`OwnerEmailEvent`
+ * pair so the dispatcher's email renderer and the Telegram `render()`
+ * if-chain never have to handle each other's payload shape.
+ */
+async function enqueueOwnerEmail(
+  db: Db,
+  event: NotificationEvent,
+  ownerEmailEvent: OwnerEmailEvent,
+  orderId: number | null,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const to = await resolveOwnerEmailRecipient(db, ownerEmailEvent);
+  if (!to) return;
+  await db.notificationOutbox.create({
+    data: {
+      event,
+      orderId,
+      channel: NotificationChannel.EMAIL,
+      payloadJson: JSON.stringify({ to, ...payload }),
+    },
+  });
+}
+
+/**
+ * Enqueue the shop owner's "a paid order landed" email (settlePaidOrder's
+ * AUTO branch, beside `approveOrder`) — an auto-delivery SKU that just paid
+ * and shipped with no admin action needed. No-op (see `enqueueOwnerEmail`)
+ * unless the owner has the master toggle, `owner_email_on_paid_order`, and a
+ * valid `owner_email` all configured. `total` is carried as Decimal
+ * `.toString()` — never `number` — per money rules.
+ */
+export async function enqueueOwnerOrderPaidEmail(
+  db: Db,
+  args: { orderId: number; orderCode: string; total: Decimal; currency: string; itemCount: number },
+): Promise<void> {
+  await enqueueOwnerEmail(db, NotificationEvent.OWNER_EMAIL_ORDER_PAID, "paid_order", args.orderId, {
+    order_code: args.orderCode,
+    total: args.total.toString(),
+    currency: args.currency,
+    item_count: args.itemCount,
+  });
+}
+
+/**
+ * Enqueue the shop owner's "a paid order needs hand-fulfilment" email
+ * (settlePaidOrder's MANUAL branch, beside `enqueueManualOrderAdminAlert`) —
+ * same trigger, but a distinct event/payload from `ADMIN_MANUAL_ORDER_QUEUED`
+ * so the email renderer never has to parse the Telegram alert's shape. No-op
+ * unless the owner has the master toggle, `owner_email_on_manual_queue`, and
+ * a valid `owner_email` all configured. `total` is carried as Decimal
+ * `.toString()` — never `number` — per money rules.
+ */
+export async function enqueueOwnerManualQueueEmail(
+  db: Db,
+  args: { orderId: number; orderCode: string; items: { name: string; qty: number }[]; total: Decimal; currency: string },
+): Promise<void> {
+  await enqueueOwnerEmail(db, NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED, "manual_queue", args.orderId, {
+    order_code: args.orderCode,
+    items: args.items,
+    total: args.total.toString(),
+    currency: args.currency,
+  });
+}
+
+/**
+ * Enqueue the shop owner's "a new support ticket was opened" email —
+ * enqueued from `createTicket` so both the storefront and the bot's ticket
+ * creation paths are covered from one call site. Tickets have no order, so
+ * `orderId` is always null (unlike the order-triggered owner emails above).
+ * `message` is the ticket's opening body — customer-authored free text with
+ * no length bound, going into the admin-visible outbox table, so it's
+ * truncated to 500 chars (same length `markNotificationFailed` truncates
+ * `lastError` to). No-op unless the owner has the master toggle,
+ * `owner_email_on_new_ticket`, and a valid `owner_email` all configured.
+ */
+export async function enqueueOwnerNewTicketEmail(
+  db: Db,
+  args: { ticketId: number; userId: number; category?: string | null; message: string },
+): Promise<void> {
+  await enqueueOwnerEmail(db, NotificationEvent.OWNER_EMAIL_NEW_TICKET, "new_ticket", null, {
+    ticket_id: args.ticketId,
+    user_id: args.userId,
+    category: args.category ?? null,
+    message: args.message.slice(0, 500),
+  });
+}
+
+/**
+ * Enqueue the shop owner's "a customer replied to a ticket" email —
+ * enqueued from `addTicketMessage`, but ONLY for `SenderType.USER` messages;
+ * an admin's own reply must never trigger this (the caller is responsible for
+ * that gate). Tickets have no order, so `orderId` is always null. `message`
+ * is truncated to 500 chars, same reasoning as `enqueueOwnerNewTicketEmail`.
+ * No-op unless the owner has the master toggle, `owner_email_on_ticket_reply`,
+ * and a valid `owner_email` all configured.
+ */
+export async function enqueueOwnerTicketReplyEmail(
+  db: Db,
+  args: { ticketId: number; userId: number; message: string },
+): Promise<void> {
+  await enqueueOwnerEmail(db, NotificationEvent.OWNER_EMAIL_TICKET_REPLY, "ticket_reply", null, {
+    ticket_id: args.ticketId,
+    user_id: args.userId,
+    message: args.message.slice(0, 500),
+  });
 }
 
 /**

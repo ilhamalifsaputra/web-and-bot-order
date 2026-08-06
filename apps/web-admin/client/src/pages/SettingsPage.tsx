@@ -72,6 +72,16 @@ const SMTP_KEYS = new Set([
   "smtp_pass",
   "smtp_from",
   "smtp_secure",
+  // Owner-notification keys — not SMTP transport settings themselves, but
+  // rendered in the same "Email (SMTP)" Card (below the SMTP fields) since
+  // mail configuration belongs in one place. This Set's name stays SMTP_KEYS
+  // to avoid a churny rename; membership, not naming, is what matters here.
+  "owner_email",
+  "owner_email_enabled",
+  "owner_email_on_paid_order",
+  "owner_email_on_manual_queue",
+  "owner_email_on_new_ticket",
+  "owner_email_on_ticket_reply",
 ]);
 
 // Per-method credential field groupings. The _enabled field for each method
@@ -194,6 +204,12 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   smtp_pass: "Signs in to the SMTP server — never shown once saved.",
   smtp_from: 'Sender shown on password-reset emails, e.g. "Shop Name <no-reply@example.com>".',
   smtp_secure: 'Type "true" for port 465 (SSL/TLS), or "false" for port 587 (STARTTLS).',
+  owner_email: "Where owner notification emails are sent.",
+  owner_email_enabled: 'Master switch — type "true" or "false". All owner emails are off unless this is true.',
+  owner_email_on_paid_order: 'Type "true" or "false" — email the owner when an auto-delivered order is paid.',
+  owner_email_on_manual_queue: 'Type "true" or "false" — email the owner when a paid order needs hand fulfilment.',
+  owner_email_on_new_ticket: 'Type "true" or "false" — email the owner when a customer opens a support ticket.',
+  owner_email_on_ticket_reply: 'Type "true" or "false" — email the owner when a customer replies to a support ticket.',
   custom_emoji_map: "Maps emoji in bot messages to Telegram Premium custom emoji ids.",
   bulk_purchase_broadcast_enabled: "Post a message to the public channel when a large purchase happens.",
   bulk_purchase_broadcast_threshold: "Minimum quantity in one order that triggers the broadcast.",
@@ -236,6 +252,15 @@ function validateField(key: string, value: string): string | null {
     return 'Expected an email, or "Name <email>".';
   }
   if (key === "smtp_secure" && !["true", "false"].includes(value.toLowerCase())) {
+    return 'Must be "true" or "false".';
+  }
+  if (key === "owner_email" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+    return "Expected a plain email address, e.g. owner@example.com.";
+  }
+  if (
+    ["owner_email_enabled", "owner_email_on_paid_order", "owner_email_on_manual_queue", "owner_email_on_new_ticket", "owner_email_on_ticket_reply"].includes(key) &&
+    !["true", "false"].includes(value.toLowerCase())
+  ) {
     return 'Must be "true" or "false".';
   }
   return null;

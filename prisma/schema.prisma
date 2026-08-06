@@ -761,6 +761,12 @@ model AuditLog {
 model NotificationOutbox {
   id          Int       @id @default(autoincrement())
   event       String
+  /// Transport for this row — TELEGRAM | EMAIL. Explicit row data rather than
+  /// inferred from the event name: the dispatcher used to derive DM-vs-channel
+  /// purely from the `ADMIN_DM_EVENTS` name Set (dispatcher.ts), which has no
+  /// notion of a second transport. Defaults to TELEGRAM so every existing row
+  /// and every existing `enqueue*` call site keeps working untouched.
+  channel     String    @default("TELEGRAM") @map("channel")
   payloadJson String    @map("payload_json")
   orderId     Int?      @map("order_id")
   status      String    @default("PENDING")

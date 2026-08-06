@@ -4,7 +4,7 @@
  * fire the buyer-notification DM twice. Now an atomic updateMany — only the
  * call that actually flips CLOSED gets a non-null return.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import {
@@ -26,8 +26,9 @@ import {
   bulkSetTicketPriority,
   bulkCloseTickets,
 } from "./support";
-import { TicketStatus, TicketPriority, TicketCategory, SenderType } from "@app/core/enums";
+import { TicketStatus, TicketPriority, TicketCategory, SenderType, NotificationEvent } from "@app/core/enums";
 import { addMinutes, addDays } from "@app/core/datetime";
+import { setSetting, deleteSetting } from "./settings";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -914,5 +915,188 @@ describe("listTicketsPaged / countTickets — unified predicate (M-36)", () => {
 
     const sorted = await listTicketsPaged(prisma, { sort: "priority" });
     expect(sorted.map((t) => t.id)).toEqual([urgent.id, high.id, medium.id, low.id]);
+  });
+});
+
+// Task 4: createTicket / addTicketMessage now enqueue the owner-email
+// notifications added in Task 3 (packages/db/src/crud/notifications.ts).
+// notificationOutbox/Setting rows are NOT wiped by this file's beforeEach
+// (only ticket/user/order tables are), so — mirroring
+// notifications.test.ts's own owner-email suite — "writes nothing" tests
+// compare before/after counts rather than asserting an absolute 0, and
+// "writes one row" tests read back the newest matching row (orderBy id
+// desc) rather than asserting an absolute findMany length.
+describe("owner-email ticket triggers (createTicket / addTicketMessage)", () => {
+  const OWNER_EMAIL_SETTING_KEYS = [
+    "owner_email_enabled",
+    "owner_email",
+    "owner_email_on_new_ticket",
+    "owner_email_on_ticket_reply",
+  ];
+
+  async function configureOwnerEmail(event: "new_ticket" | "ticket_reply") {
+    await setSetting(prisma, "owner_email_enabled", "true");
+    await setSetting(prisma, "owner_email", "owner@example.com");
+    await setSetting(prisma, `owner_email_on_${event}`, "true");
+  }
+
+  async function disableOwnerEmail() {
+    for (const key of OWNER_EMAIL_SETTING_KEYS) await deleteSetting(prisma, key);
+  }
+
+  afterEach(async () => {
+    await disableOwnerEmail();
+  });
+
+  it("createTicket enqueues exactly one OWNER_EMAIL_NEW_TICKET row, with ticket/user id and message, when owner-email is configured", async () => {
+    await configureOwnerEmail("new_ticket");
+    const user = await makeUser(2001n);
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET } });
+
+    const ticket = await createTicket(prisma, user.id, "my order never arrived");
+
+    expect(
+      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET } }),
+    ).toBe(before + 1);
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET },
+      orderBy: { id: "desc" },
+      take: 1,
+    });
+    expect(rows[0]!.channel).toBe("EMAIL");
+    expect(rows[0]!.orderId).toBeNull();
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({
+      to: "owner@example.com",
+      ticket_id: ticket.id,
+      user_id: user.id,
+      category: null,
+      message: "my order never arrived",
+    });
+  });
+
+  it("createTicket enqueues nothing when owner-email is not configured", async () => {
+    await disableOwnerEmail();
+    const user = await makeUser(2002n);
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET } });
+
+    await createTicket(prisma, user.id, "help please");
+
+    expect(
+      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET } }),
+    ).toBe(before);
+  });
+
+  it("addTicketMessage with senderType USER enqueues exactly one OWNER_EMAIL_TICKET_REPLY row, carrying the ticket id", async () => {
+    await configureOwnerEmail("ticket_reply");
+    const user = await makeUser(2003n);
+    // new_ticket toggle isn't set here, so createTicket's own enqueue is a
+    // no-op — this isolates the assertion below to addTicketMessage's call.
+    const ticket = await createTicket(prisma, user.id, "initial message");
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } });
+
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.USER,
+      senderId: user.id,
+      content: "any update on this?",
+    });
+
+    expect(
+      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } }),
+    ).toBe(before + 1);
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY },
+      orderBy: { id: "desc" },
+      take: 1,
+    });
+    expect(rows[0]!.channel).toBe("EMAIL");
+    expect(rows[0]!.orderId).toBeNull();
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({
+      to: "owner@example.com",
+      ticket_id: ticket.id,
+      user_id: user.id,
+      message: "any update on this?",
+    });
+  });
+
+  it("addTicketMessage with senderType ADMIN enqueues NOTHING — an admin's own reply must never mail the owner", async () => {
+    await configureOwnerEmail("ticket_reply");
+    const user = await makeUser(2004n);
+    const admin = await makeAdmin();
+    const ticket = await createTicket(prisma, user.id, "initial message");
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } });
+
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.ADMIN,
+      senderId: admin.id,
+      content: "we're looking into it",
+    });
+
+    expect(
+      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } }),
+    ).toBe(before);
+    // The ticket's status transition (OPEN/REPLIED) is untouched by this
+    // gate — confirm the ADMIN branch still flips the ticket to REPLIED.
+    const fresh = await prisma.supportTicket.findUnique({ where: { id: ticket.id } });
+    expect(fresh!.status).toBe(TicketStatus.REPLIED);
+  });
+
+  it("addTicketMessage with senderType USER enqueues nothing when owner-email is not configured", async () => {
+    await disableOwnerEmail();
+    const user = await makeUser(2005n);
+    const ticket = await createTicket(prisma, user.id, "initial message");
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } });
+
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.USER,
+      senderId: user.id,
+      content: "any update?",
+    });
+
+    expect(
+      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } }),
+    ).toBe(before);
+  });
+
+  it("addTicketMessage with notifyOwner: false enqueues NOTHING even though senderType USER would normally trigger it — the bot's creation-mirror call", async () => {
+    await configureOwnerEmail("ticket_reply");
+    const user = await makeUser(2006n);
+    const ticket = await createTicket(prisma, user.id, "initial message");
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } });
+
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.USER,
+      senderId: user.id,
+      content: "initial message",
+      notifyOwner: false,
+    });
+
+    expect(
+      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } }),
+    ).toBe(before);
+  });
+
+  it("addTicketMessage with notifyOwner: true (explicit) behaves the same as omitting it — still enqueues one row", async () => {
+    await configureOwnerEmail("ticket_reply");
+    const user = await makeUser(2007n);
+    const ticket = await createTicket(prisma, user.id, "initial message");
+    const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } });
+
+    await addTicketMessage(prisma, {
+      ticketId: ticket.id,
+      senderType: SenderType.USER,
+      senderId: user.id,
+      content: "any update on this?",
+      notifyOwner: true,
+    });
+
+    expect(
+      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } }),
+    ).toBe(before + 1);
   });
 });

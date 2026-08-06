@@ -142,6 +142,73 @@ describe("OrderDetailPage", () => {
   });
 });
 
+describe("OrderDetailPage — guest buyers", () => {
+  const GUEST_USER = {
+    id: 30,
+    fullName: null,
+    username: null,
+    telegramId: null,
+    isGuest: true,
+    guestEmail: "budi@gmail.com",
+  };
+
+  function guestOrderResponse(user: Record<string, unknown>) {
+    return new Response(
+      JSON.stringify({
+        ...ORDER_DETAIL_DATA,
+        order: { ...ORDER_DETAIL_DATA.order, user },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  it("marks a guest order with a Guest badge and shows the contact email", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(guestOrderResponse(GUEST_USER));
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    expect(screen.getByText("Guest")).toBeInTheDocument();
+    expect(screen.getByText("budi@gmail.com")).toBeInTheDocument();
+    // Reachable in one click — the address is a mailto link, not plain text.
+    expect(screen.getByRole("link", { name: "budi@gmail.com" })).toHaveAttribute(
+      "href",
+      "mailto:budi@gmail.com",
+    );
+  });
+
+  it("does not mark a registered buyer's order as a guest order", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      guestOrderResponse({
+        id: 10,
+        fullName: "Andi Santoso",
+        username: "andi",
+        telegramId: "111",
+        isGuest: false,
+        guestEmail: null,
+      }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    expect(screen.getByText("Andi Santoso")).toBeInTheDocument();
+    expect(screen.queryByText("Guest")).not.toBeInTheDocument();
+    expect(screen.queryByText("Guest Buyer")).not.toBeInTheDocument();
+  });
+
+  it("explains a guest order with no email on file instead of rendering an empty contact area", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      guestOrderResponse({ ...GUEST_USER, guestEmail: null }),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
+
+    expect(screen.getByText("Guest")).toBeInTheDocument();
+    expect(screen.getByText("Guest Buyer")).toBeInTheDocument();
+    expect(screen.getByText(/no contact address on file/i)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /@/ })).not.toBeInTheDocument();
+  });
+});
+
 describe("OrderDetailPage — manual fulfilment", () => {
   it("shows a Send to Buyer action for a PROCESSING order and posts the typed content", async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });

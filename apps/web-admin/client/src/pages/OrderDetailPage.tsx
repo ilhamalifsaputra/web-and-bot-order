@@ -7,11 +7,12 @@ import { DataTable } from "../components/shared/DataTable";
 import { EmptyState } from "../components/shared/EmptyState";
 import { StatusBadge } from "../components/shared/StatusBadge";
 import { ConfirmDialog } from "../components/shared/ConfirmDialog";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
-import { RefreshCw, Check, X, CircleDollarSign, Send } from "lucide-react";
+import { RefreshCw, Check, X, CircleDollarSign, Send, MailX } from "lucide-react";
 import { apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 
@@ -31,7 +32,17 @@ interface OrderDetail {
   totalAmount: string;
   createdAt: string;
   createdAtDisplay: string | null;
-  user: { id: number; fullName: string | null; username: string | null; telegramId: string | null } | null;
+  /** A guest buyer's row has `isGuest: true` and NO username/fullName/
+   * telegramId at all — `guestEmail` is the only identity and the only way
+   * to contact them, so every buyer-facing spot here has to handle it. */
+  user: {
+    id: number;
+    fullName: string | null;
+    username: string | null;
+    telegramId: string | null;
+    isGuest: boolean;
+    guestEmail: string | null;
+  } | null;
   items: OrderItem[];
   voucher: { code: string; type: string } | null;
   /** Set only by a manual/manual_with_info fulfilment (fulfillManualOrder) —
@@ -164,6 +175,11 @@ export function OrderDetailPage() {
   // noise, so hide it there; a real auto order keeps the column exactly as
   // before.
   const isManualOrder = order.items.length > 0 && order.items.every(i => i.stockItem === null);
+  // Guest buyers have no name to fall back on, so the Customer row would
+  // otherwise render a bare dash — label them explicitly instead, and give
+  // their one contact channel its own card below.
+  const isGuestBuyer = order.user?.isGuest === true;
+  const buyerName = order.user?.fullName ?? order.user?.username ?? null;
 
   return (
     <PageLayout title={`Order ${order.orderCode}`}>
@@ -183,9 +199,12 @@ export function OrderDetailPage() {
               <span className="text-ink-soft">Status</span>
               <StatusBadge status={order.status} />
             </div>
-            <div className="flex justify-between">
+            <div className="flex justify-between gap-4">
               <span className="text-ink-soft">Customer</span>
-              <span className="text-ink">{order.user?.fullName ?? order.user?.username ?? "—"}</span>
+              <span className="flex items-center gap-2 text-ink">
+                {isGuestBuyer && <Badge variant="secondary">Guest</Badge>}
+                <span>{buyerName ?? (isGuestBuyer ? "Guest checkout" : "—")}</span>
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-ink-soft">Telegram ID</span>
@@ -223,6 +242,42 @@ export function OrderDetailPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Guest contact — only rendered for guest orders (progressive
+          disclosure: a registered buyer already has a name and a Telegram id
+          in the card above). For a manually-fulfilled guest order this email
+          is the ONLY way to reach the buyer, so it gets its own card rather
+          than a fourth key/value row an admin has to hunt for. */}
+      {isGuestBuyer && (
+        <Card className="mb-6">
+          <CardHeader><CardTitle>Guest Buyer</CardTitle></CardHeader>
+          <CardContent>
+            {order.user?.guestEmail ? (
+              <div className="flex flex-col gap-1 text-sm">
+                <span className="text-ink-soft">Contact email</span>
+                <a
+                  href={`mailto:${order.user.guestEmail}`}
+                  className="w-fit font-medium text-ink underline underline-offset-4"
+                >
+                  {order.user.guestEmail}
+                </a>
+                <span className="text-xs text-ink-soft">
+                  This buyer checked out without an account — email is the only way to reach them.
+                </span>
+              </div>
+            ) : (
+              // guestEmail is nullable in the schema, so an admin can land on
+              // a guest order with nothing to contact. Say so plainly instead
+              // of leaving the card blank.
+              <EmptyState
+                icon={MailX}
+                title="No contact address on file"
+                description="This guest order has no email saved, so the buyer can't be contacted from here. They can still follow the order themselves with its order code on the storefront."
+              />
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Items table */}
       <h2 className="text-sm font-semibold text-ink mb-3">Items ({order.items.length})</h2>

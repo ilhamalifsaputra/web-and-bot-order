@@ -425,3 +425,50 @@ describe("OrdersPage", () => {
     await waitFor(() => expect(fetchSpy).toHaveBeenCalledWith("/api/orders?pageSize=50"));
   });
 });
+
+describe("OrdersPage — guest buyers", () => {
+  const GUEST_ORDER = {
+    id: 4,
+    orderCode: "ORD-0004",
+    status: "PROCESSING",
+    currency: "IDR",
+    totalAmount: "35000",
+    paymentMethod: "TOKOPAY",
+    createdAt: "2026-01-04T00:00:00.000Z",
+    createdAtDisplay: "2026-01-04",
+    user: { id: 30, fullName: null, username: null, telegramId: null, isGuest: true, guestEmail: "budi@gmail.com" },
+    items: [{ id: 4, quantity: 1, product: { id: 4, name: "Canva Pro 1 Month" } }],
+    eligibility: { ...ELIGIBILITY_NONE, canFulfill: true, canReject: true },
+  };
+
+  function guestOrdersData(user: Record<string, unknown>) {
+    return {
+      orders: [{ ...GUEST_ORDER, user }],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      hasNext: false,
+      statuses: [],
+    };
+  }
+
+  it("marks a guest row with a Guest badge and its contact email", async () => {
+    mockFetchRouter({ orders: guestOrdersData(GUEST_ORDER.user) });
+    render(<OrdersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-0004")).toBeInTheDocument());
+
+    expect(screen.getByText("Guest")).toBeInTheDocument();
+    expect(screen.getByText("budi@gmail.com")).toBeInTheDocument();
+    // The guest row must never fall back to the "Registered Customer" subline.
+    expect(screen.queryByText("Registered Customer")).not.toBeInTheDocument();
+  });
+
+  it("fills a guest row's customer cell with a no-contact note when the email is missing", async () => {
+    mockFetchRouter({ orders: guestOrdersData({ ...GUEST_ORDER.user, guestEmail: null }) });
+    render(<OrdersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-0004")).toBeInTheDocument());
+
+    expect(screen.getByText("Guest")).toBeInTheDocument();
+    expect(screen.getByText(/no contact email/i)).toBeInTheDocument();
+  });
+});

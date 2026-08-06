@@ -1354,6 +1354,50 @@ export async function approveOrder(
 }
 
 /**
+ * The buyer label carried by the ORDER_DELIVERED channel post
+ * (`masked_buyer_id`). That post goes to the shop's PUBLIC/semi-public
+ * testimonial channel, not to a private admin chat, so the label has to
+ * satisfy two conflicting requirements at once: it must never let a reader
+ * identify or contact the buyer, and it must still differ between buyers, or
+ * the channel feed reads as though one person bought everything.
+ *
+ * Per buyer kind:
+ * - **Telegram buyer** — first 4 digits of the Telegram id, the rest replaced
+ *   by X (minimum 3). Unchanged.
+ * - **Registered web buyer** — "WEB-XXX". Also unchanged: the previous inline
+ *   version built `"WEB-" + loginUsername.slice(0, 2)` and then cut the result
+ *   back to its first 4 characters ("WEB-") before padding, so the login-name
+ *   characters provably never reached the channel. The parameter is still
+ *   accepted so the buyer-kind branching reads completely at the call site.
+ * - **Guest buyer** — has no username at all, only the contact address typed
+ *   at checkout, so before this the label was always the constant "WEB-XXX".
+ *   Now it borrows at most the first 2 alphanumeric characters of the email's
+ *   LOCAL part. The "@" and the domain are never included: the domain is what
+ *   would narrow a buyer down to one real mailbox, and it is also the part a
+ *   reader could pair with a leaked local part to guess an address. Two
+ *   characters is enough to tell two buyers apart in a feed and far too few to
+ *   reconstruct or brute-force an address — every guest whose email starts
+ *   with the same two characters deliberately collides into one label.
+ */
+export function channelMaskedBuyerId(user: {
+  telegramId: bigint | number | string | null;
+  loginUsername: string | null;
+  isGuest?: boolean;
+  guestEmail?: string | null;
+}): string {
+  if (user.telegramId != null) {
+    const rawId = String(user.telegramId);
+    return rawId.slice(0, 4) + "X".repeat(Math.max(rawId.length - 4, 3));
+  }
+  // Only a guest row ever carries guestEmail (createGuestUser is its sole
+  // writer), so a registered web buyer falls through with an empty hint and
+  // keeps the exact "WEB-XXX" label it has always had.
+  const localPart = user.isGuest ? (user.guestEmail ?? "").split("@")[0] ?? "" : "";
+  const hint = localPart.replace(/[^a-z0-9]/gi, "").slice(0, 2).toLowerCase();
+  return `WEB-${hint}XXX`;
+}
+
+/**
  * Post-delivery side effects shared by the AUTO path (approveOrder) and the
  * MANUAL path (fulfillManualOrder): pay the referee's referral commission and
  * enqueue the public-channel testimonial. Runs AFTER the atomic DELIVERED claim
@@ -1382,13 +1426,10 @@ async function finalizeDeliverySideEffects(
   // forever (see dispatcher.ts), so skip creating it rather than leaving a
   // dead "Waiting" row behind for every delivered order.
   if (publicChannelId() !== undefined) {
-    // Web-only buyers (telegramId=null) get a "WEB-xx" masked id and the
+    // Web-only buyers (telegramId=null) get a "WEB-…" masked id and the
     // via_website flag so the admin channel post shows the origin.
     const viaWebsite = order.user.telegramId == null;
-    const rawId = viaWebsite
-      ? `WEB-${(order.user.loginUsername ?? "user").slice(0, 2)}`
-      : String(order.user.telegramId);
-    const maskedBuyerId = rawId.slice(0, 4) + "X".repeat(Math.max(rawId.length - 4, 3));
+    const maskedBuyerId = channelMaskedBuyerId(order.user);
     const itemsSummary = order.items.map((item) => ({
       name: item.product.name,
       duration: item.product.durationLabel,

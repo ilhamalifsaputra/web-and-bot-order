@@ -24,12 +24,14 @@ import {
   listOrders,
   countOrders,
   computeOrderEligibility,
+  channelMaskedBuyerId,
 } from "./orders";
 import { addToCart, upsertBulkPricing, createVoucher, setFlashSale, bulkAddStock } from "@app/db";
 import { VoucherType, VoucherScope } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
+import { createGuestUser } from "./webauth";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -966,5 +968,112 @@ describe("createOrderFromCart / createOrderDirect — voucher scope (SELECTED)",
 
     const order = await createOrderFromCart(prisma, { user, voucherCode: "SCHEDVOUCH" });
     expect(new Decimal(order!.discountAmount).equals("0.5000")).toBe(true); // 10% of 5.00
+  });
+});
+
+/**
+ * The buyer label that rides along on the public ORDER_DELIVERED channel
+ * post. Pure function, no DB — see channelMaskedBuyerId in ./orders.
+ */
+describe("channelMaskedBuyerId", () => {
+  const REGISTERED_WEB = { telegramId: null, loginUsername: "budiwibowo", isGuest: false, guestEmail: null };
+
+  it("derives a hint from a guest's email without leaking the address or its domain", () => {
+    const label = channelMaskedBuyerId({
+      telegramId: null,
+      loginUsername: null,
+      isGuest: true,
+      guestEmail: "budiwibowo@gmail.com",
+    });
+
+    expect(label).toBe("WEB-buXXX");
+    expect(label).not.toContain("budiwibowo@gmail.com");
+    expect(label).not.toContain("@");
+    expect(label).not.toContain("gmail");
+    expect(label).not.toContain(".com");
+    // Only the first two characters of the local part may survive.
+    expect(label).not.toContain("bud");
+  });
+
+  it("gives two guests with different emails two different labels", () => {
+    const budi = channelMaskedBuyerId({
+      telegramId: null,
+      loginUsername: null,
+      isGuest: true,
+      guestEmail: "budi@gmail.com",
+    });
+    const siti = channelMaskedBuyerId({
+      telegramId: null,
+      loginUsername: null,
+      isGuest: true,
+      guestEmail: "siti@yahoo.com",
+    });
+
+    expect(budi).toBe("WEB-buXXX");
+    expect(siti).toBe("WEB-siXXX");
+    expect(budi).not.toBe(siti);
+  });
+
+  it("keeps the pre-existing label for a Telegram buyer", () => {
+    expect(
+      channelMaskedBuyerId({
+        telegramId: BigInt(584012345),
+        loginUsername: null,
+        isGuest: false,
+        guestEmail: null,
+      }),
+    ).toBe("5840XXXXX");
+  });
+
+  it("keeps the pre-existing label for a registered web buyer", () => {
+    // The old inline masking built "WEB-" + loginUsername.slice(0, 2) and then
+    // cut the string back to 4 characters, so the login-name characters never
+    // reached the channel — "WEB-XXX" is exactly what shipped before.
+    expect(channelMaskedBuyerId(REGISTERED_WEB)).toBe("WEB-XXX");
+  });
+
+  it("falls back to the registered-web label for a guest with no email on file", () => {
+    expect(
+      channelMaskedBuyerId({ telegramId: null, loginUsername: null, isGuest: true, guestEmail: null }),
+    ).toBe("WEB-XXX");
+  });
+
+  it("ignores punctuation-only leading characters in a guest email's local part", () => {
+    expect(
+      channelMaskedBuyerId({
+        telegramId: null,
+        loginUsername: null,
+        isGuest: true,
+        guestEmail: "..@example.com",
+      }),
+    ).toBe("WEB-XXX");
+  });
+});
+
+/**
+ * Regression pin, not new behavior: the admin panel's Guest badge and contact
+ * email are rendered straight off `order.user`, so ORDER_USER_SELECT dropping
+ * either field would silently blank the admin surfaces without breaking any
+ * other test. Both admin readers (list + detail) are pinned here.
+ */
+describe("guest buyer fields on admin-facing order reads", () => {
+  it("carries isGuest and guestEmail through listOrders and getOrder", async () => {
+    const guest = await createGuestUser(prisma, { email: "Tamu@Mail.com" });
+    const order = await prisma.order.create({
+      data: {
+        orderCode: `GUEST-${Math.floor(Math.random() * 1e9)}`,
+        userId: guest.id,
+        subtotalAmount: "1000",
+        totalAmount: "1000",
+      },
+    });
+
+    const [listed] = await listOrders(prisma, { ids: [order.id] });
+    expect(listed!.user.isGuest).toBe(true);
+    expect(listed!.user.guestEmail).toBe("tamu@mail.com");
+
+    const detail = await getOrder(prisma, order.id);
+    expect(detail!.user.isGuest).toBe(true);
+    expect(detail!.user.guestEmail).toBe("tamu@mail.com");
   });
 });

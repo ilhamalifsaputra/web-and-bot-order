@@ -13,6 +13,7 @@ import { PaymentMethodBadge } from "../components/shared/PaymentMethodBadge";
 import { Pagination } from "../components/shared/Pagination";
 import { OrdersKpiRow } from "./orders/OrdersKpiRow";
 import { OrderStatusTabs, statusesForTab, type StatusTabKey } from "./orders/OrderStatusTabs";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
@@ -70,7 +71,17 @@ interface OrderRow {
   paymentMethod: string;
   createdAt: string;
   createdAtDisplay: string | null;
-  user: { id: number; fullName: string | null; username: string | null; telegramId: string | null } | null;
+  /** Guest buyers carry no fullName/username/telegramId at all — only
+   * `isGuest` and the contact `guestEmail` they typed at checkout. The
+   * Customer column has to render off those instead. */
+  user: {
+    id: number;
+    fullName: string | null;
+    username: string | null;
+    telegramId: string | null;
+    isGuest: boolean;
+    guestEmail: string | null;
+  } | null;
   items: OrderItemRow[];
   eligibility: OrderEligibility;
 }
@@ -494,14 +505,32 @@ export function OrdersPage() {
           {
             key: "customer",
             header: "Customer",
-            render: (row) => (
-              <div>
-                <div className="text-sm text-ink">{row.user?.fullName ?? row.user?.username ?? "—"}</div>
-                <div className="text-xs text-ink-soft">
-                  {row.user?.telegramId ? `Telegram ${row.user.telegramId}` : row.user ? "Registered Customer" : "—"}
+            render: (row) => {
+              // A guest has no name of any kind, so the default branch below
+              // would print a bare "—" and leave the admin with nothing to
+              // act on. Show the Guest marker plus the contact email (the
+              // guest's actual identity here) — and, if that email is
+              // somehow missing, say that outright rather than blank out.
+              if (row.user?.isGuest) {
+                return (
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary">Guest</Badge>
+                      <span className="text-sm text-ink">{row.user.guestEmail ?? "No contact email"}</span>
+                    </div>
+                    <div className="text-xs text-ink-soft">Guest checkout — no account</div>
+                  </div>
+                );
+              }
+              return (
+                <div>
+                  <div className="text-sm text-ink">{row.user?.fullName ?? row.user?.username ?? "—"}</div>
+                  <div className="text-xs text-ink-soft">
+                    {row.user?.telegramId ? `Telegram ${row.user.telegramId}` : row.user ? "Registered Customer" : "—"}
+                  </div>
                 </div>
-              </div>
-            ),
+              );
+            },
           },
           {
             key: "products",

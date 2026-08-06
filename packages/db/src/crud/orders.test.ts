@@ -1012,51 +1012,41 @@ describe("createOrderFromCart / createOrderDirect — voucher scope (SELECTED)",
  * post. Pure function, no DB — see channelMaskedBuyerId in ./orders.
  */
 describe("channelMaskedBuyerId", () => {
-  const REGISTERED_WEB = { telegramId: null, loginUsername: "budiwibowo", isGuest: false, guestEmail: null };
+  const REGISTERED_WEB = { id: 77, telegramId: null, loginUsername: "budiwibowo", isGuest: false };
+  const GUEST = { telegramId: null, loginUsername: null, isGuest: true };
 
-  it("derives a hint from a guest's email without leaking the address or its domain", () => {
-    const label = channelMaskedBuyerId({
-      telegramId: null,
-      loginUsername: null,
-      isGuest: true,
-      guestEmail: "budiwibowo@gmail.com",
-    });
-
-    expect(label).toBe("WEB-buXXX");
-    expect(label).not.toContain("budiwibowo@gmail.com");
+  it("derives a guest's hint from the row id, and cannot see the email at all", () => {
+    // The strongest guarantee here is the SIGNATURE: `guestEmail` is not a
+    // parameter any more, so the address the buyer typed at checkout cannot
+    // reach this label — nor the notification_outbox row that carries it —
+    // even by accident. The first version of this function took the first 2
+    // characters of the email's local part, which published a fragment of a
+    // private address to a public channel.
+    const label = channelMaskedBuyerId({ ...GUEST, id: 42 });
+    expect(label).toBe("WEB-42XXX");
     expect(label).not.toContain("@");
-    expect(label).not.toContain("gmail");
-    expect(label).not.toContain(".com");
-    // Only the first two characters of the local part may survive.
-    expect(label).not.toContain("bud");
   });
 
-  it("gives two guests with different emails two different labels", () => {
-    const budi = channelMaskedBuyerId({
-      telegramId: null,
-      loginUsername: null,
-      isGuest: true,
-      guestEmail: "budi@gmail.com",
-    });
-    const siti = channelMaskedBuyerId({
-      telegramId: null,
-      loginUsername: null,
-      isGuest: true,
-      guestEmail: "siti@yahoo.com",
-    });
+  it("gives two different guests two different labels", () => {
+    expect(channelMaskedBuyerId({ ...GUEST, id: 42 })).toBe("WEB-42XXX");
+    expect(channelMaskedBuyerId({ ...GUEST, id: 43 })).toBe("WEB-43XXX");
+  });
 
-    expect(budi).toBe("WEB-buXXX");
-    expect(siti).toBe("WEB-siXXX");
-    expect(budi).not.toBe(siti);
+  it("zero-pads a single-digit id and keeps only the last two digits of a long one", () => {
+    expect(channelMaskedBuyerId({ ...GUEST, id: 7 })).toBe("WEB-07XXX");
+    expect(channelMaskedBuyerId({ ...GUEST, id: 1234 })).toBe("WEB-34XXX");
+    // Deliberate collision: ids 7 and 107 share a label, which is the point —
+    // the hint distinguishes buyers in a feed without identifying the row.
+    expect(channelMaskedBuyerId({ ...GUEST, id: 107 })).toBe("WEB-07XXX");
   });
 
   it("keeps the pre-existing label for a Telegram buyer", () => {
     expect(
       channelMaskedBuyerId({
+        id: 5,
         telegramId: BigInt(584012345),
         loginUsername: null,
         isGuest: false,
-        guestEmail: null,
       }),
     ).toBe("5840XXXXX");
   });
@@ -1064,25 +1054,9 @@ describe("channelMaskedBuyerId", () => {
   it("keeps the pre-existing label for a registered web buyer", () => {
     // The old inline masking built "WEB-" + loginUsername.slice(0, 2) and then
     // cut the string back to 4 characters, so the login-name characters never
-    // reached the channel — "WEB-XXX" is exactly what shipped before.
+    // reached the channel — "WEB-XXX" is exactly what shipped before. The id
+    // hint is guest-only, so this label stays byte-identical.
     expect(channelMaskedBuyerId(REGISTERED_WEB)).toBe("WEB-XXX");
-  });
-
-  it("falls back to the registered-web label for a guest with no email on file", () => {
-    expect(
-      channelMaskedBuyerId({ telegramId: null, loginUsername: null, isGuest: true, guestEmail: null }),
-    ).toBe("WEB-XXX");
-  });
-
-  it("ignores punctuation-only leading characters in a guest email's local part", () => {
-    expect(
-      channelMaskedBuyerId({
-        telegramId: null,
-        loginUsername: null,
-        isGuest: true,
-        guestEmail: "..@example.com",
-      }),
-    ).toBe("WEB-XXX");
   });
 });
 

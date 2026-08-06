@@ -1369,31 +1369,33 @@ export async function approveOrder(
  *   back to its first 4 characters ("WEB-") before padding, so the login-name
  *   characters provably never reached the channel. The parameter is still
  *   accepted so the buyer-kind branching reads completely at the call site.
- * - **Guest buyer** — has no username at all, only the contact address typed
- *   at checkout, so before this the label was always the constant "WEB-XXX".
- *   Now it borrows at most the first 2 alphanumeric characters of the email's
- *   LOCAL part. The "@" and the domain are never included: the domain is what
- *   would narrow a buyer down to one real mailbox, and it is also the part a
- *   reader could pair with a leaked local part to guess an address. Two
- *   characters is enough to tell two buyers apart in a feed and far too few to
- *   reconstruct or brute-force an address — every guest whose email starts
- *   with the same two characters deliberately collides into one label.
+ * - **Guest buyer** — has no username at all, so before this the label was
+ *   always the constant "WEB-XXX" and the whole feed read as one shopper.
+ *   The hint is the last 2 digits of the guest's `User.id`, zero-padded.
+ *
+ *   The first version of this took the hint from the first 2 characters of
+ *   the guest email's local part. That met the "tell buyers apart" goal but
+ *   published 2 characters of a private address to a public channel — and
+ *   stored them in `notification_outbox` rows besides. The row id reaches the
+ *   same goal from something that is not a secret: it is an opaque internal
+ *   counter, it is not contactable, it is not attacker-supplied, and it says
+ *   nothing about who the buyer is. Only the LAST two digits, so the label
+ *   does not even disclose the id itself, and ids 100 apart deliberately
+ *   collide into one label.
  */
 export function channelMaskedBuyerId(user: {
+  id: number;
   telegramId: bigint | number | string | null;
   loginUsername: string | null;
   isGuest?: boolean;
-  guestEmail?: string | null;
 }): string {
   if (user.telegramId != null) {
     const rawId = String(user.telegramId);
     return rawId.slice(0, 4) + "X".repeat(Math.max(rawId.length - 4, 3));
   }
-  // Only a guest row ever carries guestEmail (createGuestUser is its sole
-  // writer), so a registered web buyer falls through with an empty hint and
-  // keeps the exact "WEB-XXX" label it has always had.
-  const localPart = user.isGuest ? (user.guestEmail ?? "").split("@")[0] ?? "" : "";
-  const hint = localPart.replace(/[^a-z0-9]/gi, "").slice(0, 2).toLowerCase();
+  // A registered web buyer falls through with an empty hint and keeps the
+  // exact "WEB-XXX" label it has always had.
+  const hint = user.isGuest ? String(user.id).slice(-2).padStart(2, "0") : "";
   return `WEB-${hint}XXX`;
 }
 

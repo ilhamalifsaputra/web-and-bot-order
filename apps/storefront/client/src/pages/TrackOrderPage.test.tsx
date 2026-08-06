@@ -72,7 +72,10 @@ describe("TrackOrderPage", () => {
   it("opens with the form and an explanation of what to enter", async () => {
     renderTrack();
     expect(screen.getByRole("heading", { name: "Track your order" })).toBeInTheDocument();
-    expect(screen.getByText(/order code from your confirmation email/)).toBeInTheDocument();
+    // Points at the order page, not an inbox: guest checkout sends no mail,
+    // so the order code exists nowhere else (see the copy guard in
+    // packages/core/src/locales.test.ts).
+    expect(screen.getByText(/order code shown on your order page/)).toBeInTheDocument();
     expect(screen.getByLabelText("Order code")).toBeInTheDocument();
     expect(screen.getByLabelText("Email address")).toBeInTheDocument();
   });

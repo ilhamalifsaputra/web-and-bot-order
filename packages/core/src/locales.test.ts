@@ -39,3 +39,62 @@ describe("locale parity (en ↔ id)", () => {
     expect(mismatches).toEqual({});
   });
 });
+
+/**
+ * Guest checkout sends NO mail. `mailer.ts` exists, but it is wired only to
+ * password reset, and docs/PROJECT_ARCHITECTURE.md records the silence as
+ * deliberate: guests read their delivered content on the web.
+ *
+ * Copy that points a guest at an inbox therefore strands them. The order code
+ * lives on the order page and nowhere else, and without it `POST
+ * /api/v1/track` cannot let them back in — so "check your confirmation email"
+ * is not a small inaccuracy, it is the difference between recovering an order
+ * and being locked out of a paid one forever.
+ *
+ * The property is pinned, not the wording: rewrite these strings freely, just
+ * never re-promise the email. If mail sending is actually implemented later,
+ * delete the offending pattern here in the SAME change that sends it.
+ */
+describe("guest-facing copy never promises an email the shop does not send", () => {
+  const GUEST_KEYS = [
+    "web.guest_email_invalid",
+    "web.guest_contact_title",
+    "web.guest_email_label",
+    "web.guest_email_hint",
+    "web.guest_account_note",
+    "web.track_title",
+    "web.track_intro",
+    "web.track_not_found_title",
+    "web.track_not_found",
+    "web.track_link",
+  ];
+
+  /** EN and ID phrasings of "something will arrive in your inbox". */
+  const INBOX_PROMISES: RegExp[] = [
+    /confirmation e-?mail/i,
+    /email konfirmasi/i,
+    /\bwe(?:'ll| will)? (?:send|e-?mail|mail)\b/i,
+    /\bsent to (?:your |this )?(?:e-?mail|inbox|address)/i,
+    /\bcheck your (?:e-?mail|inbox)/i,
+    /\b(?:go|goes|arrive|arrives|land|lands) (?:here|there)\b/i,
+    /kami kirim/i,
+    /dikirim(?:kan)? ke (?:email|inbox)/i,
+    /cek (?:email|inbox)/i,
+  ];
+
+  for (const [lang, strings] of [
+    ["en", load("en")],
+    ["id", load("id")],
+  ] as const) {
+    it(`${lang}: no guest-facing string tells the shopper to look in an inbox`, () => {
+      const offenders: Record<string, string> = {};
+      for (const key of GUEST_KEYS) {
+        const value = strings[key];
+        expect(value, `${lang} is missing ${key}`).toBeTypeOf("string");
+        const hit = INBOX_PROMISES.find((re) => re.test(value!));
+        if (hit) offenders[key] = `matched ${hit} in: ${value}`;
+      }
+      expect(offenders).toEqual({});
+    });
+  }
+});

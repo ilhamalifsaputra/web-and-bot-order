@@ -480,6 +480,12 @@ describe("CheckoutPage", () => {
   // reads `is_guest` and the two wallet_*_enabled flags off the payload rather
   // than inferring anything from the absence of a customer.
   describe("guest mode", () => {
+    // The rendered `web.guest_email_invalid` string, named once so a copy
+    // rewrite touches one line here instead of five. The wording itself is
+    // guarded in packages/core/src/locales.test.ts (it must never promise a
+    // confirmation email — guest checkout sends no mail).
+    const GUEST_EMAIL_INVALID = "Enter a valid email address — it's how the shop reaches you about this order.";
+
     const guestData: CheckoutData = {
       ...checkoutData,
       is_guest: true,
@@ -496,7 +502,7 @@ describe("CheckoutPage", () => {
       renderCheckout(() => guestData);
       await screen.findByRole("heading", { name: "Checkout" });
       expect(screen.getByLabelText("Email address")).toBeInTheDocument();
-      expect(screen.getByText(/look the order up later/)).toBeInTheDocument();
+      expect(screen.getByText(/save the order code shown there/)).toBeInTheDocument();
       expect(screen.getByRole("link", { name: "Already have an account? Sign in" })).toHaveAttribute(
         "href",
         "/login?next=/checkout",
@@ -558,8 +564,8 @@ describe("CheckoutPage", () => {
       // Once, against the field that has to change — not also in a page-level
       // banner a column away from the input (STO-005's rule for the voucher
       // error applies here too).
-      const message = await screen.findByText("Enter a valid email address — we send your order details there.");
-      expect(screen.getAllByText("Enter a valid email address — we send your order details there.")).toHaveLength(1);
+      const message = await screen.findByText(GUEST_EMAIL_INVALID);
+      expect(screen.getAllByText(GUEST_EMAIL_INVALID)).toHaveLength(1);
       // Still on checkout, with the field editable, so the retry the adopted
       // CSRF token makes possible is actually reachable.
       const email = screen.getByLabelText("Email address");
@@ -610,7 +616,7 @@ describe("CheckoutPage", () => {
       expect(screen.getByText("Required")).toBeInTheDocument();
       // But does not scold a shopper who has not typed anything yet.
       expect(
-        screen.queryByText("Enter a valid email address — we send your order details there."),
+        screen.queryByText(GUEST_EMAIL_INVALID),
       ).not.toBeInTheDocument();
       expect(screen.getByLabelText("Email address")).not.toHaveAttribute("aria-invalid", "true");
     });
@@ -623,7 +629,7 @@ describe("CheckoutPage", () => {
       fireEvent.change(email, { target: { value: "not-an-email" } });
       fireEvent.blur(email);
 
-      const message = await screen.findByText("Enter a valid email address — we send your order details there.");
+      const message = await screen.findByText(GUEST_EMAIL_INVALID);
       expect(email).toHaveAttribute("aria-invalid", "true");
       // aria-invalid alone announces "invalid" with no reason attached — the
       // message has to be reachable from the field itself.
@@ -634,7 +640,7 @@ describe("CheckoutPage", () => {
       fireEvent.change(email, { target: { value: "guest@example.com" } });
       await waitFor(() =>
         expect(
-          screen.queryByText("Enter a valid email address — we send your order details there."),
+          screen.queryByText(GUEST_EMAIL_INVALID),
         ).not.toBeInTheDocument(),
       );
       expect(email).not.toHaveAttribute("aria-invalid", "true");

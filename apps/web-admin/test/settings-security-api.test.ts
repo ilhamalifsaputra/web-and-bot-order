@@ -113,6 +113,49 @@ describe("POST /api/settings/edit", () => {
     expect(await getSetting(prisma, "smtp_from")).toBe("Shop <no-reply@example.com>");
   });
 
+  it("rejects an owner_email that isn't a plain address with 400", async () => {
+    const res = await postJson("/api/settings/edit", cookie, csrf, { key: "owner_email", value: "not-an-email" });
+    expect(res.statusCode).toBe(400);
+    expect(await getSetting(prisma, "owner_email")).toBeNull();
+  });
+
+  it("rejects an owner_email in 'Display Name <email>' form (unlike smtp_from, no display-name form)", async () => {
+    const res = await postJson("/api/settings/edit", cookie, csrf, { key: "owner_email", value: "Owner <owner@example.com>" });
+    expect(res.statusCode).toBe(400);
+    expect(await getSetting(prisma, "owner_email")).toBeNull();
+  });
+
+  it("accepts a plain owner_email address", async () => {
+    const res = await postJson("/api/settings/edit", cookie, csrf, { key: "owner_email", value: "owner@example.com" });
+    expect(res.statusCode).toBe(200);
+    expect(await getSetting(prisma, "owner_email")).toBe("owner@example.com");
+  });
+
+  it("owner_email is not a secret — it round-trips as a plain value in GET /api/settings, not masked", async () => {
+    await postJson("/api/settings/edit", cookie, csrf, { key: "owner_email", value: "owner@example.com" });
+    const res = await getJson("/api/settings", cookie);
+    expect(res.statusCode).toBe(200);
+    const data = res.json() as { fields: Array<{ key: string; secret: boolean; value: string }> };
+    const field = data.fields.find((f) => f.key === "owner_email");
+    expect(field).toBeTruthy();
+    expect(field!.secret).toBe(false);
+    expect(field!.value).toBe("owner@example.com");
+  });
+
+  it("accepts the owner_email_enabled and per-event toggle keys as plain true/false values", async () => {
+    for (const key of [
+      "owner_email_enabled",
+      "owner_email_on_paid_order",
+      "owner_email_on_manual_queue",
+      "owner_email_on_new_ticket",
+      "owner_email_on_ticket_reply",
+    ]) {
+      const res = await postJson("/api/settings/edit", cookie, csrf, { key, value: "true" });
+      expect(res.statusCode).toBe(200);
+      expect(await getSetting(prisma, key)).toBe("true");
+    }
+  });
+
   it("treats an empty smtp_pass submission as a no-op (never overwrites a saved secret)", async () => {
     await setSetting(prisma, "smtp_pass", "existing-secret");
     const res = await postJson("/api/settings/edit", cookie, csrf, { key: "smtp_pass", value: "" });

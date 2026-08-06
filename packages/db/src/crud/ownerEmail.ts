@@ -26,8 +26,10 @@ const EVENT_TOGGLE_KEY: Record<OwnerEmailEvent, string> = {
 };
 
 // Plain recipient address only — unlike SMTP_FROM_RE (settings.ts), owner_email
-// never accepts the "Display Name <email>" form.
-const OWNER_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// never accepts the "Display Name <email>" form. Exported so the web-admin
+// settings route (apps/web-admin/src/routes/api/settings.ts) validates a save
+// with the exact same pattern this resolver gates on — the two can never drift.
+export const OWNER_EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** "true" (case-insensitive) is on; anything else, including missing/blank, is off. */
 function isOn(raw: string | null): boolean {

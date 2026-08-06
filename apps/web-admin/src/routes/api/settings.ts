@@ -15,6 +15,7 @@ import {
   getBybitPollHealth,
   getBybitBscPollHealth,
   getSmtpCreds,
+  OWNER_EMAIL_RE,
 } from "@app/db";
 import { verifySmtp } from "@app/core/mailer";
 import {
@@ -85,6 +86,12 @@ const EDITABLE: Record<string, string> = {
   smtp_pass: "SMTP password",
   smtp_from: "From address",
   smtp_secure: "Use SSL/TLS (port 465)",
+  owner_email: "Owner notification email",
+  owner_email_enabled: "Owner email notifications enabled",
+  owner_email_on_paid_order: "Email owner on paid orders",
+  owner_email_on_manual_queue: "Email owner on manual-fulfilment orders",
+  owner_email_on_new_ticket: "Email owner on new support tickets",
+  owner_email_on_ticket_reply: "Email owner on ticket replies",
   [CUSTOM_EMOJI_MAP_SETTING]: "Custom emoji map (JSON)",
   bulk_purchase_broadcast_enabled: "Bulk purchase broadcast enabled",
   bulk_purchase_broadcast_threshold: "Bulk purchase broadcast threshold (qty)",
@@ -224,6 +231,12 @@ async function applyFieldEdit(
 
   if (key === "smtp_from" && value !== "" && !SMTP_FROM_RE.test(value)) {
     throw new FieldEditError(400, 'Expected an email address, optionally with a display name, like "Shop Name <no-reply@example.com>".');
+  }
+
+  // Plain address only — unlike smtp_from this is a recipient, not a
+  // Nodemailer "from" header, so no "Display Name <email>" form.
+  if (key === "owner_email" && value !== "" && !OWNER_EMAIL_RE.test(value)) {
+    throw new FieldEditError(400, "That doesn't look like a valid email address, e.g. owner@example.com.");
   }
 
   if (key === CUSTOM_EMOJI_MAP_SETTING && value !== "") {

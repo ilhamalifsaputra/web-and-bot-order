@@ -41,6 +41,8 @@ import {
   enqueueOrderProcessingDm,
   enqueueManualDeliveredDm,
   enqueueManualOrderAdminAlert,
+  enqueueOwnerOrderPaidEmail,
+  enqueueOwnerManualQueueEmail,
 } from "./notifications";
 import { logAdminAction } from "./audit";
 import { transitionOrderStatus } from "./orderStatus";
@@ -1571,8 +1573,21 @@ export async function settlePaidOrder(
   );
 
   // ── AUTO branch (unchanged behavior) ────────────────────────────────────
+  // NOTE: this `if (!isManual) { ... return ... }` early-return is what makes
+  // the AUTO and MANUAL branches below mutually exclusive — exactly one of
+  // enqueueOwnerOrderPaidEmail / enqueueOwnerManualQueueEmail ever runs per
+  // settlePaidOrder call, so a settled order never produces both an
+  // OWNER_EMAIL_ORDER_PAID and an OWNER_EMAIL_MANUAL_ORDER_QUEUED email.
+  // Don't hoist either call above this branch split.
   if (!isManual) {
     const result = await approveOrder(db, orderId, args);
+    await enqueueOwnerOrderPaidEmail(db, {
+      orderId,
+      orderCode: order.orderCode,
+      total: order.totalAmount,
+      currency: order.currency,
+      itemCount: order.items.length,
+    });
     return { kind: "delivered", order: result.order, credentials: result.credentials };
   }
 
@@ -1593,10 +1608,21 @@ export async function settlePaidOrder(
     telegramId: order.user.telegramId,
     language: order.user.language,
   });
+  // Same mutual-exclusivity guarantee noted above the AUTO branch: this call
+  // only ever runs on the MANUAL side of the `if (!isManual)` split, so it
+  // can never fire alongside enqueueOwnerOrderPaidEmail for the same order.
+  const manualItems = order.items.map((item) => ({ name: item.product.name, qty: item.quantity }));
   await enqueueManualOrderAdminAlert(db, {
     orderId,
     orderCode: order.orderCode,
-    items: order.items.map((item) => ({ name: item.product.name, qty: item.quantity })),
+    items: manualItems,
+    total: order.totalAmount,
+    currency: order.currency,
+  });
+  await enqueueOwnerManualQueueEmail(db, {
+    orderId,
+    orderCode: order.orderCode,
+    items: manualItems,
     total: order.totalAmount,
     currency: order.currency,
   });

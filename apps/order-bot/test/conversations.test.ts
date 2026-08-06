@@ -14,7 +14,7 @@ import {
   setSetting,
   deleteSetting,
 } from "@app/db";
-import { OrderStatus, SenderType, TicketStatus, UserRole } from "@app/core/enums";
+import { NotificationEvent, OrderStatus, SenderType, TicketStatus, UserRole } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import {
   makeCtx,
@@ -173,6 +173,32 @@ describe("support + reject conversations", () => {
     expect(ticket).toBeTruthy();
     expect(await prisma.ticketMessage.count({ where: { ticketId: ticket!.id } })).toBe(1);
     expect(calls(sink, "sendMessage").some((c) => c.args[0] === 999)).toBe(true); // forwarded
+  });
+
+  it("support: a bot-created ticket enqueues exactly ONE owner email (NEW_TICKET), not a second false TICKET_REPLY from the thread-mirroring addTicketMessage call", async () => {
+    // Both owner-email triggers configured, so a bug that double-fires would
+    // actually enqueue a second (wrong) row instead of silently no-op'ing.
+    await setSetting(prisma, "owner_email_enabled", "true");
+    await setSetting(prisma, "owner_email", "owner@example.com");
+    await setSetting(prisma, "owner_email_on_new_ticket", "true");
+    await setSetting(prisma, "owner_email_on_ticket_reply", "true");
+
+    const sink: SentCall[] = [];
+    const entry = entryCust(sink, "v1:support:open");
+    const conv = new FakeConversation([
+      msg(sink, { text: "My account stopped working yesterday" }),
+      msg(sink, { callbackData: "v1:support:photos:done" }),
+    ]);
+    await supportConversation(conv.asMyConversation(), entry);
+
+    const ticket = await prisma.supportTicket.findFirst({ where: { userId: sample.user.id } });
+    expect(ticket).toBeTruthy();
+    expect(
+      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET } }),
+    ).toBe(1);
+    expect(
+      await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_TICKET_REPLY } }),
+    ).toBe(0);
   });
 
   it("support: with an existing order, picking it from the order picker links orderId on the ticket", async () => {

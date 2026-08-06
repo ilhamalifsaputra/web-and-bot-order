@@ -44,6 +44,7 @@ import {
   setSetting,
   SMTP_HOST_KEY,
   SMTP_FROM_KEY,
+  createTicket,
 } from "@app/db";
 import { setBotIdentity, resetBotIdentity } from "@app/core/runtime";
 import { NotificationEvent, NotificationChannel, OrderCurrency, DeliveryType } from "@app/core/enums";
@@ -732,6 +733,47 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
       orderBy: { id: "desc" },
     });
     expect(row!.channel).toBe("TELEGRAM");
+    expect(row!.status).toBe("SENT");
+  });
+
+  /**
+   * Full-chain integration test (final-review Finding 2): every other test in
+   * this describe block hand-crafts its outbox row's payloadJson with a
+   * literal the test author typed, so the enqueue-layer's field names
+   * (Task 3, packages/db/src/crud/notifications.ts) and the render-layer's
+   * expected field names (Task 6, emailTemplates.ts, consumed by the
+   * dispatcher below) are only ever asserted independently — a rename on one
+   * side alone would leave every existing test in this file green while
+   * production email breaks. This test instead goes through the REAL
+   * `createTicket` (which calls the real `enqueueOwnerNewTicketEmail`) and
+   * then the real `drainBatch`, proving the whole enqueue -> claim -> render
+   * -> send chain actually connects end to end.
+   */
+  it("full chain: createTicket's real enqueue -> drainBatch's real claim/render/send produces the expected owner email (Finding 2)", async () => {
+    await setSetting(prisma, SMTP_HOST_KEY, "smtp.test.invalid");
+    await setSetting(prisma, SMTP_FROM_KEY, "Shop <shop@test.invalid>");
+    await setSetting(prisma, "owner_email_enabled", "true");
+    await setSetting(prisma, "owner_email", "owner@example.com");
+    await setSetting(prisma, "owner_email_on_new_ticket", "true");
+
+    const user = await upsertUser(prisma, { telegramId: 800_001, username: "fullchainuser", fullName: "Full Chain User" });
+    const ticket = await createTicket(prisma, user.id, "The full chain test message");
+
+    const { bot, sendMessage } = fakeBot();
+    await drainBatch(bot);
+
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    const [, args] = vi.mocked(sendMail).mock.calls[0]!;
+    expect(args.to).toBe("owner@example.com");
+    expect(args.subject).toBe("New support ticket");
+    expect(args.text).toContain(`#${ticket.id}`);
+    expect(args.text).toContain("The full chain test message");
+    expect(sendMessage).not.toHaveBeenCalled();
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET, orderId: null },
+      orderBy: { id: "desc" },
+    });
     expect(row!.status).toBe("SENT");
   });
 });

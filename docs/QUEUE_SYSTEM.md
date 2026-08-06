@@ -107,8 +107,11 @@ proses satu per satu:
 ## Jalur email (`channel = EMAIL`)
 
 Di `drainBatch`, baris dengan `channel === "EMAIL"` dicabang **sebelum**
-jalur `render()`/Telegram di atas — baris email tidak pernah ikut kena
-bailout rate-limit Telegram, dan sebaliknya.
+jalur `render()`/Telegram di atas — baris email tidak pernah MEMICU bailout
+rate-limit Telegram. Tapi isolasinya cuma satu arah: kalau baris Telegram
+yang kena flood control muncul lebih dulu dalam batch (maks 50 baris) yang
+sama, baris email sesudahnya tetap ikut tertunda satu tick karena bailout
+itu `return` dari seluruh `drainBatch`, bukan `continue` per baris.
 
 Jalur ini mengirim notifikasi ke **pemilik toko** (bukan customer), untuk
 empat event: order terbayar (`OWNER_EMAIL_ORDER_PAID`), order terbayar yang
@@ -143,6 +146,8 @@ di body, tidak pernah di subjek. Diverifikasi lewat test
 | `GrammyError` dengan `retry_after` (flood control Telegram) | `sleep(retry_after+1)`, `releaseNotificationClaim` (BUKAN dihitung gagal — transient, bukan salah baris ini), **bailout tick** (baris sisanya tunggu tick berikutnya) |
 | `GrammyError` 403 Forbidden (bot diblokir/bukan admin channel) | `markNotificationFailed` dengan `maxAttempts=1` — langsung `FAILED`, retry tidak akan membantu |
 | Error lain | `markNotificationFailed` dengan `config.NOTIF_MAX_ATTEMPTS` (default 5) — backoff eksponensial sampai mencapai limit |
+| (Jalur email) `renderEmail` mengembalikan `null` (event tanpa template) | `markNotificationFailed` dengan `maxAttempts=1` — langsung `FAILED`, retry tidak akan membantu |
+| (Jalur email) `payload.to` hilang/bukan string | `markNotificationFailed` dengan `maxAttempts=1` — langsung `FAILED`, retry tidak akan membantu |
 
 ## Memantau & operasi manual
 

@@ -142,12 +142,17 @@ export async function supportConversation(conversation: MyConversation, ctx: MyC
   // --- Submit (terminal) ---
   const photoFileIds = photos.length ? photos.join(",") : null;
   const ticket = await createTicket(prisma, info.id, body, photoFileIds, null, orderId);
+  // Mirrors the ticket's own opening message into the thread for display —
+  // createTicket already enqueued the "new ticket" owner email for this same
+  // content, so notifyOwner: false stops this from also enqueueing a
+  // (false) "customer replied" email. See addTicketMessage's doc comment.
   await addTicketMessage(prisma, {
     ticketId: ticket.id,
     senderType: SenderType.USER,
     senderId: info.id,
     content: body,
     photoFileIds,
+    notifyOwner: false,
   });
 
   await menuAnchor(lastCtx, t(lastCtx, "support.received"), ckb.backToMain(lang));

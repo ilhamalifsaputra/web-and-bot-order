@@ -217,6 +217,15 @@ export async function addTicketMessage(
     content: string;
     photoFileIds?: string | null;
     attachmentUrls?: string | null;
+    /** Set to `false` ONLY when this call is mirroring a ticket's own
+     * opening message into the thread (the bot's ticket-creation flow calls
+     * `createTicket` then immediately `addTicketMessage` with the same
+     * content, purely so it shows up in the `TicketMessage` thread table) —
+     * `createTicket` already enqueued the "new ticket" owner email for that
+     * same content, so the USER-sender branch below must not enqueue a
+     * second "customer replied" email for it. Every genuine reply call site
+     * omits this (defaults to `true`, i.e. notify as before). */
+    notifyOwner?: boolean;
   },
 ) {
   const msg = await db.ticketMessage.create({
@@ -243,12 +252,15 @@ export async function addTicketMessage(
       // messages. An admin's own reply (the `else` branch below) must never
       // reach this: that would mail the owner about their own admin's
       // action. No-op unless owner-email is configured (see
-      // enqueueOwnerTicketReplyEmail).
-      await enqueueOwnerTicketReplyEmail(db, {
-        ticketId: args.ticketId,
-        userId: args.senderId,
-        message: args.content,
-      });
+      // enqueueOwnerTicketReplyEmail). Also skipped when `notifyOwner` is
+      // explicitly `false` — see that field's doc comment above.
+      if (args.notifyOwner !== false) {
+        await enqueueOwnerTicketReplyEmail(db, {
+          ticketId: args.ticketId,
+          userId: args.senderId,
+          message: args.content,
+        });
+      }
     } else {
       await db.supportTicket.update({
         where: { id: args.ticketId },

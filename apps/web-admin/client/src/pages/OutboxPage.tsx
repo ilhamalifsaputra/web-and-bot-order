@@ -19,13 +19,15 @@ import { toast } from "sonner";
 import { apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
 
-/** All 15 NotificationEvent values from packages/core/src/enums.ts (11
- * pre-existing Telegram events plus the 4 EMAIL-channel owner-notification
- * events added alongside owner email notifications). Mirrors AuditPage.tsx's
- * ACTION_LABELS pattern: unknown/future values fall back to
- * humanizeEventCode() instead of showing the raw enum. The "Owner email: ..."
- * prefix keeps the four EMAIL-channel events visually distinguishable from
- * the Telegram-oriented labels at a glance. */
+/** NotificationEvent values from packages/core/src/enums.ts, labeled
+ * explicitly here (pre-existing Telegram events plus the 4 EMAIL-channel
+ * owner-notification events added alongside owner email notifications).
+ * Mirrors AuditPage.tsx's ACTION_LABELS pattern: unknown/future values
+ * (including any pre-existing event not yet added here) fall back to
+ * humanizeEventCode() instead of showing the raw enum — still readable,
+ * just not an explicit label. The "Owner email: ..." prefix keeps the four
+ * EMAIL-channel events visually distinguishable from the Telegram-oriented
+ * labels at a glance. */
 const EVENT_LABELS: Record<string, string> = {
   ORDER_DELIVERED: "Order delivered",
   ADMIN_OVERPAID: "Admin overpaid alert",
@@ -38,6 +40,7 @@ const EVENT_LABELS: Record<string, string> = {
   FLASH_SALE_BROADCAST: "Flash sale broadcast",
   ADMIN_MANUAL_ORDER_QUEUED: "Manual order queued",
   BULK_PURCHASE_BROADCAST: "Bulk purchase broadcast",
+  ADMIN_STALE_PAYMENT: "Admin stale payment alert",
   OWNER_EMAIL_ORDER_PAID: "Owner email: order paid",
   OWNER_EMAIL_MANUAL_ORDER_QUEUED: "Owner email: manual order queued",
   OWNER_EMAIL_NEW_TICKET: "Owner email: new ticket",

@@ -4,7 +4,8 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import TrackOrderPage from "./TrackOrderPage";
-import { publicPost } from "../api/client";
+import { apiGet, publicPost } from "../api/client";
+import type { ShopContext } from "../api/types";
 
 vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
@@ -12,7 +13,27 @@ vi.mock("../api/client", () => ({
   publicPost: vi.fn(),
 }));
 
-function renderTrack() {
+/** The chrome context Layout already fetches — /api/v1/pages/context is served
+ * to anonymous visitors, which is how this page knows the shop's public
+ * Telegram handle without a session or a new endpoint. */
+const context: ShopContext = {
+  lang: "en",
+  fx: null,
+  shop_name: "Toko Digital",
+  shop_tagline: "",
+  cart_count: 0,
+  customer: null,
+  is_guest: false,
+  favicon_url: "/static/favicon.svg",
+  logo_url: "",
+  bot_username: "tokobot",
+  tzname: "Asia/Jakarta",
+  analytics_enabled: false,
+  flash_active: false,
+};
+
+function renderTrack(ctx: ShopContext = context) {
+  (apiGet as Mock).mockResolvedValue(ctx);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
@@ -88,7 +109,43 @@ describe("TrackOrderPage", () => {
     // A dead end otherwise: the form is still there to retry, and the empty
     // state points somewhere for a buyer who has no idea what to fix.
     expect(screen.getByLabelText("Order code")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Help center" })).toHaveAttribute("href", "/account/support");
+  });
+
+  // The whole point of this page is the shopper who has NO password. Sending
+  // them to /account/support is a dead end: SupportPage bounces anonymous
+  // visitors to /login (see its 401 effect), and a guest can't sign in there.
+  it("sends a failed lookup to a contact route that works with no session, never to the signed-in-only help centre", async () => {
+    (publicPost as Mock).mockRejectedValue(new Error("web.track_not_found"));
+    renderTrack();
+    submitLookup();
+
+    await screen.findByText("We couldn't open that order");
+    expect(screen.getByRole("link", { name: "Message us on Telegram" })).toHaveAttribute(
+      "href",
+      "https://t.me/tokobot",
+    );
+    expect(screen.queryByRole("link", { name: "Help center" })).not.toBeInTheDocument();
+    // Sign in stays, demoted: legitimate for a REGISTERED buyer who wandered here.
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
+  });
+
+  it("falls back to the home page's public contact section when this shop has no bot handle", async () => {
+    (publicPost as Mock).mockRejectedValue(new Error("/api/v1/track failed 500"));
+    renderTrack({ ...context, bot_username: "" });
+    submitLookup();
+
+    await screen.findByText("Something went wrong. Please try again.");
+    expect(screen.getByRole("link", { name: "Contact the shop" })).toHaveAttribute("href", "/#kontak");
+    expect(screen.queryByRole("link", { name: "Help center" })).not.toBeInTheDocument();
+  });
+
+  it("announces the failure to a screen reader instead of silently swapping the page", async () => {
+    (publicPost as Mock).mockRejectedValue(new Error("web.track_not_found"));
+    renderTrack();
+    submitLookup();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("We couldn't open that order");
   });
 
   it("tells a throttled visitor it was too many attempts, not that the order is missing", async () => {

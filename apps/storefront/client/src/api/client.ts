@@ -47,14 +47,21 @@ export async function publicPost<T>(path: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  const data = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) {
+    // Tolerant only here: a failing response may not be JSON at all (a proxy's
+    // HTML 502), and the caller still needs an Error to render.
+    const data = (await res.json().catch(() => ({}))) as { error?: string; csrf_token?: string };
+    adoptCsrfToken(data);
+    throw new Error(data.error ?? `${path} failed ${res.status}`);
+  }
+  // Strict on success: a 200 whose body isn't JSON is a broken server, and
+  // resolving it as `{}` would hand the caller a payload-shaped hole (a /track
+  // response with no `redirect`) to fail on later instead of an error now.
+  const data = (await res.json()) as T;
   // POST /api/v1/track answers here, and its 200 carries the freshly minted
   // guest session's CSRF token.
   adoptCsrfToken(data);
-  if (!res.ok) {
-    throw new Error(data.error ?? `${path} failed ${res.status}`);
-  }
-  return data as T;
+  return data;
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
@@ -79,17 +86,20 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken() },
     body: JSON.stringify(body),
   });
-  const data = (await res.json().catch(() => ({}))) as { error?: string };
-  // Guest checkout answers here — its 201 AND its 4xx both carry the guest
-  // session's CSRF token once that session exists, so a failed attempt still
-  // leaves the page able to retry.
-  adoptCsrfToken(data);
+  // Guest checkout's 201 AND its 4xx both carry the guest session's CSRF token
+  // once that session exists, so a failed attempt still leaves the page able to
+  // retry — but only the error path tolerates a body that isn't JSON (see
+  // publicPost above; a malformed 200 must still reject).
   if (!res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { error?: string; csrf_token?: string };
+    adoptCsrfToken(data);
     const err = new Error(data.error ?? `${path} responded ${res.status}`);
     (err as Error & { status?: number }).status = res.status;
     throw err;
   }
-  return data as T;
+  const data = (await res.json()) as T;
+  adoptCsrfToken(data);
+  return data;
 }
 
 /** Same CSRF-header contract as `apiPost`, for a multipart `FormData` body

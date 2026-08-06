@@ -262,16 +262,34 @@ function InfoStepCard({
  * Guest checkout's one extra question. Deliberately not a gate: the sign-in
  * link is an offer sitting beside the field, not a door in front of it, and
  * the hint says what the address is FOR rather than just demanding it.
+ *
+ * This field is one of the three things that hold "Place order" back, and the
+ * only one whose blocker isn't self-evident on the page (the other two are a
+ * visibly empty method list and a visibly incomplete info step). So it carries
+ * its own explanation, in two layers:
+ *
+ *  - A "Required" marker beside the label, visible from first paint. The
+ *    native `required` attribute cannot do this job: the submit is a
+ *    `type="button"` inside a form that preventDefaults, so the browser never
+ *    runs constraint validation and never shows its own bubble.
+ *  - An inline error, but only AFTER the shopper has left the field (or the
+ *    server has rejected the address) — the same "don't scold someone who
+ *    hasn't typed yet" rule DeliveryFieldInput follows. `aria-describedby`
+ *    points at it whenever it's showing, so a screen reader hears the reason
+ *    rather than a bare "invalid".
  */
 function GuestContactCard({
   email,
   onChange,
-  invalid,
+  serverRejected,
 }: {
   email: string;
   onChange: (value: string) => void;
-  invalid: boolean;
+  /** The server came back with `web.guest_email_invalid` for this address. */
+  serverRejected: boolean;
 }) {
+  const [touched, setTouched] = useState(false);
+  const showError = serverRejected || (touched && !isValidEmail(email));
   return (
     <div className="card card-pad">
       <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
@@ -283,22 +301,34 @@ function GuestContactCard({
           {t("web.guest_have_account")}
         </Link>
       </div>
-      <label className="field-label" htmlFor="guest_email">
-        {t("web.guest_email_label")}
-      </label>
+      {/* The marker sits OUTSIDE the <label>, so the field's accessible name
+          stays "Email address" and `required` carries the semantics for
+          assistive tech; this text is the sighted half of the same fact. */}
+      <div className="flex items-baseline justify-between gap-2">
+        <label className="field-label" htmlFor="guest_email">
+          {t("web.guest_email_label")}
+        </label>
+        <span className="text-xs text-ink-faint">{t("web.field_required")}</span>
+      </div>
       <input
         id="guest_email"
         type="email"
         className="field"
         value={email}
         onChange={(e) => onChange(e.target.value)}
+        onBlur={() => setTouched(true)}
         autoComplete="email"
         inputMode="email"
         placeholder="you@example.com"
-        aria-describedby="guest_email_hint"
-        aria-invalid={invalid ? true : undefined}
+        aria-describedby={showError ? "guest_email_error guest_email_hint" : "guest_email_hint"}
+        aria-invalid={showError ? true : undefined}
         required
       />
+      {showError && (
+        <p id="guest_email_error" className="mt-2 flex items-center gap-1.5 text-sm text-rust-dark">
+          <AlertTriangle className="w-4 h-4 shrink-0" /> {t("web.guest_email_invalid")}
+        </p>
+      )}
       <p id="guest_email_hint" className="mt-2 text-xs leading-relaxed text-ink-soft">
         {t("web.guest_email_hint")}
       </p>
@@ -496,7 +526,12 @@ export default function CheckoutPage() {
       <Stepper step={2} />
       <h1 className="page-title text-2xl! mb-5">{t("web.checkout_title")}</h1>
 
-      {placeOrderErrorKey && (
+      {/* A rejected guest email is rendered against the field it belongs to
+          instead (GuestContactCard) — same reasoning as STO-005 moved the
+          voucher error out of the summary column: repeating the identical
+          sentence in a page-level banner is noise, and the banner is a whole
+          column away from the input the buyer has to fix. */}
+      {placeOrderErrorKey && !(page.is_guest && placeOrderErrorKey === "web.guest_email_invalid") && (
         <div className="card card-pad border-rust/40 bg-rust-tint text-rust-dark text-sm mb-5">
           <AlertTriangle className="w-4 h-4" /> {humanError(placeOrderErrorKey)}
         </div>
@@ -517,7 +552,7 @@ export default function CheckoutPage() {
             <GuestContactCard
               email={guestEmail}
               onChange={setGuestEmail}
-              invalid={placeOrderErrorKey === "web.guest_email_invalid"}
+              serverRejected={placeOrderErrorKey === "web.guest_email_invalid"}
             />
           )}
 

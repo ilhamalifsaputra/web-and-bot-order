@@ -26,9 +26,38 @@ import { useMutation } from "@tanstack/react-query";
 import { Clock, PackageSearch, TriangleAlert } from "lucide-react";
 import { publicPost } from "../api/client";
 import type { TrackOrderResponse } from "../api/types";
+import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
+import type { EmptyStateAction } from "../components/shop/EmptyState";
 import EmptyState from "../components/shop/EmptyState";
 import Spinner from "../components/shop/Spinner";
+
+/**
+ * Where a failed lookup sends someone who has NO way to sign in.
+ *
+ * The obvious-looking "Help centre" (/account/support) is a trap here:
+ * SupportPage redirects anonymous visitors to /login, and the entire audience
+ * of this page is guests who never set a password — so that exit loops them
+ * back to a door they have no key for. Both destinations below are reachable
+ * with no session:
+ *
+ *  - `https://t.me/<bot_username>` — the shop's public Telegram handle, the
+ *    same one HomePage's contact section and PayPage's gateway-down fallback
+ *    link to. It rides on GET /api/v1/pages/context, which `optionalCustomer`
+ *    serves to anonymous visitors (apiPages.ts) and which Layout has already
+ *    fetched, so this costs no extra request and needs no new endpoint.
+ *  - `/#kontak` — the home page's contact section, for a shop with no bot
+ *    configured. A real navigation (`href`, not `to`) so the browser honours
+ *    the anchor. The home page is public and its contact section always
+ *    renders, so this is never a dead link.
+ */
+function useContactAction(): EmptyStateAction {
+  const { data: ctx } = useShopContext();
+  const botUsername = ctx?.bot_username ?? "";
+  return botUsername
+    ? { label: t("web.ticket_help_telegram"), href: `https://t.me/${botUsername}` }
+    : { label: t("web.track_contact_shop"), href: "/#kontak" };
+}
 
 /** Which "it didn't work" screen a failed lookup earns. `not_found` covers
  * the server's single generic 404; `throttled` its 429; `error` anything else
@@ -47,7 +76,7 @@ function failureFor(errorKey: string): Failure {
  * "no" and stops is a dead end, and this page is reached by people who
  * already can't find their order.
  */
-function FailureState({ failure }: { failure: Failure }) {
+function FailureState({ failure, contact }: { failure: Failure; contact: EmptyStateAction }) {
   if (failure === "throttled") {
     return (
       <EmptyState
@@ -63,7 +92,7 @@ function FailureState({ failure }: { failure: Failure }) {
       <EmptyState
         icon={TriangleAlert}
         title={t("web.error_message")}
-        action={{ label: t("web.nav_help"), to: "/account/support" }}
+        action={contact}
         secondaryAction={{ label: t("web.continue_shopping"), to: "/" }}
       />
     );
@@ -73,7 +102,10 @@ function FailureState({ failure }: { failure: Failure }) {
       icon={PackageSearch}
       title={t("web.track_not_found_title")}
       description={t("web.track_not_found")}
-      action={{ label: t("web.nav_help"), to: "/account/support" }}
+      action={contact}
+      // Secondary, not primary: signing in is the right move only for a
+      // REGISTERED buyer who wandered onto this page, never for the guest it
+      // was built for.
       secondaryAction={{ label: t("web.nav_login"), to: "/login" }}
     />
   );
@@ -83,6 +115,7 @@ export default function TrackOrderPage() {
   const [orderCode, setOrderCode] = useState("");
   const [email, setEmail] = useState("");
   const [failure, setFailure] = useState<Failure | null>(null);
+  const contact = useContactAction();
 
   const lookupMutation = useMutation({
     mutationFn: () =>
@@ -148,10 +181,13 @@ export default function TrackOrderPage() {
       </form>
 
       {/* The form above stays put, so retrying is one edit away; this only
-          explains what happened and offers somewhere else to go. */}
+          explains what happened and offers somewhere else to go.
+          role="alert" because submitting otherwise changes nothing a screen
+          reader is told about — the outcome appears silently below the form
+          the user is still focused in. */}
       {failure && !lookupMutation.isPending && (
-        <div className="mt-6">
-          <FailureState failure={failure} />
+        <div className="mt-6" role="alert">
+          <FailureState failure={failure} contact={contact} />
         </div>
       )}
     </div>

@@ -80,6 +80,40 @@ describe("csrf_token adoption", () => {
     expect(new Headers(fetchMock.mock.calls[1]![1].headers).get("X-CSRF-Token")).toBe("track-session-token");
   });
 
+  // Adopting the token meant parsing the body on the success path too. That
+  // parse must stay STRICT: a 200 whose body isn't JSON is a broken server, and
+  // resolving it as `{}` hands the caller a page-shaped hole (a checkout with
+  // no pay_url, a /track with no redirect) instead of an error it can render.
+  it("rejects a malformed success body instead of resolving it as an empty object", async () => {
+    const malformed = {
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError("Unexpected end of JSON input");
+      },
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => malformed));
+    await expect(apiPost("/api/v1/checkout", { method: "qris" })).rejects.toThrow(SyntaxError);
+    await expect(publicPost("/api/v1/track", { order_code: "ORD1" })).rejects.toThrow(SyntaxError);
+  });
+
+  // The error path keeps the tolerant parse: a 500 from a proxy is routinely
+  // HTML, and the caller still deserves the status-bearing Error.
+  it("still tolerates a non-JSON body on the ERROR path", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 502,
+        json: async () => {
+          throw new SyntaxError("Unexpected token <");
+        },
+      })),
+    );
+    await expect(apiPost("/api/v1/checkout", {})).rejects.toThrow("/api/v1/checkout responded 502");
+    await expect(publicPost("/api/v1/track", {})).rejects.toThrow("/api/v1/track failed 502");
+  });
+
   it("leaves the meta-tag token in charge when no response ever carried one", async () => {
     const fetchMock = vi.fn(async (_path: string, _init: RequestInit) => ({
       ok: true,

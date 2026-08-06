@@ -555,12 +555,16 @@ describe("CheckoutPage", () => {
       (apiPost as Mock).mockRejectedValue(new Error("web.guest_email_invalid"));
       fireEvent.click(screen.getByRole("button", { name: /Place order/ }));
 
-      expect(
-        await screen.findByText("Enter a valid email address — we send your order details there."),
-      ).toBeInTheDocument();
+      // Once, against the field that has to change — not also in a page-level
+      // banner a column away from the input (STO-005's rule for the voucher
+      // error applies here too).
+      const message = await screen.findByText("Enter a valid email address — we send your order details there.");
+      expect(screen.getAllByText("Enter a valid email address — we send your order details there.")).toHaveLength(1);
       // Still on checkout, with the field editable, so the retry the adopted
       // CSRF token makes possible is actually reachable.
-      expect(screen.getByLabelText("Email address")).toBeInTheDocument();
+      const email = screen.getByLabelText("Email address");
+      expect(email).toBeInTheDocument();
+      expect(email.getAttribute("aria-describedby")?.split(/\s+/)).toContain(message.id);
       expect(screen.getByRole("button", { name: /Place order/ })).not.toBeDisabled();
     });
 
@@ -593,6 +597,47 @@ describe("CheckoutPage", () => {
       expect(placeOrder).toBeDisabled();
       fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "guest@example.com" } });
       expect(placeOrder).not.toBeDisabled();
+    });
+
+    // The dimmed Place order button is one of three blockers; the other two
+    // (no payment method, an incomplete info step) explain themselves on the
+    // page. This one used to say nothing at all — the native `required`
+    // attribute is inert here, since the button is type="button" and the form
+    // preventDefaults, so the browser never runs constraint validation.
+    it("marks the email required up front, before anyone has touched it", async () => {
+      renderCheckout(() => guestData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      expect(screen.getByText("Required")).toBeInTheDocument();
+      // But does not scold a shopper who has not typed anything yet.
+      expect(
+        screen.queryByText("Enter a valid email address — we send your order details there."),
+      ).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Email address")).not.toHaveAttribute("aria-invalid", "true");
+    });
+
+    it("explains the invalid email inline once the shopper has interacted, wired up for a screen reader", async () => {
+      renderCheckout(() => guestData);
+      await screen.findByRole("heading", { name: "Checkout" });
+      const email = screen.getByLabelText("Email address");
+
+      fireEvent.change(email, { target: { value: "not-an-email" } });
+      fireEvent.blur(email);
+
+      const message = await screen.findByText("Enter a valid email address — we send your order details there.");
+      expect(email).toHaveAttribute("aria-invalid", "true");
+      // aria-invalid alone announces "invalid" with no reason attached — the
+      // message has to be reachable from the field itself.
+      expect(message.id).toBeTruthy();
+      expect(email.getAttribute("aria-describedby")?.split(/\s+/)).toContain(message.id);
+
+      // ...and clears the moment the address is fixed.
+      fireEvent.change(email, { target: { value: "guest@example.com" } });
+      await waitFor(() =>
+        expect(
+          screen.queryByText("Enter a valid email address — we send your order details there."),
+        ).not.toBeInTheDocument(),
+      );
+      expect(email).not.toHaveAttribute("aria-invalid", "true");
     });
 
     it("never redirects an anonymous visitor to /login on a 401", async () => {

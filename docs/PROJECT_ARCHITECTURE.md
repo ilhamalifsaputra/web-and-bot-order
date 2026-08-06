@@ -304,6 +304,7 @@ The platform handles authentication differently for the Admin panel and the cust
        Web Admin Login                                Storefront Login
 ┌─────────────────────────────┐                ┌─────────────────────────────┐
 │ Telegram ID + Password + 2FA│                │ Username + Password / Widget│
+│                             │                │ — or guest checkout / track │
 └──────────────┬──────────────┘                └──────────────┬──────────────┘
                │                                              │
                ▼                                              ▼
@@ -340,9 +341,21 @@ The platform handles authentication differently for the Admin panel and the cust
     *   `readonly`: Can browse menus but cannot perform write operations (mutations return `403 Forbidden`).
 
 ### Storefront Customer Authentication (`apps/storefront/src/auth.ts`)
-*   **Authentication methods:** Customers can register and log in via password or through the **Telegram Login Widget**.
+*   **Authentication methods:** Customers can register and log in via password or through the **Telegram Login Widget**. They can also buy without an account at all — see Guest Checkout below.
 *   **Telegram verification:** The widget signature is validated by computing the HMAC-SHA256 hash of the received parameters using the SHA256-hashed bot token as the secret key.
 *   **Session Management:** Uses a signed cookie named `shop_session`, validating session JTIs against database settings.
+
+### Guest Checkout (buying without an account)
+
+`Order.userId` is a required non-null foreign key, so an order can never exist without a `User` row. Rather than make that column nullable — which would have meant auditing every order reader in the codebase — a guest buyer gets a **synthetic `User` row**, and everything downstream of order creation works unchanged.
+
+*   **The guest row.** `createGuestUser` (`packages/db/src/crud/webauth.ts`) writes a `User` with `isGuest: true`, the buyer's `guestEmail`, and `null` for `telegramId`, `loginUsername`, `email`, and `passwordHash`. `guestEmail` is deliberately **not** unique: it is contact information, not an identity, so the same address may be reused across checkouts and may also belong to an existing registered account. Leaving the registered `email` column null is what keeps those unique indexes from ever colliding — and it also leaves the row upgradeable to a full account later, by filling in credentials on the same row.
+*   **Session, not a special case.** `POST /api/v1/checkout` validates the email, mints the guest row, and calls the same `establishSession` a login uses. From that point the buyer holds an ordinary `shop_session` cookie, so the pay page, status polling, cancellation, and the delivered-content page all run through the existing signed-in code paths with their ownership checks intact.
+*   **CSRF handoff.** The SPA reads its CSRF token from `<meta name="csrf-token">`, which the shell renders **empty** for an anonymous visitor. Because guest checkout mints the session mid-request, the page that made the call is still holding that empty token — so the response carries a `csrf_token` field which `api/client.ts` adopts. Without it, every follow-up request from that page fails the CSRF check, most painfully the retry after a checkout that just failed.
+*   **Order recovery (`POST /api/v1/track`).** A guest who loses the cookie or changes device exchanges an order code plus the email they used for a fresh session. Two properties are load-bearing: orders owned by a **registered** account are refused (`isGuest` gate — otherwise this would be a way around their password), and **every** rejection returns one identical response, so the endpoint cannot be used to discover which order codes exist.
+*   **Throttles** (`apps/storefront/src/rateLimit.ts`, all per-IP): guest checkout 5/10min — the per-user pending-order cap cannot bite here, since every guest is a new user; order tracking 10/10min, consumed by failed attempts too, because the endpoint is otherwise an order-code guessing oracle; anonymous checkout reads 30/60s, shared by `GET /checkout` and the voucher preview so the quota cannot be reset by alternating between them.
+*   **Buyer notifications.** Guests have no `telegramId`, so the outbox's buyer DMs are skipped for them (they already guard on a null id). Admin alerts are unaffected. Guests read their delivered content on the web instead. Their channel-post label is derived from a masked hint of the email's local part — never the address or its domain.
+*   **Deploying this feature** requires migrating the live database (`pnpm prisma db push`, or applying `prisma/migrations/20260804000000_add_user_guest_fields`) and restarting order-bot **before** the new code serves traffic; otherwise Prisma raises `P2022 column … does not exist`.
 
 ---
 

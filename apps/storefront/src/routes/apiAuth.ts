@@ -15,6 +15,10 @@ import { logger } from "@app/core/logger";
 import { sendMail } from "@app/core/mailer";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { ValidationError } from "@app/core/errors";
+import { config } from "@app/core/config";
+import { utcStamp } from "@app/core/datetime";
+import { renderResetPasswordEmail } from "@app/core/email";
+import type { BrandConfig, EmailCopy } from "@app/core/email";
 import {
   prisma,
   getSetting,
@@ -26,6 +30,7 @@ import {
   setLoginCredentials,
   LOGIN_USERNAME_RE,
   getSmtpCreds,
+  RESET_TOKEN_TTL_MINUTES,
 } from "@app/db";
 import { newJti, shopSessionJtiKey, SHOP_COOKIE_NAME } from "../auth";
 import { optionalCustomer } from "../plugins/auth";
@@ -171,15 +176,56 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
         const { token } = await createPasswordResetToken(prisma, user.id);
         const link = `${publicBase(req)}/reset/${token}`;
         const shopName = (await getSetting(prisma, "shop_name")) ?? "Toko Digital";
+        // Same Settings-driven brand/copy resolution Task 3's emailTemplates.ts
+        // uses for the owner-facing "New Paid Order" mail — `??` (not `||`) so
+        // an explicitly-saved-but-empty Setting isn't silently overridden by
+        // the default, only a genuinely unset (null) one.
+        const [logoUrl, accentColor, supportEmail, copySubject, copyTitle, copySubtitle, copyMessage] =
+          await Promise.all([
+            getSetting(prisma, "web_logo_url"),
+            getSetting(prisma, "email_brand_color"),
+            getSetting(prisma, "email_support_address"),
+            getSetting(prisma, "email_reset_password_subject"),
+            getSetting(prisma, "email_reset_password_title"),
+            getSetting(prisma, "email_reset_password_subtitle"),
+            getSetting(prisma, "email_reset_password_message"),
+          ]);
+        const brand: BrandConfig = {
+          shopName,
+          logoUrl: logoUrl ?? null,
+          accentColor: accentColor ?? "#4F46E5",
+          supportEmail: supportEmail ?? null,
+          storeUrl: config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null,
+        };
+        const copy: EmailCopy = {
+          subject: copySubject ?? "{shop_name} — reset your password",
+          title: copyTitle ?? "Reset your password",
+          subtitle: copySubtitle ?? "We received a request to reset your password.",
+          message: copyMessage ?? "Click the button below to choose a new password. This link expires in 1 hour.",
+        };
+        // Fastify hands back a string, an array (repeated header), or
+        // undefined for a missing header — normalize to string | null, taking
+        // the first value of an array the same way the rest of this codebase
+        // would treat a repeated header.
+        const uaHeader = req.headers["user-agent"];
+        const userAgent = Array.isArray(uaHeader) ? (uaHeader[0] ?? null) : (uaHeader ?? null);
+        const rendered = renderResetPasswordEmail(
+          {
+            resetUrl: link,
+            expiryMinutes: RESET_TOKEN_TTL_MINUTES,
+            requestedAt: utcStamp(new Date()),
+            ip,
+            userAgent,
+          },
+          brand,
+          copy,
+        );
         try {
           await sendMail(smtp, {
             to: email,
-            subject: `${shopName} — reset password`,
-            text:
-              `Click to set a new password (valid 1 hour):\n${link}\n\n` +
-              `If you didn't request this, ignore this email — your password is unchanged.\n\n` +
-              `Klik untuk membuat kata sandi baru (berlaku 1 jam):\n${link}\n\n` +
-              `Abaikan email ini jika kamu tidak memintanya — kata sandimu tidak berubah.`,
+            subject: rendered.subject,
+            html: rendered.html,
+            text: rendered.text,
           });
         } catch (e) {
           logger.error({ err: e }, "Failed to send the password reset email — the user still sees the generic check-your-inbox confirmation, so they have no signal to retry");

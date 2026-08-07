@@ -770,8 +770,32 @@ describe("forgot + reset password", () => {
     expect(fake.json()).toEqual({ sent: true, unavailable: false });
 
     expect(sendMail).toHaveBeenCalledTimes(1);
-    const text = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![1].text as string;
-    expect(text).toMatch(/\/reset\/[A-Za-z0-9_-]{40,}/);
+    const call = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![1] as { text: string; html: string };
+    expect(call.text).toMatch(/\/reset\/[A-Za-z0-9_-]{40,}/);
+    // The visual HTML upgrade (packages/core/src/email) rides alongside the
+    // bilingual plain-text fallback, not instead of it — sendMail always gets
+    // both.
+    expect(call.html).toEqual(expect.any(String));
+    expect(call.html.length).toBeGreaterThan(0);
+  });
+
+  it("doesn't crash when the request carries no User-Agent header", async () => {
+    const { sendMail } = await import("@app/core/mailer");
+    vi.clearAllMocks();
+
+    // light-my-request defaults to a synthetic "lightMyRequest" User-Agent
+    // unless the header is explicitly set to `undefined` — do that here so
+    // req.headers["user-agent"] is genuinely undefined, exercising the same
+    // path a client that strips the header hits.
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/forgot",
+      payload: { email: "forget@me.test" },
+      headers: { "user-agent": undefined },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ sent: true, unavailable: false });
+    expect(sendMail).toHaveBeenCalledTimes(1);
   });
 
   // The route's own happy-path wiring (consumePasswordResetToken →

@@ -23,13 +23,12 @@ const fullInput: OrderPaidInput = {
   orderId: 42,
   customerLabel: "john@example.com",
   items: [
-    { name: "Netflix Premium", variant: "1 Month", quantity: 2, unitPrice: "50000" },
-    { name: "Spotify", variant: null, quantity: 1, unitPrice: "20000" },
+    { name: "Netflix Premium", variant: "1 Month", quantity: 2, unitPrice: "Rp50.000" },
+    { name: "Spotify", variant: null, quantity: 1, unitPrice: "Rp20.000" },
   ],
-  subtotal: "120000",
-  discount: "10000",
-  total: "110000",
-  currency: "IDR",
+  subtotal: "Rp120.000",
+  discount: "Rp10.000",
+  total: "Rp110.000",
   paymentMethod: "TOKOPAY",
   transactionId: "TXN-98765",
   voucherCode: "SAVE10",
@@ -51,10 +50,9 @@ describe("renderOrderPaidEmail — full fixture", () => {
     expect(result.html).toContain("Netflix Premium");
     expect(result.html).toContain("1 Month");
     expect(result.html).toContain("Spotify");
-    expect(result.html).toContain("120000");
-    expect(result.html).toContain("10000");
-    expect(result.html).toContain("110000");
-    expect(result.html).toContain("IDR");
+    expect(result.html).toContain("Rp120.000");
+    expect(result.html).toContain("Rp10.000");
+    expect(result.html).toContain("Rp110.000");
     expect(result.html).toContain("TOKOPAY");
     expect(result.html).toContain("TXN-98765");
     expect(result.html).toContain("SAVE10");
@@ -69,16 +67,24 @@ describe("renderOrderPaidEmail — full fixture", () => {
     expect(result.text).toContain("Netflix Premium");
     expect(result.text).toContain("1 Month");
     expect(result.text).toContain("Spotify");
-    expect(result.text).toContain("120000");
-    expect(result.text).toContain("10000");
-    expect(result.text).toContain("110000");
-    expect(result.text).toContain("IDR");
+    expect(result.text).toContain("Rp120.000");
+    expect(result.text).toContain("Rp10.000");
+    expect(result.text).toContain("Rp110.000");
     expect(result.text).toContain("TOKOPAY");
     expect(result.text).toContain("TXN-98765");
     expect(result.text).toContain("SAVE10");
     expect(result.text).toContain("2026-08-07 10:00 UTC");
     expect(result.text).toContain("https://acme.test/orders/42");
     expect(result.text).toContain("john@example.com");
+  });
+});
+
+describe("renderOrderPaidEmail — zero discount (empty string, caller-hidden)", () => {
+  it("omits the Discount row/line entirely when discount is an empty string", () => {
+    const noDiscountInput: OrderPaidInput = { ...fullInput, discount: "" };
+    const result = renderOrderPaidEmail(noDiscountInput, brand, defaultCopy);
+    expect(result.html).not.toContain("Discount");
+    expect(result.text).not.toContain("Discount");
   });
 });
 
@@ -114,7 +120,7 @@ describe("renderOrderPaidEmail — XSS escaping", () => {
   const maliciousInput: OrderPaidInput = {
     ...fullInput,
     customerLabel: '<script>alert("customer")</script>',
-    items: [{ name: '<script>alert("item")</script>', variant: null, quantity: 1, unitPrice: "1000" }],
+    items: [{ name: '<script>alert("item")</script>', variant: null, quantity: 1, unitPrice: "Rp1.000" }],
     voucherCode: '<script>alert("voucher")</script>',
   };
   const result = renderOrderPaidEmail(maliciousInput, brand, defaultCopy);

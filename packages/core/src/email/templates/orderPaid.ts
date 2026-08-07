@@ -24,6 +24,8 @@ export interface OrderPaidItem {
   name: string;
   variant: string | null;
   quantity: number;
+  /** Already display-formatted by the caller (e.g. via `formatMoney`) — this
+   * template renders it verbatim, same convention as `paidAt` below. */
   unitPrice: string;
 }
 
@@ -32,10 +34,16 @@ export interface OrderPaidInput {
   orderId: number;
   customerLabel: string;
   items: OrderPaidItem[];
+  /** Already display-formatted by the caller (e.g. via `formatMoney`) —
+   * this template renders it verbatim, same convention as `paidAt` below. */
   subtotal: string;
+  /** Already display-formatted by the caller (e.g. via `formatMoney`), or
+   * `""` for a zero discount — an empty string hides the Discount row/line
+   * entirely, same as `transactionId`/`voucherCode` being null. */
   discount: string;
+  /** Already display-formatted by the caller (e.g. via `formatMoney`) —
+   * this template renders it verbatim, same convention as `paidAt` below. */
   total: string;
-  currency: string;
   paymentMethod: string;
   transactionId: string | null;
   voucherCode: string | null;
@@ -71,9 +79,9 @@ export function renderOrderPaidEmail(
   const summaryRows = [
     { label: "Order", value: input.orderCode },
     { label: "Customer", value: input.customerLabel },
-    { label: "Subtotal", value: `${input.subtotal} ${input.currency}` },
-    { label: "Discount", value: input.discount !== "0" ? `${input.discount} ${input.currency}` : "" },
-    { label: "Total", value: `${input.total} ${input.currency}` },
+    { label: "Subtotal", value: input.subtotal },
+    { label: "Discount", value: input.discount },
+    { label: "Total", value: input.total },
     { label: "Payment Method", value: input.paymentMethod },
     { label: "Transaction ID", value: input.transactionId ?? "" },
     { label: "Coupon", value: input.voucherCode ?? "" },
@@ -113,9 +121,9 @@ export function renderOrderPaidEmail(
     ptKeyValue("Order", input.orderCode),
     ptKeyValue("Customer", input.customerLabel),
     itemLines,
-    ptKeyValue("Subtotal", `${input.subtotal} ${input.currency}`),
-    ...(input.discount !== "0" ? [ptKeyValue("Discount", `${input.discount} ${input.currency}`)] : []),
-    ptKeyValue("Total", `${input.total} ${input.currency}`),
+    ptKeyValue("Subtotal", input.subtotal),
+    ...(input.discount !== "" ? [ptKeyValue("Discount", input.discount)] : []),
+    ptKeyValue("Total", input.total),
     ptKeyValue("Payment Method", input.paymentMethod),
     ...(input.transactionId ? [ptKeyValue("Transaction ID", input.transactionId)] : []),
     ...(input.voucherCode ? [ptKeyValue("Coupon", input.voucherCode)] : []),

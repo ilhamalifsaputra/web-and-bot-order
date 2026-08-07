@@ -61,8 +61,8 @@ export function eventBanner(icon: string, heading: string, subheading: string, t
   const { bg, fg } = TONE_COLORS[tone];
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin-bottom:24px;"><tr><td align="center" style="background-color:${bg};border-radius:12px;padding:32px 24px;">` +
     `<div style="font-size:40px;line-height:1;margin-bottom:12px;" aria-hidden="true">${escapeHtml(icon)}</div>` +
-    `<div class="email-text" style="font-size:22px;line-height:1.3;font-weight:700;color:${fg};margin:0 0 6px 0;">${escapeHtml(heading)}</div>` +
-    `<div class="email-muted" style="font-size:15px;line-height:1.4;font-weight:400;color:${fg};opacity:0.85;margin:0;">${escapeHtml(subheading)}</div>` +
+    `<div style="font-size:22px;line-height:1.3;font-weight:700;color:${fg};margin:0 0 6px 0;">${escapeHtml(heading)}</div>` +
+    `<div style="font-size:15px;line-height:1.4;font-weight:400;color:${fg};opacity:0.85;margin:0;">${escapeHtml(subheading)}</div>` +
     `</td></tr></table>`;
 }
 

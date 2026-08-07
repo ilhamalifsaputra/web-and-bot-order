@@ -18,16 +18,18 @@
  * function is therefore `async` (Settings reads go through Prisma) even
  * though the other three branches remain pure string-building.
  *
- * SUBJECT-LINE CONSTRAINT — read before touching this file: `sendMail`
- * (packages/core/src/mailer.ts:29-40) logs the subject on every send. The
- * order code is half the guest `/track` credential, so it — and every other
- * payload-derived value — must never appear in a subject. The three
- * unchanged plain-text subjects below are fixed string literals with zero
- * interpolation. OWNER_EMAIL_ORDER_PAID's subject comes from
- * `renderOrderPaidEmail`, which only ever substitutes the literal
- * `{shop_name}` token into the Settings-edited copy — never a payload value
- * (see packages/core/src/email/subject.ts). Order code, ticket id, amounts,
- * and message text all live in the body only.
+ * SUBJECT-LINE CONSTRAINT — read before touching this file: sendMail
+ * (packages/core/src/mailer.ts) logs the subject on every send. For three of
+ * the four OWNER_EMAIL_* events (MANUAL_ORDER_QUEUED, NEW_TICKET,
+ * TICKET_REPLY) the subject is a fixed string literal with zero
+ * interpolation — no payload value may ever be substituted into those.
+ * OWNER_EMAIL_ORDER_PAID is the deliberate exception: its subject (via
+ * renderOrderPaidEmail/buildSubject) substitutes {shop_name} and,
+ * additionally, {order_code} — an accepted, narrowly-scoped risk because this
+ * email's only recipient is the trusted shop admin (see
+ * packages/core/src/email/subject.ts's header for the full rationale). Do not
+ * extend {order_code} substitution to any other event's subject, and do not
+ * add new tokens to the three plain-text events' fixed subjects.
  */
 import { NotificationEvent } from "@app/core/enums";
 import { config } from "@app/core/config";
@@ -139,7 +141,7 @@ async function resolveOrderPaidCopy(): Promise<EmailCopy> {
     // title/subtitle/message is not (those are harmless empty body text),
     // so subject alone also falls back on a whitespace-only stored value,
     // not just on a genuinely unset (null) Setting.
-    subject: subject?.trim() || "New paid order",
+    subject: subject?.trim() || "New Paid Order - {order_code}",
     title: title ?? "You've got a new order",
     subtitle: subtitle ?? "A customer just completed payment.",
     message: message ?? "Here are the details.",

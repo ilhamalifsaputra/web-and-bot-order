@@ -134,5 +134,5 @@ export function renderOrderPaidEmail(
     "This is an automated notification — no reply needed.",
   ].join("\n");
 
-  return { subject: buildSubject(copy, brand), html, text };
+  return { subject: buildSubject(copy, brand, { order_code: input.orderCode }), html, text };
 }

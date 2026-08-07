@@ -673,7 +673,7 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     const [, args] = vi.mocked(sendMail).mock.calls[0]!;
     expect(args).toEqual({
       to: "owner@example.com",
-      subject: "New paid order",
+      subject: "New Paid Order - ORD-EMAIL-1",
       text: expect.stringContaining("ORD-EMAIL-1"),
       html: expect.stringContaining("ORD-EMAIL-1"),
     });

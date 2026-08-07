@@ -93,12 +93,14 @@ function TextFieldRow({
   value,
   onSaved,
   multiline,
+  helperText,
 }: {
   label: string;
   fieldKey: string;
   value: string;
   onSaved: () => void;
   multiline?: boolean;
+  helperText?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -143,6 +145,7 @@ function TextFieldRow({
           </div>
         )}
       </div>
+      {helperText && <div className="mt-0.5 text-xs text-ink-soft">{helperText}</div>}
       {!editing && (
         <div className="mt-1 text-sm text-ink-soft">
           {value || <em className="text-ink-soft">not set</em>}
@@ -362,6 +365,7 @@ export function BrandingPage() {
                 fieldKey="email_order_paid_subject"
                 value={data.emailOrderPaidSubject}
                 onSaved={invalidate}
+                helperText="Use {order_code} to include the order code, and {shop_name} for the shop name."
               />
               <TextFieldRow
                 label="Title"

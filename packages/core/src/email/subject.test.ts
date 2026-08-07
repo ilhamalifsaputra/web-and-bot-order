@@ -22,7 +22,30 @@ describe("buildSubject", () => {
   });
 
   it("does not substitute any other token, even if literally present", () => {
+    // Also the regression guard for the extraTokens opt-in boundary below:
+    // calling the two-arg form must never substitute {order_code} on its own.
     const copy: EmailCopy = { subject: "New order {order_code}", title: "", subtitle: "", message: "" };
     expect(buildSubject(copy, brand)).toBe("New order {order_code}");
+  });
+
+  it("substitutes an extraTokens entry when explicitly opted in", () => {
+    const copy: EmailCopy = { subject: "New order {order_code}", title: "", subtitle: "", message: "" };
+    expect(buildSubject(copy, brand, { order_code: "ORD-123" })).toBe("New order ORD-123");
+  });
+
+  it("substitutes both {shop_name} and an extraTokens entry together", () => {
+    const copy: EmailCopy = {
+      subject: "{shop_name}: new order {order_code}",
+      title: "",
+      subtitle: "",
+      message: "",
+    };
+    expect(buildSubject(copy, brand, { order_code: "ORD-123" })).toBe("Acme Shop: new order ORD-123");
+  });
+
+  it("is a harmless no-op when an extraTokens key isn't present in the subject", () => {
+    const copy: EmailCopy = { subject: "New paid order", title: "", subtitle: "", message: "" };
+    expect(() => buildSubject(copy, brand, { order_code: "ORD-123" })).not.toThrow();
+    expect(buildSubject(copy, brand, { order_code: "ORD-123" })).toBe("New paid order");
   });
 });

@@ -266,4 +266,32 @@ describe("BrandingPage", () => {
     expect(within(resetPasswordCard).getByText("We received a request to reset your password.")).toBeInTheDocument();
     expect(within(resetPasswordCard).getByText("Click the button below to choose a new password.")).toBeInTheDocument();
   });
+
+  it("shows a helper hint mentioning {order_code} and {shop_name} under the New Paid Order Email Subject field only", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(BRANDING_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<BrandingPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("My Test Shop")).toBeInTheDocument());
+
+    function cardFor(title: string): HTMLElement {
+      const el = screen.getByText(title).closest('[data-slot="card"]');
+      if (!el) throw new Error(`Card containing "${title}" not found`);
+      return el as HTMLElement;
+    }
+
+    const orderPaidCard = cardFor("New Paid Order Email");
+    expect(
+      within(orderPaidCard).getByText(/use \{order_code\} to include the order code, and \{shop_name\}/i),
+    ).toBeInTheDocument();
+
+    // The Reset Password Email card's Subject field must not get this hint —
+    // its buildSubject call has no extraTokens, so {order_code} never
+    // substitutes there.
+    const resetPasswordCard = cardFor("Reset Password Email");
+    expect(within(resetPasswordCard).queryByText(/order_code/i)).not.toBeInTheDocument();
+  });
 });

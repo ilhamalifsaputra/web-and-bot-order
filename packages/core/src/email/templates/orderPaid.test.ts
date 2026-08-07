@@ -153,17 +153,17 @@ describe("renderOrderPaidEmail — subject handling", () => {
     expect(result.subject).toBe("Acme Shop has a new order!");
   });
 
-  it("does NOT substitute {order_code} even if literally present in the copy override — no unintended token expansion", () => {
+  it("substitutes {order_code} when literally present in the copy override — the deliberate, narrowly-scoped exception for this one template", () => {
     const copy: EmailCopy = { ...defaultCopy, subject: "New order {order_code}" };
     const result = renderOrderPaidEmail(fullInput, brand, copy);
-    expect(result.subject).toBe("New order {order_code}");
-    expect(result.subject).not.toContain("ORD-20260807-ABCD");
+    expect(result.subject).toBe("New order " + fullInput.orderCode);
+    expect(result.subject).toContain("ORD-20260807-ABCD");
   });
 
-  it("keeps the real order code out of the subject, present only in the body", () => {
+  it("puts the real order code in the subject as well as the body", () => {
     const copy: EmailCopy = { ...defaultCopy, subject: "New order {order_code}" };
     const result = renderOrderPaidEmail(fullInput, brand, copy);
-    expect(result.subject).not.toContain("ORD-20260807-ABCD");
+    expect(result.subject).toContain("ORD-20260807-ABCD");
     expect(result.html).toContain("ORD-20260807-ABCD");
     expect(result.text).toContain("ORD-20260807-ABCD");
   });

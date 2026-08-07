@@ -46,7 +46,8 @@ describe("emailTemplates.renderEmail", () => {
     it("renders a subject and a body (text) with the key facts, same as before this task", async () => {
       const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", payload);
       expect(result).not.toBeNull();
-      expect(result!.subject).toBe("New paid order"); // documented default (Settings unconfigured)
+      // documented default (Settings unconfigured), with {order_code} substituted
+      expect(result!.subject).toBe("New Paid Order - " + DISTINCTIVE_ORDER_CODE);
       expect(result!.text).toContain(DISTINCTIVE_ORDER_CODE);
       expect(result!.text).toContain("Rp150.000");
     });
@@ -63,9 +64,9 @@ describe("emailTemplates.renderEmail", () => {
       expect(result!.html).toContain("SAVE10");
     });
 
-    it("never puts the order code in the subject (regression guard)", async () => {
+    it("puts the order code in the subject (deliberate exception for this event only)", async () => {
       const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", payload);
-      expect(result!.subject).not.toContain(DISTINCTIVE_ORDER_CODE);
+      expect(result!.subject).toContain(DISTINCTIVE_ORDER_CODE);
     });
 
     it("omits the voucher/transaction-id/View-Order lines when those payload fields are null, without leaking null/undefined", async () => {
@@ -105,7 +106,7 @@ describe("emailTemplates.renderEmail", () => {
 
       const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", payload);
       expect(result).not.toBeNull();
-      expect(result!.subject).toBe("New paid order");
+      expect(result!.subject).toBe("New Paid Order - " + DISTINCTIVE_ORDER_CODE);
     });
 
     it("formats non-IDR money via formatPrice (2dp + currency suffix), not formatIdr", async () => {

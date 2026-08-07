@@ -5,16 +5,7 @@
  * decision 1; the other three owner-email events stay plain text).
  */
 import { renderShell } from "../layout";
-import {
-  title,
-  subtitle,
-  statusBadge,
-  infoTable,
-  primaryButton,
-  fallbackLinkLine,
-  footer,
-  TEXT,
-} from "../components";
+import { eventBanner, infoTable, primaryButton, fallbackLinkLine, footer, TEXT } from "../components";
 import { ptSection, ptKeyValue, ptDivider } from "../plaintext";
 import { escapeHtml } from "../escape";
 import { buildSubject } from "../subject";
@@ -93,9 +84,7 @@ export function renderOrderPaidEmail(
     : "";
 
   const bodyHtml = `
-    <div style="margin-bottom:16px;">${statusBadge("PAID", "success")}</div>
-    ${title(copy.title)}
-    ${subtitle(copy.subtitle)}
+    ${eventBanner("📦🔔", copy.title, copy.subtitle, "success")}
     <div class="email-text" style="font-size:15px;color:${TEXT};line-height:1.6;margin-bottom:24px;">${escapeHtml(copy.message)}</div>
     ${buildItemsHtml(input.items)}
     ${infoTable(summaryRows)}

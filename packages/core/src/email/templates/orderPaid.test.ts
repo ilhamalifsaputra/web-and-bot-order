@@ -59,7 +59,12 @@ describe("renderOrderPaidEmail — full fixture", () => {
     expect(result.html).toContain("2026-08-07 10:00 UTC");
     expect(result.html).toContain("https://acme.test/orders/42");
     expect(result.html).toContain("john@example.com");
-    expect(result.html).toContain("PAID");
+  });
+
+  it("renders the event banner with the icon glyph and the copy's title/subtitle", () => {
+    expect(result.html).toContain("📦");
+    expect(result.html).toContain("You&#x27;ve got a new order");
+    expect(result.html).toContain("A customer just completed payment.");
   });
 
   it("represents every fact in the text", () => {

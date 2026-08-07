@@ -46,6 +46,26 @@ export function statusBadge(text: string, tone: StatusTone): string {
   return `<span style="display:inline-block;padding:4px 12px;border-radius:999px;background-color:${bg};color:${fg};font-size:13px;font-weight:700;letter-spacing:0.02em;">${escapeHtml(text)}</span>`;
 }
 
+/**
+ * Full-width colored banner for the top of a template body: a big Unicode
+ * icon glyph, a bold headline, and a subheadline — an Outlook-safe,
+ * zero-dependency "hero" for an event notification. Uses the same
+ * TONE_COLORS palette as statusBadge (bg tint / fg accent) so a banner and
+ * a badge for the same event agree visually. Deliberately renders the icon
+ * as a large-font-size emoji character (not a remote <img>): most email
+ * clients block remote images by default until the user opts in, which
+ * would show a broken-image icon on first view — a Unicode glyph always
+ * renders and adds no external dependency or tracking-pixel surface.
+ */
+export function eventBanner(icon: string, heading: string, subheading: string, tone: StatusTone): string {
+  const { bg, fg } = TONE_COLORS[tone];
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin-bottom:24px;"><tr><td align="center" style="background-color:${bg};border-radius:12px;padding:32px 24px;">` +
+    `<div style="font-size:40px;line-height:1;margin-bottom:12px;" aria-hidden="true">${escapeHtml(icon)}</div>` +
+    `<div class="email-text" style="font-size:22px;line-height:1.3;font-weight:700;color:${fg};margin:0 0 6px 0;">${escapeHtml(heading)}</div>` +
+    `<div class="email-muted" style="font-size:15px;line-height:1.4;font-weight:400;color:${fg};opacity:0.85;margin:0;">${escapeHtml(subheading)}</div>` +
+    `</td></tr></table>`;
+}
+
 export interface InfoRow {
   label: string;
   value: string;

@@ -13,9 +13,20 @@
  * phrasing) for clients that render text-only.
  */
 import { renderShell } from "../layout";
-import { title, subtitle, primaryButton, fallbackLinkLine, infoTable, alertBox, footer } from "../components";
+import {
+  title,
+  subtitle,
+  primaryButton,
+  fallbackLinkLine,
+  infoTable,
+  alertBox,
+  footer,
+  TEXT,
+  MUTED,
+} from "../components";
 import { ptSection, ptDivider } from "../plaintext";
 import { escapeHtml } from "../escape";
+import { buildSubject } from "../subject";
 import type { BrandConfig, EmailCopy, RenderedEmail } from "../types";
 
 export interface ResetPasswordInput {
@@ -27,10 +38,6 @@ export interface ResetPasswordInput {
   /** Raw header value, shown verbatim (escaped) as "Device" — no UA-parsing
    * library (Global Constraints scope decision 2: no new dependency). */
   userAgent: string | null;
-}
-
-function buildSubject(copy: EmailCopy, brand: BrandConfig): string {
-  return copy.subject.replaceAll("{shop_name}", brand.shopName);
 }
 
 export function renderResetPasswordEmail(
@@ -49,9 +56,9 @@ export function renderResetPasswordEmail(
   const bodyHtml = `
     ${title(copy.title)}
     ${subtitle(copy.subtitle)}
-    <div class="email-text" style="font-size:15px;color:#18181B;line-height:1.6;margin-bottom:24px;">${escapeHtml(copy.message)}</div>
-    <div style="margin-bottom:16px;">${primaryButton("Reset Password", input.resetUrl)}</div>
-    <div class="email-muted" style="font-size:14px;color:#71717A;margin-bottom:24px;">${escapeHtml(expiryLine)}</div>
+    <div class="email-text" style="font-size:15px;color:${TEXT};line-height:1.6;margin-bottom:24px;">${escapeHtml(copy.message)}</div>
+    <div style="margin-bottom:16px;">${primaryButton("Reset Password", input.resetUrl, brand.accentColor)}</div>
+    <div class="email-muted" style="font-size:14px;color:${MUTED};margin-bottom:24px;">${escapeHtml(expiryLine)}</div>
     ${infoTable(securityRows)}
     <div style="margin-top:24px;">${alertBox(
       "Didn't request this?",

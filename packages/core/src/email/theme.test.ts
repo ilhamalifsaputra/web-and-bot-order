@@ -37,4 +37,11 @@ describe("buildThemeStyleBlock", () => {
     const block = buildThemeStyleBlock(brand);
     expect(block).not.toContain("var(--");
   });
+
+  it("escapes a malicious accentColor value in the dark-mode block", () => {
+    const malicious: BrandConfig = { ...brand, accentColor: '"}</style><script>alert(1)</script>' };
+    const block = buildThemeStyleBlock(malicious);
+    expect(block).not.toContain("<script>alert(1)</script>");
+    expect(block).not.toContain("</style>");
+  });
 });

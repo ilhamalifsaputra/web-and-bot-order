@@ -9,10 +9,12 @@ import type { BrandConfig } from "./types";
 
 // Fixed neutrals shared with theme.ts's light-mode tokens — components that
 // don't take a BrandConfig (and so can't call resolveTokens) still need the
-// same text/muted/border colors to look consistent with the shell.
-const TEXT = "#18181B";
-const MUTED = "#71717A";
-const BORDER = "#E4E4E7";
+// same text/muted/border colors to look consistent with the shell. Exported
+// so the template files (templates/orderPaid.ts, templates/resetPassword.ts)
+// can reuse the same constants instead of re-hardcoding the hex values.
+export const TEXT = "#18181B";
+export const MUTED = "#71717A";
+export const BORDER = "#E4E4E7";
 
 export function title(text: string): string {
   return `<div class="email-text" style="font-size:28px;line-height:1.3;font-weight:700;color:${TEXT};margin:0 0 8px 0;">${escapeHtml(text)}</div>`;
@@ -69,11 +71,19 @@ export function infoTable(rows: InfoRow[]): string {
  * Word rendering engine) strip padding/border-radius/background from a
  * styled `<a>` but respect them on a `<td>`. The `<a>` inside just carries
  * the href and inherits the cell's look via its own inline styles.
+ *
+ * `accentColor` is the shop's `BrandConfig.accentColor` — the CTA button is
+ * the most prominent branded element in a transactional email, so its
+ * background reflects the shop's configured accent (unlike `statusBadge`,
+ * which deliberately stays on fixed semantic tone colors regardless of
+ * branding). `class="email-button-bg"` pins this color under
+ * `prefers-color-scheme: dark` too — see theme.ts's buildThemeStyleBlock.
  */
-export function primaryButton(text: string, href: string): string {
+export function primaryButton(text: string, href: string, accentColor: string): string {
   const escapedText = escapeHtml(text);
   const escapedHref = escapeHtml(href);
-  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="border-radius:10px;background-color:#4F46E5;" class="email-button-bg"><a href="${escapedHref}" aria-label="${escapedText}" style="display:inline-block;padding:12px 28px;font-size:16px;font-weight:600;color:#FFFFFF;text-decoration:none;border-radius:10px;">${escapedText}</a></td></tr></table>`;
+  const escapedAccent = escapeHtml(accentColor);
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="border-radius:10px;background-color:${escapedAccent};" class="email-button-bg"><a href="${escapedHref}" aria-label="${escapedText}" style="display:inline-block;padding:12px 28px;font-size:16px;font-weight:600;color:#FFFFFF;text-decoration:none;border-radius:10px;">${escapedText}</a></td></tr></table>`;
 }
 
 /** "If the button doesn't work..." fallback for clients that block button
@@ -87,10 +97,10 @@ export function fallbackLinkLine(href: string): string {
 
 export type AlertTone = "warning" | "info";
 
-export function alertBox(title: string, message: string, tone: AlertTone): string {
+export function alertBox(heading: string, message: string, tone: AlertTone): string {
   const bg = tone === "warning" ? "#FEF3C7" : "#F4F4F5";
   const border = tone === "warning" ? "#F59E0B" : BORDER;
-  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;background-color:${bg};border:1px solid ${border};border-radius:8px;margin:24px 0;"><tr><td style="padding:16px;"><div style="font-size:14px;font-weight:700;color:${TEXT};margin-bottom:4px;">${escapeHtml(title)}</div><div style="font-size:14px;color:${TEXT};line-height:1.5;">${escapeHtml(message)}</div></td></tr></table>`;
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;background-color:${bg};border:1px solid ${border};border-radius:8px;margin:24px 0;"><tr><td style="padding:16px;"><div style="font-size:14px;font-weight:700;color:${TEXT};margin-bottom:4px;">${escapeHtml(heading)}</div><div style="font-size:14px;color:${TEXT};line-height:1.5;">${escapeHtml(message)}</div></td></tr></table>`;
 }
 
 export interface FooterArgs {

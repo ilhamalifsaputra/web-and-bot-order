@@ -13,9 +13,11 @@ import {
   primaryButton,
   fallbackLinkLine,
   footer,
+  TEXT,
 } from "../components";
 import { ptSection, ptKeyValue, ptDivider } from "../plaintext";
 import { escapeHtml } from "../escape";
+import { buildSubject } from "../subject";
 import type { BrandConfig, EmailCopy, RenderedEmail } from "../types";
 
 export interface OrderPaidItem {
@@ -55,19 +57,10 @@ function buildItemsHtml(items: OrderPaidItem[]): string {
   const rows = items
     .map(
       (item) =>
-        `<tr><td class="email-text" style="padding:6px 0;font-size:14px;color:#18181B;">${escapeHtml(formatItemLine(item))}</td></tr>`,
+        `<tr><td class="email-text" style="padding:6px 0;font-size:14px;color:${TEXT};">${escapeHtml(formatItemLine(item))}</td></tr>`,
     )
     .join("");
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin-bottom:8px;">${rows}</table>`;
-}
-
-/** Substitute only the literal `{shop_name}` token into an admin-edited
- * subject string — never any payload-derived token (order code, total,
- * transaction id), even if an admin types that literal token name into the
- * Settings field. See Global Constraints: the order code is half the guest
- * `/track` credential, and mailer.ts logs every subject verbatim. */
-function buildSubject(copy: EmailCopy, brand: BrandConfig): string {
-  return copy.subject.replaceAll("{shop_name}", brand.shopName);
 }
 
 export function renderOrderPaidEmail(
@@ -88,14 +81,14 @@ export function renderOrderPaidEmail(
   ];
 
   const buttonHtml = input.orderUrl
-    ? `<div style="margin-top:24px;">${primaryButton("View Order", input.orderUrl)}${fallbackLinkLine(input.orderUrl)}</div>`
+    ? `<div style="margin-top:24px;">${primaryButton("View Order", input.orderUrl, brand.accentColor)}${fallbackLinkLine(input.orderUrl)}</div>`
     : "";
 
   const bodyHtml = `
     <div style="margin-bottom:16px;">${statusBadge("PAID", "success")}</div>
     ${title(copy.title)}
     ${subtitle(copy.subtitle)}
-    <div class="email-text" style="font-size:15px;color:#18181B;line-height:1.6;margin-bottom:24px;">${escapeHtml(copy.message)}</div>
+    <div class="email-text" style="font-size:15px;color:${TEXT};line-height:1.6;margin-bottom:24px;">${escapeHtml(copy.message)}</div>
     ${buildItemsHtml(input.items)}
     ${infoTable(summaryRows)}
     ${buttonHtml}

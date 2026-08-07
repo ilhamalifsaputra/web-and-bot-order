@@ -71,4 +71,11 @@ describe("renderShell", () => {
     const html = renderShell({ brand, bodyHtml: "<p>hi</p>" });
     expect(html).toContain('role="presentation"');
   });
+
+  it("escapes a malicious accentColor value in the header rule", () => {
+    const malicious: BrandConfig = { ...brand, accentColor: '"><script>alert(1)</script>' };
+    const html = renderShell({ brand: malicious, bodyHtml: "<p>hi</p>" });
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&quot;&gt;&lt;script&gt;");
+  });
 });

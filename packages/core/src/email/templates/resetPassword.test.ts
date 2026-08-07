@@ -95,3 +95,14 @@ describe("renderResetPasswordEmail — subject", () => {
     expect(result.subject).toBe("Acme Shop — reset your password");
   });
 });
+
+describe("renderResetPasswordEmail — brand accent color", () => {
+  it("uses the brand's accent color as the Reset Password button background", () => {
+    const brandedAccent: BrandConfig = { ...brand, accentColor: "#00A86B" };
+    const result = renderResetPasswordEmail(fullInput, brandedAccent, defaultCopy);
+    // Matches primaryButton's exact bulletproof-button markup, not just any
+    // "background-color:#00A86B" occurrence (the header accent rule also
+    // carries the accent color, so a bare toContain would false-positive).
+    expect(result.html).toContain('background-color:#00A86B;" class="email-button-bg"');
+  });
+});

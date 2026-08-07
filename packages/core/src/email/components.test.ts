@@ -95,19 +95,29 @@ describe("infoTable", () => {
 
 describe("primaryButton", () => {
   it("contains the given href", () => {
-    const html = primaryButton("View Order", "https://example.com/orders/1");
+    const html = primaryButton("View Order", "https://example.com/orders/1", "#4F46E5");
     expect(html).toContain("https://example.com/orders/1");
   });
 
   it("contains an aria-label matching the button text", () => {
-    const html = primaryButton("View Order", "https://example.com/orders/1");
+    const html = primaryButton("View Order", "https://example.com/orders/1", "#4F46E5");
     expect(html).toContain('aria-label="View Order"');
   });
 
-  it("escapes malicious button text and href", () => {
-    const html = primaryButton("<script>x</script>", "javascript:alert(1)\"><script>y</script>");
+  it("uses the given accent color as the button background", () => {
+    const html = primaryButton("View Order", "https://example.com/orders/1", "#00A86B");
+    expect(html).toContain("background-color:#00A86B");
+  });
+
+  it("escapes malicious button text, href, and accent color", () => {
+    const html = primaryButton(
+      "<script>x</script>",
+      "javascript:alert(1)\"><script>y</script>",
+      '"><script>z</script>',
+    );
     expect(html).not.toContain("<script>x</script>");
     expect(html).not.toContain("<script>y</script>");
+    expect(html).not.toContain("<script>z</script>");
   });
 });
 

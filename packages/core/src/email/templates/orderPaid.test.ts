@@ -162,3 +162,14 @@ describe("renderOrderPaidEmail — subject handling", () => {
     expect(result.text).toContain("ORD-20260807-ABCD");
   });
 });
+
+describe("renderOrderPaidEmail — brand accent color", () => {
+  it("uses the brand's accent color as the View Order button background", () => {
+    const brandedAccent: BrandConfig = { ...brand, accentColor: "#00A86B" };
+    const result = renderOrderPaidEmail(fullInput, brandedAccent, defaultCopy);
+    // Matches primaryButton's exact bulletproof-button markup, not just any
+    // "background-color:#00A86B" occurrence (the header accent rule also
+    // carries the accent color, so a bare toContain would false-positive).
+    expect(result.html).toContain('background-color:#00A86B;" class="email-button-bg"');
+  });
+});

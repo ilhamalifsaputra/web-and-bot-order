@@ -6,6 +6,7 @@
  * overrides live in the one `<style>` block layout.ts embeds, targeting the
  * classes/ids that block assigns.
  */
+import { escapeHtml } from "./escape";
 import type { BrandConfig } from "./types";
 
 export interface ColorTokens {
@@ -45,12 +46,29 @@ const DARK = {
 
 /**
  * The classes/ids referenced here (`email-bg`, `email-surface`, `email-text`,
- * `email-muted`, `email-border`, `email-accent-text`) must be assigned by
- * layout.ts/components.ts on the elements whose color should flip in dark
- * mode — this file only produces the CSS text, it doesn't touch markup.
+ * `email-muted`, `email-border`, `email-button-bg`) must be assigned by
+ * layout.ts/components.ts on the elements whose color should flip (or, for
+ * the accent, stay pinned) in dark mode — this file only produces the CSS
+ * text, it doesn't touch markup.
+ *
+ * `.email-button-bg` (primaryButton's bulletproof-button cell in
+ * components.ts) re-asserts the same accent value under `prefers-color-scheme:
+ * dark` rather than swapping to a different color — the accent is kept
+ * legible on both light and dark surfaces (see DARK's comment above), but
+ * some clients apply their own heuristic dark-mode color inversion to
+ * inline styles unless an explicit dark rule pins the value, so this
+ * `!important` override exists to stop that from happening to the button.
+ * There used to be an `.email-accent-text` rule here too, but no element in
+ * layout.ts/components.ts ever carried that class (accent color is never
+ * used for text in this design system) — removed as dead CSS rather than
+ * inventing a use for it.
  */
 export function buildThemeStyleBlock(brand: BrandConfig): string {
   const tokens = resolveTokens(brand);
+  // Not validated here (only at the Settings-save boundary, Task 5) — escape
+  // like every other BrandConfig field that reaches markup, since this value
+  // is interpolated directly into a `<style>` block.
+  const accent = escapeHtml(tokens.accent);
   return `
     @media (prefers-color-scheme: dark) {
       .email-bg { background-color: ${DARK.bg} !important; }
@@ -58,7 +76,7 @@ export function buildThemeStyleBlock(brand: BrandConfig): string {
       .email-text { color: ${DARK.text} !important; }
       .email-muted { color: ${DARK.muted} !important; }
       .email-border { border-color: ${DARK.border} !important; }
-      .email-accent-text { color: ${tokens.accent} !important; }
+      .email-button-bg { background-color: ${accent} !important; }
     }
   `;
 }

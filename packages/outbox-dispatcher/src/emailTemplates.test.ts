@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // emailTemplates.ts now reads Settings (shop_name, web_logo_url,
 // email_brand_color, email_support_address, the four email_order_paid_*
@@ -14,10 +14,14 @@ vi.mock("@app/db", () => ({
 }));
 
 import { renderEmail } from "./emailTemplates";
+import { getSetting } from "@app/db";
 
 const DISTINCTIVE_ORDER_CODE = "ZZZTESTCODE99";
 
 describe("emailTemplates.renderEmail", () => {
+  beforeEach(() => {
+    vi.mocked(getSetting).mockResolvedValue(null);
+  });
   describe("OWNER_EMAIL_ORDER_PAID", () => {
     const payload = {
       to: "owner@example.com",
@@ -74,6 +78,25 @@ describe("emailTemplates.renderEmail", () => {
       expect(html).not.toContain("SAVE10");
       expect(html.toLowerCase()).not.toContain("null");
       expect(html.toLowerCase()).not.toContain("undefined");
+    });
+
+    it("preserves explicit empty strings in Settings (e.g. shop_name cleared to '') without falling back to defaults", async () => {
+      // Mock getSetting to return empty strings for shop_name and email_order_paid_title
+      vi.mocked(getSetting).mockImplementation(async (_, key) => {
+        if (key === "shop_name") return "";
+        if (key === "email_order_paid_title") return "";
+        return null; // all others get their defaults
+      });
+
+      const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", payload);
+      expect(result).not.toBeNull();
+      // Empty shop_name should pass through, not fall back to "Toko Digital" —
+      // this verifies ?? behavior: null/undefined falls back, but explicit ""
+      // stays empty
+      expect(result!.html).not.toContain("Toko Digital");
+      // Empty email_order_paid_title should pass through, not fall back to the
+      // default "You've got a new order"
+      expect(result!.html).not.toContain("You've got a new order");
     });
   });
 

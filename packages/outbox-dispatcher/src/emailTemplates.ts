@@ -114,10 +114,10 @@ async function resolveOwnerBrandConfig(): Promise<BrandConfig> {
     getSetting(prisma, "email_support_address"),
   ]);
   return {
-    shopName: shopName || "Toko Digital",
-    logoUrl: logoUrl || null,
-    accentColor: accentColor || "#4F46E5",
-    supportEmail: supportEmail || null,
+    shopName: shopName ?? "Toko Digital",
+    logoUrl: logoUrl ?? null,
+    accentColor: accentColor ?? "#4F46E5",
+    supportEmail: supportEmail ?? null,
     storeUrl: config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null,
   };
 }
@@ -133,10 +133,10 @@ async function resolveOrderPaidCopy(): Promise<EmailCopy> {
     getSetting(prisma, "email_order_paid_message"),
   ]);
   return {
-    subject: subject || "New paid order",
-    title: title || "You've got a new order",
-    subtitle: subtitle || "A customer just completed payment.",
-    message: message || "Here are the details.",
+    subject: subject ?? "New paid order",
+    title: title ?? "You've got a new order",
+    subtitle: subtitle ?? "A customer just completed payment.",
+    message: message ?? "Here are the details.",
   };
 }
 

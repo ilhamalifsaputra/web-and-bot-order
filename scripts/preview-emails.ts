@@ -58,7 +58,7 @@ const orderPaidInput: OrderPaidInput = {
     },
     {
       name: "Premium Support",
-      variant: null,
+      variant: "Standard",
       quantity: 2,
       unitPrice: "200000",
     },

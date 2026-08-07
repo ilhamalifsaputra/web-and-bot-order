@@ -23,6 +23,7 @@
     "./bulk": "./src/bulk.ts",
     "./password": "./src/password.ts",
     "./mailer": "./src/mailer.ts",
+    "./email": "./src/email/index.ts",
     "./delivery": "./src/delivery.ts",
     "./reviews": "./src/reviews.ts",
     "./payments/tokopay": "./src/payments/tokopay.ts",

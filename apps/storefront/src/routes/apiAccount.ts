@@ -54,7 +54,7 @@ import {
   SHOP_SESSION_TTL_HOURS,
 } from "../auth";
 import { optionalCustomer, type Customer } from "../plugins/auth";
-import { resolveBotUsername } from "../shop";
+import { resolveBotId, resolveBotUsername } from "../shop";
 import { constantTimeEqual } from "../auth";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -450,6 +450,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     if (!customer) return;
     return reply.send({
       bot_username: await resolveBotUsername(),
+      bot_id: await resolveBotId(),
       values: {
         username: customer.user.loginUsername ?? "",
         email: customer.user.email ?? "",

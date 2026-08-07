@@ -34,6 +34,18 @@ export async function resolveBotToken(): Promise<string | undefined> {
   return v || undefined;
 }
 
+const BOT_ID_RE = /^\d+$/;
+/** Numeric bot_id prefix of the live bot TOKEN (format `<bot_id>:<hash>`) —
+ *  what oauth.telegram.org's direct-link login flow needs instead of the
+ *  widget script. "" when no token is configured or it doesn't match the
+ *  standard Bot API token shape (never throws on a malformed token). */
+export async function resolveBotId(): Promise<string> {
+  const token = await resolveBotToken();
+  if (!token) return "";
+  const [id] = token.split(":");
+  return id && BOT_ID_RE.test(id) ? id : "";
+}
+
 /**
  * Absolute origin for links that leave the browser — the ones we put in an
  * OUTGOING EMAIL, where a relative path has nothing to resolve against. The

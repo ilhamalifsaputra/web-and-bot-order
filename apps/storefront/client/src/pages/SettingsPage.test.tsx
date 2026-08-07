@@ -14,6 +14,7 @@ vi.mock("../api/client", () => ({
 
 const settingsData: SettingsData = {
   bot_username: "tokobot",
+  bot_id: "123",
   values: { username: "alice", email: "alice@example.com" },
   has_password: true,
   tg_linked: false,

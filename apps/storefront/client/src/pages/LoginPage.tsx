@@ -30,6 +30,7 @@ interface LoginResponse {
 
 interface TelegramWidgetData {
   bot_username: string;
+  bot_id: string;
   auth_url: string;
 }
 

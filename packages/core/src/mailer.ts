@@ -19,12 +19,13 @@ function transport(creds: SmtpCreds) {
   });
 }
 
-export async function sendMail(creds: SmtpCreds, args: { to: string; subject: string; text: string }): Promise<void> {
+export async function sendMail(creds: SmtpCreds, args: { to: string; subject: string; text: string; html?: string }): Promise<void> {
   await transport(creds).sendMail({
     from: creds.from,
     to: args.to,
     subject: args.subject,
     text: args.text,
+    html: args.html,
   });
   // The recipient address is deliberately NOT in the message string: this is
   // the one function every outgoing email passes through, so interpolating

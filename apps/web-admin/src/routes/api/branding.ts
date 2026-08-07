@@ -111,8 +111,14 @@ export default async function brandingApiRoutes(app: FastifyInstance): Promise<v
     const value = (body.value ?? "").trim();
 
     // Format validation for the two structured keys — empty is always allowed
-    // (clears the override back to its coded default), same as every other
-    // text field here.
+    // to be SAVED here (clears the override), same as every other text field.
+    // For email_brand_color and the two email_*_subject keys specifically,
+    // an empty/invalid stored value is neutralized back to the coded default
+    // at RENDER time instead (packages/core/src/email/theme.ts's
+    // resolveAccentColor; the `subject?.trim() || default` fallback in
+    // emailTemplates.ts / apiAuth.ts) — not here at save time — so a
+    // half-migrated deploy or a future write path that bypasses this
+    // endpoint still gets the same safe fallback.
     if (key === "email_brand_color" && value !== "" && !BRAND_COLOR_RE.test(value)) {
       return reply.code(400).send({ error: "Enter a 6-digit hex color, e.g. #4F46E5." });
     }

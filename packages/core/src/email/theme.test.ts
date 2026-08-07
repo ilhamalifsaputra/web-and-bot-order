@@ -20,6 +20,21 @@ describe("resolveTokens", () => {
     expect(tokens.muted).toMatch(/^#/);
     expect(tokens.border).toMatch(/^#/);
   });
+
+  it("falls back to the coded default accent when accentColor is an empty string", () => {
+    const tokens = resolveTokens({ ...brand, accentColor: "" });
+    expect(tokens.accent).toBe("#4F46E5");
+  });
+
+  it("falls back to the coded default accent when accentColor is not a clean 6-digit hex code", () => {
+    const tokens = resolveTokens({ ...brand, accentColor: "red;background-image:url(evil)" });
+    expect(tokens.accent).toBe("#4F46E5");
+  });
+
+  it("keeps a valid 6-digit hex accent color unchanged", () => {
+    const tokens = resolveTokens({ ...brand, accentColor: "#00A86B" });
+    expect(tokens.accent).toBe("#00A86B");
+  });
 });
 
 describe("buildThemeStyleBlock", () => {
@@ -43,5 +58,12 @@ describe("buildThemeStyleBlock", () => {
     const block = buildThemeStyleBlock(malicious);
     expect(block).not.toContain("<script>alert(1)</script>");
     expect(block).not.toContain("</style>");
+  });
+
+  it("falls back to the coded default accent in the dark-mode button rule when accentColor is empty", () => {
+    const block = buildThemeStyleBlock({ ...brand, accentColor: "" });
+    expect(block).not.toContain("background-color:  !important");
+    expect(block).not.toContain("background-color: !important");
+    expect(block).toContain("background-color: #4F46E5 !important");
   });
 });

@@ -179,4 +179,11 @@ describe("renderOrderPaidEmail — brand accent color", () => {
     // carries the accent color, so a bare toContain would false-positive).
     expect(result.html).toContain('background-color:#00A86B;" class="email-button-bg"');
   });
+
+  it("falls back to the default accent color for the button when brand.accentColor is an empty string, instead of an invisible button", () => {
+    const emptyAccent: BrandConfig = { ...brand, accentColor: "" };
+    const result = renderOrderPaidEmail(fullInput, emptyAccent, defaultCopy);
+    expect(result.html).not.toContain('background-color:;" class="email-button-bg"');
+    expect(result.html).toContain('background-color:#4F46E5;" class="email-button-bg"');
+  });
 });

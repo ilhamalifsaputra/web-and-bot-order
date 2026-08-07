@@ -18,6 +18,31 @@ export interface ColorTokens {
   accent: string;
 }
 
+/** Coded fallback accent — used whenever the stored/supplied accent color
+ * isn't a clean 6-digit hex code (unset, cleared to `""`, or malformed). */
+export const DEFAULT_ACCENT_COLOR = "#4F46E5";
+
+const BRAND_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+
+/**
+ * Validates an accent color at render time, regardless of what's stored in
+ * Settings. Settings allows saving `email_brand_color` as an empty string
+ * (apps/web-admin/src/routes/api/branding.ts — clearing the field back to
+ * "no override" is a valid save), and `??` (not `||`) is used everywhere
+ * that Setting is read specifically so an explicit `""` is preserved rather
+ * than silently coerced to the default at read time. That means an empty —
+ * or otherwise malformed — value can reach here, and every consumer of
+ * `accentColor` needs the SAME fallback, not just the one that happened to
+ * remember to check. This is also the CSS-injection guard: `escapeHtml`
+ * only neutralizes `<>&"'`, so a value containing `;`/`{}`/`:` could
+ * otherwise inject extra declarations into an inline `style` attribute or
+ * the `<style>` block — rejecting anything that isn't a clean 6-digit hex
+ * code closes that off for free.
+ */
+export function resolveAccentColor(accentColor: string): string {
+  return BRAND_COLOR_RE.test(accentColor) ? accentColor : DEFAULT_ACCENT_COLOR;
+}
+
 /** Light-mode tokens — the ones inlined directly onto elements. Only the
  * accent color is brand-configurable; the neutrals are fixed so every shop's
  * email reads as the same well-tested design regardless of accent choice. */
@@ -28,7 +53,7 @@ export function resolveTokens(brand: BrandConfig): ColorTokens {
     text: "#18181B",
     muted: "#71717A",
     border: "#E4E4E7",
-    accent: brand.accentColor,
+    accent: resolveAccentColor(brand.accentColor),
   };
 }
 
@@ -65,9 +90,10 @@ const DARK = {
  */
 export function buildThemeStyleBlock(brand: BrandConfig): string {
   const tokens = resolveTokens(brand);
-  // Not validated here (only at the Settings-save boundary, Task 5) — escape
-  // like every other BrandConfig field that reaches markup, since this value
-  // is interpolated directly into a `<style>` block.
+  // tokens.accent is already validated by resolveTokens -> resolveAccentColor
+  // (a clean 6-digit hex code or the coded default) — still escaped like
+  // every other BrandConfig field that reaches markup, since this value is
+  // interpolated directly into a `<style>` block.
   const accent = escapeHtml(tokens.accent);
   return `
     @media (prefers-color-scheme: dark) {

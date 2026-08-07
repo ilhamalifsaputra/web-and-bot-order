@@ -105,4 +105,24 @@ describe("renderResetPasswordEmail — brand accent color", () => {
     // carries the accent color, so a bare toContain would false-positive).
     expect(result.html).toContain('background-color:#00A86B;" class="email-button-bg"');
   });
+
+  it("falls back to the default accent color for the button when brand.accentColor is an empty string, instead of an invisible button", () => {
+    const emptyAccent: BrandConfig = { ...brand, accentColor: "" };
+    const result = renderResetPasswordEmail(fullInput, emptyAccent, defaultCopy);
+    expect(result.html).not.toContain('background-color:;" class="email-button-bg"');
+    expect(result.html).toContain('background-color:#4F46E5;" class="email-button-bg"');
+  });
+});
+
+describe("renderResetPasswordEmail — text output includes all four admin-editable copy fields", () => {
+  it("weaves copy.subtitle and copy.message into the plaintext fallback, not just copy.title", () => {
+    const customCopy: EmailCopy = {
+      ...defaultCopy,
+      subtitle: "DISTINCTIVE-SUBTITLE-MARKER",
+      message: "DISTINCTIVE-MESSAGE-MARKER",
+    };
+    const result = renderResetPasswordEmail(fullInput, brand, customCopy);
+    expect(result.text).toContain("DISTINCTIVE-SUBTITLE-MARKER");
+    expect(result.text).toContain("DISTINCTIVE-MESSAGE-MARKER");
+  });
 });

@@ -21,7 +21,10 @@ const brand: BrandConfig = {
   storeUrl: "https://trustance.example",
 };
 
-// Default copy for Order Paid email (from resolveOrderPaidCopy defaults)
+// Default copy for Order Paid email — kept in sync with
+// packages/outbox-dispatcher/src/emailTemplates.ts's resolveOrderPaidCopy()
+// defaults (the ones an unconfigured Settings install actually ships), not a
+// preview-only invented version.
 const orderPaidCopy: EmailCopy = {
   subject: "New paid order",
   title: "You've got a new order",
@@ -29,13 +32,16 @@ const orderPaidCopy: EmailCopy = {
   message: "Here are the details.",
 };
 
-// Default copy for Reset Password email (English-only HTML, bilingual text)
+// Default copy for Reset Password email — kept in sync with the equivalent
+// resolution in apps/storefront/src/routes/apiAuth.ts's /auth/forgot handler
+// (English-only HTML, bilingual text). `{shop_name}` is left in the subject
+// deliberately so this preview exercises the same substitution
+// renderResetPasswordEmail performs on real traffic.
 const resetPasswordCopy: EmailCopy = {
-  subject: "Reset your password",
-  title: "Password reset requested",
-  subtitle: "Someone requested a password reset for your account.",
-  message:
-    "Click the button below to set a new password. If you didn't request this, you can safely ignore this email.",
+  subject: "{shop_name} — reset your password",
+  title: "Reset your password",
+  subtitle: "We received a request to reset your password.",
+  message: "Click the button below to choose a new password.",
 };
 
 // Realistic Order Paid fixture with all optional fields populated
@@ -71,7 +77,10 @@ const orderPaidInput: OrderPaidInput = {
   transactionId: "TRX-20260807-ABC12345",
   voucherCode: "SUMMER2026",
   paidAt: "2026-08-07 14:30 UTC",
-  orderUrl: "https://trustance.example/orders/ORD-2026-08-001234",
+  // Order-ID based, matching the real construction in
+  // packages/db/src/crud/orders.ts (`${ADMIN_PUBLIC_URL}/orders/${orderId}`)
+  // — not order-code based, which was never how this URL is actually built.
+  orderUrl: "https://trustance.example/orders/567",
 };
 
 // Realistic Reset Password fixture with all optional fields populated

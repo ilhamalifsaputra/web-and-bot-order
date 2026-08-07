@@ -5,6 +5,7 @@
  * text inputs internally — callers always pass raw, unescaped strings in.
  */
 import { escapeHtml } from "./escape";
+import { resolveAccentColor } from "./theme";
 import type { BrandConfig } from "./types";
 
 // Fixed neutrals shared with theme.ts's light-mode tokens — components that
@@ -78,11 +79,16 @@ export function infoTable(rows: InfoRow[]): string {
  * which deliberately stays on fixed semantic tone colors regardless of
  * branding). `class="email-button-bg"` pins this color under
  * `prefers-color-scheme: dark` too — see theme.ts's buildThemeStyleBlock.
+ *
+ * `accentColor` is validated via theme.ts's `resolveAccentColor` before use
+ * — an empty or malformed value (e.g. Settings' `email_brand_color` cleared
+ * to `""`) falls back to the coded default rather than rendering an
+ * invisible white-on-transparent button (`background-color:;`).
  */
 export function primaryButton(text: string, href: string, accentColor: string): string {
   const escapedText = escapeHtml(text);
   const escapedHref = escapeHtml(href);
-  const escapedAccent = escapeHtml(accentColor);
+  const escapedAccent = escapeHtml(resolveAccentColor(accentColor));
   return `<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr><td align="center" style="border-radius:10px;background-color:${escapedAccent};" class="email-button-bg"><a href="${escapedHref}" aria-label="${escapedText}" style="display:inline-block;padding:12px 28px;font-size:16px;font-weight:600;color:#FFFFFF;text-decoration:none;border-radius:10px;">${escapedText}</a></td></tr></table>`;
 }
 

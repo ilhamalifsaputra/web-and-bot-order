@@ -798,6 +798,62 @@ describe("forgot + reset password", () => {
     expect(sendMail).toHaveBeenCalledTimes(1);
   });
 
+  it("does not double up the expiry sentence in the default message — the template already states expiry via its own dedicated line", async () => {
+    const { sendMail } = await import("@app/core/mailer");
+    vi.clearAllMocks();
+
+    const res = await app.inject({ method: "POST", url: "/api/v1/auth/forgot", payload: { email: "forget@me.test" } });
+    expect(res.statusCode).toBe(200);
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    const call = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![1] as { html: string };
+    // The default intro message used to restate the expiry in hours ("This
+    // link expires in 1 hour.") right above the template's own dedicated
+    // line stating it in minutes ("This link expires in 60 minutes.") —
+    // redundant, and in mismatched units. Only the template's line should
+    // remain.
+    expect(call.html.toLowerCase()).not.toContain("expires in 1 hour");
+    const expiryMatches = call.html.match(/expires in \d+ minutes/gi) ?? [];
+    expect(expiryMatches.length).toBe(1);
+  });
+
+  it("falls back to the default subject when email_reset_password_subject is saved as an empty/whitespace string", async () => {
+    const { sendMail } = await import("@app/core/mailer");
+    vi.clearAllMocks();
+    await setSetting(prisma, "email_reset_password_subject", "   ");
+    try {
+      const res = await app.inject({ method: "POST", url: "/api/v1/auth/forgot", payload: { email: "forget@me.test" } });
+      expect(res.statusCode).toBe(200);
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      const call = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![1] as { subject: string };
+      // A whitespace-only stored subject must not produce a genuinely blank
+      // Subject header (spam-filter red flag) — it must fall back to the
+      // coded default instead.
+      expect(call.subject.trim().length).toBeGreaterThan(0);
+      expect(call.subject).not.toBe("   ");
+    } finally {
+      await deleteSetting(prisma, "email_reset_password_subject");
+    }
+  });
+
+  it("truncates an overlong User-Agent header before it reaches the email body", async () => {
+    const { sendMail } = await import("@app/core/mailer");
+    vi.clearAllMocks();
+    const longUa = "X".repeat(500);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/forgot",
+      payload: { email: "forget@me.test" },
+      headers: { "user-agent": longUa },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(sendMail).toHaveBeenCalledTimes(1);
+    const call = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![1] as { html: string };
+    expect(call.html).not.toContain(longUa);
+    expect(call.html).toContain("X".repeat(180));
+    expect(call.html).not.toContain("X".repeat(181));
+  });
+
   // The route's own happy-path wiring (consumePasswordResetToken →
   // setLoginCredentials → JSON redirect body) isn't exercised by
   // spa-api.test.ts (which only covers the invalid-token 400 case). Reuse

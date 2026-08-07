@@ -133,7 +133,11 @@ async function resolveOrderPaidCopy(): Promise<EmailCopy> {
     getSetting(prisma, "email_order_paid_message"),
   ]);
   return {
-    subject: subject ?? "New paid order",
+    // A blank Subject header is a spam-filter red flag in a way a blank
+    // title/subtitle/message is not (those are harmless empty body text),
+    // so subject alone also falls back on a whitespace-only stored value,
+    // not just on a genuinely unset (null) Setting.
+    subject: subject?.trim() || "New paid order",
     title: title ?? "You've got a new order",
     subtitle: subtitle ?? "A customer just completed payment.",
     message: message ?? "Here are the details.",

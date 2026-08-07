@@ -198,17 +198,38 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
           storeUrl: config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null,
         };
         const copy: EmailCopy = {
-          subject: copySubject ?? "{shop_name} — reset your password",
+          // A blank Subject header is a spam-filter red flag in a way a
+          // blank title/subtitle/message is not (those are harmless empty
+          // body text), so subject alone also falls back on a
+          // whitespace-only stored value, not just on a genuinely unset
+          // (null) Setting.
+          subject: copySubject?.trim() || "{shop_name} — reset your password",
           title: copyTitle ?? "Reset your password",
           subtitle: copySubtitle ?? "We received a request to reset your password.",
-          message: copyMessage ?? "Click the button below to choose a new password. This link expires in 1 hour.",
+          // No expiry clause here — packages/core/src/email/templates/
+          // resetPassword.ts already renders its own dedicated expiry line
+          // from `expiryMinutes`; restating it here (previously "...This
+          // link expires in 1 hour.") duplicated it in a different, mismatched
+          // unit (hours vs. the template's minutes).
+          message: copyMessage ?? "Click the button below to choose a new password.",
         };
         // Fastify hands back a string, an array (repeated header), or
         // undefined for a missing header — normalize to string | null, taking
         // the first value of an array the same way the rest of this codebase
         // would treat a repeated header.
         const uaHeader = req.headers["user-agent"];
-        const userAgent = Array.isArray(uaHeader) ? (uaHeader[0] ?? null) : (uaHeader ?? null);
+        const uaValue = Array.isArray(uaHeader) ? (uaHeader[0] ?? null) : (uaHeader ?? null);
+        // /auth/forgot is unauthenticated (no CSRF, no login) and can be
+        // triggered against any registered email by anyone who knows/guesses
+        // it — the raw User-Agent header rides verbatim (HTML-escaped, but
+        // otherwise unvalidated) into a real, correctly-branded email sent to
+        // the victim's inbox as the "Device" line. A normal browser can't set
+        // an arbitrary value here, but curl/any raw HTTP client can, so this
+        // caps how much attacker-controlled text can ride in that one field —
+        // no attempt at UA parsing/validation, just a length bound. Kept here
+        // (app-specific truncation policy) rather than inside the shared
+        // packages/core/src/email/ template layer.
+        const userAgent = uaValue == null ? null : uaValue.slice(0, 180);
         const rendered = renderResetPasswordEmail(
           {
             resetUrl: link,

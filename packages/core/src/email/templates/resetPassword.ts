@@ -77,6 +77,10 @@ export function renderResetPasswordEmail(
 
   const text = [
     ptSection(copy.title),
+    copy.subtitle,
+    "",
+    copy.message,
+    "",
     `Click to set a new password (valid ${input.expiryMinutes} minutes):`,
     input.resetUrl,
     "",

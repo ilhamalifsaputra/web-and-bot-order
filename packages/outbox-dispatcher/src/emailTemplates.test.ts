@@ -98,6 +98,17 @@ describe("emailTemplates.renderEmail", () => {
       // default "You've got a new order"
       expect(result!.html).not.toContain("You've got a new order");
     });
+
+    it("falls back to the default subject when email_order_paid_subject is saved as an empty/whitespace string (a blank Subject header is a spam-filter red flag, unlike a blank title/subtitle/message)", async () => {
+      vi.mocked(getSetting).mockImplementation(async (_, key) => {
+        if (key === "email_order_paid_subject") return "   ";
+        return null;
+      });
+
+      const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", payload);
+      expect(result).not.toBeNull();
+      expect(result!.subject).toBe("New paid order");
+    });
   });
 
   describe("OWNER_EMAIL_MANUAL_ORDER_QUEUED", () => {

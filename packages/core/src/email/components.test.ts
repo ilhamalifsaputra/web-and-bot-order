@@ -119,6 +119,18 @@ describe("primaryButton", () => {
     expect(html).not.toContain("<script>y</script>");
     expect(html).not.toContain("<script>z</script>");
   });
+
+  it("falls back to the coded default accent color when given an empty string, instead of rendering an invisible button", () => {
+    const html = primaryButton("View Order", "https://example.com/orders/1", "");
+    expect(html).not.toContain("background-color:;");
+    expect(html).toContain("background-color:#4F46E5;");
+  });
+
+  it("falls back to the coded default accent color when given a value that isn't a clean 6-digit hex code (CSS-injection guard)", () => {
+    const html = primaryButton("View Order", "https://example.com/orders/1", "red;background-image:url(evil)");
+    expect(html).not.toContain("background-image:url(evil)");
+    expect(html).toContain("background-color:#4F46E5;");
+  });
 });
 
 describe("fallbackLinkLine", () => {

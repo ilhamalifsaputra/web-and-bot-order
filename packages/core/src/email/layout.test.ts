@@ -59,7 +59,11 @@ describe("renderShell", () => {
 
   it("omits the preheader div when preheader is not given", () => {
     const html = renderShell({ brand, bodyHtml: "<p>hi</p>" });
-    expect(html).not.toContain("preheader");
+    // "preheader" never appears literally in the markup either way, so assert
+    // against the div's actual distinguishing marker (mso-hide:all, only ever
+    // emitted by the preheader div) instead — a vacuous string check here
+    // would keep passing even if the omission logic broke.
+    expect(html).not.toContain("mso-hide:all");
   });
 
   it("includes a hidden preheader div with the given text when preheader is given", () => {
@@ -72,10 +76,16 @@ describe("renderShell", () => {
     expect(html).toContain('role="presentation"');
   });
 
-  it("escapes a malicious accentColor value in the header rule", () => {
+  it("rejects a malicious accentColor value in the header rule outright, falling back to the coded default rather than escaping-and-including it", () => {
+    // theme.ts's resolveAccentColor (used by resolveTokens, which this
+    // shell's accent rule reads from) now rejects anything that isn't a
+    // clean 6-digit hex code before it ever reaches markup — a stronger
+    // guarantee than escaping alone: the malicious value doesn't appear in
+    // ANY form (raw or escaped), it's replaced with "#4F46E5" instead.
     const malicious: BrandConfig = { ...brand, accentColor: '"><script>alert(1)</script>' };
     const html = renderShell({ brand: malicious, bodyHtml: "<p>hi</p>" });
     expect(html).not.toContain("<script>alert(1)</script>");
-    expect(html).toContain("&quot;&gt;&lt;script&gt;");
+    expect(html).not.toContain("&quot;&gt;&lt;script&gt;");
+    expect(html).toContain("background-color:#4F46E5;");
   });
 });

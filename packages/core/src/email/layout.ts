@@ -18,11 +18,11 @@ export interface RenderShellArgs {
 }
 
 /** A 3px accent rule under the header, matching the "header rule" use case
- * named alongside buttons/badges in the Settings description. `accent` is
- * `brand.accentColor` and must be escaped like every other BrandConfig
- * field that reaches markup — it is not validated here, only at the
- * Settings-save boundary (Task 5), so a malicious value must still be
- * neutralized at the point it's interpolated into a `style` attribute. */
+ * named alongside buttons/badges in the Settings description. `accent` here
+ * is `resolveTokens(brand).accent` — already validated by theme.ts's
+ * `resolveAccentColor` (a clean 6-digit hex code or the coded default) — and
+ * still escaped like every other BrandConfig field that reaches markup,
+ * since it's interpolated directly into a `style` attribute. */
 function accentRuleHtml(accent: string): string {
   return `<tr><td style="padding:16px 32px 0 32px;"><div style="height:3px;background-color:${escapeHtml(accent)};border-radius:2px;"></div></td></tr>`;
 }

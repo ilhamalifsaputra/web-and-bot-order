@@ -411,6 +411,7 @@
   "web.settings_title": "Pengaturan akun",
   "web.setup_pending_message": "Pemilik toko sedang menyelesaikan setup di panel admin. Silakan kembali sebentar lagi.",
   "web.setup_pending_title": "Toko belum aktif",
+  "web.tg_connecting": "Menghubungkan ke Telegram…",
   "web.tg_widget_unavailable_link": "hubungi admin",
   "web.tg_widget_unavailable_login": "Login Telegram belum bisa dimuat sekarang — silakan masuk dengan username atau email dan kata sandi.",
   "web.tg_widget_unavailable_prefix": "Login Telegram belum bisa dimuat sekarang. Coba lagi nanti atau",

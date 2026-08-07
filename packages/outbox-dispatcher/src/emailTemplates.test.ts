@@ -48,8 +48,7 @@ describe("emailTemplates.renderEmail", () => {
       expect(result).not.toBeNull();
       expect(result!.subject).toBe("New paid order"); // documented default (Settings unconfigured)
       expect(result!.text).toContain(DISTINCTIVE_ORDER_CODE);
-      expect(result!.text).toContain("150000.00");
-      expect(result!.text).toContain("IDR");
+      expect(result!.text).toContain("Rp150.000");
     });
 
     it("now also returns html containing the order code, total, and item details", async () => {
@@ -57,8 +56,7 @@ describe("emailTemplates.renderEmail", () => {
       expect(result).not.toBeNull();
       expect(result!.html).toBeTypeOf("string");
       expect(result!.html).toContain(DISTINCTIVE_ORDER_CODE);
-      expect(result!.html).toContain("150000.00");
-      expect(result!.html).toContain("IDR");
+      expect(result!.html).toContain("Rp150.000");
       expect(result!.html).toContain("Netflix Premium");
       expect(result!.html).toContain("Spotify Family");
       expect(result!.html).toContain("TXN-77777");
@@ -108,6 +106,28 @@ describe("emailTemplates.renderEmail", () => {
       const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", payload);
       expect(result).not.toBeNull();
       expect(result!.subject).toBe("New paid order");
+    });
+
+    it("formats non-IDR money via formatPrice (2dp + currency suffix), not formatIdr", async () => {
+      const usdtPayload = {
+        ...payload,
+        currency: "USDT",
+        subtotal: "10.5",
+        discount: "0",
+        total: "10.5",
+        items: [{ name: "Netflix Premium", variant: "1 Month", quantity: 1, unitPrice: "5.25" }],
+      };
+      const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", usdtPayload);
+      expect(result).not.toBeNull();
+      expect(result!.html).toContain("10.50 USDT");
+      expect(result!.text).toContain("10.50 USDT");
+    });
+
+    it("hides the Discount row/line entirely end-to-end when the payload's discount is \"0\"", async () => {
+      const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", payload);
+      expect(result).not.toBeNull();
+      expect(result!.html).not.toContain("Discount");
+      expect(result!.text).not.toContain("Discount");
     });
   });
 

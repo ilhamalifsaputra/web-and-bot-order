@@ -31,6 +31,8 @@
  */
 import { NotificationEvent } from "@app/core/enums";
 import { config } from "@app/core/config";
+import { Decimal } from "@app/core/money";
+import { formatMoney } from "@app/core/formatters";
 import { prisma, getSetting } from "@app/db";
 import { renderOrderPaidEmail } from "@app/core/email";
 import type { BrandConfig, EmailCopy, OrderPaidInput, OrderPaidItem } from "@app/core/email";
@@ -145,13 +147,15 @@ async function resolveOrderPaidCopy(): Promise<EmailCopy> {
 }
 
 /** Payload item -> `OrderPaidItem`, defensively parsed the same way
- * `fmtItemLines` handles a malformed item entry elsewhere in this file. */
-function toOrderPaidItem(it: OrderPaidPayloadItem): OrderPaidItem {
+ * `fmtItemLines` handles a malformed item entry elsewhere in this file.
+ * `unitPrice` is formatted here (via `formatMoney`) since `orderPaid.ts`
+ * itself only renders pre-formatted strings verbatim. */
+function toOrderPaidItem(it: OrderPaidPayloadItem, currency: string): OrderPaidItem {
   return {
     name: String(it?.name ?? "?"),
     variant: it?.variant == null ? null : String(it.variant),
     quantity: Number.parseInt(String(it?.quantity ?? 1), 10) || 1,
-    unitPrice: String(it?.unitPrice ?? "0"),
+    unitPrice: formatMoney(new Decimal(String(it?.unitPrice ?? "0")), currency),
   };
 }
 
@@ -164,6 +168,10 @@ export async function renderEmail(
   payload: OrderPaidPayload & ManualQueuedPayload & NewTicketPayload & TicketReplyPayload,
 ): Promise<{ subject: string; text: string; html?: string } | null> {
   if (event === NotificationEvent.OWNER_EMAIL_ORDER_PAID) {
+    const currency = String(payload.currency ?? "");
+    const subtotalDecimal = new Decimal(String(payload.subtotal ?? "0"));
+    const discountDecimal = new Decimal(String(payload.discount ?? "0"));
+    const totalDecimal = new Decimal(String(payload.total ?? "0"));
     const input: OrderPaidInput = {
       orderCode: String(payload.order_code ?? "unknown"),
       // Not carried in the payload (only order_code identifies the order,
@@ -172,11 +180,13 @@ export async function renderEmail(
       // renderOrderPaidEmail's own output — a placeholder is harmless.
       orderId: 0,
       customerLabel: String(payload.customer_label ?? ""),
-      items: (payload.items ?? []).map(toOrderPaidItem),
-      subtotal: String(payload.subtotal ?? "0"),
-      discount: String(payload.discount ?? "0"),
-      total: String(payload.total ?? "0"),
-      currency: String(payload.currency ?? ""),
+      items: (payload.items ?? []).map((it) => toOrderPaidItem(it, currency)),
+      subtotal: formatMoney(subtotalDecimal, currency),
+      // "" (not formatMoney's zero output, e.g. "Rp0") hides the Discount
+      // row/line entirely — same convention as transactionId/voucherCode
+      // being null.
+      discount: discountDecimal.isZero() ? "" : formatMoney(discountDecimal, currency),
+      total: formatMoney(totalDecimal, currency),
       paymentMethod: String(payload.payment_method ?? ""),
       transactionId: payload.transaction_id == null ? null : String(payload.transaction_id),
       voucherCode: payload.voucher_code == null ? null : String(payload.voucher_code),

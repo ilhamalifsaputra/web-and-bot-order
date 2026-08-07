@@ -98,7 +98,7 @@ export function renderOrderPaidEmail(
   const html = renderShell({
     brand,
     bodyHtml,
-    preheader: `${input.orderCode} — ${input.total} ${input.currency}`,
+    preheader: `New Paid Order! - ${input.orderCode}`,
   });
 
   const itemLines = input.items.map((item) => ptKeyValue("Item", formatItemLine(item))).join("\n");

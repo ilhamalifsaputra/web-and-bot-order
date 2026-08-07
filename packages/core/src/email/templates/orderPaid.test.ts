@@ -163,6 +163,13 @@ describe("renderOrderPaidEmail — subject handling", () => {
   });
 });
 
+describe("renderOrderPaidEmail — preheader", () => {
+  it("includes preheader text with 'New Paid Order!' and the order code", () => {
+    const result = renderOrderPaidEmail(fullInput, brand, defaultCopy);
+    expect(result.html).toContain("New Paid Order! - ORD-20260807-ABCD");
+  });
+});
+
 describe("renderOrderPaidEmail — brand accent color", () => {
   it("uses the brand's accent color as the View Order button background", () => {
     const brandedAccent: BrandConfig = { ...brand, accentColor: "#00A86B" };

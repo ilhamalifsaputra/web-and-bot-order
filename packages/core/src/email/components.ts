@@ -62,15 +62,18 @@ export function eventBanner(icon: string, heading: string, subheading: string, t
   return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;margin-bottom:24px;"><tr><td align="center" style="background-color:${bg};border-radius:12px;padding:32px 24px;">` +
     `<div style="font-size:40px;line-height:1;margin-bottom:12px;" aria-hidden="true">${escapeHtml(icon)}</div>` +
     `<div style="font-size:22px;line-height:1.3;font-weight:700;color:${fg};margin:0 0 6px 0;">${escapeHtml(heading)}</div>` +
-    // Neutral MUTED, not the tone's fg accent: fg-on-bg (e.g. #16A34A on
-    // #DCFCE7) blends to ~2.53:1 with the old opacity:0.85, and even fg at
-    // full opacity only reaches ~3.6:1 — both short of WCAG AA's 4.5:1 for
-    // normal-size text. MUTED already meets AA elsewhere in this design
-    // system on light backgrounds. opacity is also dropped outright:
-    // Outlook's Word rendering engine ignores CSS opacity, so it rendered at
-    // full undimmed fg there regardless — inconsistent across clients on top
-    // of failing contrast.
-    `<div style="font-size:15px;line-height:1.4;font-weight:400;color:${MUTED};margin:0;">${escapeHtml(subheading)}</div>` +
+    // A darker neutral than MUTED, not the tone's fg accent: fg-on-bg (e.g.
+    // #16A34A on #DCFCE7) blends to ~2.53:1 with the old opacity:0.85, and
+    // even fg at full opacity only reaches ~3.6:1 — both short of WCAG AA's
+    // 4.5:1 for normal-size text. MUTED alone only reaches ~4.4:1 on these
+    // tinted banner backgrounds (e.g. 4.40:1 on success, 3.96:1 on danger) —
+    // still short of AA. #52525B (Tailwind zinc-600) clears AA with margin
+    // on all four tone backgrounds (success 7.04:1, warning 6.94:1, danger
+    // 6.33:1, neutral 7.03:1). opacity is also dropped outright: Outlook's
+    // Word rendering engine ignores CSS opacity, so it rendered at full
+    // undimmed fg there regardless — inconsistent across clients on top of
+    // failing contrast.
+    `<div style="font-size:15px;line-height:1.4;font-weight:400;color:#52525B;margin:0;">${escapeHtml(subheading)}</div>` +
     `</td></tr></table>`;
 }
 

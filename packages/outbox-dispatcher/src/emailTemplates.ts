@@ -176,10 +176,9 @@ export async function renderEmail(
     const totalDecimal = new Decimal(String(payload.total ?? "0"));
     const input: OrderPaidInput = {
       orderCode: String(payload.order_code ?? "unknown"),
-      // Not carried in the payload (only order_code identifies the order,
-      // and the subject-safety rule already keeps that out of the subject
-      // regardless) and not actually read anywhere inside
-      // renderOrderPaidEmail's own output — a placeholder is harmless.
+      // Not carried in the payload (only order_code identifies the order)
+      // and not actually read anywhere inside renderOrderPaidEmail's own
+      // output — a placeholder is harmless.
       orderId: 0,
       customerLabel: String(payload.customer_label ?? ""),
       items: (payload.items ?? []).map((it) => toOrderPaidItem(it, currency)),

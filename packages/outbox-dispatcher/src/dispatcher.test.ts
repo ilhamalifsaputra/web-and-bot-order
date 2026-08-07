@@ -638,7 +638,7 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
     expect(row!.lastError).toContain("missing to address");
   });
 
-  it("once SMTP is configured, sends a valid EMAIL row via sendMail with the rendered {to, subject, text} and marks it SENT, never touching bot.api.sendMessage", async () => {
+  it("once SMTP is configured, sends a valid EMAIL row via sendMail with the rendered {to, subject, text, html} and marks it SENT, never touching bot.api.sendMessage", async () => {
     await setSetting(prisma, SMTP_HOST_KEY, "smtp.test.invalid");
     await setSetting(prisma, SMTP_FROM_KEY, "Shop <shop@test.invalid>");
 
@@ -653,6 +653,15 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
           total: "10.00",
           currency: "USDT",
           item_count: 2,
+          customer_label: "buyer@example.com",
+          items: [{ name: "Netflix Premium", variant: "1 Month", quantity: 2, unitPrice: "5.00" }],
+          subtotal: "10.00",
+          discount: "0",
+          payment_method: "TOKOPAY",
+          transaction_id: "TXN-EMAIL-1",
+          voucher_code: null,
+          paid_at: "2026-08-07T10:00:00.000Z",
+          order_url: null,
         }),
       },
     });
@@ -666,11 +675,43 @@ describe("drainBatch EMAIL lane (owner email notifications)", () => {
       to: "owner@example.com",
       subject: "New paid order",
       text: expect.stringContaining("ORD-EMAIL-1"),
+      html: expect.stringContaining("ORD-EMAIL-1"),
     });
+    // The HTML design system is exercised for real here — assert it's a full
+    // document, not just any string containing the order code.
+    expect(args.html).toContain("<!doctype html>");
     expect(sendMessage).not.toHaveBeenCalled();
 
     const row = await prisma.notificationOutbox.findFirst({
       where: { event: NotificationEvent.OWNER_EMAIL_ORDER_PAID, orderId: null },
+      orderBy: { id: "desc" },
+    });
+    expect(row!.status).toBe("SENT");
+  });
+
+  it("sends a plain-text-only event (OWNER_EMAIL_NEW_TICKET) via sendMail with no html key (undefined), confirming the html upgrade is scoped to OWNER_EMAIL_ORDER_PAID alone", async () => {
+    // SMTP is already configured by the previous test (persists — no
+    // per-test DB reset in this file).
+    await prisma.notificationOutbox.create({
+      data: {
+        event: NotificationEvent.OWNER_EMAIL_NEW_TICKET,
+        channel: NotificationChannel.EMAIL,
+        orderId: null,
+        payloadJson: JSON.stringify({ to: "owner@example.com", ticket_id: 5001, message: "Plain-text event check" }),
+      },
+    });
+
+    const { bot } = fakeBot();
+    await drainBatch(bot);
+
+    const call = vi.mocked(sendMail).mock.calls.find((c) => (c[1].text as string).includes("Plain-text event check"));
+    expect(call).toBeDefined();
+    const [, args] = call!;
+    expect(args.html).toBeUndefined();
+    expect(args.subject).toBe("New support ticket");
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.OWNER_EMAIL_NEW_TICKET, orderId: null, payloadJson: { contains: "5001" } },
       orderBy: { id: "desc" },
     });
     expect(row!.status).toBe("SENT");

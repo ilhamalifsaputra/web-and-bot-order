@@ -1581,12 +1581,35 @@ export async function settlePaidOrder(
   // Don't hoist either call above this branch split.
   if (!isManual) {
     const result = await approveOrder(db, orderId, args);
+    // Sourced from the already-fetched `order` (this function's own getOrder
+    // call above, which eager-loads items.product/user/voucher — no new
+    // query) EXCEPT `paidAt`: approveOrder only stamps that column during its
+    // own atomic claim, so the pre-approval `order` still has it null here;
+    // `result.order` is the post-approval re-fetch, so its `paidAt` is the
+    // real one. `transactionId` prefers whichever of paymentRef/binanceTxid/
+    // bybitTxid is set, in that order — these are gateway-specific and never
+    // more than one is populated for a given order today, but the preference
+    // order keeps this deterministic if that ever changes.
     await enqueueOwnerOrderPaidEmail(db, {
       orderId,
       orderCode: order.orderCode,
       total: order.totalAmount,
       currency: order.currency,
       itemCount: order.items.length,
+      customerLabel: customerLabel(order.user),
+      items: order.items.map((item) => ({
+        name: item.product.name,
+        variant: item.product.durationLabel,
+        quantity: item.quantity,
+        unitPrice: item.unitPrice,
+      })),
+      subtotal: order.subtotalAmount,
+      discount: order.discountAmount,
+      paymentMethod: order.paymentMethod,
+      transactionId: order.paymentRef ?? order.binanceTxid ?? order.bybitTxid ?? null,
+      voucherCode: order.voucher?.code ?? null,
+      paidAt: result.order.paidAt ?? new Date(),
+      orderUrl: config.ADMIN_PUBLIC_URL ? `${config.ADMIN_PUBLIC_URL.replace(/\/+$/, "")}/orders/${orderId}` : null,
     });
     return { kind: "delivered", order: result.order, credentials: result.credentials };
   }

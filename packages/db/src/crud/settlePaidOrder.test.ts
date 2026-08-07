@@ -252,7 +252,7 @@ describe("settlePaidOrder — owner-email triggers", () => {
     await setSetting(prisma, `owner_email_on_${event}`, "true");
   }
 
-  it("AUTO settlement: enqueues exactly one OWNER_EMAIL_ORDER_PAID row with orderCode/total/currency/itemCount, and no OWNER_EMAIL_MANUAL_ORDER_QUEUED row", async () => {
+  it("AUTO settlement: enqueues exactly one OWNER_EMAIL_ORDER_PAID row with the full expanded payload (no voucher, transaction id from the attached payment proof), and no OWNER_EMAIL_MANUAL_ORDER_QUEUED row", async () => {
     await configureOwnerEmail("paid_order");
     const order = await makePendingVerificationOrder(sample.product.id, 1);
 
@@ -270,12 +270,71 @@ describe("settlePaidOrder — owner-email triggers", () => {
       total: order.totalAmount.toString(),
       currency: order.currency,
       item_count: 1,
+      customer_label: "Test User",
+      items: [{ name: "Netflix Premium 1M", variant: "1 Month", quantity: 1, unitPrice: order.subtotalAmount.toString() }],
+      subtotal: order.subtotalAmount.toString(),
+      discount: "0", // no voucher applied
+      payment_method: "BINANCE_PAY", // Order.paymentMethod's schema default — createOrderDirect never overrides it
+      transaction_id: "TX-1", // makePendingVerificationOrder's attachPaymentProof call sets binanceTxid
+      voucher_code: null,
+      paid_at: expect.any(String),
+      order_url: null, // config.ADMIN_PUBLIC_URL is unset in the test environment
     });
+    // ISO-parseable, not a placeholder string.
+    expect(new Date(payload.paid_at as string).toString()).not.toBe("Invalid Date");
 
     const manualQueueRows = await prisma.notificationOutbox.count({
       where: { orderId: order.id, event: NotificationEvent.OWNER_EMAIL_MANUAL_ORDER_QUEUED },
     });
     expect(manualQueueRows).toBe(0);
+  });
+
+  it("AUTO settlement with a voucher applied: the payload's voucher_code and discount reflect it", async () => {
+    await configureOwnerEmail("paid_order");
+    const order = await createOrderDirect(prisma, {
+      user: sample.user,
+      productId: sample.product.id,
+      quantity: 1,
+      voucherCode: sample.voucher.code, // "SAVE10", 10% PERCENT, seeded by buildSampleData
+    });
+    await attachPaymentProof(prisma, order!.id, { fileId: "file123", txid: "TX-VOUCHER" });
+
+    await settlePaidOrder(prisma, order!.id, { adminId });
+
+    const paidRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order!.id, event: NotificationEvent.OWNER_EMAIL_ORDER_PAID },
+    });
+    expect(paidRows).toHaveLength(1);
+    const payload = JSON.parse(paidRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.voucher_code).toBe("SAVE10");
+    // discountAmount is real and non-zero, and matches the order's own column
+    // (not hand-recomputed here — applyVoucherToSubtotal's math is already
+    // covered by the vouchers-domain tests).
+    const freshOrder = await prisma.order.findUnique({ where: { id: order!.id } });
+    expect(payload.discount).toBe(freshOrder!.discountAmount.toString());
+    expect(freshOrder!.discountAmount.toString()).not.toBe("0");
+  });
+
+  it("AUTO settlement with no paymentRef/binanceTxid/bybitTxid set: the payload's transaction_id is null", async () => {
+    await configureOwnerEmail("paid_order");
+    const order = await makePendingVerificationOrder(sample.product.id, 1);
+    // makePendingVerificationOrder's attachPaymentProof call always sets
+    // binanceTxid — clear all three transaction-id columns to exercise the
+    // "no gateway reference at all" case.
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { paymentRef: null, binanceTxid: null, bybitTxid: null },
+    });
+
+    await settlePaidOrder(prisma, order.id, { adminId });
+
+    const paidRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.OWNER_EMAIL_ORDER_PAID },
+    });
+    expect(paidRows).toHaveLength(1);
+    const payload = JSON.parse(paidRows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.transaction_id).toBeNull();
+    expect("transaction_id" in payload).toBe(true); // present as JSON null, not omitted
   });
 
   it("MANUAL settlement: enqueues exactly one OWNER_EMAIL_MANUAL_ORDER_QUEUED row with the correct payload, no OWNER_EMAIL_ORDER_PAID row, and still enqueues the existing ADMIN_MANUAL_ORDER_QUEUED Telegram alert", async () => {

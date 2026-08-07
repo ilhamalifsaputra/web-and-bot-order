@@ -358,7 +358,9 @@ async function trySend(bot: Bot, row: PendingRow, send: () => Promise<unknown>):
  * — there's no email analogue of Telegram flood control.
  */
 async function deliverOwnerEmail(row: PendingRow, payload: Record<string, unknown>): Promise<void> {
-  const rendered = renderEmail(row.event, payload);
+  // renderEmail is async (the OWNER_EMAIL_ORDER_PAID branch resolves brand/
+  // copy from Settings via Prisma) — see emailTemplates.ts's header comment.
+  const rendered = await renderEmail(row.event, payload);
   if (!rendered) {
     await markNotificationFailed(prisma, row.id, `no email template for event ${row.event}`, 1);
     return;
@@ -379,7 +381,11 @@ async function deliverOwnerEmail(row: PendingRow, payload: Record<string, unknow
     return;
   }
 
-  await trySendEmail(row, () => sendMail(creds, { to, subject: rendered.subject, text: rendered.text }));
+  // rendered.html is undefined for the three plain-text-only events and a
+  // real string for OWNER_EMAIL_ORDER_PAID — sendMail's `html` param is
+  // optional (Task 2), so passing `undefined` here is a no-op for those
+  // three, unchanged from before this field existed.
+  await trySendEmail(row, () => sendMail(creds, { to, subject: rendered.subject, text: rendered.text, html: rendered.html }));
 }
 
 /**

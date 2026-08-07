@@ -927,33 +927,45 @@ describe("enqueueOwner*Email (EMAIL-channel owner notifications)", () => {
     await disableOwnerEmail();
   });
 
+  /** Full args, every optional field populated — the "everything present"
+   * fixture for the payload-shape assertions below. */
+  function fullPaidOrderArgs(orderId: number, orderCode: string) {
+    return {
+      orderId,
+      orderCode,
+      total: new Decimal("199.90"),
+      currency: "USDT",
+      itemCount: 2,
+      customerLabel: "john@example.com",
+      items: [
+        { name: "Netflix Premium", variant: "1 Month", quantity: 1, unitPrice: new Decimal("150.00") },
+        { name: "Spotify", variant: null, quantity: 1, unitPrice: new Decimal("49.90") },
+      ],
+      subtotal: new Decimal("199.90"),
+      discount: new Decimal("0"),
+      paymentMethod: "TOKOPAY",
+      transactionId: "TXN-12345",
+      voucherCode: "SAVE10",
+      paidAt: new Date("2026-08-07T10:00:00.000Z"),
+      orderUrl: "https://admin.example.com/orders/1",
+    };
+  }
+
   it("enqueueOwnerOrderPaidEmail writes nothing when owner email is unconfigured", async () => {
     await disableOwnerEmail();
     const orderId = await seedOrder();
     const before = await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_ORDER_PAID } });
 
-    await enqueueOwnerOrderPaidEmail(prisma, {
-      orderId,
-      orderCode: "ORD-OWNERPAID-OFF",
-      total: new Decimal("10"),
-      currency: "IDR",
-      itemCount: 1,
-    });
+    await enqueueOwnerOrderPaidEmail(prisma, fullPaidOrderArgs(orderId, "ORD-OWNERPAID-OFF"));
 
     expect(await prisma.notificationOutbox.count({ where: { event: NotificationEvent.OWNER_EMAIL_ORDER_PAID } })).toBe(before);
   });
 
-  it("enqueueOwnerOrderPaidEmail writes one EMAIL row with to/order_code/total(string)/currency/item_count when configured", async () => {
+  it("enqueueOwnerOrderPaidEmail writes one EMAIL row with the full expanded payload (money as strings) when configured", async () => {
     await configureOwnerEmail("paid_order");
     const orderId = await seedOrder();
 
-    await enqueueOwnerOrderPaidEmail(prisma, {
-      orderId,
-      orderCode: "ORD-OWNERPAID-ON",
-      total: new Decimal("199.90"),
-      currency: "USDT",
-      itemCount: 3,
-    });
+    await enqueueOwnerOrderPaidEmail(prisma, fullPaidOrderArgs(orderId, "ORD-OWNERPAID-ON"));
 
     const rows = await prisma.notificationOutbox.findMany({
       where: { event: NotificationEvent.OWNER_EMAIL_ORDER_PAID, orderId },
@@ -966,9 +978,61 @@ describe("enqueueOwner*Email (EMAIL-channel owner notifications)", () => {
       order_code: "ORD-OWNERPAID-ON",
       total: "199.9",
       currency: "USDT",
-      item_count: 3,
+      item_count: 2,
+      customer_label: "john@example.com",
+      items: [
+        { name: "Netflix Premium", variant: "1 Month", quantity: 1, unitPrice: "150" },
+        { name: "Spotify", variant: null, quantity: 1, unitPrice: "49.9" },
+      ],
+      subtotal: "199.9",
+      discount: "0",
+      payment_method: "TOKOPAY",
+      transaction_id: "TXN-12345",
+      voucher_code: "SAVE10",
+      paid_at: "2026-08-07T10:00:00.000Z",
+      order_url: "https://admin.example.com/orders/1",
     });
     expect(typeof payload.total).toBe("string");
+    expect(typeof payload.subtotal).toBe("string");
+    expect(typeof payload.discount).toBe("string");
+    expect(typeof (payload.items as Array<{ unitPrice: unknown }>)[0]!.unitPrice).toBe("string");
+  });
+
+  it("enqueueOwnerOrderPaidEmail writes explicit JSON null for every optional field left unset — never omitted, never the string \"null\"", async () => {
+    await configureOwnerEmail("paid_order");
+    const orderId = await seedOrder();
+
+    await enqueueOwnerOrderPaidEmail(prisma, {
+      orderId,
+      orderCode: "ORD-OWNERPAID-NULLS",
+      total: new Decimal("50"),
+      currency: "IDR",
+      itemCount: 1,
+      customerLabel: "Guest (no contact email)",
+      items: [{ name: "Netflix Premium", variant: null, quantity: 1, unitPrice: new Decimal("50") }],
+      subtotal: new Decimal("50"),
+      discount: new Decimal("0"),
+      paymentMethod: "BINANCE_PAY",
+      transactionId: null,
+      voucherCode: null,
+      paidAt: new Date("2026-08-07T11:00:00.000Z"),
+      orderUrl: null,
+    });
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.OWNER_EMAIL_ORDER_PAID, orderId },
+    });
+    const payload = JSON.parse(row!.payloadJson) as Record<string, unknown>;
+    expect(payload.transaction_id).toBeNull();
+    expect(payload.voucher_code).toBeNull();
+    expect(payload.order_url).toBeNull();
+    expect((payload.items as Array<{ variant: unknown }>)[0]!.variant).toBeNull();
+    // Every one of these keys is PRESENT in the JSON (not omitted) — a bare
+    // "in" check, since `payload.transaction_id === undefined` would also be
+    // true for a key that was simply never written.
+    expect("transaction_id" in payload).toBe(true);
+    expect("voucher_code" in payload).toBe(true);
+    expect("order_url" in payload).toBe(true);
   });
 
   it("enqueueOwnerManualQueueEmail writes nothing when owner email is unconfigured", async () => {

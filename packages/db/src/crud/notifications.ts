@@ -240,18 +240,60 @@ async function enqueueOwnerEmail(
  * AUTO branch, beside `approveOrder`) — an auto-delivery SKU that just paid
  * and shipped with no admin action needed. No-op (see `enqueueOwnerEmail`)
  * unless the owner has the master toggle, `owner_email_on_paid_order`, and a
- * valid `owner_email` all configured. `total` is carried as Decimal
- * `.toString()` — never `number` — per money rules.
+ * valid `owner_email` all configured.
+ *
+ * Carries the full order-summary detail the HTML "New Paid Order" template
+ * (packages/core/src/email/templates/orderPaid.ts, rendered by
+ * packages/outbox-dispatcher/src/emailTemplates.ts) needs to show a real
+ * order summary instead of just a total — every optional field (`items`
+ * money, `subtotal`, `discount`, `transactionId`, `voucherCode`, `orderUrl`)
+ * is written into the payload as an explicit JSON `null` when the caller has
+ * none, never omitted as a missing key and never the string `"null"` — the
+ * renderer, not this enqueue layer, is what decides to omit the
+ * corresponding email line for a null value. Every money `Decimal` field
+ * (including each item's `unitPrice`) goes through `.toString()` — never a
+ * raw `number` — per money rules; `paidAt` is written as an ISO string, the
+ * same "caller formats, payload carries a plain value" pattern the rest of
+ * this file's DM payloads use for timestamps.
  */
 export async function enqueueOwnerOrderPaidEmail(
   db: Db,
-  args: { orderId: number; orderCode: string; total: Decimal; currency: string; itemCount: number },
+  args: {
+    orderId: number;
+    orderCode: string;
+    total: Decimal;
+    currency: string;
+    itemCount: number;
+    customerLabel: string;
+    items: { name: string; variant: string | null; quantity: number; unitPrice: Decimal }[];
+    subtotal: Decimal;
+    discount: Decimal;
+    paymentMethod: string;
+    transactionId: string | null;
+    voucherCode: string | null;
+    paidAt: Date;
+    orderUrl: string | null;
+  },
 ): Promise<void> {
   await enqueueOwnerEmail(db, NotificationEvent.OWNER_EMAIL_ORDER_PAID, "paid_order", args.orderId, {
     order_code: args.orderCode,
     total: args.total.toString(),
     currency: args.currency,
     item_count: args.itemCount,
+    customer_label: args.customerLabel,
+    items: args.items.map((item) => ({
+      name: item.name,
+      variant: item.variant,
+      quantity: item.quantity,
+      unitPrice: item.unitPrice.toString(),
+    })),
+    subtotal: args.subtotal.toString(),
+    discount: args.discount.toString(),
+    payment_method: args.paymentMethod,
+    transaction_id: args.transactionId,
+    voucher_code: args.voucherCode,
+    paid_at: args.paidAt.toISOString(),
+    order_url: args.orderUrl,
   });
 }
 

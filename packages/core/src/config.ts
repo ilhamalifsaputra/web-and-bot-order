@@ -223,6 +223,14 @@ export const Env = z.object({
   // address(es) once one is in front of the app.
   TRUST_PROXY: z.string().optional(),
 
+  // Public web-admin origin (no trailing slash), e.g. https://admin.example.com
+  // — used to build the "View Order" link (`${ADMIN_PUBLIC_URL}/orders/:orderId`)
+  // in the owner-facing "New Paid Order" email (packages/outbox-dispatcher/src/
+  // emailTemplates.ts). Optional: when unset, that email simply omits the View
+  // Order button/link rather than emitting a broken one — no web-admin base
+  // URL config existed anywhere before this.
+  ADMIN_PUBLIC_URL: z.string().url().optional(),
+
   // ---- storefront (customer-facing shop) ----
   // Dev/standalone port for the shop app. In the combined server, when
   // SHOP_HOST is unset the shop listens here next to the admin port.

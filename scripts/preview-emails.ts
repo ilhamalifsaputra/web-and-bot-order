@@ -26,7 +26,7 @@ const brand: BrandConfig = {
 // defaults (the ones an unconfigured Settings install actually ships), not a
 // preview-only invented version.
 const orderPaidCopy: EmailCopy = {
-  subject: "New paid order",
+  subject: "New Paid Order - {order_code}",
   title: "You've got a new order",
   subtitle: "A customer just completed payment.",
   message: "Here are the details.",

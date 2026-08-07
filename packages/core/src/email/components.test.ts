@@ -4,6 +4,7 @@ import {
   subtitle,
   divider,
   statusBadge,
+  eventBanner,
   infoTable,
   primaryButton,
   fallbackLinkLine,
@@ -59,6 +60,48 @@ describe("statusBadge", () => {
 
   it("escapes malicious text", () => {
     expect(statusBadge("<script>alert(1)</script>", "success")).not.toContain("<script>alert");
+  });
+});
+
+describe("eventBanner", () => {
+  it("renders each tone with the correct background/accent color", () => {
+    expect(eventBanner("📦", "Paid", "A customer just paid", "success")).toContain("#DCFCE7");
+    expect(eventBanner("📦", "Paid", "A customer just paid", "success")).toContain("#16A34A");
+    expect(eventBanner("⚠️", "Pending", "Awaiting payment", "warning")).toContain("#FEF3C7");
+    expect(eventBanner("⚠️", "Pending", "Awaiting payment", "warning")).toContain("#F59E0B");
+    expect(eventBanner("✖", "Failed", "Payment failed", "danger")).toContain("#FEE2E2");
+    expect(eventBanner("✖", "Failed", "Payment failed", "danger")).toContain("#DC2626");
+  });
+
+  it("renders the given icon, heading, and subheading text", () => {
+    const html = eventBanner("📦", "You've got a new order", "A customer just paid", "success");
+    expect(html).toContain("📦");
+    expect(html).toContain("You&#x27;ve got a new order");
+    expect(html).toContain("A customer just paid");
+  });
+
+  it("escapes malicious icon, heading, and subheading text", () => {
+    const html = eventBanner(
+      "<script>i</script>",
+      "<script>h</script>",
+      "<script>s</script>",
+      "success",
+    );
+    expect(html).not.toContain("<script>i</script>");
+    expect(html).not.toContain("<script>h</script>");
+    expect(html).not.toContain("<script>s</script>");
+  });
+
+  // Regression guard for the dark-mode bug fixed in commit 7ce6b96: the
+  // heading/subheading divs originally carried class="email-text" /
+  // class="email-muted", which theme.ts's dark-mode @media block overrides
+  // with !important, replacing the banner's fixed tone color with near-white
+  // text on the pale-tone background. The banner needs its tone color to
+  // stay fixed regardless of color scheme, so neither class may reappear.
+  it("does not carry the email-text/email-muted theme classes that would let dark mode override the banner's fixed tone color", () => {
+    const html = eventBanner("📦", "Paid", "A customer just paid", "success");
+    expect(html).not.toContain("email-text");
+    expect(html).not.toContain("email-muted");
   });
 });
 

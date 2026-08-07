@@ -38,6 +38,13 @@ export async function sendMail(creds: SmtpCreds, args: { to: string; subject: st
   // /track credential — out of the subject for the same reason: whatever's in
   // the subject ends up here. What's left (shop name, mail kind) is what an
   // operator reading these lines actually needs.
+  //
+  // One approved, narrowly-scoped exception: OWNER_EMAIL_ORDER_PAID's subject
+  // is allowed to contain the order code, because that email's only
+  // recipient is the trusted shop admin, not the guest the code
+  // authenticates. See packages/core/src/email/subject.ts for the full
+  // rationale — every other caller must still keep the order code out of the
+  // subject.
   logger.info(`Sent an email with subject "${args.subject}"`);
 }
 

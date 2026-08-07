@@ -131,12 +131,17 @@ persis seperti channel post tanpa `PUBLIC_CHANNEL_ID` di atas: ini
 kesalahan konfigurasi toko, bukan kesalahan baris ini, jadi email tetap
 terkirim begitu admin mengisi SMTP, alih-alih gagal permanen.
 
-**Aturan subjek email: kode order tidak boleh muncul di subjek.** `sendMail`
-mencatat (log) setiap subjek yang dikirim, dan kode order adalah separuh dari
-kredensial guest `/track`. Karena itu subjek email selalu generik (mis. "New
-paid order", "New support ticket") — kode order dan detail tiket hanya ada
-di body, tidak pernah di subjek. Diverifikasi lewat test
-(`emailTemplates.test.ts`).
+**Aturan subjek email: kode order tidak boleh muncul di subjek — kecuali satu
+pengecualian yang disetujui.** `sendMail` mencatat (log) setiap subjek yang
+dikirim, dan kode order adalah separuh dari kredensial guest `/track`. Karena
+itu subjek email selalu generik (mis. "New support ticket") — kode order dan
+detail tiket hanya ada di body, tidak pernah di subjek. Satu-satunya
+pengecualian: subjek email `OWNER_EMAIL_ORDER_PAID` (mis. "New Paid Order -
+{order_code}") boleh memuat kode order, karena satu-satunya penerima email
+ini adalah admin toko yang sudah terpercaya, bukan guest yang diautentikasi
+oleh kode tersebut — bukan kebocoran ke pihak yang tidak terpercaya. Aturan
+"tidak boleh muncul di subjek" tetap berlaku penuh untuk semua email lain.
+Diverifikasi lewat test (`emailTemplates.test.ts`).
 
 ## Penanganan error per jenis
 

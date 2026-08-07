@@ -24,6 +24,16 @@ const BRANDING_DATA = {
   shopName: "My Test Shop",
   shopTagline: "Best deals around",
   welcome: "Welcome to our shop!",
+  emailBrandColor: "#4F46E5",
+  emailSupportAddress: "support@example.com",
+  emailOrderPaidSubject: "New paid order",
+  emailOrderPaidTitle: "You've got a new order",
+  emailOrderPaidSubtitle: "A customer just completed payment.",
+  emailOrderPaidMessage: "Here are the details.",
+  emailResetPasswordSubject: "{shop_name} — reset your password",
+  emailResetPasswordTitle: "Reset your password",
+  emailResetPasswordSubtitle: "We received a request to reset your password.",
+  emailResetPasswordMessage: "Click the button below to choose a new password.",
 };
 
 beforeEach(() => {
@@ -222,5 +232,38 @@ describe("BrandingPage", () => {
 
     // Only favicon and logo have a value — hero and banner render no button.
     expect(screen.getAllByRole("button", { name: "Reset to default" })).toHaveLength(2);
+  });
+
+  it("renders the Email Branding, New Paid Order Email, and Reset Password Email cards with their fields", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(BRANDING_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<BrandingPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("My Test Shop")).toBeInTheDocument());
+
+    function cardFor(title: string): HTMLElement {
+      const el = screen.getByText(title).closest('[data-slot="card"]');
+      if (!el) throw new Error(`Card containing "${title}" not found`);
+      return el as HTMLElement;
+    }
+
+    const brandingCard = cardFor("Email Branding");
+    expect(within(brandingCard).getByText("#4F46E5")).toBeInTheDocument();
+    expect(within(brandingCard).getByText("support@example.com")).toBeInTheDocument();
+
+    const orderPaidCard = cardFor("New Paid Order Email");
+    expect(within(orderPaidCard).getByText("New paid order")).toBeInTheDocument();
+    expect(within(orderPaidCard).getByText("You've got a new order")).toBeInTheDocument();
+    expect(within(orderPaidCard).getByText("A customer just completed payment.")).toBeInTheDocument();
+    expect(within(orderPaidCard).getByText("Here are the details.")).toBeInTheDocument();
+
+    const resetPasswordCard = cardFor("Reset Password Email");
+    expect(within(resetPasswordCard).getByText("{shop_name} — reset your password")).toBeInTheDocument();
+    expect(within(resetPasswordCard).getByText("Reset your password")).toBeInTheDocument();
+    expect(within(resetPasswordCard).getByText("We received a request to reset your password.")).toBeInTheDocument();
+    expect(within(resetPasswordCard).getByText("Click the button below to choose a new password.")).toBeInTheDocument();
   });
 });

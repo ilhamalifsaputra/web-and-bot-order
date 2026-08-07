@@ -305,4 +305,118 @@ describe("branding page", () => {
 
     await deleteSetting(prisma, "web_favicon_url");
   });
+
+  // The 10 new owner-email design-system Settings keys (Global Constraints
+  // table): brand color/support address plus the 4-field copy sets for the
+  // two owner-email templates this plan touches.
+  const NEW_TEXT_VALUES: Record<string, string> = {
+    email_brand_color: "#112233",
+    email_support_address: "support@example.com",
+    email_order_paid_subject: "New order!",
+    email_order_paid_title: "You've got a sale",
+    email_order_paid_subtitle: "Ka-ching.",
+    email_order_paid_message: "Go check the order details.",
+    email_reset_password_subject: "{shop_name} — reset your password",
+    email_reset_password_title: "Reset it",
+    email_reset_password_subtitle: "We got a request.",
+    email_reset_password_message: "Click the button below.",
+  };
+
+  it("saves each of the 10 new email design-system keys via POST /api/branding/text and reads them back via GET /api/branding", async () => {
+    for (const [key, value] of Object.entries(NEW_TEXT_VALUES)) {
+      const res = await postJson("/api/branding/text", cookie, csrf, { key, value });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toEqual({ ok: true });
+    }
+
+    const getRes = await app.inject({ method: "GET", url: "/api/branding", cookies: { [COOKIE]: cookie } });
+    expect(getRes.statusCode).toBe(200);
+    const data = getRes.json() as Record<string, string>;
+    expect(data.emailBrandColor).toBe("#112233");
+    expect(data.emailSupportAddress).toBe("support@example.com");
+    expect(data.emailOrderPaidSubject).toBe("New order!");
+    expect(data.emailOrderPaidTitle).toBe("You've got a sale");
+    expect(data.emailOrderPaidSubtitle).toBe("Ka-ching.");
+    expect(data.emailOrderPaidMessage).toBe("Go check the order details.");
+    expect(data.emailResetPasswordSubject).toBe("{shop_name} — reset your password");
+    expect(data.emailResetPasswordTitle).toBe("Reset it");
+    expect(data.emailResetPasswordSubtitle).toBe("We got a request.");
+    expect(data.emailResetPasswordMessage).toBe("Click the button below.");
+  });
+
+  it("GET /api/branding returns \"\" for the 10 new keys when unset, same fallback as shop_name", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/branding", cookies: { [COOKIE]: cookie } });
+    const data = res.json() as Record<string, string>;
+    for (const key of Object.keys(NEW_TEXT_VALUES)) {
+      const field = key.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+      expect(data[field]).toBe("");
+    }
+  });
+
+  it("saving a new email design-system field records an audit log entry, same as shop_name", async () => {
+    const res = await postJson("/api/branding/text", cookie, csrf, { key: "email_brand_color", value: "#4f46e5" });
+    expect(res.statusCode).toBe(200);
+    const audit = await prisma.auditLog.findFirst({
+      where: { action: "setting_set" },
+      orderBy: { id: "desc" },
+    });
+    expect(audit).toBeTruthy();
+    expect(audit!.details).toContain("email_brand_color");
+  });
+
+  it("email_brand_color rejects a non-hex value with 400", async () => {
+    for (const bad of ["blue", "#GGG", "112233", "#1122"]) {
+      const res = await postJson("/api/branding/text", cookie, csrf, { key: "email_brand_color", value: bad });
+      expect(res.statusCode).toBe(400);
+    }
+    expect(await getSetting(prisma, "email_brand_color")).toBeNull();
+  });
+
+  it("email_brand_color accepts clearing to an empty value", async () => {
+    await setSetting(prisma, "email_brand_color", "#112233");
+    const res = await postJson("/api/branding/text", cookie, csrf, { key: "email_brand_color", value: "" });
+    expect(res.statusCode).toBe(200);
+    expect(await getSetting(prisma, "email_brand_color")).toBe("");
+  });
+
+  it("email_support_address rejects a non-email value with 400", async () => {
+    for (const bad of ["not-an-email", "missing-at-sign.com", "@no-local.com"]) {
+      const res = await postJson("/api/branding/text", cookie, csrf, { key: "email_support_address", value: bad });
+      expect(res.statusCode).toBe(400);
+    }
+    expect(await getSetting(prisma, "email_support_address")).toBeNull();
+  });
+
+  it("rejects each copy-text key over its documented length cap with 400, and accepts exactly at the cap", async () => {
+    const caps: Array<[string, number]> = [
+      ["email_order_paid_subject", 150],
+      ["email_order_paid_title", 150],
+      ["email_order_paid_subtitle", 200],
+      ["email_order_paid_message", 1000],
+      ["email_reset_password_subject", 150],
+      ["email_reset_password_title", 150],
+      ["email_reset_password_subtitle", 200],
+      ["email_reset_password_message", 1000],
+    ];
+    for (const [key, max] of caps) {
+      const tooLong = await postJson("/api/branding/text", cookie, csrf, { key, value: "x".repeat(max + 1) });
+      expect(tooLong.statusCode).toBe(400);
+      expect(await getSetting(prisma, key)).toBeNull();
+
+      const atCap = await postJson("/api/branding/text", cookie, csrf, { key, value: "x".repeat(max) });
+      expect(atCap.statusCode).toBe(200);
+      expect(await getSetting(prisma, key)).toBe("x".repeat(max));
+    }
+  });
+
+  it("POST /api/branding/text for a new key requires auth, same as shop_name", async () => {
+    const res = await postJson("/api/branding/text", null, csrf, { key: "email_brand_color", value: "#112233" });
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe("/login");
+  });
+
+  it("POST /api/branding/text for a new key rejects bad CSRF, same as shop_name", async () => {
+    const res = await postJson("/api/branding/text", cookie, "bad", { key: "email_brand_color", value: "#112233" });
+    expect(res.statusCode).toBe(403);
+  });
 });

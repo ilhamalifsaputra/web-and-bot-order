@@ -20,6 +20,16 @@ interface BrandingData {
   shopName: string;
   shopTagline: string;
   welcome: string;
+  emailBrandColor: string;
+  emailSupportAddress: string;
+  emailOrderPaidSubject: string;
+  emailOrderPaidTitle: string;
+  emailOrderPaidSubtitle: string;
+  emailOrderPaidMessage: string;
+  emailResetPasswordSubject: string;
+  emailResetPasswordTitle: string;
+  emailResetPasswordSubtitle: string;
+  emailResetPasswordMessage: string;
 }
 
 function useBranding() {
@@ -320,6 +330,86 @@ export function BrandingPage() {
                 label="Welcome message"
                 fieldKey="welcome"
                 value={data.welcome}
+                onSaved={invalidate}
+                multiline
+              />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader><CardTitle>Email Branding</CardTitle></CardHeader>
+            <CardContent className="divide-y divide-line">
+              <TextFieldRow
+                label="Brand color"
+                fieldKey="email_brand_color"
+                value={data.emailBrandColor}
+                onSaved={invalidate}
+              />
+              <TextFieldRow
+                label="Support email address"
+                fieldKey="email_support_address"
+                value={data.emailSupportAddress}
+                onSaved={invalidate}
+              />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader><CardTitle>New Paid Order Email</CardTitle></CardHeader>
+            <CardContent className="divide-y divide-line">
+              <TextFieldRow
+                label="Subject"
+                fieldKey="email_order_paid_subject"
+                value={data.emailOrderPaidSubject}
+                onSaved={invalidate}
+              />
+              <TextFieldRow
+                label="Title"
+                fieldKey="email_order_paid_title"
+                value={data.emailOrderPaidTitle}
+                onSaved={invalidate}
+              />
+              <TextFieldRow
+                label="Subtitle"
+                fieldKey="email_order_paid_subtitle"
+                value={data.emailOrderPaidSubtitle}
+                onSaved={invalidate}
+              />
+              <TextFieldRow
+                label="Message"
+                fieldKey="email_order_paid_message"
+                value={data.emailOrderPaidMessage}
+                onSaved={invalidate}
+                multiline
+              />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader><CardTitle>Reset Password Email</CardTitle></CardHeader>
+            <CardContent className="divide-y divide-line">
+              <TextFieldRow
+                label="Subject"
+                fieldKey="email_reset_password_subject"
+                value={data.emailResetPasswordSubject}
+                onSaved={invalidate}
+              />
+              <TextFieldRow
+                label="Title"
+                fieldKey="email_reset_password_title"
+                value={data.emailResetPasswordTitle}
+                onSaved={invalidate}
+              />
+              <TextFieldRow
+                label="Subtitle"
+                fieldKey="email_reset_password_subtitle"
+                value={data.emailResetPasswordSubtitle}
+                onSaved={invalidate}
+              />
+              <TextFieldRow
+                label="Message"
+                fieldKey="email_reset_password_message"
+                value={data.emailResetPasswordMessage}
                 onSaved={invalidate}
                 multiline
               />

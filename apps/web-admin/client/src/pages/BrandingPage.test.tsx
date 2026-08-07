@@ -294,4 +294,65 @@ describe("BrandingPage", () => {
     const resetPasswordCard = cardFor("Reset Password Email");
     expect(within(resetPasswordCard).queryByText(/order_code/i)).not.toBeInTheDocument();
   });
+
+  it("shows a native color picker alongside the text input when editing Brand color, in sync with the typed value", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(BRANDING_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<BrandingPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("My Test Shop")).toBeInTheDocument());
+
+    function cardFor(title: string): HTMLElement {
+      const el = screen.getByText(title).closest('[data-slot="card"]');
+      if (!el) throw new Error(`Card containing "${title}" not found`);
+      return el as HTMLElement;
+    }
+
+    const brandingCard = cardFor("Email Branding");
+    const user = userEvent.setup();
+    // Brand color is the first "Edit" button in the Email Branding card
+    // (Support email address is the second).
+    await user.click(within(brandingCard).getAllByRole("button", { name: "Edit" })[0]);
+
+    const colorPicker = screen.getByLabelText("Brand color picker") as HTMLInputElement;
+    expect(colorPicker).toBeInTheDocument();
+    expect(colorPicker).toHaveAttribute("type", "color");
+    expect(colorPicker.value).toBe("#4f46e5");
+
+    const textInput = screen.getByDisplayValue("#4F46E5");
+    await user.clear(textInput);
+    await user.type(textInput, "#123ABC");
+    expect(colorPicker.value).toBe("#123abc");
+  });
+
+  it("does not render a color picker for non-color text fields", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify(BRANDING_DATA), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    render(<BrandingPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("My Test Shop")).toBeInTheDocument());
+
+    function cardFor(title: string): HTMLElement {
+      const el = screen.getByText(title).closest('[data-slot="card"]');
+      if (!el) throw new Error(`Card containing "${title}" not found`);
+      return el as HTMLElement;
+    }
+
+    const brandingCard = cardFor("Email Branding");
+    const user = userEvent.setup();
+    // Second "Edit" button in the Email Branding card is Support email address.
+    await user.click(within(brandingCard).getAllByRole("button", { name: "Edit" })[1]);
+    expect(screen.queryByLabelText("Support email address picker")).not.toBeInTheDocument();
+    expect(brandingCard.querySelector('input[type="color"]')).not.toBeInTheDocument();
+
+    // Also check a field in a different card (Shop name) has no color picker.
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[0]);
+    expect(document.querySelector('input[type="color"]')).not.toBeInTheDocument();
+  });
 });

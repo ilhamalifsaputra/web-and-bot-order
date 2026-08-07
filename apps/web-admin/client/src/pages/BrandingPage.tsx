@@ -87,6 +87,14 @@ function ResetImageButton({
   );
 }
 
+// Mirrors DEFAULT_ACCENT_COLOR in packages/core/src/email/theme.ts — kept as
+// a local literal since this is a client-side-only fallback for the native
+// color picker's display value, not the email-render fallback itself.
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+function colorPickerValue(draft: string): string {
+  return HEX_COLOR_RE.test(draft) ? draft : "#4F46E5";
+}
+
 function TextFieldRow({
   label,
   fieldKey,
@@ -94,6 +102,7 @@ function TextFieldRow({
   onSaved,
   multiline,
   helperText,
+  colorPicker,
 }: {
   label: string;
   fieldKey: string;
@@ -101,6 +110,7 @@ function TextFieldRow({
   onSaved: () => void;
   multiline?: boolean;
   helperText?: string;
+  colorPicker?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
@@ -161,13 +171,24 @@ function TextFieldRow({
               autoFocus
             />
           ) : (
-            <Input
-              type="text"
-              value={draft}
-              onChange={e => setDraft(e.target.value)}
-              autoFocus
-              className="max-w-sm"
-            />
+            <div className="flex items-center gap-2">
+              <Input
+                type="text"
+                value={draft}
+                onChange={e => setDraft(e.target.value)}
+                autoFocus
+                className="max-w-sm"
+              />
+              {colorPicker && (
+                <input
+                  type="color"
+                  value={colorPickerValue(draft)}
+                  onChange={(e) => setDraft(e.target.value)}
+                  className="h-9 w-9 shrink-0 cursor-pointer rounded border border-line p-0.5"
+                  aria-label={`${label} picker`}
+                />
+              )}
+            </div>
           )}
           <div className="flex gap-2">
             <Button size="sm" onClick={() => setConfirmOpen(true)}>
@@ -347,6 +368,7 @@ export function BrandingPage() {
                 fieldKey="email_brand_color"
                 value={data.emailBrandColor}
                 onSaved={invalidate}
+                colorPicker
               />
               <TextFieldRow
                 label="Support email address"

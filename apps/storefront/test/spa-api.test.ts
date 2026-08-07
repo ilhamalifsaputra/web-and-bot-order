@@ -809,6 +809,18 @@ describe("resolveBotId", () => {
       await deleteSetting(prisma, "bot_token");
     }
   });
+
+  it("resolves to \"\" for a colon-less all-numeric token (not a valid bot_id)", async () => {
+    // Regression: token.split(":") on a colon-less token returns the whole
+    // token as a single element, which used to slip past BOT_ID_RE when the
+    // token happened to be all digits.
+    await setSetting(prisma, "bot_token", "123456789");
+    try {
+      expect(await resolveBotId()).toBe("");
+    } finally {
+      await deleteSetting(prisma, "bot_token");
+    }
+  });
 });
 
 // -------------------------------------------------------------------- /cart

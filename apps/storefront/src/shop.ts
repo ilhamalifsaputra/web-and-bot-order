@@ -41,7 +41,7 @@ const BOT_ID_RE = /^\d+$/;
  *  standard Bot API token shape (never throws on a malformed token). */
 export async function resolveBotId(): Promise<string> {
   const token = await resolveBotToken();
-  if (!token) return "";
+  if (!token || !token.includes(":")) return "";
   const [id] = token.split(":");
   return id && BOT_ID_RE.test(id) ? id : "";
 }

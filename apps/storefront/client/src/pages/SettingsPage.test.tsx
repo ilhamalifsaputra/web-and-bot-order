@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, afterEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import SettingsPage from "./SettingsPage";
@@ -122,54 +122,20 @@ describe("SettingsPage", () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith("/account/settings?saved=1"));
   });
 
-  it("renders the Telegram widget script only when !tg_linked && bot_username", async () => {
-    renderSettings("/account/settings", { ...settingsData, tg_linked: false, bot_username: "tokobot" });
-    await waitFor(() =>
-      expect(document.querySelector('script[data-telegram-login="tokobot"]')).toBeInTheDocument(),
-    );
-    const script = document.querySelector('script[data-telegram-login="tokobot"]') as HTMLScriptElement;
-    expect(script.getAttribute("data-auth-url")).toBe("/account/settings/link-telegram");
+  it("renders the Continue with Telegram button when !tg_linked && bot_id", async () => {
+    renderSettings("/account/settings", { ...settingsData, tg_linked: false, bot_id: "123" });
+    expect(await screen.findByRole("button", { name: "Continue with Telegram" })).toBeInTheDocument();
   });
 
-  it("omits the widget when already tg_linked", async () => {
+  it("omits the button when already tg_linked", async () => {
     renderSettings("/account/settings", { ...settingsData, tg_linked: true, tg_name: "Alice T" });
     expect(await screen.findByText("Linked to Telegram as Alice T.")).toBeInTheDocument();
-    expect(document.querySelector("script[data-telegram-login]")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue with Telegram" })).not.toBeInTheDocument();
   });
 
-  it("omits the widget when no bot_username is configured", async () => {
-    renderSettings("/account/settings", { ...settingsData, tg_linked: false, bot_username: "" });
+  it("omits the button when no bot_id is configured", async () => {
+    renderSettings("/account/settings", { ...settingsData, tg_linked: false, bot_id: "" });
     expect(await screen.findByText("Telegram sign-in isn't set up yet.")).toBeInTheDocument();
-    expect(document.querySelector("script[data-telegram-login]")).not.toBeInTheDocument();
-  });
-
-  // STO-013: Telegram's widget script renders its own raw, unstyled error
-  // text into the container — with no callback or error event — when the
-  // origin isn't authorized via BotFather /setdomain. No iframe ever
-  // appears in that case, which is the only signal useTelegramWidget can
-  // check for; the container is hidden and a styled fallback shown instead.
-  it("shows a styled fallback and hides the container when no iframe appears within the timeout", async () => {
-    vi.useFakeTimers();
-    try {
-      renderSettings("/account/settings", { ...settingsData, tg_linked: false, bot_username: "tokobot" });
-      // Flush the mocked apiGet promise + the resulting widget-injection
-      // effect without relying on real timers (fake timers are active).
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
-      });
-      expect(document.querySelector('script[data-telegram-login="tokobot"]')).toBeInTheDocument();
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(4100);
-      });
-      expect(screen.getByText(/Telegram sign-in isn't loading right now/)).toBeInTheDocument();
-      expect(screen.getByRole("link", { name: "contact support" })).toHaveAttribute(
-        "href",
-        "/account/support",
-      );
-      const container = document.querySelector('script[data-telegram-login="tokobot"]')!.parentElement!;
-      expect(container).toHaveClass("hidden");
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(screen.queryByRole("button", { name: "Continue with Telegram" })).not.toBeInTheDocument();
   });
 });

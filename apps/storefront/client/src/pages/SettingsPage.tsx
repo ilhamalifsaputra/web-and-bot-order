@@ -9,25 +9,26 @@
  * error. Username/email are controlled (seeded once from the GET, the same
  * "page" pattern CheckoutPage uses so a later background refetch can't
  * clobber what the user is mid-typing); the password fields are read via
- * FormData at submit like every other auth form. The Telegram widget embed
- * mirrors LoginPage's script-injection effect, but `data-auth-url` is the
- * fixed server route (not fetched) and the gate is `!tg_linked && bot_username`
- * per settings.njk. The form markup has since been reworked for the phone —
- * consistent label/field spacing, mobile keyboard hints, and the credentials
- * error moved next to the button that produced it — but every endpoint,
- * payload and validation rule is unchanged from the port.
+ * FormData at submit like every other auth form. The Telegram section uses
+ * the same native-looking `TelegramLoginCard` button as LoginPage, but its
+ * `authUrl` is the fixed server route (not fetched) and the gate is
+ * `!tg_linked && bot_id` per settings.njk. The form markup has since been
+ * reworked for the phone — consistent label/field spacing, mobile keyboard
+ * hints, and the credentials error moved next to the button that produced
+ * it — but every endpoint, payload and validation rule is unchanged from
+ * the port.
  */
-import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useEffect, useState, type FormEvent } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { CheckCircle, Send } from "lucide-react";
+import { CheckCircle } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { SettingsData } from "../api/types";
 import { t } from "../lib/i18n";
-import { useTelegramWidget } from "../lib/useTelegramWidget";
 import Flash from "../components/shop/Flash";
 import PasswordInput from "../components/shop/PasswordInput";
 import Spinner from "../components/shop/Spinner";
+import TelegramLoginCard from "../components/shop/TelegramLoginCard";
 
 interface CredentialsVars {
   username: string;
@@ -81,16 +82,6 @@ export default function SettingsPage() {
       new_password: String(formData.get("new_password") ?? ""),
     });
   }
-
-  // Telegram widget script injection — same pattern as LoginPage, but the
-  // auth-url is the fixed server route rather than a fetched value. The
-  // widget only mounts once `page` is seeded and the account isn't already
-  // linked, per settings.njk's `!tg_linked && bot_username` gate.
-  const widgetContainerRef = useRef<HTMLDivElement>(null);
-  const widgetFailed = useTelegramWidget(widgetContainerRef, {
-    botUsername: page && !page.tg_linked ? page.bot_username : null,
-    authUrl: "/account/settings/link-telegram",
-  });
 
   if (!page) return null;
 
@@ -242,26 +233,8 @@ export default function SettingsPage() {
           ) : (
             <>
               <p className="text-sm text-ink-soft mb-4">{t("web.settings_tg_hint")}</p>
-              {page.bot_username ? (
-                <div className="rounded-xl border border-line bg-paper px-4 py-4">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-3 flex items-center gap-1.5">
-                    <Send className="w-3.5 h-3.5" /> {t("web.settings_tg_connect_label")}
-                  </p>
-                  {/* STO-013: Telegram renders its own raw, unstyled error text
-                      (e.g. "Bot domain invalid") into this container when the
-                      origin isn't authorized — hide it and show our own styled
-                      fallback instead of leaking that text into the page. */}
-                  <div ref={widgetContainerRef} className={widgetFailed ? "hidden" : ""} />
-                  {widgetFailed && (
-                    <p className="text-sm text-ink-soft">
-                      {t("web.tg_widget_unavailable_prefix")}{" "}
-                      <Link to="/account/support" className="text-pine underline hover:text-pine-dark">
-                        {t("web.tg_widget_unavailable_link")}
-                      </Link>
-                      {t("web.tg_widget_unavailable_suffix")}
-                    </p>
-                  )}
-                </div>
+              {page.bot_id ? (
+                <TelegramLoginCard botId={page.bot_id} authUrl="/account/settings/link-telegram" />
               ) : (
                 <p className="text-sm text-ink-faint">{t("web.settings_tg_unconfigured")}</p>
               )}

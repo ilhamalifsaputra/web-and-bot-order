@@ -66,7 +66,7 @@ describe("TelegramLoginButton", () => {
 
     const button = screen.getByRole("button");
     expect(button).toBeInTheDocument();
-    expect(button).toHaveClass("btn", "btn-primary", "w-full");
+    expect(button).toHaveClass("btn", "btn-soft", "w-full");
 
     const svgIcon = button.querySelector("svg");
     expect(svgIcon).toBeInTheDocument();

@@ -39,7 +39,7 @@ export default function TelegramLoginButton({ botId, authUrl }: TelegramLoginBut
   }
 
   return (
-    <button type="button" className="btn btn-primary w-full" onClick={handleClick} disabled={connecting}>
+    <button type="button" className="btn btn-soft w-full" onClick={handleClick} disabled={connecting}>
       {connecting ? (
         <>
           <Spinner />

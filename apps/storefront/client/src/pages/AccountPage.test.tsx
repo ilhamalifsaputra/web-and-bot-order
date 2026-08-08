@@ -186,7 +186,7 @@ describe("AccountPage", () => {
       renderGuestAccount();
       await screen.findByRole("heading", { name: "My account" });
       expect(screen.getByRole("button", { name: /Sign out/ })).toBeInTheDocument();
-      expect(screen.getByText(/you'll need your order code and email to get back in/)).toBeInTheDocument();
+      expect(screen.getByText(/you'll need your order code to get back in/)).toBeInTheDocument();
     });
 
     // The guest menu used to be built by filtering MENU_GROUPS[0], which only

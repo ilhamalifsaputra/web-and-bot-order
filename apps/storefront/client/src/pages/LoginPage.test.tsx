@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import LoginPage from "./LoginPage";
@@ -13,10 +13,14 @@ vi.mock("../api/client", () => ({
 
 interface WidgetData {
   bot_username: string;
+  bot_id: string;
   auth_url: string;
 }
 
-function renderLogin(initialEntry = "/login", widget: WidgetData = { bot_username: "", auth_url: "" }) {
+function renderLogin(
+  initialEntry = "/login",
+  widget: WidgetData = { bot_username: "", bot_id: "", auth_url: "" },
+) {
   (apiGet as Mock).mockResolvedValue(widget);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -99,65 +103,14 @@ describe("LoginPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders the telegram widget script only when bot_username is non-empty", async () => {
-    renderLogin("/login", { bot_username: "tokobot", auth_url: "/auth/telegram?next=%2F" });
-    await waitFor(() =>
-      expect(document.querySelector('script[data-telegram-login="tokobot"]')).toBeInTheDocument(),
-    );
-    const script = document.querySelector('script[data-telegram-login="tokobot"]') as HTMLScriptElement;
-    expect(script.getAttribute("data-auth-url")).toBe("/auth/telegram?next=%2F");
-    expect(script.getAttribute("data-request-access")).toBe("write");
+  it("renders the Continue with Telegram button when bot_id is present", async () => {
+    renderLogin("/login", { bot_username: "tokobot", bot_id: "123", auth_url: "/auth/telegram?next=%2F" });
+    expect(await screen.findByRole("button", { name: "Continue with Telegram" })).toBeInTheDocument();
   });
 
-  it("omits the telegram widget script when bot_username is empty", async () => {
-    renderLogin("/login", { bot_username: "", auth_url: "" });
+  it("omits the Continue with Telegram button when bot_id is empty", async () => {
+    renderLogin("/login", { bot_username: "", bot_id: "", auth_url: "" });
     await waitFor(() => expect(apiGet).toHaveBeenCalled());
-    expect(document.querySelector("script[data-telegram-login]")).not.toBeInTheDocument();
-  });
-
-  // STO-013: Telegram's widget script renders its own raw, unstyled error
-  // text (e.g. "Bot domain invalid") into the container — with no callback
-  // or error event — when the origin isn't authorized via BotFather
-  // /setdomain. No iframe ever appears in that case, which is the only
-  // signal useTelegramWidget can check for.
-  it("shows a styled fallback and hides the container when no iframe appears within the timeout", async () => {
-    vi.useFakeTimers();
-    try {
-      renderLogin("/login", { bot_username: "tokobot", auth_url: "/auth/telegram?next=%2F" });
-      // Flush the mocked apiGet promise + the resulting widget-injection
-      // effect without relying on real timers (fake timers are active).
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
-      });
-      expect(document.querySelector('script[data-telegram-login="tokobot"]')).toBeInTheDocument();
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(4100);
-      });
-      expect(screen.getByText(/Telegram sign-in isn't loading right now/)).toBeInTheDocument();
-      const container = document.querySelector('script[data-telegram-login="tokobot"]')!.parentElement!;
-      expect(container).toHaveClass("hidden");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("keeps the widget visible and shows no fallback once an iframe appears", async () => {
-    vi.useFakeTimers();
-    try {
-      renderLogin("/login", { bot_username: "tokobot", auth_url: "/auth/telegram?next=%2F" });
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
-      });
-      const script = document.querySelector('script[data-telegram-login="tokobot"]') as HTMLScriptElement;
-      expect(script).toBeInTheDocument();
-      script.parentElement!.appendChild(document.createElement("iframe"));
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(4100);
-      });
-      expect(screen.queryByText(/Telegram sign-in isn't loading right now/)).not.toBeInTheDocument();
-      expect(script.parentElement).not.toHaveClass("hidden");
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(screen.queryByRole("button", { name: "Continue with Telegram" })).not.toBeInTheDocument();
   });
 });

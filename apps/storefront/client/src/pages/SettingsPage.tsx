@@ -10,7 +10,7 @@
  * "page" pattern CheckoutPage uses so a later background refetch can't
  * clobber what the user is mid-typing); the password fields are read via
  * FormData at submit like every other auth form. The Telegram section uses
- * the same native-looking `TelegramLoginCard` button as LoginPage, but its
+ * the same native-looking `TelegramLoginButton` button as LoginPage, but its
  * `authUrl` is the fixed server route (not fetched) and the gate is
  * `!tg_linked && bot_id` per settings.njk. The form markup has since been
  * reworked for the phone — consistent label/field spacing, mobile keyboard
@@ -28,7 +28,7 @@ import { t } from "../lib/i18n";
 import Flash from "../components/shop/Flash";
 import PasswordInput from "../components/shop/PasswordInput";
 import Spinner from "../components/shop/Spinner";
-import TelegramLoginCard from "../components/shop/TelegramLoginCard";
+import TelegramLoginButton from "../components/shop/TelegramLoginButton";
 
 interface CredentialsVars {
   username: string;
@@ -234,7 +234,7 @@ export default function SettingsPage() {
             <>
               <p className="text-sm text-ink-soft mb-4">{t("web.settings_tg_hint")}</p>
               {page.bot_id ? (
-                <TelegramLoginCard botId={page.bot_id} authUrl="/account/settings/link-telegram" />
+                <TelegramLoginButton botId={page.bot_id} authUrl="/account/settings/link-telegram" />
               ) : (
                 <p className="text-sm text-ink-faint">{t("web.settings_tg_unconfigured")}</p>
               )}

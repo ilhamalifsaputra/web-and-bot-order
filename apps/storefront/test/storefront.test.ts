@@ -632,11 +632,11 @@ describe("telegram login is lookup-only", () => {
 // on the auth cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 5) as fully
 // redundant: resolveBotUsername()'s placeholder-filtering is the SAME
 // function asserted right below against /api/v1/pages/home's `bot_username`
-// field, and the widget-script-presence rendering itself (script only when
-// bot_username is non-empty) is covered by
-// client/src/pages/LoginPage.test.tsx ("renders the telegram widget script
-// only when bot_username is non-empty" / "omits the telegram widget script
-// when bot_username is empty").
+// field, and the button-presence rendering itself (Continue with Telegram
+// button only when bot_id is non-empty) is covered by
+// client/src/pages/LoginPage.test.tsx ("renders the Continue with Telegram
+// button when bot_id is present" / "omits the Continue with Telegram button
+// when bot_id is empty").
 
 // Task 9 fix: HomePage.tsx only renders the Telegram contact card/link when
 // `bot_username` is truthy (`{bot_username && (...)}`) — this asserts the data

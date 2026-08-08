@@ -49,7 +49,7 @@ import { establishSession, safeNext } from "./auth";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const apiAuthRoutes: FastifyPluginAsync = async (app) => {
-  // ---- Telegram Login Widget parameters for the React login/settings pages ----
+  // ---- Telegram direct-link OAuth parameters for the React login/settings pages ----
   app.get<{ Querystring: { next?: string; ref?: string } }>(
     "/auth/telegram-widget",
     async (req, reply) => {

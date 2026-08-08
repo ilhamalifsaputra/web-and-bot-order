@@ -15,7 +15,7 @@ import { t } from "../lib/i18n";
 import Flash from "../components/shop/Flash";
 import PasswordInput from "../components/shop/PasswordInput";
 import Spinner from "../components/shop/Spinner";
-import TelegramLoginCard from "../components/shop/TelegramLoginCard";
+import TelegramLoginButton from "../components/shop/TelegramLoginButton";
 
 /** Only ever a local path — client-side twin of routes/auth.ts `safeNext`
  * (open-redirect guard); the server re-checks this itself on every POST, this
@@ -165,7 +165,7 @@ export default function LoginPage() {
                 <span className="flex-1 border-t border-line" />
               </div>
               <div className="mt-4">
-                <TelegramLoginCard botId={widget?.bot_id} authUrl={widget?.auth_url ?? ""} />
+                <TelegramLoginButton botId={widget?.bot_id} authUrl={widget?.auth_url ?? ""} />
               </div>
             </>
           )}

@@ -19,12 +19,10 @@ describe("buildTelegramOAuthUrl", () => {
     expect(url).toContain("return_to=https%3A%2F%2Fshop.local%2Faccount%2Fsettings%2Flink-telegram");
   });
 
-  it("handles trailing slashes in the origin", () => {
+  it("concatenates origin and authUrl verbatim (callers pass window.location.origin, which has no trailing slash)", () => {
     const url = buildTelegramOAuthUrl("123", "/auth", "https://example.com/");
 
-    // The URL should still be correctly formed
-    expect(url).toContain("oauth.telegram.org/auth?");
-    expect(url).toContain("bot_id=123");
+    expect(url).toContain("return_to=https%3A%2F%2Fexample.com%2F%2Fauth");
   });
 
   it("uses the exact bot_id provided", () => {

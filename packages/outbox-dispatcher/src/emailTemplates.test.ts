@@ -13,14 +13,29 @@ vi.mock("@app/db", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
 
+// resolveOwnerBrandConfig's logoUrl resolution (Task 7) joins a relative
+// web_logo_url against config.ADMIN_PUBLIC_URL. Mocked (rather than using the
+// real config, which reads process.env at import time) so tests can flip
+// ADMIN_PUBLIC_URL between set/unset per case without depending on the
+// environment this suite happens to run in.
+vi.mock("@app/core/config", () => ({
+  config: {
+    ADMIN_PUBLIC_URL: undefined as string | undefined,
+    SHOP_PUBLIC_URL: undefined as string | undefined,
+    PUBLIC_URL: undefined as string | undefined,
+  },
+}));
+
 import { renderEmail } from "./emailTemplates";
 import { getSetting } from "@app/db";
+import { config } from "@app/core/config";
 
 const DISTINCTIVE_ORDER_CODE = "ZZZTESTCODE99";
 
 describe("emailTemplates.renderEmail", () => {
   beforeEach(() => {
     vi.mocked(getSetting).mockResolvedValue(null);
+    config.ADMIN_PUBLIC_URL = undefined;
   });
   describe("OWNER_EMAIL_ORDER_PAID", () => {
     const payload = {
@@ -129,6 +144,64 @@ describe("emailTemplates.renderEmail", () => {
       expect(result).not.toBeNull();
       expect(result!.html).not.toContain("Discount");
       expect(result!.text).not.toContain("Discount");
+    });
+
+    describe("resolveOwnerBrandConfig — logo URL", () => {
+      it("joins a relative web_logo_url with ADMIN_PUBLIC_URL when configured", async () => {
+        vi.mocked(getSetting).mockImplementation(async (_prisma, key) => {
+          if (key === "web_logo_url") return "/uploads/branding/logo-abc123.png";
+          return null;
+        });
+        config.ADMIN_PUBLIC_URL = "https://admin.example.com";
+
+        const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", payload);
+        expect(result!.html).toContain(
+          'src="https://admin.example.com/uploads/branding/logo-abc123.png"',
+        );
+      });
+
+      it("omits the <img> entirely (rather than emitting a guaranteed-broken relative src) when web_logo_url is relative but ADMIN_PUBLIC_URL is unset", async () => {
+        vi.mocked(getSetting).mockImplementation(async (_prisma, key) => {
+          if (key === "web_logo_url") return "/uploads/branding/logo-abc123.png";
+          return null;
+        });
+        // config.ADMIN_PUBLIC_URL left undefined by beforeEach's reset
+
+        const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", payload);
+        expect(result!.html).not.toContain("<img");
+        expect(result!.html).not.toContain("/uploads/branding/logo-abc123.png");
+      });
+
+      it("passes an already-absolute logo URL through unchanged, regardless of ADMIN_PUBLIC_URL", async () => {
+        vi.mocked(getSetting).mockImplementation(async (_prisma, key) => {
+          if (key === "web_logo_url") return "https://cdn.example.com/logo.png";
+          return null;
+        });
+        config.ADMIN_PUBLIC_URL = "https://admin.example.com";
+
+        const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", payload);
+        expect(result!.html).toContain('src="https://cdn.example.com/logo.png"');
+      });
+
+      it("renders no <img> tag when no logo is configured at all (regression guard — unaffected by this fix)", async () => {
+        // getSetting resolves null for every key by this suite's default mock
+        const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", payload);
+        expect(result!.html).not.toContain("<img");
+      });
+
+      it("does not produce a doubled slash when ADMIN_PUBLIC_URL has a trailing slash", async () => {
+        vi.mocked(getSetting).mockImplementation(async (_prisma, key) => {
+          if (key === "web_logo_url") return "/uploads/branding/logo-abc123.png";
+          return null;
+        });
+        config.ADMIN_PUBLIC_URL = "https://admin.example.com/";
+
+        const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", payload);
+        expect(result!.html).toContain(
+          'src="https://admin.example.com/uploads/branding/logo-abc123.png"',
+        );
+        expect(result!.html).not.toContain("//uploads");
+      });
     });
   });
 

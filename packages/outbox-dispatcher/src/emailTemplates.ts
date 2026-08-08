@@ -99,6 +99,30 @@ interface TicketReplyPayload {
 }
 
 /**
+ * `web_logo_url` (the Branding page's uploaded-logo Setting) is stored as a
+ * path relative to the app's own origin (e.g. "/uploads/branding/logo-
+ * abc123.png") — correct for the storefront/admin SPA, which resolves it
+ * against whatever page it's on, but meaningless in an email client, which
+ * has no page to resolve against at all. Join it with ADMIN_PUBLIC_URL
+ * (the same base this email's "View Order" button already links to —
+ * packages/db/src/crud/orders.ts's orderUrl construction) so the <img>
+ * this renders into is a real, fetchable absolute URL.
+ *
+ * Passes an already-absolute value through unchanged (defensive — nothing
+ * writes one today, but a relative-only assumption would be a silent trap
+ * if that ever changes). Returns null — no logo, not a guaranteed-broken
+ * relative URL — when there's no logo configured, or when the logo IS a
+ * relative path but ADMIN_PUBLIC_URL isn't configured for this deployment
+ * (rendering it would just reproduce this exact bug in a different form).
+ */
+function toAbsoluteLogoUrl(logoUrl: string | null): string | null {
+  if (!logoUrl) return null;
+  if (/^https?:\/\//i.test(logoUrl)) return logoUrl;
+  if (!config.ADMIN_PUBLIC_URL) return null;
+  return `${config.ADMIN_PUBLIC_URL.replace(/\/+$/, "")}${logoUrl}`;
+}
+
+/**
  * Resolve the owner-email `BrandConfig` from Settings — the same
  * shop_name/web_logo_url rows the web-admin Branding page already edits
  * (Global Constraints scope decision 5: brand name/logo reuse those existing
@@ -119,7 +143,7 @@ async function resolveOwnerBrandConfig(): Promise<BrandConfig> {
   ]);
   return {
     shopName: shopName ?? "Toko Digital",
-    logoUrl: logoUrl ?? null,
+    logoUrl: toAbsoluteLogoUrl(logoUrl),
     accentColor: accentColor ?? "#4F46E5",
     supportEmail: supportEmail ?? null,
     storeUrl: config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null,

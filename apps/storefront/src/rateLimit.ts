@@ -221,9 +221,9 @@ export function checkoutPreviewRateLimited(ip: string): boolean {
 
 // ---------------------------------------------------------------------------
 // Order-tracking lookup rate limit (per IP, in-process) — Task 3, guest
-// checkout. The order-tracking endpoint (a later task) validates an order
-// code + email pair with no login required; without a throttle it's an
-// oracle an attacker can hammer to brute-force valid order codes.
+// checkout. The order-tracking endpoint (a later task) validates a bare
+// order code with no login required; without a throttle it's an oracle an
+// attacker can hammer to brute-force valid order codes.
 // ---------------------------------------------------------------------------
 
 const trackLookupHits = new Map<string, number[]>();

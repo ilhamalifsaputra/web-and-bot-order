@@ -148,6 +148,12 @@ describe("guest checkout emails the order code when SMTP is configured", () => {
     expect(text).toMatch(/kode pesanan/i);
   });
 
+  it("never tells the buyer they need their email address to get back in — the order code alone is the credential", async () => {
+    await guestCheckout("code-only.guest@example.com");
+    const { text } = onlyMailArgs();
+    expect(text).not.toMatch(/and this email address|dan alamat email ini/i);
+  });
+
   it("never puts delivered product content or credentials in the mail", async () => {
     const res = await guestCheckout("nocreds.guest@example.com");
     const orderCode = res.json().order_code as string;

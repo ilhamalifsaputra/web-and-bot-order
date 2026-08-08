@@ -23,15 +23,28 @@ export async function resolveBotUsername(): Promise<string> {
  * Live bot TOKEN for Telegram-login HMAC verification: DB `bot_token` setting
  * wins, env fallback — mirrors resolveBotCredentials' precedence. Resolved live
  * (not the boot-cached runtime) so the verification token stays consistent with
- * the live bot username the widget signs with: the Login Widget signs the
- * payload with the bot in `data-telegram-login`, and the server MUST verify with
- * that SAME bot's token. Setting the right token in admin then takes effect with
- * no restart. NEVER log the returned value (CLAUDE.md: never log secrets).
+ * the live bot the login flow authenticates against: oauth.telegram.org signs
+ * the redirect payload for the bot identified by `bot_id` (see resolveBotId
+ * below), and the server MUST verify with that SAME bot's token. Setting the
+ * right token in admin then takes effect with no restart. NEVER log the
+ * returned value (CLAUDE.md: never log secrets).
  */
 export async function resolveBotToken(): Promise<string | undefined> {
   const fromDb = ((await getSetting(prisma, "bot_token")) ?? "").trim();
   const v = fromDb || (config.BOT_TOKEN ?? "").trim();
   return v || undefined;
+}
+
+const BOT_ID_RE = /^\d+$/;
+/** Numeric bot_id prefix of the live bot TOKEN (format `<bot_id>:<hash>`) —
+ *  what oauth.telegram.org's direct-link login flow needs instead of the
+ *  widget script. "" when no token is configured or it doesn't match the
+ *  standard Bot API token shape (never throws on a malformed token). */
+export async function resolveBotId(): Promise<string> {
+  const token = await resolveBotToken();
+  if (!token || !token.includes(":")) return "";
+  const [id] = token.split(":");
+  return id && BOT_ID_RE.test(id) ? id : "";
 }
 
 /**

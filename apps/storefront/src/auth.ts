@@ -50,8 +50,9 @@ export type TgLoginResult =
 /**
  * Verify a Telegram Login payload (the query params Telegram appends to the
  * auth URL) and report WHY it failed. The HMAC secret is SHA256(bot_token);
- * the bot token MUST belong to the same bot as the widget's `data-telegram-login`
- * username, or the hash never matches (reason "bad_hash").
+ * the bot token MUST belong to the same bot identified by the `bot_id` the
+ * direct-link OAuth flow was started with, or the hash never matches
+ * (reason "bad_hash").
  */
 export function verifyTelegramLoginResult(
   params: Record<string, string>,

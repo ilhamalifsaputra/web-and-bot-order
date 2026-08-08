@@ -6,16 +6,16 @@
  * src/index.css). Markup/classes copied verbatim apart from the mechanical
  * Tailwind v3→v4 renames (docs/REACT_STOREFRONT_MIGRATION.md).
  */
-import { useRef, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { LogIn, Send } from "lucide-react";
+import { LogIn } from "lucide-react";
 import { apiGet, publicPost } from "../api/client";
 import { t } from "../lib/i18n";
-import { useTelegramWidget } from "../lib/useTelegramWidget";
 import Flash from "../components/shop/Flash";
 import PasswordInput from "../components/shop/PasswordInput";
 import Spinner from "../components/shop/Spinner";
+import TelegramLoginButton from "../components/shop/TelegramLoginButton";
 
 /** Only ever a local path — client-side twin of routes/auth.ts `safeNext`
  * (open-redirect guard); the server re-checks this itself on every POST, this
@@ -30,6 +30,7 @@ interface LoginResponse {
 
 interface TelegramWidgetData {
   bot_username: string;
+  bot_id: string;
   auth_url: string;
 }
 
@@ -61,14 +62,6 @@ export default function LoginPage() {
       if (ref) qs.set("ref", ref);
       return apiGet<TelegramWidgetData>(`/api/v1/auth/telegram-widget?${qs.toString()}`);
     },
-  });
-
-  // Renders the Telegram Login Widget's own <script> tag only once we know
-  // the bot username — exactly login.njk's `{% if bot_username %}` gate.
-  const widgetContainerRef = useRef<HTMLDivElement>(null);
-  const widgetFailed = useTelegramWidget(widgetContainerRef, {
-    botUsername: widget?.bot_username,
-    authUrl: widget?.auth_url ?? "",
   });
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -164,27 +157,15 @@ export default function LoginPage() {
             </p>
           </form>
 
-          {widget?.bot_username && (
+          {widget?.bot_id && (
             <>
               <div className="mt-6 flex items-center gap-3 text-xs text-ink-faint">
                 <span className="flex-1 border-t border-line" />
                 {t("web.login_or")}
                 <span className="flex-1 border-t border-line" />
               </div>
-              <div className="mt-4 rounded-xl border border-line bg-paper px-4 py-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint mb-3 flex items-center justify-center gap-1.5">
-                  <Send className="w-3.5 h-3.5" /> {t("web.login_telegram")}
-                </p>
-                {/* STO-013: Telegram renders its own raw, unstyled error text
-                    (e.g. "Bot domain invalid") into this container when the
-                    origin isn't authorized — hide it and show our own styled
-                    fallback instead of leaking that text into the page. */}
-                <div className={`flex justify-center ${widgetFailed ? "hidden" : ""}`} ref={widgetContainerRef}>
-                  <noscript className="text-xs text-ink-faint">{t("web.login_telegram")}</noscript>
-                </div>
-                {widgetFailed && (
-                  <p className="text-xs text-ink-soft text-center">{t("web.tg_widget_unavailable_login")}</p>
-                )}
+              <div className="mt-4">
+                <TelegramLoginButton botId={widget?.bot_id} authUrl={widget?.auth_url ?? ""} />
               </div>
             </>
           )}

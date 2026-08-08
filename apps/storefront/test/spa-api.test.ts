@@ -58,6 +58,7 @@ import { DeliveryType, OrderStatus, VoucherType } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
 import { hashPassword } from "@app/core/password";
 import { TICKET_DIR } from "../src/lib/ticketAttachments";
+import { resolveBotId } from "../src/shop";
 import { buildApp } from "../src/server";
 
 let app: FastifyInstance;
@@ -760,6 +761,65 @@ describe("/api/v1/auth", () => {
     const body = res.json();
     expect(body.auth_url).toContain("next=%2F"); // safeNext collapsed //evil → /
     expect(body.auth_url).toContain("ref=ABC");
+    // BOT_TOKEN="123:ABCDEFGHIJKLMNOPQRSTUVWXYZ-test" (setup-env.ts) → numeric prefix "123".
+    expect(body.bot_id).toBe("123");
+  });
+});
+
+// resolveBotId — the numeric bot_id prefix oauth.telegram.org's direct-link
+// login flow needs (Telegram native-login button, Task 1). Unit-level
+// (imported straight from ../src/shop) rather than another HTTP round trip,
+// mirroring resolveBotToken's own DB-wins-over-env precedence.
+describe("resolveBotId", () => {
+  it("resolves the numeric prefix of the env BOT_TOKEN by default", async () => {
+    expect(await resolveBotId()).toBe("123");
+  });
+
+  it("a DB bot_token setting overrides the env token", async () => {
+    await setSetting(prisma, "bot_token", "987654:LIVE_BOT_TOKEN_xyz");
+    try {
+      expect(await resolveBotId()).toBe("987654");
+    } finally {
+      await deleteSetting(prisma, "bot_token");
+    }
+  });
+
+  it("resolves to \"\" when no token is configured", async () => {
+    const original = config.BOT_TOKEN;
+    config.BOT_TOKEN = undefined;
+    try {
+      expect(await resolveBotId()).toBe("");
+    } finally {
+      config.BOT_TOKEN = original;
+    }
+  });
+
+  it("resolves to \"\" for a malformed token (no colon, or a non-numeric prefix)", async () => {
+    await setSetting(prisma, "bot_token", "not-a-valid-token");
+    try {
+      expect(await resolveBotId()).toBe("");
+    } finally {
+      await deleteSetting(prisma, "bot_token");
+    }
+
+    await setSetting(prisma, "bot_token", "abc:XYZ");
+    try {
+      expect(await resolveBotId()).toBe("");
+    } finally {
+      await deleteSetting(prisma, "bot_token");
+    }
+  });
+
+  it("resolves to \"\" for a colon-less all-numeric token (not a valid bot_id)", async () => {
+    // Regression: token.split(":") on a colon-less token returns the whole
+    // token as a single element, which used to slip past BOT_ID_RE when the
+    // token happened to be all digits.
+    await setSetting(prisma, "bot_token", "123456789");
+    try {
+      expect(await resolveBotId()).toBe("");
+    } finally {
+      await deleteSetting(prisma, "bot_token");
+    }
   });
 });
 
@@ -1517,6 +1577,19 @@ describe("/api/v1/account twins", () => {
       const res = await app.inject({ method: "GET", url: "/api/v1/account", headers: { cookie } });
       expect(res.statusCode).toBe(200);
       expect(res.json().name).toBe("accspauser");
+    });
+
+    // bot_id added alongside bot_username (Task 1, native Telegram login) —
+    // BOT_TOKEN="123:ABCDEFGHIJKLMNOPQRSTUVWXYZ-test" (setup-env.ts).
+    it("GET /account/settings returns bot_username + bot_id alongside the account fields", async () => {
+      const res = await app.inject({ method: "GET", url: "/api/v1/account/settings", headers: { cookie } });
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body.bot_username).toBe("TestBot");
+      expect(body.bot_id).toBe("123");
+      expect(body.values).toEqual({ username: "accspauser", email: "accspauser@u.test" });
+      expect(body.has_password).toBe(true);
+      expect(body.tg_linked).toBe(false);
     });
 
     it("support ticket: create (trio) → list → detail → reply", async () => {

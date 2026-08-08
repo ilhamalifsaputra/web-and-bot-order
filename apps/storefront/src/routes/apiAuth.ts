@@ -43,13 +43,13 @@ import {
   resetAccountFailures,
   forgotEmailRateLimited,
 } from "../rateLimit";
-import { publicBase, resolveBotUsername } from "../shop";
+import { publicBase, resolveBotId, resolveBotUsername } from "../shop";
 import { establishSession, safeNext } from "./auth";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const apiAuthRoutes: FastifyPluginAsync = async (app) => {
-  // ---- Telegram Login Widget parameters for the React login/settings pages ----
+  // ---- Telegram direct-link OAuth parameters for the React login/settings pages ----
   app.get<{ Querystring: { next?: string; ref?: string } }>(
     "/auth/telegram-widget",
     async (req, reply) => {
@@ -58,6 +58,7 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
       if (req.query.ref) params.set("ref", req.query.ref.slice(0, 16));
       return reply.send({
         bot_username: await resolveBotUsername(),
+        bot_id: await resolveBotId(),
         auth_url: `/auth/telegram?${params.toString()}`,
       });
     },

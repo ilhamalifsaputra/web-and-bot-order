@@ -555,6 +555,7 @@ export interface TicketDetailData {
 /** GET /api/v1/account/settings — settings.njk. */
 export interface SettingsData {
   bot_username: string;
+  bot_id: string;
   values: { username: string; email: string };
   has_password: boolean;
   tg_linked: boolean;

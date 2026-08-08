@@ -880,6 +880,39 @@ describe("forgot + reset password", () => {
     const updated = (await prisma.user.findUnique({ where: { id: user.id } }))!;
     expect(verifyPassword("brandnew-99", updated.passwordHash!)).toBe(true);
   });
+
+  it("resolves a relative web_logo_url to an absolute URL using the storefront's public URL, not the admin's", async () => {
+    const { sendMail } = await import("@app/core/mailer");
+    const { hashPassword } = await import("@app/core/password");
+    vi.clearAllMocks();
+    // A dedicated user/email — "forget@me.test" already has 5 prior
+    // successful /auth/forgot calls earlier in this describe block, which
+    // would trip forgotEmailRateLimited's per-email cap (default 5) and mask
+    // this test's actual assertion behind an unrelated 429.
+    await prisma.user.create({
+      data: {
+        loginUsername: "logotestuser",
+        email: "logotest@me.test",
+        passwordHash: hashPassword("oldpass-123"),
+        referralCode: "LOGOTS1",
+      },
+    });
+    await setSetting(prisma, "web_logo_url", "/uploads/branding/logo-xyz789.png");
+    try {
+      const res = await app.inject({ method: "POST", url: "/api/v1/auth/forgot", payload: { email: "logotest@me.test" } });
+      expect(res.statusCode).toBe(200);
+      expect(sendMail).toHaveBeenCalledTimes(1);
+      const call = (sendMail as ReturnType<typeof vi.fn>).mock.calls[0]![1] as { html: string };
+      // setup-env.ts sets SHOP_PUBLIC_URL to "https://shop.test.invalid" for
+      // this whole test file (unlike ADMIN_PUBLIC_URL, which is unset for the
+      // owner-email equivalent test), so a usable base IS available here —
+      // the correct behavior is a real absolute <img src>, joining the
+      // storefront's public URL, not a relative or admin-based one.
+      expect(call.html).toContain('<img src="https://shop.test.invalid/uploads/branding/logo-xyz789.png"');
+    } finally {
+      await deleteSetting(prisma, "web_logo_url");
+    }
+  });
 });
 
 // Account-area cutover (docs/REACT_STOREFRONT_MIGRATION.md Phase 7): every

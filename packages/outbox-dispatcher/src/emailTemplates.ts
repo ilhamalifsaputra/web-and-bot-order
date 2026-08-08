@@ -36,7 +36,7 @@ import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { formatMoney } from "@app/core/formatters";
 import { prisma, getSetting } from "@app/db";
-import { renderOrderPaidEmail } from "@app/core/email";
+import { renderOrderPaidEmail, toAbsoluteAssetUrl } from "@app/core/email";
 import type { BrandConfig, EmailCopy, OrderPaidInput, OrderPaidItem } from "@app/core/email";
 
 interface Item {
@@ -99,30 +99,6 @@ interface TicketReplyPayload {
 }
 
 /**
- * `web_logo_url` (the Branding page's uploaded-logo Setting) is stored as a
- * path relative to the app's own origin (e.g. "/uploads/branding/logo-
- * abc123.png") — correct for the storefront/admin SPA, which resolves it
- * against whatever page it's on, but meaningless in an email client, which
- * has no page to resolve against at all. Join it with ADMIN_PUBLIC_URL
- * (the same base this email's "View Order" button already links to —
- * packages/db/src/crud/orders.ts's orderUrl construction) so the <img>
- * this renders into is a real, fetchable absolute URL.
- *
- * Passes an already-absolute value through unchanged (defensive — nothing
- * writes one today, but a relative-only assumption would be a silent trap
- * if that ever changes). Returns null — no logo, not a guaranteed-broken
- * relative URL — when there's no logo configured, or when the logo IS a
- * relative path but ADMIN_PUBLIC_URL isn't configured for this deployment
- * (rendering it would just reproduce this exact bug in a different form).
- */
-function toAbsoluteLogoUrl(logoUrl: string | null): string | null {
-  if (!logoUrl) return null;
-  if (/^https?:\/\//i.test(logoUrl)) return logoUrl;
-  if (!config.ADMIN_PUBLIC_URL) return null;
-  return `${config.ADMIN_PUBLIC_URL.replace(/\/+$/, "")}${logoUrl}`;
-}
-
-/**
  * Resolve the owner-email `BrandConfig` from Settings — the same
  * shop_name/web_logo_url rows the web-admin Branding page already edits
  * (Global Constraints scope decision 5: brand name/logo reuse those existing
@@ -133,6 +109,14 @@ function toAbsoluteLogoUrl(logoUrl: string | null): string | null {
  * surfaces agree on one default rather than inventing a second string.
  * `storeUrl` reuses `SHOP_PUBLIC_URL ?? PUBLIC_URL`, same as every other
  * buyer-facing link in this codebase — no new Settings key for it.
+ *
+ * `logoUrl` is joined against `ADMIN_PUBLIC_URL` via the shared
+ * `toAbsoluteAssetUrl` helper (packages/core/src/email/assetUrl.ts) — the
+ * same base this email's "View Order" button already links to
+ * (packages/db/src/crud/orders.ts's orderUrl construction) — since this
+ * email's only recipient is the shop admin. See that helper's own doc
+ * comment for why the raw `web_logo_url` Setting (a path relative to the
+ * app's own origin) can't be used as-is inside an email.
  */
 async function resolveOwnerBrandConfig(): Promise<BrandConfig> {
   const [shopName, logoUrl, accentColor, supportEmail] = await Promise.all([
@@ -143,7 +127,7 @@ async function resolveOwnerBrandConfig(): Promise<BrandConfig> {
   ]);
   return {
     shopName: shopName ?? "Toko Digital",
-    logoUrl: toAbsoluteLogoUrl(logoUrl),
+    logoUrl: toAbsoluteAssetUrl(logoUrl, config.ADMIN_PUBLIC_URL),
     accentColor: accentColor ?? "#4F46E5",
     supportEmail: supportEmail ?? null,
     storeUrl: config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null,

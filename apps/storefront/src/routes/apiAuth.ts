@@ -17,7 +17,7 @@ import { hashPassword, verifyPassword } from "@app/core/password";
 import { ValidationError } from "@app/core/errors";
 import { config } from "@app/core/config";
 import { utcStamp } from "@app/core/datetime";
-import { renderResetPasswordEmail } from "@app/core/email";
+import { renderResetPasswordEmail, toAbsoluteAssetUrl } from "@app/core/email";
 import type { BrandConfig, EmailCopy } from "@app/core/email";
 import {
   prisma,
@@ -192,7 +192,13 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
           ]);
         const brand: BrandConfig = {
           shopName,
-          logoUrl: logoUrl ?? null,
+          // web_logo_url is stored relative to this app's own origin (e.g.
+          // "/uploads/branding/logo-abc123.png") — meaningless inside an
+          // email client with no page to resolve it against, so join it
+          // with the storefront's own public URL (this recipient is always
+          // a storefront customer, never the admin) via the shared
+          // toAbsoluteAssetUrl helper (packages/core/src/email/assetUrl.ts).
+          logoUrl: toAbsoluteAssetUrl(logoUrl, config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL),
           accentColor: accentColor ?? "#4F46E5",
           supportEmail: supportEmail ?? null,
           storeUrl: config.SHOP_PUBLIC_URL ?? config.PUBLIC_URL ?? null,

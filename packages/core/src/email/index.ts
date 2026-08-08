@@ -7,6 +7,7 @@ export * as layout from "./layout";
 export * as components from "./components";
 export * as theme from "./theme";
 export { escapeHtml } from "./escape";
+export { toAbsoluteAssetUrl } from "./assetUrl";
 export { renderOrderPaidEmail } from "./templates/orderPaid";
 export type { OrderPaidInput, OrderPaidItem } from "./templates/orderPaid";
 export { renderResetPasswordEmail } from "./templates/resetPassword";

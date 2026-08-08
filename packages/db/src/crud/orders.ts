@@ -11,6 +11,7 @@ import {
   quantizeMoney,
   generateOrderCode,
   computeUniqueCents,
+  usdtFromIdr,
 } from "@app/core/formatters";
 import { Decimal } from "@app/core/money";
 import { effectiveUnitPrice, type FlashFields } from "@app/core/flash";
@@ -1590,6 +1591,31 @@ export async function settlePaidOrder(
     // bybitTxid is set, in that order — these are gateway-specific and never
     // more than one is populated for a given order today, but the preference
     // order keeps this deterministic if that ever changes.
+    // subtotalAmount/discountAmount/item.unitPrice are always stored in
+    // central-IDR (see createOrderFromCart/createOrderDirect) regardless of
+    // the order's settlement currency — finalizeOrderPayment only ever
+    // converts totalAmount. Convert each to the order's settlement currency
+    // here so the owner email doesn't render a raw IDR figure with a USDT
+    // suffix (e.g. "8000 USDT" for a Rp8000 order instead of "0.40 USDT").
+    //
+    // Each value is converted independently via usdtFromIdr, the same
+    // technique apps/web-admin/src/routes/orderMoneyView.ts's
+    // toOrderCurrency uses for the admin order-detail view. This carries
+    // that same helper's known, pre-existing rounding caveat — usdtFromIdr's
+    // own doc says to convert once per displayed TOTAL, never per component,
+    // because independently rounding each of subtotal/discount to the
+    // nearest 0.1 USDT means Subtotal minus Discount can differ from Total
+    // by up to ~0.1 USDT (see docs/audit-backend-2026-07-31.md's L-1
+    // finding, which flags exactly this for orderMoneyView.ts). That's an
+    // acceptable, pre-existing tradeoff for an informational notification
+    // email — getting the right ORDER OF MAGNITUDE (this fix) matters far
+    // more here than being reconciled to the cent, which the admin ledger
+    // view separately owns. Do not attempt to fully solve the L-1 rounding
+    // class of issue as part of this fix — that's a larger, separate
+    // architectural question.
+    const toOrderCurrency = (value: Decimal.Value): Decimal =>
+      order.currency === "IDR" || !order.fxRate ? new Decimal(value) : usdtFromIdr(value, order.fxRate);
+
     await enqueueOwnerOrderPaidEmail(db, {
       orderId,
       orderCode: order.orderCode,
@@ -1601,10 +1627,10 @@ export async function settlePaidOrder(
         name: item.product.name,
         variant: item.product.durationLabel,
         quantity: item.quantity,
-        unitPrice: item.unitPrice,
+        unitPrice: toOrderCurrency(item.unitPrice),
       })),
-      subtotal: order.subtotalAmount,
-      discount: order.discountAmount,
+      subtotal: toOrderCurrency(order.subtotalAmount),
+      discount: toOrderCurrency(order.discountAmount),
       paymentMethod: order.paymentMethod,
       transactionId: order.paymentRef ?? order.binanceTxid ?? order.bybitTxid ?? null,
       voucherCode: order.voucher?.code ?? null,

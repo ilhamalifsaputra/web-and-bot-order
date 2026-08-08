@@ -29,6 +29,7 @@ import {
 } from "@app/core/deliveryFields";
 import { setSetting } from "./settings";
 import { addAdminIdToDb } from "./admins";
+import { usdtFromIdr } from "@app/core/formatters";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -335,6 +336,43 @@ describe("settlePaidOrder — owner-email triggers", () => {
     const payload = JSON.parse(paidRows[0]!.payloadJson) as Record<string, unknown>;
     expect(payload.transaction_id).toBeNull();
     expect("transaction_id" in payload).toBe(true); // present as JSON null, not omitted
+  });
+
+  it("AUTO settlement for a USDT-settled order: the payload's subtotal, discount, and item unitPrice are converted via the order's fxRate — not left as raw IDR", async () => {
+    await configureOwnerEmail("paid_order");
+    const order = await makePendingVerificationOrder(sample.product.id, 1);
+
+    // Simulate a USDT-settled order the way finalizeOrderPayment would have
+    // left it (this test only needs the DB row shape settlePaidOrder reads
+    // — it doesn't need to drive the full payment-finalization flow).
+    const rate = "16000"; // 16,000 IDR per USDT, a plausible rate
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { currency: "USDT", fxRate: rate },
+    });
+
+    await settlePaidOrder(prisma, order.id, { adminId });
+
+    const paidRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: NotificationEvent.OWNER_EMAIL_ORDER_PAID },
+    });
+    expect(paidRows).toHaveLength(1);
+    const payload = JSON.parse(paidRows[0]!.payloadJson) as Record<string, unknown>;
+
+    // usdtFromIdr rounds to the nearest 0.1 — compute the expected value the
+    // same way the fix does, then assert against it (don't hardcode a magic
+    // number that could silently drift from sample.product's actual price).
+    const freshOrder = await prisma.order.findUnique({ where: { id: order.id } });
+    const expectedSubtotal = usdtFromIdr(freshOrder!.subtotalAmount, rate).toString();
+    expect(payload.subtotal).toBe(expectedSubtotal);
+    expect((payload.items as Array<{ unitPrice: unknown }>)[0]!.unitPrice).toBe(expectedSubtotal);
+    // No voucher applied — discountAmount is 0, and usdtFromIdr(0, rate) is
+    // still 0, so this must stay "0" (not some non-zero rounding artifact).
+    expect(payload.discount).toBe("0");
+    // Total is untouched by this fix — still the pre-existing correctly
+    // -converted value, unrelated to subtotal/discount.
+    expect(payload.total).toBe(freshOrder!.totalAmount.toString());
+    expect(payload.currency).toBe("USDT");
   });
 
   it("MANUAL settlement: enqueues exactly one OWNER_EMAIL_MANUAL_ORDER_QUEUED row with the correct payload, no OWNER_EMAIL_ORDER_PAID row, and still enqueues the existing ADMIN_MANUAL_ORDER_QUEUED Telegram alert", async () => {

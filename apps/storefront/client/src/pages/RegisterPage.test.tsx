@@ -1,12 +1,15 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, within, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import RegisterPage from "./RegisterPage";
 import { publicPost } from "../api/client";
 
+// apiGet backs AuthBrandPanel's useShopContext() (Task 16) — its response
+// shape doesn't matter to this page's own behavior, only that it resolves.
 vi.mock("../api/client", () => ({
+  apiGet: vi.fn().mockResolvedValue({}),
   publicPost: vi.fn(),
 }));
 
@@ -125,8 +128,25 @@ describe("RegisterPage", () => {
 
   it("links Terms and Privacy near the submit button without a required checkbox (T11)", () => {
     renderRegister();
-    expect(screen.getByRole("link", { name: "Terms & Conditions" })).toHaveAttribute("href", "/terms");
-    expect(screen.getByRole("link", { name: "Privacy Policy" })).toHaveAttribute("href", "/privacy");
+    // Scoped to the <form>: Task 16's AuthBrandPanel also links Terms &
+    // Privacy (its policy-link row), so an unscoped query would now match
+    // two elements with the same accessible name.
+    const form = screen.getByRole("button", { name: "Create account" }).closest("form")!;
+    expect(within(form).getByRole("link", { name: "Terms & Conditions" })).toHaveAttribute("href", "/terms");
+    expect(within(form).getByRole("link", { name: "Privacy Policy" })).toHaveAttribute("href", "/privacy");
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
+  // Task 16: the page now shares its <main> with AuthBrandPanel — no longer
+  // a bare card floating on an empty background. The panel's Terms/Privacy
+  // links intentionally duplicate the inline consent notice above (T11);
+  // Refund is new to this page.
+  it("renders the brand panel's trust strip and policy links", () => {
+    renderRegister();
+    expect(screen.getByText("Instant delivery")).toBeInTheDocument();
+    expect(screen.getByText("QRIS & USDT")).toBeInTheDocument();
+    expect(screen.getByText("Warranty included")).toBeInTheDocument();
+    expect(screen.getByText("24/7 support")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Refund Policy" })).toHaveAttribute("href", "/refund");
   });
 });

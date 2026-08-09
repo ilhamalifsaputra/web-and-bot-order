@@ -89,6 +89,24 @@ describe("ResetPage", () => {
     expect(forgotLink).toHaveAttribute("href", "/forgot");
   });
 
+  // Task 16: the page now shares its <main> with AuthBrandPanel — no longer
+  // a bare card floating on an empty background, and no longer a dead end
+  // with zero route to the policies. apiGet resolves {valid:true} for every
+  // call in this suite (the beforeEach mock isn't queryKey-aware), which
+  // also backs the panel's useShopContext() call here — harmless, since the
+  // panel only reads shop_name/logo_url off it and falls back cleanly.
+  it("renders the brand panel's trust strip and policy links", async () => {
+    renderReset();
+    await screen.findByLabelText("Password");
+    expect(screen.getByText("Instant delivery")).toBeInTheDocument();
+    expect(screen.getByText("QRIS & USDT")).toBeInTheDocument();
+    expect(screen.getByText("Warranty included")).toBeInTheDocument();
+    expect(screen.getByText("24/7 support")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Terms & Conditions" })).toHaveAttribute("href", "/terms");
+    expect(screen.getByRole("link", { name: "Privacy Policy" })).toHaveAttribute("href", "/privacy");
+    expect(screen.getByRole("link", { name: "Refund Policy" })).toHaveAttribute("href", "/refund");
+  });
+
   it("posts to /api/v1/auth/reset/:token and assigns /login?reset=1 on success", async () => {
     const assign = vi.fn();
     Object.defineProperty(window, "location", {

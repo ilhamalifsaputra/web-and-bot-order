@@ -5,6 +5,12 @@
  * #root already supplies the flex-column body base.njk put on <body>, see
  * src/index.css). Markup/classes copied verbatim apart from the mechanical
  * Tailwind v3→v4 renames (docs/REACT_STOREFRONT_MIGRATION.md).
+ *
+ * Task 16: the bare card floating on an empty background read as unfinished,
+ * so it now shares its <main> with <AuthBrandPanel/> — see that file for why
+ * the panel comes *after* the card in the JSX/DOM despite sitting visually to
+ * its left on desktop (`lg:order-first`), and why that also means these
+ * pages still don't need a skip-to-content link.
  */
 import { useRef, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -13,6 +19,7 @@ import { LogIn, Send } from "lucide-react";
 import { apiGet, publicPost } from "../api/client";
 import { t } from "../lib/i18n";
 import { useTelegramWidget } from "../lib/useTelegramWidget";
+import AuthBrandPanel from "../components/AuthBrandPanel";
 import Flash from "../components/shop/Flash";
 import PasswordInput from "../components/shop/PasswordInput";
 import Spinner from "../components/shop/Spinner";
@@ -92,7 +99,7 @@ export default function LoginPage() {
     // navigation (T15) — these auth routes sit outside <Layout/>, so each
     // needs its own focusable <main>.
     <main className="max-w-6xl mx-auto px-4 py-8 lg:px-6 flex-1" tabIndex={-1}>
-      <div className="min-h-[100svh] flex items-center justify-center -my-8">
+      <div className="min-h-[100svh] flex flex-col items-center justify-center gap-8 -my-8 lg:flex-row lg:items-center lg:justify-center lg:gap-16">
         <div className="w-full max-w-md card card-pad">
           <Link to="/" className="text-center block">
             <LogIn className="w-8 h-8 text-pine mx-auto" />
@@ -192,6 +199,8 @@ export default function LoginPage() {
             </>
           )}
         </div>
+
+        <AuthBrandPanel className="max-w-md" />
       </div>
     </main>
   );

@@ -6,7 +6,10 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import ForgotPage from "./ForgotPage";
 import { publicPost } from "../api/client";
 
+// apiGet backs AuthBrandPanel's useShopContext() (Task 16) — its response
+// shape doesn't matter to this page's own behavior, only that it resolves.
 vi.mock("../api/client", () => ({
+  apiGet: vi.fn().mockResolvedValue({}),
   publicPost: vi.fn(),
 }));
 
@@ -60,5 +63,19 @@ describe("ForgotPage", () => {
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "alice@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: "Send reset link" }));
     expect(await screen.findByText("Too many requests. Please wait a moment.")).toBeInTheDocument();
+  });
+
+  // Task 16: the page now shares its <main> with AuthBrandPanel — no longer
+  // a bare card floating on an empty background, and no longer a dead end
+  // with zero route to the policies.
+  it("renders the brand panel's trust strip and policy links", () => {
+    renderForgot();
+    expect(screen.getByText("Instant delivery")).toBeInTheDocument();
+    expect(screen.getByText("QRIS & USDT")).toBeInTheDocument();
+    expect(screen.getByText("Warranty included")).toBeInTheDocument();
+    expect(screen.getByText("24/7 support")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Terms & Conditions" })).toHaveAttribute("href", "/terms");
+    expect(screen.getByRole("link", { name: "Privacy Policy" })).toHaveAttribute("href", "/privacy");
+    expect(screen.getByRole("link", { name: "Refund Policy" })).toHaveAttribute("href", "/refund");
   });
 });

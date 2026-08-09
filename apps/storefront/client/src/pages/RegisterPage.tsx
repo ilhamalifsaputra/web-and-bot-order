@@ -5,6 +5,12 @@
  * (see LoginPage.tsx for the shared rationale). Markup/classes copied
  * verbatim apart from the mechanical Tailwind v3→v4 renames
  * (docs/REACT_STOREFRONT_MIGRATION.md).
+ *
+ * Task 16: shares its <main> with <AuthBrandPanel/> — see AuthBrandPanel.tsx
+ * for why it sits after the card in the JSX despite rendering to its left on
+ * desktop. Note this page also has its own inline Terms/Privacy links in the
+ * consent notice below the password fields (T11) — those are independent of
+ * the panel's policy links and intentionally duplicate them.
  */
 import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -12,6 +18,7 @@ import { useMutation } from "@tanstack/react-query";
 import { UserPlus } from "lucide-react";
 import { publicPost } from "../api/client";
 import { t } from "../lib/i18n";
+import AuthBrandPanel from "../components/AuthBrandPanel";
 import Flash from "../components/shop/Flash";
 import PasswordInput from "../components/shop/PasswordInput";
 import Spinner from "../components/shop/Spinner";
@@ -72,7 +79,7 @@ export default function RegisterPage() {
     // navigation (T15) — these auth routes sit outside <Layout/>, so each
     // needs its own focusable <main>.
     <main className="max-w-6xl mx-auto px-4 py-8 lg:px-6 flex-1" tabIndex={-1}>
-      <div className="min-h-[100svh] flex items-center justify-center -my-8">
+      <div className="min-h-[100svh] flex flex-col items-center justify-center gap-8 -my-8 lg:flex-row lg:items-center lg:justify-center lg:gap-16">
         <div className="w-full max-w-md card card-pad">
           <Link to="/" className="text-center block">
             <UserPlus className="w-8 h-8 text-pine mx-auto" />
@@ -194,6 +201,8 @@ export default function RegisterPage() {
             </div>
           </form>
         </div>
+
+        <AuthBrandPanel className="max-w-md" />
       </div>
     </main>
   );

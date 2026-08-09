@@ -141,6 +141,20 @@ describe("LoginPage", () => {
     }
   });
 
+  // Task 16: the page now shares its <main> with AuthBrandPanel — no
+  // longer a bare card floating on an empty background, and no longer a
+  // dead end with zero route to the policies.
+  it("renders the brand panel's trust strip and policy links", () => {
+    renderLogin();
+    expect(screen.getByText("Instant delivery")).toBeInTheDocument();
+    expect(screen.getByText("QRIS & USDT")).toBeInTheDocument();
+    expect(screen.getByText("Warranty included")).toBeInTheDocument();
+    expect(screen.getByText("24/7 support")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Terms & Conditions" })).toHaveAttribute("href", "/terms");
+    expect(screen.getByRole("link", { name: "Privacy Policy" })).toHaveAttribute("href", "/privacy");
+    expect(screen.getByRole("link", { name: "Refund Policy" })).toHaveAttribute("href", "/refund");
+  });
+
   it("keeps the widget visible and shows no fallback once an iframe appears", async () => {
     vi.useFakeTimers();
     try {

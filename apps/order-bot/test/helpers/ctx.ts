@@ -81,6 +81,15 @@ export interface MakeCtxOptions {
    * for one chat id to exercise fail-open, or return different statuses on
    * successive calls to exercise the join-gate cache). */
   getChatMember?: (chatId: number | string, userId: number) => Promise<{ status: string; is_member?: boolean }>;
+  /** Override ctx.chat.type (defaults to "private"). Set to "group",
+   * "supergroup", or "channel" to exercise code paths — like the join gate —
+   * that must behave differently outside a private chat. */
+  chatType?: "private" | "group" | "supergroup" | "channel";
+  /** Sets ctx.myChatMember to a minimal truthy stand-in, simulating a
+   * my_chat_member update (bot blocked/unblocked/added to a chat). Real
+   * grammY populates this from update.my_chat_member; tests only need it to
+   * be truthy for guards that check `if (ctx.myChatMember) …`. */
+  myChatMember?: boolean;
 }
 
 export interface FakeCtx {
@@ -95,7 +104,7 @@ let msgSeq = 1000;
 export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
   const sink = opts.sink ?? [];
   const from = { ...DEFAULT_FROM, ...opts.from };
-  const chat = { id: from.id, type: "private" as const };
+  const chat = { id: from.id, type: opts.chatType ?? ("private" as const) };
 
   // Message ids deleted via deleteMessage in THIS ctx. Mirrors real Telegram:
   // editing a deleted message throws, which is what makes smartEdit's catch
@@ -244,6 +253,7 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
     message,
     callbackQuery,
     match: opts.match,
+    myChatMember: opts.myChatMember ? { chat, from, date: 0, old_chat_member: {}, new_chat_member: {} } : undefined,
     session,
     reply: rec("reply"),
     replyWithPhoto: opts.replyWithPhotoResult

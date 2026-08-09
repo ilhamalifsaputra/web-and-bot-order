@@ -167,10 +167,19 @@ async function checkMembership(ctx: MyContext, chatId: string, userId: number): 
  * extra plumbing. That same tap is also the one path that always forces a
  * fresh (uncached) check, so a customer who just joined never gets stuck on
  * a stale cached verdict.
+ *
+ * Only ever runs for private-chat message/callback updates: `my_chat_member`
+ * status-change events pass straight through (nothing to gate), and any
+ * update from a non-private chat is silently swallowed rather than replied
+ * to — the bot must be an admin of the required group to check membership
+ * there, so replying into it would spam that group for every member who
+ * joined the group but not the channel.
  */
 export const joinGate: MiddlewareFn<MyContext> = async (ctx, next) => {
   const from = ctx.from;
   if (!from) return next();
+  if (ctx.myChatMember) return next(); // status-change events aren't a customer interaction to gate
+  if (ctx.chat?.type !== "private") return; // never reply into a group/channel; also blocks any group-originated command from bypassing the gate
   if (isAdmin(from.id)) return next();
 
   const [channelId, groupId] = await Promise.all([
@@ -205,6 +214,23 @@ export const joinGate: MiddlewareFn<MyContext> = async (ctx, next) => {
     const key = forceFresh ? "gate.alert_still_missing" : "gate.alert_generic";
     await ctx.answerCallbackQuery({ text: t(ctx, key), show_alert: true });
     return;
+  }
+
+  // The gate blocks startCommand from ever running, which would otherwise
+  // credit a `/start ref_<code>` deep link's referral — without this, that
+  // credit is lost forever, since the "I've Joined" follow-up tap carries no
+  // payload. Minimal fix: attribute the referral here too, before the gate
+  // message. The user still sees the gate and must join before using the
+  // bot; the fuller "stash and replay the prod_<id> deep link too" fix is
+  // out of scope for this pass.
+  const startMatch = ctx.message?.text?.match(/^\/start\s+ref_(\S+)/);
+  if (startMatch) {
+    await upsertUser(prisma, {
+      telegramId: from.id,
+      username: from.username ?? null,
+      fullName: [from.first_name, from.last_name].filter(Boolean).join(" ") || null,
+      referredByCode: startMatch[1],
+    });
   }
 
   const kb = new InlineKeyboard();

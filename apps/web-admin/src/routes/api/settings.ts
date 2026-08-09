@@ -209,14 +209,19 @@ async function applyFieldEdit(
   if (key === "join_gate_channel_id" || key === "join_gate_group_id") {
     if (admin.role !== "super") throw new FieldEditError(403, "Only the owner can change the join-gate settings.");
     const urlKey = key === "join_gate_channel_id" ? "join_gate_channel_url" : "join_gate_group_url";
-    if (value === "-") {
+    if (value === "-" || value === "") {
       await deleteSetting(prisma, key);
       await deleteSetting(prisma, urlKey);
       await logAdminAction(prisma, { adminId: admin.userId, action: "setting_clear", targetType: "setting", details: `Cleared setting "${key}".` });
       return { ok: true, cleared: true };
     }
-    const botToken = (await getSetting(prisma, "notif_bot_token")) ?? (await getSetting(prisma, "bot_token"));
-    if (!botToken) throw new FieldEditError(400, "Set a bot token first, then add this chat.");
+    // The join gate is enforced by the ORDER bot's ctx.api.getChatMember at
+    // runtime (apps/order-bot/src/middleware.ts), never the notifier bot —
+    // unlike public_channel_id below, this must NOT prefer notif_bot_token,
+    // or a shop with a separate notifier bot validates the wrong bot here
+    // while every real getChatMember call fails silently at runtime.
+    const botToken = await getSetting(prisma, "bot_token");
+    if (!botToken) throw new FieldEditError(400, "Set the order bot token first, then add this chat.");
     const check = await getChannelValidator()(botToken, value);
     if (!check.ok || typeof check.id !== "number") throw new FieldEditError(400, "Couldn't find that chat.");
     const wantTypes = key === "join_gate_channel_id" ? ["channel"] : ["group", "supergroup"];
@@ -434,15 +439,34 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
 
     let result: { ok: boolean; detail: string };
     if (CHANNEL_LIKE_KEYS.has(target)) {
+      // join_gate_* is enforced by the ORDER bot at runtime (getChatMember),
+      // never the notifier bot — see the matching comment in applyFieldEdit
+      // above. public_channel_id keeps preferring notif_bot_token since that
+      // really is the bot that posts there.
+      const isJoinGate = target === "join_gate_channel_id" || target === "join_gate_group_id";
+      const noun = target === "join_gate_group_id" ? "group" : "channel";
       const channelId = await getSetting(prisma, target);
-      const botToken = (await getSetting(prisma, "notif_bot_token")) ?? (await getSetting(prisma, "bot_token"));
-      if (!channelId) result = { ok: false, detail: "No channel is set yet." };
-      else if (!botToken) result = { ok: false, detail: "Set a bot token first, then test the channel." };
+      const botToken = isJoinGate
+        ? await getSetting(prisma, "bot_token")
+        : (await getSetting(prisma, "notif_bot_token")) ?? (await getSetting(prisma, "bot_token"));
+      if (!channelId) result = { ok: false, detail: `No ${noun} is set yet.` };
+      else if (!botToken) result = { ok: false, detail: `Set a bot token first, then test the ${noun}.` };
       else {
         const check = await getChannelValidator()(botToken, channelId);
-        result = check.ok
-          ? { ok: true, detail: `Connected — channel "${check.title ?? channelId}" is reachable.` }
-          : { ok: false, detail: "Couldn't reach that channel with the current bot token." };
+        if (!check.ok) {
+          result = { ok: false, detail: `Couldn't reach that ${noun} with the current bot token.` };
+        } else if (isJoinGate) {
+          // Reachability alone isn't enough for the join gate: getChatMember
+          // only works reliably at runtime if the order bot is currently an
+          // admin of the chat, so a "Connected" result that skipped this
+          // would lie about whether the gate actually works.
+          const adminCheck = await getBotAdminValidator()(botToken, Number(channelId));
+          result = adminCheck.ok && adminCheck.isAdmin
+            ? { ok: true, detail: `Connected — ${noun} "${check.title ?? channelId}" is reachable and the bot is an admin there.` }
+            : { ok: false, detail: `The ${noun} "${check.title ?? channelId}" is reachable, but the bot is not an admin there. Add it as an admin so the join gate can check membership.` };
+        } else {
+          result = { ok: true, detail: `Connected — channel "${check.title ?? channelId}" is reachable.` };
+        }
       }
     } else {
       const token = await getSetting(prisma, target);

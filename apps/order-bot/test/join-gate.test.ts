@@ -2,7 +2,7 @@
 import "./setup-db";
 
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { prisma, setSetting } from "@app/db";
+import { prisma, setSetting, upsertUser } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { resetBotIdentity } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
@@ -220,5 +220,78 @@ describe("joinGate middleware", () => {
     await joinGate(notJoinedCtx.ctx, notJoinedNext);
     expect(notJoinedNext).not.toHaveBeenCalled();
     expect(calls(notJoinedCtx.sink, "reply")).toHaveLength(1);
+  });
+
+  it("my_chat_member status-change update passes straight through — no membership checks, no reply", async () => {
+    await setSetting(prisma, "join_gate_channel_id", "-100111");
+    const gcmCalls: unknown[] = [];
+    const { ctx, sink } = makeCtx({
+      from: { id: 6011 },
+      myChatMember: true,
+      getChatMember: async (...args) => {
+        gcmCalls.push(args);
+        return { status: "left" };
+      },
+    });
+    const next = vi.fn(async () => {});
+
+    await joinGate(ctx, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(gcmCalls).toHaveLength(0);
+    expect(sink).toHaveLength(0);
+  });
+
+  it("non-private chat update (e.g. the required group itself) is silently swallowed — never replies into the group, never bypasses the gate", async () => {
+    await setSetting(prisma, "join_gate_group_id", "-100222");
+    const { ctx, sink } = makeCtx({
+      from: { id: 6012 },
+      chatType: "supergroup",
+      text: "hello",
+      getChatMember: async () => ({ status: "left" }),
+    });
+    const next = vi.fn(async () => {});
+
+    await joinGate(ctx, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(sink).toHaveLength(0); // no reply posted publicly into the group
+  });
+
+  it("/start ref_<code> deep link still credits the referral even though the update is gated", async () => {
+    await setSetting(prisma, "join_gate_channel_id", "-100111");
+    const referrer = await upsertUser(prisma, { telegramId: 6013, username: "referrer", fullName: "Referrer" });
+
+    const { ctx, sink } = makeCtx({
+      from: { id: 6014, username: "newbie" },
+      text: `/start ref_${referrer.referralCode}`,
+      getChatMember: async () => ({ status: "left" }),
+    });
+    const next = vi.fn(async () => {});
+
+    await joinGate(ctx, next);
+
+    expect(next).not.toHaveBeenCalled(); // still gated — the user sees the join prompt
+    expect(calls(sink, "reply")).toHaveLength(1);
+
+    const referee = await prisma.user.findUnique({ where: { telegramId: BigInt(6014) } });
+    expect(referee).toBeTruthy();
+    expect(referee?.referredById).toBe(referrer.id);
+  });
+
+  it("a gated /start without a ref_ payload doesn't touch referral attribution", async () => {
+    await setSetting(prisma, "join_gate_channel_id", "-100111");
+    const { ctx } = makeCtx({
+      from: { id: 6015 },
+      text: "/start",
+      getChatMember: async () => ({ status: "left" }),
+    });
+    const next = vi.fn(async () => {});
+
+    await joinGate(ctx, next);
+
+    expect(next).not.toHaveBeenCalled();
+    const user = await prisma.user.findUnique({ where: { telegramId: BigInt(6015) } });
+    expect(user).toBeNull(); // joinGate itself never creates/upserts a plain user
   });
 });

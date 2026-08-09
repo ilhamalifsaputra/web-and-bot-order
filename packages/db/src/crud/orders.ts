@@ -329,7 +329,12 @@ export function computeBulkDiscountForCart(
   return q4(total);
 }
 
-async function uniqueOrderCode(db: Db): Promise<string> {
+/** Exported so wallet_topup.ts (a bare-Order creator with no cart/stock of its
+ * own) can mint the same collision-free order codes as every other order
+ * creation path, instead of duplicating this retry loop. Pure/no side effects
+ * beyond the read it already did — exporting it changes nothing for any
+ * existing caller. */
+export async function uniqueOrderCode(db: Db): Promise<string> {
   for (let i = 0; i < 5; i++) {
     const candidate = generateOrderCode();
     const existing = await db.order.findUnique({

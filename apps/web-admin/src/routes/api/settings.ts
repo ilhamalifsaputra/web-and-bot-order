@@ -96,6 +96,10 @@ const EDITABLE: Record<string, string> = {
   bulk_purchase_broadcast_enabled: "Bulk purchase broadcast enabled",
   bulk_purchase_broadcast_threshold: "Bulk purchase broadcast threshold (qty)",
   bulk_purchase_broadcast_template: "Bulk purchase broadcast message template",
+  wallet_topup_min_amount_idr: "Wallet top-up min amount (IDR)",
+  wallet_topup_max_amount_idr: "Wallet top-up max amount (IDR)",
+  wallet_topup_min_amount_usdt: "Wallet top-up min amount (USDT)",
+  wallet_topup_max_amount_usdt: "Wallet top-up max amount (USDT)",
 };
 
 const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key", "smtp_pass"]);
@@ -204,6 +208,12 @@ async function applyFieldEdit(
     let valid = false;
     try { const d = new Decimal(value); valid = d.isFinite() && d.greaterThan(0); } catch { valid = false; }
     if (!valid) throw new FieldEditError(400, "Minimum amount must be a positive number, or blank to disable.");
+  }
+
+  if (key.startsWith("wallet_topup_") && (key.endsWith("_amount_idr") || key.endsWith("_amount_usdt")) && value !== "") {
+    let valid = false;
+    try { const d = new Decimal(value); valid = d.isFinite() && d.greaterThan(0); } catch { valid = false; }
+    if (!valid) throw new FieldEditError(400, "Amount must be a positive number, or blank to disable.");
   }
 
   // This value is interpolated into a <script> tag on every storefront page

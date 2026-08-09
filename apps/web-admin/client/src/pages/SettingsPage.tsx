@@ -19,6 +19,7 @@ import {
   Upload,
   DatabaseBackup,
   MoreVertical,
+  Users,
 } from "lucide-react";
 import { PageLayout } from "../components/shared/PageLayout";
 import { PageHeader } from "../components/shared/PageHeader";
@@ -57,6 +58,11 @@ const TELEGRAM_KEYS = new Set([
   "bot_username",
   "notif_bot_token",
   "public_channel_id",
+]);
+
+const JOIN_GATE_KEYS = new Set([
+  "join_gate_channel_id",
+  "join_gate_group_id",
 ]);
 
 const FX_KEYS = new Set([
@@ -153,6 +159,7 @@ const PAY_CRED_KEYS = new Set([
 const ALL_GROUPED_KEYS = new Set([
   ...BRANDING_KEYS,
   ...TELEGRAM_KEYS,
+  ...JOIN_GATE_KEYS,
   ...SMTP_KEYS,
   ...FX_KEYS,
   ...PAY_CRED_KEYS,
@@ -198,6 +205,8 @@ const FIELD_DESCRIPTIONS: Record<string, string> = {
   bot_token: "The Telegram bot customers order through. Changing this needs a restart.",
   notif_bot_token: "A second bot used only for admin/channel notifications. Changing this needs a restart.",
   public_channel_id: "Public Telegram channel order/stock updates are posted to. Changing this needs a restart.",
+  join_gate_channel_id: "Customers must join this channel before they can use the bot. Paste a @username, t.me link, or numeric id — the bot must already be an admin of the chat. Leave blank to not require a channel.",
+  join_gate_group_id: "Customers must join this group before they can use the bot. Paste a @username, t.me link, or numeric id — the bot must already be an admin of the chat. Leave blank (and the channel above) to turn the join requirement off entirely.",
   smtp_host: "Your email provider's SMTP server, e.g. smtp.hostinger.com.",
   smtp_port: "SMTP port — commonly 465 (SSL/TLS) or 587 (STARTTLS).",
   smtp_user: "SMTP login username, usually the sending email address.",
@@ -787,6 +796,7 @@ export function SettingsPage() {
 
   const showGeneral = fieldGroup(data.fields, BRANDING_KEYS).length > 0;
   const showTelegram = fieldGroup(data.fields, TELEGRAM_KEYS).length > 0;
+  const showJoinGate = fieldGroup(data.fields, JOIN_GATE_KEYS).length > 0;
   const showSmtp = fieldGroup(data.fields, SMTP_KEYS).length > 0;
   const showOther = fieldsOther(data.fields).length > 0;
   const payGroups = PAY_CRED_GROUPS.map(({ methodKey, label, fieldKeys }) => {
@@ -814,12 +824,14 @@ export function SettingsPage() {
 
   const generalFields = fieldGroup(data.fields, BRANDING_KEYS);
   const telegramFields = fieldGroup(data.fields, TELEGRAM_KEYS);
+  const joinGateFields = fieldGroup(data.fields, JOIN_GATE_KEYS);
   const smtpFields = fieldGroup(data.fields, SMTP_KEYS);
   const otherFields = fieldsOther(data.fields);
   const fxFields = fieldGroup(data.fields, FX_KEYS);
 
   const generalVisible = showGeneral && sectionVisible("General", generalFields);
   const telegramVisible = showTelegram && sectionVisible("Telegram & Bot", telegramFields);
+  const joinGateVisible = showJoinGate && sectionVisible("Join Gate", joinGateFields);
   const smtpVisible = showSmtp && sectionVisible("Email (SMTP)", smtpFields);
   const otherVisible = showOther && sectionVisible("Other Settings", otherFields);
   const fxVisible = sectionVisible("Exchange Rates", fxFields);
@@ -830,6 +842,7 @@ export function SettingsPage() {
   const topLinks: SettingsNavLink[] = [
     ...(showGeneral ? [{ id: "settings-general", label: "General", icon: navIcon(SettingsIcon), visible: generalVisible }] : []),
     ...(showTelegram ? [{ id: "settings-telegram", label: "Telegram & Bot", icon: navIcon(Bot), visible: telegramVisible }] : []),
+    ...(showJoinGate ? [{ id: "settings-joingate", label: "Join Gate", icon: navIcon(Users), visible: joinGateVisible }] : []),
     ...(showSmtp ? [{ id: "settings-email", label: "Email (SMTP)", icon: navIcon(Mail), visible: smtpVisible }] : []),
   ];
   const bottomLinks: SettingsNavLink[] = [
@@ -950,6 +963,54 @@ export function SettingsPage() {
             </Card>
           )}
 
+          {/* Join Gate */}
+          {joinGateVisible && (
+            <Card id="settings-joingate">
+              <CardHeader>
+                <CardTitle as="h2">Join Gate</CardTitle>
+              </CardHeader>
+              <CardContent className="divide-y divide-line">
+                {joinGateFields.map((field) => (
+                  <FieldRow
+                    key={field.key}
+                    field={field}
+                    query={fieldQueryFor("Join Gate")}
+                    onSaved={onSaved}
+                    onStatusChange={onStatusChange}
+                  />
+                ))}
+              </CardContent>
+              <CardContent className="flex flex-wrap items-center gap-3 pt-0">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!joinGateFields.find((f) => f.key === "join_gate_channel_id")?.hasValue}
+                  onClick={() => setPendingTest({ methodKey: "__telegram_join_channel__", label: "Join Gate channel" })}
+                >
+                  Test Connection (Channel)
+                </Button>
+                {testResults.__telegram_join_channel__ && (
+                  <p className={`text-xs ${testResults.__telegram_join_channel__.ok ? "text-grass-dark" : "text-rust"}`}>
+                    {testResults.__telegram_join_channel__.detail}
+                  </p>
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!joinGateFields.find((f) => f.key === "join_gate_group_id")?.hasValue}
+                  onClick={() => setPendingTest({ methodKey: "__telegram_join_group__", label: "Join Gate group" })}
+                >
+                  Test Connection (Group)
+                </Button>
+                {testResults.__telegram_join_group__ && (
+                  <p className={`text-xs ${testResults.__telegram_join_group__.ok ? "text-grass-dark" : "text-rust"}`}>
+                    {testResults.__telegram_join_group__.detail}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {/* Email (SMTP) */}
           {smtpVisible && (
             <Card id="settings-email">
@@ -1039,6 +1100,16 @@ export function SettingsPage() {
               if (pendingTest.methodKey === "__telegram_bot_token__") {
                 const result = await apiPost<TestResult>("/api/settings/telegram/test", { target: "bot_token" });
                 setTestResults((prev) => ({ ...prev, __telegram_bot_token__: result }));
+                return result.detail;
+              }
+              if (pendingTest.methodKey === "__telegram_join_channel__") {
+                const result = await apiPost<TestResult>("/api/settings/telegram/test", { target: "join_gate_channel_id" });
+                setTestResults((prev) => ({ ...prev, __telegram_join_channel__: result }));
+                return result.detail;
+              }
+              if (pendingTest.methodKey === "__telegram_join_group__") {
+                const result = await apiPost<TestResult>("/api/settings/telegram/test", { target: "join_gate_group_id" });
+                setTestResults((prev) => ({ ...prev, __telegram_join_group__: result }));
                 return result.detail;
               }
               if (pendingTest.methodKey === "__smtp__") {

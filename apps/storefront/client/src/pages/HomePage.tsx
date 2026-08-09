@@ -273,15 +273,29 @@ export default function HomePage() {
                   <Link to={`/p/${p.slug}`} className="focus-on-dark flex items-center gap-3">
                     <span className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-xl bg-white/10">
                       {p.image ? (
-                        <img
-                          src={p.image}
-                          alt=""
-                          aria-hidden="true"
-                          loading="lazy"
-                          width={44}
-                          height={44}
-                          className="h-full w-full object-cover"
-                        />
+                        <picture className="block h-full w-full">
+                          {/* block + full size: <picture> is inline by default,
+                              which would drop the h-full/w-full the <img> relies
+                              on in this fixed 44px well (see ProductCard). */}
+                          {p.image_srcset && (
+                            <source type="image/webp" srcSet={p.image_srcset} sizes="44px" />
+                          )}
+                          <img
+                            src={p.image}
+                            alt=""
+                            aria-hidden="true"
+                            // Eager on purpose: these three cards sit beside the
+                            // hero heading inside the fold on desktop (lg:block),
+                            // so lazy-loading them only delays what's already
+                            // visible on first paint instead of deferring
+                            // anything actually offscreen.
+                            loading="eager"
+                            decoding="async"
+                            width={44}
+                            height={44}
+                            className="h-full w-full object-cover"
+                          />
+                        </picture>
                       ) : (
                         <Package className="h-5 w-5 text-white/70" aria-hidden="true" />
                       )}

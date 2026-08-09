@@ -245,6 +245,51 @@ describe("HomePage", () => {
     expect(img).toHaveAttribute("src", "https://x/netflix.png");
   });
 
+  // T8/performance.md: these thumbnails sit next to the hero heading and are
+  // visible on first paint (desktop), so `loading="lazy"` only delays what's
+  // already in view — pins the eager fix alongside ProductPage's hero image.
+  it("loads the hero product-preview thumbnails eagerly, not lazily", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium", image: "https://x/netflix.png" };
+    const { container } = renderHome(homeFixture({ products: [product, second] }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const preview = container.querySelector('[data-testid="hero-product-preview"]');
+    const img = preview!.querySelector("img");
+    expect(img).toHaveAttribute("loading", "eager");
+  });
+
+  // T8/performance.md: a real upload carries `image_srcset` (webpSrcset(),
+  // widths from webpVariants.ts's PRODUCT_WIDTHS) — the 44px well should ask
+  // for it via a <source>, sized to the slot rather than the 800w original.
+  it("emits a sized <source> for the hero thumbnail when the product carries an image_srcset", async () => {
+    const second = {
+      ...product,
+      slug: "spotify-premium",
+      name: "Spotify Premium",
+      image: "/uploads/products/spotify-abc.jpg",
+      image_srcset: "/uploads/products/spotify-abc-400.webp 400w, /uploads/products/spotify-abc-800.webp 800w",
+    };
+    const { container } = renderHome(homeFixture({ products: [product, second] }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const preview = container.querySelector('[data-testid="hero-product-preview"]');
+    const source = preview!.querySelector("source");
+    expect(source).not.toBeNull();
+    expect(source).toHaveAttribute("srcset", second.image_srcset);
+    expect(source).toHaveAttribute("sizes", "44px");
+    expect(source).toHaveAttribute("type", "image/webp");
+  });
+
+  // Seed/demo imagery (hotlinked Unsplash URLs) never has a local WebP
+  // derivative — webpSrcset() returns null for it — so the thumbnail must
+  // degrade to a plain <img> instead of an empty/broken <source>.
+  it("renders no <source> for the hero thumbnail when the product has no image_srcset", async () => {
+    const second = { ...product, slug: "spotify-premium", name: "Spotify Premium", image: "https://x/netflix.png" };
+    const { container } = renderHome(homeFixture({ products: [product, second] }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const preview = container.querySelector('[data-testid="hero-product-preview"]');
+    expect(preview!.querySelector("source")).toBeNull();
+    expect(preview!.querySelector("img")).toHaveAttribute("src", "https://x/netflix.png");
+  });
+
   it("caps the hero product-preview composition at three cards", async () => {
     const products = [
       product,

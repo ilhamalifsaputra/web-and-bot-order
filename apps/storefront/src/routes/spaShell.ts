@@ -143,6 +143,10 @@ const TITLE_KEYS: Array<[RegExp, string]> = [
   [/^\/checkout\/[^/]+\/pay$/, "web.pay_title"],
   // Guest order tracking — anonymous by nature (see apiTrack.ts).
   [/^\/track$/, "web.track_title"],
+  // Wallet top-up (Task 5) — same "payment instructions" screen shape as
+  // /checkout/:code/pay, so it reuses that title key rather than a new one.
+  [/^\/wallet\/topup$/, "web.wallet_topup_title"],
+  [/^\/wallet\/topup\/[^/]+\/pay$/, "web.pay_title"],
   [/^\/account$/, "web.account_title"],
   [/^\/account\/orders$/, "web.account_orders"],
   [/^\/account\/referral$/, "web.account_referral"],
@@ -156,6 +160,7 @@ const TITLE_KEYS: Array<[RegExp, string]> = [
 const KNOWN_PATHS = new RegExp(
   "^(/|/search|/products|/categories|/flash|/cart|/checkout|/login|/register|/forgot" +
     "|/reset/[^/]+|/checkout/[^/]+/pay|/track" +
+    "|/wallet/topup|/wallet/topup/[^/]+/pay" +
     "|/account|/account/orders|/account/orders/[^/]+|/account/referral" +
     "|/account/reviews|/account/support|/account/support/\\d+|/account/settings" +
     "|/about|/how-to-order|/terms|/privacy|/refund)$",

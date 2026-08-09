@@ -345,10 +345,33 @@ export interface PayData {
 }
 
 /** GET /api/v1/orders/:code/status — the ~5s poll (JSON twin of the HX-Redirect
- * the HTMX partial used to send once the order flips to DELIVERED). */
+ * the HTMX partial used to send once the order flips to DELIVERED). Also the
+ * shape of GET /api/v1/wallet/topup/:code/status (Task 5) — same payState(). */
 export interface PayStatusData {
   state: PayState;
   redirect: string | null;
+}
+
+/** GET /api/v1/wallet/topup — gateway availability per currency + configured
+ * amount bounds + current balances (server: routes/apiWalletTopup.ts). */
+export interface WalletTopupData {
+  idr_enabled: boolean;
+  paydisini_enabled: boolean;
+  binance_enabled: boolean;
+  bybit_enabled: boolean;
+  bybit_bsc_enabled: boolean;
+  nowpayments_enabled: boolean;
+  min_idr: string | null;
+  max_idr: string | null;
+  min_usdt: string | null;
+  max_usdt: string | null;
+  wallet_idr: string;
+  wallet_usdt: string;
+}
+
+/** 201 response of POST /api/v1/wallet/topup (top-up order created). */
+export interface WalletTopupCreateResponse {
+  orderCode: string;
 }
 
 /** Base context for the shop chrome — JSON twin of shopContext()

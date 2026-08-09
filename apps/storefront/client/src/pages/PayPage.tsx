@@ -17,6 +17,15 @@
  * nothing but a form). Markup/classes copied verbatim apart from the
  * mechanical Tailwind v3→v4 renames (docs/REACT_STOREFRONT_MIGRATION.md):
  * `!text-2xl`/`!text-base` → trailing `!`, `flex-shrink-0` → `shrink-0`.
+ *
+ * Wallet top-up (Task 5) reuses this component AS-IS rather than forking it —
+ * payView()/payState() (routes/checkout.ts) only ever read `Order` columns,
+ * never `items`, so their JSON shape is identical for a WALLET_TOPUP order.
+ * The `variant` prop below is the one seam: it swaps which API base this page
+ * fetches from and the handful of "where do I go next" destinations that
+ * genuinely differ between a product order (has a My-Orders detail page, a
+ * cart to return to) and a top-up (neither exists — it settles onto the
+ * account/wallet balance instead).
  */
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -83,13 +92,18 @@ function StatusStrip({ state }: { state: PayState }) {
  * PayDisini/NOWPayments gateway_error branches below (pay.njk repeats this
  * exact block three times with the same wa_number → bot_username fallback). */
 function GatewayDownFallback({
-  code,
+  payPath,
   titleKey,
   bodyKey,
   waNumber,
   botUsername,
 }: {
-  code: string;
+  /** Full client-side path to reload — `/checkout/:code/pay` for a product
+   * order, `/wallet/topup/:code/pay` for a top-up (the two variants' client
+   * routes, App.tsx). A plain `<a>` (full reload), not a router Link: the
+   * point is to re-fetch the pay view from scratch, same as pay.njk's retry
+   * link did. */
+  payPath: string;
   titleKey: string;
   bodyKey: string;
   waNumber: string;
@@ -105,7 +119,7 @@ function GatewayDownFallback({
         </div>
       </div>
       <div className="flex flex-wrap gap-2 mt-4">
-        <a href={`/checkout/${code}/pay`} className="btn btn-soft btn-sm">
+        <a href={payPath} className="btn btn-soft btn-sm">
           <RefreshCw className="w-3.5 h-3.5" /> {t("web.pay_retry")}
         </a>
         {waNumber ? (
@@ -155,27 +169,40 @@ function useCountdown(expiresAtIso: string | null): string {
   return text;
 }
 
-export default function PayPage() {
+export default function PayPage({ variant = "order" }: { variant?: "order" | "topup" } = {}) {
   const { code = "" } = useParams<{ code: string }>();
   const navigate = useNavigate();
+  const isTopup = variant === "topup";
+  // The only seam between the two order kinds — see the file header.
+  const apiBase = isTopup ? "/wallet/topup" : "/orders";
+  const loginNextBase = isTopup ? "/wallet/topup" : "/checkout";
+  const retryHref = isTopup ? "/wallet/topup" : "/cart";
+  const retryLabelKey = isTopup ? "web.wallet_topup_retry" : "web.back_to_cart";
+  const deliveredHref = isTopup ? "/account" : `/account/orders/${code}`;
+  const deliveredLabelKey = isTopup ? "web.wallet_topup_view_wallet" : "web.view_credentials";
+  const closedHref = isTopup ? "/account" : "/account/orders";
+  const closedLabelKey = isTopup ? "web.account_title" : "web.account_orders";
+  // Full-reload retry link for GatewayDownFallback — the client route for
+  // this page (App.tsx), not the API base above.
+  const payPagePath = isTopup ? `/wallet/topup/${code}/pay` : `/checkout/${code}/pay`;
 
   const { data, error } = useQuery({
-    queryKey: ["pay", code],
-    queryFn: () => apiGet<PayData>(`/api/v1/orders/${code}/pay`),
+    queryKey: ["pay", apiBase, code],
+    queryFn: () => apiGet<PayData>(`/api/v1${apiBase}/${code}/pay`),
     retry: false,
   });
 
   useEffect(() => {
     if ((error as (Error & { status?: number }) | null)?.status === 401) {
-      window.location.assign(`/login?next=/checkout/${code}/pay`);
+      window.location.assign(`/login?next=${loginNextBase}/${code}/pay`);
     }
-  }, [error, code]);
+  }, [error, code, loginNextBase]);
 
   // Polls every 5s (the HTMX twin); only drives the small strip + the
   // delivered-redirect, never the big card below (see file header).
   const { data: poll } = useQuery({
-    queryKey: ["pay-status", code],
-    queryFn: () => apiGet<PayStatusData>(`/api/v1/orders/${code}/status`),
+    queryKey: ["pay-status", apiBase, code],
+    queryFn: () => apiGet<PayStatusData>(`/api/v1${apiBase}/${code}/status`),
     refetchInterval: 5000,
     enabled: Boolean(data),
   });
@@ -185,8 +212,8 @@ export default function PayPage() {
   }, [poll, navigate]);
 
   const cancelMutation = useMutation({
-    mutationFn: () => apiPost<{ ok: boolean }>(`/api/v1/orders/${code}/cancel`, {}),
-    onSuccess: () => navigate("/cart"),
+    mutationFn: () => apiPost<{ ok: boolean }>(`/api/v1${apiBase}/${code}/cancel`, {}),
+    onSuccess: () => navigate(retryHref),
   });
 
   const countdownText = useCountdown(data?.order.expires_at_iso ?? null);
@@ -332,7 +359,7 @@ export default function PayPage() {
                   </>
                 ) : data.gateway_error ? (
                   <GatewayDownFallback
-                    code={order.code}
+                    payPath={payPagePath}
                     titleKey="web.pay_idr_down_title"
                     bodyKey="web.pay_idr_down_body"
                     waNumber={data.wa_number}
@@ -369,7 +396,7 @@ export default function PayPage() {
                   </>
                 ) : data.paydisini_gateway_error ? (
                   <GatewayDownFallback
-                    code={order.code}
+                    payPath={payPagePath}
                     titleKey="web.pay_idr_down_title"
                     bodyKey="web.pay_idr_down_body"
                     waNumber={data.wa_number}
@@ -397,7 +424,7 @@ export default function PayPage() {
                   </>
                 ) : data.nowpayments_gateway_error ? (
                   <GatewayDownFallback
-                    code={order.code}
+                    payPath={payPagePath}
                     titleKey="web.pay_nowpayments_down_title"
                     bodyKey="web.pay_nowpayments_down_body"
                     waNumber={data.wa_number}
@@ -463,8 +490,8 @@ export default function PayPage() {
           <BadgeCheck className="w-12 h-12 text-grass mx-auto mb-3" />
           <h2 className="section-title">{t("web.pay_done_title")}</h2>
           <p className="text-sm text-ink-soft mt-1">{t("web.pay_done_sub")}</p>
-          <Link to={`/account/orders/${order.code}`} className="btn btn-primary mt-5">
-            {t("web.view_credentials")} <ChevronRight className="w-4 h-4" />
+          <Link to={deliveredHref} className="btn btn-primary mt-5">
+            {t(deliveredLabelKey)} <ChevronRight className="w-4 h-4" />
           </Link>
         </div>
       )}
@@ -481,8 +508,8 @@ export default function PayPage() {
         <div className="card card-pad text-center py-10">
           <TimerOff className="w-10 h-10 text-rust mx-auto mb-3" />
           <p className="text-sm text-ink-soft">{t("web.pay_expired")}</p>
-          <Link to="/cart" className="btn btn-primary mt-4">
-            {t("web.back_to_cart")}
+          <Link to={retryHref} className="btn btn-primary mt-4">
+            {t(retryLabelKey)}
           </Link>
         </div>
       )}
@@ -490,8 +517,8 @@ export default function PayPage() {
       {state === "closed" && (
         <div className="card card-pad text-center py-10">
           <p className="text-sm text-ink-soft">{t("web.pay_closed")}</p>
-          <Link to="/account/orders" className="btn btn-soft mt-4">
-            {t("web.account_orders")}
+          <Link to={closedHref} className="btn btn-soft mt-4">
+            {t(closedLabelKey)}
           </Link>
         </div>
       )}

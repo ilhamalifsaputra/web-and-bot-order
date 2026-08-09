@@ -141,13 +141,23 @@ export function findUserByLoginIdentifier(db: Db, identifier: string) {
  * being a guest row.
  *
  * **Security — the guest-marker clearing is load-bearing.** `POST
- * /api/v1/track` mints a full session from (order code + `guestEmail`) with no
- * password involved, gated only on `isGuest`. That trade is only acceptable
- * while the account has no password to bypass: a guest's contact address IS
- * their whole identity. The moment a password exists, the same shortcut would
- * let anyone holding the order code and the old contact address walk past that
- * password AND rotate the real owner's session out (establishSession rotates
- * the jti).
+ * /api/v1/track` mints a session from the order code alone, gated only on
+ * `isGuest`. That trade is only acceptable while the account has no password,
+ * because the order code is the whole identity, not the email address. The
+ * moment a password exists, an order code alone would let anyone walk past
+ * that password AND rotate the real owner's session out (establishSession
+ * rotates the jti).
+ *
+ * That gate works because `isGuest === true` implies `guestEmail !== null`
+ * — by construction, not by any runtime check. Only two places ever write
+ * either field, and both write them together: `createGuestUser` sets both
+ * when a guest row is created, and this very function clears both together
+ * a few lines below (`data.isGuest = false; data.guestEmail = null;`). There
+ * is no code path that flips `isGuest` without also touching `guestEmail`,
+ * so a guest row can never end up with `isGuest` true and `guestEmail` null.
+ * That's what lets `/track`'s route handler check `isGuest` alone and skip
+ * checking `guestEmail` for presence — the invariant already guarantees the
+ * email marker is there whenever the guest flag is.
  *
  * Both routes that can give an account its first password land here — the
  * storefront's `POST /api/v1/account/settings/credentials` (which skips the

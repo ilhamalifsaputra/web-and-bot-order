@@ -239,10 +239,11 @@ const GUEST_ORDER_EMAIL_TIMEOUT_MS = 8_000;
  * Mail a guest their order code, and report whether it actually went out.
  *
  * WHY THIS EXISTS: a guest's only two ways back into a paid order are the
- * 30-day session cookie and `POST /api/v1/track` (order code + email). The code
- * used to live on screen and nowhere else, so closing the tab and then losing
- * the cookie — new device, private window, a browser clean-up — lost the order
- * permanently. This is the durable second copy.
+ * 30-day session cookie and `POST /api/v1/track`, which now opens the order
+ * from the order code alone. The code used to live on screen and nowhere
+ * else, so closing the tab and then losing the cookie — new device, private
+ * window, a browser clean-up — lost the order permanently. This is the
+ * durable second copy.
  *
  * WHY IT IS AWAITED: the `201` body carries `email_sent`, and the SPA only
  * promises an email when that flag is true (SMTP is optional per deployment).
@@ -274,21 +275,22 @@ async function sendGuestOrderCodeEmail(req: FastifyRequest, to: string, orderCod
     const text =
       `Your order code is:\n\n${orderCode}\n\n` +
       `Open your order:\n${orderLink}\n\n` +
-      `Lost this browser, or on another device? Open it again with the code above and this email address:\n${trackLink}\n\n` +
-      `Keep this email — the order code is the only way back into this order. What you bought is never sent by email; you read it on the order page.\n\n` +
+      `Lost this browser, or on another device? Open it again with the code above:\n${trackLink}\n\n` +
+      `Keep this email safe — the order code is the only way back into this order, so treat it like a password. What you bought is never sent by email; you read it on the order page.\n\n` +
       `--\n\n` +
       `Kode pesanan kamu:\n\n${orderCode}\n\n` +
       `Buka pesanan kamu:\n${orderLink}\n\n` +
-      `Browser ini hilang, atau kamu pindah perangkat? Buka lagi pakai kode di atas dan alamat email ini:\n${trackLink}\n\n` +
-      `Simpan email ini — kode pesanan adalah satu-satunya cara masuk kembali ke pesanan ini. Barang yang kamu beli tidak pernah dikirim lewat email; kamu membacanya di halaman pesanan.`;
+      `Browser ini hilang, atau kamu pindah perangkat? Buka lagi pakai kode di atas:\n${trackLink}\n\n` +
+      `Simpan email ini baik-baik — kode pesanan itu satu-satunya cara masuk kembali ke pesanan ini, jadi perlakukan seperti kata sandi. Barang yang kamu beli tidak pernah dikirim lewat email; kamu membacanya di halaman pesanan.`;
 
-    // Subject deliberately omits the order code: it's half the /track
-    // credential (code + email), and a subject line lands in lock-screen
-    // notification previews and every relay's logs along the way — including
-    // this app's own (sendMail logs its subject). The code itself only ever
-    // appears in the body, which is where the buyer actually reads it. Shop
-    // serves Indonesian by default, so the subject is Indonesian even though
-    // the body below is bilingual.
+    // Subject deliberately omits the order code: the code is now the entire
+    // /track credential on its own (no email needed), so keeping it out of
+    // lock-screen notification previews and every relay's logs along the way
+    // — including this app's own (sendMail logs its subject) — matters more
+    // than when it was only half of what unlocked the order. The code itself
+    // only ever appears in the body, which is where the buyer actually reads
+    // it. Shop serves Indonesian by default, so the subject is Indonesian
+    // even though the body below is bilingual.
     const send = sendMail(smtp, { to, subject: `${shopName} — kode pesanan kamu`, text });
     // Attached before the race so a rejection that lands AFTER the timeout is
     // already handled and can never surface as an unhandled rejection.

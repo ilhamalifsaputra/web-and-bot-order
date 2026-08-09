@@ -1,9 +1,11 @@
-// Task 5 (guest checkout): POST /api/v1/track — order code + email session
-// recovery for a guest buyer whose cookie is gone or who switched devices.
-// Two properties matter most and get their own tests: an order owned by a
-// REGISTERED account must never be openable this way (test 6), and every
-// rejection is byte-identical so the endpoint can't be used to probe which
-// order codes exist (tests 4/5/7 compare against the same body).
+// Task 5 (guest checkout) / Task 1 (order-code-only recovery): POST
+// /api/v1/track — a bare order code establishes a session for a guest buyer
+// whose cookie is gone or who switched devices. The order code is now a
+// bearer credential with no second factor, by product decision. Two
+// properties matter most and get their own tests: an order owned by a
+// REGISTERED account must never be openable this way, and every rejection
+// is byte-identical so the endpoint can't be used to probe which order
+// codes exist.
 //
 // Pattern: guest-checkout-api.test.ts — app.inject() against an isolated
 // temp DB, reusing its guest-checkout-via-POST-/api/v1/checkout helper shape.
@@ -140,7 +142,7 @@ describe("POST /api/v1/track — happy path (Task 5)", () => {
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: orderCode, email: "track.happy@example.com" },
+      payload: { order_code: orderCode },
     });
 
     expect(res.statusCode).toBe(200);
@@ -161,7 +163,7 @@ describe("POST /api/v1/track — happy path (Task 5)", () => {
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: orderCode, email: "track.works@example.com" },
+      payload: { order_code: orderCode },
     });
     expect(track.statusCode).toBe(200);
 
@@ -177,14 +179,14 @@ describe("POST /api/v1/track — happy path (Task 5)", () => {
     expect(status.statusCode).toBe(200);
   });
 
-  it("normalizes email (case + surrounding whitespace) and order code (case)", async () => {
+  it("normalizes order code (case + surrounding whitespace)", async () => {
     const orderCode = await makeGuestOrder("track.norm@example.com");
 
     const res = await app.inject({
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: orderCode.toLowerCase(), email: "  Track.Norm@Example.COM  " },
+      payload: { order_code: "  " + orderCode.toLowerCase() + "  " },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().redirect).toBe(`/account/orders/${orderCode}`);
@@ -192,8 +194,8 @@ describe("POST /api/v1/track — happy path (Task 5)", () => {
 });
 
 describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => {
-  it("wrong email 404s with the generic body", async () => {
-    const orderCode = await makeGuestOrder("track.wrongemail@example.com");
+  it("an extra email field in the body is ignored — the order code alone is enough", async () => {
+    const orderCode = await makeGuestOrder("track.emailignored@example.com");
 
     const res = await app.inject({
       method: "POST",
@@ -201,71 +203,60 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
       headers: { "x-forwarded-for": freshIp() },
       payload: { order_code: orderCode, email: "not.the.right.email@example.com" },
     });
-    expect(res.statusCode).toBe(404);
-    expect(res.json()).toEqual({ error: "web.track_not_found" });
-    expect(res.headers["set-cookie"]).toBeUndefined();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().redirect).toBe(`/account/orders/${orderCode}`);
   });
 
-  it("a nonexistent order code produces a byte-identical response to a wrong email", async () => {
-    const wrongEmail = await app.inject({
-      method: "POST",
-      url: "/api/v1/track",
-      headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: await makeGuestOrder("track.identbase@example.com"), email: "nope@example.com" },
-    });
+  it("a nonexistent order code produces a byte-identical response to a registered-account order code", async () => {
+    const acctOrderCode = await makeAccountOrder("trackident1", "trackident1-pw-1", "TRKID1");
 
     const missingOrder = await app.inject({
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: "NOSUCHORDERCODE1", email: "nope@example.com" },
+      payload: { order_code: "NOSUCHORDERCODE1" },
     });
 
-    expect(missingOrder.statusCode).toBe(wrongEmail.statusCode);
+    const acctOrder = await app.inject({
+      method: "POST",
+      url: "/api/v1/track",
+      headers: { "x-forwarded-for": freshIp() },
+      payload: { order_code: acctOrderCode },
+    });
+
+    expect(missingOrder.statusCode).toBe(acctOrder.statusCode);
     expect(missingOrder.statusCode).toBe(404);
-    expect(missingOrder.body).toBe(wrongEmail.body);
+    expect(missingOrder.body).toBe(acctOrder.body);
     expect(missingOrder.headers["set-cookie"]).toBeUndefined();
+    expect(acctOrder.headers["set-cookie"]).toBeUndefined();
   });
 
   it("THE most important test: an order owned by a REGISTERED account is byte-identical-refused and sets no session", async () => {
     const orderCode = await makeAccountOrder("trackacct1", "trackacct1-pw-1", "TRKAC1");
 
-    // Even with the account's own login email, the code+email path must not
-    // open it — that would let anyone who learns the order code and the
-    // account's email skip the account's password entirely.
-    const accountUser = await prisma.user.findFirst({ where: { loginUsername: "trackacct1" } });
-    const attempts = [accountUser!.email!, "totally.wrong@example.com", ""];
-
-    let baseline: { statusCode: number; body: string } | null = null;
-    for (const email of attempts) {
-      const res = await app.inject({
-        method: "POST",
-        url: "/api/v1/track",
-        headers: { "x-forwarded-for": freshIp() },
-        payload: { order_code: orderCode, email },
-      });
-      expect(res.statusCode).toBe(404);
-      expect(res.json()).toEqual({ error: "web.track_not_found" });
-      expect(res.headers["set-cookie"]).toBeUndefined();
-      if (baseline) {
-        expect(res.body).toBe(baseline.body);
-        expect(res.statusCode).toBe(baseline.statusCode);
-      } else {
-        baseline = { statusCode: res.statusCode, body: res.body };
-      }
-    }
+    // The order code alone must not open this order — that would let anyone
+    // who learns the order code skip the account's password entirely.
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/track",
+      headers: { "x-forwarded-for": freshIp() },
+      payload: { order_code: orderCode },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json()).toEqual({ error: "web.track_not_found" });
+    expect(res.headers["set-cookie"]).toBeUndefined();
   });
 
-  it("THE attack: a guest who sets a password can no longer be session-rotated via order code + old guest email", async () => {
+  it("THE attack: a guest who sets a password can no longer be session-rotated via their old order code", async () => {
     // Reachable end-to-end, no hand-built DB state. /account/settings is a
     // registered route in the SPA (only the account-menu LINK is hidden for
     // guests), and POST /account/settings/credentials skips the
     // current-password re-auth while passwordHash is null — so a guest can
     // walk in and turn their synthetic row into a password-protected
-    // account. Before the fix, setLoginCredentials left `isGuest: true` and
-    // `guestEmail` in place, so /track still opened that now-protected
-    // account from (order code + the old guest address) and rotated the
-    // owner's live session out. This test walks exactly that path.
+    // account. setLoginCredentials clears `isGuest` on upgrade, so the
+    // `isGuest` gate in apiTrack.ts — now the endpoint's only defense besides
+    // the order code itself — must refuse the same order code that worked
+    // before the upgrade. This test walks exactly that path.
     const guestEmail = "attack.upgrade@example.com";
     const { orderCode, cookie, csrf } = await makeGuestCheckout(guestEmail);
 
@@ -290,7 +281,7 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: await makeGuestOrder("attack.baseline@example.com"), email: "nope@example.com" },
+      payload: { order_code: "NOSUCHORDERCODE1" },
     });
     expect(baseline.statusCode).toBe(404);
 
@@ -298,7 +289,7 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: orderCode, email: guestEmail },
+      payload: { order_code: orderCode },
     });
 
     expect(res.statusCode).toBe(baseline.statusCode);
@@ -307,20 +298,20 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
   });
 
   it("a synthetic isGuest:false-with-guestEmail row is refused — pins the isGuest guard itself", async () => {
-    // Defence in depth. setLoginCredentials now nulls `guestEmail` alongside
+    // Defence in depth. setLoginCredentials nulls `guestEmail` alongside
     // `isGuest` on upgrade, so this exact combination is no longer produced
     // by any code path — but the row shape is still writable (a migration, a
-    // future importer, a manual DB fix), and the `isGuest` guard in
-    // apiTrack.ts is the only thing that refuses it.
+    // future importer, a manual DB fix), and now that the order code is the
+    // endpoint's only input, the `isGuest` guard in apiTrack.ts is the only
+    // thing left standing between a request like this and a minted session.
     //
     // This is NOT redundant with "an order owned by a REGISTERED account"
-    // above: that helper (makeAccountOrder) never sets guestEmail, so that
-    // test's rejection is actually driven by the `!order.user.guestEmail`
-    // guard — it would still pass even if the `isGuest` check were deleted
-    // from apiTrack.ts. This test constructs a row where guestEmail IS set
-    // and the submitted email matches it exactly, so only the isGuest guard
-    // stands between this request and a minted session. Do not delete this
-    // as "the same thing" as the test above.
+    // above: that helper (makeAccountOrder) never sets guestEmail, so it
+    // only pins the guard against the row shape a normal registered signup
+    // produces. This test pins it against a row that still carries a
+    // guest-shaped marker (`guestEmail` set) alongside `isGuest: false` — the
+    // shape a migration or manual fix could produce — so nobody deletes this
+    // test as "the same thing" as the one above.
     const orderCode = await makeAccountOrder("trackupgraded1", "trackupgraded1-pw-1", "TRKUP1");
     const upgradedEmail = "track.upgraded@example.com";
     await prisma.user.update({
@@ -328,14 +319,14 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
       data: { isGuest: false, guestEmail: upgradedEmail },
     });
 
-    // Baseline captured from another rejection case (wrong email against a
-    // fresh guest order), the same generic shape every rejection in this
-    // file must match — not a hard-coded literal.
+    // Baseline captured from another rejection case (a nonexistent order
+    // code), the same generic shape every rejection in this file must
+    // match — not a hard-coded literal.
     const baseline = await app.inject({
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      payload: { order_code: await makeGuestOrder("track.upgraded.baseline@example.com"), email: "nope@example.com" },
+      payload: { order_code: "NOSUCHORDERCODE1" },
     });
     expect(baseline.statusCode).toBe(404);
 
@@ -343,10 +334,7 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": freshIp() },
-      // The exact guestEmail left on the row after upgrade — every other
-      // guard (order exists, guestEmail present, email matches) is
-      // satisfied here, so only isGuest can still reject this.
-      payload: { order_code: orderCode, email: upgradedEmail },
+      payload: { order_code: orderCode },
     });
 
     expect(res.statusCode).toBe(baseline.statusCode);
@@ -354,8 +342,20 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
     expect(res.headers["set-cookie"]).toBeUndefined();
   });
 
-  it("empty body / missing fields get the same generic rejection", async () => {
-    for (const payload of [{}, { order_code: "" }, { email: "" }, { order_code: "   ", email: "   " }]) {
+  it("empty body / missing fields / non-string order_code get the same generic rejection", async () => {
+    const payloads: Array<Record<string, unknown>> = [
+      {},
+      { order_code: "" },
+      { order_code: "   " },
+      { order_code: null },
+      // A non-string order_code (fastify doesn't schema-validate the body)
+      // must not throw past the .trim() call and turn into a 500 — it's
+      // still just "not a usable order code", so it gets the same generic
+      // 404 as an empty one.
+      { order_code: 123 },
+      { order_code: ["X"] },
+    ];
+    for (const payload of payloads) {
       const res = await app.inject({
         method: "POST",
         url: "/api/v1/track",
@@ -377,7 +377,7 @@ describe("POST /api/v1/track — rate limiting (Task 5)", () => {
         method: "POST",
         url: "/api/v1/track",
         headers: { "x-forwarded-for": ip },
-        payload: { order_code: "NOSUCHORDER", email: `guess${i}@example.com` },
+        payload: { order_code: "NOSUCHORDER" },
       });
       expect(res.statusCode).toBe(404); // still under the cap, and all failed
     }
@@ -385,7 +385,7 @@ describe("POST /api/v1/track — rate limiting (Task 5)", () => {
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": ip },
-      payload: { order_code: "NOSUCHORDER", email: "over@example.com" },
+      payload: { order_code: "NOSUCHORDER" },
     });
     expect(limited.statusCode).toBe(429);
     expect(limited.json()).toEqual({ error: "error.rate_limited" });
@@ -398,7 +398,7 @@ describe("POST /api/v1/track — rate limiting (Task 5)", () => {
         method: "POST",
         url: "/api/v1/track",
         headers: { "x-forwarded-for": ip },
-        payload: { order_code: "NOSUCHORDER", email: `sep${i}@example.com` },
+        payload: { order_code: "NOSUCHORDER" },
       });
       expect(res.statusCode).toBe(404);
     }
@@ -406,7 +406,7 @@ describe("POST /api/v1/track — rate limiting (Task 5)", () => {
       method: "POST",
       url: "/api/v1/track",
       headers: { "x-forwarded-for": ip },
-      payload: { order_code: "NOSUCHORDER", email: "sep-over@example.com" },
+      payload: { order_code: "NOSUCHORDER" },
     });
     expect(cappedTrack.statusCode).toBe(429);
 

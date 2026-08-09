@@ -275,10 +275,10 @@ export interface PlaceOrderResponse {
   email_sent?: boolean;
 }
 
-/** 200 response of POST /api/v1/track — an order code + email pair that
- * matched a guest order, exchanged for a live session. Every failure is one
- * indistinguishable 404 `{ error: "web.track_not_found" }` by design, so
- * there is no "reason" field here to render. */
+/** 200 response of POST /api/v1/track — an order code that matched a guest
+ * order, exchanged for a live session. Every failure is one indistinguishable
+ * 404 `{ error: "web.track_not_found" }` by design, so there is no "reason"
+ * field here to render. */
 export interface TrackOrderResponse {
   redirect: string;
   csrf_token?: string;

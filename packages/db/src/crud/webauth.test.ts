@@ -149,11 +149,10 @@ describe("setLoginCredentials", () => {
 
   it("clears the guest markers when a guest row is given a password", async () => {
     // The security property behind POST /api/v1/track: that endpoint mints a
-    // full session from (order code + guestEmail) alone, gated only on
-    // `isGuest`. The moment a guest sets a password, the account is
-    // password-protected and that shortcut must stop working — otherwise the
-    // password they just chose is bypassable by anyone holding the order code
-    // and the old contact address.
+    // session from the order code alone, gated only on `isGuest`. The moment a
+    // guest sets a password, the account is password-protected and that
+    // shortcut must stop working — otherwise the password they just chose is
+    // bypassable by anyone holding the order code.
     const guest = await createGuestUser(prisma, { email: "upgrade-me@mail.com" });
     await setLoginCredentials(prisma, guest.id, {
       loginUsername: "upgrademe",

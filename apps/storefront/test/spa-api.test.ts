@@ -2105,6 +2105,12 @@ describe("/api/v1/account twins", () => {
       expect(withBot.json()).toEqual({
         referral_code: "ACCSPA",
         referral_link: "https://t.me/TestBot?start=ref_ACCSPA",
+        // Task 14: same getReferralSummary the bot's viewReferral handler
+        // reads — this fixture user has referred nobody, so a zero count and
+        // a Decimal(0) string, not null/NaN.
+        referred_count: 0,
+        earned_usdt: "0",
+        commission_percent: 10,
       });
 
       await setSetting(prisma, "bot_username", "YourBot");

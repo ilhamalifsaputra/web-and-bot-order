@@ -463,10 +463,16 @@ export interface OrderDetailData {
 
 /** GET /api/v1/account/referral — referral.njk. `referral_link` is null when
  * no bot username is configured yet (the template renders the input's value
- * empty in that case). */
+ * empty in that case). `earned_usdt` is a Decimal string (packages/db's
+ * getReferralSummary, same source of truth the bot's viewReferral handler
+ * reads) — format client-side with formatNativeUsdt, never pre-formatted
+ * server-side. */
 export interface ReferralData {
   referral_code: string;
   referral_link: string | null;
+  referred_count: number;
+  earned_usdt: string;
+  commission_percent: number;
 }
 
 /** An order still awaiting the buyer's review — reviews.njk's pending form. */

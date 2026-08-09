@@ -288,6 +288,7 @@ export default function Layout() {
             <Link
               to="/track"
               aria-label={t("web.nav_track")}
+              title={t("web.nav_track")}
               className={`hidden items-center gap-1 rounded-lg px-2.5 py-2 hover:bg-sand sm:flex ${location.pathname === "/track" ? "text-pine" : ""}`}
             >
               <PackageSearch className="h-4 w-4" />

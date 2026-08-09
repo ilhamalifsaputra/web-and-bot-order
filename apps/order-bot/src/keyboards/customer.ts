@@ -609,6 +609,68 @@ export function bybitBscTrackingKb(order: { id: number; status: string }, lang: 
 }
 
 // ---------------------------------------------------------------------------
+// Wallet top-up
+// ---------------------------------------------------------------------------
+
+/** Wallet screen footer: a Top Up entry point + the usual Menu escape. */
+export function walletKb(lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("wallet.topup_btn", lang), data: cb("topup", "open") }],
+    [{ text: coreT("menu.main", lang), data: cb("menu", "main") }],
+  ]);
+}
+
+/** Currency choice — the first step of the top-up flow. Back returns to the wallet screen. */
+export function topupCurrencyKb(lang: string): InlineKeyboard {
+  return ik([
+    [
+      { text: coreT("wallet.topup_currency_idr_btn", lang), data: cb("topup", "currency", "idr") },
+      { text: coreT("wallet.topup_currency_usdt_btn", lang), data: cb("topup", "currency", "usdt") },
+    ],
+    [{ text: coreT("menu.back", lang), data: cb("wallet", "view") }],
+  ]);
+}
+
+/** Shown while awaiting the typed top-up amount. Cancel returns to the currency choice. */
+export function topupAmountCancelKb(lang: string): InlineKeyboard {
+  return ik([
+    [{ text: coreT("checkout.cancel_btn", lang), data: cb("topup", "open") }],
+  ]);
+}
+
+/**
+ * Gateway picker for the top-up flow — structurally identical to
+ * {@link usdtMethodsKb}/orderConfirmKb's QRIS/PayDisini rows, just scoped to
+ * the currency the buyer already chose: IDR gets TokoPay/PayDisini, USDT gets
+ * the four USDT auto-confirm rails. One button per gateway actually enabled
+ * (per web-admin Settings); Back re-opens the amount prompt for the same
+ * currency so the buyer can change the figure without re-picking currency.
+ */
+export function topupMethodsKb(
+  currency: "IDR" | "USDT",
+  lang: string,
+  tokopayEnabled = false,
+  paydisiniEnabled = false,
+  internalEnabled = false,
+  bybitEnabled = false,
+  bybitBscEnabled = false,
+  nowpaymentsEnabled = false,
+): InlineKeyboard {
+  const rows: Btn[][] = [];
+  if (currency === "IDR") {
+    if (tokopayEnabled) rows.push([{ text: coreT("checkout.pay_qris_btn", lang), data: cb("topup", "pay", "tokopay") }]);
+    if (paydisiniEnabled) rows.push([{ text: coreT("checkout.pay_paydisini_btn", lang), data: cb("topup", "pay", "paydisini") }]);
+  } else {
+    if (internalEnabled) rows.push([{ text: coreT("checkout.pay_internal_btn", lang), data: cb("topup", "pay", "internal") }]);
+    if (bybitEnabled) rows.push([{ text: coreT("checkout.pay_bybit_btn", lang), data: cb("topup", "pay", "bybit") }]);
+    if (bybitBscEnabled) rows.push([{ text: coreT("checkout.pay_bybit_bsc_btn", lang), data: cb("topup", "pay", "bybitbsc") }]);
+    if (nowpaymentsEnabled) rows.push([{ text: coreT("checkout.pay_nowpayments_btn", lang), data: cb("topup", "pay", "nowpayments") }]);
+  }
+  rows.push([{ text: coreT("menu.back", lang), data: cb("topup", "currency", currency.toLowerCase()) }]);
+  return ik(rows);
+}
+
+// ---------------------------------------------------------------------------
 // Support tickets
 // ---------------------------------------------------------------------------
 

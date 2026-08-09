@@ -9,6 +9,7 @@ import {
   resolveWalletTopupLimits,
   createWalletTopupOrder,
   settleWalletTopup,
+  hasPendingWalletTopupOrder,
   WALLET_TOPUP_MIN_AMOUNT_IDR_KEY,
   WALLET_TOPUP_MAX_AMOUNT_IDR_KEY,
   WALLET_TOPUP_MIN_AMOUNT_USDT_KEY,
@@ -141,6 +142,89 @@ describe("createWalletTopupOrder — creates a bare Order (kind + zero OrderItem
     const itemRows = await prisma.orderItem.count({ where: { orderId: order.id } });
     expect(itemRows).toBe(0);
     expect(order.voucherId).toBeNull();
+  });
+});
+
+describe("hasPendingWalletTopupOrder", () => {
+  it("is false when the buyer has no pending top-up order at all", async () => {
+    const dupe = await hasPendingWalletTopupOrder(prisma, {
+      userId: sample.user.id,
+      method: PaymentMethod.TOKOPAY,
+      sinceMs: 30_000,
+    });
+    expect(dupe).toBe(false);
+  });
+
+  it("is true for a same-rail PENDING_PAYMENT top-up order created within the window", async () => {
+    await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "20000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+    const dupe = await hasPendingWalletTopupOrder(prisma, {
+      userId: sample.user.id,
+      method: PaymentMethod.TOKOPAY,
+      sinceMs: 30_000,
+    });
+    expect(dupe).toBe(true);
+  });
+
+  it("is false for a DIFFERENT rail — the duplicate guard is per payment method", async () => {
+    await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "20000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+    const dupe = await hasPendingWalletTopupOrder(prisma, {
+      userId: sample.user.id,
+      method: PaymentMethod.PAYDISINI,
+      sinceMs: 30_000,
+    });
+    expect(dupe).toBe(false);
+  });
+
+  it("is false once the pending top-up order is outside the window", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "20000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+    await prisma.order.update({ where: { id: order.id }, data: { createdAt: new Date(Date.now() - 60_000) } });
+    const dupe = await hasPendingWalletTopupOrder(prisma, {
+      userId: sample.user.id,
+      method: PaymentMethod.TOKOPAY,
+      sinceMs: 30_000,
+    });
+    expect(dupe).toBe(false);
+  });
+
+  it("is false once the order is no longer PENDING_PAYMENT (e.g. delivered)", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "20000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: "20000" }));
+    const dupe = await hasPendingWalletTopupOrder(prisma, {
+      userId: sample.user.id,
+      method: PaymentMethod.TOKOPAY,
+      sinceMs: 30_000,
+    });
+    expect(dupe).toBe(false);
+  });
+
+  it("a PENDING PRODUCT order under the same method never counts as a duplicate top-up", async () => {
+    // A plain product order stamped to the same rail (kind defaults to
+    // PRODUCT) must not block a top-up — the guard is scoped to
+    // kind: WALLET_TOPUP specifically.
+    await prisma.order.create({
+      data: {
+        orderCode: `PRODORDER-${Math.random()}`,
+        userId: sample.user.id,
+        subtotalAmount: "50000",
+        totalAmount: "50000",
+        status: OrderStatus.PENDING_PAYMENT,
+        paymentMethod: PaymentMethod.TOKOPAY,
+      },
+    });
+    const dupe = await hasPendingWalletTopupOrder(prisma, {
+      userId: sample.user.id,
+      method: PaymentMethod.TOKOPAY,
+      sinceMs: 30_000,
+    });
+    expect(dupe).toBe(false);
   });
 });
 

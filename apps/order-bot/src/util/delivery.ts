@@ -9,6 +9,7 @@
  * `sendMessage` path did.
  */
 import { InputFile, type Api } from "grammy";
+import type { Decimal } from "@app/core/money";
 import {
   buildAccountFileContent,
   buildDeliveryCaption,
@@ -17,10 +18,37 @@ import {
   type DeliveredItem,
 } from "@app/core/delivery";
 import { notificationKb } from "../keyboards/customer";
+import { orderAmount, formatIdr, formatUsdtAmount } from "./format";
+import { coreT } from "./i18n";
 
 interface DeliverableOrder {
   orderCode: string;
   items: DeliveredItem[];
+}
+
+interface WalletTopupOrder {
+  orderCode: string;
+  currency: string | null;
+  totalAmount: Decimal.Value;
+}
+
+/**
+ * Shared "top-up successful" text — both the buyer DM and the anchored
+ * payment-instructions bubble edit use this (binanceInternal.ts /
+ * bybitDeposit.ts / bybitBscDeposit.ts onDelivered; the TokoPay/PayDisini/
+ * NOWPayments rails settle via the outbox instead, see wallet_topup.ts's
+ * TODO(Task 7)). `order`'s own currency/totalAmount are what
+ * createWalletTopupOrder validated and finalized; `newBalance` is the
+ * caller's post-credit balance for that same currency (read fresh — the
+ * order row itself doesn't carry it).
+ */
+export function walletTopupSuccessText(order: WalletTopupOrder, newBalance: Decimal.Value, lang: string): string {
+  const isIdr = (order.currency ?? "USDT") === "IDR";
+  return coreT("wallet.topup_success", lang, {
+    code: order.orderCode,
+    amount: orderAmount(order),
+    balance: isIdr ? formatIdr(newBalance) : formatUsdtAmount(newBalance),
+  });
 }
 
 /** Send the buyer their account file (caption + `.txt`). Throws on failure. */

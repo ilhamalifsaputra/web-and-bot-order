@@ -50,6 +50,9 @@ export interface SessionData {
   qrMsgId?: number;
   /** Set while waiting for a free-text quantity reply (browse flow). */
   awaitingQtyDenomId?: number;
+  /** Set while waiting for a free-text wallet top-up amount reply (walletTopup
+   *  flow) — the currency the amount will be validated/charged against. */
+  awaitingTopupCurrency?: "IDR" | "USDT";
   /** Transient scratch for multi-step flows (mirrors context.user_data extras). */
   scratch: Record<string, unknown>;
 }

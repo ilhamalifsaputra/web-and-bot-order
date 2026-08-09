@@ -936,12 +936,11 @@ export async function viewWallet(ctx: MyContext): Promise<void> {
   const user = await getUser(prisma, info.id);
   const idrBalance = user ? user.walletBalance : new Decimal(0);
   const usdtBalance = user ? user.walletBalanceUsdt : new Decimal(0);
-  let text = t(ctx, "wallet.credit_balances", {
+  const text = t(ctx, "wallet.credit_balances", {
     idr: formatIdr(idrBalance),
     usdt: price(usdtBalance),
   });
-  text += "\n\n" + t(ctx, "wallet.topup_info");
-  await smartEdit(ctx, text, ckb.backToMain(lang));
+  await smartEdit(ctx, text, ckb.walletKb(lang));
 }
 
 export async function viewReferral(ctx: MyContext): Promise<void> {

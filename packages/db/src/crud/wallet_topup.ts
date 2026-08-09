@@ -354,3 +354,29 @@ export async function settleWalletTopup(
   const refreshed = await getOrder(db, orderId);
   return { order: refreshed!, credited: new Decimal(order.totalAmount) };
 }
+
+/**
+ * True when the buyer already has a PENDING_PAYMENT top-up order for the same
+ * rail created within the last `sinceMs` — the bot's double-tap/grammY-retry
+ * guard (mirrors checkout.ts's own per-product refuseDuplicateCheckout query,
+ * scoped to `kind: WALLET_TOPUP` instead of a productId so a pending PRODUCT
+ * order under the same method never blocks a top-up, and vice versa). Kept
+ * here rather than as an inline `prisma.order.findFirst` in the handler file
+ * per this repo's "no raw SQL/ad-hoc Prisma in routes or handlers" rule.
+ */
+export async function hasPendingWalletTopupOrder(
+  db: Db,
+  args: { userId: number; method: WalletTopupMethod; sinceMs: number },
+): Promise<boolean> {
+  const dupe = await db.order.findFirst({
+    where: {
+      userId: args.userId,
+      paymentMethod: args.method,
+      kind: OrderKind.WALLET_TOPUP,
+      status: OrderStatus.PENDING_PAYMENT,
+      createdAt: { gt: new Date(Date.now() - args.sinceMs) },
+    },
+    select: { id: true },
+  });
+  return dupe !== null;
+}

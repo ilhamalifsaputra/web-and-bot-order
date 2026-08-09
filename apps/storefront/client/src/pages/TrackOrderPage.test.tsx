@@ -138,7 +138,7 @@ describe("TrackOrderPage", () => {
     submitLookup();
 
     await screen.findByText("Something went wrong. Please try again.");
-    expect(screen.getByRole("link", { name: "Contact the shop" })).toHaveAttribute("href", "/#kontak");
+    expect(screen.getByRole("link", { name: "Contact the shop" })).toHaveAttribute("href", "/#contact");
     expect(screen.queryByRole("link", { name: "Help center" })).not.toBeInTheDocument();
   });
 

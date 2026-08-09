@@ -173,7 +173,7 @@ describe("HomePage", () => {
     await screen.findByRole("heading", { name: "Netflix Premium" });
     expect(screen.queryByText("Telegram")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /t\.me/ })).not.toBeInTheDocument();
-    const grid = container.querySelector("#kontak .grid.grid-cols-1");
+    const grid = container.querySelector("#contact .grid.grid-cols-1");
     expect(grid).not.toBeNull();
     expect(grid?.className).not.toMatch(/sm:grid-cols-[23]/);
   });

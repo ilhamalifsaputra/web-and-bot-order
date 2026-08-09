@@ -315,12 +315,17 @@ export default function Layout() {
             className="ml-auto flex items-center gap-1 text-sm text-ink-soft sm:ml-0"
             aria-label={t("web.nav_main")}
           >
+            {/* T21: shows the language IN FORCE (not the target you'd switch
+                to) — a bare target code here read as "current language: EN"
+                while the page was rendering Indonesian, which is backwards.
+                Matches the drawer row's "name the current language" pattern
+                below. */}
             <a
               href={`/lang?to=${otherLang}&back=${encodeURIComponent(backPath)}`}
               className="hidden items-center gap-1 rounded-lg px-2.5 py-2 hover:bg-sand sm:flex uppercase"
               aria-label={t("web.lang_label")}
             >
-              <Globe className="h-4 w-4" /> {otherLang}
+              <Globe className="h-4 w-4" /> {lang}
             </a>
 
             {ctx?.customer ? (
@@ -358,12 +363,14 @@ export default function Layout() {
           <div className="flex-1">
             <SearchForm inputAriaLabel={t("web.search_placeholder")} />
           </div>
+          {/* T21: same fix as the desktop link above — name the current
+              language, not the target. */}
           <a
             href={`/lang?to=${otherLang}&back=${encodeURIComponent(backPath)}`}
             className="flex shrink-0 items-center gap-1 rounded-lg px-2.5 py-2 text-sm text-ink-soft hover:bg-sand uppercase"
             aria-label={t("web.lang_label")}
           >
-            <Globe className="h-4 w-4" /> {otherLang}
+            <Globe className="h-4 w-4" /> {lang}
           </a>
         </div>
       </header>

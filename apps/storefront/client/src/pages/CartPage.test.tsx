@@ -150,6 +150,31 @@ describe("CartPage", () => {
     expect(screen.queryByText("Summary")).not.toBeInTheDocument();
   });
 
+  // E3: a stepper reading "1 · Cart → 2 · Payment → 3 · Done" above an empty
+  // state implies a checkout in progress when there's nothing to check out.
+  it("hides the checkout stepper when the cart is empty", async () => {
+    renderCart(() => ({ items: [], subtotal: "0" }));
+    await screen.findByText("Your cart is empty — browse the products.");
+    expect(screen.queryByRole("listitem", { name: "1 · Cart" })).not.toBeInTheDocument();
+  });
+
+  it("shows the checkout stepper on step 1 while the cart has items", async () => {
+    renderCart(() => cartData);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    expect(screen.getByRole("listitem", { name: "1 · Cart" })).toHaveAttribute("aria-current", "step");
+  });
+
+  it("hides the stepper once the last line is removed", async () => {
+    renderCart(() => cartData);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    expect(screen.getByRole("listitem", { name: "1 · Cart" })).toBeInTheDocument();
+    (apiPost as Mock).mockResolvedValue({ items: [], subtotal: "0" });
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await screen.findByText("Your cart is empty — browse the products.");
+    expect(screen.queryByRole("listitem", { name: "1 · Cart" })).not.toBeInTheDocument();
+  });
+
   // Task 10 (E4): an empty cart is one of the pages where shopping IS the
   // next step, so the shelf fetch fires (unlike SupportPage/the checkout
   // error state, which stay shelf-free on purpose).

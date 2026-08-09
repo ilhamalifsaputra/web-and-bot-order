@@ -219,7 +219,7 @@ export default function HomePage() {
           <p className="mt-4 text-lg text-ink-faint">{t("web.hero_sub")}</p>
           <div className="mt-7 flex flex-wrap gap-3">
             <motion.a
-              href="#produk"
+              href="#products"
               {...hoverLift}
               className="focus-on-dark inline-flex items-center gap-2 rounded-xl bg-pine px-5 py-3 font-semibold text-white hover:bg-pine-dark transition-colors shadow-soft hover:shadow-lift"
             >
@@ -227,7 +227,7 @@ export default function HomePage() {
               {t("web.hero_cta")}
             </motion.a>
             <a
-              href="#kontak"
+              href="#contact"
               className="focus-on-dark inline-flex items-center gap-2 rounded-xl border border-white/20 px-5 py-3 font-semibold text-white hover:bg-white/15 transition-colors"
             >
               <MessageCircle className="h-5 w-5" />
@@ -376,7 +376,7 @@ export default function HomePage() {
 
       {/* 3. Kategori */}
       {categories.length > 0 && (
-        <section className="mt-16 reveal" id="kategori">
+        <section className="mt-16 reveal" id="categories">
           <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.categories")}</p>
           <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.categories_title")}</h2>
 
@@ -404,14 +404,14 @@ export default function HomePage() {
       )}
 
       {/* 4. Produk unggulan */}
-      <section id="produk" className="mt-16 reveal">
+      <section id="products" className="mt-16 reveal">
         <div className="flex items-end justify-between">
           <div>
             <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.featured_kicker")}</p>
             <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.new_arrivals")}</h2>
           </div>
           {categories.length > 0 && (
-            <a href="#kategori" className="inline-flex items-center gap-1 group text-sm font-medium text-pine hover:text-pine-dark">
+            <a href="#categories" className="inline-flex items-center gap-1 group text-sm font-medium text-pine hover:text-pine-dark">
               {t("web.view_by_category")} <ChevronRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
             </a>
           )}
@@ -613,7 +613,7 @@ export default function HomePage() {
       </section>
 
       {/* 8. Kontak */}
-      <section className="mt-16 reveal" id="kontak">
+      <section className="mt-16 reveal" id="contact">
         <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">{t("web.contact_kicker")}</p>
         <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.contact_title")}</h2>
         <p className="mt-2 text-center text-ink-soft">{t("web.contact_sub")}</p>

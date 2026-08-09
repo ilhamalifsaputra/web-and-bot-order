@@ -27,7 +27,7 @@ function renderRegister(initialEntry = "/register") {
 }
 
 function fillForm() {
-  fireEvent.change(screen.getByLabelText("Full Name"), { target: { value: "Alice Wonderland" } });
+  fireEvent.change(screen.getByLabelText("Full name"), { target: { value: "Alice Wonderland" } });
   fireEvent.change(screen.getByLabelText("Username"), { target: { value: "alice" } });
   fireEvent.change(screen.getByLabelText("Email"), { target: { value: "alice@example.com" } });
   fireEvent.change(screen.getByLabelText("Password"), { target: { value: "supersecret" } });
@@ -42,7 +42,7 @@ describe("RegisterPage", () => {
 
   it("renders fullName/username/email/password/password2 fields", () => {
     renderRegister();
-    expect(screen.getByLabelText("Full Name")).toBeInTheDocument();
+    expect(screen.getByLabelText("Full name")).toBeInTheDocument();
     expect(screen.getByLabelText("Username")).toBeInTheDocument();
     expect(screen.getByLabelText("Email")).toBeInTheDocument();
     expect(screen.getByLabelText("Password")).toBeInTheDocument();
@@ -51,7 +51,7 @@ describe("RegisterPage", () => {
 
   it("requires the fullName field — the form won't submit without it", () => {
     renderRegister();
-    const fullNameInput = screen.getByLabelText("Full Name") as HTMLInputElement;
+    const fullNameInput = screen.getByLabelText("Full name") as HTMLInputElement;
     expect(fullNameInput.required).toBe(true);
     expect(fullNameInput.minLength).toBe(2);
     fireEvent.change(screen.getByLabelText("Username"), { target: { value: "alice" } });

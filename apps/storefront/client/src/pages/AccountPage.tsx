@@ -521,7 +521,7 @@ export default function AccountPage() {
             <div className="card overflow-hidden">
               {menuGroups.map((group) => (
                 <nav key={group.headingKey} aria-label={t(group.headingKey)}>
-                  <div className="bg-sand/60 px-4 py-2 text-xs font-semibold tracking-wide text-ink-soft uppercase">
+                  <div className="bg-sand/60 px-4 py-2 text-xs font-semibold tracking-wide text-ink uppercase">
                     {t(group.headingKey)}
                   </div>
                   <div className="divide-y divide-line">

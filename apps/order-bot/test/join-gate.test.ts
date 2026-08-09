@@ -6,7 +6,7 @@ import { prisma, setSetting, upsertUser } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { resetBotIdentity } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
-import { joinGate } from "../src/middleware";
+import { joinGate, registeredUser } from "../src/middleware";
 import * as ckb from "../src/keyboards/customer";
 import { makeCtx, calls, lastMarkup } from "./helpers/ctx";
 import { t } from "../src/util/i18n";
@@ -242,7 +242,7 @@ describe("joinGate middleware", () => {
     expect(sink).toHaveLength(0);
   });
 
-  it("non-private chat update (e.g. the required group itself) is silently swallowed — never replies into the group, never bypasses the gate", async () => {
+  it("non-private chat update (e.g. the required group itself) is silently swallowed once the gate is active — never replies into the group, never bypasses the gate", async () => {
     await setSetting(prisma, "join_gate_group_id", "-100222");
     const { ctx, sink } = makeCtx({
       from: { id: 6012 },
@@ -258,6 +258,42 @@ describe("joinGate middleware", () => {
     expect(sink).toHaveLength(0); // no reply posted publicly into the group
   });
 
+  it("non-private chat update passes through untouched when the gate isn't configured at all — e.g. an ungated shop's support group", async () => {
+    const { ctx, sink } = makeCtx({
+      from: { id: 6016 },
+      chatType: "supergroup",
+      text: "hello",
+      getChatMember: async () => ({ status: "left" }),
+    });
+    const next = vi.fn(async () => {});
+
+    await joinGate(ctx, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(sink).toHaveLength(0);
+  });
+
+  it("admin's non-private chat update (e.g. a ticket Reply/Close tap in the support group) still passes through even with the gate active", async () => {
+    await setSetting(prisma, "join_gate_group_id", "-100222");
+    const { ctx, sink } = makeCtx({
+      from: { id: 999 }, // 999 is an admin per ADMIN_IDS in setup-db.ts
+      chatType: "supergroup",
+      callbackData: "adm:ticket:reply:1",
+      getChatMember: async () => ({ status: "left" }),
+    });
+    const next = vi.fn(async () => {});
+
+    await joinGate(ctx, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(sink).toHaveLength(0);
+  });
+
+  // Referral attribution (`/start ref_<code>`) happens in `registeredUser`
+  // — it's the middleware that actually creates the User row on first
+  // sight, and `upsertUser` only ever applies `referredByCode` at creation
+  // time. These tests run the real chain (`registeredUser` then `joinGate`)
+  // so they'd fail if referral credit were ever lost to the gate again.
   it("/start ref_<code> deep link still credits the referral even though the update is gated", async () => {
     await setSetting(prisma, "join_gate_channel_id", "-100111");
     const referrer = await upsertUser(prisma, { telegramId: 6013, username: "referrer", fullName: "Referrer" });
@@ -269,7 +305,9 @@ describe("joinGate middleware", () => {
     });
     const next = vi.fn(async () => {});
 
-    await joinGate(ctx, next);
+    await registeredUser(ctx, async () => {
+      await joinGate(ctx, next);
+    });
 
     expect(next).not.toHaveBeenCalled(); // still gated — the user sees the join prompt
     expect(calls(sink, "reply")).toHaveLength(1);
@@ -288,10 +326,32 @@ describe("joinGate middleware", () => {
     });
     const next = vi.fn(async () => {});
 
-    await joinGate(ctx, next);
+    await registeredUser(ctx, async () => {
+      await joinGate(ctx, next);
+    });
 
     expect(next).not.toHaveBeenCalled();
     const user = await prisma.user.findUnique({ where: { telegramId: BigInt(6015) } });
-    expect(user).toBeNull(); // joinGate itself never creates/upserts a plain user
+    expect(user).toBeTruthy(); // registeredUser always creates the row
+    expect(user?.referredById).toBeNull();
+  });
+
+  it("/start@botname ref_<code> (bot-username-suffixed deep link) also credits the referral", async () => {
+    await setSetting(prisma, "join_gate_channel_id", "-100111");
+    const referrer = await upsertUser(prisma, { telegramId: 6017, username: "referrer2", fullName: "Referrer Two" });
+
+    const { ctx } = makeCtx({
+      from: { id: 6018, username: "newbie2" },
+      text: `/start@TestBot ref_${referrer.referralCode}`,
+      getChatMember: async () => ({ status: "left" }),
+    });
+    const next = vi.fn(async () => {});
+
+    await registeredUser(ctx, async () => {
+      await joinGate(ctx, next);
+    });
+
+    const referee = await prisma.user.findUnique({ where: { telegramId: BigInt(6018) } });
+    expect(referee?.referredById).toBe(referrer.id);
   });
 });

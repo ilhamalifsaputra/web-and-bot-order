@@ -27,6 +27,12 @@ import * as ckb from "./keyboards/customer";
 export const bindUpdateId: MiddlewareFn<MyContext> = (ctx, next) =>
   withUpdateId(ctx.update.update_id, next);
 
+/** Matches a `/start ref_<code>` deep link, tolerating a `@botname` suffix
+ * (e.g. `/start@shopbot ref_ABC123`) the way grammY's own command matching
+ * does. Read directly off the raw text since this runs before grammY's
+ * command router populates `ctx.match`. */
+const START_REF_RE = /^\/start(?:@\S+)?\s+ref_(\S+)/;
+
 /**
  * Auto-register the user, cache a snapshot, sync language, block bans.
  *
@@ -36,6 +42,16 @@ export const bindUpdateId: MiddlewareFn<MyContext> = (ctx, next) =>
  * (role/ban/language/wallet changes) invalidates it via `invalidateWarmUser`
  * in packages/db/src/crud/users.ts, so a miss always falls back to a fresh
  * `upsertUser` read.
+ *
+ * Also credits a `/start ref_<code>` deep link's referral on first sight.
+ * This has to happen HERE, not in `startCommand`: this middleware is what
+ * actually creates the User row for a brand-new customer (it runs before
+ * every command handler, including `/start`), and `upsertUser` only ever
+ * applies `referredByCode` on the row's initial creation — by the time a
+ * later handler calls `upsertUser` again for the same user, the row already
+ * exists and the referral code is silently ignored. Attributing it here is
+ * what makes referral credit survive downstream gates (like `joinGate`)
+ * that can block the update before `startCommand` ever runs.
  */
 export const registeredUser: MiddlewareFn<MyContext> = async (ctx, next) => {
   const from = ctx.from;
@@ -50,7 +66,8 @@ export const registeredUser: MiddlewareFn<MyContext> = async (ctx, next) => {
   if (warm && warm.username === username && warm.fullName === fullName) {
     snap = warm;
   } else {
-    const user = await upsertUser(prisma, { telegramId: from.id, username, fullName });
+    const referredByCode = ctx.message?.text?.match(START_REF_RE)?.[1];
+    const user = await upsertUser(prisma, { telegramId: from.id, username, fullName, referredByCode });
     snap = {
       id: user.id,
       telegramId: telegramIdKey,
@@ -168,18 +185,20 @@ async function checkMembership(ctx: MyContext, chatId: string, userId: number): 
  * fresh (uncached) check, so a customer who just joined never gets stuck on
  * a stale cached verdict.
  *
- * Only ever runs for private-chat message/callback updates: `my_chat_member`
- * status-change events pass straight through (nothing to gate), and any
- * update from a non-private chat is silently swallowed rather than replied
- * to — the bot must be an admin of the required group to check membership
- * there, so replying into it would spam that group for every member who
- * joined the group but not the channel.
+ * `my_chat_member` status-change events pass straight through (nothing to
+ * gate). Once the gate is actually configured, a non-admin's update from a
+ * non-private chat is silently swallowed rather than replied to — the bot
+ * must be an admin of the required group to check membership there, so
+ * replying into it would spam that group for every member who joined the
+ * group but not the channel. That check runs LAST (after the admin
+ * exemption and the not-configured no-op), so it never touches an admin's
+ * taps in an unrelated group (e.g. replying to a support ticket) and never
+ * fires at all for a shop that hasn't configured a join gate.
  */
 export const joinGate: MiddlewareFn<MyContext> = async (ctx, next) => {
   const from = ctx.from;
   if (!from) return next();
   if (ctx.myChatMember) return next(); // status-change events aren't a customer interaction to gate
-  if (ctx.chat?.type !== "private") return; // never reply into a group/channel; also blocks any group-originated command from bypassing the gate
   if (isAdmin(from.id)) return next();
 
   const [channelId, groupId] = await Promise.all([
@@ -187,6 +206,11 @@ export const joinGate: MiddlewareFn<MyContext> = async (ctx, next) => {
     getSetting(prisma, "join_gate_group_id"),
   ]);
   if (!channelId && !groupId) return next();
+
+  // Only reachable once the gate is actually active. Never reply into a
+  // group/channel (would spam it); also blocks any group-originated command
+  // from bypassing the gate.
+  if (ctx.chat?.type !== "private") return;
 
   const forceFresh = ctx.callbackQuery?.data === ckb.cb("menu", "main");
   const cached = joinGateCache.get(from.id);
@@ -214,23 +238,6 @@ export const joinGate: MiddlewareFn<MyContext> = async (ctx, next) => {
     const key = forceFresh ? "gate.alert_still_missing" : "gate.alert_generic";
     await ctx.answerCallbackQuery({ text: t(ctx, key), show_alert: true });
     return;
-  }
-
-  // The gate blocks startCommand from ever running, which would otherwise
-  // credit a `/start ref_<code>` deep link's referral — without this, that
-  // credit is lost forever, since the "I've Joined" follow-up tap carries no
-  // payload. Minimal fix: attribute the referral here too, before the gate
-  // message. The user still sees the gate and must join before using the
-  // bot; the fuller "stash and replay the prod_<id> deep link too" fix is
-  // out of scope for this pass.
-  const startMatch = ctx.message?.text?.match(/^\/start\s+ref_(\S+)/);
-  if (startMatch) {
-    await upsertUser(prisma, {
-      telegramId: from.id,
-      username: from.username ?? null,
-      fullName: [from.first_name, from.last_name].filter(Boolean).join(" ") || null,
-      referredByCode: startMatch[1],
-    });
   }
 
   const kb = new InlineKeyboard();

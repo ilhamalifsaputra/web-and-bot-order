@@ -148,7 +148,7 @@ export default function ReviewsPage() {
       <section>
         <h2 className="section-title mb-3">{t("web.account_reviews")}</h2>
         {data.reviews.length > 0 ? (
-          <div className="grid sm:grid-cols-2 gap-4">
+          <div className="grid sm:grid-cols-2 gap-4 items-start">
             {data.reviews.map((r, idx) => (
               <ReviewCard key={idx} review={r} />
             ))}

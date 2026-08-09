@@ -33,7 +33,7 @@ import {
 } from "../../auth";
 import { CUSTOM_EMOJI_MAP_SETTING, setCustomEmojiMap } from "@app/core/customEmoji";
 import { currentAdmin, csrfProtect } from "../../plugins/auth";
-import { getTokenValidator, getChannelValidator } from "../../lib/telegramCheck";
+import { getTokenValidator, getChannelValidator, getBotAdminValidator, getJoinUrlResolver, matchesExpectedType } from "../../lib/telegramCheck";
 import { CONNECTION_TESTS } from "../../lib/connectionTest";
 
 const EDITABLE: Record<string, string> = {
@@ -80,6 +80,8 @@ const EDITABLE: Record<string, string> = {
   bot_username: "Bot username",
   notif_bot_token: "Channel Notifier Bot token",
   public_channel_id: "Public channel ID",
+  join_gate_channel_id: "Required channel to join",
+  join_gate_group_id: "Required group to join",
   smtp_host: "SMTP host",
   smtp_port: "SMTP port",
   smtp_user: "SMTP username",
@@ -100,6 +102,10 @@ const EDITABLE: Record<string, string> = {
 
 const SECRET_KEYS = new Set(["tokopay_secret", "paydisini_apikey", "bot_token", "notif_bot_token", "bybit_api_key", "bybit_api_secret", "binance_api_key", "binance_api_secret", "nowpayments_api_key", "nowpayments_ipn_secret", "bscscan_api_key", "smtp_pass"]);
 const TOKEN_KEYS = new Set(["bot_token", "notif_bot_token"]);
+// Fields whose /telegram/test check reuses the getChat-based "is this chat
+// reachable" flow — the original public_channel_id plus the two join-gate
+// chats added on top of it.
+const CHANNEL_LIKE_KEYS = new Set(["public_channel_id", "join_gate_channel_id", "join_gate_group_id"]);
 const BOT_TOKEN_FIELD_KEYS = new Set(["bot_token", "bot_username", "notif_bot_token", "public_channel_id"]);
 const SECRET_PREFIXES = ["web_admin_password_hash:", "web_session_jti:", "web_2fa_secret:", "web_2fa_pending:", "shop_session_jti:"];
 const isSecret = (key: string) => SECRET_KEYS.has(key) || SECRET_PREFIXES.some(p => key.startsWith(p));
@@ -198,6 +204,35 @@ async function applyFieldEdit(
     await setSetting(prisma, key, String(check.id));
     await logAdminAction(prisma, { adminId: admin.userId, action: "setting_set", targetType: "setting", details: `Changed setting "${key}" to ${check.id}.` });
     return { ok: true, needsRestart: true };
+  }
+
+  if (key === "join_gate_channel_id" || key === "join_gate_group_id") {
+    if (admin.role !== "super") throw new FieldEditError(403, "Only the owner can change the join-gate settings.");
+    const urlKey = key === "join_gate_channel_id" ? "join_gate_channel_url" : "join_gate_group_url";
+    if (value === "-") {
+      await deleteSetting(prisma, key);
+      await deleteSetting(prisma, urlKey);
+      await logAdminAction(prisma, { adminId: admin.userId, action: "setting_clear", targetType: "setting", details: `Cleared setting "${key}".` });
+      return { ok: true, cleared: true };
+    }
+    const botToken = (await getSetting(prisma, "notif_bot_token")) ?? (await getSetting(prisma, "bot_token"));
+    if (!botToken) throw new FieldEditError(400, "Set a bot token first, then add this chat.");
+    const check = await getChannelValidator()(botToken, value);
+    if (!check.ok || typeof check.id !== "number") throw new FieldEditError(400, "Couldn't find that chat.");
+    const wantTypes = key === "join_gate_channel_id" ? ["channel"] : ["group", "supergroup"];
+    if (!matchesExpectedType(check, wantTypes)) {
+      throw new FieldEditError(400, key === "join_gate_channel_id" ? "That's a group/other chat, not a channel." : "That's a channel, not a group.");
+    }
+    const adminCheck = await getBotAdminValidator()(botToken, check.id);
+    if (!adminCheck.ok || !adminCheck.isAdmin) {
+      throw new FieldEditError(400, "The bot must be an admin of that chat before it can enforce the join requirement — add it as an admin, then try again.");
+    }
+    const urlRes = await getJoinUrlResolver()(botToken, check);
+    if (!urlRes.ok) throw new FieldEditError(400, "Couldn't get a joinable link for that chat.");
+    await setSetting(prisma, key, String(check.id));
+    await setSetting(prisma, urlKey, urlRes.url);
+    await logAdminAction(prisma, { adminId: admin.userId, action: "setting_set", targetType: "setting", details: `Changed setting "${key}" to ${check.id}.` });
+    return { ok: true };
   }
 
   if (key.endsWith("_min_amount") && value !== "") {
@@ -393,13 +428,13 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
   // them as a standalone, side-effect-free check.
   app.post("/api/settings/telegram/test", { preHandler: csrfProtect }, async (req, reply) => {
     const target = (req.body as { target?: string } | undefined)?.target ?? "";
-    if (!["bot_token", "notif_bot_token", "public_channel_id"].includes(target)) {
+    if (!["bot_token", "notif_bot_token"].includes(target) && !CHANNEL_LIKE_KEYS.has(target)) {
       return reply.code(400).send({ error: "Unknown Telegram field to test." });
     }
 
     let result: { ok: boolean; detail: string };
-    if (target === "public_channel_id") {
-      const channelId = await getSetting(prisma, "public_channel_id");
+    if (CHANNEL_LIKE_KEYS.has(target)) {
+      const channelId = await getSetting(prisma, target);
       const botToken = (await getSetting(prisma, "notif_bot_token")) ?? (await getSetting(prisma, "bot_token"));
       if (!channelId) result = { ok: false, detail: "No channel is set yet." };
       else if (!botToken) result = { ok: false, detail: "Set a bot token first, then test the channel." };

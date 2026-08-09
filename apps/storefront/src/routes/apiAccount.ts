@@ -16,7 +16,7 @@
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 import { config } from "@app/core/config";
 import { localize, addDays } from "@app/core/datetime";
-import { SenderType, OrderStatus, TicketStatus } from "@app/core/enums";
+import { SenderType, OrderStatus, OrderKind, TicketStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { hashPassword, verifyPassword } from "@app/core/password";
 import { Decimal } from "@app/core/money";
@@ -120,8 +120,12 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     const customer = await requireCustomer(req, reply);
     if (!customer) return;
     const order = await getOrderByCodeFull(prisma, req.params.code);
-    // Ownership check — 404 (not 403) so codes can't be probed.
-    if (!order || order.userId !== customer.userId) {
+    // Ownership check — 404 (not 403) so codes can't be probed. A
+    // WALLET_TOPUP order is also 404'd here: it's not a "My Orders" purchase
+    // (it's already visible via the wallet ledger), so it should not be
+    // reachable by code on this buyer-facing product-order detail route
+    // either — same exclusion listUserOrders/countUserOrders apply.
+    if (!order || order.userId !== customer.userId || order.kind !== OrderKind.PRODUCT) {
       return reply.code(404).send({ error: "not_found" });
     }
     const delivered = order.status === OrderStatus.DELIVERED;
@@ -173,7 +177,7 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
       if (!customer) return;
       if (!csrfHeaderOk(req, customer)) return reply.code(403).send({ error: "csrf_failed" });
       const order = await getOrderByCodeFull(prisma, req.params.code);
-      if (!order || order.userId !== customer.userId) {
+      if (!order || order.userId !== customer.userId || order.kind !== OrderKind.PRODUCT) {
         return reply.code(404).send({ error: "not_found" });
       }
       try {

@@ -140,6 +140,28 @@ describe("OrderDetailPage", () => {
     await waitFor(() => expect(screen.getByText("CapCut Pro 1M")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: /resend to telegram/i })).not.toBeInTheDocument();
   });
+
+  // Task 4: a WALLET_TOPUP order has zero OrderItem rows by design (it
+  // credits the buyer's wallet balance rather than delivering a SKU) — the
+  // page must render a clear label instead of an empty/confusing Items
+  // table, and never offer Resend (there are no credentials to resend).
+  it("shows a Wallet Top-Up label and no Items table or Resend button for a WALLET_TOPUP order", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...ORDER_DETAIL_DATA,
+          order: { ...ORDER_DETAIL_DATA.order, kind: "WALLET_TOPUP", status: "DELIVERED", items: [] },
+          isDelivered: true,
+          canAct: false,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<OrderDetailPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Wallet Top-Up (IDR)")).toBeInTheDocument());
+    expect(screen.queryByText("CapCut Pro 1M")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /resend to telegram/i })).not.toBeInTheDocument();
+  });
 });
 
 describe("OrderDetailPage — guest buyers", () => {

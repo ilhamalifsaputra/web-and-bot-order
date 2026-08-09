@@ -110,6 +110,24 @@ async function makeOrder(qty = 1) {
   );
 }
 
+/** A DELIVERED WALLET_TOPUP order (Task 4) for the sample user — zero
+ * OrderItem rows by design (it credits the wallet balance, not a SKU).
+ * Created directly, same as orders.test.ts's own makeOrder-style helpers,
+ * since it's reached today only via a real payment gateway's settlement
+ * path (Tasks 1-3), not via a bot-side order constructor. */
+async function makeWalletTopupOrder() {
+  return prisma.order.create({
+    data: {
+      orderCode: `TOPUP-${Math.random()}`,
+      userId: sample.user.id,
+      subtotalAmount: "50000",
+      totalAmount: "50000",
+      status: OrderStatus.DELIVERED,
+      kind: "WALLET_TOPUP",
+    },
+  });
+}
+
 /** A plain MANUAL denomination (no custom fields) — its own category/product. */
 async function makeManualDenom() {
   const category = await createCategory(prisma, `manual-cat-${Math.random()}`);
@@ -428,6 +446,19 @@ describe("customer handlers", () => {
     const { ctx, sink } = customerCtx();
     await customer.viewOrder(ctx, order!.id);
     expect(sentIncludes(sink, sold!.credentials)).toBe(true);
+  });
+
+  // Task 4: a WALLET_TOPUP order isn't a "My Orders" purchase (it's already
+  // visible via the wallet ledger), so it's not reachable through the
+  // per-order-id view either, even though the buyer owns it — same
+  // exclusion listUserOrders applies to the list this screen is normally
+  // opened from. Also proves no crash on the order's zero OrderItem rows.
+  it("viewOrder treats the owner's own WALLET_TOPUP order as not found", async () => {
+    const topup = await makeWalletTopupOrder();
+    const { ctx, sink } = customerCtx();
+    await customer.viewOrder(ctx, topup.id);
+    expect(JSON.stringify(sink)).not.toContain(topup.orderCode);
+    expect(offersForwardAction(sink)).toBe(true);
   });
 
   it("viewOrder never strands the user when the order isn't found", async () => {

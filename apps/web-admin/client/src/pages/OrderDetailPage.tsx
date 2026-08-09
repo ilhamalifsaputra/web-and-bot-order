@@ -28,6 +28,11 @@ interface OrderDetail {
   id: number;
   orderCode: string;
   status: string;
+  /** "PRODUCT" (normal purchase) or "WALLET_TOPUP" (zero OrderItem rows —
+   * the buyer topped up their wallet balance, not bought a SKU). Support
+   * needs to see top-ups here, but the Items table below is meaningless for
+   * one, so it gets a distinct label instead. */
+  kind: string;
   currency: string;
   totalAmount: string;
   createdAt: string;
@@ -166,7 +171,10 @@ export function OrderDetailPage() {
   }
 
   const { order, money, canAct, canCredit, canFulfill, canReject, isDelivered, customerDataFields, customerData } = data;
-  const canResend = isDelivered && order.user?.telegramId != null;
+  const isWalletTopup = order.kind === "WALLET_TOPUP";
+  // A top-up never reserves a stockItem/credentials to resend — there's
+  // nothing here for the outbox's account-credentials DM to attach.
+  const canResend = isDelivered && order.user?.telegramId != null && !isWalletTopup;
   const hasCustomerData = customerDataFields.length > 0 && customerData.length > 0;
   // Manual/manual_with_info orders never reserve stock (stockItemId stays
   // null for every unit, from checkout through fulfilment) — unlike auto
@@ -195,6 +203,12 @@ export function OrderDetailPage() {
         <Card>
           <CardHeader><CardTitle>Order Info</CardTitle></CardHeader>
           <CardContent className="flex flex-col gap-1 text-sm">
+            {isWalletTopup && (
+              <div className="flex justify-between">
+                <span className="text-ink-soft">Type</span>
+                <Badge variant="secondary">Wallet Top-Up ({order.currency})</Badge>
+              </div>
+            )}
             <div className="flex justify-between">
               <span className="text-ink-soft">Status</span>
               <StatusBadge status={order.status} />
@@ -279,21 +293,32 @@ export function OrderDetailPage() {
         </Card>
       )}
 
-      {/* Items table */}
-      <h2 className="text-sm font-semibold text-ink mb-3">Items ({order.items.length})</h2>
-      <DataTable
-        columns={[
-          { key: "product", header: "Product", render: item => <span className="text-sm">{item.product.name}</span> },
-          { key: "qty", header: "Qty", render: item => <span className="text-sm text-center">{item.quantity}</span> },
-          { key: "price", header: "Unit Price", render: item => <span className="text-sm font-mono">{item.unitPrice}</span> },
-          ...(isManualOrder
-            ? []
-            : [{ key: "credentials", header: "Credentials", render: (item: OrderItem) => <span className="font-mono text-xs text-ink-soft">{item.stockItem?.credentials ?? "—"}</span> }]),
-        ]}
-        data={order.items}
-        keyExtractor={item => item.id}
-        empty={<EmptyState title="No items" />}
-      />
+      {/* Items table — a wallet top-up has zero OrderItem rows by design (it
+          credits the buyer's wallet balance, not a SKU), so the table is
+          replaced with a plain note instead of an empty product grid. */}
+      {isWalletTopup ? (
+        <EmptyState
+          title="No items — this is a wallet top-up"
+          description={`This order credited the buyer's wallet balance directly (${order.currency}); it never had products to deliver.`}
+        />
+      ) : (
+        <>
+          <h2 className="text-sm font-semibold text-ink mb-3">Items ({order.items.length})</h2>
+          <DataTable
+            columns={[
+              { key: "product", header: "Product", render: item => <span className="text-sm">{item.product.name}</span> },
+              { key: "qty", header: "Qty", render: item => <span className="text-sm text-center">{item.quantity}</span> },
+              { key: "price", header: "Unit Price", render: item => <span className="text-sm font-mono">{item.unitPrice}</span> },
+              ...(isManualOrder
+                ? []
+                : [{ key: "credentials", header: "Credentials", render: (item: OrderItem) => <span className="font-mono text-xs text-ink-soft">{item.stockItem?.credentials ?? "—"}</span> }]),
+            ]}
+            data={order.items}
+            keyExtractor={item => item.id}
+            empty={<EmptyState title="No items" />}
+          />
+        </>
+      )}
 
       {/* Buyer-submitted custom checkout info (manual_with_info orders only) */}
       {hasCustomerData && (

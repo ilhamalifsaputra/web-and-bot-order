@@ -5,7 +5,14 @@
  * and outbox changes land atomically.
  */
 import { config } from "@app/core/config";
-import { OrderStatus, StockStatus, UserRole, DeliveryType, langCode } from "@app/core/enums";
+import {
+  OrderKind,
+  OrderStatus,
+  StockStatus,
+  UserRole,
+  DeliveryType,
+  langCode,
+} from "@app/core/enums";
 import { parseAdditionalFields, validateCustomerData } from "@app/core/deliveryFields";
 import {
   quantizeMoney,
@@ -861,7 +868,7 @@ export async function applyUsdtWalletToOrder(
 
 export function listUserOrders(db: Db, userId: number, limit = 5, offset = 0) {
   return db.order.findMany({
-    where: { userId },
+    where: { userId, kind: OrderKind.PRODUCT },
     orderBy: { createdAt: "desc" },
     skip: offset,
     take: limit,
@@ -870,7 +877,7 @@ export function listUserOrders(db: Db, userId: number, limit = 5, offset = 0) {
 }
 
 export function countUserOrders(db: Db, userId: number) {
-  return db.order.count({ where: { userId } });
+  return db.order.count({ where: { userId, kind: OrderKind.PRODUCT } });
 }
 
 /**

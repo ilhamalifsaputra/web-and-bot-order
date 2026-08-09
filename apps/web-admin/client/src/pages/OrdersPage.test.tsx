@@ -85,9 +85,27 @@ const ORDER_CAN_RESEND = {
   eligibility: { ...ELIGIBILITY_NONE, isDelivered: true, canResend: true },
 };
 
+// Task 4: a WALLET_TOPUP order has zero OrderItem rows by design (it credits
+// the buyer's wallet balance rather than delivering a SKU) — the Products
+// column must show a distinct label instead of the generic zero-items dash.
+const ORDER_WALLET_TOPUP = {
+  id: 4,
+  orderCode: "ORD-0004",
+  status: "DELIVERED",
+  currency: "IDR",
+  kind: "WALLET_TOPUP",
+  totalAmount: "100000",
+  paymentMethod: "TOKOPAY",
+  createdAt: "2026-01-04T00:00:00.000Z",
+  createdAtDisplay: "2026-01-04",
+  user: { id: 13, fullName: "Dedi Purnomo", username: null, telegramId: "888333" },
+  items: [],
+  eligibility: { ...ELIGIBILITY_NONE, isDelivered: true },
+};
+
 const ORDERS_DATA = {
-  orders: [ORDER_CAN_ACT, ORDER_CAN_FULFILL, ORDER_CAN_RESEND],
-  total: 3,
+  orders: [ORDER_CAN_ACT, ORDER_CAN_FULFILL, ORDER_CAN_RESEND, ORDER_WALLET_TOPUP],
+  total: 4,
   page: 1,
   pageSize: 20,
   hasNext: false,
@@ -159,6 +177,13 @@ describe("OrdersPage", () => {
     expect(screen.getByText("+1")).toBeInTheDocument();
     // Product Count: zero items shows a dash.
     expect(screen.getByText("Citra Dewi")).toBeInTheDocument();
+  });
+
+  it("shows a Wallet Top-Up badge (not a product name or dash) for a WALLET_TOPUP order", async () => {
+    mockFetchRouter();
+    render(<OrdersPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("ORD-0004")).toBeInTheDocument());
+    expect(screen.getByText("Wallet Top-Up (IDR)")).toBeInTheDocument();
   });
 
   it("renders the KPI row from /api/orders/kpis", async () => {

@@ -74,6 +74,13 @@ export interface MakeCtxOptions {
    * sites that don't opt in — only set this when a test specifically needs
    * to prove a handler doesn't double-answer. */
   rejectDuplicateAnswerCallbackQuery?: boolean;
+  /** Opt-in override for ctx.api.getChatMember(chat_id, user_id). Defaults to
+   * a plain `{ status: "member" }` resolution (i.e. "already joined") so
+   * this doesn't change behavior for callers that don't touch the join
+   * gate. Pass a function to script per-chat/per-call responses (e.g. throw
+   * for one chat id to exercise fail-open, or return different statuses on
+   * successive calls to exercise the join-gate cache). */
+  getChatMember?: (chatId: number | string, userId: number) => Promise<{ status: string; is_member?: boolean }>;
 }
 
 export interface FakeCtx {
@@ -167,6 +174,8 @@ export function makeCtx(opts: MakeCtxOptions = {}): FakeCtx {
     setMyCommands: rec("setMyCommands"),
     deleteWebhook: rec("deleteWebhook"),
     getFile: (..._a: unknown[]) => Promise.resolve({ file_id: "f", file_path: "docs/file.txt" }),
+    getChatMember:
+      opts.getChatMember ?? ((..._a: unknown[]) => Promise.resolve({ status: "member" })),
   };
 
   const message =

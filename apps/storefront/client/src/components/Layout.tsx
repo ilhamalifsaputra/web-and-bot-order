@@ -19,6 +19,7 @@ import {
   LogIn,
   Menu,
   Package,
+  PackageSearch,
   Shapes,
   ShieldCheck,
   ShoppingBag,
@@ -49,12 +50,15 @@ export function useShopContext() {
 }
 
 /** Footer link row — keep in step with App.tsx's routes and with
- * STATIC_PAGES in apps/storefront/src/routes/spaShell.ts. */
+ * STATIC_PAGES in apps/storefront/src/routes/spaShell.ts. One row here is a
+ * utility destination rather than a policy page (/track), so the
+ * STATIC_PAGES pairing only applies to the policy links below it. */
 const FOOTER_LINKS = [
   // The browse-all shelves are otherwise only linked from the mobile nav
   // drawer — this row is how a desktop visitor (and a crawler) reaches them.
   { to: "/products", key: "web.products_title" },
   { to: "/categories", key: "web.categories_page_title" },
+  { to: "/track", key: "web.track_title" },
   { to: "/about", key: "web.about_title" },
   { to: "/how-to-order", key: "web.hto_title" },
   { to: "/terms", key: "web.terms_title" },
@@ -278,6 +282,17 @@ export default function Layout() {
               <Globe className="h-4 w-4" /> {otherLang}
             </a>
 
+            {/* Desktop-only by design: the mobile header row is already three
+                items wide plus the hamburger, so mobile reaches /track via
+                the drawer instead. */}
+            <Link
+              to="/track"
+              aria-label={t("web.nav_track")}
+              className={`hidden items-center gap-1 rounded-lg px-2.5 py-2 hover:bg-sand sm:flex ${location.pathname === "/track" ? "text-pine" : ""}`}
+            >
+              <PackageSearch className="h-4 w-4" />
+            </Link>
+
             {ctx?.customer ? (
               <Link
                 to="/account"
@@ -403,6 +418,15 @@ export default function Layout() {
                   sub={ctx?.customer ? undefined : t("web.nav_login_required")}
                   to="/account/orders"
                   active={location.pathname.startsWith("/account/orders")}
+                  onNavigate={closeDrawer}
+                />
+                {/* No-account counterpart to My orders — order-code lookup
+                    needs neither a session nor an email. */}
+                <DrawerRow
+                  icon={PackageSearch}
+                  label={t("web.nav_track")}
+                  to="/track"
+                  active={location.pathname === "/track"}
                   onNavigate={closeDrawer}
                 />
 

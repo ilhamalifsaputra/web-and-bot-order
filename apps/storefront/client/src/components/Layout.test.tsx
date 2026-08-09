@@ -74,7 +74,7 @@ describe("Layout", () => {
       const nav = within(drawer);
       // Rows carrying a subtitle fold it into their accessible name, so those
       // two are matched on their leading label rather than the whole string.
-      for (const name of ["Sign in", "Cart", /^My orders/, "Home", "Browse products", "Categories", /^Language/, "Help center"]) {
+      for (const name of ["Sign in", "Cart", /^My orders/, "Track order", "Home", "Browse products", "Categories", /^Language/, "Help center"]) {
         expect(nav.getByRole("link", { name })).toBeInTheDocument();
       }
     });
@@ -141,5 +141,31 @@ describe("Layout", () => {
       await waitFor(() => expect(screen.queryByRole("dialog", { name: "Menu" })).not.toBeInTheDocument());
       expect(await screen.findByText("products content")).toBeInTheDocument();
     });
+  });
+
+  it("lists the footer nav links in order, including Track order", async () => {
+    renderLayout();
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    const footerNav = screen.getByRole("navigation", { name: "About us" });
+    const hrefs = within(footerNav)
+      .getAllByRole("link")
+      .map((link) => link.getAttribute("href"));
+    expect(hrefs).toEqual([
+      "/products",
+      "/categories",
+      "/track",
+      "/about",
+      "/how-to-order",
+      "/terms",
+      "/privacy",
+      "/refund",
+    ]);
+  });
+
+  it("offers Track order in the desktop header, separate from the drawer's copy", async () => {
+    renderLayout();
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    const header = within(screen.getByRole("banner"));
+    expect(header.getByRole("link", { name: "Track order" })).toHaveAttribute("href", "/track");
   });
 });

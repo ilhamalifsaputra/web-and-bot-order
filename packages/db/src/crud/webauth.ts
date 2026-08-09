@@ -148,6 +148,17 @@ export function findUserByLoginIdentifier(db: Db, identifier: string) {
  * that password AND rotate the real owner's session out (establishSession
  * rotates the jti).
  *
+ * That gate works because `isGuest === true` implies `guestEmail !== null`
+ * — by construction, not by any runtime check. Only two places ever write
+ * either field, and both write them together: `createGuestUser` sets both
+ * when a guest row is created, and this very function clears both together
+ * a few lines below (`data.isGuest = false; data.guestEmail = null;`). There
+ * is no code path that flips `isGuest` without also touching `guestEmail`,
+ * so a guest row can never end up with `isGuest` true and `guestEmail` null.
+ * That's what lets `/track`'s route handler check `isGuest` alone and skip
+ * checking `guestEmail` for presence — the invariant already guarantees the
+ * email marker is there whenever the guest flag is.
+ *
  * Both routes that can give an account its first password land here — the
  * storefront's `POST /api/v1/account/settings/credentials` (which skips the
  * current-password re-auth precisely because `passwordHash` is still null) and

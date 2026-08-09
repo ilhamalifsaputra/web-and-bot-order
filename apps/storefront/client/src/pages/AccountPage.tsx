@@ -576,6 +576,7 @@ export default function AccountPage() {
               <EmptyState
                 icon={Receipt}
                 title={t("web.no_orders")}
+                description={t("web.no_orders_desc")}
                 action={{ label: t("web.nav_products"), to: "/products" }}
                 bare
               />

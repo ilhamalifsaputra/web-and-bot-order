@@ -153,6 +153,55 @@ describe("AccountPage", () => {
     expect(screen.getByText("🐉")).toBeInTheDocument();
   });
 
+  // E2 (Task 6): this panel's empty state used to render title + action only,
+  // while OrdersPage's "no orders yet" empty state also has a description —
+  // same underlying state, two different renderings. `bare` still applies
+  // (this panel already has its own card chrome) but the description now
+  // matches OrdersPage's.
+  describe("recent orders panel (desktop dashboard)", () => {
+    // The panel only fetches/renders at the `lg` split; jsdom has no
+    // matchMedia by default, so stub it to force the desktop arm.
+    beforeEach(() => {
+      vi.stubGlobal("matchMedia", (query: string) => ({
+        matches: true,
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }));
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("shows the no-orders description alongside the title in the empty recent-orders panel", async () => {
+      (apiGet as Mock).mockImplementation(async (path: string) => {
+        if (path === "/api/v1/account/orders") return { orders: [] };
+        if (path === "/api/v1/pages/context") {
+          return { lang: "en", fx: null, customer: { username: "alice", email: null, telegram_linked: false } };
+        }
+        return account;
+      });
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={["/account"]}>
+            <Routes>
+              <Route path="/account" element={<AccountPage />} />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await screen.findByRole("heading", { name: "My account" });
+      expect(await screen.findByText("No orders yet — your purchases will show up here.")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Once you buy something it lands here, with its delivery status and your credentials.",
+        ),
+      ).toBeInTheDocument();
+    });
+  });
+
   describe("guest account", () => {
     it("shows a guest only their orders — no referral, reviews, tickets or settings", async () => {
       renderGuestAccount();

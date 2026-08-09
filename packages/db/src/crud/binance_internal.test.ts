@@ -18,8 +18,16 @@ vi.mock("@app/core/config", async () => {
 
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderDirect, deliverPaidInternalOrder, createCategory, createCatalogProduct, createDenomination } from "@app/db";
-import { OrderStatus, PaymentMethod, NotificationEvent, DeliveryType } from "@app/core/enums";
+import {
+  createOrderDirect,
+  deliverPaidInternalOrder,
+  createCategory,
+  createCatalogProduct,
+  createDenomination,
+  createWalletTopupOrder,
+  upsertUser,
+} from "@app/db";
+import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, DeliveryType, StockStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 
 let db: TestDb;
@@ -221,5 +229,62 @@ describe("deliverPaidInternalOrder", () => {
       where: { orderId: order.id, event: NotificationEvent.ORDER_PROCESSING_DM },
     });
     expect(processingDm).not.toBeNull();
+  });
+});
+
+describe("deliverPaidInternalOrder — WALLET_TOPUP routing", () => {
+  async function makeReferredUser() {
+    const referrer = await upsertUser(prisma, { telegramId: 9301, username: "topup-referrer-bi", fullName: "Referrer" });
+    const referee = await upsertUser(prisma, {
+      telegramId: 9302,
+      username: "topup-referee-bi",
+      fullName: "Referee",
+      referredByCode: referrer.referralCode,
+    });
+    return { referrer, referee };
+  }
+
+  async function makePendingTopupOrder(userId: number, amount: string = "10") {
+    return prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId, amount, currency: "USDT", method: PaymentMethod.BINANCE_INTERNAL, rate: "16000" }),
+    );
+  }
+
+  it("a WALLET_TOPUP order routes to settleWalletTopup: wallet credited, no stock/referral side effects", async () => {
+    const { referee } = await makeReferredUser();
+    const order = await makePendingTopupOrder(referee.id, "10");
+    expect(order.kind).toBe(OrderKind.WALLET_TOPUP);
+
+    const result = await deliverPaidInternalOrder(prisma, {
+      orderId: order.id,
+      binanceTxId: "tx-topup-1",
+      amount: order.totalAmount,
+    });
+
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+    expect(result.credentials).toEqual([]);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: referee.id } });
+    expect(new Decimal(user.walletBalanceUsdt).equals(order.totalAmount)).toBe(true);
+
+    const stock = await prisma.stockItem.findMany({ where: { productId: sample.product.id } });
+    expect(stock.every((s) => s.status === StockStatus.AVAILABLE)).toBe(true);
+    const referral = await prisma.referral.findUnique({ where: { refereeId: referee.id } });
+    expect(referral).toBeNull();
+  });
+
+  it("a duplicate gateway tx id does not double-credit the wallet", async () => {
+    const order = await makePendingTopupOrder(sample.user.id, "10");
+
+    const first = await deliverPaidInternalOrder(prisma, { orderId: order.id, binanceTxId: "tx-topup-dup-1", amount: order.totalAmount });
+    expect(first.status).toBe("delivered");
+
+    const second = await deliverPaidInternalOrder(prisma, { orderId: order.id, binanceTxId: "tx-topup-dup-1", amount: order.totalAmount });
+    expect(second.status).toBe("already_processed");
+
+    const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
+    expect(rows).toHaveLength(1);
   });
 });

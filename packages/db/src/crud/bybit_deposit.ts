@@ -15,7 +15,7 @@
  * repeated poll cycles never double-deliver.
  */
 import { config } from "@app/core/config";
-import { OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import type { PrismaClient, Tx } from "../client";
@@ -26,6 +26,7 @@ import { transitionOrderStatus, tryTransitionOrderStatus } from "./orderStatus";
 import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
+import { settleWalletTopup } from "./wallet_topup";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -182,6 +183,12 @@ export async function deliverPaidBybitOrder(
       const order = await getOrder(tx, args.orderId);
       if (!order || order.status !== OrderStatus.PENDING_PAYMENT) {
         return { status: "stale" as const };
+      }
+      if (order.kind === OrderKind.WALLET_TOPUP) {
+        const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        // TODO(Task 7): enqueue WALLET_TOPUP_CREDITED_DM notification here
+        logger.info(`Auto-delivered Bybit wallet top-up order ${settled.orderCode} for transaction ${args.bybitTxId}`);
+        return { status: "delivered" as const, order: settled, credentials: [] };
       }
       await tx.order.update({
         where: { id: args.orderId },

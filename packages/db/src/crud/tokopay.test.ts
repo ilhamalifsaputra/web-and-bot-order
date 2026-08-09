@@ -18,8 +18,17 @@ vi.mock("@app/core/config", async () => {
 
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderDirect, deliverPaidTokopayOrder, recordUnmatchedTokopayTx, getTokopayCreds, setSetting, deleteSetting } from "@app/db";
-import { OrderStatus, PaymentMethod, NotificationEvent, StockStatus } from "@app/core/enums";
+import {
+  createOrderDirect,
+  deliverPaidTokopayOrder,
+  recordUnmatchedTokopayTx,
+  getTokopayCreds,
+  setSetting,
+  deleteSetting,
+  createWalletTopupOrder,
+  upsertUser,
+} from "@app/db";
+import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { qrisChargeAmount } from "@app/core/payments/tokopay";
 
@@ -254,6 +263,69 @@ describe("deliverPaidTokopayOrder", () => {
 
     const ledgerRow = await prisma.processedTokopayTx.findUnique({ where: { trxId: "trx-discount-exact-1" } });
     expect(ledgerRow?.outcome).toBe("matched"); // not "overpaid" either — exact fee, no excess
+  });
+});
+
+describe("deliverPaidTokopayOrder — WALLET_TOPUP routing", () => {
+  async function makeReferredUser() {
+    const referrer = await upsertUser(prisma, { telegramId: 9001, username: "topup-referrer-tp", fullName: "Referrer" });
+    const referee = await upsertUser(prisma, {
+      telegramId: 9002,
+      username: "topup-referee-tp",
+      fullName: "Referee",
+      referredByCode: referrer.referralCode,
+    });
+    return { referrer, referee };
+  }
+
+  async function makePendingTopupOrder(userId: number, amount: string = "20000") {
+    return prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId, amount, currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+  }
+
+  it("a WALLET_TOPUP order routes to settleWalletTopup: wallet credited, no stock/referral side effects", async () => {
+    const { referee } = await makeReferredUser();
+    const order = await makePendingTopupOrder(referee.id, "20000");
+    expect(order.kind).toBe(OrderKind.WALLET_TOPUP);
+
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-topup-1",
+      amount: order.totalAmount,
+    });
+
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+    expect(result.credentials).toEqual([]);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: referee.id } });
+    expect(new Decimal(user.walletBalance).equals(order.totalAmount)).toBe(true);
+
+    // Never touched the product-order machinery: sample.product's stock is
+    // untouched, and no referral commission was paid for the referee's
+    // first "order" (which would have paid out had this gone through
+    // settlePaidOrder instead of settleWalletTopup).
+    const stock = await prisma.stockItem.findMany({ where: { productId: sample.product.id } });
+    expect(stock.every((s) => s.status === StockStatus.AVAILABLE)).toBe(true);
+    const referral = await prisma.referral.findUnique({ where: { refereeId: referee.id } });
+    expect(referral).toBeNull();
+  });
+
+  it("a duplicate gateway tx id does not double-credit the wallet", async () => {
+    const order = await makePendingTopupOrder(sample.user.id, "20000");
+
+    const first = await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: "trx-topup-dup-1", amount: order.totalAmount });
+    expect(first.status).toBe("delivered");
+
+    const second = await deliverPaidTokopayOrder(prisma, { orderId: order.id, trxId: "trx-topup-dup-1", amount: order.totalAmount });
+    expect(second.status).toBe("already_processed");
+
+    // adjustWallet's crediting effect (one WalletTransaction row) happened
+    // exactly once — not just "the final balance happens to look right".
+    const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
+    expect(rows).toHaveLength(1);
   });
 });
 

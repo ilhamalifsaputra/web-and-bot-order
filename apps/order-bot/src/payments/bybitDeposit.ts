@@ -30,7 +30,7 @@ import { createHmac } from "node:crypto";
 import type { Api } from "grammy";
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
-import { langCode, NotificationEvent } from "@app/core/enums";
+import { langCode, NotificationEvent, OrderKind } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
@@ -158,21 +158,33 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   const lang = langCode(order.user.language);
   const tgId = Number(order.user.telegramId);
 
-  // Delivery is instant: send the account file straight away.
-  try {
-    await sendAccountFile(api, tgId, order, lang);
-  } catch (err) {
-    logger.error(
-      { err },
-      `Failed to DM the account file for order ${order.orderCode} — enqueuing outbox retry so the buyer still receives their credentials`,
-    );
+  if (order.kind === OrderKind.WALLET_TOPUP) {
+    // There is nothing to deliver here — settleWalletTopup already credited
+    // the wallet, so there's no account file to send. Placeholder only;
+    // Task 6 replaces this with the real wallet top-up success UI.
+    // TODO(Task 6): replace with the real wallet top-up success UI.
     try {
-      await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, order.id, {
-        chat_id: tgId,
-        order_code: order.orderCode,
-      });
-    } catch (eq) {
-      logger.error({ err: eq }, `Failed to enqueue outbox fallback for order ${order.orderCode} — buyer may not receive credentials without manual admin resend`);
+      await api.sendMessage(tgId, "Top-up successful.");
+    } catch (err) {
+      logger.error({ err }, `Failed to DM the wallet top-up success message for order ${order.orderCode}`);
+    }
+  } else {
+    // Delivery is instant: send the account file straight away.
+    try {
+      await sendAccountFile(api, tgId, order, lang);
+    } catch (err) {
+      logger.error(
+        { err },
+        `Failed to DM the account file for order ${order.orderCode} — enqueuing outbox retry so the buyer still receives their credentials`,
+      );
+      try {
+        await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, order.id, {
+          chat_id: tgId,
+          order_code: order.orderCode,
+        });
+      } catch (eq) {
+        logger.error({ err: eq }, `Failed to enqueue outbox fallback for order ${order.orderCode} — buyer may not receive credentials without manual admin resend`);
+      }
     }
   }
 

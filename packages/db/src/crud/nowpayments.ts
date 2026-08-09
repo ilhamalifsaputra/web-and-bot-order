@@ -16,7 +16,7 @@ import {
   NOWPAYMENTS_PAY_CURRENCY_KEY,
   type NowpaymentsCreds,
 } from "@app/core/payments/nowpayments";
-import { OrderStatus, PaymentMethod, NotificationEvent, langCode } from "@app/core/enums";
+import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, langCode } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import type { PrismaClient, Tx } from "../client";
@@ -27,6 +27,7 @@ import { transitionOrderStatus } from "./orderStatus";
 import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
 import { getSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
+import { settleWalletTopup } from "./wallet_topup";
 
 /** Minimum-payment-amount note shown at checkout (USDT) — blank = no note. */
 export const NOWPAYMENTS_MIN_AMOUNT_KEY = "nowpayments_min_amount";
@@ -119,6 +120,12 @@ export async function deliverPaidNowpaymentsOrder(
           .update({ where: { trxId: args.trxId }, data: { outcome: "stale" } })
           .catch(() => undefined);
         return { status: "stale" as const };
+      }
+      if (order.kind === OrderKind.WALLET_TOPUP) {
+        const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        // TODO(Task 7): enqueue WALLET_TOPUP_CREDITED_DM notification here
+        logger.info(`Auto-delivered NOWPayments wallet top-up order ${settled.orderCode} for transaction ${args.trxId}`);
+        return { status: "delivered" as const, order: settled, credentials: [] };
       }
       await tx.order.update({
         where: { id: args.orderId },

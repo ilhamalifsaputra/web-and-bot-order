@@ -342,12 +342,18 @@ describe("POST /api/v1/track — rejections are byte-identical (Task 5)", () => 
     expect(res.headers["set-cookie"]).toBeUndefined();
   });
 
-  it("empty body / missing fields get the same generic rejection", async () => {
+  it("empty body / missing fields / non-string order_code get the same generic rejection", async () => {
     const payloads: Array<Record<string, unknown>> = [
       {},
       { order_code: "" },
       { order_code: "   " },
       { order_code: null },
+      // A non-string order_code (fastify doesn't schema-validate the body)
+      // must not throw past the .trim() call and turn into a 500 — it's
+      // still just "not a usable order code", so it gets the same generic
+      // 404 as an empty one.
+      { order_code: 123 },
+      { order_code: ["X"] },
     ];
     for (const payload of payloads) {
       const res = await app.inject({

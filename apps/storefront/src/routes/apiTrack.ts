@@ -41,7 +41,12 @@ const apiTrackRoutes: FastifyPluginAsync = async (app) => {
     // unobservable.
     const reject = () => reply.code(404).send({ error: "web.track_not_found" });
 
-    const orderCode = (req.body?.order_code ?? "").trim().toUpperCase();
+    // req.body isn't schema-validated, so order_code can arrive as anything
+    // JSON allows (a number, an array, …) — guard the type before calling
+    // string methods on it, or a non-string value throws and turns this
+    // endpoint's one generic 404 into a 500 instead.
+    const orderCode =
+      typeof req.body?.order_code === "string" ? req.body.order_code.trim().toUpperCase() : "";
     if (!orderCode) return reject();
 
     const order = await getOrderByCode(prisma, orderCode);

@@ -40,7 +40,14 @@ export function getTokenValidator(): typeof tokenValidator {
   return tokenValidator;
 }
 
-export type ChannelCheck = { ok: boolean; id?: number; title?: string };
+export type ChannelCheck = {
+  ok: boolean;
+  id?: number;
+  title?: string;
+  type?: string; // "channel" | "group" | "supergroup" | "private" — from getChat
+  username?: string; // public @username, if any
+  inviteLink?: string; // getChat's invite_link — only populated when the bot is admin of that chat
+};
 
 /**
  * Normalize admin input to a Telegram `chat_id` argument:
@@ -67,9 +74,19 @@ export async function checkChannelWithTelegram(botToken: string, input: string):
       `https://api.telegram.org/bot${botToken}/getChat?chat_id=${encodeURIComponent(chat)}`,
       { signal: ac.signal },
     );
-    const data = (await res.json()) as { ok?: boolean; result?: { id?: number; title?: string } };
+    const data = (await res.json()) as {
+      ok?: boolean;
+      result?: { id?: number; title?: string; type?: string; username?: string; invite_link?: string };
+    };
     return data.ok && typeof data.result?.id === "number"
-      ? { ok: true, id: data.result.id, title: data.result.title }
+      ? {
+          ok: true,
+          id: data.result.id,
+          title: data.result.title,
+          type: data.result.type,
+          username: data.result.username,
+          inviteLink: data.result.invite_link,
+        }
       : { ok: false };
   } catch {
     return { ok: false };
@@ -88,6 +105,99 @@ export function setChannelValidator(fn: typeof channelValidator): void {
 /** Current channel validator (the stub in tests, the real getChat otherwise). */
 export function getChannelValidator(): typeof channelValidator {
   return channelValidator;
+}
+
+export type BotAdminCheck = { ok: boolean; isAdmin: boolean };
+
+/**
+ * Confirm the bot itself is an admin of chatId — getChatMember is only reliable
+ * for an arbitrary user when the bot is an admin of that chat. Checked at save
+ * time rather than discovered later as a silent fail-open on every update.
+ * Two-step plain fetch (same pattern as the rest of this file): getMe to get the
+ * bot's own numeric id, then getChatMember with that id. Status "administrator"
+ * or "creator" -> isAdmin: true; anything else -> false. A failed request or
+ * exception -> { ok: false, isAdmin: false }.
+ */
+export async function checkBotIsAdminOf(botToken: string, chatId: number): Promise<BotAdminCheck> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), TELEGRAM_FETCH_TIMEOUT_MS);
+  try {
+    const meRes = await fetch(`https://api.telegram.org/bot${botToken}/getMe`, { signal: ac.signal });
+    const meData = (await meRes.json()) as { ok?: boolean; result?: { id?: number } };
+    if (!meData.ok || typeof meData.result?.id !== "number") return { ok: false, isAdmin: false };
+
+    const memberRes = await fetch(
+      `https://api.telegram.org/bot${botToken}/getChatMember?chat_id=${encodeURIComponent(String(chatId))}&user_id=${meData.result.id}`,
+      { signal: ac.signal },
+    );
+    const memberData = (await memberRes.json()) as { ok?: boolean; result?: { status?: string } };
+    if (!memberData.ok) return { ok: false, isAdmin: false };
+    const status = memberData.result?.status;
+    return { ok: true, isAdmin: status === "administrator" || status === "creator" };
+  } catch {
+    return { ok: false, isAdmin: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+let botAdminValidator: (botToken: string, chatId: number) => Promise<BotAdminCheck> = checkBotIsAdminOf;
+
+/** Test hook: stub the getChatMember check so tests never hit the network. */
+export function setBotAdminValidator(fn: typeof botAdminValidator): void {
+  botAdminValidator = fn;
+}
+
+/** Current bot-admin validator (the stub in tests, the real check otherwise). */
+export function getBotAdminValidator(): typeof botAdminValidator {
+  return botAdminValidator;
+}
+
+export type JoinUrlResolution = { ok: true; url: string } | { ok: false };
+
+/**
+ * Resolve a URL the user can tap to join, from a ChannelCheck result. Priority:
+ * check.username (-> `https://t.me/${username}`) > check.inviteLink (from
+ * getChat) > mint a fresh one via exportChatInviteLink(chatId) (for private
+ * chats where the bot is admin but getChat hasn't returned an invite_link yet).
+ * If all three sources fail -> { ok: false }.
+ */
+export async function resolveJoinUrl(botToken: string, check: ChannelCheck): Promise<JoinUrlResolution> {
+  if (check.username) return { ok: true, url: `https://t.me/${check.username}` };
+  if (check.inviteLink) return { ok: true, url: check.inviteLink };
+  if (typeof check.id !== "number") return { ok: false };
+
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), TELEGRAM_FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch(
+      `https://api.telegram.org/bot${botToken}/exportChatInviteLink?chat_id=${encodeURIComponent(String(check.id))}`,
+      { signal: ac.signal },
+    );
+    const data = (await res.json()) as { ok?: boolean; result?: string };
+    return data.ok && typeof data.result === "string" ? { ok: true, url: data.result } : { ok: false };
+  } catch {
+    return { ok: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+let joinUrlResolver: (botToken: string, check: ChannelCheck) => Promise<JoinUrlResolution> = resolveJoinUrl;
+
+/** Test hook: stub the join-URL resolution so tests never hit the network. */
+export function setJoinUrlResolver(fn: typeof joinUrlResolver): void {
+  joinUrlResolver = fn;
+}
+
+/** Current join-URL resolver (the stub in tests, the real resolution otherwise). */
+export function getJoinUrlResolver(): typeof joinUrlResolver {
+  return joinUrlResolver;
+}
+
+/** True when check.type is one of wantTypes. */
+export function matchesExpectedType(check: ChannelCheck, wantTypes: string[]): boolean {
+  return typeof check.type === "string" && wantTypes.includes(check.type);
 }
 
 export type FileResolution = { ok: true; filePath: string } | { ok: false };

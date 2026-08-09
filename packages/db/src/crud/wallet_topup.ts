@@ -303,6 +303,16 @@ export async function createWalletTopupOrder(
  * order unchanged with `credited: 0`. This is defense-in-depth only; the real
  * idempotency gate is each gateway's own `ProcessedXTx` unique-claim (Task 3),
  * which runs before this function is ever called.
+ *
+ * Also defense-in-depth: refuses to run at all on a non-WALLET_TOPUP order.
+ * Task 3's six gateway-settlement call sites are each expected to guard this
+ * themselves (`if (order.kind === OrderKind.WALLET_TOPUP)`) before ever
+ * calling this function, but this function has no way to know a future
+ * caller got that right — and the failure mode if one doesn't is severe: a
+ * PENDING_PAYMENT PRODUCT order would silently flip to DELIVERED, credit the
+ * buyer's wallet for the product's price, and skip stock allocation/referral/
+ * delivery entirely. Same reasoning as the double-settlement guard above,
+ * just guarding "kind" instead of "status".
  */
 export async function settleWalletTopup(
   db: Db,
@@ -311,6 +321,9 @@ export async function settleWalletTopup(
 ): Promise<{ order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credited: Decimal }> {
   const order = await getOrder(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
+  if (order.kind !== OrderKind.WALLET_TOPUP) {
+    throw new ValidationError("error.order_not_wallet_topup");
+  }
 
   const now = new Date();
   const claim = await db.order.updateMany({

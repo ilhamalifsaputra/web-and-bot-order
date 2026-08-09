@@ -330,4 +330,36 @@ describe("settleWalletTopup", () => {
     const user = await freshUser();
     expect(new Decimal(user.walletBalance).equals(order.totalAmount)).toBe(true);
   });
+
+  // Defense-in-depth guard (review finding, fix round 1): Task 3's six
+  // gateway-settlement call sites are each expected to check
+  // `order.kind === OrderKind.WALLET_TOPUP` before ever calling this
+  // function, but settleWalletTopup must not rely on every future caller
+  // getting that right — the failure mode (a PRODUCT order silently
+  // DELIVERED + wallet-credited, skipping stock/referral/delivery) is a real
+  // money+inventory bug.
+  it("refuses to settle a PRODUCT-kind order even if it's PENDING_PAYMENT — wallet and status untouched", async () => {
+    const productOrder = await prisma.order.create({
+      data: {
+        orderCode: "TEST-PRODUCT-ORDER",
+        userId: sample.user.id,
+        // kind defaults to PRODUCT — deliberately not overridden here.
+        subtotalAmount: "10000",
+        totalAmount: "10000",
+        status: OrderStatus.PENDING_PAYMENT,
+      },
+    });
+    expect(productOrder.kind).toBe("PRODUCT");
+
+    await expect(
+      prisma.$transaction((tx) => settleWalletTopup(tx, productOrder.id, { amount: "10000" })),
+    ).rejects.toMatchObject({ key: "error.order_not_wallet_topup" });
+
+    const reloaded = await prisma.order.findUniqueOrThrow({ where: { id: productOrder.id } });
+    expect(reloaded.status).toBe(OrderStatus.PENDING_PAYMENT); // unchanged — never claimed as DELIVERED
+
+    const user = await freshUser();
+    expect(new Decimal(user.walletBalance).equals(0)).toBe(true); // no credit applied
+    expect(new Decimal(user.walletBalanceUsdt).equals(0)).toBe(true);
+  });
 });

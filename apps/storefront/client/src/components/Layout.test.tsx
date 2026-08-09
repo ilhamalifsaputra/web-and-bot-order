@@ -2,11 +2,18 @@ import "@testing-library/jest-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Layout from "./Layout";
 import { apiGet } from "../api/client";
 import type { ShopContext } from "../api/types";
+
+/** Exposes the router's current search string so a test can confirm Layout's
+ * `?welcome=1` marker (T5) actually gets stripped after being read, not just
+ * that the toast rendered once. */
+function LocationSearchProbe() {
+  return <span data-testid="location-search">{useLocation().search}</span>;
+}
 
 vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
@@ -33,7 +40,15 @@ function renderLayout(overrides: Partial<ShopContext> = {}, path = "/") {
       <MemoryRouter initialEntries={[path]}>
         <Routes>
           <Route path="/" element={<Layout />}>
-            <Route index element={<div>home content</div>} />
+            <Route
+              index
+              element={
+                <>
+                  <div>home content</div>
+                  <LocationSearchProbe />
+                </>
+              }
+            />
             <Route path="products" element={<div>products content</div>} />
           </Route>
         </Routes>
@@ -54,6 +69,20 @@ async function openDrawer(overrides: Partial<ShopContext> = {}, path = "/") {
 describe("Layout", () => {
   beforeEach(() => {
     document.documentElement.lang = "en";
+  });
+
+  it("shows the post-registration welcome toast when the URL carries ?welcome=1, then strips the param (T5)", async () => {
+    renderLayout({}, "/?welcome=1");
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    expect(await screen.findByText("Account created — welcome aboard!")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("location-search")).toHaveTextContent(""));
+  });
+
+  it("shows no welcome toast on an ordinary visit", async () => {
+    renderLayout();
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    await screen.findByText("home content");
+    expect(screen.queryByText("Account created — welcome aboard!")).not.toBeInTheDocument();
   });
 
   it("exposes a language switcher reachable on mobile, not only the desktop nav (STO-004)", async () => {

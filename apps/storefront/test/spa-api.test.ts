@@ -53,6 +53,7 @@ import {
   updateDenomination,
   setFlashSale,
   clearFlashSale,
+  createPasswordResetToken,
 } from "@app/db";
 import { DeliveryType, OrderStatus, VoucherType } from "@app/core/enums";
 import { AdditionalFieldType, type AdditionalField } from "@app/core/deliveryFields";
@@ -752,6 +753,32 @@ describe("/api/v1/auth", () => {
     expect(res.statusCode).toBe(400);
     expect(res.json()).toEqual({ error: "web.reset_invalid" });
     expect(res.headers["referrer-policy"]).toBe("no-referrer");
+  });
+
+  it("reset check: an unknown token reports invalid without leaking anything else", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/v1/auth/reset/not-a-real-token/check" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ valid: false });
+    expect(res.headers["referrer-policy"]).toBe("no-referrer");
+  });
+
+  it("reset check: a freshly issued token reports valid and is NOT consumed by the check", async () => {
+    const userId = await makeUser("checkflowuser", "checkflow-pw-1", "CHKREF");
+    const { token } = await createPasswordResetToken(prisma, userId);
+
+    const check = await app.inject({ method: "GET", url: `/api/v1/auth/reset/${token}/check` });
+    expect(check.statusCode).toBe(200);
+    expect(check.json()).toEqual({ valid: true });
+
+    // The check must not have spent the token's one legitimate use — the
+    // real reset below still succeeds.
+    const reset = await app.inject({
+      method: "POST",
+      url: `/api/v1/auth/reset/${token}`,
+      payload: { password: "brand-new-pw-1", password2: "brand-new-pw-1" },
+    });
+    expect(reset.statusCode).toBe(200);
+    expect(reset.json()).toEqual({ redirect: "/login?reset=1" });
   });
 
   it("telegram-widget returns bot_username + a safe auth_url", async () => {

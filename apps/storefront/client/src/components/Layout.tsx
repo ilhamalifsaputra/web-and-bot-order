@@ -35,6 +35,7 @@ import type { ShopContext } from "../api/types";
 import { currentLang, t } from "../lib/i18n";
 import { PageTransition } from "./PageTransition";
 import { scrim, slideInLeft } from "../lib/motion";
+import Toast from "./shop/Toast";
 
 /** Header context, shared by every page under the shop chrome. staleTime
  * doesn't poll — it just permits TanStack to refetch on refocus/remount once
@@ -182,6 +183,25 @@ export default function Layout() {
   const panelRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
+  // T5: RegisterPage's success redirect is a full page load (fresh CSRF
+  // token), so no in-memory Toast state on that page could ever survive to
+  // be seen — it marks its landing URL with `?welcome=1` instead (mirroring
+  // /login?reset=1's query-flag pattern) and this, the shared chrome every
+  // in-app destination renders through, is what turns that into the
+  // confirmation the visitor actually sees. Read once on mount (an
+  // in-session client-side nav never re-adds the param), then the param is
+  // stripped so a later refresh of the same URL doesn't replay it.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [showWelcomeToast, setShowWelcomeToast] = useState(false);
+  useEffect(() => {
+    if (searchParams.get("welcome") !== "1") return;
+    setShowWelcomeToast(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete("welcome");
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Lock body scroll while the drawer is open, compensating for the
   // scrollbar's width so the page doesn't reflow/shift under the fixed
   // panel. `overflow: hidden` (vs. `position: fixed`) means the page's
@@ -234,6 +254,12 @@ export default function Layout() {
 
   return (
     <>
+      <Toast
+        text={showWelcomeToast ? t("web.register_welcome") : null}
+        onDismiss={() => setShowWelcomeToast(false)}
+        kind="success"
+      />
+
       <header className="sticky top-0 z-30 border-b border-line bg-card/90 backdrop-blur-sm">
         <div className="mx-auto flex h-16 max-w-6xl items-center gap-4 px-4 lg:px-6">
           <button

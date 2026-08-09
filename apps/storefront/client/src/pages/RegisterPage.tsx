@@ -39,8 +39,17 @@ export default function RegisterPage() {
       publicPost<RegisterResponse>("/api/v1/auth/register", { ...vars, ref, next }),
     // Full page load (not navigate()) — the shell must re-serve with the
     // fresh CSRF token now that a session cookie exists.
+    //
+    // T5: a bare `data.redirect` landed the new customer on their
+    // destination with zero acknowledgement that anything happened — the
+    // "Masuk" → "Akun" header swap was the only (easy-to-miss) signal. Since
+    // this is a full page load, no in-memory Toast state survives it — the
+    // `welcome=1` marker rides on the redirect URL instead (same pattern as
+    // /login?reset=1 below) and Layout.tsx reads it once on mount to show the
+    // confirmation, then strips it from the URL.
     onSuccess: (data) => {
-      window.location.assign(data.redirect);
+      const separator = data.redirect.includes("?") ? "&" : "?";
+      window.location.assign(`${data.redirect}${separator}welcome=1`);
     },
   });
 
@@ -142,6 +151,10 @@ export default function RegisterPage() {
                 required
                 minLength={8}
               />
+              {/* T10: the 8-character minimum used to only surface as the
+                  browser's native validation bubble after a failed submit —
+                  same hint style/position as the username field's above. */}
+              <p className="text-xs text-ink-faint mt-1">{t("web.register_password_help")}</p>
             </div>
             <div>
               <label className="text-sm font-semibold" htmlFor="password2">
@@ -156,6 +169,20 @@ export default function RegisterPage() {
                 minLength={8}
               />
             </div>
+            {/* T11: a passive notice, not a blocking consent checkbox — signup
+                stays a single required step, this just makes sure the two
+                policies are reachable from the form that binds you to them. */}
+            <p className="text-center text-xs text-ink-faint">
+              {t("web.register_terms_prefix")}{" "}
+              <Link to="/terms" className="text-pine hover:underline">
+                {t("web.terms_title")}
+              </Link>{" "}
+              {t("web.register_terms_and")}{" "}
+              <Link to="/privacy" className="text-pine hover:underline">
+                {t("web.privacy_title")}
+              </Link>
+              .
+            </p>
             <button type="submit" className="btn btn-primary w-full" disabled={registerMutation.isPending}>
               {registerMutation.isPending && <Spinner />}
               {t("web.register_submit")}

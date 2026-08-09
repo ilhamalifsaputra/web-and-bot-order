@@ -27,6 +27,7 @@ import {
   createWebUser,
   createPasswordResetToken,
   consumePasswordResetToken,
+  isPasswordResetTokenValid,
   setLoginCredentials,
   LOGIN_USERNAME_RE,
   getSmtpCreds,
@@ -260,6 +261,23 @@ const apiAuthRoutes: FastifyPluginAsync = async (app) => {
       }
     }
     return reply.send({ sent: true, unavailable: false });
+  });
+
+  // ---- Reset link check (does the link even work, before the form is filled in) ----
+  // Read-only twin of the POST below: same token criteria
+  // (isPasswordResetTokenValid mirrors consumePasswordResetToken's
+  // unknown/expired/used checks exactly, so the two can't disagree), but
+  // never consumes the token. The response is a bare boolean — nothing about
+  // which user the token belongs to — so this stays as enumeration-safe as
+  // /auth/forgot: it answers "is this link usable", never "does this account
+  // exist".
+  app.get<{ Params: { token: string } }>("/auth/reset/:token/check", async (req, reply) => {
+    void reply.header("Referrer-Policy", "no-referrer");
+    if (loginRateLimited(clientIp(req))) {
+      return reply.code(429).send({ error: "error.rate_limited" });
+    }
+    const valid = await isPasswordResetTokenValid(prisma, req.params.token);
+    return reply.send({ valid });
   });
 
   // ---- Reset password (the token IS the auth) ----

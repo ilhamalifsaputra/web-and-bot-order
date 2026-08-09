@@ -71,7 +71,7 @@ describe("RegisterPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("calls window.location.assign with the redirect on success", async () => {
+  it("calls window.location.assign with the redirect, marked so the landing page can confirm success (T5)", async () => {
     const assign = vi.fn();
     Object.defineProperty(window, "location", {
       configurable: true,
@@ -82,7 +82,21 @@ describe("RegisterPage", () => {
     (publicPost as Mock).mockResolvedValue({ redirect: "/account" });
     fillForm();
     fireEvent.click(screen.getByRole("button", { name: "Create account" }));
-    await waitFor(() => expect(assign).toHaveBeenCalledWith("/account"));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/account?welcome=1"));
+  });
+
+  it("appends the welcome marker with & when the redirect already carries a query string", async () => {
+    const assign = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { assign },
+    });
+    renderRegister();
+    (publicPost as Mock).mockResolvedValue({ redirect: "/cart?promo=1" });
+    fillForm();
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/cart?promo=1&welcome=1"));
   });
 
   it("preserves ref/next from the URL into the POST body", async () => {
@@ -101,5 +115,18 @@ describe("RegisterPage", () => {
         next: "/cart",
       }),
     );
+  });
+
+  it("shows the 8-character password hint, matching the username hint's style/position (T10)", () => {
+    renderRegister();
+    const hint = screen.getByText("At least 8 characters.");
+    expect(hint).toHaveClass("text-xs", "text-ink-faint");
+  });
+
+  it("links Terms and Privacy near the submit button without a required checkbox (T11)", () => {
+    renderRegister();
+    expect(screen.getByRole("link", { name: "Terms & Conditions" })).toHaveAttribute("href", "/terms");
+    expect(screen.getByRole("link", { name: "Privacy Policy" })).toHaveAttribute("href", "/privacy");
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 });

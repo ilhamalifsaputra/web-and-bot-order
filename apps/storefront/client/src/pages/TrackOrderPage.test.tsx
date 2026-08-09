@@ -130,6 +130,23 @@ describe("TrackOrderPage", () => {
     expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
   });
 
+  // The "Track order" nav entry is new, so a signed-in customer can now land
+  // here out of curiosity. "Sign in" as their next step would be nonsensical
+  // — they already are — so a failed lookup should point them at their own
+  // orders instead.
+  it("offers a signed-in visitor their own orders instead of signing in, when a lookup fails", async () => {
+    (publicPost as Mock).mockRejectedValue(new Error("web.track_not_found"));
+    renderTrack({
+      ...context,
+      customer: { username: "budi", email: "budi@example.com", telegram_linked: false },
+    });
+    submitLookup();
+
+    await screen.findByText("We couldn't open that order");
+    expect(screen.queryByRole("link", { name: "Sign in" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "My orders" })).toHaveAttribute("href", "/account/orders");
+  });
+
   it("falls back to the home page's public contact section when this shop has no bot handle", async () => {
     (publicPost as Mock).mockRejectedValue(new Error("/api/v1/track failed 500"));
     renderTrack({ ...context, bot_username: "" });

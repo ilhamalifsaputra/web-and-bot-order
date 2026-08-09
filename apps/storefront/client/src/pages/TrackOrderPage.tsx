@@ -75,7 +75,15 @@ function failureFor(errorKey: string): Failure {
  * "no" and stops is a dead end, and this page is reached by people who
  * already can't find their order.
  */
-function FailureState({ failure, contact }: { failure: Failure; contact: EmptyStateAction }) {
+function FailureState({
+  failure,
+  contact,
+  isSignedIn,
+}: {
+  failure: Failure;
+  contact: EmptyStateAction;
+  isSignedIn: boolean;
+}) {
   if (failure === "throttled") {
     return (
       <EmptyState
@@ -102,11 +110,18 @@ function FailureState({ failure, contact }: { failure: Failure; contact: EmptySt
       title={t("web.track_not_found_title")}
       description={t("web.track_not_found")}
       action={contact}
-      // Secondary, not primary: signing in is the right move only for a
-      // REGISTERED buyer who wandered onto this page, never for the guest it
-      // was built for. Now that this page is reachable from the nav, that
-      // wandering is expected traffic, not an accident.
-      secondaryAction={{ label: t("web.nav_login"), to: "/login" }}
+      // Secondary, not primary: this page is reachable from the nav now, so
+      // both audiences show up here as expected traffic, not an accident —
+      // a signed-in customer who wandered in (their own orders page is the
+      // right next step) and a REGISTERED-but-signed-out buyer who wandered
+      // in (signing in is). A signed-in visitor has no use for a login link
+      // to a session they already hold, so this is one or the other, never
+      // both.
+      secondaryAction={
+        isSignedIn
+          ? { label: t("web.nav_orders"), to: "/account/orders" }
+          : { label: t("web.nav_login"), to: "/login" }
+      }
     />
   );
 }
@@ -115,6 +130,13 @@ export default function TrackOrderPage() {
   const [orderCode, setOrderCode] = useState("");
   const [failure, setFailure] = useState<Failure | null>(null);
   const contact = useContactAction();
+  // Shares the query cache useContactAction's useShopContext() call already
+  // populated, so this costs no extra request. A signed-in customer who
+  // clicks "Track order" out of curiosity (the nav entry is new — this page
+  // used to be unreachable while signed in) shouldn't be told to sign in
+  // when a lookup fails; they already are.
+  const { data: shopContext } = useShopContext();
+  const isSignedIn = Boolean(shopContext?.customer);
 
   const lookupMutation = useMutation({
     mutationFn: () =>
@@ -169,7 +191,7 @@ export default function TrackOrderPage() {
           the user is still focused in. */}
       {failure && !lookupMutation.isPending && (
         <div className="mt-6" role="alert">
-          <FailureState failure={failure} contact={contact} />
+          <FailureState failure={failure} contact={contact} isSignedIn={isSignedIn} />
         </div>
       )}
     </div>

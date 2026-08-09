@@ -24,6 +24,7 @@ import {
   allProductsPageData,
   flashPageData,
   categoriesPageData,
+  suggestionsPageData,
 } from "../pageData";
 import { isSortKey } from "../cards";
 
@@ -143,6 +144,11 @@ const apiPagesRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/pages/categories", async (_req, reply) => {
     return reply.send(await categoriesPageData());
+  });
+
+  // ---- EmptyState's optional "you might like" shelf (Task 10 / E4) ----
+  app.get("/pages/suggestions", async (_req, reply) => {
+    return reply.send(await suggestionsPageData());
   });
 };
 

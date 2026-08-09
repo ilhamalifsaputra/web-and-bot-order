@@ -659,6 +659,35 @@ describe("GET /api/v1/pages/*", () => {
     expect(related.some((p: { slug: string }) => p.slug === sibling.slug)).toBe(true);
     expect(related.some((p: { slug: string }) => p.slug === productSlug)).toBe(false);
   });
+
+  // Task 10 (E4): EmptyState's optional "you might like" shelf. Asserts on a
+  // freshly-created product rather than the shared `productSlug` fixture —
+  // by this point in the suite other tests have created enough products that
+  // the fixture may no longer be among the newest few this endpoint returns.
+  it("suggestions returns a small shelf of the newest products", async () => {
+    const cat = await prisma.category.findFirstOrThrow();
+    const fresh = await createCatalogProduct(prisma, { categoryId: cat.id, name: `Suggested ${Math.random()}` });
+    await createDenomination(prisma, { productId: fresh.id, name: "Plan", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/suggestions" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.products.some((p: { slug: string }) => p.slug === fresh.slug)).toBe(true);
+    expect(typeof body.low_threshold).toBe("number");
+  });
+
+  it("suggestions caps at 4 products even when more exist", async () => {
+    const cat = await prisma.category.create({
+      data: { name: `Suggestions Cap ${Math.random()}`, slug: `suggestions-cap-${Math.random()}`, sortOrder: 99 },
+    });
+    for (let i = 0; i < 5; i++) {
+      const p = await createCatalogProduct(prisma, { categoryId: cat.id, name: `Cap Product ${i} ${Math.random()}` });
+      await createDenomination(prisma, { productId: p.id, name: "Plan", type: "SHARED", durationLabel: "1 Month", price: "10000" });
+    }
+    const res = await app.inject({ method: "GET", url: "/api/v1/pages/suggestions" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().products.length).toBeLessThanOrEqual(4);
+  });
 });
 
 // ------------------------------------------------------------------- /auth

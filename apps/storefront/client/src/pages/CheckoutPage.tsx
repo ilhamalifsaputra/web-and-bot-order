@@ -42,6 +42,7 @@ import { formatIdr, formatNativeUsdt } from "../lib/format";
 import { rememberCodeEmailed } from "../lib/orderCodeEmailed";
 import { allFieldsValid, isValidEmail } from "../lib/deliveryFields";
 import { useIsDesktop } from "../lib/useMediaQuery";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import EmptyState from "../components/shop/EmptyState";
 import FlashBadge, { flashPercentLabel } from "../components/shop/FlashBadge";
 import Price from "../components/shop/Price";
@@ -382,6 +383,12 @@ export default function CheckoutPage() {
     }
   }, [data, page]);
 
+  // Fetched only once the cart is known to be empty at checkout — never
+  // delays the empty-cart card itself, which paints from `page` alone. Not
+  // the "checkout unavailable" error branch below: that's a failed load, not
+  // a normal empty state, and the user was explicit that it stays shelf-free.
+  const { data: suggested } = useSuggestedProducts(page?.items_empty === true);
+
   const previewMutation = useMutation({
     mutationFn: (voucherCode: string) =>
       apiPost<CheckoutData>("/api/v1/checkout/voucher/preview", { voucher_code: voucherCode }),
@@ -524,6 +531,7 @@ export default function CheckoutPage() {
           description={t("web.cart_empty_desc")}
           action={{ label: t("web.nav_products"), to: "/products" }}
           secondaryAction={{ label: t("web.back_to_cart"), to: "/cart" }}
+          suggestions={suggested ? { products: suggested.products, fx: ctx?.fx, lowThreshold: suggested.low_threshold } : undefined}
         />
       </>
     );

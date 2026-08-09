@@ -48,6 +48,7 @@ import { hoverLift, staggerContainer, staggerItem } from "../lib/motion";
 import type { HomePageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import Callout from "../components/shop/Callout";
 import ProductCard from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
@@ -97,6 +98,11 @@ export default function HomePage() {
     queryKey: ["home"],
     queryFn: () => apiGet<HomePageData>("/api/v1/pages/home"),
   });
+  // Newest-products is already this page's own "products" — if that list is
+  // empty the whole catalog has zero products, so a suggestions fetch would
+  // just return the same empty list. Wired up anyway for consistency with
+  // every other empty state; it simply never has anything to show here.
+  const { data: suggested } = useSuggestedProducts(!!data && data.products.length === 0);
   // Section reveal on scroll — port of home.njk's inline <script>: the same
   // document-wide querySelectorAll, same threshold/class toggling, same
   // no-IntersectionObserver / reduced-motion fallback (immediately visible,
@@ -414,6 +420,7 @@ export default function HomePage() {
               title={t("web.catalog_empty")}
               description={t("web.catalog_empty_desc")}
               action={{ label: t("web.nav_categories"), to: "/categories" }}
+              suggestions={suggested ? { products: suggested.products, fx, lowThreshold: suggested.low_threshold } : undefined}
             />
           </div>
         )}

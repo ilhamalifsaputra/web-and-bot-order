@@ -18,6 +18,7 @@ import { SORT_KEYS, type ShelfPageData, type SortKey } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { staggerContainer, staggerItem } from "../lib/motion";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import ProductCard from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
@@ -35,6 +36,9 @@ export default function FlashPage() {
     queryKey: ["flash", sort],
     queryFn: () => apiGet<ShelfPageData>(`/api/v1/pages/flash?sort=${sort}`),
   });
+  // Fetched only once it's known no sale is running — never delays the
+  // empty-state card itself, which paints from `data` alone.
+  const { data: suggested } = useSuggestedProducts(!!data && data.products.length === 0);
 
   if (!data) {
     return (
@@ -88,6 +92,7 @@ export default function FlashPage() {
           title={t("web.flash_empty")}
           description={t("web.flash_empty_desc")}
           action={{ label: t("web.nav_products"), to: "/products" }}
+          suggestions={suggested ? { products: suggested.products, fx: ctx?.fx, lowThreshold: suggested.low_threshold } : undefined}
         />
       )}
     </>

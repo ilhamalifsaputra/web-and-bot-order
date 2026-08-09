@@ -217,6 +217,20 @@ describe("CheckoutPage", () => {
     expect(screen.getByRole("link", { name: "Back to cart" })).toHaveAttribute("href", "/cart");
   });
 
+  // Task 10 (E4): the user was explicit that this state stays shelf-free —
+  // their checkout just failed, it's an error, not a normal empty state.
+  // Locked down so a later change can't quietly reintroduce it.
+  it("never shows a product shelf when the checkout payload fails to load", async () => {
+    renderCheckout(() => {
+      const err = new Error("error.rate_limited") as Error & { status?: number };
+      err.status = 429;
+      throw err;
+    });
+    await screen.findByText("We couldn't load your checkout");
+    expect(screen.queryByText("You might also like")).not.toBeInTheDocument();
+    expect(document.querySelector('a[href^="/p/"]')).toBeNull();
+  });
+
   // apiGet's fallback message for a body with no `error` key is a developer
   // string ("/api/v1/checkout responded 500"). It must never reach a shopper.
   it("apologises in plain language when the failure carries no i18n key", async () => {

@@ -65,8 +65,11 @@ describe("ReviewsPage", () => {
         comment: "Decent",
       }),
     );
-    // Refetch after a successful submit.
-    await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(2));
+    // Refetch after a successful submit. 3 = initial reviews fetch + the shop
+    // context ReviewsPage now also reads for the suggestions shelf's fx rate
+    // (Task 10 / E4; in the real app Layout already holds that query, so this
+    // is normally a cache hit, not a second request) + the post-submit refetch.
+    await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(3));
   });
 
   // STO-016: the empty state used to be a dead end — it now offers a way

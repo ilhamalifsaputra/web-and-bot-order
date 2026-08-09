@@ -55,6 +55,7 @@ import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { formatIdr, formatNativeUsdt } from "../lib/format";
 import { useMediaQuery } from "../lib/useMediaQuery";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import EmptyState from "../components/shop/EmptyState";
 import Price from "../components/shop/Price";
 import Skeleton from "../components/shop/Skeleton";
@@ -297,6 +298,12 @@ export default function AccountPage() {
     retry: false,
   });
   const { data: shopCtx } = useShopContext();
+  // Only fetched once the widget actually needs it — never on the common
+  // "has orders" render, and never delaying the empty-state card itself,
+  // which paints from `recentOrders` alone.
+  const { data: suggested } = useSuggestedProducts(
+    isDashboard && !!recentOrders && recentOrders.orders.length === 0,
+  );
   // Guest checkout (Task 6). The marker rides on the context payload this
   // page already fetches — no extra endpoint. An older/mocked payload without
   // the field reads as a normal registered customer, which keeps the full
@@ -579,6 +586,9 @@ export default function AccountPage() {
                 description={t("web.no_orders_desc")}
                 action={{ label: t("web.nav_products"), to: "/products" }}
                 bare
+                suggestions={
+                  suggested ? { products: suggested.products, fx: shopCtx?.fx, lowThreshold: suggested.low_threshold } : undefined
+                }
               />
             ) : (
               <div className="divide-y divide-line">

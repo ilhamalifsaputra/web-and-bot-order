@@ -11,6 +11,7 @@ import { apiGet } from "../api/client";
 import { SORT_KEYS, type SearchPageData, type SortKey } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import EmptyState from "../components/shop/EmptyState";
 import ProductCard from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
@@ -72,6 +73,9 @@ export default function SearchPage() {
     queryKey: ["search", q, sort],
     queryFn: () => apiGet<SearchPageData>(`/api/v1/pages/search?q=${encodeURIComponent(q)}&sort=${sort}`),
   });
+  // Fetched only once the search is known to have come back empty — never
+  // delays the empty-state card itself, which paints from `data` alone.
+  const { data: suggested } = useSuggestedProducts(!!data && data.products.length === 0);
 
   const [recent, setRecent] = useState<string[]>(readRecent);
 
@@ -203,6 +207,7 @@ export default function SearchPage() {
             description={t("web.search_empty_desc")}
             action={{ label: t("web.nav_products"), to: "/products" }}
             secondaryAction={{ label: t("web.back_home"), to: "/" }}
+            suggestions={suggested ? { products: suggested.products, fx, lowThreshold: suggested.low_threshold } : undefined}
           />
         </>
       )}

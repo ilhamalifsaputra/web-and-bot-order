@@ -13,6 +13,7 @@ import { SORT_KEYS, type ShelfPageData, type SortKey } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { staggerContainer, staggerItem } from "../lib/motion";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import ProductCard from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
@@ -30,6 +31,10 @@ export default function ProductsPage() {
     queryKey: ["products", sort],
     queryFn: () => apiGet<ShelfPageData>(`/api/v1/pages/products?sort=${sort}`),
   });
+  // The whole catalog is already empty in that branch, so this fetch would
+  // just return the same empty list — wired up anyway for consistency, never
+  // delaying the empty-state card itself, which paints from `data` alone.
+  const { data: suggested } = useSuggestedProducts(!!data && data.products.length === 0);
 
   // Same reasoning as CategoryPage: a skeleton shaped like the loaded layout
   // instead of a blank page on a slow connection.
@@ -84,6 +89,7 @@ export default function ProductsPage() {
           title={t("web.catalog_empty")}
           description={t("web.catalog_empty_desc")}
           action={{ label: t("web.back_home"), to: "/" }}
+          suggestions={suggested ? { products: suggested.products, fx: ctx?.fx, lowThreshold: suggested.low_threshold } : undefined}
         />
       )}
     </>

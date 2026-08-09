@@ -296,6 +296,21 @@ export async function allProductsPageData(sort: SortKey = "default") {
   return shelfFrom(await listCatalogProducts(prisma), sort);
 }
 
+/**
+ * Task 10 (E4): the small "you might like" shelf EmptyState.tsx renders below
+ * its card on pages where shopping is genuinely the next step (an empty cart,
+ * no orders yet, a search with no results — see the client's
+ * lib/useSuggestedProducts.ts for the full list of callers). The shop's
+ * newest products, same as the home page's own shelf but capped much smaller
+ * since this is a secondary element, not the page's main content — and shaped
+ * by the same shelfFrom() every other grid uses, so a suggested card can never
+ * disagree with the "real" grid it's standing in for.
+ */
+const SUGGESTED_PRODUCTS_LIMIT = 4;
+export async function suggestionsPageData() {
+  return shelfFrom(await listNewestCatalogProducts(prisma, SUGGESTED_PRODUCTS_LIMIT), "default");
+}
+
 /** Products with a flash sale running right now (GET /api/v1/pages/flash). An
  * empty list is a normal state — no sale is on — not an error. */
 export async function flashPageData(sort: SortKey = "default") {

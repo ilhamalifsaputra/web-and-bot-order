@@ -12,7 +12,9 @@ import { Star } from "lucide-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiGet, apiPost } from "../api/client";
 import type { AccountReview, PendingReview, ReviewsData } from "../api/types";
+import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import Stars from "../components/shop/Stars";
 import Spinner from "../components/shop/Spinner";
 import Skeleton from "../components/shop/Skeleton";
@@ -97,11 +99,15 @@ function ReviewCard({ review }: { review: AccountReview }) {
 }
 
 export default function ReviewsPage() {
+  const { data: ctx } = useShopContext();
   const { data, error, refetch } = useQuery({
     queryKey: ["account-reviews"],
     queryFn: () => apiGet<ReviewsData>("/api/v1/account/reviews"),
     retry: false,
   });
+  // Fetched only once it's known there are no reviews yet — never delays the
+  // empty-state card itself, which paints from `data` alone.
+  const { data: suggested } = useSuggestedProducts(!!data && data.reviews.length === 0);
 
   useEffect(() => {
     if ((error as (Error & { status?: number }) | null)?.status === 401) {
@@ -160,6 +166,7 @@ export default function ReviewsPage() {
             icon={Star}
             title={t("web.reviews_none")}
             action={{ label: t("web.continue_shopping"), to: "/" }}
+            suggestions={suggested ? { products: suggested.products, fx: ctx?.fx, lowThreshold: suggested.low_threshold } : undefined}
           />
         )}
       </section>

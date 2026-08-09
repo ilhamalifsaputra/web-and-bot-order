@@ -11,16 +11,22 @@ import { apiGet } from "../api/client";
 import type { CategoriesPageData } from "../api/types";
 import { t } from "../lib/i18n";
 import { staggerContainer, staggerItem } from "../lib/motion";
+import { useShopContext } from "../components/Layout";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import Skeleton from "../components/shop/Skeleton";
 import EmptyState from "../components/shop/EmptyState";
 
 const SKELETON_TILES = Array.from({ length: 6 }, (_, i) => i);
 
 export default function CategoriesPage() {
+  const { data: ctx } = useShopContext();
   const { data } = useQuery({
     queryKey: ["categories"],
     queryFn: () => apiGet<CategoriesPageData>("/api/v1/pages/categories"),
   });
+  // Fetched only once the category list is known to be empty — never delays
+  // the empty-state card itself, which paints from `data` alone.
+  const { data: suggested } = useSuggestedProducts(!!data && data.categories.length === 0);
 
   if (!data) {
     return (
@@ -79,6 +85,7 @@ export default function CategoriesPage() {
           title={t("web.categories_empty")}
           description={t("web.catalog_empty_desc")}
           action={{ label: t("web.back_home"), to: "/" }}
+          suggestions={suggested ? { products: suggested.products, fx: ctx?.fx, lowThreshold: suggested.low_threshold } : undefined}
         />
       )}
     </>

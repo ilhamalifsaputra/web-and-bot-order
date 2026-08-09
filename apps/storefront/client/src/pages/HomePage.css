@@ -17,6 +17,11 @@ details[open] > .faq-body {
     transform: translateY(0);
   }
 }
+@media (prefers-reduced-motion: reduce) {
+  details[open] > .faq-body {
+    animation: none;
+  }
+}
 
 /* Section reveal on scroll */
 .reveal {

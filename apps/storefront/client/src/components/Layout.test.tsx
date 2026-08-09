@@ -85,6 +85,49 @@ describe("Layout", () => {
     expect(screen.queryByText("Account created — welcome aboard!")).not.toBeInTheDocument();
   });
 
+  it("labels the header and footer nav landmarks distinctly (T12)", async () => {
+    renderLayout();
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    await screen.findByText("home content");
+
+    const header = screen.getByRole("navigation", { name: "Main navigation" });
+    const footer = screen.getByRole("navigation", { name: "Footer navigation" });
+    expect(header).toBeInTheDocument();
+    expect(footer).toBeInTheDocument();
+    // The footer nav holds the informational-page links; it must not carry
+    // "About us" as its landmark name even though "About us" is one of the
+    // seven links inside it.
+    expect(within(footer).getByRole("link", { name: "About us" })).toBeInTheDocument();
+  });
+
+  it("only points aria-controls at the drawer while it exists in the DOM (T13)", async () => {
+    renderLayout();
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    const trigger = screen.getByRole("button", { name: "Menu" });
+    expect(trigger).not.toHaveAttribute("aria-controls");
+
+    const user = userEvent.setup();
+    await user.click(trigger);
+    await screen.findByRole("dialog", { name: "Menu" });
+    expect(trigger).toHaveAttribute("aria-controls", "mobile-nav-drawer");
+    expect(document.getElementById("mobile-nav-drawer")).not.toBeNull();
+  });
+
+  it("renders a skip link targeting #main-content as the first focusable element (T14)", async () => {
+    renderLayout();
+    await waitFor(() => expect(apiGet).toHaveBeenCalled());
+    await screen.findByText("home content");
+
+    const skipLink = screen.getByRole("link", { name: "Skip to content" });
+    expect(skipLink).toHaveAttribute("href", "#main-content");
+    expect(document.getElementById("main-content")).not.toBeNull();
+
+    // First Tab from the top of the document lands on the skip link, not
+    // the hamburger button or anything else in the header.
+    await userEvent.setup().tab();
+    expect(skipLink).toHaveFocus();
+  });
+
   it("exposes a language switcher reachable on mobile, not only the desktop nav (STO-004)", async () => {
     const { container } = renderLayout();
     await waitFor(() => expect(apiGet).toHaveBeenCalled());

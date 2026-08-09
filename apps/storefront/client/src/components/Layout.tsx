@@ -254,6 +254,18 @@ export default function Layout() {
 
   return (
     <>
+      {/* T14: first focusable element in the document. Off-screen until it
+          receives keyboard focus (Tab from the very top of the page), at
+          which point a keyboard user can jump straight past the header —
+          menu button, search field, language toggle, account link, cart
+          link — to the page content instead of tabbing through all of it. */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:rounded-lg focus:bg-pine focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-white focus:shadow-lift"
+      >
+        {t("web.skip_to_content")}
+      </a>
+
       <Toast
         text={showWelcomeToast ? t("web.register_welcome") : null}
         onDismiss={() => setShowWelcomeToast(false)}
@@ -268,7 +280,11 @@ export default function Layout() {
             onClick={() => setDrawerOpen(true)}
             aria-label={t("web.nav_menu")}
             aria-expanded={drawerOpen}
-            aria-controls="mobile-nav-drawer"
+            // T13: "mobile-nav-drawer" only exists in the DOM while the
+            // drawer is rendered (AnimatePresence unmounts it on close) — a
+            // dangling aria-controls reference when closed is worse than
+            // none, so only point at it once it's actually there.
+            aria-controls={drawerOpen ? "mobile-nav-drawer" : undefined}
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-sand hover:text-ink sm:hidden"
           >
             <Menu className="h-5 w-5" />
@@ -295,7 +311,10 @@ export default function Layout() {
             <SearchForm inputAriaLabel={t("web.search_placeholder")} />
           </div>
 
-          <nav className="ml-auto flex items-center gap-1 text-sm text-ink-soft sm:ml-0">
+          <nav
+            className="ml-auto flex items-center gap-1 text-sm text-ink-soft sm:ml-0"
+            aria-label={t("web.nav_main")}
+          >
             <a
               href={`/lang?to=${otherLang}&back=${encodeURIComponent(backPath)}`}
               className="hidden items-center gap-1 rounded-lg px-2.5 py-2 hover:bg-sand sm:flex uppercase"
@@ -519,8 +538,9 @@ export default function Layout() {
 
       {/* tabIndex=-1: RouteEffects.tsx moves focus here on every client-side
           navigation (T15) — <main> doesn't unmount when PageTransition swaps
-          the Outlet content, so it's a stable, always-focusable target. */}
-      <main className="max-w-6xl mx-auto px-4 py-8 lg:px-6 flex-1" tabIndex={-1}>
+          the Outlet content, so it's a stable, always-focusable target. id
+          is also the skip link's target (T14). */}
+      <main id="main-content" className="max-w-6xl mx-auto px-4 py-8 lg:px-6 flex-1" tabIndex={-1}>
         <PageTransition>
           <Outlet />
         </PageTransition>
@@ -532,7 +552,7 @@ export default function Layout() {
             that lets a crawler reach them at all. */}
         <nav
           className="mx-auto max-w-6xl px-4 pt-6 lg:px-6"
-          aria-label={t("web.about_title")}
+          aria-label={t("web.nav_footer")}
         >
           <ul className="flex flex-wrap justify-center gap-x-6 gap-y-2 text-sm sm:justify-start">
             {FOOTER_LINKS.map(({ to, key }) => (

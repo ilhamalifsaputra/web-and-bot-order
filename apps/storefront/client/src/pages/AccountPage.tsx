@@ -420,7 +420,7 @@ export default function AccountPage() {
         </div>
         {/* Signing out costs a guest more than it costs a registered
             customer — there is no password to come back with, only the order
-            code and email. Say so next to the button rather than letting them
+            code itself. Say so next to the button rather than letting them
             find out afterwards. */}
         <div className="flex shrink-0 flex-col gap-2 sm:items-end">
           <button

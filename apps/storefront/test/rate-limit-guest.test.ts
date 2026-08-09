@@ -6,14 +6,13 @@
 //    countUserPendingOrders) never bites for a guest — every checkout starts
 //    a fresh user with zero pending orders. guestCheckoutRateLimited(ip)
 //    fills that gap with a per-IP cap instead.
-// 2. The (not-yet-built) order-tracking endpoint validates an order code +
-//    email pair; without a throttle it's an oracle an attacker can use to
-//    brute-force order codes. trackLookupRateLimited(ip) caps that.
+// 2. The order-tracking endpoint mints a session from an order code alone;
+//    without a throttle it's an oracle an attacker can use to brute-force
+//    order codes. trackLookupRateLimited(ip) caps that.
 //
-// Pure unit tests against the rateLimit module — no app/DB wiring needed,
-// since these two functions aren't called from any route yet. Uses Vitest
-// fake timers (the throttles are time-based sliding windows) instead of real
-// sleeps.
+// Pure unit tests against the rateLimit module — no app/DB wiring needed.
+// Uses Vitest fake timers (the throttles are time-based sliding windows)
+// instead of real sleeps.
 import "./setup-env"; // FIRST import — sets env before @app/* load
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTestDb } from "./setup-env";

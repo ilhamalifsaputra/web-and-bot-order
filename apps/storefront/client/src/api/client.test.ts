@@ -75,7 +75,7 @@ describe("csrf_token adoption", () => {
     }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await publicPost("/api/v1/track", { order_code: "ORD1", email: "a@b.com" });
+    await publicPost("/api/v1/track", { order_code: "ORD1" });
     await apiPost("/api/v1/cart", {});
     expect(new Headers(fetchMock.mock.calls[1]![1].headers).get("X-CSRF-Token")).toBe("track-session-token");
   });

@@ -1,8 +1,9 @@
 import "@testing-library/jest-dom";
+import { lazy } from "react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import Layout from "./Layout";
 import { apiGet } from "../api/client";
@@ -212,6 +213,126 @@ describe("Layout", () => {
       await user.click(within(drawer).getByRole("link", { name: /browse products/i }));
       await waitFor(() => expect(screen.queryByRole("dialog", { name: "Menu" })).not.toBeInTheDocument());
       expect(await screen.findByText("products content")).toBeInTheDocument();
+    });
+  });
+
+  // Task 12: App.tsx lazy-loads most routes rendered through Layout's
+  // <Outlet/>. PageTransition.tsx now puts a <Suspense> *inside*
+  // AnimatePresence's animated container specifically so a pending chunk
+  // doesn't blank the header/footer chrome or skip the transition. These use
+  // a `React.lazy` whose import we control by hand instead of a real dynamic
+  // import, so the pending state can be asserted on before resolving it.
+  describe("a lazily-loaded route (T-task-12)", () => {
+    function renderWithLazyRoute(lazyElement: JSX.Element, initialEntries: string[]) {
+      const client = new QueryClient();
+      (apiGet as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(context);
+      return render(
+        <QueryClientProvider client={client}>
+          <MemoryRouter initialEntries={initialEntries}>
+            <Routes>
+              <Route path="/" element={<Layout />}>
+                <Route index element={<Link to="/products">Go to products</Link>} />
+                <Route path="products" element={lazyElement} />
+              </Route>
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    }
+
+    it("shows the route-loading fallback on a hard load of a lazy route (deep link/refresh) without losing the chrome, then swaps in the real page once the chunk resolves", async () => {
+      // Mounting straight onto "/products" — not a client-side <Link> nav —
+      // mirrors visiting the URL directly: the very first commit is not
+      // wrapped in React Router's navigation `startTransition` (see the
+      // other test below), so this is the one path where Suspense's fallback
+      // is actually shown rather than deferred.
+      let resolveImport!: (mod: { default: () => JSX.Element }) => void;
+      const importPromise = new Promise<{ default: () => JSX.Element }>((resolve) => {
+        resolveImport = resolve;
+      });
+      const LazyProducts = lazy(() => importPromise);
+
+      renderWithLazyRoute(<LazyProducts />, ["/products"]);
+
+      // Layout's own chrome — header/nav/skip-link — isn't part of the
+      // suspended Outlet subtree, so it's already there on this very first
+      // render, fallback or not.
+      expect(screen.getByRole("link", { name: "Skip to content" })).toBeInTheDocument();
+      expect(screen.getByRole("navigation", { name: "Main navigation" })).toBeInTheDocument();
+
+      // The chunk hasn't resolved: the shared route-loading fallback shows,
+      // matching the same aria-busy/aria-label vocabulary every data-loading
+      // skeleton in this app uses (see RouteFallback.tsx).
+      const fallback = await screen.findByLabelText("Loading…");
+      expect(fallback).toHaveAttribute("aria-busy", "true");
+
+      await act(async () => {
+        resolveImport({ default: () => <div>products lazy content</div> });
+        await importPromise;
+      });
+
+      expect(await screen.findByText("products lazy content")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Loading…")).not.toBeInTheDocument();
+      // Still there — the fallback resolving didn't take the chrome with it.
+      expect(screen.getByRole("link", { name: "Skip to content" })).toBeInTheDocument();
+    });
+
+    it("keeps the previous page fully visible — no blank frame, no fallback flash — while a client-side <Link> navigation's chunk is pending, then completes the transition once it resolves", async () => {
+      // React Router v7 wraps every navigation's state update in
+      // `React.startTransition` (confirmed in its own source: `chunk-*.js`
+      // calls `React.startTransition(() => setStateImpl(newState))` for a
+      // PUSH). Suspending inside a transition does NOT show the nearest
+      // Suspense fallback — React keeps the current UI on screen until the
+      // suspended work is ready, then commits directly to the resolved
+      // result. So a real in-app click to a lazy route never shows
+      // RouteFallback at all; it just looks like the click "took a moment."
+      // This is the scenario the brief's worry about "a permanently blank
+      // frame" or "double-fired transition" is really about, so it's worth
+      // asserting explicitly rather than assuming it from the deep-link case
+      // above.
+      let resolveImport!: (mod: { default: () => JSX.Element }) => void;
+      const importPromise = new Promise<{ default: () => JSX.Element }>((resolve) => {
+        resolveImport = resolve;
+      });
+      const LazyProducts = lazy(() => importPromise);
+
+      renderWithLazyRoute(<LazyProducts />, ["/"]);
+      await waitFor(() => expect(apiGet).toHaveBeenCalled());
+      await screen.findByRole("link", { name: "Go to products" });
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("link", { name: "Go to products" }));
+
+      // Give the transition's microtask queue a turn, then confirm: the old
+      // page is still fully there (not blanked, not swapped for a
+      // fallback), and the chrome never budged.
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByRole("link", { name: "Go to products" })).toBeInTheDocument();
+      expect(screen.queryByLabelText("Loading…")).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Skip to content" })).toBeInTheDocument();
+
+      await act(async () => {
+        resolveImport({ default: () => <div>products lazy content</div> });
+        await importPromise;
+      });
+
+      // One transition, straight through to the resolved page — not two.
+      expect(await screen.findByText("products lazy content")).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "Go to products" })).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Loading…")).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Skip to content" })).toBeInTheDocument();
+    });
+
+    it("does not suspend past Layout: an eagerly-resolved route renders straight through with no fallback flash", async () => {
+      renderWithLazyRoute(<div>eager products content</div>, ["/"]);
+      await waitFor(() => expect(apiGet).toHaveBeenCalled());
+      const user = userEvent.setup();
+      await user.click(await screen.findByRole("link", { name: "Go to products" }));
+
+      expect(await screen.findByText("eager products content")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Loading…")).not.toBeInTheDocument();
     });
   });
 });

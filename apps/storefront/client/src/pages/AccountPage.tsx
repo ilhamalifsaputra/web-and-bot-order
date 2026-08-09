@@ -12,26 +12,33 @@
  * Redesigned into a dashboard shape: a summary grid (2x2 below `lg`, one row
  * of 4 at `lg` — wallet cards outweigh orders/referral visually, per this
  * shop's own "wallet is the thing customers check most" read of the account
- * page), a Quick Actions row for the three destinations that don't already
- * get a dedicated summary card, and the same three grouped menus as before
- * with a description line added to each row. `AccountData` only carries
+ * page) and the same three grouped menus as before, each with a description
+ * line added to each row. `AccountData` only carries
  * name/order_count/referral_code/wallet_idr/wallet_usdt
  * (apps/storefront/src/routes/apiAccount.ts) — no avatar, email or fx rate,
  * so there's no email line and no "≈ Rp" conversion under the USDT balance.
  *
- * Below `lg` (mobile + tablet) the page is a single stacked column, byte-
- * identical to the original redesign. At `lg` and up it becomes a real
- * two-column dashboard instead of the same narrow column just centered in
- * more whitespace: quick actions + the grouped menu (merged into one side
- * panel) move into a left rail, and a right column adds three widgets built
- * from data this shop already exposes — recent orders (existing
- * `/api/v1/account/orders` endpoint, not a new one), a combined wallet
- * panel, and a fuller referral panel — rather than leaving that space empty
- * or inventing a "recent activity" feed this app has no customer-facing
- * source for (the audit log is admin-only, per CLAUDE.md). The whole page
- * also breaks out of Layout's shared `max-w-6xl` container at `lg` (a
+ * Below `lg` (mobile + tablet) the page is a single stacked column. At `lg`
+ * and up it becomes a real two-column dashboard instead of the same narrow
+ * column just centered in more whitespace: the grouped menu moves into a
+ * left rail, and a right column adds a Recent Orders widget built from data
+ * this shop already exposes (the existing `/api/v1/account/orders`
+ * endpoint, not a new one) rather than leaving that space empty or
+ * inventing a "recent activity" feed this app has no customer-facing source
+ * for (the audit log is admin-only, per CLAUDE.md). The whole page also
+ * breaks out of Layout's shared `max-w-6xl` container at `lg` (a
  * self-contained full-bleed-then-recenter wrapper, so no other page is
  * affected) to reach the wider dashboard width this breakpoint asks for.
+ *
+ * Task 11 (storefront UX eval) removed the Quick Actions row and the
+ * desktop-only "Ringkasan saldo"/Referral panels that used to sit in the
+ * right column: they restated the same balances, referral code and three
+ * destinations (Reviews/Settings/Support) already shown by the summary grid
+ * and the grouped menu below it — see storefront-eval-shots/08-account.png
+ * for the before. The summary grid (present at every breakpoint) is now the
+ * sole place the referral code is shown and is copyable from; the grouped
+ * menu is the sole nav listing. Both wallet balances now live only in the
+ * summary grid.
  */
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -39,7 +46,6 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ChevronRight,
   Coins,
-  Copy,
   Gift,
   LifeBuoy,
   LogOut,
@@ -131,24 +137,6 @@ export function guestMenuGroups(groups: MenuGroup[]): MenuGroup[] {
 
 const GUEST_MENU_GROUPS: MenuGroup[] = guestMenuGroups(MENU_GROUPS);
 
-interface QuickAction {
-  href: string;
-  icon: LucideIcon;
-  labelKey: string;
-}
-
-/**
- * Orders and Referral already get a dedicated, more prominent summary card
- * below, so repeating them here would point at the same destination twice
- * with no extra information scent. These three are the account destinations
- * that don't otherwise get a card.
- */
-const QUICK_ACTIONS: QuickAction[] = [
-  { href: "/account/reviews", icon: Star, labelKey: "web.account_reviews" },
-  { href: "/account/settings", icon: Settings, labelKey: "web.account_settings" },
-  { href: "/account/support", icon: LifeBuoy, labelKey: "web.account_support" },
-];
-
 /**
  * There is no avatar image anywhere in the account data, and inventing an
  * upload feature is out of scope — an initial derived from the display name
@@ -179,22 +167,6 @@ function MenuRow({ item }: { item: MenuItem }) {
       {/* The chevron is the affordance that says "this navigates"; it carries
           no information the label doesn't, so screen readers skip it. */}
       <ChevronRight className="h-4 w-4 shrink-0 text-ink-faint" aria-hidden="true" />
-    </Link>
-  );
-}
-
-/** A small icon-over-label shortcut tile for the Quick Actions row. */
-function QuickActionTile({ action }: { action: QuickAction }) {
-  const Icon = action.icon;
-  return (
-    <Link
-      to={action.href}
-      className="card flex min-h-[44px] flex-col items-center gap-2 px-2 py-3 text-center transition-colors hover:bg-sand"
-    >
-      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-sand text-ink-soft">
-        <Icon className="h-4 w-4" aria-hidden="true" />
-      </span>
-      <span className="text-xs font-semibold text-ink">{t(action.labelKey)}</span>
     </Link>
   );
 }
@@ -360,14 +332,6 @@ export default function AccountPage() {
               </div>
             ))}
           </div>
-          <div className="grid grid-cols-3 gap-3 lg:max-w-sm">
-            {Array.from({ length: 3 }, (_, i) => (
-              <div key={i} className="card flex flex-col items-center gap-2 px-2 py-3">
-                <Skeleton className="h-10 w-10 rounded-full" />
-                <Skeleton className="h-3 w-12" />
-              </div>
-            ))}
-          </div>
           <div className="space-y-6 lg:max-w-sm">
             {MENU_GROUPS.map((group) => (
               <div key={group.headingKey} className="space-y-2">
@@ -493,28 +457,13 @@ export default function AccountPage() {
         )}
       </div>
 
-      {/* Below `lg`: quick actions + grouped menu stack full-width, exactly
-          as before. At `lg`: they become the dashboard's left rail (~1/3
-          width) and a right column of widgets appears alongside them. The
+      {/* Below `lg`: the grouped menu stacks full-width, exactly as before.
+          At `lg`: it becomes the dashboard's left rail (~1/3 width) and a
+          right column of widgets appears alongside it. The
           `space-y-8`/`lg:space-y-0` pair hands spacing duties to the grid's
           own `gap` once the split is active. */}
       <div className="space-y-8 lg:grid lg:grid-cols-12 lg:items-start lg:gap-6 lg:space-y-0">
         <div className="space-y-8 lg:col-span-4">
-          {/* Quick Actions: shortcuts to the destinations that don't already
-              have a dedicated summary card above. All three are closed to a
-              guest, which would leave an empty row of tiles — so the whole
-              section goes rather than being rendered hollow. */}
-          {!isGuest && (
-            <div className="space-y-2">
-              <h2 className="stat-label px-1">{t("web.account_quick_actions")}</h2>
-              <div className="grid grid-cols-3 gap-3">
-                {QUICK_ACTIONS.map((action) => (
-                  <QuickActionTile key={action.href} action={action} />
-                ))}
-              </div>
-            </div>
-          )}
-
           {/* Grouped destinations. Each group is a labelled <nav> so
               assistive tech gets the same "these three things are about
               help" grouping the headings give a sighted visitor. Below `lg`
@@ -556,12 +505,13 @@ export default function AccountPage() {
         </div>
 
         {/* Right column — desktop only. Recent Orders reuses the existing
-            /api/v1/account/orders endpoint (no new API); the Wallet and
-            Referral panels restate data already on this page in a fuller
-            format. There's no customer-facing "recent activity" feed to
-            build a fourth widget from (the audit log is admin-only), so
-            three real widgets fill this column rather than a fabricated
-            fourth. */}
+            /api/v1/account/orders endpoint (no new API). This used to also
+            carry a Wallet overview panel and a Referral panel, but both only
+            restated the summary grid above (same balances, same referral
+            code) — removed as part of Task 11's de-duplication pass. There's
+            no customer-facing "recent activity" feed to build a second
+            widget from (the audit log is admin-only), so Recent Orders is
+            the sole widget here rather than a fabricated companion. */}
         <div className="hidden space-y-6 lg:col-span-8 lg:block">
           <div className="card card-pad">
             <div className="mb-4 flex items-center justify-between gap-3">
@@ -598,38 +548,6 @@ export default function AccountPage() {
               </div>
             )}
           </div>
-
-          {/* Both panels below are about things a guest account doesn't have
-              (a balance, a referral code), so they don't render for one. */}
-          {!isGuest && (
-          <div className="card card-pad">
-            <h2 className="section-title mb-4">{t("web.account_wallet_overview")}</h2>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="min-w-0">
-                <span className="stat-label block">{t("web.account_credit_idr")}</span>
-                <span className="stat-value tabular block text-2xl!">{formatIdr(data.wallet_idr)}</span>
-              </div>
-              <div className="min-w-0">
-                <span className="stat-label block">{t("web.account_credit_usdt")}</span>
-                <span className="stat-value tabular block text-2xl!">{formatNativeUsdt(data.wallet_usdt)}</span>
-              </div>
-            </div>
-            <p className="stat-sub mt-4">{t("web.account_wallet_note")}</p>
-          </div>
-          )}
-
-          {!isGuest && (
-          <div className="card card-pad">
-            <h2 className="section-title mb-1">{t("web.account_referral")}</h2>
-            <p className="page-lead mb-4">{t("web.referral_hint")}</p>
-            <div className="flex items-center gap-3">
-              <span className="stat-value font-mono text-xl! select-all">{data.referral_code}</span>
-              <button type="button" className="btn btn-soft btn-sm whitespace-nowrap" onClick={copyReferral}>
-                <Copy className="h-3.5 w-3.5" aria-hidden="true" /> {t("web.copy")}
-              </button>
-            </div>
-          </div>
-          )}
         </div>
       </div>
     </div>

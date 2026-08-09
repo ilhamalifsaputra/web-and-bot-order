@@ -88,7 +88,7 @@ model WalletTransaction {
   /// Currency of this ledger row's balance/delta. Existing rows default to IDR
   /// (the system was IDR-base); USDT rows track the USDT credit balance.
   currency     String   @default("IDR")
-  reason       String // machine code: admin_adjust | underpaid_refund | referral | order_payment | order_refund | adjust
+  reason       String // machine code: admin_adjust | underpaid_refund | referral | order_payment | order_refund | adjust | wallet_topup
   note         String?
   adminId      Int?     @map("admin_id") // acting admin (null = system/customer)
   orderId      Int?     @map("order_id")
@@ -367,6 +367,10 @@ model Order {
   /// confirmed — distinct from `paidAt` (set only once Bybit's own status
   /// reaches Success).
   firstDetectedAt       DateTime? @map("first_detected_at")
+  /// PRODUCT (default) | WALLET_TOPUP. A WALLET_TOPUP order has no OrderItem
+  /// rows, no voucher, no stock — settlement credits the buyer's wallet via
+  /// settleWalletTopup instead of settlePaidOrder/approveOrder.
+  kind                  String    @default("PRODUCT") @map("kind")
   /// When the tracker's own confirmation count first reached
   /// `requiredConfirmations` — a display-grade milestone, intentionally
   /// separate from `paidAt`/`deliveredAt` (which stay gated on Bybit's report).
@@ -398,6 +402,7 @@ model Order {
   @@index([bybitTxid], map: "ix_orders_bybit_txid")
   @@index([status, createdAt], map: "ix_orders_status_created")
   @@index([status, deliveredAt], map: "ix_orders_status_delivered")
+  @@index([kind], map: "ix_orders_kind")
   @@map("orders")
 }
 

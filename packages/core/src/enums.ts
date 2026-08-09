@@ -191,6 +191,10 @@ export const OrderCurrency = {
 export type OrderCurrency = (typeof OrderCurrency)[keyof typeof OrderCurrency];
 export const zOrderCurrency = z.nativeEnum(OrderCurrency);
 
+export const OrderKind = { PRODUCT: "PRODUCT", WALLET_TOPUP: "WALLET_TOPUP" } as const;
+export type OrderKind = (typeof OrderKind)[keyof typeof OrderKind];
+export const zOrderKind = z.nativeEnum(OrderKind);
+
 export const VoucherType = {
   PERCENT: "PERCENT",
   FIXED: "FIXED",

@@ -327,6 +327,48 @@ describe("GET /api/v1/pages/product/:slug", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().reviews.some((r: { comment: string | null }) => r.comment === "great-1-month-plan")).toBe(true);
   });
+
+  // Task 9 (R4): the detail page previously showed no aggregate rating at
+  // all, unlike the catalog card linking to it. This proves the full round
+  // trip — route -> pageData.ts -> DB — reports the aggregate on
+  // `body.product`, and that its count is the TRUE total of non-hidden
+  // reviews (here 12, across two denominations), not `reviews.length`
+  // (capped at 10 by pageData.ts's listReviews call).
+  it("reports the product's aggregate rating, with the TRUE review total, not the 10-row reviews cap", async () => {
+    const cat = await prisma.category.create({ data: { name: "AggRatingCat", slug: "agg-rating-cat", sortOrder: 9 } });
+    const { product, members } = await seedProduct(cat.id, "Heavily Reviewed Product", [
+      { name: "1 Week", price: "11000", duration: "1 Week" },
+      { name: "1 Month", price: "31000", duration: "1 Month" },
+    ]);
+    const [weekPlan, monthPlan] = members;
+    // 12 non-hidden reviews split across both plans (all rating 4), plus one
+    // hidden 1-star that must be excluded from both avg and count.
+    const seedRatings = [
+      ...Array.from({ length: 7 }, () => ({ denomId: weekPlan!.id, rating: 4, hidden: false })),
+      ...Array.from({ length: 5 }, () => ({ denomId: monthPlan!.id, rating: 4, hidden: false })),
+      { denomId: monthPlan!.id, rating: 1, hidden: true },
+    ];
+    for (const s of seedRatings) {
+      const user = await prisma.user.create({
+        data: { telegramId: BigInt(Math.floor(Math.random() * 1e15)), referralCode: `r${Math.random()}` },
+      });
+      const order = await prisma.order.create({
+        data: { orderCode: `ORD-${Math.random()}`, userId: user.id, subtotalAmount: "11000", totalAmount: "11000", status: "DELIVERED" },
+      });
+      await prisma.review.create({
+        data: { userId: user.id, orderId: order.id, productId: s.denomId, rating: s.rating, hidden: s.hidden, comment: null },
+      });
+    }
+
+    const res = await app.inject({ method: "GET", url: `/api/v1/pages/product/${product.slug}` });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.product.rating_count).toBe(12);
+    expect(body.product.rating).toBeCloseTo(4.0);
+    // Only 10 review rows actually arrive (pageData.ts's fetch cap) — the
+    // aggregate count above must NOT have come from counting these.
+    expect(body.reviews.length).toBe(10);
+  });
 });
 
 describe("GET /api/v1/pages/search", () => {

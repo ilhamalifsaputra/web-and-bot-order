@@ -164,6 +164,14 @@ export interface ProductPageData {
     /** WebP `srcset` for `image`, or null when no derivatives exist — see
      *  webpSrcset() in apps/storefront/src/images.ts. */
     image_srcset?: string | null;
+    /** Aggregate rating across every denomination of this product — the same
+     * weighted-average calculation ProductCard's `rating`/`rating_count`
+     * come from (apps/storefront/src/cards.ts's `aggregateRating`), so this
+     * page's summary always agrees with the catalog card that linked here.
+     * `rating_count` is the TRUE total of non-hidden reviews, not capped by
+     * `reviews` below (which is limited to 10). */
+    rating: number | null;
+    rating_count: number;
   };
   denominations: ProductDenomination[];
   default_restock_denomination_id: number;

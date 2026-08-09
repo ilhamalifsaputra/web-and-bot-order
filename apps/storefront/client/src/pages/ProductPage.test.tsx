@@ -84,6 +84,8 @@ const productData: ProductPageData = {
     category_name: "Streaming",
     category_slug: "streaming",
     image: "/img/netflix.jpg",
+    rating: 4.6,
+    rating_count: 12,
   },
   denominations: [
     {
@@ -193,14 +195,16 @@ describe("ProductPage", () => {
     // In-stock plan selected -> buy form shown, not the restock CTA.
     expect(screen.getByRole("button", { name: /Add to cart/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Notify me when ready/ })).not.toBeInTheDocument();
-    // Live-summary stock line is the njk inline script's `.chip` pill (not the
-    // stock_badge macro's markup) — 3 Months has available=3 <= low_threshold=5.
-    const chip = document.querySelector(".chip");
-    expect(chip).toHaveClass("bg-amberx-tint", "text-amberx");
-    expect(chip).toHaveTextContent("3 left");
+    // Live-summary stock line reuses the shared StockBadge (T18) — scoped to
+    // #buy-summary since DenominationCard renders its own StockBadge per plan
+    // too (e.g. "6 Months" also reads "Available" elsewhere on the page).
+    // 3 Months has available=3 <= low_threshold=5.
+    const badge = document.querySelector("#buy-summary .rounded-full");
+    expect(badge).toHaveClass("bg-amberx-tint", "text-amberx");
+    expect(badge).toHaveTextContent("3 left");
   });
 
-  it("selecting another in-stock denomination updates the displayed price, qty max, and stock chip", async () => {
+  it("selecting another in-stock denomination updates the displayed price, qty max, and stock badge", async () => {
     renderProduct("netflix-premium", () => productData);
     await screen.findByRole("heading", { name: "Netflix Premium" });
     const radio6mo = screen.getByRole("radio", { name: /6 Months/ });
@@ -209,10 +213,10 @@ describe("ProductPage", () => {
     await waitFor(() => expect(selectedPrice).toHaveTextContent("Rp399.000"));
     const qtyInput = screen.getByLabelText("Quantity") as HTMLInputElement;
     expect(qtyInput.max).toBe("20");
-    // 6 Months has available=20 > low_threshold=5 -> "Available" / grass chip.
-    const chip = document.querySelector(".chip");
-    expect(chip).toHaveClass("bg-grass-tint", "text-grass-dark");
-    expect(chip).toHaveTextContent("Available");
+    // 6 Months has available=20 > low_threshold=5 -> "Available" / grass badge.
+    const badge = document.querySelector("#buy-summary .rounded-full");
+    expect(badge).toHaveClass("bg-grass-tint");
+    expect(badge).toHaveTextContent("Available");
   });
 
   it("swaps to the restock CTA when selecting an out-of-stock denomination", async () => {
@@ -223,9 +227,9 @@ describe("ProductPage", () => {
     // The 1-month plan is out of stock -> restock CTA replaces the buy form.
     expect(await screen.findByRole("button", { name: /Notify me when ready/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Add to cart/ })).not.toBeInTheDocument();
-    const chip = document.querySelector(".chip");
-    expect(chip).toHaveClass("bg-rust-tint", "text-rust-dark");
-    expect(chip).toHaveTextContent("Out of stock");
+    const badge = document.querySelector("#buy-summary .rounded-full");
+    expect(badge).toHaveClass("bg-rust-tint", "text-rust-dark");
+    expect(badge).toHaveTextContent("Out of stock");
   });
 
   it("clamps typed qty to the selected denomination's available stock", async () => {
@@ -259,6 +263,43 @@ describe("ProductPage", () => {
   it("renders the no-reviews copy when there are none", async () => {
     renderProduct("netflix-premium", () => ({ ...productData, reviews: [] }));
     expect(await screen.findByText("No reviews yet.")).toBeInTheDocument();
+  });
+
+  // R4: the detail page used to show no aggregate at all, while the catalog
+  // card that linked here (ProductCard.tsx) shows "4.6 · 12 reviews" — the
+  // signal disappeared on arrival. This mirrors ProductCard's own
+  // formatting/rounding and reuses the same `web.review_count` copy.
+  it("shows the aggregate rating (stars, rounded average, review count) matching the catalog card's formatting (R4)", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.getByText("4.6")).toBeInTheDocument();
+    expect(screen.getByText("· 12 reviews")).toBeInTheDocument();
+  });
+
+  it("omits the aggregate rating summary when the product has no ratings yet", async () => {
+    renderProduct("netflix-premium", () => ({
+      ...productData,
+      product: { ...productData.product, rating: null, rating_count: 0 },
+    }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.queryByText(/^· \d+ reviews$/)).not.toBeInTheDocument();
+  });
+
+  // R4 motivation: reviews are capped at 10 server-side (pageData.ts), with
+  // no total shown — a product with 200 reviews looked identical to one with
+  // 10. The aggregate count must be the TRUE total, not `reviews.length`.
+  it("shows the true review total even when it exceeds the number of review cards actually fetched", async () => {
+    renderProduct("netflix-premium", () => ({
+      ...productData,
+      // Only 1 review object arrives (the API caps at 10), but the aggregate
+      // count reflects every non-hidden review across the product.
+      product: { ...productData.product, rating: 4.3, rating_count: 47 },
+    }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    expect(screen.getByText("· 47 reviews")).toBeInTheDocument();
+    // Exactly one review card renders below (only 1 arrived from the API),
+    // proving the "47" above came from the aggregate, not reviews.length.
+    expect(screen.getAllByText(/A\*\*\* ·/)).toHaveLength(1);
   });
 
   // R1/R2/R5 (Task 1): a pasted "proof" URL with no natural break points used
@@ -457,7 +498,13 @@ describe("ProductPage", () => {
     expect(screen.queryByText(/Ends in/)).not.toBeInTheDocument();
   });
 
-  it("does not show a false out-of-stock indicator for a non-auto denomination", async () => {
+  // T18: the live summary used to render nothing at all for a non-auto
+  // denomination (the old ad-hoc stockChip() returned null whenever
+  // !isAuto), unlike the catalog card, which shows "Available" for an
+  // all-non-auto product via StockBadge's allNonAuto prop. Reusing
+  // StockBadge here closes that gap — a purchasable manual-delivery plan now
+  // gets the same positive "Available" signal the card already gave it.
+  it("shows Available (not nothing) for a purchasable non-auto denomination (T18)", async () => {
     const manualOnly: ProductPageData = {
       ...productData,
       denominations: [
@@ -478,6 +525,10 @@ describe("ProductPage", () => {
     renderProduct("netflix-premium", () => manualOnly);
     await screen.findByRole("heading", { name: "Netflix Premium" });
     expect(screen.queryByText("Out of stock")).not.toBeInTheDocument();
+    // Only one denomination and no related products here, so this is
+    // unambiguous — it's the live-summary badge.
+    const badge = screen.getByText("Available");
+    expect(badge).toHaveClass("bg-grass-tint");
   });
 });
 

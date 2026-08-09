@@ -30,6 +30,7 @@ import { fadeUp } from "../lib/motion";
 import { useIsDesktop } from "../lib/useMediaQuery";
 import Breadcrumb from "../components/shop/Breadcrumb";
 import Stars from "../components/shop/Stars";
+import StockBadge from "../components/shop/StockBadge";
 import DenominationCard from "../components/shop/DenominationCard";
 import FlashBadge, { FlashCountdown, FlashWasPrice } from "../components/shop/FlashBadge";
 import ProductCard from "../components/shop/ProductCard";
@@ -44,19 +45,6 @@ const revealProps = {
   whileInView: "animate" as const,
   viewport: { once: true, margin: "-80px" },
 };
-
-/** Mirrors product.njk's inline script `select()` cls/txt branches for the
- * live summary's stock line — a `.chip` pill, NOT the shared `stock_badge`
- * macro (StockBadge's rounded-full/px-2.5/py-1/font-medium markup), which is
- * only used on the denomination cards themselves. Returns null for a
- * non-auto denomination — there's no stock concept for those, so showing a
- * false "Out of stock" chip next to a purchasable product would be wrong. */
-function stockChip(available: number, lowThreshold: number, isAuto: boolean): { cls: string; text: string } | null {
-  if (!isAuto) return null;
-  if (available > lowThreshold) return { cls: "bg-grass-tint text-grass-dark", text: t("web.stock_available") };
-  if (available > 0) return { cls: "bg-amberx-tint text-amberx", text: t("web.stock_left", { count: available }) };
-  return { cls: "bg-rust-tint text-rust-dark", text: t("web.stock_out") };
-}
 
 /** Qty input contract: 1..min(99, available) for an auto denomination — a
  * non-auto denomination has no stock concept (available is always 0 by
@@ -253,7 +241,6 @@ export default function ProductPage() {
 
   const buying = addMutation.isPending || buyMutation.isPending;
   const selectedIsAuto = selected.delivery_type === "auto";
-  const chip = stockChip(selected.available, low_threshold, selectedIsAuto);
 
   return (
     <>
@@ -344,11 +331,18 @@ export default function ProductPage() {
                   <FlashWasPrice value={selected.flash.base_price} endsAt={selected.flash.ends_at} />
                 )}
               </div>
-              {chip && (
-                <div>
-                  <span className={`chip ${chip.cls}`}>{chip.text}</span>
-                </div>
-              )}
+              {/* T18: reuse the same StockBadge the catalog card and each
+                  denomination card use — it always renders a state (never
+                  nothing, unlike the old ad-hoc `.chip` markup this replaced,
+                  which returned null — and so showed no positive stock
+                  signal at all — for a purchasable non-auto denomination). */}
+              <div>
+                <StockBadge
+                  available={selected.available}
+                  lowThreshold={low_threshold}
+                  allNonAuto={!selectedIsAuto}
+                />
+              </div>
             </div>
             {selected.flash && (
               <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -471,6 +465,22 @@ export default function ProductPage() {
       {/* Reviews */}
       <motion.section {...revealProps} className="mt-10">
         <h2 className="section-title mb-3">{t("web.reviews")}</h2>
+        {/* R4: the catalog card that links here already shows this same
+            aggregate (ProductCard.tsx) — without it, the signal a shopper saw
+            before clicking through disappears on arrival. Same rounding and
+            the same `web.review_count` copy as the card, computed by the
+            same aggregateRating helper server-side (cards.ts/pageData.ts), so
+            the two can never disagree. `rating_count` is the TRUE total of
+            non-hidden reviews, not `reviews.length` below — which is capped
+            at 10 fetched rows — so this can (correctly) read higher than the
+            number of review cards actually shown. */}
+        {product.rating_count > 0 && (
+          <div className="flex items-center gap-1.5 text-sm text-ink-soft mb-4">
+            <Stars rating={product.rating ?? 0} cls="w-4 h-4" />{" "}
+            <span className="font-medium text-ink">{String(Math.round((product.rating ?? 0) * 10) / 10)}</span>
+            <span className="text-ink-faint">· {t("web.review_count", { count: product.rating_count })}</span>
+          </div>
+        )}
         {reviews.length > 0 ? (
           <div className="grid sm:grid-cols-2 gap-4 items-start">
             {reviews.map((r, i) => (

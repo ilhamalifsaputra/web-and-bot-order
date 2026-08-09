@@ -30,7 +30,7 @@ import {
 } from "@app/db";
 import { PRODUCT_VARIANT_WIDTHS, categoryImage, productImage, webpSrcset } from "./images";
 import { resolveBotUsername } from "./shop";
-import { shapeProducts, sortProductCards, type SortKey } from "./cards";
+import { aggregateRating, shapeProducts, sortProductCards, type SortKey } from "./cards";
 
 /**
  * A privacy-safe display name for a public testimonial: prefer the buyer's full
@@ -213,6 +213,17 @@ export async function productPageData(rawSlug: string, isReseller = false) {
     bulkRules,
     isReseller,
   ).slice(0, RELATED_PRODUCTS_LIMIT);
+  // Same weighted-average-across-denominations logic ProductCard's rating
+  // comes from (shapeProducts, above) — reused via aggregateRating rather
+  // than a second calculation, so the detail page's summary can never
+  // disagree with the card that linked here. `count` is the TRUE total of
+  // non-hidden reviews across every denomination (productRatingSummaries
+  // groups the whole table), not `reviews.length` below, which is capped
+  // at 10 fetched rows.
+  const { avg: productRatingAvg, count: productRatingCount } = aggregateRating(
+    product.denominations.map((d) => d.id),
+    ratingByDenom,
+  );
 
   return {
     product: {
@@ -226,6 +237,8 @@ export async function productPageData(rawSlug: string, isReseller = false) {
       category_slug: product.category.slug,
       image: product.webImageUrl ?? productImage(product, catName),
       image_srcset: webpSrcset(product.webImageUrl, PRODUCT_VARIANT_WIDTHS),
+      rating: productRatingAvg,
+      rating_count: productRatingCount,
     },
     denominations,
     default_restock_denomination_id: defaultRestockDenominationId,

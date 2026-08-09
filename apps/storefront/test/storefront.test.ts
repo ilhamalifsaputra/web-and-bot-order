@@ -1039,6 +1039,10 @@ describe("storefront setup gate", () => {
       // no `shop_lang` cookie is set here, so it's in the default (English) locale.
       expect(res.body).toContain('<meta name="setup-pending" content="true">');
       expect(res.body).toContain("Shop not active yet");
+      // spaFallback.ts's renderSpecialShell() reads the same built index.html
+      // as the normal spaShell.ts route, so the pre-hydration #seo-shell
+      // visibility fix (Task 3) covers this path too without separate code.
+      expect(res.body).toContain("<style>#seo-shell{");
     } finally {
       await setSetting(prisma, "setup_completed", "true"); // restore for other tests
     }

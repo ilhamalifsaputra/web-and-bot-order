@@ -123,6 +123,27 @@ describe("crawler-visible SEO body (no JavaScript)", () => {
     expect(res.body).not.toContain(`href="/p/${inactiveProductSlug}"`);
   });
 
+  // Task 3: the SEO shell used to render as a real, visible block until
+  // main.tsx deleted it post-mount — a full screen of raw unstyled text on
+  // every cold load, and the home page's biggest CLS contributor (1000px ->
+  // 5192px body height jump). The fix is an inline <style> shipped in the
+  // SAME response that clips #seo-shell off-screen (not display:none /
+  // visibility:hidden, which would make crawlers discount the content).
+  it("ships an inline style that visually hides #seo-shell before hydration", async () => {
+    const res = await app.inject({ method: "GET", url: "/" });
+    expect(res.statusCode).toBe(200);
+    // Must appear in <head>, before the seo-shell div itself, and in the same
+    // document — a stylesheet <link> would arrive too late to prevent the flash.
+    const styleIndex = res.body.indexOf("<style>#seo-shell{");
+    const shellIndex = res.body.indexOf('<div id="seo-shell">');
+    expect(styleIndex).toBeGreaterThan(-1);
+    expect(shellIndex).toBeGreaterThan(-1);
+    expect(styleIndex).toBeLessThan(shellIndex);
+    expect(res.body).toContain("clip-path:inset(50%)");
+    expect(res.body).not.toContain("#seo-shell{display:none");
+    expect(res.body).not.toContain("#seo-shell{visibility:hidden");
+  });
+
   it("names the product in the H1 and links back to its category", async () => {
     const res = await app.inject({ method: "GET", url: `/p/${activeProductSlug}` });
     expect(res.statusCode).toBe(200);

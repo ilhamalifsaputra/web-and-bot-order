@@ -2,18 +2,17 @@
  * "I bought as a guest and I've lost my order" — the recovery path for a
  * shopper who has no password to sign in with (guest checkout, Task 6).
  *
- * POST /api/v1/track (apps/storefront/src/routes/apiTrack.ts) exchanges an
- * order code + the email used at checkout for a live session on that guest's
- * account, and answers with the order's own URL.
+ * POST /api/v1/track (apps/storefront/src/routes/apiTrack.ts) exchanges the
+ * order code alone for a live session on that guest's account, and answers
+ * with the order's own URL.
  *
  * Two things about the server contract shape this page:
  *
  *  1. EVERY failure is one identical 404 (`web.track_not_found`) — "no such
- *     order", "that order belongs to a registered account" and "wrong email"
- *     are deliberately indistinguishable, so the endpoint can't be used to
- *     probe for valid order codes. The UI must not leak more than the server
- *     does, so there is exactly one failure message here too; it never names
- *     which of the two fields was wrong.
+ *     order" and "that order belongs to a registered account" are
+ *     deliberately indistinguishable, so the endpoint can't be used to probe
+ *     for valid order codes. The UI must not leak more than the server does,
+ *     so there is exactly one failure message here too.
  *  2. Success establishes a session mid-request. Like LoginPage, the redirect
  *     is a FULL page load rather than a react-router navigate(): the shell has
  *     to re-render for the whole app to see the new session (account menu,
@@ -105,7 +104,8 @@ function FailureState({ failure, contact }: { failure: Failure; contact: EmptySt
       action={contact}
       // Secondary, not primary: signing in is the right move only for a
       // REGISTERED buyer who wandered onto this page, never for the guest it
-      // was built for.
+      // was built for. Now that this page is reachable from the nav, that
+      // wandering is expected traffic, not an accident.
       secondaryAction={{ label: t("web.nav_login"), to: "/login" }}
     />
   );
@@ -113,18 +113,16 @@ function FailureState({ failure, contact }: { failure: Failure; contact: EmptySt
 
 export default function TrackOrderPage() {
   const [orderCode, setOrderCode] = useState("");
-  const [email, setEmail] = useState("");
   const [failure, setFailure] = useState<Failure | null>(null);
   const contact = useContactAction();
 
   const lookupMutation = useMutation({
     mutationFn: () =>
       publicPost<TrackOrderResponse>("/api/v1/track", {
-        // The server upper/lower-cases and trims both of these itself; doing
-        // it here too just means the request carries what the buyer will see
-        // on the order page rather than whatever their keyboard produced.
+        // The server upper/lower-cases and trims this itself; doing it here
+        // too just means the request carries what the buyer will see on the
+        // order page rather than whatever their keyboard produced.
         order_code: orderCode.trim().toUpperCase(),
-        email: email.trim().toLowerCase(),
       }),
     onSuccess: (data) => window.location.assign(data.redirect),
     onError: (err) => setFailure(failureFor((err as Error).message)),
@@ -136,7 +134,7 @@ export default function TrackOrderPage() {
     lookupMutation.mutate();
   }
 
-  const canSubmit = orderCode.trim() !== "" && email.trim() !== "" && !lookupMutation.isPending;
+  const canSubmit = orderCode.trim() !== "" && !lookupMutation.isPending;
 
   return (
     <div className="mx-auto max-w-lg">
@@ -155,22 +153,6 @@ export default function TrackOrderPage() {
             onChange={(e) => setOrderCode(e.target.value)}
             autoComplete="off"
             maxLength={32}
-            required
-          />
-        </div>
-        <div>
-          <label className="field-label" htmlFor="track_email">
-            {t("web.guest_email_label")}
-          </label>
-          <input
-            id="track_email"
-            type="email"
-            className="field"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            autoComplete="email"
-            inputMode="email"
-            placeholder="you@example.com"
             required
           />
         </div>

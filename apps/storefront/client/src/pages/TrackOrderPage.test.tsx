@@ -46,10 +46,9 @@ function renderTrack(ctx: ShopContext = context) {
   );
 }
 
-/** Fill both fields and submit — the page's only interaction. */
-function submitLookup(code = "ord123", email = "guest@example.com"): void {
+/** Fill the order code and submit — the page's only interaction. */
+function submitLookup(code = "ord123"): void {
   fireEvent.change(screen.getByLabelText("Order code"), { target: { value: code } });
-  fireEvent.change(screen.getByLabelText("Email address"), { target: { value: email } });
   fireEvent.click(screen.getByRole("button", { name: "Find my order" }));
 }
 
@@ -77,10 +76,10 @@ describe("TrackOrderPage", () => {
     // packages/core/src/locales.test.ts).
     expect(screen.getByText(/order code shown on your order page/)).toBeInTheDocument();
     expect(screen.getByLabelText("Order code")).toBeInTheDocument();
-    expect(screen.getByLabelText("Email address")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Email address")).not.toBeInTheDocument();
   });
 
-  it("posts the code and email to /api/v1/track and leaves for the redirect it answers with", async () => {
+  it("posts the code alone to /api/v1/track and leaves for the redirect it answers with", async () => {
     (publicPost as Mock).mockResolvedValue({ redirect: "/account/orders/ORD123", csrf_token: "fresh" });
     renderTrack();
     submitLookup();
@@ -88,7 +87,6 @@ describe("TrackOrderPage", () => {
     await waitFor(() =>
       expect(publicPost).toHaveBeenCalledWith("/api/v1/track", {
         order_code: "ORD123",
-        email: "guest@example.com",
       }),
     );
     // Full page load, not navigate(): the shell must re-render so the app
@@ -170,13 +168,11 @@ describe("TrackOrderPage", () => {
     expect(screen.queryByText("/api/v1/track failed 500")).not.toBeInTheDocument();
   });
 
-  it("keeps the submit button inert until both fields are filled", () => {
+  it("keeps the submit button inert until the order code is filled", () => {
     renderTrack();
     const submit = screen.getByRole("button", { name: "Find my order" });
     expect(submit).toBeDisabled();
     fireEvent.change(screen.getByLabelText("Order code"), { target: { value: "ORD1" } });
-    expect(submit).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "a@b.com" } });
     expect(submit).not.toBeDisabled();
   });
 });

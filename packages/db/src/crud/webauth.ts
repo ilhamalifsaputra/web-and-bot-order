@@ -141,13 +141,12 @@ export function findUserByLoginIdentifier(db: Db, identifier: string) {
  * being a guest row.
  *
  * **Security — the guest-marker clearing is load-bearing.** `POST
- * /api/v1/track` mints a full session from (order code + `guestEmail`) with no
- * password involved, gated only on `isGuest`. That trade is only acceptable
- * while the account has no password to bypass: a guest's contact address IS
- * their whole identity. The moment a password exists, the same shortcut would
- * let anyone holding the order code and the old contact address walk past that
- * password AND rotate the real owner's session out (establishSession rotates
- * the jti).
+ * /api/v1/track` mints a session from the order code alone, gated only on
+ * `isGuest`. That trade is only acceptable while the account has no password,
+ * because the order code is the whole identity, not the email address. The
+ * moment a password exists, an order code alone would let anyone walk past
+ * that password AND rotate the real owner's session out (establishSession
+ * rotates the jti).
  *
  * Both routes that can give an account its first password land here — the
  * storefront's `POST /api/v1/account/settings/credentials` (which skips the

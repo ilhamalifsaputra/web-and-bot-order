@@ -1,7 +1,7 @@
 // Follow-up to guest checkout: the recovery email that carries the order code.
 //
 // A guest's only two ways back into a paid order are the 30-day session cookie
-// and `POST /api/v1/track` (order code + email). Before this feature the code
+// and `POST /api/v1/track` (order code alone). Before this feature the code
 // existed ONLY on screen, so closing the tab and losing the cookie lost the
 // order for good. These tests pin the three properties that make the email
 // worth having AND safe to have:

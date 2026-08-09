@@ -84,7 +84,7 @@ function MessageBubble({
           {timePart}
         </span>
       </div>
-      <p className="text-sm whitespace-pre-line">{entry.content}</p>
+      <p className="text-sm whitespace-pre-line break-words">{entry.content}</p>
       <AttachmentGallery urls={entry.attachments} />
     </div>
   );

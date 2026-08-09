@@ -462,7 +462,7 @@ export default function ProductPage() {
       <motion.section {...revealProps} className="mt-10">
         <h2 className="section-title mb-3">{t("web.reviews")}</h2>
         {reviews.length > 0 ? (
-          <div className="grid sm:grid-cols-2 gap-4">
+          <div className="grid sm:grid-cols-2 gap-4 items-start">
             {reviews.map((r, i) => (
               <div key={i} className="card card-pad">
                 <div className="flex items-center gap-2">
@@ -471,7 +471,9 @@ export default function ProductPage() {
                     {r.author} · {r.created_at_display}
                   </span>
                 </div>
-                {r.comment && <p className="text-sm text-ink-soft mt-2">{r.comment}</p>}
+                {r.comment && (
+                  <p className="text-sm text-ink-soft mt-2 whitespace-pre-line break-words">{r.comment}</p>
+                )}
               </div>
             ))}
           </div>

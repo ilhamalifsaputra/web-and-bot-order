@@ -251,6 +251,41 @@ describe("ProductPage", () => {
     expect(await screen.findByText("No reviews yet.")).toBeInTheDocument();
   });
 
+  // R1/R2/R5 (Task 1): a pasted "proof" URL with no natural break points used
+  // to overflow the card (and the whole page, since nothing constrained it),
+  // and blank-line-separated paragraphs collapsed into one run-on sentence
+  // because the DOM's literal newlines were rendered with `white-space: normal`.
+  it("gives the review comment paragraph break-words and whitespace-pre-line so long tokens wrap and blank lines survive", async () => {
+    const longToken = "https://proof.example.com/" + "a".repeat(80);
+    const multilineComment = `Barang sesuai deskripsi.\n\nPengiriman cepat, admin ramah.\n\n${longToken}`;
+    renderProduct("netflix-premium", () => ({
+      ...productData,
+      reviews: [{ rating: 4.5, comment: multilineComment, author: "A***", created_at_display: "2026-06-01" }],
+    }));
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const commentParagraph = document.querySelector("p.text-sm.text-ink-soft.mt-2");
+    expect(commentParagraph).not.toBeNull();
+    // The blank-line-separated text must reach the DOM verbatim (not
+    // collapsed/stripped) -- whitespace-pre-line is what makes the browser
+    // honor those newlines as line breaks instead of flattening them.
+    expect(commentParagraph?.textContent).toBe(multilineComment);
+    expect(commentParagraph).toHaveClass("whitespace-pre-line");
+    // break-words lets the long unbroken token wrap inside the card instead
+    // of forcing the card -- and the page -- wider than the viewport.
+    expect(commentParagraph).toHaveClass("break-words");
+  });
+
+  // R3 (Task 1): grid rows stretch every card to the tallest sibling by
+  // default, so a two-line review card was padded to match a much longer
+  // neighbor, leaving a large blank void. items-start lets each card size to
+  // its own content.
+  it("sizes each review card to its own content instead of stretching to match its row", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    const grid = screen.getByText("Great service!").closest(".grid");
+    expect(grid).toHaveClass("items-start");
+  });
+
   // STO-011: same-category "You might also like" shelf.
   it("renders the related-products shelf when the API returns some", async () => {
     renderProduct("netflix-premium", () => ({ ...productData, related_products: [relatedProduct] }));

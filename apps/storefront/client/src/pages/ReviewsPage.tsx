@@ -87,7 +87,9 @@ function ReviewCard({ review }: { review: AccountReview }) {
         <div className="font-semibold text-sm">{review.product_name}</div>
         <Stars rating={review.rating} />
       </div>
-      {review.comment && <p className="text-sm text-ink-soft mt-2">{review.comment}</p>}
+      {review.comment && (
+        <p className="text-sm text-ink-soft mt-2 whitespace-pre-line break-words">{review.comment}</p>
+      )}
       <div className="text-xs text-ink-faint mt-2">{review.created_at_display}</div>
     </div>
   );

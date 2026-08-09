@@ -70,7 +70,17 @@ function renderCategory(slug: string, respond: (path: string) => unknown) {
 describe("CategoryPage", () => {
   beforeEach(() => {
     document.documentElement.lang = "en";
+    document.title = "";
     vi.clearAllMocks();
+  });
+
+  // T2: the category name isn't known until the fetch resolves, so this page
+  // sets document.title itself rather than relying on routeTitle.ts's
+  // pathname-only mapping (which deliberately skips /c/:slug).
+  it("sets document.title to the category name once it loads (T2)", async () => {
+    renderCategory("streaming", () => categoryData);
+    await screen.findByRole("heading", { name: "🎬 Streaming" });
+    await waitFor(() => expect(document.title).toBe("Streaming — Toko Digital"));
   });
 
   it("renders the category name and products, highlighting the active pill", async () => {

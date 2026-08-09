@@ -169,8 +169,18 @@ function renderProduct(slug: string, respond: (path: string) => unknown) {
 describe("ProductPage", () => {
   beforeEach(() => {
     document.documentElement.lang = "en";
+    document.title = "";
     observers.length = 0;
     vi.clearAllMocks();
+  });
+
+  // T2: the product name isn't known until the fetch resolves, so this page
+  // sets document.title itself rather than relying on routeTitle.ts's
+  // pathname-only mapping (which deliberately skips /p/:slug).
+  it("sets document.title to the product name once it loads (T2)", async () => {
+    renderProduct("netflix-premium", () => productData);
+    await screen.findByRole("heading", { name: "Netflix Premium" });
+    await waitFor(() => expect(document.title).toBe("Netflix Premium — Toko Digital"));
   });
 
   it("preselects the first in-stock denomination (skipping the out-of-stock one)", async () => {

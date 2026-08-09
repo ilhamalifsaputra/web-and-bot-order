@@ -491,7 +491,10 @@ export default function Layout() {
         )}
       </AnimatePresence>
 
-      <main className="max-w-6xl mx-auto px-4 py-8 lg:px-6 flex-1">
+      {/* tabIndex=-1: RouteEffects.tsx moves focus here on every client-side
+          navigation (T15) — <main> doesn't unmount when PageTransition swaps
+          the Outlet content, so it's a stable, always-focusable target. */}
+      <main className="max-w-6xl mx-auto px-4 py-8 lg:px-6 flex-1" tabIndex={-1}>
         <PageTransition>
           <Outlet />
         </PageTransition>

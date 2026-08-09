@@ -23,6 +23,7 @@ import {
 import { apiGet, apiPost } from "../api/client";
 import type { CartPageData, ProductPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
+import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { t } from "../lib/i18n";
 import { formatIdr } from "../lib/format";
 import { fadeUp } from "../lib/motion";
@@ -143,6 +144,15 @@ export default function ProductPage() {
     queryFn: () => apiGet<ProductPageData>(`/api/v1/pages/product/${slug}`),
     retry: false,
   });
+
+  // T2: not covered by routeTitle.ts (RouteEffects.tsx) — the product name
+  // isn't known until this fetch resolves. Called unconditionally, before
+  // the early returns below, per the rules of hooks; useDocumentTitle itself
+  // no-ops on undefined, so the previous page's title just stays put until
+  // both the product and the shop name are in.
+  useDocumentTitle(
+    data && ctx?.shop_name ? `${data.product.name} — ${ctx.shop_name}` : undefined,
+  );
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [qty, setQty] = useState(1);

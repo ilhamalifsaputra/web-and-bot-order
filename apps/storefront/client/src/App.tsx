@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 import { Route, Routes } from "react-router-dom";
 import Layout from "./components/Layout";
+import RouteEffects from "./components/RouteEffects";
 import ErrorPage from "./pages/ErrorPage";
 import HomePage from "./pages/HomePage";
 import CategoryPage from "./pages/CategoryPage";
@@ -57,6 +58,10 @@ const RefundPage = lazy(() => import("./pages/RefundPage"));
 export default function App() {
   return (
     <Suspense fallback={<div className="min-h-[50vh]" aria-busy="true" />}>
+      {/* Sibling of <Routes>, not inside <Layout/>: covers every route,
+          including the four auth screens below that sit outside it. See
+          RouteEffects.tsx for what it does (title/scroll/focus on nav). */}
+      <RouteEffects />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/register" element={<RegisterPage />} />

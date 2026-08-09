@@ -41,7 +41,10 @@ export default function ForgotPage() {
   const result = forgotMutation.data;
 
   return (
-    <main className="max-w-6xl mx-auto px-4 py-8 lg:px-6 flex-1">
+    // tabIndex=-1: RouteEffects.tsx moves focus here on client-side
+    // navigation (T15) — these auth routes sit outside <Layout/>, so each
+    // needs its own focusable <main>.
+    <main className="max-w-6xl mx-auto px-4 py-8 lg:px-6 flex-1" tabIndex={-1}>
       <div className="min-h-[100svh] flex items-center justify-center -my-8">
         <div className="w-full max-w-md card card-pad">
           <Link to="/" className="text-center block">

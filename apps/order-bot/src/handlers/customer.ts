@@ -17,7 +17,6 @@ import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFiel
 import { logger } from "@app/core/logger";
 import {
   prisma,
-  upsertUser,
   botOverallStats,
   userTotalSpent,
   listCatalogProducts,
@@ -203,16 +202,13 @@ export async function startCommand(ctx: MyContext): Promise<void> {
   const tg = ctx.from!;
   ctx.session.awaitingQtyDenomId = undefined;
 
+  // `ref_<code>` referral attribution happens in the registeredUser
+  // middleware (apps/order-bot/src/middleware.ts), not here: that's what
+  // actually creates the User row for a brand-new customer, and it always
+  // runs before this handler — upsertUser only ever applies referredByCode
+  // on the row's initial creation, so calling it again here would be a
+  // no-op every time.
   const args = (ctx.match && typeof ctx.match === "string" ? ctx.match : "").trim().split(/\s+/).filter(Boolean);
-  if (args.length && args[0]!.startsWith("ref_")) {
-    const code = args[0]!.slice(4);
-    await upsertUser(prisma, {
-      telegramId: tg.id,
-      username: tg.username ?? null,
-      fullName: [tg.first_name, tg.last_name].filter(Boolean).join(" ") || null,
-      referredByCode: code,
-    });
-  }
 
   // Deep-link: t.me/<bot>?start=prod_<id> → open a denomination detail bubble
   // directly (the id is a Denomination/SKU id, as used in share links).

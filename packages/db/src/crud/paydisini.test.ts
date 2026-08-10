@@ -428,6 +428,12 @@ describe("deliverPaidPaydisiniOrder — WALLET_TOPUP routing", () => {
 
     const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
     expect(rows).toHaveLength(1);
+
+    // Same for the buyer DM — exactly one outbox row, not one per attempt.
+    const dmRows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(dmRows).toHaveLength(1);
   });
 
   // PayDisini is a WEBHOOK-driven rail (deliverPaidPaydisiniOrder is called

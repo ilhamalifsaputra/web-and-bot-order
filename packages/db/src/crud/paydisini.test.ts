@@ -429,6 +429,27 @@ describe("deliverPaidPaydisiniOrder — WALLET_TOPUP routing", () => {
     const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
     expect(rows).toHaveLength(1);
   });
+
+  // PayDisini is a WEBHOOK-driven rail (deliverPaidPaydisiniOrder is called
+  // from both the storefront's webhook handler AND the bot's reconcile
+  // poller) — the web process can never send Telegram itself, so this is one
+  // of the three rails where settlement enqueues WALLET_TOPUP_CREDITED_DM to
+  // the outbox (Task 7).
+  it("enqueues a WALLET_TOPUP_CREDITED_DM outbox row with chat_id/amount/currency/new_balance", async () => {
+    const order = await makePendingTopupOrder(sample.user.id, "20000");
+
+    await deliverPaidPaydisiniOrder(prisma, { orderId: order.id, trxId: "trx-topup-dm-1", amount: order.totalAmount });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(rows).toHaveLength(1);
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.chat_id).toBe(Number(sample.user.telegramId));
+    expect(payload.amount).toBe(new Decimal(order.totalAmount).toString());
+    expect(payload.currency).toBe(order.currency);
+    expect(payload.new_balance).toBe(new Decimal(order.totalAmount).toString());
+  });
 });
 
 describe("recordUnmatchedPaydisiniTx", () => {

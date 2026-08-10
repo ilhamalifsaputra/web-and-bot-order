@@ -313,12 +313,22 @@ export async function createWalletTopupOrder(
  * buyer's wallet for the product's price, and skip stock allocation/referral/
  * delivery entirely. Same reasoning as the double-settlement guard above,
  * just guarding "kind" instead of "status".
+ *
+ * Returns `newBalance` (the buyer's post-credit balance in `order.currency`)
+ * alongside `order`/`credited` — `adjustWallet` already computes this value
+ * internally, so surfacing it here lets the three webhook-rail callers
+ * (Task 7 — TokoPay/PayDisini/NOWPayments) build their
+ * `enqueueWalletTopupCreditedDm` payload without a second wallet read. On the
+ * no-op double-settlement path, `newBalance` reflects the buyer's CURRENT
+ * balance (re-read fresh) rather than a stale/zero figure, even though
+ * `credited` is 0 — callers should gate any notification on
+ * `credited.greaterThan(0)`, not on `newBalance` alone.
  */
 export async function settleWalletTopup(
   db: Db,
   orderId: number,
   args: { amount: Decimal.Value },
-): Promise<{ order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credited: Decimal }> {
+): Promise<{ order: NonNullable<Awaited<ReturnType<typeof getOrder>>>; credited: Decimal; newBalance: Decimal }> {
   const order = await getOrder(db, orderId);
   if (!order) throw new ValidationError("error.order_not_found");
   if (order.kind !== OrderKind.WALLET_TOPUP) {
@@ -332,7 +342,11 @@ export async function settleWalletTopup(
   });
   if (claim.count !== 1) {
     const current = await getOrder(db, orderId);
-    return { order: current!, credited: new Decimal(0) };
+    const currentUser = await db.user.findUniqueOrThrow({ where: { id: current!.userId } });
+    const currentBalance = new Decimal(
+      current!.currency === OrderCurrency.USDT ? currentUser.walletBalanceUsdt : currentUser.walletBalance,
+    );
+    return { order: current!, credited: new Decimal(0), newBalance: currentBalance };
   }
 
   const reportedAmount = new Decimal(args.amount);
@@ -344,7 +358,7 @@ export async function settleWalletTopup(
     );
   }
 
-  await adjustWallet(db, order.userId, order.totalAmount, {
+  const newBalance = await adjustWallet(db, order.userId, order.totalAmount, {
     reason: "wallet_topup",
     currency: order.currency as "IDR" | "USDT",
     orderId: order.id,
@@ -352,7 +366,7 @@ export async function settleWalletTopup(
   });
 
   const refreshed = await getOrder(db, orderId);
-  return { order: refreshed!, credited: new Decimal(order.totalAmount) };
+  return { order: refreshed!, credited: new Decimal(order.totalAmount), newBalance };
 }
 
 /**

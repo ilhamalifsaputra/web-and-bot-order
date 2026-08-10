@@ -383,6 +383,24 @@ describe("settleWalletTopup", () => {
     expect(new Decimal(user.walletBalance).equals(0)).toBe(true);
   });
 
+  it("returns newBalance matching adjustWallet's post-credit balance (Task 7 — feeds the buyer DM payload)", async () => {
+    const order = await makeIdrTopupOrder("20000");
+    const result = await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    expect(result.newBalance.equals(order.totalAmount)).toBe(true);
+    const user = await freshUser();
+    expect(new Decimal(user.walletBalance).equals(result.newBalance)).toBe(true);
+  });
+
+  it("on the no-op double-settlement path, newBalance reflects the buyer's current balance, not zero", async () => {
+    const order = await makeIdrTopupOrder("20000");
+    await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+
+    const second = await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));
+    expect(second.credited.equals(0)).toBe(true);
+    expect(second.newBalance.equals(order.totalAmount)).toBe(true); // unchanged balance, still surfaced correctly
+  });
+
   it("writes a WalletTransaction row with reason wallet_topup, the order's currency, and orderId set", async () => {
     const order = await makeIdrTopupOrder("15000");
     await prisma.$transaction((tx) => settleWalletTopup(tx, order.id, { amount: order.totalAmount }));

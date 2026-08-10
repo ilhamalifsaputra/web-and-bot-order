@@ -405,4 +405,23 @@ describe("deliverPaidBybitBscOrder — WALLET_TOPUP routing", () => {
     const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
     expect(rows).toHaveLength(1);
   });
+
+  // Anti-double-notify guarantee (Task 7): Bybit BSC is a POLLER-ONLY rail —
+  // deliverPaidBybitBscOrder only ever runs inside the bot process's own
+  // Bybit BSC deposit poller, never a web request — so the buyer is DM'd
+  // directly by that poller's onDelivered handler instead. Settlement here
+  // must NOT also enqueue WALLET_TOPUP_CREDITED_DM to the outbox, or the
+  // buyer would be notified twice.
+  it("does NOT enqueue a WALLET_TOPUP_CREDITED_DM outbox row — the bot DMs the buyer directly for this poller-only rail", async () => {
+    const order = await makePendingTopupOrder(sample.user.id, "10");
+    const txId = "0x" + "4".repeat(64);
+
+    const result = await deliverPaidBybitBscOrder(prisma, { orderId: order.id, bybitTxId: txId, amount: order.totalAmount });
+    expect(result.status).toBe("delivered");
+
+    const dmRows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(dmRows).toHaveLength(0);
+  });
 });

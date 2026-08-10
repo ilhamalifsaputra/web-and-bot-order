@@ -15,6 +15,7 @@ import {
   enqueueManualOrderAdminAlert,
   enqueueAdminStalePayment,
   enqueueAdminPasswordReset,
+  enqueueWalletTopupCreditedDm,
   enqueueRestockBroadcast,
   enqueueFlashSaleBroadcast,
   enqueueOwnerOrderPaidEmail,
@@ -456,6 +457,55 @@ describe("enqueueAdminStalePayment", () => {
     expect(payload.order_code).toBe("ORD-STALETEST");
     expect(payload.gateway).toBe("TokoPay");
     expect(payload.trx_id).toBe("TRX-STALE-1");
+  });
+});
+
+describe("enqueueWalletTopupCreditedDm", () => {
+  it("writes one WALLET_TOPUP_CREDITED_DM row with orderId set and money stringified via Decimal.toString()", async () => {
+    const orderId = await seedOrder();
+
+    await enqueueWalletTopupCreditedDm(prisma, {
+      orderId,
+      chatId: 8001,
+      amount: new Decimal("50000"),
+      currency: "IDR",
+      newBalance: new Decimal("125000"),
+    });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.orderId).toBe(orderId);
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload).toEqual({
+      chat_id: 8001,
+      amount: "50000",
+      currency: "IDR",
+      new_balance: "125000",
+    });
+    expect(typeof payload.amount).toBe("string");
+    expect(typeof payload.new_balance).toBe("string");
+  });
+
+  it("carries a USDT top-up's amount/balance as plain decimal strings too", async () => {
+    const orderId = await seedOrder();
+
+    await enqueueWalletTopupCreditedDm(prisma, {
+      orderId,
+      chatId: 8002,
+      amount: new Decimal("10.5"),
+      currency: "USDT",
+      newBalance: new Decimal("30.25"),
+    });
+
+    const row = await prisma.notificationOutbox.findFirst({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId },
+    });
+    const payload = JSON.parse(row!.payloadJson) as Record<string, unknown>;
+    expect(payload.amount).toBe("10.5");
+    expect(payload.currency).toBe("USDT");
+    expect(payload.new_balance).toBe("30.25");
   });
 });
 

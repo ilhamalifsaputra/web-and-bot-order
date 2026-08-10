@@ -182,6 +182,12 @@ interface AdminStalePaymentPayload {
   trx_id?: unknown;
 }
 
+interface WalletTopupCreditedPayload {
+  amount?: unknown;
+  currency?: unknown;
+  new_balance?: unknown;
+}
+
 /** Return the message body for an outbox event, or "" to skip. */
 export function render(
   event: string,
@@ -194,8 +200,30 @@ export function render(
     FlashSaleBroadcastPayload &
     ManualOrderQueuedPayload &
     BulkPurchaseBroadcastPayload &
-    AdminStalePaymentPayload,
+    AdminStalePaymentPayload &
+    WalletTopupCreditedPayload,
 ): string {
+  if (event === NotificationEvent.WALLET_TOPUP_CREDITED_DM) {
+    // Buyer DM: only enqueued by the three webhook-driven top-up rails
+    // (TokoPay/PayDisini/NOWPayments — see enqueueWalletTopupCreditedDm).
+    // The three poller-driven rails (Binance Internal/Bybit/Bybit BSC) DM the
+    // buyer directly from the bot process instead (walletTopupSuccessText in
+    // apps/order-bot/src/util/delivery.ts), so this template never fires
+    // twice for the same top-up. No buyer_language in the payload (unlike
+    // ORDER_PROCESSING_DM) — bilingual EN+ID in one message, same fallback
+    // every other per-order DM template here uses.
+    const amount = escape(String(payload.amount ?? "0"));
+    const currency = escape(String(payload.currency ?? ""));
+    const newBalance = escape(String(payload.new_balance ?? "0"));
+    return (
+      `✅ <b>Top-up successful!</b>\n` +
+      `+${amount} ${currency} has been added to your wallet.\n` +
+      `New balance: <b>${newBalance} ${currency}</b>\n\n` +
+      `✅ <b>Top up berhasil!</b>\n` +
+      `+${amount} ${currency} sudah ditambahkan ke saldo kamu.\n` +
+      `Saldo baru: <b>${newBalance} ${currency}</b>`
+    );
+  }
   if (event === NotificationEvent.BULK_PURCHASE_BROADCAST) {
     // Channel post: qty/product_name/denomination_name are derived from the
     // order and escaped like every other interpolated value, but `template`

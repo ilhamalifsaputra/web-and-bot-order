@@ -425,7 +425,12 @@ export async function deliverPaidBybitBscOrder(
           await tx.order.update({ where: { id: args.orderId }, data: { status: OrderStatus.PENDING_PAYMENT } });
         }
         const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
-        // TODO(Task 7): enqueue WALLET_TOPUP_CREDITED_DM notification here
+        // No outbox enqueue here (unlike TokoPay/PayDisini/NOWPayments): this
+        // function only ever runs inside the bot process's own Bybit BSC
+        // deposit poller (never a web request), so the buyer is DM'd
+        // directly by that poller's `onDelivered` handler
+        // (apps/order-bot/src/payments/bybitBscDeposit.ts) right after this
+        // call returns — enqueueing to the outbox here too would double-notify.
         logger.info(`Auto-delivered Bybit BSC wallet top-up order ${settled.orderCode} for transaction ${args.bybitTxId}`);
         return { status: "delivered" as const, order: settled, credentials: [] };
       }

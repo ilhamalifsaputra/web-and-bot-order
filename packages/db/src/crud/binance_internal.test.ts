@@ -287,4 +287,22 @@ describe("deliverPaidInternalOrder — WALLET_TOPUP routing", () => {
     const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
     expect(rows).toHaveLength(1);
   });
+
+  // Anti-double-notify guarantee (Task 7): Binance Internal is a POLLER-ONLY
+  // rail — deliverPaidInternalOrder only ever runs inside the bot process's
+  // own internal-transfer poller, never a web request — so the buyer is DM'd
+  // directly by that poller's onDelivered handler instead. Settlement here
+  // must NOT also enqueue WALLET_TOPUP_CREDITED_DM to the outbox, or the
+  // buyer would be notified twice.
+  it("does NOT enqueue a WALLET_TOPUP_CREDITED_DM outbox row — the bot DMs the buyer directly for this poller-only rail", async () => {
+    const order = await makePendingTopupOrder(sample.user.id, "10");
+
+    const result = await deliverPaidInternalOrder(prisma, { orderId: order.id, binanceTxId: "tx-topup-nodm-1", amount: order.totalAmount });
+    expect(result.status).toBe("delivered");
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(rows).toHaveLength(0);
+  });
 });

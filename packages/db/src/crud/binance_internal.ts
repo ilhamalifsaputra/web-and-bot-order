@@ -233,7 +233,12 @@ export async function deliverPaidInternalOrder(
       }
       if (order.kind === OrderKind.WALLET_TOPUP) {
         const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
-        // TODO(Task 7): enqueue WALLET_TOPUP_CREDITED_DM notification here
+        // No outbox enqueue here (unlike TokoPay/PayDisini/NOWPayments): this
+        // function only ever runs inside the bot process's own internal-
+        // transfer poller (never a web request), so the buyer is DM'd
+        // directly by that poller's `onDelivered` handler
+        // (apps/order-bot/src/payments/binanceInternal.ts) right after this
+        // call returns — enqueueing to the outbox here too would double-notify.
         logger.info(`Auto-delivered internal-transfer wallet top-up order ${settled.orderCode} for Binance transaction ${args.binanceTxId}`);
         return { status: "delivered" as const, order: settled, credentials: [] };
       }

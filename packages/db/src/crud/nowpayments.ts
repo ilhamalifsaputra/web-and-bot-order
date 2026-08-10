@@ -24,7 +24,7 @@ import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
 import { getOrder, settlePaidOrder } from "./orders";
 import { transitionOrderStatus } from "./orderStatus";
-import { enqueueNotification, enqueueAdminOverpaid } from "./notifications";
+import { enqueueNotification, enqueueAdminOverpaid, enqueueWalletTopupCreditedDm } from "./notifications";
 import { getSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
 import { settleWalletTopup } from "./wallet_topup";
@@ -122,8 +122,20 @@ export async function deliverPaidNowpaymentsOrder(
         return { status: "stale" as const };
       }
       if (order.kind === OrderKind.WALLET_TOPUP) {
-        const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
-        // TODO(Task 7): enqueue WALLET_TOPUP_CREDITED_DM notification here
+        const { order: settled, credited, newBalance } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        // Buyer DM via the outbox — this settlement runs in the web process
+        // (a NOWPayments IPN webhook), which must never send Telegram
+        // itself. Guarded on credited > 0 so the rare double-settlement
+        // no-op never enqueues a second DM for an already-notified top-up.
+        if (credited.greaterThan(0) && settled.user.telegramId != null) {
+          await enqueueWalletTopupCreditedDm(tx, {
+            orderId: settled.id,
+            chatId: Number(settled.user.telegramId),
+            amount: credited,
+            currency: settled.currency,
+            newBalance,
+          });
+        }
         logger.info(`Auto-delivered NOWPayments wallet top-up order ${settled.orderCode} for transaction ${args.trxId}`);
         return { status: "delivered" as const, order: settled, credentials: [] };
       }

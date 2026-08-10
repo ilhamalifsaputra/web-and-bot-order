@@ -36,7 +36,9 @@ import { newErrorRef } from "./util/errors";
 import * as customer from "./handlers/customer";
 import * as staticPages from "./handlers/static";
 import * as admin from "./handlers/admin";
+import * as walletTopup from "./handlers/walletTopup";
 import { routeCallback } from "./handlers/callbacks";
+import { matchPersistentLabel } from "./keyboards/customer";
 import { scheduleJobs, scheduleFxRefresh } from "./jobs";
 import { startPolling, stopPolling } from "./payments/binanceInternal";
 import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "./payments/bybitDeposit";
@@ -114,7 +116,17 @@ export function buildBot(token?: string): Bot<MyContext> {
     }
   });
   bot.on("message:text", async (ctx, next) => {
-    if ((ctx.message.text ?? "").startsWith("/")) return next();
+    const rawText = ctx.message.text ?? "";
+    if (rawText.startsWith("/")) return next();
+    // Wallet-topup amount capture (walletTopup.promptTopupAmount) — only
+    // diverts free text, never a menu button, same rule handleProductNumber
+    // applies to its own awaitingQtyDenomId capture.
+    const topupCurrency = ctx.session.awaitingTopupCurrency;
+    if (topupCurrency && matchPersistentLabel(rawText) === null) {
+      await walletTopup.handleTopupAmountInput(ctx, topupCurrency, rawText);
+      return;
+    }
+    ctx.session.awaitingTopupCurrency = undefined;
     await customer.handleProductNumber(ctx);
   });
 

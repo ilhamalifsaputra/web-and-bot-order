@@ -12,7 +12,7 @@ import { config } from "@app/core/config";
 import { botUsername } from "@app/core/runtime";
 import { Decimal } from "@app/core/money";
 import { ensureUtc, localize, addDays } from "@app/core/datetime";
-import { UserRole, OrderStatus, PaymentMethod, TicketStatus, SenderType, DeliveryType, customerStatusLabel } from "@app/core/enums";
+import { UserRole, OrderStatus, OrderKind, PaymentMethod, TicketStatus, SenderType, DeliveryType, customerStatusLabel } from "@app/core/enums";
 import { parseAdditionalFields, parseCustomerData } from "@app/core/deliveryFields";
 import { logger } from "@app/core/logger";
 import {
@@ -755,7 +755,11 @@ export async function viewOrder(ctx: MyContext, orderId: number): Promise<void> 
   const info = requireUser(ctx);
   const lang = ctx.session.lang;
   const order = await getOrder(prisma, orderId);
-  if (order === null || order.userId !== info.id) {
+  // Ownership check, plus WALLET_TOPUP exclusion: a top-up isn't a "My
+  // Orders" purchase (it's already visible via the wallet ledger), so it's
+  // not reachable through this per-order-id view either — same exclusion
+  // listUserOrders applies to the list this screen is normally opened from.
+  if (order === null || order.userId !== info.id || order.kind !== OrderKind.PRODUCT) {
     await smartEdit(ctx, t(ctx, "error.order_not_found"), ckb.backToMain(lang));
     return;
   }
@@ -928,12 +932,11 @@ export async function viewWallet(ctx: MyContext): Promise<void> {
   const user = await getUser(prisma, info.id);
   const idrBalance = user ? user.walletBalance : new Decimal(0);
   const usdtBalance = user ? user.walletBalanceUsdt : new Decimal(0);
-  let text = t(ctx, "wallet.credit_balances", {
+  const text = t(ctx, "wallet.credit_balances", {
     idr: formatIdr(idrBalance),
     usdt: price(usdtBalance),
   });
-  text += "\n\n" + t(ctx, "wallet.topup_info");
-  await smartEdit(ctx, text, ckb.backToMain(lang));
+  await smartEdit(ctx, text, ckb.walletKb(lang));
 }
 
 export async function viewReferral(ctx: MyContext): Promise<void> {

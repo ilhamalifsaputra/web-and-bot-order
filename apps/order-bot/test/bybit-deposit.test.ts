@@ -5,6 +5,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import {
   prisma,
   createBybitOrder,
+  createWalletTopupOrder,
   deliverPaidBybitOrder,
   markUnderpaidBybit,
   recordUnmatchedBybitTx,
@@ -14,6 +15,7 @@ import {
   getSetting,
   deleteSetting,
   setOrderPaymentMessage,
+  getUser,
   BYBIT_UID_KEY,
   BYBIT_API_KEY_KEY,
   BYBIT_API_SECRET_KEY,
@@ -25,6 +27,7 @@ import { Decimal } from "@app/core/money";
 import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { normalizeInternalDeposit, processDeposits, pollOnce, type BybitDeposit } from "../src/payments/bybitDeposit";
+import { formatUsdt } from "../src/util/format";
 
 let sample: SampleData;
 
@@ -393,6 +396,70 @@ describe("processDeposits (poll-loop wiring)", () => {
     await processDeposits(api, [dep({ txId: "0xDUST", amount: dust })], await pending());
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xDUST" } }))!.outcome).toBe("unmatched");
+  });
+});
+
+// ===========================================================================
+// processDeposits — WALLET_TOPUP delivery (Task 6 success UI). Same shape as
+// binance-internal.test.ts's equivalent block; onDelivered isn't exported, so
+// this drives it through the real poll-loop wiring (processDeposits).
+// ===========================================================================
+
+describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", () => {
+  function fakeApi() {
+    const sent: Array<{ chatId: number | string; text: string; extra?: unknown }> = [];
+    const edits: Array<{ chatId: number | string; messageId: number; text: string; extra?: unknown }> = [];
+    let sendDocumentCalls = 0;
+    const api = {
+      sendMessage: async (chatId: number | string, text: string, extra?: unknown) => {
+        sent.push({ chatId, text, extra });
+        return { message_id: 1 };
+      },
+      sendDocument: async () => {
+        sendDocumentCalls++;
+        return { message_id: 1 };
+      },
+      editMessageText: async (chatId: number | string, messageId: number, text: string, extra?: unknown) => {
+        edits.push({ chatId, messageId, text, extra });
+        return {};
+      },
+    } as unknown as Api;
+    return { api, sent, edits, sendDocumentCalls: () => sendDocumentCalls };
+  }
+
+  const pending = () => listPendingBybitOrders(prisma, new Date());
+  const dep = (over: Partial<BybitDeposit> & { txId: string; amount: number }): BybitDeposit => ({ ...over });
+
+  const makeTopupOrder = (amount: string) =>
+    prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount, currency: "USDT", method: PaymentMethod.BYBIT, rate: "16000" }),
+    );
+
+  it("delivers, DMs the credited-amount + new-balance text (not the bare placeholder), sends no credential file, and flips the anchored bubble to the same text", async () => {
+    const order = await makeTopupOrder("7");
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const { api, sent, edits, sendDocumentCalls } = fakeApi();
+    await processDeposits(api, [dep({ txId: "0xTOPUP-1", amount: Number(order.totalAmount) })], await pending());
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe(OrderStatus.DELIVERED);
+
+    // No account file — a top-up has no product/credentials to deliver.
+    expect(sendDocumentCalls()).toBe(0);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.text).not.toBe("Top-up successful."); // the old bare placeholder is gone
+    expect(sent[0]!.text).toContain("7.00 USDT"); // credited amount, with unit
+    const freshUser = await getUser(prisma, sample.user.id);
+    expect(freshUser!.walletBalanceUsdt.toString()).toBe("7"); // credited to the right currency field
+    expect(sent[0]!.text).toContain(formatUsdt(freshUser!.walletBalanceUsdt)); // new balance, with unit
+    expect(sent[0]!.extra).toMatchObject({ parse_mode: "HTML" });
+
+    // Anchored bubble uses the SAME top-up text, not the generic
+    // "your items are being delivered now" product copy.
+    expect(edits).toHaveLength(1);
+    expect(edits[0]!.text).not.toContain("items are being delivered");
+    expect(edits[0]!.text).toContain("7.00 USDT");
   });
 });
 

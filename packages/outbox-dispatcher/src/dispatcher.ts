@@ -6,9 +6,9 @@
  *
  * TELEGRAM lane — two kinds of rows:
  *  - Direct messages to a buyer/admin (payload.chat_id): ORDER_DELIVERED_DM,
- *    ORDER_MANUAL_DELIVERED_DM, ORDER_PROCESSING_DM, ADMIN_PW_RESET. These
- *    deliver regardless of whether a public channel is configured — the loop
- *    runs whenever a bot token is available.
+ *    ORDER_MANUAL_DELIVERED_DM, ORDER_PROCESSING_DM, ADMIN_PW_RESET,
+ *    WALLET_TOPUP_CREDITED_DM. These deliver regardless of whether a public
+ *    channel is configured — the loop runs whenever a bot token is available.
  *  - Channel posts (ORDER_DELIVERED testimonial): need PUBLIC_CHANNEL_ID. When
  *    no channel is configured they are left PENDING (skipped) so they post once
  *    a channel is set, rather than being failed away.
@@ -74,6 +74,7 @@ const ADMIN_DM_EVENTS = new Set<string>([
   NotificationEvent.FLASH_SALE_BROADCAST, // buyer DM (flash sale went live, all customers)
   NotificationEvent.ADMIN_MANUAL_ORDER_QUEUED, // admin DM (order queued for hand-fulfilment)
   NotificationEvent.ADMIN_STALE_PAYMENT, // admin DM (webhook delivery raced order's own expiry/cancel)
+  NotificationEvent.WALLET_TOPUP_CREDITED_DM, // buyer DM (webhook-rail top-up settled, wallet credited)
 ]);
 
 /** Telegram's hard cap on a single message's text length. */

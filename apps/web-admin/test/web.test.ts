@@ -265,6 +265,28 @@ async function makeProcessingOrder(): Promise<number> {
   return order.id;
 }
 
+/** A DELIVERED WALLET_TOPUP order (Task 4) — zero OrderItem rows by design
+ * (it credits the buyer's wallet balance rather than delivering a SKU).
+ * Created directly via prisma.order.create, same as orders.test.ts's own
+ * makeOrder helper, since there's no createOrderDirect-style constructor for
+ * this kind yet (Tasks 1-3 build settlement via the payment-gateway webhook
+ * path, not an admin-facing order-builder). Owned by seed.customerId, who
+ * has a Telegram id — the exact shape that would otherwise pass the
+ * Resend/bulk-resend Telegram-buyer eligibility check. */
+async function makeDeliveredWalletTopupOrder(): Promise<number> {
+  const order = await prisma.order.create({
+    data: {
+      orderCode: `TOPUP-${Math.random()}`,
+      userId: seed.customerId,
+      subtotalAmount: "50000",
+      totalAmount: "50000",
+      status: "DELIVERED",
+      kind: "WALLET_TOPUP",
+    },
+  });
+  return order.id;
+}
+
 // ---- auth (acceptance #4) -------------------------------------------------
 
 describe("auth", () => {
@@ -962,6 +984,20 @@ describe("orders API — approve/resend enqueue the buyer's account DM", () => {
     expect(res.statusCode).toBe(422);
   });
 
+  // Task 4: a WALLET_TOPUP order has zero OrderItem rows, so without a
+  // kind-aware guard the resend route's manual-vs-auto branch would
+  // misclassify it as AUTO and enqueue a bogus, credential-less
+  // ORDER_DELIVERED_DM. It has a Telegram buyer and is DELIVERED, so it
+  // would otherwise pass every other resend precondition.
+  it("resend rejects a WALLET_TOPUP order (422) and enqueues no DM", async () => {
+    const orderId = await makeDeliveredWalletTopupOrder();
+    const res = await postJson(`/api/orders/${orderId}/resend`, seed.cookie, seed.csrf);
+    expect(res.statusCode).toBe(422);
+    expect(
+      await prisma.notificationOutbox.count({ where: { orderId } }),
+    ).toBe(0);
+  });
+
   it("resend requires auth (anon → 303 /login)", async () => {
     const orderId = await makePendingOrder();
     await postJson(`/api/orders/${orderId}/approve`, seed.cookie, seed.csrf);
@@ -1042,6 +1078,31 @@ describe("GET /api/orders — pageSize resolution + eligibility", () => {
     const res = await get("/api/orders", seed.cookie);
     const data = JSON.parse(res.body) as { orders: Array<{ eligibility: { canAct: boolean; isDelivered: boolean } }> };
     expect(data.orders[0]!.eligibility).toMatchObject({ canAct: true, isDelivered: false });
+  });
+
+  // Task 4: the admin order list/detail routes legitimately need to show
+  // WALLET_TOPUP orders (zero OrderItem rows) for support purposes — they
+  // must render without crashing rather than excluding them, unlike the
+  // buyer-facing listUserOrders/countUserOrders.
+  it("a WALLET_TOPUP order renders in the list with kind + zero items, no crash", async () => {
+    const topupId = await makeDeliveredWalletTopupOrder();
+    const res = await get("/api/orders", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { orders: Array<{ id: number; kind: string; items: unknown[] }> };
+    const row = data.orders.find((o) => o.id === topupId);
+    expect(row).toBeDefined();
+    expect(row!.kind).toBe("WALLET_TOPUP");
+    expect(row!.items).toEqual([]);
+  });
+
+  it("GET /api/orders/:orderId renders a WALLET_TOPUP order's kind and empty items, no crash", async () => {
+    const topupId = await makeDeliveredWalletTopupOrder();
+    const res = await get(`/api/orders/${topupId}`, seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { order: { kind: string; items: unknown[] }; customerDataFields: unknown[] };
+    expect(data.order.kind).toBe("WALLET_TOPUP");
+    expect(data.order.items).toEqual([]);
+    expect(data.customerDataFields).toEqual([]);
   });
 });
 
@@ -1185,6 +1246,23 @@ describe("POST /api/orders/bulk-action", () => {
 
     const audit = await prisma.auditLog.findMany({ where: { action: "order_bulk_resend" } });
     expect(audit.length).toBe(1);
+  });
+
+  // Task 4: same wallet-top-up guard as the single-order resend route — a
+  // DELIVERED WALLET_TOPUP order with a Telegram buyer passes
+  // eligibility.canResend (it doesn't know about kind), so the route itself
+  // must reject it rather than enqueueing a bogus credentials DM.
+  it("bulk resend rejects a WALLET_TOPUP order and enqueues no DM", async () => {
+    const topup = await makeDeliveredWalletTopupOrder();
+    const res = await postJsonOrders("/api/orders/bulk-action", seed.cookie, seed.csrf, {
+      ids: [topup],
+      action: "resend",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body) as { succeeded: number[]; failed: { id: number; error: string }[] };
+    expect(body.succeeded).toEqual([]);
+    expect(body.failed).toEqual([{ id: topup, error: "error.not_eligible" }]);
+    expect(await prisma.notificationOutbox.count({ where: { orderId: topup } })).toBe(0);
   });
 
   it("bulk cancel: requires a reason, cancels eligible orders, skips an already-delivered one", async () => {

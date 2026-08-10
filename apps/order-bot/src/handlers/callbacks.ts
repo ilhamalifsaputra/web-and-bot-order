@@ -23,6 +23,7 @@ import { logErrorRef } from "../util/errors";
 import * as ckb from "../keyboards/customer";
 import * as customer from "./customer";
 import * as checkout from "./checkout";
+import * as walletTopup from "./walletTopup";
 import * as staticPages from "./static";
 import { handleAdminCallback } from "./admin";
 
@@ -173,6 +174,37 @@ const dispatchWalletPay: DomainDispatcher = async (ctx, parts) => {
   await checkout.completeOrderWithWallet(ctx, parseInt(parts[2]!, 10), parseInt(parts[3]!, 10));
 };
 
+const dispatchTopup: DomainDispatcher = async (ctx, parts) => {
+  // v1:topup:open | v1:topup:currency:idr|usdt | v1:topup:pay:<rail>
+  const action = parts[2];
+  if (action === "open") {
+    await walletTopup.showWalletTopupMenu(ctx);
+  } else if (action === "currency") {
+    await walletTopup.promptTopupAmount(ctx, parts[3] === "usdt" ? "USDT" : "IDR");
+  } else if (action === "pay") {
+    switch (parts[3]) {
+      case "tokopay":
+        await walletTopup.payTopupTokopay(ctx);
+        break;
+      case "paydisini":
+        await walletTopup.payTopupPaydisini(ctx);
+        break;
+      case "internal":
+        await walletTopup.payTopupInternal(ctx);
+        break;
+      case "bybit":
+        await walletTopup.payTopupBybit(ctx);
+        break;
+      case "bybitbsc":
+        await walletTopup.payTopupBybitBsc(ctx);
+        break;
+      case "nowpayments":
+        await walletTopup.payTopupNowpayments(ctx);
+        break;
+    }
+  }
+};
+
 const dispatchLang: DomainDispatcher = async (ctx, parts) => {
   const action = parts[2];
   if (action === "menu") await customer.showLanguageMenu(ctx);
@@ -229,6 +261,7 @@ const DOMAIN_ROUTES: Record<string, DomainDispatcher> = {
   ref: dispatchRef,
   restock: dispatchRestock,
   ticket: dispatchTicket,
+  topup: dispatchTopup,
   voucher: dispatchVoucher,
   wallet: dispatchWallet,
   walletm: dispatchWalletMenu,
@@ -263,6 +296,13 @@ export async function routeCallback(ctx: MyContext): Promise<void> {
   // sets the flag itself just after rendering its prompt.
   if (!(domain === "qty" && parts[2] === "input")) {
     ctx.session.awaitingQtyDenomId = undefined;
+  }
+  // Same guarantee for the wallet-topup amount-input mode: any tap other than
+  // the one that starts it (topup:currency, handled by promptTopupAmount)
+  // must end capture, or a later typed number could be misread as a top-up
+  // amount on an unrelated screen.
+  if (!(domain === "topup" && parts[2] === "currency")) {
+    ctx.session.awaitingTopupCurrency = undefined;
   }
 
   const dispatcher = DOMAIN_ROUTES[domain!];

@@ -8,7 +8,7 @@
  * serialization + busy_timeout, this prevents double-delivery without locks.
  */
 import { config } from "@app/core/config";
-import { OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { ValidationError } from "@app/core/errors";
@@ -31,6 +31,7 @@ import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
 import { enqueueAdminOverpaid } from "./notifications";
+import { settleWalletTopup } from "./wallet_topup";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -229,6 +230,17 @@ export async function deliverPaidInternalOrder(
       const order = await getOrder(tx, args.orderId);
       if (!order || order.status !== OrderStatus.PENDING_PAYMENT) {
         return { status: "stale" as const };
+      }
+      if (order.kind === OrderKind.WALLET_TOPUP) {
+        const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        // No outbox enqueue here (unlike TokoPay/PayDisini/NOWPayments): this
+        // function only ever runs inside the bot process's own internal-
+        // transfer poller (never a web request), so the buyer is DM'd
+        // directly by that poller's `onDelivered` handler
+        // (apps/order-bot/src/payments/binanceInternal.ts) right after this
+        // call returns — enqueueing to the outbox here too would double-notify.
+        logger.info(`Auto-delivered internal-transfer wallet top-up order ${settled.orderCode} for Binance transaction ${args.binanceTxId}`);
+        return { status: "delivered" as const, order: settled, credentials: [] };
       }
       await tx.order.update({
         where: { id: args.orderId },

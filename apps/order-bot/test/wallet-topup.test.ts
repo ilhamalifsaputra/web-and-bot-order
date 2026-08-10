@@ -1,0 +1,272 @@
+// setup-db MUST be first — temp DB + push before any @app import.
+import "./setup-db";
+
+vi.mock("@app/core/payments/tokopay", async (orig) => ({
+  ...(await orig<typeof import("@app/core/payments/tokopay")>()),
+  createTransaction: vi.fn().mockResolvedValue({
+    trxId: "TP-TOPUP-TEST",
+    payUrl: null,
+    qrLink: "https://x/qr.png",
+    qrString: "000",
+    totalBayar: "100",
+  }),
+}));
+
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  prisma,
+  setSetting,
+  BINANCE_UID_KEY,
+  BINANCE_API_KEY_KEY,
+  BINANCE_API_SECRET_KEY,
+} from "@app/db";
+import { OrderKind, PaymentMethod } from "@app/core/enums";
+import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
+import { makeCtx, calls } from "./helpers/ctx";
+import type { SessionData } from "../src/context";
+import { invalidateRateCache } from "../src/util/rate";
+import { topupMethodsKb } from "../src/keyboards/customer";
+import * as walletTopup from "../src/handlers/walletTopup";
+import { routeCallback } from "../src/handlers/callbacks";
+
+let sample: SampleData;
+
+beforeEach(async () => {
+  await resetDb(prisma);
+  invalidateRateCache();
+  sample = await buildSampleData(prisma);
+});
+
+afterAll(async () => {
+  await prisma.$disconnect();
+});
+
+function userSession(): Partial<SessionData> {
+  return {
+    lang: "en",
+    scratch: {},
+    dbUser: {
+      id: sample.user.id,
+      telegramId: String(sample.user.telegramId),
+      role: sample.user.role,
+      language: sample.user.language,
+      referralCode: sample.user.referralCode,
+      walletBalance: String(sample.user.walletBalance),
+    },
+  };
+}
+
+function customerCtx(opts: Parameters<typeof makeCtx>[0] = {}) {
+  return makeCtx({ from: { id: 42, username: "tester" }, session: userSession(), ...opts });
+}
+
+// ===========================================================================
+// topupMethodsKb — mirrors payment-menu.test.ts's coverage of usdtMethodsKb/
+// orderConfirmKb: only the gateways actually enabled for the chosen currency
+// get a button.
+// ===========================================================================
+
+interface FlatBtn {
+  text: string;
+  callback_data?: string;
+}
+
+function data(kb: { inline_keyboard: FlatBtn[][] }): string[] {
+  return kb.inline_keyboard.flat().map((b) => b.callback_data ?? "");
+}
+
+describe("topupMethodsKb", () => {
+  it("IDR: shows TokoPay + PayDisini when both are enabled, never a USDT rail", () => {
+    const d = data(topupMethodsKb("IDR", "en", true, true, true, true, true, true));
+    expect(d).toContain("v1:topup:pay:tokopay");
+    expect(d).toContain("v1:topup:pay:paydisini");
+    expect(d.some((x) => x.startsWith("v1:topup:pay:internal"))).toBe(false);
+    expect(d.some((x) => x.startsWith("v1:topup:pay:bybit"))).toBe(false);
+    expect(d.some((x) => x.startsWith("v1:topup:pay:nowpayments"))).toBe(false);
+  });
+
+  it("IDR: omits a rail's button when it isn't enabled", () => {
+    const onlyTokopay = data(topupMethodsKb("IDR", "en", true, false));
+    expect(onlyTokopay).toContain("v1:topup:pay:tokopay");
+    expect(onlyTokopay).not.toContain("v1:topup:pay:paydisini");
+
+    const onlyPaydisini = data(topupMethodsKb("IDR", "en", false, true));
+    expect(onlyPaydisini).not.toContain("v1:topup:pay:tokopay");
+    expect(onlyPaydisini).toContain("v1:topup:pay:paydisini");
+
+    const neither = data(topupMethodsKb("IDR", "en", false, false));
+    expect(neither.some((x) => x.startsWith("v1:topup:pay:"))).toBe(false);
+  });
+
+  it("USDT: shows Binance/Bybit/Bybit BSC/NOWPayments only when each is enabled, never an IDR rail", () => {
+    const all = data(topupMethodsKb("USDT", "en", true, true, true, true, true, true));
+    expect(all).toContain("v1:topup:pay:internal");
+    expect(all).toContain("v1:topup:pay:bybit");
+    expect(all).toContain("v1:topup:pay:bybitbsc");
+    expect(all).toContain("v1:topup:pay:nowpayments");
+    expect(all.some((x) => x.startsWith("v1:topup:pay:tokopay"))).toBe(false);
+    expect(all.some((x) => x.startsWith("v1:topup:pay:paydisini"))).toBe(false);
+
+    const none = data(topupMethodsKb("USDT", "en", false, false, false, false, false, false));
+    expect(none.some((x) => x.startsWith("v1:topup:pay:"))).toBe(false);
+  });
+
+  it("USDT: omits NOWPayments alone when only it is disabled", () => {
+    const d = data(topupMethodsKb("USDT", "en", false, false, true, true, true, false));
+    expect(d).toContain("v1:topup:pay:internal");
+    expect(d).toContain("v1:topup:pay:bybit");
+    expect(d).toContain("v1:topup:pay:bybitbsc");
+    expect(d.some((x) => x.startsWith("v1:topup:pay:nowpayments"))).toBe(false);
+  });
+
+  it("always offers a Back action re-opening the amount prompt for the same currency", () => {
+    const idr = data(topupMethodsKb("IDR", "en"));
+    expect(idr).toContain("v1:topup:currency:idr");
+    const usdt = data(topupMethodsKb("USDT", "en"));
+    expect(usdt).toContain("v1:topup:currency:usdt");
+  });
+});
+
+// ===========================================================================
+// topup domain dispatch — v1:topup:* routes to the right walletTopup export.
+// ===========================================================================
+
+describe("topup callback domain dispatch", () => {
+  it("v1:topup:open routes to showWalletTopupMenu (currency choice screen)", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:topup:open" });
+    await routeCallback(ctx);
+    const flat = JSON.stringify(sink);
+    expect(flat).toContain("v1:topup:currency:idr");
+    expect(flat).toContain("v1:topup:currency:usdt");
+  });
+
+  it("v1:topup:currency:idr routes to promptTopupAmount(ctx, \"IDR\") — sets the IDR capture flag and prompts for an amount", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:topup:currency:idr" });
+    await routeCallback(ctx);
+    expect(ctx.session.awaitingTopupCurrency).toBe("IDR");
+    expect(JSON.stringify(sink)).toContain("IDR");
+  });
+
+  it("v1:topup:currency:usdt routes to promptTopupAmount(ctx, \"USDT\") — sets the USDT capture flag", async () => {
+    const { ctx } = customerCtx({ callbackData: "v1:topup:currency:usdt" });
+    await routeCallback(ctx);
+    expect(ctx.session.awaitingTopupCurrency).toBe("USDT");
+  });
+
+  it.each([
+    ["tokopay", "payTopupTokopay"],
+    ["paydisini", "payTopupPaydisini"],
+    ["internal", "payTopupInternal"],
+    ["bybit", "payTopupBybit"],
+    ["bybitbsc", "payTopupBybitBsc"],
+    ["nowpayments", "payTopupNowpayments"],
+  ] as const)("v1:topup:pay:%s routes to walletTopup.%s and no other pay handler", async (rail, fnName) => {
+    const spies = {
+      payTopupTokopay: vi.spyOn(walletTopup, "payTopupTokopay").mockResolvedValue(undefined),
+      payTopupPaydisini: vi.spyOn(walletTopup, "payTopupPaydisini").mockResolvedValue(undefined),
+      payTopupInternal: vi.spyOn(walletTopup, "payTopupInternal").mockResolvedValue(undefined),
+      payTopupBybit: vi.spyOn(walletTopup, "payTopupBybit").mockResolvedValue(undefined),
+      payTopupBybitBsc: vi.spyOn(walletTopup, "payTopupBybitBsc").mockResolvedValue(undefined),
+      payTopupNowpayments: vi.spyOn(walletTopup, "payTopupNowpayments").mockResolvedValue(undefined),
+    };
+    try {
+      const { ctx } = customerCtx({ callbackData: `v1:topup:pay:${rail}` });
+      await routeCallback(ctx);
+      for (const [name, spy] of Object.entries(spies)) {
+        if (name === fnName) expect(spy, `${name} should have been called`).toHaveBeenCalledTimes(1);
+        else expect(spy, `${name} should NOT have been called`).not.toHaveBeenCalled();
+      }
+    } finally {
+      for (const spy of Object.values(spies)) spy.mockRestore();
+    }
+  });
+
+  it("an unknown v1:topup:pay:<rail> is a no-op (not routed to any handler)", async () => {
+    const spy = vi.spyOn(walletTopup, "payTopupTokopay").mockResolvedValue(undefined);
+    try {
+      const { ctx } = customerCtx({ callbackData: "v1:topup:pay:doesnotexist" });
+      await routeCallback(ctx);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+// ===========================================================================
+// End-to-end smoke: a couple of representative rails actually create a
+// WALLET_TOPUP order via createWalletTopupOrder, reusing the real gateway-
+// claim/QR-render/anchoring code (not a fresh reimplementation).
+// ===========================================================================
+
+describe("payTopup* handlers (representative rails)", () => {
+  it("payTopupTokopay creates an IDR/TOKOPAY WALLET_TOPUP order and sends the QR as one photo+caption bubble", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const { ctx, sink } = customerCtx({
+      session: { ...userSession(), scratch: { topupCurrency: "IDR", topupAmount: "50000" } },
+    });
+    await walletTopup.payTopupTokopay(ctx);
+
+    const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order?.kind).toBe(OrderKind.WALLET_TOPUP);
+    expect(order?.paymentMethod).toBe(PaymentMethod.TOKOPAY);
+    expect(order?.currency).toBe("IDR");
+    // Bare order — no OrderItem rows on a WALLET_TOPUP order (it credits the
+    // wallet balance directly, not a SKU).
+    const itemCount = await prisma.orderItem.count({ where: { orderId: order!.id } });
+    expect(itemCount).toBe(0);
+    expect(calls(sink, "replyWithPhoto").length).toBe(1);
+  });
+
+  it("payTopupInternal creates a USDT/BINANCE_INTERNAL WALLET_TOPUP order with a paymentRef, no HTTP call needed", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const { ctx, sink } = customerCtx({
+      session: { ...userSession(), scratch: { topupCurrency: "USDT", topupAmount: "10" } },
+    });
+    await walletTopup.payTopupInternal(ctx);
+
+    const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order?.kind).toBe(OrderKind.WALLET_TOPUP);
+    expect(order?.paymentMethod).toBe(PaymentMethod.BINANCE_INTERNAL);
+    expect(order?.currency).toBe("USDT");
+    expect(order?.paymentRef).toBeTruthy();
+    expect(JSON.stringify(sink)).toContain("UID123");
+  });
+
+  it("payTopupInternal clears the scratch amount/currency once the order is created", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const { ctx } = customerCtx({
+      session: { ...userSession(), scratch: { topupCurrency: "USDT", topupAmount: "10" } },
+    });
+    await walletTopup.payTopupInternal(ctx);
+    const scratch = ctx.session.scratch as { topupCurrency?: string; topupAmount?: string };
+    expect(scratch.topupCurrency).toBeUndefined();
+    expect(scratch.topupAmount).toBeUndefined();
+  });
+
+  it("a stale tap (no scratch amount/currency) never crashes — falls back to the currency-choice screen", async () => {
+    const { ctx, sink } = customerCtx({ callbackData: "v1:topup:pay:internal" });
+    await walletTopup.payTopupInternal(ctx);
+    expect(JSON.stringify(sink)).toContain("v1:topup:currency:idr");
+    const orders = await prisma.order.count({ where: { userId: sample.user.id } });
+    expect(orders).toBe(0);
+  });
+
+  it("payTopupTokopay refuses a wrong-currency scratch (USDT) instead of creating an IDR order", async () => {
+    await setSetting(prisma, "tokopay_merchant_id", "M1");
+    await setSetting(prisma, "tokopay_secret", "S1");
+    const { ctx } = customerCtx({
+      session: { ...userSession(), scratch: { topupCurrency: "USDT", topupAmount: "5" } },
+    });
+    await walletTopup.payTopupTokopay(ctx);
+    const orders = await prisma.order.count({ where: { userId: sample.user.id } });
+    expect(orders).toBe(0);
+  });
+});

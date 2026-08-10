@@ -456,15 +456,19 @@ export default function AccountPage() {
           value={String(data.order_count)}
           helperKey="web.account_view_history"
         />
+        {/* Both wallet tiles now link to the top-up flow (Task 5) — previously
+            "as=static", since there was nothing to navigate to. The currency
+            is pre-selected via the query string WalletTopupPage reads. */}
         {!isGuest && (
           <>
             <SummaryCard
-              as="static"
+              as="link"
+              href="/wallet/topup?currency=IDR"
               emphasized
               icon={Wallet}
               labelKey="web.account_credit_idr"
               value={formatIdr(data.wallet_idr)}
-              helperKey="web.account_balance_available"
+              helperKey="web.wallet_topup_cta"
             />
             <SummaryCard
               as="button"
@@ -475,12 +479,13 @@ export default function AccountPage() {
               helperKey="web.account_tap_to_copy"
             />
             <SummaryCard
-              as="static"
+              as="link"
+              href="/wallet/topup?currency=USDT"
               emphasized
               icon={Coins}
               labelKey="web.account_credit_usdt"
               value={formatNativeUsdt(data.wallet_usdt)}
-              helperKey="web.account_balance_available"
+              helperKey="web.wallet_topup_cta"
             />
           </>
         )}
@@ -603,7 +608,17 @@ export default function AccountPage() {
                 <span className="stat-value tabular block text-2xl!">{formatNativeUsdt(data.wallet_usdt)}</span>
               </div>
             </div>
-            <p className="stat-sub mt-4">{t("web.account_wallet_note")}</p>
+            {/* Task 5: a real next step instead of the note explaining how
+                credit gets spent — now that top-up exists, "how do I get
+                more?" is the more useful question to answer here. */}
+            <div className="mt-4 flex flex-wrap gap-2">
+              <Link to="/wallet/topup?currency=IDR" className="btn btn-soft btn-sm">
+                <Wallet className="h-3.5 w-3.5" aria-hidden="true" /> {t("web.wallet_topup_button_idr")}
+              </Link>
+              <Link to="/wallet/topup?currency=USDT" className="btn btn-soft btn-sm">
+                <Coins className="h-3.5 w-3.5" aria-hidden="true" /> {t("web.wallet_topup_button_usdt")}
+              </Link>
+            </div>
           </div>
           )}
 

@@ -233,6 +233,39 @@ describe("notifier templates.render", () => {
     expect(out).not.toContain("http");
   });
 
+  it("renders WALLET_TOPUP_CREDITED_DM as a bilingual DM with the credited IDR amount and new balance", () => {
+    const out = render("WALLET_TOPUP_CREDITED_DM", {
+      amount: "50000",
+      currency: "IDR",
+      new_balance: "125000",
+    });
+    expect(out).toContain("50000 IDR");
+    expect(out).toContain("125000 IDR");
+    expect(out).toMatch(/top-?up successful/i);
+    expect(out).toMatch(/top up berhasil/i); // Indonesian line
+  });
+
+  it("renders WALLET_TOPUP_CREDITED_DM correctly for a USDT top-up", () => {
+    const out = render("WALLET_TOPUP_CREDITED_DM", {
+      amount: "10.5",
+      currency: "USDT",
+      new_balance: "30.25",
+    });
+    expect(out).toContain("10.5 USDT");
+    expect(out).toContain("30.25 USDT");
+  });
+
+  it("HTML-escapes WALLET_TOPUP_CREDITED_DM interpolated values", () => {
+    const out = render("WALLET_TOPUP_CREDITED_DM", {
+      amount: "<script>alert(1)</script>",
+      currency: "<b>IDR</b>",
+      new_balance: "100",
+    });
+    expect(out).not.toContain("<script>");
+    expect(out).not.toContain("<b>IDR</b>");
+    expect(out).toContain("&lt;script&gt;");
+  });
+
   it("HTML-escapes ORDER_PROCESSING_DM interpolated values", () => {
     const out = render("ORDER_PROCESSING_DM", {
       order_code: "<b>ORD</b>",

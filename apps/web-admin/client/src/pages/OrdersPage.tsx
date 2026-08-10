@@ -66,6 +66,12 @@ interface OrderRow {
   id: number;
   orderCode: string;
   status: string;
+  /** "PRODUCT" (normal purchase) or "WALLET_TOPUP" (zero OrderItem rows —
+   * the buyer topped up their wallet balance, not bought a SKU). Support
+   * surfaces need to see top-ups; the Products column below shows a
+   * distinct label for them instead of trying to read a product name off
+   * an empty items array. */
+  kind: string;
   currency: string;
   totalAmount: string;
   paymentMethod: string;
@@ -536,6 +542,9 @@ export function OrdersPage() {
             key: "products",
             header: "Product Count",
             render: (row) => {
+              if (row.kind === "WALLET_TOPUP") {
+                return <Badge variant="secondary">Wallet Top-Up ({row.currency})</Badge>;
+              }
               if (row.items.length === 0) return <span className="text-sm text-ink-soft">—</span>;
               const first = row.items[0]!;
               const extra = row.items.length - 1;

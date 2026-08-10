@@ -191,6 +191,10 @@ export const OrderCurrency = {
 export type OrderCurrency = (typeof OrderCurrency)[keyof typeof OrderCurrency];
 export const zOrderCurrency = z.nativeEnum(OrderCurrency);
 
+export const OrderKind = { PRODUCT: "PRODUCT", WALLET_TOPUP: "WALLET_TOPUP" } as const;
+export type OrderKind = (typeof OrderKind)[keyof typeof OrderKind];
+export const zOrderKind = z.nativeEnum(OrderKind);
+
 export const VoucherType = {
   PERCENT: "PERCENT",
   FIXED: "FIXED",
@@ -295,6 +299,17 @@ export const NotificationEvent = {
   // buyer_language only — the content is read LIVE from Order.deliveredContent at
   // dispatch time, never placed in the payload (same rule as ORDER_DELIVERED_DM).
   ORDER_MANUAL_DELIVERED_DM: "ORDER_MANUAL_DELIVERED_DM",
+  // Buyer DM: a wallet top-up settled and the buyer's balance was credited.
+  // Only enqueued by the three WEBHOOK-driven top-up rails (TokoPay/
+  // PayDisini/NOWPayments — settlement can run in the web process, which must
+  // never send Telegram itself, hence the outbox). The other three top-up
+  // rails (Binance Internal, Bybit, Bybit BSC) settle exclusively inside
+  // bot-process pollers and DM the buyer directly instead (see each rail's
+  // `onDelivered` handler under apps/order-bot/src/payments/) — enqueueing
+  // this event for those too would double-notify the buyer. payload carries
+  // `chat_id` + `amount`/`currency`/`new_balance` (all money as Decimal
+  // `.toString()`), no order_code — the dispatcher needs no live DB read.
+  WALLET_TOPUP_CREDITED_DM: "WALLET_TOPUP_CREDITED_DM",
   // Admin DM (not a channel post): a Bybit BSC order's automated tracking
   // pipeline failed post-detection (tracker lookup-failure grace period
   // exhausted, or a delivery throw after Bybit reported the deposit

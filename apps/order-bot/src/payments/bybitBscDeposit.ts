@@ -32,7 +32,7 @@ import { createHmac } from "node:crypto";
 import type { Api } from "grammy";
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
-import { langCode, OrderStatus, NotificationEvent } from "@app/core/enums";
+import { langCode, OrderStatus, OrderKind, NotificationEvent } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
@@ -45,6 +45,7 @@ import {
   recordBybitBscPollHealth,
   resolveBybitBscConfig,
   enqueueNotification,
+  getUser,
   type BybitBscConfig,
   type BybitBscDeliverResult,
 } from "@app/db";
@@ -53,7 +54,7 @@ import { esc, renderBybitBscTrackingScreen } from "../util/format";
 import { matchByAmount, matchUnderpaidByAmount } from "./binanceInternal";
 import { createBackoffGate } from "./pollBackoff";
 import { paymentSuccessKb, bybitBscTrackingKb } from "../keyboards/customer";
-import { sendAccountFile } from "../util/delivery";
+import { sendAccountFile, walletTopupSuccessText } from "../util/delivery";
 
 // USDT itself has no on-chain "gas deducted from the sent amount" semantics
 // the way native-coin transfers do, so the same tight tolerance Internal
@@ -184,20 +185,43 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   const lang = langCode(order.user.language);
   const tgId = Number(order.user.telegramId);
 
-  try {
-    await sendAccountFile(api, tgId, order, lang);
-  } catch (err) {
-    logger.error(
-      { err },
-      `Failed to DM the account file for order ${order.orderCode} — enqueuing outbox retry so the buyer still receives their credentials`,
-    );
+  // Non-null only for a WALLET_TOPUP order — both the DM below and the
+  // anchored-bubble edit further down reuse this exact text, so it's built
+  // once and shared instead of re-fetching the fresh balance twice.
+  let topupSuccessText: string | null = null;
+
+  if (order.kind === OrderKind.WALLET_TOPUP) {
+    // There is nothing to deliver here — settleWalletTopup already credited
+    // the wallet, so there's no account file to send; tell the buyer what
+    // was credited and their new balance instead.
+    const freshUser = await getUser(prisma, order.userId);
+    const newBalance = freshUser
+      ? order.currency === "IDR"
+        ? freshUser.walletBalance
+        : freshUser.walletBalanceUsdt
+      : order.totalAmount;
+    topupSuccessText = walletTopupSuccessText(order, newBalance, lang);
     try {
-      await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, order.id, {
-        chat_id: tgId,
-        order_code: order.orderCode,
-      });
-    } catch (eq) {
-      logger.error({ err: eq }, `Failed to enqueue outbox fallback for order ${order.orderCode} — buyer may not receive credentials without manual admin resend`);
+      await api.sendMessage(tgId, topupSuccessText, { parse_mode: "HTML" });
+    } catch (err) {
+      logger.error({ err }, `Failed to DM the wallet top-up success message for order ${order.orderCode}`);
+    }
+  } else {
+    try {
+      await sendAccountFile(api, tgId, order, lang);
+    } catch (err) {
+      logger.error(
+        { err },
+        `Failed to DM the account file for order ${order.orderCode} — enqueuing outbox retry so the buyer still receives their credentials`,
+      );
+      try {
+        await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, order.id, {
+          chat_id: tgId,
+          order_code: order.orderCode,
+        });
+      } catch (eq) {
+        logger.error({ err: eq }, `Failed to enqueue outbox fallback for order ${order.orderCode} — buyer may not receive credentials without manual admin resend`);
+      }
     }
   }
 
@@ -207,7 +231,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
       await api.editMessageText(
         Number(order.paymentMsgChatId),
         order.paymentMsgId,
-        coreT("checkout.bybit_bsc_paid", lang, { code: order.orderCode }),
+        topupSuccessText ?? coreT("checkout.bybit_bsc_paid", lang, { code: order.orderCode }),
         { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
       );
     } catch {

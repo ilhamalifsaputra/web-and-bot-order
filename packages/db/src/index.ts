@@ -28,6 +28,7 @@ export * from "./crud/tokopay";
 export * from "./crud/paydisini";
 export * from "./crud/nowpayments";
 export * from "./crud/wallet_checkout";
+export * from "./crud/wallet_topup";
 export * from "./crud/credentials";
 export * from "./crud/webauth";
 export * from "./crud/admins";

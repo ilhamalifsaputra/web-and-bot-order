@@ -27,7 +27,7 @@ import { createHmac } from "node:crypto";
 import type { Api } from "grammy";
 import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
-import { langCode, NotificationEvent } from "@app/core/enums";
+import { langCode, NotificationEvent, OrderKind } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
@@ -40,6 +40,7 @@ import {
   recordBinancePollHealth,
   resolveBinanceInternalConfig,
   enqueueNotification,
+  getUser,
   type BinanceInternalConfig,
   type DeliverResult,
 } from "@app/db";
@@ -47,7 +48,7 @@ import { coreT } from "../util/i18n";
 import { esc } from "../util/format";
 import { createBackoffGate } from "./pollBackoff";
 import { paymentSuccessKb } from "../keyboards/customer";
-import { sendAccountFile } from "../util/delivery";
+import { sendAccountFile, walletTopupSuccessText } from "../util/delivery";
 
 // Internal transfers are exact off-chain ledger moves (no on-chain
 // slippage/fees) — the only error source is Number() float parsing of a
@@ -374,22 +375,45 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   const lang = langCode(order.user.language);
   const tgId = Number(order.user.telegramId);
 
-  // Delivery is instant: skip the interim "payment verified / being prepared"
-  // notice and send the account file straight away.
-  try {
-    await sendAccountFile(api, tgId, order, lang);
-  } catch (err) {
-    logger.error(
-      { err },
-      `Failed to DM the account file for order ${order.orderCode} — enqueuing outbox retry so the buyer still receives their credentials`,
-    );
+  // Non-null only for a WALLET_TOPUP order — both the DM below and the
+  // anchored-bubble edit further down reuse this exact text, so it's built
+  // once and shared instead of re-fetching the fresh balance twice.
+  let topupSuccessText: string | null = null;
+
+  if (order.kind === OrderKind.WALLET_TOPUP) {
+    // There is nothing to deliver here — settleWalletTopup already credited
+    // the wallet, so there's no account file to send; tell the buyer what
+    // was credited and their new balance instead.
+    const freshUser = await getUser(prisma, order.userId);
+    const newBalance = freshUser
+      ? order.currency === "IDR"
+        ? freshUser.walletBalance
+        : freshUser.walletBalanceUsdt
+      : order.totalAmount;
+    topupSuccessText = walletTopupSuccessText(order, newBalance, lang);
     try {
-      await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, order.id, {
-        chat_id: tgId,
-        order_code: order.orderCode,
-      });
-    } catch (eq) {
-      logger.error({ err: eq }, `Failed to enqueue outbox fallback for order ${order.orderCode} — buyer may not receive credentials without manual admin resend`);
+      await api.sendMessage(tgId, topupSuccessText, { parse_mode: "HTML" });
+    } catch (err) {
+      logger.error({ err }, `Failed to DM the wallet top-up success message for order ${order.orderCode}`);
+    }
+  } else {
+    // Delivery is instant: skip the interim "payment verified / being prepared"
+    // notice and send the account file straight away.
+    try {
+      await sendAccountFile(api, tgId, order, lang);
+    } catch (err) {
+      logger.error(
+        { err },
+        `Failed to DM the account file for order ${order.orderCode} — enqueuing outbox retry so the buyer still receives their credentials`,
+      );
+      try {
+        await enqueueNotification(prisma, NotificationEvent.ORDER_DELIVERED_DM, order.id, {
+          chat_id: tgId,
+          order_code: order.orderCode,
+        });
+      } catch (eq) {
+        logger.error({ err: eq }, `Failed to enqueue outbox fallback for order ${order.orderCode} — buyer may not receive credentials without manual admin resend`);
+      }
     }
   }
 
@@ -399,7 +423,7 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
       await api.editMessageText(
         Number(order.paymentMsgChatId),
         order.paymentMsgId,
-        coreT("checkout.internal_paid", lang, { code: order.orderCode }),
+        topupSuccessText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
         { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
       );
     } catch {

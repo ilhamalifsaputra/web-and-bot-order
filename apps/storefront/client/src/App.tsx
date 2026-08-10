@@ -24,6 +24,7 @@ import FlashPage from "./pages/FlashPage";
 const CartPage = lazy(() => import("./pages/CartPage"));
 const CheckoutPage = lazy(() => import("./pages/CheckoutPage"));
 const PayPage = lazy(() => import("./pages/PayPage"));
+const WalletTopupPage = lazy(() => import("./pages/WalletTopupPage"));
 // Guest order tracking — reached from a confirmation message or the sign-in
 // page, never on the way to a purchase.
 const TrackOrderPage = lazy(() => import("./pages/TrackOrderPage"));
@@ -75,6 +76,10 @@ export default function App() {
           <Route path="/checkout" element={<CheckoutPage />} />
           <Route path="/checkout/:code/pay" element={<PayPage />} />
           <Route path="/track" element={<TrackOrderPage />} />
+          {/* Wallet top-up (Task 5): PayPage is reused as-is via `variant` —
+              see PayPage.tsx's file header for why a fork wasn't needed. */}
+          <Route path="/wallet/topup" element={<WalletTopupPage />} />
+          <Route path="/wallet/topup/:code/pay" element={<PayPage variant="topup" />} />
           <Route path="/account" element={<AccountPage />} />
           <Route path="/account/orders" element={<OrdersPage />} />
           <Route path="/account/orders/:code" element={<OrderDetailPage />} />

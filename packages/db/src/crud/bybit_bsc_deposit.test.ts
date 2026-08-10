@@ -34,7 +34,10 @@ import {
 } from "./bybit_bsc_deposit";
 import { createOrderDirect } from "./orders";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
-import { OrderStatus, PaymentMethod, DeliveryType, NotificationEvent } from "@app/core/enums";
+import { createWalletTopupOrder } from "./wallet_topup";
+import { upsertUser } from "./users";
+import { OrderStatus, OrderKind, PaymentMethod, DeliveryType, NotificationEvent, StockStatus } from "@app/core/enums";
+import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import type { Db } from "./_types";
@@ -301,5 +304,124 @@ describe("deliverPaidBybitBscOrder — processing branch (manual SKU)", () => {
       where: { orderId: order.id, event: NotificationEvent.ORDER_PROCESSING_DM },
     });
     expect(processingDm).not.toBeNull();
+  });
+});
+
+describe("deliverPaidBybitBscOrder — WALLET_TOPUP routing", () => {
+  let db: TestDb;
+  let prisma: PrismaClient;
+  let sample: SampleData;
+
+  beforeAll(async () => {
+    db = await makeTestDb();
+    prisma = db.prisma;
+  });
+  afterAll(async () => {
+    await db.cleanup();
+  });
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  async function makeReferredUser() {
+    const referrer = await upsertUser(prisma, { telegramId: 9501, username: "topup-referrer-bb", fullName: "Referrer" });
+    const referee = await upsertUser(prisma, {
+      telegramId: 9502,
+      username: "topup-referee-bb",
+      fullName: "Referee",
+      referredByCode: referrer.referralCode,
+    });
+    return { referrer, referee };
+  }
+
+  async function makePendingTopupOrder(userId: number, amount: string = "10") {
+    return prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId, amount, currency: "USDT", method: PaymentMethod.BYBIT_BSC, rate: "16000" }),
+    );
+  }
+
+  it("a WALLET_TOPUP order routes to settleWalletTopup: wallet credited, no stock/referral side effects", async () => {
+    const { referee } = await makeReferredUser();
+    const order = await makePendingTopupOrder(referee.id, "10");
+    expect(order.kind).toBe(OrderKind.WALLET_TOPUP);
+    const txId = "0x" + "1".repeat(64);
+
+    const result = await deliverPaidBybitBscOrder(prisma, {
+      orderId: order.id,
+      bybitTxId: txId,
+      amount: order.totalAmount,
+    });
+
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+    expect(result.credentials).toEqual([]);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: referee.id } });
+    expect(new Decimal(user.walletBalanceUsdt).equals(order.totalAmount)).toBe(true);
+
+    const stock = await prisma.stockItem.findMany({ where: { productId: sample.product.id } });
+    expect(stock.every((s) => s.status === StockStatus.AVAILABLE)).toBe(true);
+    const referral = await prisma.referral.findUnique({ where: { refereeId: referee.id } });
+    expect(referral).toBeNull();
+  });
+
+  it("a duplicate gateway tx id does not double-credit the wallet", async () => {
+    const order = await makePendingTopupOrder(sample.user.id, "10");
+    const txId = "0x" + "2".repeat(64);
+
+    const first = await deliverPaidBybitBscOrder(prisma, { orderId: order.id, bybitTxId: txId, amount: order.totalAmount });
+    expect(first.status).toBe("delivered");
+
+    const second = await deliverPaidBybitBscOrder(prisma, { orderId: order.id, bybitTxId: txId, amount: order.totalAmount });
+    expect(second.status).toBe("already_processed");
+
+    const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
+    expect(rows).toHaveLength(1);
+  });
+
+  // Regression: unlike the other 5 gateways, an on-chain Bybit BSC deposit
+  // legitimately passes through PAYMENT_DETECTED/CONFIRMING/CONFIRMED (the
+  // confirmation tracker, kind-agnostic) BEFORE Bybit reports status 3
+  // ("Success") and this function is called — so by delivery time,
+  // order.status is very often NOT PENDING_PAYMENT anymore. Pin that this
+  // still credits the wallet (not a silent no-op) even when the order has
+  // already progressed to CONFIRMED before this call.
+  it("still credits the wallet when the order already progressed to CONFIRMED before delivery", async () => {
+    const order = await makePendingTopupOrder(sample.user.id, "10");
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.CONFIRMED } });
+    const txId = "0x" + "3".repeat(64);
+
+    const result = await deliverPaidBybitBscOrder(prisma, { orderId: order.id, bybitTxId: txId, amount: order.totalAmount });
+
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: sample.user.id } });
+    expect(new Decimal(user.walletBalanceUsdt).equals(order.totalAmount)).toBe(true);
+
+    const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
+    expect(rows).toHaveLength(1);
+  });
+
+  // Anti-double-notify guarantee (Task 7): Bybit BSC is a POLLER-ONLY rail —
+  // deliverPaidBybitBscOrder only ever runs inside the bot process's own
+  // Bybit BSC deposit poller, never a web request — so the buyer is DM'd
+  // directly by that poller's onDelivered handler instead. Settlement here
+  // must NOT also enqueue WALLET_TOPUP_CREDITED_DM to the outbox, or the
+  // buyer would be notified twice.
+  it("does NOT enqueue a WALLET_TOPUP_CREDITED_DM outbox row — the bot DMs the buyer directly for this poller-only rail", async () => {
+    const order = await makePendingTopupOrder(sample.user.id, "10");
+    const txId = "0x" + "4".repeat(64);
+
+    const result = await deliverPaidBybitBscOrder(prisma, { orderId: order.id, bybitTxId: txId, amount: order.totalAmount });
+    expect(result.status).toBe("delivered");
+
+    const dmRows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(dmRows).toHaveLength(0);
   });
 });

@@ -2045,6 +2045,25 @@ describe("/api/v1/account twins", () => {
       expect(probe.statusCode).toBe(404);
     });
 
+    // Task 4: a WALLET_TOPUP order (zero OrderItem rows) isn't a "My Orders"
+    // purchase — it's already visible via the wallet ledger — so even its
+    // own owner gets 404 (never a crash on the empty items array) when
+    // hitting this buyer-facing product-order detail route directly by code.
+    it("GET /account/orders/:code 404s the owner's own WALLET_TOPUP order", async () => {
+      const topup = await prisma.order.create({
+        data: {
+          orderCode: `TOPUP-SPA-${Math.random()}`,
+          userId: buyerId,
+          subtotalAmount: "50000",
+          totalAmount: "50000",
+          status: OrderStatus.DELIVERED,
+          kind: "WALLET_TOPUP",
+        },
+      });
+      const res = await app.inject({ method: "GET", url: `/api/v1/account/orders/${topup.orderCode}`, headers: { cookie } });
+      expect(res.statusCode).toBe(404);
+    });
+
     // Migrated from the deleted account.ts — same "never had a Nunjucks-era
     // HTTP test" gap as the order-detail test above.
     it("reviews: create, then a dupe or a bad order_id swallow silently (matches the deleted HTML handler 1:1)", async () => {

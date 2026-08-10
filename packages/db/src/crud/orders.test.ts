@@ -23,12 +23,14 @@ import {
   getOrder,
   listOrders,
   countOrders,
+  listUserOrders,
+  countUserOrders,
   computeOrderEligibility,
   channelMaskedBuyerId,
   customerLabel,
 } from "./orders";
 import { addToCart, upsertBulkPricing, createVoucher, setFlashSale, bulkAddStock } from "@app/db";
-import { VoucherType, VoucherScope } from "@app/core/enums";
+import { VoucherType, VoucherScope, OrderKind } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { ValidationError } from "@app/core/errors";
 import { createCategory, createCatalogProduct, createDenomination, updateDenomination } from "./catalog";
@@ -134,6 +136,33 @@ describe("order status counts", () => {
     await makeOrder("REJECTED");
     await makeOrder("REFUNDED");
     expect(await countCancelled(prisma)).toBe(2);
+  });
+});
+
+// Task 4 (wallet top-up): a WALLET_TOPUP order is a real Order row (zero
+// OrderItem rows) but isn't a "purchase" from the buyer's point of view —
+// it's already visible via the wallet ledger — so "My Orders" must exclude
+// it. listUserOrders/countUserOrders are the only two functions that surface
+// (paginate a buyer's own orders directly to the storefront/bot's "My
+// Orders" screens.
+describe("listUserOrders / countUserOrders — exclude WALLET_TOPUP", () => {
+  it("returns/counts only the PRODUCT order when the same user has one of each kind", async () => {
+    const productOrder = await makeOrder("DELIVERED", { kind: OrderKind.PRODUCT });
+    await makeOrder("DELIVERED", { kind: OrderKind.WALLET_TOPUP });
+
+    const orders = await listUserOrders(prisma, userId, 5, 0);
+    expect(orders).toHaveLength(1);
+    expect(orders[0]!.id).toBe(productOrder.id);
+    expect(orders[0]!.kind).toBe(OrderKind.PRODUCT);
+
+    expect(await countUserOrders(prisma, userId)).toBe(1);
+  });
+
+  it("defaults to PRODUCT when kind is omitted (schema default), so pre-existing rows still list", async () => {
+    const order = await makeOrder("DELIVERED");
+    const orders = await listUserOrders(prisma, userId, 5, 0);
+    expect(orders.map(o => o.id)).toEqual([order.id]);
+    expect(await countUserOrders(prisma, userId)).toBe(1);
   });
 });
 

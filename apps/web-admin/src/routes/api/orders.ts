@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import { OrderStatus, DeliveryType } from "@app/core/enums";
+import { OrderStatus, OrderKind, DeliveryType } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
@@ -273,6 +273,13 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
         error: "This buyer has no Telegram account to notify — they see their order on the storefront.",
       });
     }
+    // A wallet top-up never reserves a stockItem/credentials — there is
+    // nothing here for the account-credentials DM to attach, and (with zero
+    // items) the manual-vs-auto branch below would misclassify it as an
+    // AUTO order and send a bogus empty-credentials file.
+    if (order.kind === OrderKind.WALLET_TOPUP) {
+      return reply.code(422).send({ error: "This order is a wallet top-up — it has no credentials to resend." });
+    }
     // Manual/manual_with_info orders never reserve a stockItem (see
     // fulfillManualOrder), so ORDER_DELIVERED_DM's stock-credentials file
     // would come out empty — resend the hand-typed deliveredContent instead
@@ -511,6 +518,12 @@ export default async function ordersApiRoutes(app: FastifyInstance): Promise<voi
           });
         } else if (action === "resend") {
           if (!eligibility.canResend) {
+            failed.push({ id: orderId, error: "error.not_eligible" });
+            continue;
+          }
+          // Same wallet-top-up guard as the single-order /resend route above
+          // — no items to resend credentials for.
+          if (order.kind === OrderKind.WALLET_TOPUP) {
             failed.push({ id: orderId, error: "error.not_eligible" });
             continue;
           }

@@ -20,8 +20,21 @@ vi.mock("@app/core/config", async () => {
 
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
-import { createOrderDirect, deliverPaidPaydisiniOrder, recordUnmatchedPaydisiniTx, addAdminIdToDb, getPaydisiniCreds, setSetting, deleteSetting, createCategory, createCatalogProduct, createDenomination } from "@app/db";
-import { OrderStatus, PaymentMethod, NotificationEvent, StockStatus, DeliveryType } from "@app/core/enums";
+import {
+  createOrderDirect,
+  deliverPaidPaydisiniOrder,
+  recordUnmatchedPaydisiniTx,
+  addAdminIdToDb,
+  getPaydisiniCreds,
+  setSetting,
+  deleteSetting,
+  createCategory,
+  createCatalogProduct,
+  createDenomination,
+  createWalletTopupOrder,
+  upsertUser,
+} from "@app/db";
+import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, DeliveryType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 
 let db: TestDb;
@@ -358,6 +371,90 @@ describe("deliverPaidPaydisiniOrder", () => {
       const payload = JSON.parse(row.payloadJson) as Record<string, unknown>;
       expect(payload.excess).toBe("1.5");
     }
+  });
+});
+
+describe("deliverPaidPaydisiniOrder — WALLET_TOPUP routing", () => {
+  async function makeReferredUser() {
+    const referrer = await upsertUser(prisma, { telegramId: 9101, username: "topup-referrer-pd", fullName: "Referrer" });
+    const referee = await upsertUser(prisma, {
+      telegramId: 9102,
+      username: "topup-referee-pd",
+      fullName: "Referee",
+      referredByCode: referrer.referralCode,
+    });
+    return { referrer, referee };
+  }
+
+  async function makePendingTopupOrder(userId: number, amount: string = "20000") {
+    return prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId, amount, currency: "IDR", method: PaymentMethod.PAYDISINI }),
+    );
+  }
+
+  it("a WALLET_TOPUP order routes to settleWalletTopup: wallet credited, no stock/referral side effects", async () => {
+    const { referee } = await makeReferredUser();
+    const order = await makePendingTopupOrder(referee.id, "20000");
+    expect(order.kind).toBe(OrderKind.WALLET_TOPUP);
+
+    const result = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: order.id,
+      trxId: "trx-topup-1",
+      amount: order.totalAmount,
+    });
+
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+    expect(result.credentials).toEqual([]);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: referee.id } });
+    expect(new Decimal(user.walletBalance).equals(order.totalAmount)).toBe(true);
+
+    const stock = await prisma.stockItem.findMany({ where: { productId: sample.product.id } });
+    expect(stock.every((s) => s.status === StockStatus.AVAILABLE)).toBe(true);
+    const referral = await prisma.referral.findUnique({ where: { refereeId: referee.id } });
+    expect(referral).toBeNull();
+  });
+
+  it("a duplicate gateway tx id does not double-credit the wallet", async () => {
+    const order = await makePendingTopupOrder(sample.user.id, "20000");
+
+    const first = await deliverPaidPaydisiniOrder(prisma, { orderId: order.id, trxId: "trx-topup-dup-1", amount: order.totalAmount });
+    expect(first.status).toBe("delivered");
+
+    const second = await deliverPaidPaydisiniOrder(prisma, { orderId: order.id, trxId: "trx-topup-dup-1", amount: order.totalAmount });
+    expect(second.status).toBe("already_processed");
+
+    const rows = await prisma.walletTransaction.findMany({ where: { orderId: order.id, reason: "wallet_topup" } });
+    expect(rows).toHaveLength(1);
+
+    // Same for the buyer DM — exactly one outbox row, not one per attempt.
+    const dmRows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(dmRows).toHaveLength(1);
+  });
+
+  // PayDisini is a WEBHOOK-driven rail (deliverPaidPaydisiniOrder is called
+  // from both the storefront's webhook handler AND the bot's reconcile
+  // poller) — the web process can never send Telegram itself, so this is one
+  // of the three rails where settlement enqueues WALLET_TOPUP_CREDITED_DM to
+  // the outbox (Task 7).
+  it("enqueues a WALLET_TOPUP_CREDITED_DM outbox row with chat_id/amount/currency/new_balance", async () => {
+    const order = await makePendingTopupOrder(sample.user.id, "20000");
+
+    await deliverPaidPaydisiniOrder(prisma, { orderId: order.id, trxId: "trx-topup-dm-1", amount: order.totalAmount });
+
+    const rows = await prisma.notificationOutbox.findMany({
+      where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
+    });
+    expect(rows).toHaveLength(1);
+    const payload = JSON.parse(rows[0]!.payloadJson) as Record<string, unknown>;
+    expect(payload.chat_id).toBe(Number(sample.user.telegramId));
+    expect(payload.amount).toBe(new Decimal(order.totalAmount).toString());
+    expect(payload.currency).toBe(order.currency);
+    expect(payload.new_balance).toBe(new Decimal(order.totalAmount).toString());
   });
 });
 

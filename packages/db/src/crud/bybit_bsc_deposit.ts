@@ -20,7 +20,7 @@
  * BEP20 ids are 0x-prefixed 64-hex-char transaction hashes.
  */
 import { config } from "@app/core/config";
-import { OrderStatus, OrderCurrency, PaymentMethod } from "@app/core/enums";
+import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import type { PrismaClient, Tx } from "../client";
@@ -33,6 +33,7 @@ import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY } from "./bybit_deposit";
 import { parseMinAmount } from "./_minAmount";
+import { settleWalletTopup } from "./wallet_topup";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -404,6 +405,34 @@ export async function deliverPaidBybitBscOrder(
       const order = await getOrder(tx, args.orderId);
       if (!order || !PRE_DELIVERY_STATUSES.includes(order.status)) {
         return { status: "stale" as const };
+      }
+      if (order.kind === OrderKind.WALLET_TOPUP) {
+        // settleWalletTopup's own idempotency claim only matches
+        // status === PENDING_PAYMENT (same idiom as approveOrder's claim).
+        // But unlike the other 5 gateways, a Bybit BSC deposit is on-chain and
+        // legitimately passes through PAYMENT_DETECTED/CONFIRMING/CONFIRMED
+        // (the confirmation tracker, kind-agnostic — see PRE_DELIVERY_STATUSES
+        // above) before Bybit reports status 3 ("Success") and this function
+        // ever runs — so `order.status` here is very often NOT PENDING_PAYMENT
+        // by delivery time. The PRE_DELIVERY_STATUSES check above already
+        // established this is a legitimate pre-delivery state (not stale), so
+        // it's safe to normalize back to PENDING_PAYMENT here, inside the SAME
+        // transaction settleWalletTopup's own claim runs in — the transient
+        // state is never externally observable (no separate commit, and
+        // settleWalletTopup writes no OrderStatusHistory row for this
+        // transition either, mirroring approveOrder's claim idiom).
+        if (order.status !== OrderStatus.PENDING_PAYMENT) {
+          await tx.order.update({ where: { id: args.orderId }, data: { status: OrderStatus.PENDING_PAYMENT } });
+        }
+        const { order: settled } = await settleWalletTopup(tx, args.orderId, { amount: args.amount });
+        // No outbox enqueue here (unlike TokoPay/PayDisini/NOWPayments): this
+        // function only ever runs inside the bot process's own Bybit BSC
+        // deposit poller (never a web request), so the buyer is DM'd
+        // directly by that poller's `onDelivered` handler
+        // (apps/order-bot/src/payments/bybitBscDeposit.ts) right after this
+        // call returns — enqueueing to the outbox here too would double-notify.
+        logger.info(`Auto-delivered Bybit BSC wallet top-up order ${settled.orderCode} for transaction ${args.bybitTxId}`);
+        return { status: "delivered" as const, order: settled, credentials: [] };
       }
       await tx.order.update({
         where: { id: args.orderId },

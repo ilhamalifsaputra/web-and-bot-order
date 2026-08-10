@@ -18,7 +18,7 @@ import {
   type DeliveredItem,
 } from "@app/core/delivery";
 import { notificationKb } from "../keyboards/customer";
-import { orderAmount, formatIdr, formatUsdtAmount } from "./format";
+import { orderAmount, formatIdr, formatUsdt } from "./format";
 import { coreT } from "./i18n";
 
 interface DeliverableOrder {
@@ -40,14 +40,17 @@ interface WalletTopupOrder {
  * TODO(Task 7)). `order`'s own currency/totalAmount are what
  * createWalletTopupOrder validated and finalized; `newBalance` is the
  * caller's post-credit balance for that same currency (read fresh — the
- * order row itself doesn't carry it).
+ * order row itself doesn't carry it). Uses `formatUsdt` (not the bare
+ * `formatUsdtAmount`) for the USDT branch so the balance always carries an
+ * explicit unit, matching `formatIdr`'s "Rp" prefix on the IDR branch — a
+ * bare "New balance: 10" with no currency word would be ambiguous.
  */
 export function walletTopupSuccessText(order: WalletTopupOrder, newBalance: Decimal.Value, lang: string): string {
   const isIdr = (order.currency ?? "USDT") === "IDR";
   return coreT("wallet.topup_success", lang, {
     code: order.orderCode,
     amount: orderAmount(order),
-    balance: isIdr ? formatIdr(newBalance) : formatUsdtAmount(newBalance),
+    balance: isIdr ? formatIdr(newBalance) : formatUsdt(newBalance),
   });
 }
 

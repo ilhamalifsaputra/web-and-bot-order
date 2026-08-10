@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import {
   prisma,
   createInternalOrder,
+  createWalletTopupOrder,
   deliverPaidInternalOrder,
   markUnderpaid,
   recordUnmatchedTx,
@@ -14,6 +15,7 @@ import {
   resolveBinanceInternalConfig,
   setSetting,
   deleteSetting,
+  getUser,
   BINANCE_UID_KEY,
   BINANCE_API_KEY_KEY,
   BINANCE_API_SECRET_KEY,
@@ -24,6 +26,7 @@ import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
+import { formatUsdt } from "../src/util/format";
 import {
   classifyTx,
   noteMatches,
@@ -501,6 +504,116 @@ describe("processTransfers (poll-loop wiring)", () => {
     await processTransfers(api, [txFor({ txId: "T4", note: order.paymentRef!, amount: Number(order.totalAmount) - 1 })], await pending());
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.UNDERPAID);
     expect(sent.some((m) => /[Uu]nderpaid/.test(m.text))).toBe(true);
+  });
+});
+
+// ===========================================================================
+// processTransfers — WALLET_TOPUP delivery (Task 6 success UI). onDelivered
+// isn't exported, so these drive it the same way the PRODUCT-order tests
+// above do: through the real poll-loop wiring (processTransfers), asserting
+// on the fake Api's recorded calls.
+// ===========================================================================
+
+describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", () => {
+  function fakeApi() {
+    const sent: Array<{ chatId: number | string; text: string; extra?: unknown }> = [];
+    const edits: Array<{ chatId: number | string; messageId: number; text: string; extra?: unknown }> = [];
+    let sendDocumentCalls = 0;
+    const api = {
+      sendMessage: async (chatId: number | string, text: string, extra?: unknown) => {
+        sent.push({ chatId, text, extra });
+        return { message_id: 1 };
+      },
+      sendDocument: async () => {
+        sendDocumentCalls++;
+        return { message_id: 1 };
+      },
+      editMessageText: async (chatId: number | string, messageId: number, text: string, extra?: unknown) => {
+        edits.push({ chatId, messageId, text, extra });
+        return {};
+      },
+    } as unknown as Api;
+    return { api, sent, edits, sendDocumentCalls: () => sendDocumentCalls };
+  }
+
+  const pending = () => listPendingInternalOrders(prisma, new Date());
+  const txFor = (over: Partial<BinanceTx> & { txId: string; amount: number }): BinanceTx => ({
+    note: "", currency: "USDT", ...over,
+  });
+
+  const makeTopupOrder = (amount: string) =>
+    prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, {
+        userId: sample.user.id,
+        amount,
+        currency: "USDT",
+        method: PaymentMethod.BINANCE_INTERNAL,
+        rate: "16000",
+      }),
+    );
+
+  it("delivers, credits the wallet, and DMs the credited-amount + new-balance text — never the bare placeholder, never a credential file", async () => {
+    const order = await makeTopupOrder("10");
+    const { api, sent, sendDocumentCalls } = fakeApi();
+    await processTransfers(api, [txFor({ txId: "T-TOPUP-DM", note: order.paymentRef!, amount: Number(order.totalAmount) })], await pending());
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe(OrderStatus.DELIVERED);
+
+    // No account file — a top-up has no product/credentials to deliver.
+    expect(sendDocumentCalls()).toBe(0);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.text).not.toBe("Top-up successful."); // the old bare placeholder is gone
+    // Credited amount, formatted as USDT (with unit, not IDR).
+    expect(sent[0]!.text).toContain("10.00 USDT");
+    // New balance reads walletBalanceUsdt, not walletBalance — proves the
+    // IDR/USDT currency branch picked the right field — and carries an
+    // explicit "USDT" unit (not the bare unitless number).
+    const freshUser = await getUser(prisma, sample.user.id);
+    expect(freshUser!.walletBalanceUsdt.toString()).toBe("10");
+    expect(sent[0]!.text).toContain(formatUsdt(freshUser!.walletBalanceUsdt));
+    expect(sent[0]!.text).toMatch(/10 USDT/);
+    expect(sent[0]!.extra).toMatchObject({ parse_mode: "HTML" });
+  });
+
+  it("flips the anchored payment bubble to the SAME top-up success text, not the generic 'items being delivered' product copy", async () => {
+    const order = await makeTopupOrder("10");
+    await setOrderPaymentMessage(prisma, order.id, 555, 777);
+    const { api, edits } = fakeApi();
+    await processTransfers(api, [txFor({ txId: "T-TOPUP-BUBBLE", note: order.paymentRef!, amount: Number(order.totalAmount) })], await pending());
+
+    expect(edits).toHaveLength(1);
+    expect(edits[0]!.chatId).toBe(555);
+    expect(edits[0]!.messageId).toBe(777);
+    expect(edits[0]!.text).not.toContain("items are being delivered");
+    expect(edits[0]!.text).toContain("10.00 USDT");
+  });
+
+  it("credits an IDR top-up's walletBalance (not walletBalanceUsdt) and formats the DM in Rupiah", async () => {
+    const order = await prisma.$transaction((tx) =>
+      createWalletTopupOrder(tx, { userId: sample.user.id, amount: "50000", currency: "IDR", method: PaymentMethod.TOKOPAY }),
+    );
+    // Re-route this IDR/TOKOPAY order onto the Binance Internal poll path
+    // purely as a delivery-mechanism shortcut for this test (paymentRef +
+    // BINANCE_INTERNAL are what processTransfers matches on) — settleWalletTopup
+    // itself is currency-agnostic, so this still proves the onDelivered
+    // IDR-vs-USDT branch reads the right wallet field.
+    const paymentRef = "IDRTOPUPTEST";
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { paymentMethod: PaymentMethod.BINANCE_INTERNAL, paymentRef, expiresAt: new Date(Date.now() + 60_000) },
+    });
+    const { api, sent } = fakeApi();
+    await processTransfers(api, [txFor({ txId: "T-TOPUP-IDR", note: paymentRef, amount: 50000 })], await pending());
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe(OrderStatus.DELIVERED);
+    const freshUser = await getUser(prisma, sample.user.id);
+    expect(freshUser!.walletBalance.toString()).toBe("50000");
+    expect(freshUser!.walletBalanceUsdt.toString()).toBe("0"); // never crossed into the USDT field
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.text).toContain("Rp50.000");
   });
 });
 

@@ -43,6 +43,7 @@ import { scheduleJobs, scheduleFxRefresh } from "./jobs";
 import { startPolling, stopPolling } from "./payments/binanceInternal";
 import { startPolling as startBybitPolling, stopPolling as stopBybitPolling } from "./payments/bybitDeposit";
 import { startPolling as startBybitBscPolling, stopPolling as stopBybitBscPolling } from "./payments/bybitBscDeposit";
+import { startPolling as startBybitBscTracker, stopPolling as stopBybitBscTracker } from "./payments/bybitBscConfirmationTracker";
 import { startPolling as startTokopayPolling, stopPolling as stopTokopayPolling } from "./payments/tokopayReconcile";
 import { startPolling as startPaydisiniPolling, stopPolling as stopPaydisiniPolling } from "./payments/paydisiniReconcile";
 import { startPolling as startNowpaymentsPolling, stopPolling as stopNowpaymentsPolling } from "./payments/nowpaymentsReconcile";
@@ -294,6 +295,7 @@ export async function start(): Promise<void> {
   startPolling(bot.api); // Binance Internal Transfer
   startBybitPolling(bot.api); // Bybit Internal Transfer deposits
   startBybitBscPolling(bot.api); // Bybit BSC on-chain (BEP20) deposits
+  startBybitBscTracker(bot.api); // Bybit BSC live confirmation-count tracker (display-only)
   startTokopayPolling(bot.api); // TokoPay / QRIS reconcile (webhook safety net)
   startPaydisiniPolling(bot.api); // PayDisini / QRIS reconcile (webhook safety net)
   startNowpaymentsPolling(bot.api); // NOWPayments / USDT invoice reconcile (webhook safety net)
@@ -303,6 +305,7 @@ export async function start(): Promise<void> {
     stopPolling();
     stopBybitPolling();
     stopBybitBscPolling();
+    stopBybitBscTracker();
     stopTokopayPolling();
     stopPaydisiniPolling();
     stopNowpaymentsPolling();

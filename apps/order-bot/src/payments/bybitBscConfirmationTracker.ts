@@ -167,6 +167,17 @@ export async function pollOnce(api: Api): Promise<void> {
 
   const cfg = await resolveBybitBscTrackerConfig(prisma);
   const orders = await listTrackedBybitBscOrders(prisma);
+
+  // An order can leave the tracked set (delivered/cancelled/expired/etc.)
+  // without ever hitting the success or escalation branches below, both of
+  // which are the only other places this map is cleaned up — prune those
+  // stale entries here so a re-tracked order (same id, later re-detected)
+  // starts its grace period over rather than inheriting a stale count.
+  const trackedOrderIds = new Set(orders.map((order) => order.id));
+  for (const orderId of lookupFailureCounts.keys()) {
+    if (!trackedOrderIds.has(orderId)) lookupFailureCounts.delete(orderId);
+  }
+
   if (!orders.length) return;
 
   for (const order of orders) {

@@ -269,6 +269,33 @@ describe("pollOnce (confirmation tracker poll loop)", () => {
     expect(delivered.status).toBe(OrderStatus.DELIVERED);
   });
 
+  it("forgets the lookup-failure count for an order that leaves the tracked set", async () => {
+    const order = await makeTrackedOrder("0x" + "a".repeat(64));
+    mockChain("0x65", null); // tx not found every cycle
+
+    // Accumulate failures right up to the edge of escalating, but stop short.
+    for (let i = 0; i < MAX_CONSECUTIVE_LOOKUP_FAILURES - 1; i++) await pollOnce(fakeApi);
+    let updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(updated.trackingStaleAt).toBeNull(); // not escalated yet
+
+    // Order leaves the tracked set through another path (delivered/cancelled/
+    // expired) — simulated by flipping its status away from
+    // PAYMENT_DETECTED/CONFIRMING while its bybitTxid stays set.
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.CANCELLED } });
+    await pollOnce(fakeApi); // this order is absent from listTrackedBybitBscOrders this cycle
+
+    // ...then it re-enters the tracked set (still has bybitTxid from before).
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PAYMENT_DETECTED } });
+
+    // If the old failure count survived the gap, this single cycle would be
+    // the Nth consecutive failure and escalate immediately. It must not: a
+    // re-tracked order's grace period starts over from zero.
+    await pollOnce(fakeApi);
+    updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(updated.trackingStaleAt).toBeNull();
+    expect(updated.status).toBe(OrderStatus.PAYMENT_DETECTED);
+  });
+
   it("is a no-op with no tracked orders (no fetch call at all)", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

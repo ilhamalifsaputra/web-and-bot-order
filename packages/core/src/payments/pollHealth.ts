@@ -29,6 +29,16 @@ export interface PollHeartbeat {
   lastSuccessAt: string | null;
   backoffUntil: string | null;
   consecutiveFailures: number | null;
+  /** Sticky — last error message seen (any failure type), for diagnostics.
+   * Optional so callers whose heartbeat source doesn't track it (e.g.
+   * `pollWatchdogDecision`'s stripped-down literal, which only needs
+   * `paging`) can omit it; the failing-case `detail` below falls back to a
+   * generic phrase when it's absent. Matches `BinancePollHealth` /
+   * `BybitPollHealth` / `BybitBscPollHealth`'s `lastError` field
+   * (packages/db/src/crud/{binance_internal,bybit_deposit,bybit_bsc_deposit}.ts)
+   * exactly, so an existing heartbeat record can be passed straight in with
+   * no adapter. */
+  lastError?: string | null;
 }
 
 export interface PollHealthEvaluation {
@@ -42,6 +52,25 @@ export interface PollHealthEvaluation {
 
 const DEFAULT_STALE_MS = 5 * 60_000;
 const DEFAULT_FAILURE_THRESHOLD = 3;
+
+/** How much of `lastError` the failing-case `detail` quotes verbatim before
+ * this module was hooked up. `lastError` is already truncated to 300 chars by
+ * the poller before it's persisted (`String(err).slice(0, 300)`), but 300
+ * characters is still too long for one sentence in a Telegram DM to a shop
+ * admin — this matches the 200-char convention this codebase already uses
+ * for admin-facing error snippets elsewhere (e.g. the delivery-fail alerts in
+ * apps/order-bot/src/payments/binanceInternal.ts and its Bybit twins). */
+const LAST_ERROR_DISPLAY_MAX = 200;
+
+/** Renders `lastError` for the failing-case `detail`: "unknown" when absent
+ * or blank, otherwise the message trimmed and capped at
+ * `LAST_ERROR_DISPLAY_MAX` characters (with an ellipsis) so one long gateway
+ * error can't blow out the DM sentence. */
+function formatLastError(lastError: string | null | undefined): string {
+  const trimmed = lastError?.trim();
+  if (!trimmed) return "unknown";
+  return trimmed.length > LAST_ERROR_DISPLAY_MAX ? `${trimmed.slice(0, LAST_ERROR_DISPLAY_MAX)}…` : trimmed;
+}
 
 /** Renders the whole minutes between `iso` and `now`. Falls back to a plain
  * English phrase instead of the literal "NaN" when `iso` fails to parse (a
@@ -113,7 +142,7 @@ export function evaluatePollHealth(
       status: "red",
       paging: true,
       detail: withLastSuccessClause(
-        `Cycles are completing but ${consecutiveFailures} consecutive cycles failed.`,
+        `Cycles are completing but ${consecutiveFailures} consecutive cycles failed (last error: ${formatLastError(health.lastError)}).`,
         health,
         now,
       ),

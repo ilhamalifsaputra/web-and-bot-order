@@ -85,6 +85,44 @@ describe("evaluatePollHealth — rule table (packages/core/src/payments/pollHeal
     expect(result.paging).toBe(true);
   });
 
+  it("rule 4: detail carries the lastError reason when present, so the admin DM says why cycles are failing (regression: this was dropped when the watchdog was rebased onto evaluatePollHealth)", () => {
+    const result = evaluatePollHealth(
+      heartbeat({
+        lastRun: new Date(NOW - 1000).toISOString(),
+        consecutiveFailures: 3,
+        lastError: "Binance pay/transactions request timed out",
+      }),
+      { enabled: true, now: NOW },
+    );
+    expect(result.status).toBe("red");
+    expect(result.paging).toBe(true);
+    expect(result.detail).toMatch(/3 consecutive cycles failed/);
+    expect(result.detail).toContain("last error: Binance pay/transactions request timed out");
+  });
+
+  it("rule 4: detail falls back to a generic reason when lastError is absent (null or omitted)", () => {
+    const withNull = evaluatePollHealth(
+      heartbeat({ lastRun: new Date(NOW - 1000).toISOString(), consecutiveFailures: 3, lastError: null }),
+      { enabled: true, now: NOW },
+    );
+    const omitted = evaluatePollHealth(
+      heartbeat({ lastRun: new Date(NOW - 1000).toISOString(), consecutiveFailures: 3 }),
+      { enabled: true, now: NOW },
+    );
+    expect(withNull.detail).toContain("last error: unknown");
+    expect(omitted.detail).toContain("last error: unknown");
+  });
+
+  it("rule 4: detail truncates a very long lastError to keep the DM sentence readable, matching the 200-char convention used elsewhere for admin-facing error snippets (e.g. binanceInternal.ts's delivery-fail alert)", () => {
+    const longError = "x".repeat(300);
+    const result = evaluatePollHealth(
+      heartbeat({ lastRun: new Date(NOW - 1000).toISOString(), consecutiveFailures: 3, lastError: longError }),
+      { enabled: true, now: NOW },
+    );
+    expect(result.detail).toContain(`last error: ${"x".repeat(200)}…`);
+    expect(result.detail).not.toContain("x".repeat(201));
+  });
+
   it('rule 5: "a poller whose last cycle is hours old is red even with a zero failure count"', () => {
     // This is the dashboard.ts bug: it ignores staleness entirely and would
     // read this poller as green because consecutiveFailures is 0.

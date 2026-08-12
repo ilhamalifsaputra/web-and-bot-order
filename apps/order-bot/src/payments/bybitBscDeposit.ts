@@ -467,7 +467,19 @@ const loop = createPollLoop({
   onCycleTimeout: (elapsedMs) =>
     recordBybitBscPollHealth(prisma, {
       lastTxCount: 0,
-      backoffUntil: null,
+      // Read the same module-level backoff gate the failure branch above
+      // reads, so an abandoned cycle doesn't erase a live "backing off, N
+      // rate-limit hits" state the panel is currently showing — the gate is
+      // untouched by the timeout itself, only this heartbeat write is new.
+      backoffUntil: backoff.backoffUntil || null,
+      consecutiveRateLimitHits: backoff.hitCount,
+      // Not a rate-limit event: this cycle timed out (hung), it wasn't told
+      // by the gateway to back off. rateLimited stays false so the abandon
+      // (a) doesn't stamp lastRateLimitAt with a rate-limit that didn't
+      // happen, and (b) still increments consecutiveFailures — a hang is a
+      // genuine failure, unlike a rate-limit hit, which deliberately leaves
+      // that counter alone.
+      rateLimited: false,
       success: false,
       error: `Poll cycle abandoned after ${elapsedMs}ms without finishing`,
     }).catch(() => undefined),

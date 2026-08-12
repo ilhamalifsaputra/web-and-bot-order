@@ -1,7 +1,7 @@
 // setup-db MUST be first — temp DB + push before any @app import.
 import "./setup-db";
 
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   prisma,
   createBybitOrder,
@@ -11,6 +11,7 @@ import {
   recordUnmatchedBybitTx,
   listPendingBybitOrders,
   resolveBybitConfig,
+  getBybitPollHealth,
   setSetting,
   getSetting,
   deleteSetting,
@@ -530,6 +531,74 @@ describe("pollOnce — USE_UNIQUE_CENTS hard gate", () => {
     const fakeApi = {} as Api; // never called — pollOnce must return before touching it
     await pollOnce(fakeApi);
     expect(await getSetting(prisma, BYBIT_POLL_HEALTH_KEY)).toBeNull(); // never reached fetchRecentDeposits
+  });
+});
+
+// ===========================================================================
+// pollOnce — HTTP timeout bound + credential-leak safety (Task 3). Bybit
+// carries its API key in a header (X-BAPI-API-KEY), and until this task
+// nothing wrapped the raw fetch() call — a rejection's err.cause could carry
+// that header into a logger.error({ err }). These drive the deposit-query
+// fetch through the real poll cycle rather than calling bybitGet directly,
+// since it isn't exported.
+// ===========================================================================
+
+describe("pollOnce — HTTP timeout bound + credential-leak safety", () => {
+  beforeEach(async () => {
+    await setSetting(prisma, BYBIT_UID_KEY, "123456");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "k");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "s");
+  });
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+  });
+  afterAll(async () => {
+    await deleteSetting(prisma, BYBIT_UID_KEY);
+    await deleteSetting(prisma, BYBIT_API_KEY_KEY);
+    await deleteSetting(prisma, BYBIT_API_SECRET_KEY);
+  });
+
+  it("bounds the deposit-query request so a hung gateway cannot stall the poller forever", async () => {
+    const original = config.USE_UNIQUE_CENTS;
+    config.USE_UNIQUE_CENTS = true;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => ({ retCode: 0, result: { rows: [] } }),
+      text: async () => "",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await pollOnce({} as Api);
+    } finally {
+      config.USE_UNIQUE_CENTS = original;
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("wraps a rejected deposit-query request in a fresh, static-message error instead of the raw (header-bearing) rejection", async () => {
+    const original = config.USE_UNIQUE_CENTS;
+    config.USE_UNIQUE_CENTS = true;
+    // Node's fetch sometimes attaches the failed request — headers included,
+    // one of which carries the X-BAPI-API-KEY credential — to a rejected
+    // error's .cause. bybitGet must catch that and rethrow a fresh, static
+    // Error before it can reach the poll-health heartbeat (or a logger).
+    const fetchMock = vi.fn().mockRejectedValue(
+      Object.assign(new Error("fetch failed"), { cause: { headers: { "X-BAPI-API-KEY": "LEAKED-API-KEY-VALUE" } } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await pollOnce({} as Api);
+    } finally {
+      config.USE_UNIQUE_CENTS = original;
+    }
+    const health = await getBybitPollHealth(prisma);
+    expect(health.lastError).not.toContain("LEAKED-API-KEY-VALUE");
+    expect(health.lastError).not.toBe("Error: fetch failed"); // proves the raw error was replaced, not just stringified
+    expect(health.lastError).toMatch(/request failed/);
   });
 });
 

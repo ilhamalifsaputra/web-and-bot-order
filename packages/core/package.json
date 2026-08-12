@@ -20,7 +20,7 @@
     "./flash": "./src/flash.ts",
     "./media": "./src/media.ts",
     "./bulk": "./src/bulk.ts",
-    "./bulk": "./src/bulk.ts",
+    "./http": "./src/http.ts",
     "./password": "./src/password.ts",
     "./mailer": "./src/mailer.ts",
     "./email": "./src/email/index.ts",

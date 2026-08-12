@@ -29,6 +29,7 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { langCode, NotificationEvent, OrderKind } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { fetchWithTimeout, HTTP_TIMEOUT_MS } from "@app/core/http";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
 import {
@@ -256,11 +257,10 @@ export function normalizeTx(raw: Record<string, unknown>): BinanceTx | null {
 
 const CONNECT_RETRY_ATTEMPTS = 3;
 const CONNECT_RETRY_DELAY_MS = 1500;
-// Only applied to fallback-mirror attempts (see fallThroughMirrors) — the
-// primary host keeps relying on undici's implicit default, unchanged from
-// before fallback support existed. Bounds the worst case once there are
-// multiple mirrors to walk through: an unreachable host fails fast instead of
-// hanging on undici's longer implicit timeout per attempt.
+// Applied to fallback-mirror attempts (see fallThroughMirrors), shorter than
+// the primary host's own gatewayRead budget: bounds the worst case once
+// there are multiple mirrors to walk through, so an unreachable host fails
+// fast instead of eating a full gatewayRead-sized wait per mirror.
 const FALLBACK_CONNECT_TIMEOUT_MS = 8_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -269,11 +269,17 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * out of fetchIncomingTransfers so each retry/fallback attempt gets a fresh
  * timestamp/signature (Binance rejects a stale timestamp outside recvWindow).
  * The signature covers only the query string, never the host, so calling this
- * against a mirror host is safe. `timeoutMs` is only set for fallback attempts
- * (see FALLBACK_CONNECT_TIMEOUT_MS) — omitted, the primary path behaves
- * exactly as it always has.
+ * against a mirror host is safe. `timeoutMs` defaults to `HTTP_TIMEOUT_MS.gatewayRead`
+ * for the primary host; fallback-mirror attempts (see fallThroughMirrors)
+ * pass the shorter `FALLBACK_CONNECT_TIMEOUT_MS` explicitly. Either way the
+ * call is now bounded — before this task the primary host relied on
+ * undici's implicit (much longer) default, unlike the mirror path.
  */
-async function requestIncomingTransfers(cfg: BinanceInternalConfig, apiBase: string, timeoutMs?: number): Promise<Response> {
+async function requestIncomingTransfers(
+  cfg: BinanceInternalConfig,
+  apiBase: string,
+  timeoutMs: number = HTTP_TIMEOUT_MS.gatewayRead,
+): Promise<Response> {
   const params = new URLSearchParams({
     startTime: String(Date.now() - 60 * 60 * 1000),
     limit: "100",
@@ -282,9 +288,9 @@ async function requestIncomingTransfers(cfg: BinanceInternalConfig, apiBase: str
   });
   const qs = params.toString();
   const url = `${apiBase}/sapi/v1/pay/transactions?${qs}&signature=${sign(qs, cfg.apiSecret)}`;
-  return fetch(url, {
+  return fetchWithTimeout(url, {
     headers: { "X-MBX-APIKEY": cfg.apiKey },
-    ...(timeoutMs != null ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
+    timeoutMs,
   });
 }
 
@@ -356,7 +362,16 @@ export async function fetchIncomingTransfers(cfg: BinanceInternalConfig): Promis
   if (!res.ok) {
     throw new Error(`Binance pay/transactions HTTP ${res.status}: ${await res.text().catch(() => "")}`);
   }
-  const body = (await res.json()) as { data?: Record<string, unknown>[] };
+  let body: { data?: Record<string, unknown>[] };
+  try {
+    body = (await res.json()) as { data?: Record<string, unknown>[] };
+  } catch {
+    // A 200 with an unparseable body (HTML error page, truncated response, …)
+    // — turn the raw SyntaxError into a readable failure so this cycle fails
+    // cleanly (logged + a failed heartbeat, see pollOnce's catch) instead of
+    // an opaque "Unexpected token < in JSON" bubbling up.
+    throw new Error("Binance pay/transactions returned an unparseable response");
+  }
   const rows = body.data ?? [];
   return rows
     .map(normalizeTx)

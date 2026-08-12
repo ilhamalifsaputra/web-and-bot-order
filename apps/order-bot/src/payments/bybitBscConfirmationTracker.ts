@@ -31,6 +31,7 @@ import type { Api } from "grammy";
 import { config } from "@app/core/config";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { fetchWithTimeout, HTTP_TIMEOUT_MS } from "@app/core/http";
 import {
   prisma,
   listTrackedBybitBscOrders,
@@ -75,7 +76,7 @@ async function bscscanRpc(
     ...params,
     ...(cfg.apiKey ? { apikey: cfg.apiKey } : {}),
   }).toString();
-  const res = await fetch(`${cfg.apiBase}?${query}`);
+  const res = await fetchWithTimeout(`${cfg.apiBase}?${query}`, { timeoutMs: HTTP_TIMEOUT_MS.explorerRead });
   if (res.status === 429 || res.status === 403) {
     throw new RateLimitedError(`BscScan rate limited (HTTP ${res.status})`);
   }

@@ -715,6 +715,39 @@ describe("fetchIncomingTransfers (connect-fallback escalation)", () => {
     await expect(fetchIncomingTransfers({ ...baseCfg, apiBaseFallbacks: [] })).rejects.toThrow("connect refused");
     expect(fetchMock).toHaveBeenCalledTimes(3); // primary's retry budget only
   }, 15_000);
+
+  // Task 3: the primary host previously relied on undici's implicit (much
+  // longer) default timeout — only the fallback-mirror path had an explicit
+  // deadline. A hung primary now gets the same gatewayRead budget so it
+  // can't stall the poll cycle past the loop's abandon deadline.
+  it("bounds the primary-host request with a real deadline, not just the fallback mirrors", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(okResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchIncomingTransfers(baseCfg);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("a malformed Binance response body fails the cycle cleanly instead of throwing a raw SyntaxError", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError("Unexpected token < in JSON");
+      },
+    } as unknown as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    let caught: unknown;
+    try {
+      await fetchIncomingTransfers(baseCfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(SyntaxError);
+    expect((caught as Error).message).toMatch(/unparseable|malformed|invalid/i);
+  });
 });
 
 describe("resolveBinanceInternalConfig — minAmount", () => {

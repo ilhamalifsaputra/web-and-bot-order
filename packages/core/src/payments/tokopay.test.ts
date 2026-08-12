@@ -180,6 +180,39 @@ describe("checkTransaction", () => {
     expect(message).toMatch(/unparseable/);
     expect(message).not.toContain(FULL_CREDS.secret);
   });
+
+  it("checkTransaction bounds the request so a hung gateway cannot stall the reconcile poller forever", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ status: "success", data: { status: "Paid", trx_id: "TRX-8" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await checkTransaction(FULL_CREDS, { refId: "ORD-9", amountIdr: 1000 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("never leaks the secret-bearing query string when the request times out", async () => {
+    // Simulate what AbortSignal.timeout produces: fetch() rejects with a
+    // DOMException named "TimeoutError" once the deadline elapses.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" })),
+    );
+    let caught: unknown;
+    try {
+      await checkTransaction(FULL_CREDS, { refId: "ORD-10", amountIdr: 1000 });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/timed out|network error/);
+    expect(message).not.toContain(FULL_CREDS.secret);
+    expect(message).not.toContain("http");
+  });
 });
 
 describe("createTransaction", () => {
@@ -204,5 +237,18 @@ describe("createTransaction", () => {
     expect(message).toMatch(/network error/);
     expect(message).not.toContain(FULL_CREDS.secret);
     expect(message).not.toContain("http");
+  });
+
+  it("bounds the request so a hung gateway cannot stall checkout forever", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ status: "success", data: { trx_id: "TRX-9" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await createTransaction(FULL_CREDS, { refId: "ORD-9", amountIdr: 1000 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 });

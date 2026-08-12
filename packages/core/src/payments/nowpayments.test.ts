@@ -190,6 +190,38 @@ describe("createInvoice", () => {
       createInvoice(FULL_CREDS, { orderId: "ORD-5", amountUsd: "1.00", ipnCallbackUrl: "https://example.com/ipn" }),
     ).rejects.toThrow(/missing invoice_url/);
   });
+
+  it("bounds the request so a hung gateway cannot stall checkout forever", async () => {
+    stubFetchJson({ id: "INV-6", invoice_url: "https://nowpayments.io/payment/INV-6" });
+    await createInvoice(FULL_CREDS, { orderId: "ORD-6", amountUsd: "1.00", ipnCallbackUrl: "https://example.com/ipn" });
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("wraps a rejected fetch() in a fresh, static-message error instead of letting the original (header-bearing) object escape", async () => {
+    // Node's fetch sometimes attaches the failed request — including its
+    // headers, one of which carries the x-api-key credential — to
+    // err.cause. A naive `logger.error({ err })` downstream would serialize
+    // that whole object. createInvoice must catch the rejection and rethrow
+    // a brand-new Error with a static message, never the original.
+    const original = Object.assign(new Error("fetch failed"), {
+      cause: { request: { headers: { "x-api-key": FULL_CREDS.apiKey } } },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(original));
+    let caught: unknown;
+    try {
+      await createInvoice(FULL_CREDS, { orderId: "ORD-7", amountUsd: "1.00", ipnCallbackUrl: "https://example.com/ipn" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBe(original);
+    expect((caught as Error).cause).toBeUndefined();
+    expect((caught as Error).message).not.toContain(FULL_CREDS.apiKey);
+    expect((caught as Error).message).not.toBe("fetch failed");
+  });
 });
 
 describe("getPaymentStatus", () => {
@@ -216,5 +248,32 @@ describe("getPaymentStatus", () => {
   it("throws on a non-2xx HTTP response", async () => {
     stubFetchJson({}, { ok: false, status: 404 });
     await expect(getPaymentStatus(FULL_CREDS, { invoiceId: "INV-3" })).rejects.toThrow(/HTTP 404/);
+  });
+
+  it("bounds the request so a hung gateway cannot stall the reconcile poller forever", async () => {
+    stubFetchJson({ payment_status: "finished", payment_id: "PID-4", actually_paid: 10 });
+    await getPaymentStatus(FULL_CREDS, { invoiceId: "INV-4" });
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("wraps a rejected fetch() in a fresh, static-message error instead of letting the original (header-bearing) object escape", async () => {
+    const original = Object.assign(new Error("fetch failed"), {
+      cause: { request: { headers: { "x-api-key": FULL_CREDS.apiKey } } },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(original));
+    let caught: unknown;
+    try {
+      await getPaymentStatus(FULL_CREDS, { invoiceId: "INV-5" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBe(original);
+    expect((caught as Error).cause).toBeUndefined();
+    expect((caught as Error).message).not.toContain(FULL_CREDS.apiKey);
+    expect((caught as Error).message).not.toBe("fetch failed");
   });
 });

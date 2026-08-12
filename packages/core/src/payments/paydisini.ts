@@ -12,6 +12,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Decimal } from "../money";
 import { logger } from "../logger";
+import { fetchWithTimeout, HttpTimeoutError, HTTP_TIMEOUT_MS } from "../http";
 
 export const PAYDISINI_USERKEY_KEY = "paydisini_userkey";
 export const PAYDISINI_APIKEY_KEY = "paydisini_apikey";
@@ -50,17 +51,26 @@ export interface PaydisiniOrderInfo {
  *     err })` downstream (or an *unhandled rejection* if a caller forgets to
  *     `.catch()`) would serialize whole — echoing the api key straight back
  *     into logs. Catching it here and throwing a fresh, static-message Error
- *     means nothing downstream ever sees the original object.
+ *     means nothing downstream ever sees the original object. A request that
+ *     hangs past `timeoutMs` (see `fetchWithTimeout`/`HTTP_TIMEOUT_MS`) hits
+ *     this same branch — `HttpTimeoutError` is deliberately just another
+ *     `Error`, so it's indistinguishable from any other network failure here
+ *     and gets the identical credential-free treatment, just with a message
+ *     that says "timed out" instead of "network error" so a stuck gateway is
+ *     diagnosable without ever touching the query string.
  *   - `res.json()` can throw on a malformed body; same treatment.
  * The existing `!res.ok` branch keeps its own static-message throw (no
  * change in behavior), just relocated into this shared helper so both
  * `createTransaction` and `checkTransaction` get the same guarantee.
  */
-async function fetchPaydisiniJson(url: string, errorPrefix: string): Promise<Record<string, unknown>> {
+async function fetchPaydisiniJson(url: string, errorPrefix: string, timeoutMs: number): Promise<Record<string, unknown>> {
   let res: Response;
   try {
-    res = await fetch(url);
-  } catch {
+    res = await fetchWithTimeout(url, { timeoutMs });
+  } catch (err) {
+    if (err instanceof HttpTimeoutError) {
+      throw new Error(`${errorPrefix} timed out`); // never log the query — it carries the api key
+    }
     throw new Error(`${errorPrefix} network error`); // never log the query — it carries the api key
   }
   if (!res.ok) {
@@ -85,7 +95,11 @@ export async function createTransaction(
     amount: new Decimal(args.amountIdr).toFixed(0),
     service: creds.channel,
   });
-  const body = (await fetchPaydisiniJson(`${API_BASE}/v1/transaction?${params.toString()}`, "PayDisini order")) as {
+  const body = (await fetchPaydisiniJson(
+    `${API_BASE}/v1/transaction?${params.toString()}`,
+    "PayDisini order",
+    HTTP_TIMEOUT_MS.gatewayWrite, // a human is waiting at checkout for this to resolve
+  )) as {
     success?: unknown;
     status?: unknown;
     data?: Record<string, unknown>;
@@ -137,7 +151,11 @@ export async function checkTransaction(
     amount: new Decimal(args.amountIdr).toFixed(0),
     service: creds.channel,
   });
-  const body = (await fetchPaydisiniJson(`${API_BASE}/v1/transaction?${params.toString()}`, "PayDisini status")) as {
+  const body = (await fetchPaydisiniJson(
+    `${API_BASE}/v1/transaction?${params.toString()}`,
+    "PayDisini status",
+    HTTP_TIMEOUT_MS.gatewayRead, // reconcile poller — the next tick retries if this is slow
+  )) as {
     success?: unknown;
     status?: unknown;
     data?: Record<string, unknown>;

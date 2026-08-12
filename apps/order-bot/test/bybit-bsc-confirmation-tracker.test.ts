@@ -118,6 +118,16 @@ describe("fetchConfirmations", () => {
     vi.stubGlobal("fetch", fetchMock);
     await expect(fetchConfirmations("0xabc", cfg)).rejects.toThrow(/rate limited/i);
   });
+
+  it("bounds each BscScan RPC call so a hung explorer cannot stall the tracker forever", async () => {
+    const fetchMock = mockTwoCalls("0x70", { blockNumber: "0x65" });
+    await fetchConfirmations("0xabc", cfg);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // eth_blockNumber + eth_getTransactionByHash
+    for (const call of fetchMock.mock.calls) {
+      const init = (call as unknown[])[1] as RequestInit | undefined;
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+    }
+  });
 });
 
 // ===========================================================================

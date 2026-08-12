@@ -32,6 +32,7 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { langCode, NotificationEvent, OrderKind } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { fetchWithTimeout, HTTP_TIMEOUT_MS } from "@app/core/http";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
   prisma,
@@ -78,7 +79,15 @@ type PendingOrder = Awaited<ReturnType<typeof listPendingBybitOrders>>[number];
 
 class RateLimitedError extends Error {}
 
-/** Bybit V5 GET auth: HMAC-SHA256(secret, timestamp + apiKey + recvWindow + queryString). */
+/**
+ * Bybit V5 GET auth: HMAC-SHA256(secret, timestamp + apiKey + recvWindow + queryString).
+ * The credential rides in a header (X-BAPI-API-KEY), not the query string —
+ * but Node's fetch sometimes attaches the failed request, headers included,
+ * to a rejected error's `.cause`. A naive `logger.error({ err })` downstream
+ * would serialize that whole object, so a rejection (network failure OR a
+ * `fetchWithTimeout` deadline) is caught here and rethrown as a fresh,
+ * static-message Error before it can escape.
+ */
 async function bybitGet(path: string, params: Record<string, string>, cfg: BybitConfig): Promise<Record<string, unknown>> {
   const key = cfg.apiKey;
   const secret = cfg.apiSecret;
@@ -86,14 +95,20 @@ async function bybitGet(path: string, params: Record<string, string>, cfg: Bybit
   const ts = String(Date.now());
   const query = new URLSearchParams(params).toString();
   const sign = createHmac("sha256", secret).update(ts + key + recv + query).digest("hex");
-  const res = await fetch(`${cfg.apiBase}${path}?${query}`, {
-    headers: {
-      "X-BAPI-API-KEY": key,
-      "X-BAPI-TIMESTAMP": ts,
-      "X-BAPI-RECV-WINDOW": recv,
-      "X-BAPI-SIGN": sign,
-    },
-  });
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(`${cfg.apiBase}${path}?${query}`, {
+      headers: {
+        "X-BAPI-API-KEY": key,
+        "X-BAPI-TIMESTAMP": ts,
+        "X-BAPI-RECV-WINDOW": recv,
+        "X-BAPI-SIGN": sign,
+      },
+      timeoutMs: HTTP_TIMEOUT_MS.gatewayRead, // poller — the next tick retries if this is slow
+    });
+  } catch {
+    throw new Error(`Bybit ${path} request failed`); // never log err — it may carry the X-BAPI-API-KEY header
+  }
   // Bybit returns its rate-limit budget on every response (not just 429s) —
   // logging it gives empirical data on real headroom instead of guessing.
   const limit = res.headers.get("X-Bapi-Limit");

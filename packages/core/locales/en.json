@@ -158,6 +158,8 @@
   "checkout.min_amount_note": "ℹ️ Minimum payment for this method: {min}.",
   "checkout.payment_unavailable": "Payments aren't available right now — the shop hasn't finished setting up. Please try again later.",
   "checkout.refresh_delivered_toast": "✅ Payment confirmed!",
+  "checkout.copy_note_btn": "📋 Copy Unique Code",
+  "checkout.copy_uid_btn": "📋 Copy Binance ID",
   "checkout.refresh_status_btn": "🔄 Refresh Status",
   "checkout.still_pending_toast": "Payment not received yet. Still waiting…",
   "checkout.use_voucher": "Apply Voucher",

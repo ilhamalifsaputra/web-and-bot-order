@@ -22,12 +22,20 @@ export function cb(...parts: Array<string | number>): string {
 interface Btn {
   text: string;
   data?: string;
+  /** When set, builds a native "copy to clipboard" button instead of a callback button. */
+  copyText?: string;
 }
 
 /** Build an InlineKeyboard from a 2D array of {text,data}. Missing data → noop. */
 function ik(rows: Btn[][]): InlineKeyboard {
   return InlineKeyboard.from(
-    rows.map((row) => row.map((b) => InlineKeyboard.text(b.text, b.data ?? cb("noop")))),
+    rows.map((row) =>
+      row.map((b) =>
+        b.copyText !== undefined
+          ? InlineKeyboard.copyText(b.text, b.copyText)
+          : InlineKeyboard.text(b.text, b.data ?? cb("noop")),
+      ),
+    ),
   );
 }
 
@@ -572,8 +580,19 @@ export function voucherCancelKb(productId: number, qty: number, lang: string): I
  * stranded on a cancel-or-nothing screen. `showRefresh` adds the on-demand
  * reconcile button the auto rails pass `true` for.
  */
-export function proofCancelKb(orderId: number, lang: string, showRefresh = false): InlineKeyboard {
+export function proofCancelKb(
+  orderId: number,
+  lang: string,
+  showRefresh = false,
+  copy?: { uid?: string; note?: string },
+): InlineKeyboard {
   return ik([
+    ...(copy?.uid !== undefined
+      ? [[{ text: coreT("checkout.copy_uid_btn", lang), copyText: copy.uid }]]
+      : []),
+    ...(copy?.note !== undefined
+      ? [[{ text: coreT("checkout.copy_note_btn", lang), copyText: copy.note }]]
+      : []),
     ...(showRefresh
       ? [[{ text: coreT("checkout.refresh_status_btn", lang), data: cb("checkout", "refresh", orderId) }]]
       : []),

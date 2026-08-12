@@ -674,7 +674,11 @@ export async function buyNowInternal(ctx: MyContext, productId: number, quantity
     idr_line: idrLine,
     expiry,
   }) + minAmountNote(ctx, cfg.minAmount, "USDT");
-  await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
+  await smartEdit(
+    ctx,
+    text,
+    ckb.proofCancelKb(order.id, lang, true, { uid: cfg.receiveUid, note: order.paymentRef }),
+  );
   // Anchor the instructions message so the poller can flip it to success.
   if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
   // Latency optimization: an extra poll right now, on top of the regular

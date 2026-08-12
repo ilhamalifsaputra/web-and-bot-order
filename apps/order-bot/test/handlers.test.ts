@@ -1619,6 +1619,26 @@ describe("Refresh Status button (§7)", () => {
       const flat = kb.inline_keyboard.flat() as Array<{ callback_data?: string }>;
       expect(flat.some((b) => b.callback_data?.startsWith("v1:checkout:refresh"))).toBe(false);
     });
+
+    it("proofCancelKb with copy={uid,note} adds copy-to-clipboard buttons for both values", () => {
+      const kb = proofCancelKb(1, "en", true, { uid: "U123", note: "N456" });
+      const flat = kb.inline_keyboard.flat() as Array<{ copy_text?: { text: string } }>;
+      expect(flat.some((b) => b.copy_text?.text === "U123")).toBe(true);
+      expect(flat.some((b) => b.copy_text?.text === "N456")).toBe(true);
+    });
+
+    it("proofCancelKb with no copy arg has NO copy_text buttons (backward compatible)", () => {
+      const kb = proofCancelKb(1, "en", true);
+      const flat = kb.inline_keyboard.flat() as Array<{ copy_text?: { text: string } }>;
+      expect(flat.some((b) => b.copy_text !== undefined)).toBe(false);
+    });
+
+    it("proofCancelKb with copy={uid} only adds the UID copy button, not a note button", () => {
+      const kb = proofCancelKb(1, "en", true, { uid: "U123" });
+      const flat = kb.inline_keyboard.flat() as Array<{ copy_text?: { text: string } }>;
+      expect(flat.some((b) => b.copy_text?.text === "U123")).toBe(true);
+      expect(flat.some((b) => b.copy_text !== undefined && b.copy_text.text !== "U123")).toBe(false);
+    });
   });
 
   // --- refreshPaymentStatus ownership/state guards ---------------------------

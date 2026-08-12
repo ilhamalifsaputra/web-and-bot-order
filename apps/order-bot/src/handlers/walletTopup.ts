@@ -280,7 +280,11 @@ export async function payTopupInternal(ctx: MyContext): Promise<void> {
     idr_line: idrLine,
     expiry,
   });
-  await smartEdit(ctx, text, ckb.proofCancelKb(order.id, lang, true));
+  await smartEdit(
+    ctx,
+    text,
+    ckb.proofCancelKb(order.id, lang, true, { uid: cfg.receiveUid, note: order.paymentRef }),
+  );
   if (ctx.session.menuMsgId) await setOrderPaymentMessage(prisma, order.id, ctx.chat!.id, ctx.session.menuMsgId);
   internalImmediatePoll(ctx.api);
 }

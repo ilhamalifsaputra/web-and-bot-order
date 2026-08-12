@@ -158,6 +158,8 @@
   "checkout.min_amount_note": "ℹ️ Minimum pembayaran untuk metode ini: {min}.",
   "checkout.payment_unavailable": "Pembayaran lagi tidak tersedia — toko belum selesai disetel. Coba lagi nanti ya.",
   "checkout.refresh_delivered_toast": "✅ Pembayaran terkonfirmasi!",
+  "checkout.copy_note_btn": "📋 Salin Kode Unik",
+  "checkout.copy_uid_btn": "📋 Salin Binance ID",
   "checkout.refresh_status_btn": "🔄 Refresh Status",
   "checkout.still_pending_toast": "Pembayaran belum masuk. Masih menunggu…",
   "checkout.use_voucher": "Pakai Voucher",

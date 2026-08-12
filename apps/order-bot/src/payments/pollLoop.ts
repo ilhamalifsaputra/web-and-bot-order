@@ -123,6 +123,15 @@ export function createPollLoop(opts: PollLoopOptions): PollLoop {
 
     void deadline.then(() => {
       if (settled) return;
+      // stop() bumps `generation` unconditionally on every call, so this also
+      // covers a plain stop() with no restart, not just a stop()+start(): the
+      // deadline for a cycle that started before the stop() must not log an
+      // abandon that was never observed by anyone, nor fire onCycleTimeout
+      // for a rail that was deliberately shut down.
+      if (myGeneration !== generation) {
+        settled = true;
+        return;
+      }
       settled = true;
       const elapsedMs = Date.now() - startedAt;
       logger.error(

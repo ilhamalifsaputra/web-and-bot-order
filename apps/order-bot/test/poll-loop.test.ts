@@ -1,7 +1,8 @@
 // setup-env MUST be first — sets env that @app/core/config reads at import time.
 import "./setup-env";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { logger } from "@app/core/logger";
 import { createPollLoop } from "../src/payments/pollLoop";
 
 /**
@@ -17,8 +18,22 @@ import { createPollLoop } from "../src/payments/pollLoop";
  * every later tick behind a `running` flag that never clears.
  */
 describe("createPollLoop", () => {
+  // The loop logs at warn/error on the abandon and late-rejection paths.
+  // Spying (and no-op'ing) both keeps test output clean — same pattern as
+  // apps/order-bot/test/jobs.test.ts:345 — and lets individual tests assert
+  // the right message actually fired instead of just trusting silence.
+  let errorSpy: ReturnType<typeof vi.spyOn>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    errorSpy = vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+  });
+
   afterEach(() => {
     vi.useRealTimers();
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 
   it("abandons a cycle that never settles and starts a fresh one on the next tick", async () => {
@@ -56,6 +71,9 @@ describe("createPollLoop", () => {
     expect(onCycleTimeout).toHaveBeenCalledTimes(1);
     expect(onCycleTimeout).toHaveBeenCalledWith(2_500);
     expect(loop.running).toBe(false);
+    // The abandon path actually logs, at error level.
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(String(errorSpy.mock.calls[0]?.[0])).toContain("did not finish within");
 
     // The next scheduled tick (t=4000) starts a fresh cycle.
     await vi.advanceTimersByTimeAsync(500);
@@ -206,6 +224,80 @@ describe("createPollLoop", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  it("stop() disarms the in-flight cycle's deadline — no late onCycleTimeout, no abandon log", async () => {
+    vi.useFakeTimers();
+    let hangResolve: (() => void) | undefined;
+    const run = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          hangResolve = resolve;
+        }),
+    );
+    const onCycleTimeout = vi.fn();
+    const loop = createPollLoop({ name: "Test", intervalMs: 1_000, cycleTimeoutMs: 2_500, run, onCycleTimeout });
+
+    loop.start();
+    loop.triggerNow(); // cycle 1 starts, hangs
+    expect(loop.running).toBe(true);
+
+    loop.stop();
+    expect(loop.running).toBe(false);
+
+    // Advance well past the deadline the hung cycle would otherwise have
+    // been abandoned at. A clean stop() is not a hang: nothing should log
+    // and onCycleTimeout must never fire for a rail that was deliberately
+    // shut down.
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(onCycleTimeout).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+
+    hangResolve?.();
+  });
+
+  it("a stale cycle from before stop()+start() cannot clear the new generation's running flag", async () => {
+    vi.useFakeTimers();
+    let resolveA: (() => void) | undefined;
+    let resolveB: (() => void) | undefined;
+    let calls = 0;
+    const run = vi.fn(() => {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise<void>((resolve) => {
+          resolveA = resolve;
+        });
+      }
+      return new Promise<void>((resolve) => {
+        resolveB = resolve;
+      });
+    });
+    const loop = createPollLoop({ name: "Test", intervalMs: 1_000, cycleTimeoutMs: 10_000, run });
+
+    loop.start();
+    loop.triggerNow(); // cycle A starts (generation 0), hangs
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(loop.running).toBe(true);
+
+    loop.stop(); // bumps generation, forces running false
+    loop.start(); // new generation's schedule armed
+
+    await vi.advanceTimersByTimeAsync(1_000); // scheduled tick starts cycle B (generation 1), hangs
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(loop.running).toBe(true);
+
+    // Cycle A, left over from before the stop()+start(), finally settles.
+    // Its completion handler must be a no-op for `running` — B is still the
+    // one in flight, on a newer generation.
+    resolveA?.();
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    expect(loop.running).toBe(true); // B's flag survived A's stale settle
+    expect(run).toHaveBeenCalledTimes(2); // no third cycle started
+
+    resolveB?.();
+    loop.stop();
+  });
+
   it("a cycle that rejects after being abandoned never surfaces as an unhandled rejection", async () => {
     vi.useFakeTimers();
     const unhandled = vi.fn();
@@ -228,13 +320,27 @@ describe("createPollLoop", () => {
       await vi.advanceTimersByTimeAsync(500); // deadline fires — cycle is abandoned
       expect(loop.running).toBe(false);
 
+      // Nothing left for the fake schedule timer to do in this test — drop
+      // it now so switching to real timers below doesn't leave a fake timer
+      // handle behind.
+      loop.stop();
+
       // The abandoned cycle rejects minutes later, well after being given up on.
       hangReject?.(new Error("late failure"));
-      await vi.advanceTimersByTimeAsync(0);
-      await Promise.resolve();
-      await Promise.resolve();
+
+      // Node only checks for an unhandled rejection after the microtask
+      // queue drains at the end of a REAL tick. Fake timers fake that
+      // checkpoint away too, so this assertion could pass even against a
+      // rejection handler attached too late to matter unless we actually
+      // give Node's real event loop a turn. Switch to real timers and await
+      // a genuine setImmediate before asserting.
+      vi.useRealTimers();
+      await new Promise<void>((resolve) => setImmediate(resolve));
 
       expect(unhandled).not.toHaveBeenCalled();
+      // The late-rejection path actually logs, at warn level.
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0]?.[1])).toContain("already been abandoned by its deadline");
     } finally {
       process.removeListener("unhandledRejection", unhandled);
       loop.stop();

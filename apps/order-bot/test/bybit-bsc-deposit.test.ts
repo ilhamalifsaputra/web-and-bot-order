@@ -30,7 +30,7 @@ import { Decimal } from "@app/core/money";
 import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { formatUsdt } from "../src/util/format";
-import { normalizeOnchainDeposit, processDeposits, pollOnce, type BybitBscDeposit } from "../src/payments/bybitBscDeposit";
+import { normalizeOnchainDeposit, processDeposits, pollOnce, fetchRecentDeposits, type BybitBscDeposit } from "../src/payments/bybitBscDeposit";
 
 let sample: SampleData;
 
@@ -770,7 +770,56 @@ describe("pollOnce — HTTP timeout bound + credential-leak safety", () => {
     const health = await getBybitBscPollHealth(prisma);
     expect(health.lastError).not.toContain("LEAKED-API-KEY-VALUE");
     expect(health.lastError).not.toBe("Error: fetch failed");
-    expect(health.lastError).toMatch(/request failed/);
+    // "network error" (not "timed out") — a plain rejection, not a deadline —
+    // per fetchWithTimeoutSafe's shared wording (packages/core/src/http.ts).
+    expect(health.lastError).toMatch(/network error/);
+  });
+
+  // Calls fetchRecentDeposits directly (now exported) rather than only
+  // through pollOnce, so the test can inspect the actual thrown Error object
+  // — not just its message after pollOnce reduces it to a string for the DB
+  // health record — the same way tokopay/paydisini/nowpayments' own
+  // credential-leak tests do. This is what pollOnce's own DB-observed test
+  // above cannot catch: a future change that attached a `.cause` to the
+  // rethrown error would not show up in `String(err)` (health.lastError),
+  // but WOULD reach a logger via pino's cause serialization if this code
+  // ever changed to log `err` directly instead of routing through the DB
+  // heartbeat (Minor 10, Task 3 review follow-up).
+  it("fetchRecentDeposits rethrows a brand-new, cause-free Error instead of letting the header-bearing rejection escape", async () => {
+    const cfg = await resolveBybitBscConfig(prisma);
+    const original = Object.assign(new Error("fetch failed"), {
+      cause: { headers: { "X-BAPI-API-KEY": "LEAKED-API-KEY-VALUE" } },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(original));
+    let caught: unknown;
+    try {
+      await fetchRecentDeposits(cfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBe(original);
+    expect((caught as Error).cause).toBeUndefined();
+    expect((caught as Error).message).not.toContain("LEAKED-API-KEY-VALUE");
+    expect((caught as Error).message).not.toBe("fetch failed");
+    expect((caught as Error).message).toMatch(/network error/);
+  });
+
+  it("fetchRecentDeposits distinguishes a timeout from a network error, both still cause-free", async () => {
+    const cfg = await resolveBybitBscConfig(prisma);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" })),
+    );
+    let caught: unknown;
+    try {
+      await fetchRecentDeposits(cfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).cause).toBeUndefined();
+    expect((caught as Error).message).toMatch(/timed out/);
   });
 });
 

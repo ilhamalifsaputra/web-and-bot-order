@@ -106,11 +106,19 @@ const RAILS: Array<{
    * the abandon heartbeat's payload, not just that a fresh cycle started.
    */
   healthMockKey?: keyof typeof dbMock;
+  /**
+   * Rails whose `createPollLoop` call passes an explicit `cycleTimeoutMs`
+   * (Binance and the BSC confirmation tracker, both Task 3 review follow-up
+   * fixes — see the derivation comments next to each `createPollLoop` call)
+   * instead of relying on the default `max(3 * intervalMs, 60_000)`. Omitted
+   * for every other rail, which still uses that default.
+   */
+  cycleTimeoutMs?: number;
 }> = [
-  { name: "Binance Internal Transfer", mod: binanceInternal, hangFn: "resolveBinanceInternalConfig", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBinancePollHealth" },
+  { name: "Binance Internal Transfer", mod: binanceInternal, hangFn: "resolveBinanceInternalConfig", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBinancePollHealth", cycleTimeoutMs: 90_000 },
   { name: "Bybit Internal Transfer deposit", mod: bybitDeposit, hangFn: "resolveBybitConfig", intervalMs: config.BYBIT_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitPollHealth" },
   { name: "Bybit BSC deposit", mod: bybitBscDeposit, hangFn: "resolveBybitBscConfig", intervalMs: config.BYBIT_BSC_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitBscPollHealth" },
-  { name: "Bybit BSC confirmation tracker", mod: bybitBscConfirmationTracker, hangFn: "resolveBybitBscTrackerConfig", intervalMs: config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS * 1000 },
+  { name: "Bybit BSC confirmation tracker", mod: bybitBscConfirmationTracker, hangFn: "resolveBybitBscTrackerConfig", intervalMs: config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS * 1000, cycleTimeoutMs: 150_000 },
   { name: "TokoPay reconcile", mod: tokopayReconcile, hangFn: "getTokopayCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000 },
   { name: "PayDisini reconcile", mod: paydisiniReconcile, hangFn: "getPaydisiniCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000 },
   { name: "NOWPayments reconcile", mod: nowpaymentsReconcile, hangFn: "getNowpaymentsCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000 },
@@ -179,7 +187,7 @@ describe("payment pollers self-heal from a hung cycle via createPollLoop", () =>
     vi.restoreAllMocks();
   });
 
-  describe.each(RAILS)("$name", ({ mod, hangFn, intervalMs, healthMockKey }) => {
+  describe.each(RAILS)("$name", ({ mod, hangFn, intervalMs, healthMockKey, cycleTimeoutMs: railCycleTimeoutMs }) => {
     it("re-arms the schedule and starts a fresh cycle instead of dying when a cycle hangs forever", async () => {
       const hangMock = vi.mocked(dbMock[hangFn] as unknown as (...a: unknown[]) => Promise<unknown>);
       hangMock.mockReset();
@@ -194,7 +202,11 @@ describe("payment pollers self-heal from a hung cycle via createPollLoop", () =>
       // call so only cycle-driven calls are counted below.
       hangMock.mockClear();
 
-      const cycleTimeoutMs = Math.max(3 * intervalMs, 60_000);
+      // Most rails still use createPollLoop's default; Binance and the BSC
+      // confirmation tracker pass an explicit cycleTimeoutMs sized off their
+      // own worst-case arithmetic (Task 3 review follow-up) — see the
+      // derivation comments next to each rail's own createPollLoop call.
+      const cycleTimeoutMs = railCycleTimeoutMs ?? Math.max(3 * intervalMs, 60_000);
 
       // First scheduled tick starts cycle 1, which hangs.
       await vi.advanceTimersByTimeAsync(intervalMs);

@@ -20,7 +20,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Decimal } from "../money";
 import { logger } from "../logger";
-import { fetchWithTimeout, HttpTimeoutError, HTTP_TIMEOUT_MS } from "../http";
+import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "../http";
 
 export const NOWPAYMENTS_API_KEY_KEY = "nowpayments_api_key";
 export const NOWPAYMENTS_IPN_SECRET_KEY = "nowpayments_ipn_secret";
@@ -42,15 +42,16 @@ export interface NowpaymentsInvoice {
 
 /**
  * Create a hosted invoice for an order. Never log the request body or the
- * api-key header. `fetch()` is wrapped, not just called directly, because
- * Node's fetch sometimes attaches the failed request — headers included, one
- * of which carries the api-key credential — to a rejected error's `.cause`.
- * A naive `logger.error({ err })` downstream would serialize that whole
- * object, so a rejection here is caught and rethrown as a fresh, static
- * Error before it can escape. `fetchWithTimeout` bounds the call so a
- * gateway that accepts the connection and never answers (or stalls the
- * body) can't stall checkout — a timeout hits this same catch, distinguished
- * only by its message.
+ * api-key header. `fetch()` goes through `fetchWithTimeoutSafe`
+ * (`@app/core/http`), not a bare call, because Node's fetch sometimes
+ * attaches the failed request — headers included, one of which carries the
+ * api-key credential — to a rejected error's `.cause`. `fetchWithTimeoutSafe`
+ * catches any rejection (a genuine network failure or the `timeoutMs`
+ * deadline elapsing) and rethrows a fresh, static, credential-free Error
+ * before the original can escape, so a naive `logger.error({ err })`
+ * downstream never sees the header. It also bounds the call so a gateway
+ * that accepts the connection and never answers (or stalls the body) can't
+ * stall checkout.
  */
 export async function createInvoice(
   creds: NowpaymentsCreds,
@@ -62,9 +63,9 @@ export async function createInvoice(
     cancelUrl?: string;
   },
 ): Promise<NowpaymentsInvoice> {
-  let res: Response;
-  try {
-    res = await fetchWithTimeout(`${API_BASE}/v1/invoice`, {
+  const res = await fetchWithTimeoutSafe(
+    `${API_BASE}/v1/invoice`,
+    {
       method: "POST",
       headers: {
         "x-api-key": creds.apiKey,
@@ -80,15 +81,18 @@ export async function createInvoice(
         cancel_url: args.cancelUrl,
       }),
       timeoutMs: HTTP_TIMEOUT_MS.gatewayWrite, // a human is waiting at checkout for this to resolve
-    });
-  } catch (err) {
-    const timedOut = err instanceof HttpTimeoutError;
-    throw new Error(`NOWPayments invoice request ${timedOut ? "timed out" : "failed"}`); // never log err — it may carry the api-key header
-  }
+    },
+    "NOWPayments invoice request", // never log err — it may carry the api-key header
+  );
   if (!res.ok) {
     throw new Error(`NOWPayments invoice HTTP ${res.status}`); // never log the body — header carries the api key
   }
-  const body = (await res.json()) as { id?: unknown; invoice_url?: unknown };
+  let body: { id?: unknown; invoice_url?: unknown };
+  try {
+    body = (await res.json()) as { id?: unknown; invoice_url?: unknown };
+  } catch {
+    throw new Error("NOWPayments invoice response is unparseable"); // never log the body — header carries the api key
+  }
   if (typeof body.id !== "string" && typeof body.id !== "number") {
     throw new Error("NOWPayments invoice response missing id");
   }
@@ -118,20 +122,23 @@ export async function getPaymentStatus(
   creds: NowpaymentsCreds,
   args: { invoiceId: string },
 ): Promise<NowpaymentsStatus> {
-  let res: Response;
-  try {
-    res = await fetchWithTimeout(`${API_BASE}/v1/invoice/${encodeURIComponent(args.invoiceId)}`, {
+  const res = await fetchWithTimeoutSafe(
+    `${API_BASE}/v1/invoice/${encodeURIComponent(args.invoiceId)}`,
+    {
       headers: { "x-api-key": creds.apiKey },
       timeoutMs: HTTP_TIMEOUT_MS.gatewayRead, // reconcile poller — the next tick retries if this is slow
-    });
-  } catch (err) {
-    const timedOut = err instanceof HttpTimeoutError;
-    throw new Error(`NOWPayments status request ${timedOut ? "timed out" : "failed"}`); // never log err — it may carry the api-key header
-  }
+    },
+    "NOWPayments status request", // never log err — it may carry the api-key header
+  );
   if (!res.ok) {
     throw new Error(`NOWPayments status HTTP ${res.status}`);
   }
-  const body = (await res.json()) as Record<string, unknown>;
+  let body: Record<string, unknown>;
+  try {
+    body = (await res.json()) as Record<string, unknown>;
+  } catch {
+    throw new Error("NOWPayments status response is unparseable");
+  }
   const statusStr = String(body.payment_status ?? "").toLowerCase();
   const amountRaw = body.actually_paid ?? body.pay_amount ?? 0;
   let amount: Decimal;

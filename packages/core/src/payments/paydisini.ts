@@ -12,7 +12,7 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { Decimal } from "../money";
 import { logger } from "../logger";
-import { fetchWithTimeout, HttpTimeoutError, HTTP_TIMEOUT_MS } from "../http";
+import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "../http";
 
 export const PAYDISINI_USERKEY_KEY = "paydisini_userkey";
 export const PAYDISINI_APIKEY_KEY = "paydisini_apikey";
@@ -43,36 +43,22 @@ export interface PaydisiniOrderInfo {
  * flagged ASSUMPTION above) only accepts these credentials via query string
  * — there's no header/POST-body alternative to switch to. Given that, every
  * failure mode of the raw `fetch()` call is caught HERE, inside this single
- * choke point, and rethrown as a new `Error` built from a static,
- * credential-free string:
- *   - `fetch()` itself can reject (DNS failure, connection refused, aborted,
- *     TLS error, …) before a `Response` even exists. Node's `fetch` some­times
- *     attaches the failed request to `err.cause`, which a naive `logger.error({
- *     err })` downstream (or an *unhandled rejection* if a caller forgets to
- *     `.catch()`) would serialize whole — echoing the api key straight back
- *     into logs. Catching it here and throwing a fresh, static-message Error
- *     means nothing downstream ever sees the original object. A request that
- *     hangs past `timeoutMs` (see `fetchWithTimeout`/`HTTP_TIMEOUT_MS`) hits
- *     this same branch — `HttpTimeoutError` is deliberately just another
- *     `Error`, so it's indistinguishable from any other network failure here
- *     and gets the identical credential-free treatment, just with a message
- *     that says "timed out" instead of "network error" so a stuck gateway is
- *     diagnosable without ever touching the query string.
- *   - `res.json()` can throw on a malformed body; same treatment.
- * The existing `!res.ok` branch keeps its own static-message throw (no
- * change in behavior), just relocated into this shared helper so both
- * `createTransaction` and `checkTransaction` get the same guarantee.
+ * choke point, via `fetchWithTimeoutSafe` (`@app/core/http`): it rethrows a
+ * new `Error` built from a static, credential-free string, whether `fetch()`
+ * itself rejected (DNS failure, connection refused, aborted, TLS error, …:
+ * Node's `fetch` some­times attaches the failed request to `err.cause`, which
+ * a naive `logger.error({ err })` downstream — or an *unhandled rejection* if
+ * a caller forgets to `.catch()` — would serialize whole, echoing the api key
+ * straight back into logs) or the deadline (`timeoutMs` / `HTTP_TIMEOUT_MS`)
+ * elapsed first, distinguished only by "timed out" vs. "network error" in the
+ * message so a stuck gateway is diagnosable without ever touching the query
+ * string. `res.json()` gets the same static-message treatment below on a
+ * malformed body. The existing `!res.ok` branch keeps its own static-message
+ * throw (no change in behavior). Both `createTransaction` and
+ * `checkTransaction` share this one guarantee.
  */
 async function fetchPaydisiniJson(url: string, errorPrefix: string, timeoutMs: number): Promise<Record<string, unknown>> {
-  let res: Response;
-  try {
-    res = await fetchWithTimeout(url, { timeoutMs });
-  } catch (err) {
-    if (err instanceof HttpTimeoutError) {
-      throw new Error(`${errorPrefix} timed out`); // never log the query — it carries the api key
-    }
-    throw new Error(`${errorPrefix} network error`); // never log the query — it carries the api key
-  }
+  const res = await fetchWithTimeoutSafe(url, { timeoutMs }, errorPrefix); // never log the query — it carries the api key
   if (!res.ok) {
     throw new Error(`${errorPrefix} HTTP ${res.status}`); // never log the query — it carries the api key
   }

@@ -209,7 +209,12 @@ describe("checkTransaction", () => {
     }
     expect(caught).toBeInstanceOf(Error);
     const message = (caught as Error).message;
-    expect(message).toMatch(/timed out|network error/);
+    // Tightened to pin the HttpTimeoutError branch actually running, not just
+    // that the message happens to be credential-free either way (Minor 9,
+    // Task 3 review follow-up): the old `/timed out|network error/`
+    // alternation would still pass if the timeout branch silently stopped
+    // firing and this fell through to the generic network-error message.
+    expect(message).toMatch(/timed out/);
     expect(message).not.toContain(FULL_CREDS.secret);
     expect(message).not.toContain("http");
   });

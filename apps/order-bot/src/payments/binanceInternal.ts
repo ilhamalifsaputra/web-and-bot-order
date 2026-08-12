@@ -29,7 +29,7 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { langCode, NotificationEvent, OrderKind } from "@app/core/enums";
 import { logger } from "@app/core/logger";
-import { fetchWithTimeout, HTTP_TIMEOUT_MS } from "@app/core/http";
+import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "@app/core/http";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
 import {
@@ -274,6 +274,15 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * pass the shorter `FALLBACK_CONNECT_TIMEOUT_MS` explicitly. Either way the
  * call is now bounded — before this task the primary host relied on
  * undici's implicit (much longer) default, unlike the mirror path.
+ *
+ * The credential rides in a header (X-MBX-APIKEY), not the query string —
+ * the same shape Bybit and NOWPayments have (Important #1, Task 3 review
+ * follow-up: Binance was the one header-credential client this task left
+ * unwrapped). Routed through `fetchWithTimeoutSafe` (`@app/core/http`) so a
+ * rejected fetch()'s `.cause` — which Node's fetch sometimes populates with
+ * the failed request, headers included — never reaches `requestWithRetries`'
+ * warn log or `fetchIncomingTransfers`' `logger.error({ err })` / poll-health
+ * heartbeat below.
  */
 async function requestIncomingTransfers(
   cfg: BinanceInternalConfig,
@@ -288,10 +297,11 @@ async function requestIncomingTransfers(
   });
   const qs = params.toString();
   const url = `${apiBase}/sapi/v1/pay/transactions?${qs}&signature=${sign(qs, cfg.apiSecret)}`;
-  return fetchWithTimeout(url, {
-    headers: { "X-MBX-APIKEY": cfg.apiKey },
-    timeoutMs,
-  });
+  return fetchWithTimeoutSafe(
+    url,
+    { headers: { "X-MBX-APIKEY": cfg.apiKey }, timeoutMs },
+    "Binance pay/transactions request", // never log err — it may carry the X-MBX-APIKEY header
+  );
 }
 
 /** Up to CONNECT_RETRY_ATTEMPTS tries against ONE host, CONNECT_RETRY_DELAY_MS
@@ -601,9 +611,29 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
 // while this is still undefined.
 let boundApi: Api | undefined;
 
+// ── Important #2 (Task 3 review follow-up) ──────────────────────────────────
+// Worst-case failover-to-mirror-k arithmetic: the primary host's own retry
+// budget (requestWithRetries, unchanged by this task) is
+// CONNECT_RETRY_ATTEMPTS(3) × HTTP_TIMEOUT_MS.gatewayRead(10s) +
+// 2 × CONNECT_RETRY_DELAY_MS(1.5s) sleeps between attempts = 33s. Each
+// subsequent fallback-mirror attempt (fallThroughMirrors) is bounded at
+// FALLBACK_CONNECT_TIMEOUT_MS(8s), one attempt per mirror, no sleep between.
+// BINANCE_API_BASE_FALLBACKS defaults to FIVE mirrors (config.ts), so the
+// worst case — primary exhausted, every mirror also unreachable/slow — is
+// 33s + 5 × 8s = 73s. The default cycleTimeoutMs (`max(3 * intervalMs,
+// 60_000)` = 60s at the default 10s POLL_INTERVAL_SECONDS) is BELOW that
+// worst case: a cycle could be abandoned mid-failover on a mirror attempt
+// that would have succeeded seconds later, and the abandon heartbeat would
+// carry only the generic "did not finish within 60000ms" message instead of
+// the real "all Binance hosts unreachable" error. 90_000 gives ~17s of
+// margin above the 73s worst case so the cycle always has time to either
+// succeed via a mirror or genuinely exhaust every host and report why.
+const BINANCE_CYCLE_TIMEOUT_MS = 90_000;
+
 const loop = createPollLoop({
   name: "Binance Internal Transfer",
   intervalMs: config.POLL_INTERVAL_SECONDS * 1000,
+  cycleTimeoutMs: BINANCE_CYCLE_TIMEOUT_MS,
   run: () => pollOnce(boundApi!),
   // A hung cycle abandoned past its deadline must still show up as a failed
   // heartbeat on the ops panel, not silence — the existing failure branch in

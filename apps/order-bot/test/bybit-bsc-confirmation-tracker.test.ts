@@ -11,13 +11,14 @@ import {
   setSetting,
   deleteSetting,
 } from "@app/db";
-import { OrderStatus } from "@app/core/enums";
+import { OrderStatus, StockStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import {
   computeConfirmations,
   fetchConfirmations,
   pollOnce,
   MAX_CONSECUTIVE_LOOKUP_FAILURES,
+  MAX_ORDERS_PER_CYCLE,
 } from "../src/payments/bybitBscConfirmationTracker";
 
 let sample: SampleData;
@@ -127,6 +128,37 @@ describe("fetchConfirmations", () => {
       const init = (call as unknown[])[1] as RequestInit | undefined;
       expect(init?.signal).toBeInstanceOf(AbortSignal);
     }
+  });
+
+  // Minor 5 (Task 3 review follow-up): bscscanRpc previously had no try/catch
+  // at all, so a rejected fetch() reached pollOnce's `logger.error({ err })`
+  // raw — same M-15 shape as TokoPay/PayDisini's query-string credentials,
+  // just on the (low-severity, optional, read-only-rate-limit) BscScan key.
+  it("rethrows a brand-new, cause-free error instead of the raw (query-string-bearing) rejection", async () => {
+    const cfgWithKey = { apiBase: "https://api.bscscan.com/api", apiKey: "LEAKED-BSCSCAN-KEY" };
+    const original = Object.assign(new Error("fetch failed"), {
+      cause: { request: { url: "https://api.bscscan.com/api?...&apikey=LEAKED-BSCSCAN-KEY" } },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(original));
+    let caught: unknown;
+    try {
+      await fetchConfirmations("0xabc", cfgWithKey);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBe(original);
+    expect((caught as Error).cause).toBeUndefined();
+    expect((caught as Error).message).not.toContain("LEAKED-BSCSCAN-KEY");
+    expect((caught as Error).message).toMatch(/network error/);
+  });
+
+  it("distinguishes a timeout from a network error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" })),
+    );
+    await expect(fetchConfirmations("0xabc", cfg)).rejects.toThrow(/timed out/);
   });
 });
 
@@ -311,6 +343,47 @@ describe("pollOnce (confirmation tracker poll loop)", () => {
     vi.stubGlobal("fetch", fetchMock);
     await pollOnce(fakeApi);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // Important #3 (Task 3 review follow-up): pollOnce now caps how many
+  // tracked orders one cycle inspects (MAX_ORDERS_PER_CYCLE), rotating the
+  // starting point each cycle so a backlog larger than the cap still gets
+  // full coverage over a few cycles instead of starving the same tail-end
+  // orders forever. cycleCursor is module state shared with every earlier
+  // test in this file, so this asserts the size of the covered set (true
+  // regardless of the cursor's leftover position from prior tests), not
+  // which specific orders land in the first batch.
+  it("caps one cycle at MAX_ORDERS_PER_CYCLE orders, then covers the rest on a later cycle", async () => {
+    const total = MAX_ORDERS_PER_CYCLE + 2;
+    // makeTrackedOrder consumes one stock unit per call — buildSampleData's
+    // default product only stocks enough for the other tests in this file,
+    // so top it up before creating `total` tracked orders in one test.
+    await prisma.stockItem.createMany({
+      data: Array.from({ length: total }, (_, i) => ({
+        productId: sample.product.id,
+        credentials: `bsc-tracker-cap-${i}@x.com:pw`,
+        status: StockStatus.AVAILABLE,
+      })),
+    });
+    for (let i = 0; i < total; i++) {
+      await makeTrackedOrder("0x" + String(i).padStart(64, "0"));
+    }
+    const seenTxHashes = new Set<string>();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.includes("eth_blockNumber")) return Promise.resolve(rpc("0x65"));
+        const match = /txhash=([^&]+)/.exec(url);
+        if (match?.[1]) seenTxHashes.add(decodeURIComponent(match[1]));
+        return Promise.resolve(rpc({ blockNumber: "0x65" }));
+      }),
+    );
+
+    await pollOnce(fakeApi);
+    expect(seenTxHashes.size).toBe(MAX_ORDERS_PER_CYCLE); // never all `total` in one cycle
+
+    await pollOnce(fakeApi); // the rotating window's next slice picks up the rest
+    expect(seenTxHashes.size).toBe(total); // full coverage within ceil(total / MAX_ORDERS_PER_CYCLE) = 2 cycles
   });
 
   // MUST run last in this file: a rate-limit hit arms the module-level

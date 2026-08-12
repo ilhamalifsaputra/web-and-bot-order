@@ -702,18 +702,77 @@ describe("fetchIncomingTransfers (connect-fallback escalation)", () => {
     expect(fetchMock.mock.calls[4]![0]).toContain("api2.binance.com");
   }, 15_000);
 
-  it("all bases exhausted (primary + every fallback) throws the primary's error", async () => {
+  // Important #1 (Task 3 review follow-up): requestIncomingTransfers now
+  // routes through fetchWithTimeoutSafe, the same credential-safe choke
+  // point Bybit/NOWPayments use — the primary's raw rejection ("always
+  // fails") is exactly the kind of thing that could carry the X-MBX-APIKEY
+  // header on err.cause in production, so it must NOT survive verbatim to
+  // this function's own caller/logger. The assertion below moved from
+  // pinning the raw message to pinning the sanitized one.
+  it("all bases exhausted (primary + every fallback) throws a sanitized error, never the raw rejection", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error("always fails"));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(fetchIncomingTransfers(baseCfg)).rejects.toThrow("always fails");
+    let caught: unknown;
+    try {
+      await fetchIncomingTransfers(baseCfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).not.toContain("always fails");
+    expect((caught as Error).message).toMatch(/network error/);
     expect(fetchMock).toHaveBeenCalledTimes(5); // 3 primary + 2 fallbacks (1 each)
   }, 15_000);
 
-  it("empty fallback list behaves exactly like today — no fallback attempted, same error", async () => {
+  it("empty fallback list behaves exactly like today — no fallback attempted, still a sanitized error", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error("connect refused"));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(fetchIncomingTransfers({ ...baseCfg, apiBaseFallbacks: [] })).rejects.toThrow("connect refused");
+    let caught: unknown;
+    try {
+      await fetchIncomingTransfers({ ...baseCfg, apiBaseFallbacks: [] });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).not.toContain("connect refused");
+    expect((caught as Error).message).toMatch(/network error/);
     expect(fetchMock).toHaveBeenCalledTimes(3); // primary's retry budget only
+  }, 15_000);
+
+  // Minor 10-style coverage for Important #1: prove the header credential
+  // never rides along via `.cause`, the same shape as the NOWPayments/Bybit
+  // tests, not just that the message text changed.
+  it("wraps a rejected request in a fresh, cause-free error instead of letting the header-bearing rejection escape", async () => {
+    const original = Object.assign(new Error("fetch failed"), {
+      cause: { request: { headers: { "X-MBX-APIKEY": "LEAKED-BINANCE-API-KEY" } } },
+    });
+    const fetchMock = vi.fn().mockRejectedValue(original);
+    vi.stubGlobal("fetch", fetchMock);
+    let caught: unknown;
+    try {
+      await fetchIncomingTransfers(baseCfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBe(original);
+    expect((caught as Error).cause).toBeUndefined();
+    expect((caught as Error).message).not.toContain("LEAKED-BINANCE-API-KEY");
+    expect((caught as Error).message).not.toBe("fetch failed");
+  }, 15_000);
+
+  it("distinguishes a timeout from a network error, both still cause-free", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" }));
+    vi.stubGlobal("fetch", fetchMock);
+    let caught: unknown;
+    try {
+      await fetchIncomingTransfers({ ...baseCfg, apiBaseFallbacks: [] });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).cause).toBeUndefined();
+    expect((caught as Error).message).toMatch(/timed out/);
   }, 15_000);
 
   // Task 3: the primary host previously relied on undici's implicit (much

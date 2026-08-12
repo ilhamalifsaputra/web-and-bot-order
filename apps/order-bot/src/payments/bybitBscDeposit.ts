@@ -34,7 +34,7 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { langCode, OrderStatus, OrderKind, NotificationEvent } from "@app/core/enums";
 import { logger } from "@app/core/logger";
-import { fetchWithTimeout, HTTP_TIMEOUT_MS } from "@app/core/http";
+import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "@app/core/http";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
   prisma,
@@ -99,10 +99,10 @@ class RateLimitedError extends Error {}
  * Bybit V5 GET auth: HMAC-SHA256(secret, timestamp + apiKey + recvWindow + queryString).
  * The credential rides in a header (X-BAPI-API-KEY), not the query string —
  * but Node's fetch sometimes attaches the failed request, headers included,
- * to a rejected error's `.cause`. A naive `logger.error({ err })` downstream
- * would serialize that whole object, so a rejection (network failure OR a
- * `fetchWithTimeout` deadline) is caught here and rethrown as a fresh,
- * static-message Error before it can escape.
+ * to a rejected error's `.cause`. `fetchWithTimeoutSafe` (`@app/core/http`)
+ * catches any rejection (network failure OR the `timeoutMs` deadline
+ * elapsing) and rethrows a fresh, static-message Error before it can escape,
+ * so a naive `logger.error({ err })` downstream never sees the header.
  */
 async function bybitGet(path: string, params: Record<string, string>, cfg: BybitBscConfig): Promise<Record<string, unknown>> {
   const key = cfg.apiKey;
@@ -111,9 +111,9 @@ async function bybitGet(path: string, params: Record<string, string>, cfg: Bybit
   const ts = String(Date.now());
   const query = new URLSearchParams(params).toString();
   const sign = createHmac("sha256", secret).update(ts + key + recv + query).digest("hex");
-  let res: Response;
-  try {
-    res = await fetchWithTimeout(`${cfg.apiBase}${path}?${query}`, {
+  const res = await fetchWithTimeoutSafe(
+    `${cfg.apiBase}${path}?${query}`,
+    {
       headers: {
         "X-BAPI-API-KEY": key,
         "X-BAPI-TIMESTAMP": ts,
@@ -121,10 +121,9 @@ async function bybitGet(path: string, params: Record<string, string>, cfg: Bybit
         "X-BAPI-SIGN": sign,
       },
       timeoutMs: HTTP_TIMEOUT_MS.gatewayRead, // poller — the next tick retries if this is slow
-    });
-  } catch {
-    throw new Error(`Bybit ${path} request failed`); // never log err — it may carry the X-BAPI-API-KEY header
-  }
+    },
+    `Bybit ${path} request`, // never log err — it may carry the X-BAPI-API-KEY header
+  );
   // Bybit returns its rate-limit budget on every response (not just 429s) —
   // logging it gives empirical data on real headroom instead of guessing.
   const limit = res.headers.get("X-Bapi-Limit");
@@ -141,7 +140,12 @@ async function bybitGet(path: string, params: Record<string, string>, cfg: Bybit
   if (!res.ok) {
     throw new Error(`Bybit ${path} HTTP ${res.status}: ${await res.text().catch(() => "")}`);
   }
-  const body = (await res.json()) as { retCode?: number; retMsg?: string; result?: Record<string, unknown> };
+  let body: { retCode?: number; retMsg?: string; result?: Record<string, unknown> };
+  try {
+    body = (await res.json()) as { retCode?: number; retMsg?: string; result?: Record<string, unknown> };
+  } catch {
+    throw new Error(`Bybit ${path} returned an unparseable response`);
+  }
   if (body.retCode !== 0) {
     // 10006/10018 = rate limit on the V5 retCode layer.
     if (body.retCode === 10006 || body.retCode === 10018) throw new RateLimitedError(`Bybit retCode ${body.retCode}`);
@@ -177,8 +181,13 @@ export function normalizeOnchainDeposit(raw: Record<string, unknown>, cfg: Pick<
 }
 
 /** Fetch recent successful on-chain USDT deposits (last 3 days).
- * Throws RateLimitedError on 429/403/retCode rate limits. */
-async function fetchRecentDeposits(cfg: BybitBscConfig): Promise<BybitBscDeposit[]> {
+ * Throws RateLimitedError on 429/403/retCode rate limits. Exported (in
+ * addition to being used by `pollOnce` below) so a test can call it directly
+ * against a rejected `fetch()` and assert on the thrown Error itself — e.g.
+ * that it carries no `.cause` — the same way the query-string-credential
+ * gateway clients' own tests do, rather than only observing the sanitized
+ * message after it's been reduced to a string in a DB health record. */
+export async function fetchRecentDeposits(cfg: BybitBscConfig): Promise<BybitBscDeposit[]> {
   const result = await bybitGet("/v5/asset/deposit/query-record", {
     coin: config.CURRENCY,
     startTime: String(Date.now() - 3 * 24 * 60 * 60 * 1000),

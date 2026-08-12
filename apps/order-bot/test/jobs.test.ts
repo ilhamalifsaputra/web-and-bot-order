@@ -1011,3 +1011,28 @@ describe("binancePollWatchdog alert-flag ordering (M-26 fix)", () => {
     expect(secondRunApi.sendMessage).not.toHaveBeenCalled();
   });
 });
+
+// Task 5 (payment-health-hardening): pollWatchdogDecision is now derived from
+// evaluatePollHealth (packages/core/src/payments/pollHealth.ts), whose
+// "yellow" status treats a single failed cycle as a warning the ops UI
+// surfaces, not an outage — the poller is still running on schedule. This
+// pins that the watchdog (the consumer that actually pages admins) still
+// stays silent for that same case after the rebase.
+describe("binancePollWatchdog does not page for a single failed cycle (Task 5)", () => {
+  it("the watchdog does not page for a single failed cycle, which the ops UI shows as a warning", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "12345");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "test-key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "test-secret");
+    await setSetting(
+      prisma,
+      BINANCE_POLL_HEALTH_KEY,
+      JSON.stringify({ lastRun: new Date().toISOString(), backoffUntil: null, consecutiveFailures: 1 }),
+    );
+    const api = fakeApi();
+
+    await binancePollWatchdog(api);
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(await getSetting(prisma, "binance_poll_alert_sent")).not.toBe("1");
+  });
+});

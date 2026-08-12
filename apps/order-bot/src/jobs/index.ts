@@ -46,6 +46,7 @@ import {
 import { flashPrice } from "@app/core/flash";
 import { formatIdr } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
+import { evaluatePollHealth } from "@app/core/payments/pollHealth";
 import { coreT } from "../util/i18n";
 import { notificationKb } from "../keyboards/customer";
 import { esc } from "../util/format";
@@ -189,6 +190,15 @@ const POLL_ALERT_KEY = "binance_poll_alert_sent";
  *
  * `consecutiveFailures` is optional so callers whose health type doesn't track
  * it (e.g. Binance, currently) keep the original stale-only behavior unchanged.
+ *
+ * Delegates the actual unhealthy/healthy call to `evaluatePollHealth`
+ * (packages/core/src/payments/pollHealth.ts) — its `paging` flag reproduces
+ * this function's original stale/failing/backoff rule bit-for-bit, so admins
+ * see exactly the same alert/recover transitions as before this was
+ * rebased onto the shared rule. `enabled: true` is the truthful state here,
+ * not a placeholder: every call site (binancePollWatchdog and its two twins)
+ * already returns early while its rail is disabled, so this function only
+ * ever runs for a rail that is enabled.
  */
 export function pollWatchdogDecision(
   health: { lastRun: string | null; backoffUntil: string | null; consecutiveFailures?: number | null },
@@ -197,14 +207,17 @@ export function pollWatchdogDecision(
   staleMs = POLL_STALE_MINUTES * 60_000,
   failureThreshold = FAILURE_STREAK_ALERT_THRESHOLD,
 ): "none" | "alert" | "recover" {
-  const backoff = health.backoffUntil ? Date.parse(health.backoffUntil) : 0;
-  if (backoff > now) return "none"; // rate-limited on purpose, not stuck
-  const lastRun = health.lastRun ? Date.parse(health.lastRun) : 0;
-  const stale = now - lastRun > staleMs;
-  const failing = (health.consecutiveFailures ?? 0) >= failureThreshold;
-  const unhealthy = stale || failing;
-  if (unhealthy && !alreadyAlerted) return "alert";
-  if (!unhealthy && alreadyAlerted) return "recover";
+  const { paging } = evaluatePollHealth(
+    {
+      lastRun: health.lastRun,
+      lastSuccessAt: null,
+      backoffUntil: health.backoffUntil,
+      consecutiveFailures: health.consecutiveFailures ?? null,
+    },
+    { enabled: true, now, staleMs, failureThreshold },
+  );
+  if (paging && !alreadyAlerted) return "alert";
+  if (!paging && alreadyAlerted) return "recover";
   return "none";
 }
 
@@ -219,16 +232,17 @@ export async function binancePollWatchdog(api: Api): Promise<void> {
   if (!(await resolveBinanceInternalConfig(prisma)).enabled) return;
   const health = await getBinancePollHealth(prisma);
   const alerted = (await getSetting(prisma, POLL_ALERT_KEY)) === "1";
-  const decision = pollWatchdogDecision(health, alerted);
+  const now = Date.now();
+  const decision = pollWatchdogDecision(health, alerted, now);
 
   if (decision === "alert") {
-    const lastRun = health.lastRun ? Date.parse(health.lastRun) : 0;
-    const mins = lastRun ? Math.round((Date.now() - lastRun) / 60_000) : "∞";
-    const failing = (health.consecutiveFailures ?? 0) >= FAILURE_STREAK_ALERT_THRESHOLD;
-    const detail = failing
-      ? `${health.consecutiveFailures} consecutive cycle(s) failed (last error: ${health.lastError ?? "unknown"})`
-      : `no completed cycle in ${mins} min`;
-    logger.error(`Binance poller looks unhealthy (${detail}) — alerting admins and pausing auto-confirm`);
+    const { detail } = evaluatePollHealth(health, {
+      enabled: true,
+      now,
+      staleMs: POLL_STALE_MINUTES * 60_000,
+      failureThreshold: FAILURE_STREAK_ALERT_THRESHOLD,
+    });
+    logger.error(`Binance poller looks unhealthy: ${detail} Alerting admins and pausing auto-confirm.`);
     // Flag flips BEFORE the DM loop, not after (M-26 fix, backend audit
     // 2026-07-31): the loop below awaits Telegram per admin, so writing the
     // flag only once every DM was sent left a window where a crash mid-loop
@@ -244,7 +258,7 @@ export async function binancePollWatchdog(api: Api): Promise<void> {
       try {
         await api.sendMessage(
           adminId,
-          `⚠️ <b>Binance poller looks unhealthy</b>\n${esc(detail)}. ` +
+          `⚠️ <b>Binance poller looks unhealthy</b>\n${esc(detail)} ` +
             `Auto-confirm is paused — check the order-bot process.`,
           { parse_mode: "HTML" },
         );
@@ -267,16 +281,17 @@ export async function bybitPollWatchdog(api: Api): Promise<void> {
   if (!(await resolveBybitConfig(prisma)).enabled) return;
   const health = await getBybitPollHealth(prisma);
   const alerted = (await getSetting(prisma, BYBIT_POLL_ALERT_KEY)) === "1";
-  const decision = pollWatchdogDecision(health, alerted);
+  const now = Date.now();
+  const decision = pollWatchdogDecision(health, alerted, now);
 
   if (decision === "alert") {
-    const lastRun = health.lastRun ? Date.parse(health.lastRun) : 0;
-    const mins = lastRun ? Math.round((Date.now() - lastRun) / 60_000) : "∞";
-    const failing = (health.consecutiveFailures ?? 0) >= FAILURE_STREAK_ALERT_THRESHOLD;
-    const detail = failing
-      ? `${health.consecutiveFailures} consecutive cycle(s) failed (last error: ${health.lastError ?? "unknown"})`
-      : `no completed cycle in ${mins} min`;
-    logger.error(`Bybit deposit poller looks unhealthy (${detail}) — alerting admins and pausing auto-confirm`);
+    const { detail } = evaluatePollHealth(health, {
+      enabled: true,
+      now,
+      staleMs: POLL_STALE_MINUTES * 60_000,
+      failureThreshold: FAILURE_STREAK_ALERT_THRESHOLD,
+    });
+    logger.error(`Bybit deposit poller looks unhealthy: ${detail} Alerting admins and pausing auto-confirm.`);
     // Flag flips before the DM loop — same reasoning as binancePollWatchdog
     // above (M-26 fix, backend audit 2026-07-31).
     await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "1");
@@ -284,7 +299,7 @@ export async function bybitPollWatchdog(api: Api): Promise<void> {
       try {
         await api.sendMessage(
           adminId,
-          `⚠️ <b>Bybit deposit poller looks unhealthy</b>\n${esc(detail)}. ` +
+          `⚠️ <b>Bybit deposit poller looks unhealthy</b>\n${esc(detail)} ` +
             `Auto-confirm is paused — check the order-bot process.`,
           { parse_mode: "HTML" },
         );
@@ -308,16 +323,17 @@ export async function bybitBscPollWatchdog(api: Api): Promise<void> {
   if (!(await resolveBybitBscConfig(prisma)).enabled) return;
   const health = await getBybitBscPollHealth(prisma);
   const alerted = (await getSetting(prisma, BYBIT_BSC_POLL_ALERT_KEY)) === "1";
-  const decision = pollWatchdogDecision(health, alerted);
+  const now = Date.now();
+  const decision = pollWatchdogDecision(health, alerted, now);
 
   if (decision === "alert") {
-    const lastRun = health.lastRun ? Date.parse(health.lastRun) : 0;
-    const mins = lastRun ? Math.round((Date.now() - lastRun) / 60_000) : "∞";
-    const failing = (health.consecutiveFailures ?? 0) >= FAILURE_STREAK_ALERT_THRESHOLD;
-    const detail = failing
-      ? `${health.consecutiveFailures} consecutive cycle(s) failed (last error: ${health.lastError ?? "unknown"})`
-      : `no completed cycle in ${mins} min`;
-    logger.error(`Bybit BSC deposit poller looks unhealthy (${detail}) — alerting admins and pausing auto-confirm`);
+    const { detail } = evaluatePollHealth(health, {
+      enabled: true,
+      now,
+      staleMs: POLL_STALE_MINUTES * 60_000,
+      failureThreshold: FAILURE_STREAK_ALERT_THRESHOLD,
+    });
+    logger.error(`Bybit BSC deposit poller looks unhealthy: ${detail} Alerting admins and pausing auto-confirm.`);
     // Flag flips before the DM loop — same reasoning as binancePollWatchdog
     // above (M-26 fix, backend audit 2026-07-31).
     await setSetting(prisma, BYBIT_BSC_POLL_ALERT_KEY, "1");
@@ -325,7 +341,7 @@ export async function bybitBscPollWatchdog(api: Api): Promise<void> {
       try {
         await api.sendMessage(
           adminId,
-          `⚠️ <b>Bybit BSC deposit poller looks unhealthy</b>\n${esc(detail)}. ` +
+          `⚠️ <b>Bybit BSC deposit poller looks unhealthy</b>\n${esc(detail)} ` +
             `Auto-confirm is paused — check the order-bot process.`,
           { parse_mode: "HTML" },
         );

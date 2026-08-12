@@ -57,6 +57,19 @@ describe("evaluatePollHealth — rule table (packages/core/src/payments/pollHeal
     expect(result.paging).toBe(false);
   });
 
+  it("rule 2: detail uses relative phrasing (minutes remaining), not a raw UTC instant — consistent with rules 4/5/6/7's phrasing and this repo's UTC-in-DB/local-on-display convention", () => {
+    const result = evaluatePollHealth(
+      heartbeat({
+        lastRun: new Date(NOW - MINUTE).toISOString(),
+        backoffUntil: new Date(NOW + 3 * MINUTE).toISOString(),
+        consecutiveFailures: 0,
+      }),
+      { enabled: true, now: NOW },
+    );
+    expect(result.detail).toMatch(/for about 3 more minute\(s\)/);
+    expect(result.detail).not.toMatch(/\d{4}-\d{2}-\d{2}T/); // no raw ISO timestamp
+  });
+
   it("rule 3: a poller that has never completed a cycle is red and pages", () => {
     const result = evaluatePollHealth(heartbeat({ lastRun: null }), { enabled: true, now: NOW });
     expect(result.status).toBe("red");
@@ -120,6 +133,40 @@ describe("evaluatePollHealth — rule ordering", () => {
     expect(result.status).toBe("red");
     expect(result.paging).toBe(true);
     expect(result.detail).toMatch(/5 consecutive cycles failed/);
+  });
+});
+
+describe("evaluatePollHealth — exact `>` boundaries (rules 2 and 5 use strict greater-than)", () => {
+  it("staleness: elapsedSinceLastRun exactly equal to staleMs stays green, not red (rule 5 uses strict >)", () => {
+    const result = evaluatePollHealth(
+      heartbeat({ lastRun: new Date(NOW - 5 * MINUTE).toISOString(), consecutiveFailures: 0 }),
+      { enabled: true, now: NOW }, // default staleMs is 5 minutes; elapsed is exactly 5 minutes
+    );
+    expect(result.status).toBe("green");
+    expect(result.paging).toBe(false);
+  });
+
+  it("staleness: one millisecond past staleMs goes red and pages (rule 5's > boundary)", () => {
+    const result = evaluatePollHealth(
+      heartbeat({ lastRun: new Date(NOW - 5 * MINUTE - 1).toISOString(), consecutiveFailures: 0 }),
+      { enabled: true, now: NOW },
+    );
+    expect(result.status).toBe("red");
+    expect(result.paging).toBe(true);
+  });
+
+  it("backoff: backoffUntil exactly equal to now is NOT a live backoff (rule 2 uses strict >, so an equal timestamp means the window has already closed) and falls through to the healthy rules below", () => {
+    const result = evaluatePollHealth(
+      heartbeat({
+        lastRun: new Date(NOW - MINUTE).toISOString(),
+        backoffUntil: new Date(NOW).toISOString(),
+        consecutiveFailures: 0,
+      }),
+      { enabled: true, now: NOW },
+    );
+    expect(result.status).not.toBe("yellow");
+    expect(result.status).toBe("green");
+    expect(result.paging).toBe(false);
   });
 });
 
@@ -197,13 +244,23 @@ describe("evaluatePollHealth — paging parity with the watchdog (apps/order-bot
     ).toBe(false);
   });
 
-  it("custom staleMs/failureThreshold options are honored the same way the watchdog's optional params are", () => {
+  it("custom failureThreshold is honored: consecutiveFailures at a lowered custom threshold trips rule 4 on its own (staleMs left at its wide default, so this is failureThreshold's effect alone)", () => {
     const result = evaluatePollHealth(
-      heartbeat({ lastRun: new Date(NOW - 2 * MINUTE).toISOString(), consecutiveFailures: 2 }),
-      { enabled: true, now: NOW, staleMs: MINUTE, failureThreshold: 2 },
+      heartbeat({ lastRun: new Date(NOW - 1000).toISOString(), consecutiveFailures: 2 }),
+      { enabled: true, now: NOW, failureThreshold: 2 },
     );
     expect(result.status).toBe("red");
     expect(result.paging).toBe(true);
+  });
+
+  it("custom staleMs is honored on its own: a heartbeat that never trips rule 4 (consecutiveFailures stays 0, failureThreshold left at its default) still goes red once elapsed time passes a tightened custom staleMs — proving rule 5, not rule 4, is what reacted", () => {
+    const result = evaluatePollHealth(
+      heartbeat({ lastRun: new Date(NOW - 2 * MINUTE).toISOString(), consecutiveFailures: 0 }),
+      { enabled: true, now: NOW, staleMs: MINUTE },
+    );
+    expect(result.status).toBe("red");
+    expect(result.paging).toBe(true);
+    expect(result.detail).toMatch(/No cycle has completed/);
   });
 });
 
@@ -238,6 +295,41 @@ describe("evaluatePollHealth — detail surfaces lastSuccessAt when it diverges 
       { enabled: true, now: NOW },
     );
     expect(result.detail).not.toMatch(/last successful cycle/);
+  });
+});
+
+describe("evaluatePollHealth — unparseable timestamps (corrupt heartbeat data)", () => {
+  // Date.parse("not-a-real-timestamp") is NaN. `now - NaN > staleMs` is
+  // false, so an unparseable lastRun currently reads as NOT stale — the
+  // poller silently reads healthy instead of red, which is what
+  // pollWatchdogDecision (apps/order-bot/src/jobs/index.ts:202-203) also
+  // does today (`now - NaN > staleMs` is false there too). This test pins
+  // that behavior deliberately so a future refactor can't silently change
+  // it; see the task report for why this may be the wrong call and why it
+  // is being left alone here regardless.
+  it("an unparseable lastRun reads green (elapsed is NaN, not > staleMs) — matches the watchdog's own NaN behavior, pinned deliberately", () => {
+    const result = evaluatePollHealth(
+      heartbeat({ lastRun: "not-a-real-timestamp", consecutiveFailures: 0 }),
+      { enabled: true, now: NOW },
+    );
+    expect(result.status).toBe("green");
+    expect(result.paging).toBe(false);
+    expect(Number.isNaN(result.staleMs)).toBe(true);
+    // detail must degrade to readable text, not the literal "NaN".
+    expect(result.detail).not.toMatch(/NaN/);
+  });
+
+  it("an unparseable backoffUntil is treated as no live backoff (NaN guard on rule 2) and falls through to the rules below", () => {
+    const result = evaluatePollHealth(
+      heartbeat({
+        lastRun: new Date(NOW - MINUTE).toISOString(),
+        backoffUntil: "not-a-real-timestamp",
+        consecutiveFailures: 0,
+      }),
+      { enabled: true, now: NOW },
+    );
+    expect(result.status).toBe("green");
+    expect(result.paging).toBe(false);
   });
 });
 

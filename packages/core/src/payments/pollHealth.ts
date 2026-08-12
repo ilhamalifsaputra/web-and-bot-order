@@ -43,8 +43,14 @@ export interface PollHealthEvaluation {
 const DEFAULT_STALE_MS = 5 * 60_000;
 const DEFAULT_FAILURE_THRESHOLD = 3;
 
-function minutesAgo(iso: string, now: number): number {
-  return Math.max(0, Math.round((now - Date.parse(iso)) / 60_000));
+/** Renders the whole minutes between `iso` and `now`. Falls back to a plain
+ * English phrase instead of the literal "NaN" when `iso` fails to parse (a
+ * corrupt heartbeat value) — the numeric branch below still yields a number
+ * for every valid timestamp this module produces itself. */
+function minutesAgo(iso: string, now: number): string {
+  const parsed = Date.parse(iso);
+  if (Number.isNaN(parsed)) return "an unknown number of";
+  return String(Math.max(0, Math.round((now - parsed) / 60_000)));
 }
 
 /** Appends a clause about the last successful cycle when `lastSuccessAt`
@@ -79,10 +85,13 @@ export function evaluatePollHealth(
   // check would (the dashboard.ts bug this replaces).
   const backoffUntil = health.backoffUntil ? Date.parse(health.backoffUntil) : NaN;
   if (!Number.isNaN(backoffUntil) && backoffUntil > now) {
+    // backoffUntil is guaranteed parseable and in the future here, so a
+    // plain minute count (not the NaN-guarded minutesAgo helper) is safe.
+    const minutesRemaining = Math.max(0, Math.round((backoffUntil - now) / 60_000));
     return {
       status: "yellow",
       paging: false,
-      detail: `Rate-limited on purpose until ${new Date(backoffUntil).toISOString()}; retrying automatically once the window ends.`,
+      detail: `Rate-limited on purpose for about ${minutesRemaining} more minute(s); retrying automatically once the window ends.`,
       staleMs: elapsedSinceLastRun,
     };
   }

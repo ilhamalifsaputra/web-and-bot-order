@@ -337,6 +337,13 @@ describe("createPollLoop", () => {
       vi.useRealTimers();
       await new Promise<void>((resolve) => setImmediate(resolve));
 
+      // Treat this assertion as documentation, not as a proven regression
+      // gate. During review we deliberately broke pollLoop so its rejection
+      // handler was attached a tick too late, and this listener STILL never
+      // fired under Vitest (an equivalent standalone Node script did observe
+      // it), so Vitest's own rejection instrumentation appears to intercept
+      // the event before Node's checkpoint reaches us. The warn assertion
+      // below is the part of this test that reliably turns red.
       expect(unhandled).not.toHaveBeenCalled();
       // The late-rejection path actually logs, at warn level.
       expect(warnSpy).toHaveBeenCalledTimes(1);

@@ -23,7 +23,7 @@ vi.mock("@app/db", async (orig) => {
   return { ...actual, claimGatewaySlot: vi.fn(actual.claimGatewaySlot) };
 });
 
-import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock } from "@app/db";
+import { prisma, createOrderDirect, upsertBulkPricing, deleteBulkPricing, attachPaymentProof, approveOrder, getOrder, getUser, createBroadcast, setSetting, getSetting, createCatalogProduct, createCategory, createDenomination, updateDenomination, bulkAddStock, finalizeOrderPayment, listPendingTokopayOrders, createBybitBscOrder, adjustWallet, getCatalogProduct, settlePaidOrder, fulfillManualOrder, claimGatewaySlot, subscribeToRestock, BINANCE_UID_KEY, BINANCE_API_KEY_KEY, BINANCE_API_SECRET_KEY } from "@app/db";
 import { BANNER_IMAGE_KEY } from "../src/util/banner";
 import { createTransaction as mockedCreateTokopayTransaction } from "@app/core/payments/tokopay";
 import type { Api } from "grammy";
@@ -1392,6 +1392,30 @@ describe("checkout handlers", () => {
     const { ctx } = customerCtx({ callbackData: "v1:payq:1:1" });
     await checkout.buyNowTokopay(ctx, sample.product.id, 1);
     expect(await prisma.order.count()).toBe(before); // no new order
+  });
+
+  it("buyNowInternal's screen carries native copy-to-clipboard buttons for the Binance UID and unique payment code", async () => {
+    // Pins the real call site (checkout.ts's buyNowInternal → proofCancelKb(..., copy)),
+    // not just the keyboard builder in isolation — nothing else would catch
+    // someone accidentally dropping the 4th argument at that call site while
+    // proofCancelKb's own unit tests stayed green.
+    await setSetting(prisma, BINANCE_UID_KEY, "UID123");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "secret");
+    await setSetting(prisma, "usd_idr_rate", "16000");
+    const { ctx, sink } = customerCtx();
+    await checkout.buyNowInternal(ctx, sample.product.id, 1);
+
+    const order = await prisma.order.findFirst({ where: { userId: sample.user.id }, orderBy: { id: "desc" } });
+    expect(order?.paymentMethod).toBe(PaymentMethod.BINANCE_INTERNAL);
+    expect(order?.paymentRef).toBeTruthy();
+
+    const markup = lastMarkup(sink) as
+      | { inline_keyboard?: Array<Array<{ copy_text?: { text: string } }>> }
+      | undefined;
+    const copies = (markup?.inline_keyboard ?? []).flat().map((b) => b.copy_text?.text);
+    expect(copies).toContain("UID123");
+    expect(copies).toContain(order!.paymentRef);
   });
 
   it("cancelPendingOrder on a photo wait screen (QRIS) deletes the QR bubble and sends a fresh Product Detail", async () => {

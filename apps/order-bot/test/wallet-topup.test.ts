@@ -22,7 +22,7 @@ import {
 } from "@app/db";
 import { OrderKind, PaymentMethod } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { makeCtx, calls } from "./helpers/ctx";
+import { makeCtx, calls, lastMarkup } from "./helpers/ctx";
 import type { SessionData } from "../src/context";
 import { invalidateRateCache } from "../src/util/rate";
 import { topupMethodsKb } from "../src/keyboards/customer";
@@ -235,6 +235,18 @@ describe("payTopup* handlers (representative rails)", () => {
     expect(order?.currency).toBe("USDT");
     expect(order?.paymentRef).toBeTruthy();
     expect(JSON.stringify(sink)).toContain("UID123");
+
+    // Pin the actual call-site wiring, not just the message body: the
+    // real screen's reply_markup must carry native copy-to-clipboard
+    // buttons for the Binance UID and the unique payment code, not merely
+    // mention them in the caption text (which the assertion above already
+    // covered before copy buttons existed).
+    const markup = lastMarkup(sink) as
+      | { inline_keyboard?: Array<Array<{ copy_text?: { text: string } }>> }
+      | undefined;
+    const copies = (markup?.inline_keyboard ?? []).flat().map((b) => b.copy_text?.text);
+    expect(copies).toContain("UID123");
+    expect(copies).toContain(order!.paymentRef);
   });
 
   it("payTopupInternal clears the scratch amount/currency once the order is created", async () => {

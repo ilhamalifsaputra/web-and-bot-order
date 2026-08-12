@@ -26,7 +26,12 @@ interface Btn {
   copyText?: string;
 }
 
-/** Build an InlineKeyboard from a 2D array of {text,data}. Missing data → noop. */
+/**
+ * Build an InlineKeyboard from a 2D array of button specs. A row entry with
+ * `data` builds a normal callback button (missing `data` → noop); a row
+ * entry with `copyText` instead builds a native "copy to clipboard" button
+ * via `InlineKeyboard.copyText`.
+ */
 function ik(rows: Btn[][]): InlineKeyboard {
   return InlineKeyboard.from(
     rows.map((row) =>
@@ -578,7 +583,14 @@ export function voucherCancelKb(productId: number, qty: number, lang: string): I
  * the only destructive action; '🏠 Menu' is a non-destructive escape that leaves
  * the order pending (it stays reachable under My Orders), so the user is never
  * stranded on a cancel-or-nothing screen. `showRefresh` adds the on-demand
- * reconcile button the auto rails pass `true` for.
+ * reconcile button the auto rails pass `true` for. `copy` optionally adds
+ * native "copy to clipboard" buttons for the Binance UID and/or the unique
+ * payment code (memo/paymentRef) — pass the RAW, un-escaped values: Telegram's
+ * `copy_text` field is not HTML-parsed, so running them through `esc(...)`
+ * (as the surrounding message text does) would copy literal escape
+ * sequences instead of the real value. A value that's empty or over
+ * Telegram's 256-char `copy_text` limit is silently omitted rather than
+ * sent, since Telegram's API rejects the whole request otherwise.
  */
 export function proofCancelKb(
   orderId: number,
@@ -587,10 +599,10 @@ export function proofCancelKb(
   copy?: { uid?: string; note?: string },
 ): InlineKeyboard {
   return ik([
-    ...(copy?.uid !== undefined
+    ...(copy?.uid && copy.uid.length <= 256
       ? [[{ text: coreT("checkout.copy_uid_btn", lang), copyText: copy.uid }]]
       : []),
-    ...(copy?.note !== undefined
+    ...(copy?.note && copy.note.length <= 256
       ? [[{ text: coreT("checkout.copy_note_btn", lang), copyText: copy.note }]]
       : []),
     ...(showRefresh

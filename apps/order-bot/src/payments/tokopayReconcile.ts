@@ -35,6 +35,7 @@ import {
 } from "@app/db";
 import { esc } from "../util/format";
 import { paymentSuccessKb } from "../keyboards/customer";
+import { createPollLoop } from "./pollLoop";
 
 type PendingOrder = Awaited<ReturnType<typeof listPendingTokopayOrders>>[number];
 
@@ -163,27 +164,23 @@ export async function pollOnce(api: Api): Promise<void> {
 // restart (each cycle re-checks getTokopayCreds).
 // ---------------------------------------------------------------------------
 
-let timer: ReturnType<typeof setTimeout> | undefined;
-let isRunning = false;
-let stopped = false;
+// Set by startPolling() before the loop's `run` ever fires — the loop
+// itself starts `stopped`, so `run` can never be invoked while this is
+// still undefined.
+let boundApi: Api | undefined;
+
+// No `onCycleTimeout`: TokoPay/PayDisini/NOWPayments have no poll-health
+// heartbeat row yet (that's a later hardening task) — wiring one here for
+// only this rail's abandon path, ahead of the normal error path having one
+// too, would invent a shape rather than reuse an existing one.
+const loop = createPollLoop({
+  name: "TokoPay reconcile",
+  intervalMs: config.POLL_INTERVAL_SECONDS * 1000,
+  run: () => pollOnce(boundApi!),
+});
 
 export function startPolling(api: Api): void {
-  stopped = false;
-  const intervalMs = config.POLL_INTERVAL_SECONDS * 1000;
-  const tick = async () => {
-    if (stopped) return;
-    if (!isRunning) {
-      isRunning = true;
-      try {
-        await pollOnce(api);
-      } catch (err) {
-        logger.error({ err }, "TokoPay reconcile cycle threw an unhandled error — the cycle was aborted, polling resumes on the next tick");
-      } finally {
-        isRunning = false;
-      }
-    }
-    if (!stopped) timer = setTimeout(tick, intervalMs);
-  };
+  boundApi = api;
   void getTokopayCreds(prisma).then((creds) => {
     if (!creds) {
       logger.info("TokoPay reconcile disabled (no merchant/secret in Settings or .env) — poller idle");
@@ -191,11 +188,9 @@ export function startPolling(api: Api): void {
     }
     logger.info(`TokoPay reconcile poller active (every ${config.POLL_INTERVAL_SECONDS}s)`);
   });
-  timer = setTimeout(tick, intervalMs);
+  loop.start();
 }
 
 export function stopPolling(): void {
-  stopped = true;
-  if (timer) clearTimeout(timer);
-  timer = undefined;
+  loop.stop();
 }

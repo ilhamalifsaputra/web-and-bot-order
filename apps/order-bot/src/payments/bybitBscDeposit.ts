@@ -53,6 +53,7 @@ import { coreT } from "../util/i18n";
 import { esc, renderBybitBscTrackingScreen } from "../util/format";
 import { matchByAmount, matchUnderpaidByAmount } from "./binanceInternal";
 import { createBackoffGate } from "./pollBackoff";
+import { createPollLoop } from "./pollLoop";
 import { paymentSuccessKb, bybitBscTrackingKb } from "../keyboards/customer";
 import { sendAccountFile, walletTopupSuccessText } from "../util/delivery";
 
@@ -451,27 +452,29 @@ export async function processDeposits(
 // Self-scheduling loop (guards against overlapping runs)
 // ---------------------------------------------------------------------------
 
-let timer: ReturnType<typeof setTimeout> | undefined;
-let isRunning = false;
-let stopped = false;
+// Set by startPolling()/triggerImmediatePoll() before the loop's `run` ever
+// fires — the loop itself starts `stopped`, so `run` can never be invoked
+// while this is still undefined.
+let boundApi: Api | undefined;
+
+const loop = createPollLoop({
+  name: "Bybit BSC deposit",
+  intervalMs: config.BYBIT_BSC_POLL_INTERVAL_SECONDS * 1000,
+  run: () => pollOnce(boundApi!),
+  // A hung cycle abandoned past its deadline must still show up as a failed
+  // heartbeat on the ops panel, not silence — the existing failure branch in
+  // pollOnce() already writes the same shape on a fetch/HTTP error.
+  onCycleTimeout: (elapsedMs) =>
+    recordBybitBscPollHealth(prisma, {
+      lastTxCount: 0,
+      backoffUntil: null,
+      success: false,
+      error: `Poll cycle abandoned after ${elapsedMs}ms without finishing`,
+    }).catch(() => undefined),
+});
 
 export function startPolling(api: Api): void {
-  stopped = false;
-  const intervalMs = config.BYBIT_BSC_POLL_INTERVAL_SECONDS * 1000;
-  const tick = async () => {
-    if (stopped) return;
-    if (!isRunning) {
-      isRunning = true;
-      try {
-        await pollOnce(api);
-      } catch (err) {
-        logger.error({ err }, "Bybit BSC poll cycle threw an unhandled error — the cycle was aborted, polling resumes on the next tick");
-      } finally {
-        isRunning = false;
-      }
-    }
-    if (!stopped) timer = setTimeout(tick, intervalMs);
-  };
+  boundApi = api;
   // The loop always runs and self-gates each cycle on resolveBybitBscConfig().enabled,
   // so enabling Bybit BSC in web-admin Settings takes effect without a restart. The
   // boot log just reports the CURRENT state.
@@ -492,13 +495,11 @@ export function startPolling(api: Api): void {
     }
     logger.info(`Bybit BSC deposit poller active (every ${config.BYBIT_BSC_POLL_INTERVAL_SECONDS}s)`);
   });
-  timer = setTimeout(tick, intervalMs);
+  loop.start();
 }
 
 export function stopPolling(): void {
-  stopped = true;
-  if (timer) clearTimeout(timer);
-  timer = undefined;
+  loop.stop();
 }
 
 /**
@@ -509,14 +510,12 @@ export function stopPolling(): void {
  * confirmation Bybit itself requires (~1-2 min), which this cannot shrink —
  * it only removes the poll-interval delay layered on top of that floor.
  * Fire-and-forget by design (never awaited, never throws) and shares the
- * timer loop's `isRunning` guard so it can't race a tick already in flight.
+ * loop's overlap guard so it can't race a cycle already in flight. A no-op
+ * before startPolling() has run (the loop starts stopped) — the only callers
+ * (checkout.ts, walletTopup.ts) are reachable only after main.ts's boot has
+ * already called startPolling() synchronously.
  */
 export function triggerImmediatePoll(api: Api): void {
-  if (isRunning || stopped) return;
-  isRunning = true;
-  void pollOnce(api)
-    .catch((err) => logger.error({ err }, "Bybit BSC immediate poll (triggered right after order creation) threw an unhandled error — the regular timer will retry on its next tick"))
-    .finally(() => {
-      isRunning = false;
-    });
+  boundApi = api;
+  loop.triggerNow();
 }

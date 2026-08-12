@@ -47,6 +47,7 @@ import {
 import { coreT } from "../util/i18n";
 import { esc } from "../util/format";
 import { createBackoffGate } from "./pollBackoff";
+import { createPollLoop } from "./pollLoop";
 import { paymentSuccessKb } from "../keyboards/customer";
 import { sendAccountFile, walletTopupSuccessText } from "../util/delivery";
 
@@ -580,27 +581,29 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
 // Self-scheduling loop (guards against overlapping runs)
 // ---------------------------------------------------------------------------
 
-let timer: ReturnType<typeof setTimeout> | undefined;
-let isRunning = false;
-let stopped = false;
+// Set by startPolling()/triggerImmediatePoll() before the loop's `run` ever
+// fires — the loop itself starts `stopped`, so `run` can never be invoked
+// while this is still undefined.
+let boundApi: Api | undefined;
+
+const loop = createPollLoop({
+  name: "Binance Internal Transfer",
+  intervalMs: config.POLL_INTERVAL_SECONDS * 1000,
+  run: () => pollOnce(boundApi!),
+  // A hung cycle abandoned past its deadline must still show up as a failed
+  // heartbeat on the ops panel, not silence — the existing failure branch in
+  // pollOnce() already writes the same shape on a fetch/HTTP error.
+  onCycleTimeout: (elapsedMs) =>
+    recordBinancePollHealth(prisma, {
+      lastTxCount: 0,
+      backoffUntil: null,
+      success: false,
+      error: `Poll cycle abandoned after ${elapsedMs}ms without finishing`,
+    }).catch(() => undefined),
+});
 
 export function startPolling(api: Api): void {
-  stopped = false;
-  const intervalMs = config.POLL_INTERVAL_SECONDS * 1000;
-  const tick = async () => {
-    if (stopped) return;
-    if (!isRunning) {
-      isRunning = true;
-      try {
-        await pollOnce(api);
-      } catch (err) {
-        logger.error({ err }, "Binance poll cycle threw an unhandled error — the cycle was aborted, polling resumes on the next tick");
-      } finally {
-        isRunning = false;
-      }
-    }
-    if (!stopped) timer = setTimeout(tick, intervalMs);
-  };
+  boundApi = api;
   // The loop always runs and self-gates each cycle on
   // resolveBinanceInternalConfig().enabled, so enabling Binance Internal in
   // web-admin Settings takes effect without a restart. The boot log just
@@ -623,13 +626,11 @@ export function startPolling(api: Api): void {
     }
     logger.info(`Binance Internal Transfer poller active (every ${config.POLL_INTERVAL_SECONDS}s)`);
   });
-  timer = setTimeout(tick, intervalMs);
+  loop.start();
 }
 
 export function stopPolling(): void {
-  stopped = true;
-  if (timer) clearTimeout(timer);
-  timer = undefined;
+  loop.stop();
 }
 
 /**
@@ -638,15 +639,12 @@ export function stopPolling(): void {
  * up to POLL_INTERVAL_SECONDS for the next scheduled tick. Pure latency
  * optimization: never lowers the confirmation bar, just shrinks the window
  * before the first check happens. Fire-and-forget by design (never awaited,
- * never throws) and shares the timer loop's `isRunning` guard so it can't
- * race a tick already in flight.
+ * never throws) and shares the loop's overlap guard so it can't race a cycle
+ * already in flight. A no-op before startPolling() has run (the loop starts
+ * stopped) — the only callers (checkout.ts, walletTopup.ts) are reachable
+ * only after main.ts's boot has already called startPolling() synchronously.
  */
 export function triggerImmediatePoll(api: Api): void {
-  if (isRunning || stopped) return;
-  isRunning = true;
-  void pollOnce(api)
-    .catch((err) => logger.error({ err }, "Binance immediate poll (triggered right after order creation) threw an unhandled error — the regular timer will retry on its next tick"))
-    .finally(() => {
-      isRunning = false;
-    });
+  boundApi = api;
+  loop.triggerNow();
 }

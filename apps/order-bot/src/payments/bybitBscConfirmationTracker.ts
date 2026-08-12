@@ -43,6 +43,7 @@ import {
 import { renderBybitBscTrackingScreen } from "../util/format";
 import { bybitBscTrackingKb } from "../keyboards/customer";
 import { createBackoffGate } from "./pollBackoff";
+import { createPollLoop } from "./pollLoop";
 
 type TrackedOrder = Awaited<ReturnType<typeof listTrackedBybitBscOrders>>[number];
 
@@ -240,46 +241,40 @@ export async function pollOnce(api: Api): Promise<void> {
 // bybitBscDeposit.ts's own shape exactly.
 // ---------------------------------------------------------------------------
 
-let timer: ReturnType<typeof setTimeout> | undefined;
-let isRunning = false;
-let stopped = false;
+// Set by startPolling()/triggerImmediatePoll() before the loop's `run` ever
+// fires — the loop itself starts `stopped`, so `run` can never be invoked
+// while this is still undefined.
+let boundApi: Api | undefined;
+
+// No `onCycleTimeout` here, unlike the three crypto deposit pollers above:
+// this tracker has a backoff gate but no poll-health heartbeat row of its
+// own to mark as failed (display-only module — see the module doc-comment).
+// Inventing a bespoke DB write for that here would be scope creep beyond
+// this task's pure scheduler-wiring change; a real tracker heartbeat is a
+// gap left for a later hardening task, same as the QRIS reconcilers below.
+const loop = createPollLoop({
+  name: "Bybit BSC confirmation tracker",
+  intervalMs: config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS * 1000,
+  run: () => pollOnce(boundApi!),
+});
 
 export function startPolling(api: Api): void {
-  stopped = false;
-  const intervalMs = config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS * 1000;
-  const tick = async () => {
-    if (stopped) return;
-    if (!isRunning) {
-      isRunning = true;
-      try {
-        await pollOnce(api);
-      } catch (err) {
-        logger.error({ err }, "Bybit BSC confirmation tracker poll cycle threw an unhandled error — the cycle was aborted, polling resumes on the next tick");
-      } finally {
-        isRunning = false;
-      }
-    }
-    if (!stopped) timer = setTimeout(tick, intervalMs);
-  };
+  boundApi = api;
   logger.info(`Bybit BSC confirmation tracker poller active (every ${config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS}s)`);
-  timer = setTimeout(tick, intervalMs);
+  loop.start();
 }
 
 export function stopPolling(): void {
-  stopped = true;
-  if (timer) clearTimeout(timer);
-  timer = undefined;
+  loop.stop();
 }
 
 /** Fire an extra poll cycle right now, on top of the normal timer — shares
- * the timer loop's `isRunning` guard so it can't race a tick already in
- * flight. Fire-and-forget by design (never awaited, never throws). */
+ * the loop's overlap guard so it can't race a cycle already in flight.
+ * Fire-and-forget by design (never awaited, never throws). A no-op before
+ * startPolling() has run (the loop starts stopped) — the only callers
+ * (checkout.ts) are reachable only after main.ts's boot has already called
+ * startPolling() synchronously. */
 export function triggerImmediatePoll(api: Api): void {
-  if (isRunning || stopped) return;
-  isRunning = true;
-  void pollOnce(api)
-    .catch((err) => logger.error({ err }, "Bybit BSC confirmation tracker immediate poll threw an unhandled error — the regular timer will retry on its next tick"))
-    .finally(() => {
-      isRunning = false;
-    });
+  boundApi = api;
+  loop.triggerNow();
 }

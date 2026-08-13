@@ -10,8 +10,9 @@
  * total. Two DISTINCT decimal totals can collapse onto the identical double
  * (e.g. "4.35" and "4.3499999999999999" both round to the same double), so
  * the old check could see a false tie and refuse a real payment, or (the
- * mirror failure) miss a genuine tie. `binanceInternal.ts` and both Bybit
- * rails re-export these functions so their own imports stay unchanged.
+ * mirror failure) miss a genuine tie. `binanceInternal.ts` re-exports these
+ * so its existing test import path stays valid; both Bybit rails import them
+ * from here directly.
  */
 import { Decimal } from "@app/core/money";
 

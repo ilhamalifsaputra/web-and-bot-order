@@ -407,6 +407,17 @@ describe("PaymentsPage", () => {
     await qc.invalidateQueries({ queryKey: ["payments"] });
 
     await waitFor(() => expect(screen.getByText("1 selected")).toBeInTheDocument());
+
+    // And the payload follows the count: the matched transfer must not be
+    // dismissed just because it was selected while it was still eligible.
+    vi.mocked(apiPost).mockResolvedValue({ ok: true });
+    mockPaymentsFetch({ ...base, ledger: [stays, { ...getsMatched, outcome: "matched" }] });
+    await user.click(screen.getByRole("button", { name: /dismiss 1 transfer/i }));
+
+    await waitFor(() =>
+      expect(apiPost).toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "STAYS" }),
+    );
+    expect(apiPost).not.toHaveBeenCalledWith("/api/payments/dismiss", { binance_tx_id: "GETSMATCHED" });
   });
 
   it("clears the bulk selection when navigating to the next page", async () => {

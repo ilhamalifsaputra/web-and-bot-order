@@ -284,11 +284,15 @@ export function CatalogPage() {
     });
   }
 
-  async function bulkSetActive(active: boolean) {
-    const count = visibleSelected.size;
+  // Takes an explicit `ids` argument rather than reading the derived selection
+  // from closure: that binding is declared past this point, below the early
+  // returns, so a future caller from anywhere but the bulk toolbar would hit a
+  // temporal dead zone. Matches how StockProductPage and FlashSalesPage do it.
+  async function bulkSetActive(active: boolean, ids: number[]) {
+    const count = ids.length;
     setBulkActing(true);
     try {
-      await apiPost("/api/catalog/products/bulk-active", { ids: Array.from(visibleSelected), active });
+      await apiPost("/api/catalog/products/bulk-active", { ids, active });
       setSelected(new Set());
       await invalidateCatalog();
       toast.success(`${count} product(s) ${active ? "activated" : "deactivated"}.`);
@@ -299,11 +303,11 @@ export function CatalogPage() {
     }
   }
 
-  async function bulkSetArchived(archived: boolean) {
-    const count = visibleSelected.size;
+  async function bulkSetArchived(archived: boolean, ids: number[]) {
+    const count = ids.length;
     setBulkActing(true);
     try {
-      await apiPost("/api/catalog/products/bulk-archive", { ids: Array.from(visibleSelected), archived });
+      await apiPost("/api/catalog/products/bulk-archive", { ids, archived });
       setSelected(new Set());
       await invalidateCatalog();
       toast.success(`${count} product(s) ${archived ? "archived" : "unarchived"}.`);
@@ -660,13 +664,13 @@ export function CatalogPage() {
       {visibleSelected.size > 0 && (
         <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
           <span className="text-ink-soft">{visibleSelected.size} selected</span>
-          <Button size="sm" variant="outline" disabled={bulkActing} onClick={() => void bulkSetActive(true)}>
+          <Button size="sm" variant="outline" disabled={bulkActing} onClick={() => void bulkSetActive(true, Array.from(visibleSelected))}>
             Activate
           </Button>
-          <Button size="sm" variant="outline" disabled={bulkActing} onClick={() => void bulkSetActive(false)}>
+          <Button size="sm" variant="outline" disabled={bulkActing} onClick={() => void bulkSetActive(false, Array.from(visibleSelected))}>
             Deactivate
           </Button>
-          <Button size="sm" variant="outline" disabled={bulkActing} onClick={() => void bulkSetArchived(true)}>
+          <Button size="sm" variant="outline" disabled={bulkActing} onClick={() => void bulkSetArchived(true, Array.from(visibleSelected))}>
             Archive
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>

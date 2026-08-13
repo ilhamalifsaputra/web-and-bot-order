@@ -624,12 +624,7 @@ describe("SupportPage", () => {
     expect(screen.getByText("2 selected")).toBeInTheDocument();
 
     // Poll surfaces ticket #2 leaving the result set (another admin acted on it).
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if ((init?.method ?? "GET") === "POST") return jsonResponse({ ok: true });
-      if (url.startsWith("/api/admins")) return jsonResponse({ admins: [ADMIN_ROW] });
-      return jsonResponse(supportData([TICKET_OPEN]));
-    });
+    mockFetchRouter({ support: supportData([TICKET_OPEN]) });
     await qc.invalidateQueries({ queryKey: ["support"] });
     await waitFor(() => expect(screen.queryByText("Refund request")).not.toBeInTheDocument());
 
@@ -650,12 +645,7 @@ describe("SupportPage", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Select all tickets on this page" }));
     expect(screen.getByText("2 selected")).toBeInTheDocument();
 
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const url = typeof input === "string" ? input : input.toString();
-      if ((init?.method ?? "GET") === "POST") return jsonResponse({ ok: true });
-      if (url.startsWith("/api/admins")) return jsonResponse({ admins: [ADMIN_ROW] });
-      return jsonResponse(supportData([TICKET_OPEN]));
-    });
+    mockFetchRouter({ support: supportData([TICKET_OPEN]) });
     await qc.invalidateQueries({ queryKey: ["support"] });
     await waitFor(() => expect(screen.queryByText("Refund request")).not.toBeInTheDocument());
 

@@ -206,14 +206,18 @@ export function FlashSalesPage() {
     });
   }
 
-  const percentNumber = Number(discountPercent.trim());
-  const percentIsValid =
-    discountPercent.trim() !== "" && !Number.isNaN(percentNumber) && percentNumber > 0 && percentNumber <= 100;
-  const canSubmit = percentIsValid && startsAt.trim() !== "" && endsAt.trim() !== "";
   // What the bulk bar counts and the bulk actions act on. The clearing effect
   // covers filter changes; this covers a SKU leaving `filtered` through a
   // refetch, which no filter state records.
   const visibleSelected = visibleSelection(selected, filtered, (d) => d.id);
+  const percentNumber = Number(discountPercent.trim());
+  const percentIsValid =
+    discountPercent.trim() !== "" && !Number.isNaN(percentNumber) && percentNumber > 0 && percentNumber <= 100;
+  // A refetch can empty the visible selection while the dialog is open, so guard
+  // on it here rather than letting Apply post an empty list and bounce off the
+  // server's "Select at least one SKU."
+  const canSubmit =
+    percentIsValid && startsAt.trim() !== "" && endsAt.trim() !== "" && visibleSelected.size > 0;
   const alreadyScheduledCount = Array.from(visibleSelected).filter((id) => rows.find((r) => r.id === id)?.flash).length;
 
   function openNewFlashSale() {
@@ -267,7 +271,7 @@ export function FlashSalesPage() {
     onError: (e: Error) => setFormError(e.message),
   });
 
-  // Takes an explicit `ids` argument (Task 3, req #9) rather than reading
+  // Takes an explicit `ids` argument rather than reading
   // `selected` from closure: a row's "End Sale Now" action must end just that
   // row's schedule regardless of whatever else is multi-selected in the bulk
   // toolbar at the time. The bulk toolbar call site below now passes

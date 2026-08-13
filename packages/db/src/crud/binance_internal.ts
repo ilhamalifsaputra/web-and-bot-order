@@ -6,6 +6,13 @@
  * gate — claiming a tx id is an atomic insert; a duplicate insert throws and is
  * treated as "already processed". Combined with SQLite's single-writer
  * serialization + busy_timeout, this prevents double-delivery without locks.
+ *
+ * A duplicate is not always terminal: an id stamped with one of
+ * NON_DELIVERING_OUTCOMES delivered nothing and must stay re-claimable, so
+ * `deliverPaidInternalOrder` re-claims it with a compare-and-swap — a read
+ * followed by an `updateMany` gated on the values that read returned. Both
+ * halves stay single statements on purpose; see the comment there for why an
+ * interactive transaction would be less safe under WAL, not more.
  */
 import { config } from "@app/core/config";
 import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod } from "@app/core/enums";
@@ -217,16 +224,30 @@ export async function deliverPaidInternalOrder(
   //    those ever actually delivered anything, so the tx id must stay
   //    re-claimable, or the buyer's payment is silently lost forever behind a
   //    stuck idempotency row (delivery_failed: H-3, backend audit
-  //    2026-07-31; unmatched: Task 15). The read-then-update runs inside its
-  //    own short $transaction so SQLite serializes the pair atomically: if
-  //    two retries race, exactly one transaction sees a still-matching
-  //    outcome and reclaims it; the other sees none and correctly reports
-  //    already_processed. `reclaimedFrom` remembers exactly what the reclaim
-  //    overwrote (outcome/orderId/amount) so step 2 can put it back if this
-  //    turns out to be a stale match — unlike the three QRIS rails, one
-  //    Binance transfer can be re-tried against ANY pending order by amount,
-  //    so a reclaim that turns out stale here must not strand the row
-  //    outside the manual-match queue (Task 15 review, Important #1).
+  //    2026-07-31; unmatched: Task 15). The reclaim is a compare-and-swap, not
+  //    a transaction: read the row, then gate a single `updateMany` on the
+  //    exact values that read returned. `count === 1` therefore PROVES the row
+  //    was still in that state at the instant of the write, so the captured
+  //    prior values are trustworthy; `count === 0` means a racer got there
+  //    first and already_processed is the right answer.
+  //
+  //    An interactive $transaction would be worse here, not better. This
+  //    database runs in WAL mode (see client.ts) and Prisma opens interactive
+  //    transactions with a deferred BEGIN, so two racing reclaims would both
+  //    read the same snapshot, both pass the outcome check, and the loser's
+  //    write would fail with SQLITE_BUSY_SNAPSHOT — the one busy case
+  //    busy_timeout cannot rescue, since waiting can never make a stale read
+  //    snapshot valid. That turns a graceful already_processed into a thrown
+  //    error, on a path that races across processes (the poller reclaims while
+  //    an admin clicks manual-match in web-admin). A single conditional
+  //    statement degrades gracefully instead (Task 15 re-review).
+  //
+  //    `reclaimedFrom` remembers exactly what the reclaim overwrote
+  //    (outcome/orderId/amount) so step 2 can put it back if this turns out to
+  //    be a stale match — unlike the three QRIS rails, one Binance transfer can
+  //    be re-tried against ANY pending order by amount, so a reclaim that turns
+  //    out stale here must not strand the row outside the manual-match queue
+  //    (Task 15 review, Important #1).
   let reclaimedFrom: Pick<ProcessedBinanceTx, "outcome" | "orderId" | "amount"> | null = null;
   try {
     await db.processedBinanceTx.create({
@@ -234,16 +255,16 @@ export async function deliverPaidInternalOrder(
     });
   } catch (e) {
     if (!isUniqueViolation(e)) throw e;
-    reclaimedFrom = await db.$transaction(async (tx: Tx) => {
-      const prior = await tx.processedBinanceTx.findUnique({ where: { binanceTxId: args.binanceTxId } });
-      if (!prior || !(NON_DELIVERING_OUTCOMES as readonly string[]).includes(prior.outcome)) return null;
-      await tx.processedBinanceTx.update({
-        where: { binanceTxId: args.binanceTxId },
-        data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
-      });
-      return { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
+    const prior = await db.processedBinanceTx.findUnique({ where: { binanceTxId: args.binanceTxId } });
+    if (!prior || !(NON_DELIVERING_OUTCOMES as readonly string[]).includes(prior.outcome)) {
+      return { status: "already_processed" };
+    }
+    const reclaimed = await db.processedBinanceTx.updateMany({
+      where: { binanceTxId: args.binanceTxId, outcome: prior.outcome, orderId: prior.orderId },
+      data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
-    if (!reclaimedFrom) return { status: "already_processed" };
+    if (reclaimed.count === 0) return { status: "already_processed" };
+    reclaimedFrom = { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
   }
 
   // 2. Deliver. On failure, flag the ledger row so we don't silently retry
@@ -270,6 +291,9 @@ export async function deliverPaidInternalOrder(
             where: { binanceTxId: args.binanceTxId },
             data: { outcome: reclaimedFrom.outcome, orderId: reclaimedFrom.orderId, amount: reclaimedFrom.amount },
           });
+          logger.warn(
+            `Binance transfer ${args.binanceTxId} was amount-matched to order ${args.orderId}, but that order is no longer awaiting payment — the ledger row was returned to "${reclaimedFrom.outcome}" so it stays in the manual-match queue. This usually means the amount-matching heuristic picked the wrong order, or the order was delivered by another path first.`,
+          );
         }
         return { status: "stale" as const };
       }
@@ -400,8 +424,10 @@ export type TxOutcome = (typeof TX_OUTCOMES)[number];
  * un-matchable (wrong method/currency, a short payment later topped up) gets
  * permanently stuck behind the trxId UNIQUE gate (Task 15). The terminal set
  * that must NEVER be re-claimable *includes* "matched", "overpaid", and
- * "stale" (each means a delivery attempt actually ran, so re-claiming risks
- * a second attempt racing/duplicating a settlement that already happened) —
+ * "stale". "matched"/"overpaid" mean a delivery actually ran, so re-claiming
+ * risks a second attempt racing a settlement that already happened; "stale"
+ * is terminal for a different reason — no attempt ran, but the order is
+ * provably no longer claimable, so there is nothing to re-claim it against —
  * but it is not exactly the complement of NON_DELIVERING_OUTCOMES:
  * TX_OUTCOMES below also lists "underpaid", "credited_to_balance", and
  * "dismissed", which are equally terminal/non-re-claimable but out of this

@@ -203,6 +203,28 @@ describe("emailTemplates.renderEmail", () => {
         expect(result!.html).not.toContain("//uploads");
       });
     });
+
+    it("formats non-IDR money via formatPrice (2dp + currency suffix), not formatIdr", async () => {
+      const usdtPayload = {
+        ...payload,
+        currency: "USDT",
+        subtotal: "10.5",
+        discount: "0",
+        total: "10.5",
+        items: [{ name: "Netflix Premium", variant: "1 Month", quantity: 1, unitPrice: "5.25" }],
+      };
+      const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", usdtPayload);
+      expect(result).not.toBeNull();
+      expect(result!.html).toContain("10.50 USDT");
+      expect(result!.text).toContain("10.50 USDT");
+    });
+
+    it("hides the Discount row/line entirely end-to-end when the payload's discount is \"0\"", async () => {
+      const result = await renderEmail("OWNER_EMAIL_ORDER_PAID", payload);
+      expect(result).not.toBeNull();
+      expect(result!.html).not.toContain("Discount");
+      expect(result!.text).not.toContain("Discount");
+    });
   });
 
   describe("OWNER_EMAIL_MANUAL_ORDER_QUEUED", () => {

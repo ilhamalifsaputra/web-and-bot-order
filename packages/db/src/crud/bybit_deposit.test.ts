@@ -20,11 +20,19 @@ vi.mock("@app/core/config", () => ({
   },
 }));
 
-import { resolveBybitConfig, getBybitPollHealth, recordBybitPollHealth, deliverPaidBybitOrder } from "./bybit_deposit";
+import {
+  resolveBybitConfig,
+  getBybitPollHealth,
+  recordBybitPollHealth,
+  deliverPaidBybitOrder,
+  markUnderpaidBybit,
+  recordUnmatchedBybitTx,
+} from "./bybit_deposit";
 import { createOrderDirect } from "./orders";
 import { createCategory, createCatalogProduct, createDenomination } from "./catalog";
 import { createWalletTopupOrder } from "./wallet_topup";
 import { upsertUser } from "./users";
+import { bulkAddStock } from "./stock";
 import { OrderStatus, OrderKind, PaymentMethod, DeliveryType, NotificationEvent, StockStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
@@ -342,6 +350,211 @@ describe("deliverPaidBybitOrder — processing branch (manual SKU)", () => {
       where: { orderId: order.id, event: NotificationEvent.ORDER_PROCESSING_DM },
     });
     expect(processingDm).not.toBeNull();
+  });
+});
+
+// Task 16: mirrors Task 15's re-claim widening (binance_internal.ts,
+// tokopay.ts, paydisini.ts, nowpayments.ts) onto this rail — the last of the
+// six gateways with no re-claim at all before Task 16 touched it. An
+// `unmatched` or `delivery_failed` ledger row never delivered anything, so
+// the SAME bybitTxId must stay re-claimable by a later poller pass, or the
+// buyer's payment is stuck forever behind the bybit_tx_id UNIQUE gate.
+//
+// Bybit Internal Transfer matches a deposit against ANY pending order by
+// amount (same shape as Binance Internal, unlike the 1:1 QRIS trxId), so a
+// re-claim can turn out stale — the fix must revert the ledger row to its
+// prior outcome instead of stranding it as an unreachable "matched". There is
+// no manualMatchTx/dismissUnmatchedTx equivalent for Bybit at all (checked:
+// no route in apps/web-admin references processedBybitTx), so an unreverted
+// stale reclaim would be WORSE than Binance's case — not just invisible to
+// admin tooling, but with no recovery path whatsoever, automatic or manual.
+//
+// This rail has no "overpaid" outcome (unlike Binance/TokoPay/PayDisini/
+// NOWPayments — see the module doc-comment), so its full outcome set is:
+// matched, delivery_failed, underpaid, underpaid_flag_failed, unmatched.
+// Terminal (never re-claimable): matched, underpaid, underpaid_flag_failed.
+describe("deliverPaidBybitOrder — re-claiming a bybitTxId across non-delivering outcomes", () => {
+  let db: TestDb;
+  let prisma: PrismaClient;
+  let sample: SampleData;
+
+  beforeAll(async () => {
+    db = await makeTestDb();
+    prisma = db.prisma;
+  });
+  afterAll(async () => {
+    await db.cleanup();
+  });
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  async function makePendingBybitOrder() {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT } });
+    return order;
+  }
+
+  it("a bybitTxId first recorded as unmatched can still be delivered by a later poller pass", async () => {
+    const order = await makePendingBybitOrder();
+    const bybitTxId = "tx-unmatched-reclaim-1";
+
+    const recorded = await recordUnmatchedBybitTx(prisma, { bybitTxId, amount: new Decimal("5") });
+    expect(recorded).toBe(true);
+    const unmatchedRow = await prisma.processedBybitTx.findUnique({ where: { bybitTxId } });
+    expect(unmatchedRow?.outcome).toBe("unmatched");
+
+    const result = await deliverPaidBybitOrder(prisma, { orderId: order.id, bybitTxId, amount: order.totalAmount });
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+
+    const ledgerRow = await prisma.processedBybitTx.findUnique({ where: { bybitTxId } });
+    expect(ledgerRow?.outcome).toBe("matched");
+    expect(ledgerRow?.orderId).toBe(order.id);
+
+    const rows = await prisma.processedBybitTx.findMany({ where: { bybitTxId } });
+    expect(rows.length).toBe(1);
+  });
+
+  // H-3-shaped (mirrors tokopay.test.ts's "a claim whose delivery failed is
+  // retryable"): wipe stock so approveOrder's out-of-stock guard throws
+  // INSIDE the delivery $transaction, rolling it back and tagging the ledger
+  // row delivery_failed instead of leaving the payment stuck as unclaimable.
+  it("a bybitTxId whose delivery failed is retryable — a later call with the same id succeeds instead of already_processed", async () => {
+    const order = await makePendingBybitOrder();
+    const bybitTxId = "tx-delivery-failed-retry-1";
+
+    await prisma.stockItem.updateMany({ where: { productId: sample.product.id }, data: { status: StockStatus.DEAD } });
+
+    await expect(
+      deliverPaidBybitOrder(prisma, { orderId: order.id, bybitTxId, amount: order.totalAmount }),
+    ).rejects.toThrow();
+
+    const failedLedger = await prisma.processedBybitTx.findUnique({ where: { bybitTxId } });
+    expect(failedLedger?.outcome).toBe("delivery_failed");
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+
+    await prisma.stockItem.create({
+      data: { productId: sample.product.id, credentials: "retry-cred-bybit-1@example.com:pwd", status: StockStatus.AVAILABLE },
+    });
+
+    const retry = await deliverPaidBybitOrder(prisma, { orderId: order.id, bybitTxId, amount: order.totalAmount });
+    expect(retry.status).toBe("delivered");
+    if (retry.status !== "delivered") throw new Error("expected delivered");
+    expect(retry.order.status).toBe(OrderStatus.DELIVERED);
+
+    const ledgerRow = await prisma.processedBybitTx.findUnique({ where: { bybitTxId } });
+    expect(ledgerRow?.outcome).toBe("matched");
+    expect(ledgerRow?.orderId).toBe(order.id);
+
+    const rows = await prisma.processedBybitTx.findMany({ where: { bybitTxId } });
+    expect(rows.length).toBe(1);
+  });
+
+  it("a bybitTxId already delivered (matched) is never re-claimed", async () => {
+    await bulkAddStock(
+      prisma,
+      sample.product.id,
+      Array.from({ length: 5 }, (_, i) => `bybit-terminal-matched-${i}@example.com:pwd`),
+    );
+
+    const matchedOrder = await makePendingBybitOrder();
+    const matchedTxId = "tx-terminal-matched-1";
+    const delivered = await deliverPaidBybitOrder(prisma, {
+      orderId: matchedOrder.id,
+      bybitTxId: matchedTxId,
+      amount: matchedOrder.totalAmount,
+    });
+    expect(delivered.status).toBe("delivered");
+
+    const otherOrder = await makePendingBybitOrder();
+    const reclaimAttempt = await deliverPaidBybitOrder(prisma, {
+      orderId: otherOrder.id,
+      bybitTxId: matchedTxId,
+      amount: otherOrder.totalAmount,
+    });
+    expect(reclaimAttempt.status).toBe("already_processed");
+
+    const ledger = await prisma.processedBybitTx.findUnique({ where: { bybitTxId: matchedTxId } });
+    expect(ledger?.outcome).toBe("matched");
+    expect(ledger?.orderId).toBe(matchedOrder.id);
+    expect((await prisma.order.findUnique({ where: { id: otherOrder.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
+  it("an underpaid bybitTxId is never re-claimed", async () => {
+    const order = await makePendingBybitOrder();
+    const underTxId = "tx-terminal-underpaid-1";
+    const shortAmount = new Decimal(order.totalAmount).minus("5");
+
+    const flagged = await markUnderpaidBybit(prisma, { orderId: order.id, bybitTxId: underTxId, amount: shortAmount });
+    expect(flagged).toBe(true);
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.UNDERPAID);
+
+    const otherOrder = await makePendingBybitOrder();
+    const reclaimAttempt = await deliverPaidBybitOrder(prisma, {
+      orderId: otherOrder.id,
+      bybitTxId: underTxId,
+      amount: otherOrder.totalAmount,
+    });
+    expect(reclaimAttempt.status).toBe("already_processed");
+
+    const ledger = await prisma.processedBybitTx.findUnique({ where: { bybitTxId: underTxId } });
+    expect(ledger?.outcome).toBe("underpaid");
+    expect((await prisma.order.findUnique({ where: { id: otherOrder.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
+  // underpaid_flag_failed only happens if markUnderpaidBybit's own order
+  // update transaction throws — not practically forceable from the outside
+  // without stubbing Prisma internals, so it's seeded directly (same
+  // technique as binance_internal.test.ts's directly-seeded "stale" case).
+  it("a directly-seeded underpaid_flag_failed row is never re-claimed", async () => {
+    const seedOrder = await makePendingBybitOrder();
+    const txId = "tx-terminal-underpaid-flag-failed-1";
+    await prisma.processedBybitTx.create({
+      data: { bybitTxId: txId, orderId: seedOrder.id, amount: new Decimal("5"), outcome: "underpaid_flag_failed" },
+    });
+
+    const otherOrder = await makePendingBybitOrder();
+    const result = await deliverPaidBybitOrder(prisma, { orderId: otherOrder.id, bybitTxId: txId, amount: otherOrder.totalAmount });
+
+    expect(result.status).toBe("already_processed");
+    const ledgerAfter = await prisma.processedBybitTx.findUnique({ where: { bybitTxId: txId } });
+    expect(ledgerAfter?.outcome).toBe("underpaid_flag_failed");
+    expect((await prisma.order.findUnique({ where: { id: otherOrder.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
+  // Bybit Internal Transfer matches by amount against ANY pending order — a
+  // re-claim can therefore land on the WRONG order, one that turns out to no
+  // longer be PENDING_PAYMENT. Without a revert, the row would be stranded
+  // "matched" against an order that received nothing, forever excluded from
+  // NON_DELIVERING_OUTCOMES and (unlike Binance) with no manual-match tool to
+  // fall back on either — a true dead end for the buyer's money. The fix must
+  // restore the exact prior outcome/orderId/amount instead.
+  it("a re-claimed bybitTxId whose order turns out stale is reverted to its prior outcome, not stranded as matched", async () => {
+    const bybitTxId = "tx-unmatched-then-stale-1";
+    const recorded = await recordUnmatchedBybitTx(prisma, { bybitTxId, amount: new Decimal("5") });
+    expect(recorded).toBe(true);
+
+    const staleOrder = await makePendingBybitOrder();
+    await prisma.order.update({ where: { id: staleOrder.id }, data: { status: OrderStatus.CANCELLED } });
+
+    const result = await deliverPaidBybitOrder(prisma, { orderId: staleOrder.id, bybitTxId, amount: staleOrder.totalAmount });
+    expect(result.status).toBe("stale");
+
+    const ledgerAfter = await prisma.processedBybitTx.findUnique({ where: { bybitTxId } });
+    expect(ledgerAfter?.outcome).toBe("unmatched");
+    expect(ledgerAfter?.orderId).toBeNull();
+
+    // Still re-claimable — a later, legitimate poller pass can still deliver it.
+    const recoveryOrder = await makePendingBybitOrder();
+    const recovered = await deliverPaidBybitOrder(prisma, {
+      orderId: recoveryOrder.id,
+      bybitTxId,
+      amount: recoveryOrder.totalAmount,
+    });
+    expect(recovered.status).toBe("delivered");
   });
 });
 

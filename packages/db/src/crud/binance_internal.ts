@@ -445,11 +445,13 @@ export type TxOutcome = (typeof TX_OUTCOMES)[number];
  * overwrote, keeping the row in the manual-match queue rather than
  * stranding it as an unreachable "matched" (Task 15 review, Important #1).
  *
- * bybit_deposit.ts and bybit_bsc_deposit.ts do NOT use this set yet — they
- * still gate re-claim on the narrower `outcome: "delivery_failed"` alone.
- * Their trxId binds 1:1 to one order like the QRIS rails, so the same
- * widening applies there too; folding them into NON_DELIVERING_OUTCOMES is
- * deliberately deferred to the next task, not an oversight here.
+ * bybit_deposit.ts and bybit_bsc_deposit.ts (Task 16) also import this set.
+ * Both match a deposit against ANY pending order by amount — the same shape
+ * as this rail, NOT the QRIS rails' 1:1 trxId binding — so both also carry
+ * their own reclaimedFrom-and-revert logic (a stale reclaim there is even
+ * more dangerous than here: Bybit has no manualMatchTx/dismissUnmatchedTx
+ * equivalent at all, so an unreverted stale reclaim would strand the ledger
+ * row with no recovery path, automatic or manual).
  *
  * "underpaid" (written by markUnderpaid below) was considered and left out
  * on purpose: nothing is delivered for it either, so by this fix's own logic

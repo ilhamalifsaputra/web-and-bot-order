@@ -23,6 +23,7 @@ import { config } from "@app/core/config";
 import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
+import type { ProcessedBybitTx } from "@prisma/client";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
@@ -35,6 +36,7 @@ import { BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY } from "./bybit_deposit";
 import { parseMinAmount } from "./_minAmount";
 import { settleWalletTopup } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
+import { NON_DELIVERING_OUTCOMES } from "./binance_internal";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -389,14 +391,53 @@ export async function deliverPaidBybitBscOrder(
   db: PrismaClient,
   args: { orderId: number; bybitTxId: string; amount: Decimal.Value },
 ): Promise<BybitBscDeliverResult> {
-  // 1. Claim the tx id. A duplicate means another cycle already handled it.
+  // 1. Claim the tx id. A duplicate normally means another cycle already
+  //    handled it — UNLESS the prior claim's outcome is one of
+  //    NON_DELIVERING_OUTCOMES ("delivery_failed" or "unmatched"): neither of
+  //    those ever actually delivered anything, so the tx id must stay
+  //    re-claimable, or the buyer's payment is silently lost forever behind a
+  //    stuck idempotency row (Task 16 — this rail previously had NO re-claim
+  //    at all, the only deliverPaid*Order that didn't). This rail matches by
+  //    amount against ANY pending order, the same shape as Binance Internal,
+  //    so a deposit that arrived while its true order was temporarily
+  //    un-matchable must not be lost forever either. The reclaim is a
+  //    compare-and-swap, not a transaction: read the row, then gate a single
+  //    `updateMany` on the exact values that read returned. `count === 1`
+  //    therefore PROVES the row was still in that state at the instant of
+  //    the write, so the captured prior values are trustworthy;
+  //    `count === 0` means a racer got there first and already_processed is
+  //    the right answer.
+  //
+  //    An interactive $transaction would be worse here, not better — see
+  //    deliverPaidInternalOrder (binance_internal.ts) step 1 for the full
+  //    reasoning (WAL + Prisma's deferred-BEGIN interactive transactions make
+  //    two racing reclaims collide with SQLITE_BUSY_SNAPSHOT instead of
+  //    degrading gracefully).
+  //
+  //    `reclaimedFrom` remembers exactly what the reclaim overwrote
+  //    (outcome/orderId/amount) so step 2 can put it back if this turns out
+  //    to be a stale match — this rail's amount-matching means a reclaim can
+  //    land on the WRONG order, and unlike Binance there is no
+  //    manualMatchTx/dismissUnmatchedTx equivalent for Bybit at all, so an
+  //    unreverted stale reclaim would strand the row with no recovery path,
+  //    automatic or manual.
+  let reclaimedFrom: Pick<ProcessedBybitTx, "outcome" | "orderId" | "amount"> | null = null;
   try {
     await db.processedBybitTx.create({
       data: { bybitTxId: args.bybitTxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
   } catch (e) {
-    if (isUniqueViolation(e)) return { status: "already_processed" };
-    throw e;
+    if (!isUniqueViolation(e)) throw e;
+    const prior = await db.processedBybitTx.findUnique({ where: { bybitTxId: args.bybitTxId } });
+    if (!prior || !(NON_DELIVERING_OUTCOMES as readonly string[]).includes(prior.outcome)) {
+      return { status: "already_processed" };
+    }
+    const reclaimed = await db.processedBybitTx.updateMany({
+      where: { bybitTxId: args.bybitTxId, outcome: prior.outcome, orderId: prior.orderId },
+      data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
+    });
+    if (reclaimed.count === 0) return { status: "already_processed" };
+    reclaimedFrom = { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
   }
 
   // 2. Deliver. On failure, flag the ledger row so we don't silently retry
@@ -405,6 +446,25 @@ export async function deliverPaidBybitBscOrder(
     return await db.$transaction(async (tx: Tx) => {
       const order = await getOrder(tx, args.orderId);
       if (!order || !PRE_DELIVERY_STATUSES.includes(order.status)) {
+        // If step 1 re-claimed this row from a non-delivering outcome, undo
+        // that claim — restore the outcome/orderId/amount it overwrote —
+        // instead of leaving the row "matched" against an order that never
+        // got delivered. Left as "matched", the deposit would become
+        // permanently unreachable: "matched" is excluded from
+        // NON_DELIVERING_OUTCOMES, so it can never be re-claimed again, and
+        // there is no manual-match tool for Bybit either. A fresh claim
+        // (reclaimedFrom === null) has nothing to undo — that row simply
+        // stays "matched" against this now-stale order, the same
+        // pre-existing behavior as before this fix.
+        if (reclaimedFrom) {
+          await tx.processedBybitTx.update({
+            where: { bybitTxId: args.bybitTxId },
+            data: { outcome: reclaimedFrom.outcome, orderId: reclaimedFrom.orderId, amount: reclaimedFrom.amount },
+          });
+          logger.warn(
+            `Bybit BSC deposit ${args.bybitTxId} was amount-matched to order ${args.orderId}, but that order is no longer awaiting payment — the ledger row was returned to "${reclaimedFrom.outcome}" so a later poller pass can still re-claim it. This usually means the amount-matching heuristic picked the wrong order, or the order was delivered/expired/failed by another path first.`,
+          );
+        }
         return { status: "stale" as const };
       }
       if (order.kind === OrderKind.WALLET_TOPUP) {

@@ -175,7 +175,7 @@ const CYCLE_TIMEOUT_MARGIN_MS = 30_000;
  * value instead of a hardcoded copy that could silently drift from it. */
 export const RECONCILE_CYCLE_TIMEOUT_MS = MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
 
-export async function pollOnce(api: Api): Promise<void> {
+export async function pollOnce(api: Api, isCurrent: () => boolean = () => true): Promise<void> {
   const creds = await getNowpaymentsCreds(prisma);
   if (!creds) return; // rail genuinely off — no heartbeat; its watchdog is gated on credentials too
 
@@ -185,7 +185,18 @@ export async function pollOnce(api: Api): Promise<void> {
     // healthy shop that's simply quiet must still advance the heartbeat, or
     // it reads as stale after 5 minutes and the Task 12 watchdog pages
     // admins over nothing (Task 11 brief).
-    await recordPollHealth(prisma, "nowpayments", { lastTxCount: 0, success: true }).catch(() => undefined);
+    //
+    // Task 11 review follow-up, Important #1 (Finding A): guarded by
+    // isCurrent() — a cycle abandoned by pollLoop.ts's deadline keeps
+    // running in the background and can still reach this write minutes
+    // later, overwriting the abandon-failure heartbeat with a retroactive
+    // success and resetting consecutiveFailures. Skipped instead once
+    // isCurrent() is false.
+    if (isCurrent()) {
+      await recordPollHealth(prisma, "nowpayments", { lastTxCount: 0, success: true }).catch(() => undefined);
+    } else {
+      logger.warn("NOWPayments reconcile cycle finished after its own deadline had already abandoned it — skipping the success heartbeat write so it can't overwrite the abandon-failure heartbeat already recorded");
+    }
     return;
   }
   logger.info(`NOWPayments reconcile checking ${orders.length} pending order(s) against the gateway`);
@@ -211,14 +222,27 @@ export async function pollOnce(api: Api): Promise<void> {
   // corner case (Task 11 review follow-up, Critical #1). `gatewayCalls > 0`
   // keeps an all-skipped cycle correctly successful — there's no call to
   // have failed.
+  //
+  // The whole write below is guarded by isCurrent() (Task 11 review
+  // follow-up, Important #1 / Finding A) rather than only its `success: true`
+  // case: a stale write from an abandoned cycle is stale evidence either way
+  // — even a `success: false` write here would double-count the SAME
+  // underlying failure the abandon heartbeat already recorded (once as the
+  // abandon, once here) — so the simplest correct rule is "the abandoned
+  // cycle's own view of this cycle's outcome is retired the moment it's
+  // abandoned", not just its optimistic half.
   const allFailed = gatewayCalls > 0 && gatewayErrors === gatewayCalls;
-  await recordPollHealth(prisma, "nowpayments", {
-    lastTxCount: orders.length,
-    success: !allFailed,
-    error: allFailed
-      ? `NOWPayments gateway unreachable — all ${gatewayCalls} pending order status check(s) failed this cycle`
-      : null,
-  }).catch(() => undefined);
+  if (isCurrent()) {
+    await recordPollHealth(prisma, "nowpayments", {
+      lastTxCount: orders.length,
+      success: !allFailed,
+      error: allFailed
+        ? `NOWPayments gateway unreachable — all ${gatewayCalls} pending order status check(s) failed this cycle`
+        : null,
+    }).catch(() => undefined);
+  } else {
+    logger.warn("NOWPayments reconcile cycle finished after its own deadline had already abandoned it — skipping the heartbeat write so it can't overwrite the abandon-failure heartbeat already recorded");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +276,7 @@ const loop = createPollLoop({
   name: "NOWPayments reconcile",
   intervalMs: config.POLL_INTERVAL_SECONDS * 1000,
   cycleTimeoutMs: RECONCILE_CYCLE_TIMEOUT_MS,
-  run: () => pollOnce(boundApi!),
+  run: (isCurrent) => pollOnce(boundApi!, isCurrent),
   onCycleTimeout: (elapsedMs) =>
     recordPollHealth(prisma, "nowpayments", {
       lastTxCount: 0,

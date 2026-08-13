@@ -329,7 +329,7 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
 
 const backoff = createBackoffGate();
 
-export async function pollOnce(api: Api): Promise<void> {
+export async function pollOnce(api: Api, isCurrent: () => boolean = () => true): Promise<void> {
   const cfg = await resolveBybitBscConfig(prisma);
   if (!cfg.enabled) return;
   // BEP20 carries no memo — amount is the ONLY disambiguator. Without
@@ -378,7 +378,18 @@ export async function pollOnce(api: Api): Promise<void> {
   // through to "no candidate -> unmatched" on every later cycle.
   const orders = await listInFlightBybitBscOrders(prisma, now);
   if (deposits.length) logger.info(`Bybit BSC poll fetched ${deposits.length} deposit(s) against ${orders.length} in-flight order(s)`);
-  await recordBybitBscPollHealth(prisma, { lastTxCount: deposits.length, backoffUntil: null, success: true }).catch(() => undefined);
+  // Task 11 review follow-up, Important #1 (Finding A): a cycle abandoned by
+  // pollLoop.ts's deadline keeps running in the background and can still
+  // reach this write minutes later — writing `success: true` then would
+  // overwrite the abandon-failure heartbeat the deadline already recorded
+  // and reset consecutiveFailures, making a hung poller read healthy.
+  // isCurrent() is false once this cycle has been abandoned, so the write is
+  // skipped instead.
+  if (isCurrent()) {
+    await recordBybitBscPollHealth(prisma, { lastTxCount: deposits.length, backoffUntil: null, success: true }).catch(() => undefined);
+  } else {
+    logger.warn("Bybit BSC poll cycle finished after its own deadline had already abandoned it — skipping the success heartbeat write so it can't overwrite the abandon-failure heartbeat already recorded");
+  }
 
   await processDeposits(api, deposits, orders, cfg.chain);
 }
@@ -484,7 +495,7 @@ let boundApi: Api | undefined;
 const loop = createPollLoop({
   name: "Bybit BSC deposit",
   intervalMs: config.BYBIT_BSC_POLL_INTERVAL_SECONDS * 1000,
-  run: () => pollOnce(boundApi!),
+  run: (isCurrent) => pollOnce(boundApi!, isCurrent),
   // A hung cycle abandoned past its deadline must still show up as a failed
   // heartbeat on the ops panel, not silence — the existing failure branch in
   // pollOnce() already writes the same shape on a fetch/HTTP error.

@@ -26,6 +26,8 @@ import {
   createDenomination,
   createWalletTopupOrder,
   upsertUser,
+  listDeliveredOrdersAwaitingEdit,
+  bulkAddStock,
 } from "@app/db";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, DeliveryType, StockStatus } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -304,5 +306,68 @@ describe("deliverPaidInternalOrder — WALLET_TOPUP routing", () => {
       where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
     });
     expect(rows).toHaveLength(0);
+  });
+});
+
+// Task 11 review follow-up, Minor #4: `listDeliveredOrdersAwaitingEdit`
+// gained the same `limit`/`take`/`orderBy` shape as the three
+// `listPending*Orders` functions (see e.g. crud/tokopay.test.ts's
+// "listPendingTokopayOrders — the query-level cap returns the oldest rows
+// first"), but only those three ever got a test pinning it. This mirrors
+// that exact test for the one list function that was missed.
+describe("listDeliveredOrdersAwaitingEdit — the query-level cap returns the oldest rows first", () => {
+  it("returns exactly `limit` rows, and they are the `limit` oldest by createdAt", async () => {
+    const extraCreds = Array.from({ length: 53 }, (_, i) => `awaiting-edit-cap-${i}`);
+    await bulkAddStock(prisma, sample.product.id, extraCreds);
+
+    const created: { id: number; createdAt: Date }[] = [];
+    for (let i = 0; i < 53; i++) {
+      const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+      // Stagger createdAt explicitly — a tight creation loop can tie at
+      // whatever resolution SQLite/JS Date store, which would make "the 50
+      // oldest" ambiguous and the assertion below vacuous.
+      const createdAt = new Date(Date.now() - (53 - i) * 1000);
+      await prisma.order.update({
+        where: { id: order.id },
+        data: {
+          status: OrderStatus.DELIVERED,
+          paymentMethod: PaymentMethod.TOKOPAY,
+          paymentMsgChatId: BigInt(555),
+          paymentMsgId: 777,
+          createdAt,
+        },
+      });
+      created.push({ id: order.id, createdAt });
+    }
+    const oldest50Ids = [...created].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).slice(0, 50).map((o) => o.id);
+
+    const result = await listDeliveredOrdersAwaitingEdit(prisma, PaymentMethod.TOKOPAY, 50);
+
+    expect(result).toHaveLength(50);
+    expect(result.map((o) => o.id)).toEqual(oldest50Ids);
+  });
+
+  it("without a limit, returns every anchored DELIVERED order of that payment method", async () => {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({
+      where: { id: order.id },
+      data: { status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.PAYDISINI, paymentMsgChatId: BigInt(1), paymentMsgId: 2 },
+    });
+    // A DELIVERED order of a DIFFERENT payment method must never show up.
+    const otherMethodOrder = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({
+      where: { id: otherMethodOrder.id },
+      data: { status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.TOKOPAY, paymentMsgChatId: BigInt(1), paymentMsgId: 2 },
+    });
+    // A DELIVERED PAYDISINI order whose anchor was already cleared must never show up.
+    const clearedOrder = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({
+      where: { id: clearedOrder.id },
+      data: { status: OrderStatus.DELIVERED, paymentMethod: PaymentMethod.PAYDISINI, paymentMsgChatId: null, paymentMsgId: null },
+    });
+
+    const result = await listDeliveredOrdersAwaitingEdit(prisma, PaymentMethod.PAYDISINI);
+
+    expect(result.map((o) => o.id)).toEqual([order.id]);
   });
 });

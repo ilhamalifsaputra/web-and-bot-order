@@ -71,14 +71,37 @@ async function editBubbleToSuccess(api: Api, order: AnchoredOrder): Promise<void
 }
 
 /** Per-order budget for waiting on a sweep bubble edit (Task 11 review
- * follow-up, Important #2). grammY's Api client has no built-in per-call
- * timeout the way this codebase's own gateway fetch clients do (see
- * @app/core/http), so an unbounded sweep loop could hang on a single
- * black-holed `editMessageCaption`/`editMessageText` call forever — the most
- * plausible remaining way a reconcile cycle hangs, now that every gateway
- * call is itself bounded at HTTP_TIMEOUT_MS.gatewayRead. 10s mirrors that
- * same budget for consistency. */
-const SWEEP_EDIT_TIMEOUT_MS = 10_000;
+ * follow-up, Important #2). grammY's Api client DOES have a built-in
+ * per-call timeout (`ApiClientOptions.timeoutSeconds`, verified against
+ * grammy@1.43.0's `core/client.js` — an `AbortController`-backed deadline,
+ * defaulting to 500s) — an earlier version of this comment claimed
+ * otherwise, which is what let the cycle-timeout derivation below balloon to
+ * ~17 minutes (Task 11 review follow-up, Important #3: it charged this
+ * cosmetic bubble-flip sweep the same 10s-per-row budget as a money-bearing
+ * gateway call, then multiplied by the full MAX_ORDERS_PER_CYCLE cap). The
+ * client's own 500s default is still far too generous for a bounded reconcile
+ * cycle to rely on alone — main.ts's `buildBot()` now sets it to 30s bot-wide
+ * (Task 11 review follow-up, Important #2's "wider lever") — and
+ * SWEEP_EDIT_TIMEOUT_MS stays as an extra, tighter per-row valve specific to
+ * this sweep so the whole-sweep budget below (`SWEEP_TOTAL_BUDGET_MS`) can
+ * actually be enforced by checking it between rows. Exported (same reasoning
+ * as MAX_ORDERS_PER_CYCLE/RECONCILE_CYCLE_TIMEOUT_MS below) so tests import
+ * the real value instead of a hardcoded copy that could silently drift. */
+export const SWEEP_EDIT_TIMEOUT_MS = 10_000;
+
+/** Whole-sweep wall-clock budget (Task 11 review follow-up, Important #3):
+ * this sweep is a cosmetic caption flip on orders already DELIVERED —
+ * idempotent, retried next cycle, and normally an empty list — never a
+ * money-bearing gateway call, so it does not deserve `cap × per-row worst
+ * case` in the cycle-timeout derivation the way the reconcile loop's real
+ * gateway calls do. `sweepDeliveredAwaitingEdit` checks this between rows and
+ * gives up on the REST of the batch once it's exceeded, leaving their anchors
+ * in place for the next cycle to retry (same accepted trade-off a per-row
+ * timeout already makes). 30s is ample for a normally-empty or small sweep;
+ * see RECONCILE_CYCLE_TIMEOUT_MS below for how this and SWEEP_EDIT_TIMEOUT_MS
+ * combine into the cycle deadline. Exported for the same reason as
+ * SWEEP_EDIT_TIMEOUT_MS above. */
+export const SWEEP_TOTAL_BUDGET_MS = 30_000;
 
 /** Race `promise` against `timeoutMs`; resolves `"timeout"` if the deadline
  * wins. The underlying grammY call isn't cancelled when this loses the race —
@@ -105,18 +128,25 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | "ti
 /**
  * Sweep DELIVERED TokoPay orders whose bubble hasn't been flipped yet (catches
  * webhook deliveries). Idempotent: clears the anchor after editing so a re-run
- * is a no-op. Bounded two ways (Task 11 review follow-up, Important #2): the
- * list itself is capped at MAX_ORDERS_PER_CYCLE, and each order's edit gets at
- * most SWEEP_EDIT_TIMEOUT_MS before the sweep gives up on it and moves on —
- * without both, this loop was uncapped and its grammY calls unbounded, so the
- * 530s `cycleTimeoutMs` (sized only off the 50 gateway calls) didn't actually
- * bound the whole cycle. A timed-out edit leaves the anchor in place so the
- * next cycle retries it — clearing only happens once an edit genuinely
- * completes (not necessarily succeeds; editBubbleToSuccess never throws).
+ * is a no-op. Bounded three ways (Task 11 review follow-up, Important #2 and
+ * #3): the list itself is capped at MAX_ORDERS_PER_CYCLE, each order's edit
+ * gets at most SWEEP_EDIT_TIMEOUT_MS before the sweep gives up on it and moves
+ * on, and the WHOLE sweep gives up on any remaining rows once
+ * SWEEP_TOTAL_BUDGET_MS has elapsed (checked between rows, not just per row —
+ * the sweep's own progress is optional and safely retried next cycle, so it
+ * gets a flat wall-clock budget instead of `cap × per-row worst case`). A
+ * timed-out or budget-cut-off edit leaves the anchor in place so the next
+ * cycle retries it — clearing only happens once an edit genuinely completes
+ * (not necessarily succeeds; editBubbleToSuccess never throws).
  */
 export async function sweepDeliveredAwaitingEdit(api: Api): Promise<void> {
   const orders = await listDeliveredOrdersAwaitingEdit(prisma, PaymentMethod.TOKOPAY, MAX_ORDERS_PER_CYCLE);
-  for (const order of orders) {
+  const sweepStartedAt = Date.now();
+  for (const [i, order] of orders.entries()) {
+    if (Date.now() - sweepStartedAt > SWEEP_TOTAL_BUDGET_MS) {
+      logger.warn(`TokoPay sweep hit its ${SWEEP_TOTAL_BUDGET_MS}ms whole-sweep budget with ${orders.length - i} order(s) left unedited this cycle — their anchors are left in place so the next cycle retries them`);
+      break;
+    }
     const outcome = await withTimeout(editBubbleToSuccess(api, order), SWEEP_EDIT_TIMEOUT_MS);
     if (outcome === "timeout") {
       logger.warn(`TokoPay sweep gave up waiting on the bubble edit for order ${order.orderCode} after ${SWEEP_EDIT_TIMEOUT_MS}ms — anchor left in place so the next cycle retries`);
@@ -215,24 +245,42 @@ export const MAX_ORDERS_PER_CYCLE = 50;
 // sequential checkTransaction calls, each individually bounded at
 // HTTP_TIMEOUT_MS.gatewayRead (10s) — so MAX_ORDERS_PER_CYCLE ×
 // HTTP_TIMEOUT_MS.gatewayRead is the raw worst case for the reconcile loop
-// (500_000ms at today's cap/timeout). sweepDeliveredAwaitingEdit runs
-// alongside it and used to be unaccounted-for margin — Task 11 review
-// follow-up, Important #2 found it was actually uncapped/untimed, so the
-// derivation now folds in its OWN worst case the same way: at most
-// MAX_ORDERS_PER_CYCLE edits (the sweep's own `limit`), each bounded at
-// SWEEP_EDIT_TIMEOUT_MS (another 500_000ms). +30s margin covers the
-// remaining DB list/deliver work around both loops.
+// (500_000ms at today's cap/timeout).
+//
+// sweepDeliveredAwaitingEdit runs alongside it — Task 11 review follow-up,
+// Important #3 corrected an earlier version of this derivation that charged
+// the sweep `MAX_ORDERS_PER_CYCLE × SWEEP_EDIT_TIMEOUT_MS` (another
+// 500_000ms, on top of the reconcile loop's own 500_000ms — a false premise:
+// see SWEEP_EDIT_TIMEOUT_MS's own doc-comment for why "grammY has no built-in
+// timeout" was wrong, and why treating a cosmetic bubble-flip sweep as
+// deserving a money-bearing gateway call's budget was the real bug). The
+// sweep now contributes its OWN flat worst case instead:
+// SWEEP_TOTAL_BUDGET_MS + one more in-flight SWEEP_EDIT_TIMEOUT_MS (the
+// budget is only checked BETWEEN rows, so the row in flight when the budget
+// is crossed still gets to finish) = 40_000ms.
+//
+// +30s margin covers the remaining DB list/deliver work around both loops.
 const PER_ORDER_WORST_CASE_MS = HTTP_TIMEOUT_MS.gatewayRead;
+const SWEEP_WORST_CASE_MS = SWEEP_TOTAL_BUDGET_MS + SWEEP_EDIT_TIMEOUT_MS;
 const CYCLE_TIMEOUT_MARGIN_MS = 30_000;
-/** MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS (reconcile) +
- * MAX_ORDERS_PER_CYCLE × SWEEP_EDIT_TIMEOUT_MS (sweep) + margin = 1_030_000 —
+/** MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS (reconcile, 500_000) +
+ * SWEEP_WORST_CASE_MS (sweep, 40_000) + margin (30_000) = 570_000 (~9m30s) —
  * passed to `createPollLoop` below as this rail's `cycleTimeoutMs`. Exported
  * (Task 11 review follow-up, Minor #5) so the wiring test imports the real
- * value instead of a hardcoded copy that could silently drift from it. */
+ * value instead of a hardcoded copy that could silently drift from it.
+ *
+ * Sanity check against PAYMENT_WINDOW_MINUTES (Task 11 review follow-up,
+ * Important #3): a cycle deadline eating more than half an order's payment
+ * window means a single hung cycle can, on its own, do ZERO reconciliation
+ * for most of that order's life with the safety net switched off — the
+ * signal the arithmetic above has left reality (this is exactly how the
+ * previous ~17m10s value was found: 1_030_000ms is 57% of the default 30-minute
+ * window). At 570_000ms against the same default 30-minute (1_800_000ms)
+ * window, this is ~32% — comfortably under that line. */
 export const RECONCILE_CYCLE_TIMEOUT_MS =
-  MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + MAX_ORDERS_PER_CYCLE * SWEEP_EDIT_TIMEOUT_MS + CYCLE_TIMEOUT_MARGIN_MS;
+  MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + SWEEP_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
 
-export async function pollOnce(api: Api): Promise<void> {
+export async function pollOnce(api: Api, isCurrent: () => boolean = () => true): Promise<void> {
   const creds = await getTokopayCreds(prisma);
   if (!creds) return; // rail genuinely off — no heartbeat; its watchdog is gated on credentials too
 
@@ -242,7 +290,18 @@ export async function pollOnce(api: Api): Promise<void> {
     // healthy shop that's simply quiet must still advance the heartbeat, or
     // it reads as stale after 5 minutes and the Task 12 watchdog pages
     // admins over nothing (Task 11 brief).
-    await recordPollHealth(prisma, "tokopay", { lastTxCount: 0, success: true }).catch(() => undefined);
+    //
+    // Task 11 review follow-up, Important #1 (Finding A): guarded by
+    // isCurrent() — a cycle abandoned by pollLoop.ts's deadline keeps
+    // running in the background and can still reach this write minutes
+    // later, overwriting the abandon-failure heartbeat with a retroactive
+    // success and resetting consecutiveFailures. Skipped instead once
+    // isCurrent() is false.
+    if (isCurrent()) {
+      await recordPollHealth(prisma, "tokopay", { lastTxCount: 0, success: true }).catch(() => undefined);
+    } else {
+      logger.warn("TokoPay reconcile cycle finished after its own deadline had already abandoned it — skipping the success heartbeat write so it can't overwrite the abandon-failure heartbeat already recorded");
+    }
     return;
   }
   logger.info(`TokoPay reconcile checking ${orders.length} pending order(s) against the gateway`);
@@ -263,17 +322,33 @@ export async function pollOnce(api: Api): Promise<void> {
   // actually skips today, but the shape is shared with nowpaymentsReconcile.ts,
   // where it does, so both stay correct even if this rail ever grows a skip
   // path). `gatewayCalls > 0` keeps an all-skipped cycle correctly successful.
+  //
+  // The whole write below is guarded by isCurrent() (Task 11 review
+  // follow-up, Important #1 / Finding A) rather than only its `success: true`
+  // case: a stale write from an abandoned cycle is stale evidence either way
+  // — even a `success: false` write here would double-count the SAME
+  // underlying failure the abandon heartbeat already recorded (once as the
+  // abandon, once here) — so the simplest correct rule is "the abandoned
+  // cycle's own view of this cycle's outcome is retired the moment it's
+  // abandoned", not just its optimistic half.
   const allFailed = gatewayCalls > 0 && gatewayErrors === gatewayCalls;
-  await recordPollHealth(prisma, "tokopay", {
-    lastTxCount: orders.length,
-    success: !allFailed,
-    error: allFailed
-      ? `TokoPay gateway unreachable — all ${gatewayCalls} pending order status check(s) failed this cycle`
-      : null,
-  }).catch(() => undefined);
+  if (isCurrent()) {
+    await recordPollHealth(prisma, "tokopay", {
+      lastTxCount: orders.length,
+      success: !allFailed,
+      error: allFailed
+        ? `TokoPay gateway unreachable — all ${gatewayCalls} pending order status check(s) failed this cycle`
+        : null,
+    }).catch(() => undefined);
+  } else {
+    logger.warn("TokoPay reconcile cycle finished after its own deadline had already abandoned it — skipping the heartbeat write so it can't overwrite the abandon-failure heartbeat already recorded");
+  }
 
   // Catches orders the storefront webhook delivered (the bubble flip never
   // happens on the web — CLAUDE.md "never send Telegram from the web").
+  // Left unguarded: the sweep's own effects (a Telegram bubble edit) are
+  // already idempotent, same as every other post-abandon side effect
+  // pollLoop.ts's module doc-comment documents as safe.
   await sweepDeliveredAwaitingEdit(api);
 }
 
@@ -290,7 +365,7 @@ let boundApi: Api | undefined;
 
 // cycleTimeoutMs is RECONCILE_CYCLE_TIMEOUT_MS, sized off MAX_ORDERS_PER_CYCLE's
 // own worst case for BOTH the reconcile loop and the sweep (see the
-// derivation comment above pollOnce) — 1_030s. Without this the default
+// derivation comment above pollOnce) — 570s. Without this the default
 // `max(3 * intervalMs, 60_000)` (60s at the default POLL_INTERVAL_SECONDS)
 // would abandon a cycle mid-batch long before a full MAX_ORDERS_PER_CYCLE
 // sweep of a slow-but-not-hung gateway could finish.
@@ -309,7 +384,7 @@ const loop = createPollLoop({
   name: "TokoPay reconcile",
   intervalMs: config.POLL_INTERVAL_SECONDS * 1000,
   cycleTimeoutMs: RECONCILE_CYCLE_TIMEOUT_MS,
-  run: () => pollOnce(boundApi!),
+  run: (isCurrent) => pollOnce(boundApi!, isCurrent),
   onCycleTimeout: (elapsedMs) =>
     recordPollHealth(prisma, "tokopay", {
       lastTxCount: 0,

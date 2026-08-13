@@ -498,7 +498,7 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
 
 const backoff = createBackoffGate();
 
-export async function pollOnce(api: Api): Promise<void> {
+export async function pollOnce(api: Api, isCurrent: () => boolean = () => true): Promise<void> {
   const cfg = await resolveBinanceInternalConfig(prisma);
   if (!cfg.enabled) return;
   if (backoff.shouldSkip()) return;
@@ -530,7 +530,18 @@ export async function pollOnce(api: Api): Promise<void> {
   const now = new Date();
   const orders = await listPendingInternalOrders(prisma, now);
   if (txs.length) logger.info(`Binance poll fetched ${txs.length} transfer(s) against ${orders.length} pending order(s)`);
-  await recordBinancePollHealth(prisma, { lastTxCount: txs.length, backoffUntil: null, success: true }).catch(() => undefined);
+  // Task 11 review follow-up, Important #1 (Finding A): a cycle abandoned by
+  // pollLoop.ts's deadline keeps running in the background and can still
+  // reach this write minutes later — writing `success: true` then would
+  // overwrite the abandon-failure heartbeat the deadline already recorded
+  // and reset consecutiveFailures, making a hung poller read healthy.
+  // isCurrent() is false once this cycle has been abandoned, so the write is
+  // skipped instead.
+  if (isCurrent()) {
+    await recordBinancePollHealth(prisma, { lastTxCount: txs.length, backoffUntil: null, success: true }).catch(() => undefined);
+  } else {
+    logger.warn("Binance poll cycle finished after its own deadline had already abandoned it — skipping the success heartbeat write so it can't overwrite the abandon-failure heartbeat already recorded");
+  }
 
   await processTransfers(api, txs, orders);
 }
@@ -634,7 +645,7 @@ const loop = createPollLoop({
   name: "Binance Internal Transfer",
   intervalMs: config.POLL_INTERVAL_SECONDS * 1000,
   cycleTimeoutMs: BINANCE_CYCLE_TIMEOUT_MS,
-  run: () => pollOnce(boundApi!),
+  run: (isCurrent) => pollOnce(boundApi!, isCurrent),
   // A hung cycle abandoned past its deadline must still show up as a failed
   // heartbeat on the ops panel, not silence — the existing failure branch in
   // pollOnce() already writes the same shape on a fetch/HTTP error.

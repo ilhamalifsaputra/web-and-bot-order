@@ -329,6 +329,13 @@ let boundApi: Api | undefined;
 // Task 3 review follow-up). Without the explicit value here the default
 // `max(3 * intervalMs, 60_000)` = 60s would abandon a cycle mid-batch even at
 // the now-bounded worst case.
+// `run` deliberately does not thread through pollLoop.ts's `isCurrent()`
+// (Task 11 review follow-up, Important #1 / Finding A): this tracker writes
+// no poll-health heartbeat at all (display-only module, see the file's own
+// doc-comment above), so there is nothing here a stale post-abandon write
+// could retroactively mark healthy — `isCurrent()` exists to guard exactly
+// that write, and this rail has none. A rail's `run` ignoring the parameter
+// is explicitly safe per pollLoop.ts's own contract.
 const loop = createPollLoop({
   name: "Bybit BSC confirmation tracker",
   intervalMs: config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS * 1000,

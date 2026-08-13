@@ -27,9 +27,22 @@
  * change (`processed_binance_tx.binance_tx_id`, `processed_bybit_tx.bybit_tx_id`,
  * `processed_{tokopay,paydisini,nowpayments}_tx.trx_id`) — the second claim
  * hits a unique violation and the caller returns `already_processed`. The
- * only un-gated effects are an admin DM, `nudgeOutboxDispatcher()`, and a
- * Telegram bubble edit — all idempotent. Worst case is one duplicate admin
- * DM during a genuine hang, which is far better than a dead poller.
+ * un-gated effects are an admin DM, `nudgeOutboxDispatcher()`, and a Telegram
+ * bubble edit — all idempotent. Worst case is one duplicate admin DM during a
+ * genuine hang, which is far better than a dead poller.
+ *
+ * The one effect that is NOT idempotent is a rail's poll-health heartbeat
+ * write: a stale cycle's `success: true` write, arriving after the cycle was
+ * already abandoned, both sets `lastSuccessAt` to a now-stale "now" AND resets
+ * `consecutiveFailures` to 0 — silently erasing the abandon-failure heartbeat
+ * the deadline just recorded and making a hung rail read healthy (Task 11
+ * review follow-up, Important #1). `run` is therefore passed `isCurrent()` (see
+ * `PollLoopOptions.run` below): a rail's own heartbeat write must call it
+ * immediately before writing and skip the write when it returns `false`, so a
+ * cycle that finishes after being abandoned can't overwrite the abandon
+ * heartbeat with a retroactive success. A rail that ignores `isCurrent()`
+ * keeps today's exact (buggy, pre-Task-11-review-follow-up) behavior — this
+ * mechanism only ever makes a heartbeat MORE accurate, never less.
  */
 import { logger } from "@app/core/logger";
 
@@ -39,7 +52,20 @@ export interface PollLoopOptions {
   intervalMs: number;
   /** Defaults to max(3 * intervalMs, 60_000). */
   cycleTimeoutMs?: number;
-  run: () => Promise<void>;
+  /**
+   * `isCurrent()` reports whether THIS cycle is still the one the loop is
+   * waiting on — it flips to `false` the moment the cycle's deadline fires
+   * and the loop abandons it (see the module doc-comment's "Safe from
+   * double-writes" section for why that matters). Call it right before any
+   * non-idempotent write — a poll-health heartbeat, chiefly — and skip the
+   * write when it returns `false`, so a cycle that keeps running in the
+   * background after being abandoned can't overwrite the abandon-failure
+   * heartbeat with a stale success. Ignoring the parameter is safe and keeps
+   * today's exact behavior (nothing regresses) — it just means that rail's
+   * heartbeat stays vulnerable to the retroactive-success bug this exists to
+   * close.
+   */
+  run: (isCurrent: () => boolean) => Promise<void>;
   /** Fired when a cycle is abandoned past its deadline; elapsedMs is the time since the cycle started. */
   onCycleTimeout?: (elapsedMs: number) => void | Promise<void>;
 }
@@ -70,10 +96,21 @@ export function createPollLoop(opts: PollLoopOptions): PollLoop {
     const myGeneration = generation;
     const startedAt = Date.now();
     let settled = false;
+    // Flipped to true the moment this cycle's deadline fires and it's
+    // abandoned (see below) — distinct from `settled`, which also becomes
+    // true on an ordinary completion/rejection where no abandon ever
+    // happened. Threaded through to `run` as `isCurrent()` so a rail's own
+    // heartbeat write can no-op once this goes false.
+    let abandoned = false;
 
     const releaseIfCurrentGeneration = () => {
       if (myGeneration === generation) running = false;
     };
+
+    // False once this cycle has been abandoned by its deadline OR superseded
+    // by a stop()+start() (generation bump) — either way, this cycle's own
+    // result/side-effects are no longer the loop's current concern.
+    const isCurrent = () => !abandoned && myGeneration === generation;
 
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<void>((resolve) => {
@@ -88,7 +125,7 @@ export function createPollLoop(opts: PollLoopOptions): PollLoop {
     // uncaught exception on this tick.
     let cyclePromise: Promise<void>;
     try {
-      cyclePromise = opts.run();
+      cyclePromise = opts.run(isCurrent);
     } catch (err) {
       cyclePromise = Promise.reject(err);
     }
@@ -133,6 +170,7 @@ export function createPollLoop(opts: PollLoopOptions): PollLoop {
         return;
       }
       settled = true;
+      abandoned = true;
       const elapsedMs = Date.now() - startedAt;
       logger.error(
         `${opts.name} poll cycle did not finish within ${cycleTimeoutMs}ms — abandoning it so the schedule is not blocked; it may still complete in the background and its result will be discarded`,

@@ -58,7 +58,21 @@ export function buildBot(token?: string): Bot<MyContext> {
   if (!resolvedToken) {
     throw new Error("Bot token is not configured (set it in web-admin Settings or BOT_TOKEN env)");
   }
-  const bot = new Bot<MyContext>(resolvedToken);
+  // Task 11 review follow-up, Important #2 (Finding B, "the wider lever"):
+  // grammY's Api client already has a built-in per-call timeout
+  // (`ApiClientOptions.timeoutSeconds`), but its DEFAULT is 500s — so every
+  // bare Telegram call in this app (editMessageCaption/editMessageText in a
+  // reconcile poller's delivery path, alertAdmins' sendMessage loop, a
+  // handler's ctx.reply, sendDocument for a credential file, etc.) was, until
+  // now, bounded only by that generous default. A single hung call at 500s
+  // can already outweigh a poll cycle's own budget (see
+  // tokopayReconcile.ts/paydisiniReconcile.ts's RECONCILE_CYCLE_TIMEOUT_MS
+  // derivation), so tightening this ONE knob bounds every such call across
+  // the whole bot at once. 30s is generous for every real call shape here
+  // (small text messages, a small .txt credential file, a QR/product photo)
+  // while staying far below any poll cycle's own budget, so a hung Telegram
+  // call can no longer quietly consume the majority of a cycle.
+  const bot = new Bot<MyContext>(resolvedToken, { client: { timeoutSeconds: 30 } });
 
   // Global send defaults (replaces PTB Defaults(parse_mode=HTML, no link preview))
   // plus the custom-emoji upgrade — see util/apiDefaults.ts.

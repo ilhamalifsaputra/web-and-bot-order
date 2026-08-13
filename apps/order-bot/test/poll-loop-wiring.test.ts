@@ -291,6 +291,93 @@ describe("payment pollers self-heal from a hung cycle via createPollLoop", () =>
   });
 });
 
+// Task 11 review follow-up, Important #1 (Finding A) — end-to-end pin for at
+// least one real rail (not just the synthetic run() in poll-loop.test.ts):
+// proves the actual wiring (`run: (isCurrent) => pollOnce(boundApi!,
+// isCurrent)`) really does suppress a stale retroactive success. NOWPayments
+// is used because its success-heartbeat write is reachable with only
+// @app/db mocks (no gateway `fetch` involved) via the empty-pending-list
+// branch.
+describe("a rail's success heartbeat no-ops once its own cycle has been abandoned (Finding A regression pin)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    vi.spyOn(logger, "info").mockImplementation(() => undefined as never);
+  });
+
+  afterEach(() => {
+    nowpaymentsReconcile.stopPolling();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("NOWPayments reconcile: a cycle that resolves after its deadline does not overwrite the abandon-failure heartbeat with a retroactive success", async () => {
+    const credsMock = vi.mocked(dbMock.getNowpaymentsCreds);
+    credsMock.mockReset();
+    let resolveCreds: ((v: unknown) => void) | undefined;
+    // Each call gets its own pending promise — startPolling()'s fire-and-
+    // forget boot check calls this once, then the loop's own cycle calls it
+    // again on the scheduled tick; `resolveCreds` ends up bound to the LAST
+    // call captured, which is the cycle's own (the one we want to resolve).
+    credsMock.mockImplementation(
+      () =>
+        new Promise<unknown>((resolve) => {
+          resolveCreds = resolve;
+        }) as ReturnType<typeof dbMock.getNowpaymentsCreds>,
+    );
+
+    const listMock = vi.mocked(dbMock.listPendingNowpaymentsOrders);
+    listMock.mockReset();
+    listMock.mockResolvedValue([]); // empty pending list -> the success-heartbeat branch
+
+    const healthMock = vi.mocked(dbMock.recordPollHealth);
+    healthMock.mockClear();
+
+    nowpaymentsReconcile.startPolling(fakeApi);
+
+    const intervalMs = config.POLL_INTERVAL_SECONDS * 1000;
+
+    // Scheduled tick starts cycle 1, which hangs on getNowpaymentsCreds.
+    await vi.advanceTimersByTimeAsync(intervalMs);
+    // Snapshot cycle 1's own resolver NOW, before the next advance — with
+    // NOWPAYMENTS_CYCLE_TIMEOUT_MS an exact multiple of intervalMs (both
+    // round numbers by construction), the next scheduled tick lands on the
+    // EXACT SAME virtual timestamp cycle 1's deadline fires at, so the advance
+    // below both abandons cycle 1 AND starts cycle 2 — which calls
+    // getNowpaymentsCreds again and would otherwise steal `resolveCreds`.
+    const resolveCycle1Creds = resolveCreds;
+    expect(resolveCycle1Creds).toBeDefined();
+
+    // Past the deadline, the cycle is abandoned — the abandon-failure
+    // heartbeat is recorded exactly once (cycle 2 also starts here, per the
+    // note above, and hangs on its own fresh getNowpaymentsCreds call — inert
+    // for the rest of this test, cleaned up by afterEach's stopPolling()).
+    await vi.advanceTimersByTimeAsync(NOWPAYMENTS_CYCLE_TIMEOUT_MS);
+    expect(healthMock).toHaveBeenCalledTimes(1);
+    expect(healthMock).toHaveBeenCalledWith(
+      expect.anything(),
+      "nowpayments",
+      expect.objectContaining({ success: false, error: expect.stringContaining("Poll cycle abandoned after") }),
+    );
+    healthMock.mockClear();
+
+    // Cycle 1's own (now-stale) getNowpaymentsCreds call finally resolves,
+    // letting its pollOnce continue in the background straight to its
+    // empty-list success-heartbeat write.
+    resolveCycle1Creds?.({ apiKey: "x", ipnSecret: "y" });
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Before the Finding A fix, this would be called once more with
+    // `success: true`, silently erasing the abandon-failure heartbeat above
+    // and resetting consecutiveFailures — making a hung poller read healthy.
+    expect(healthMock).not.toHaveBeenCalled();
+  });
+});
+
 // This suite runs after the self-heal suite above, so every rail's loop has
 // already been through at least one start()/stop() cycle — startPolling()
 // here is a genuine restart, not first boot. That's fine: the assertion only

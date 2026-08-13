@@ -354,6 +354,76 @@ describe("createPollLoop", () => {
     }
   });
 
+  // Task 11 review follow-up, Important #1 (Finding A): before this fix, a
+  // cycle abandoned past its deadline kept running in the background and,
+  // once it finally settled, a rail's own success-heartbeat write inside
+  // `run()` had no way to know it had already been given up on — so a
+  // retroactive `success: true` write could silently overwrite the
+  // abandon-failure heartbeat pollLoop.ts itself had just recorded via
+  // onCycleTimeout, resetting consecutiveFailures and making a genuinely
+  // hung rail read healthy. `run` is now passed an `isCurrent()` check for
+  // exactly this: it must go `false` the instant the cycle is abandoned, so
+  // a rail can gate its own heartbeat write on it.
+  it("passes run() an isCurrent() that flips to false once the cycle is abandoned, so a late heartbeat write can no-op", async () => {
+    vi.useFakeTimers();
+    const heartbeat = vi.fn();
+    let settleHungCycle: (() => void) | undefined;
+    const run = vi.fn(
+      (isCurrent: () => boolean) =>
+        new Promise<void>((resolve) => {
+          settleHungCycle = () => {
+            // This mirrors a rail's own guarded heartbeat write — see
+            // binanceInternal.ts/tokopayReconcile.ts/etc.'s `if (isCurrent())`
+            // guard around their success-heartbeat write.
+            if (isCurrent()) heartbeat();
+            resolve();
+          };
+        }),
+    );
+    const onCycleTimeout = vi.fn();
+    const loop = createPollLoop({ name: "Test", intervalMs: 1_000, cycleTimeoutMs: 2_500, run, onCycleTimeout });
+
+    loop.start();
+
+    // First tick starts cycle 1, which hangs.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(run).toHaveBeenCalledTimes(1);
+
+    // The deadline abandons it — onCycleTimeout fires the abandon-failure
+    // heartbeat (the rail's own onCycleTimeout hook, not exercised directly
+    // here — see poll-loop-wiring.test.ts for that end-to-end).
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(onCycleTimeout).toHaveBeenCalledTimes(1);
+
+    // The abandoned cycle finally "completes" in the background, well after
+    // being given up on. Without the fix, its guarded heartbeat call would
+    // still fire here (isCurrent() didn't exist / always read true) —
+    // overwriting the abandon-failure heartbeat with a retroactive success.
+    settleHungCycle?.();
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+
+    expect(heartbeat).not.toHaveBeenCalled();
+
+    loop.stop();
+  });
+
+  it("isCurrent() stays true for a cycle that finishes inside its own deadline", async () => {
+    vi.useFakeTimers();
+    let observedIsCurrent: boolean | undefined;
+    const run = vi.fn(async (isCurrent: () => boolean) => {
+      observedIsCurrent = isCurrent();
+    });
+    const loop = createPollLoop({ name: "Test", intervalMs: 1_000, cycleTimeoutMs: 5_000, run });
+
+    loop.start();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(observedIsCurrent).toBe(true);
+
+    loop.stop();
+  });
+
   it("defaults cycleTimeoutMs to max(3 * intervalMs, 60_000)", async () => {
     vi.useFakeTimers();
     let hangResolve: (() => void) | undefined;

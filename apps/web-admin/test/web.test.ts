@@ -41,6 +41,13 @@ import {
   listAuditLogs,
   setUserRole,
   setUserBanned,
+  BINANCE_UID_KEY,
+  BINANCE_API_KEY_KEY,
+  BINANCE_API_SECRET_KEY,
+  BINANCE_POLL_HEALTH_KEY,
+  BYBIT_UID_KEY,
+  BYBIT_API_KEY_KEY,
+  BYBIT_API_SECRET_KEY,
   __clearSettingsCacheForTests,
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
@@ -4142,6 +4149,31 @@ describe("settings", () => {
     expect(apiData.fields.find((f) => f.key === "nowpayments_pay_currency")?.value).toBe("usdttrc20");
   });
 
+  // The behavior change in Task 8 is server-side: settings.ts maps both Bybit
+  // heartbeats through evaluatePollHealth using the rail's REAL config state.
+  // The SettingsPage test stubs this endpoint's JSON, so it cannot catch a
+  // regression here (a hardcoded `enabled: true`, or the two configs swapped).
+  // These two cases pin the distinction the truthful `enabled` exists to make.
+  it("GET /api/settings reports an unconfigured Bybit rail as unmonitored", async () => {
+    const page = await get("/api/settings", seed.cookie);
+    expect(page.statusCode).toBe(200);
+    const data = JSON.parse(page.body) as { bybitHealth: { status: string; detail: string } };
+    expect(data.bybitHealth.status).toBe("unmonitored");
+  });
+
+  it("GET /api/settings reports a configured but never-polled Bybit rail as red", async () => {
+    await setSetting(prisma, BYBIT_UID_KEY, "bybit-uid");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "bybit-key");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "bybit-secret");
+
+    const page = await get("/api/settings", seed.cookie);
+    expect(page.statusCode).toBe(200);
+    const data = JSON.parse(page.body) as { bybitHealth: { status: string; detail: string } };
+    expect(data.bybitHealth.status).toBe("red");
+    // Credentials must never be echoed back in the health payload.
+    expect(JSON.stringify(data.bybitHealth)).not.toContain("bybit-secret");
+  });
+
   it("nowpayments_api_key / nowpayments_ipn_secret are write-only (blank keeps value, never echoed)", async () => {
     await post("/api/settings/edit", seed.cookie, {
       csrf_token: seed.csrf, key: "nowpayments_api_key", value: "NOWAPIKEYSECRET",
@@ -4521,6 +4553,32 @@ describe("payments", () => {
     expect(res.statusCode).toBe(200);
     const data = JSON.parse(res.body) as { ledger: Array<{ reference: string }> };
     expect(data.ledger.some((tx) => tx.reference === "RENDTX")).toBe(true);
+  });
+
+  // Route-level counterpart to dashboard-api.test.ts's staleness case. The
+  // PaymentsPage pill now renders whatever `health.status`/`health.detail` the
+  // server sends, so the client test can only prove the client renders what it
+  // is given — the wiring from the stored heartbeat through evaluatePollHealth
+  // into the response is pinned here or nowhere.
+  //
+  // lastRun is two hours old and consecutiveFailures is 0, which is exactly the
+  // shape the deleted client-side rule mis-read as "Synced 2h ago" at level ok.
+  it("GET /api/payments reports a poller whose last cycle is two hours old as red", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "test-uid");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "test-key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "test-secret");
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      BINANCE_POLL_HEALTH_KEY,
+      JSON.stringify({ lastRun: twoHoursAgo, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/payments", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { health: { status: string; detail: string } };
+    expect(data.health.status).toBe("red");
+    expect(data.health.detail).toMatch(/No cycle has completed/);
   });
 
   it("GET /api/payments returns todayCount and honors the q search param", async () => {

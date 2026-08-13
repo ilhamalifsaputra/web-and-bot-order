@@ -8,6 +8,12 @@ import type { FastifyInstance } from "fastify";
 import { startOfDayUtc, addDays } from "@app/core/datetime";
 import { Decimal } from "@app/core/money";
 import { config } from "@app/core/config";
+import { evaluatePollHealth, type PollHealthEvaluation } from "@app/core/payments/pollHealth";
+import {
+  TOKOPAY_POLL_STALE_MS,
+  PAYDISINI_POLL_STALE_MS,
+  NOWPAYMENTS_POLL_STALE_MS,
+} from "@app/core/payments/reconcileCycleBudget";
 import { displayDateTime } from "../../dateDisplay";
 import {
   prisma,
@@ -30,7 +36,15 @@ import {
   combinedRevenueByDay,
   resolveBotCredentials,
   resolveBinanceInternalConfig,
+  resolveBybitConfig,
+  resolveBybitBscConfig,
   getBinancePollHealth,
+  getBybitPollHealth,
+  getBybitBscPollHealth,
+  getPollHealth,
+  getTokopayCreds,
+  getPaydisiniCreds,
+  getNowpaymentsCreds,
 } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
 
@@ -150,25 +164,58 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
   });
 
   app.get("/api/dashboard/health", { preHandler: currentAdmin }, async () => {
-    const creds = await resolveBotCredentials(prisma);
-    const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
-    const binanceHealth = binanceEnabled ? await getBinancePollHealth(prisma) : null;
+    const toEntry = ({ status, detail }: PollHealthEvaluation) => ({ status, detail });
 
-    const binanceStatus = !binanceEnabled
-      ? "unmonitored"
-      : (binanceHealth!.consecutiveFailures ?? 0) > 0
-        ? "red"
-        : binanceHealth!.backoffUntil
-          ? "yellow"
-          : "green";
+    const [creds, binanceConfig, bybitConfig, bybitBscConfig, tokopayCreds, paydisiniCreds, nowpaymentsCreds] =
+      await Promise.all([
+        resolveBotCredentials(prisma),
+        resolveBinanceInternalConfig(prisma),
+        resolveBybitConfig(prisma),
+        resolveBybitBscConfig(prisma),
+        getTokopayCreds(prisma),
+        getPaydisiniCreds(prisma),
+        getNowpaymentsCreds(prisma),
+      ]);
+    // Same credential gate the QRIS watchdogs use (tokopayPollWatchdog and its
+    // two twins, apps/order-bot/src/jobs/index.ts) — a rail the shop has never
+    // turned on must read "unmonitored", not red, same as a disabled crypto rail.
+    const tokopayEnabled = tokopayCreds !== null;
+    const paydisiniEnabled = paydisiniCreds !== null;
+    const nowpaymentsEnabled = nowpaymentsCreds !== null;
+
+    const [binanceHealth, bybitHealth, bybitBscHealth, tokopayHealth, paydisiniHealth, nowpaymentsHealth] =
+      await Promise.all([
+        binanceConfig.enabled ? getBinancePollHealth(prisma) : null,
+        bybitConfig.enabled ? getBybitPollHealth(prisma) : null,
+        bybitBscConfig.enabled ? getBybitBscPollHealth(prisma) : null,
+        tokopayEnabled ? getPollHealth(prisma, "tokopay") : null,
+        paydisiniEnabled ? getPollHealth(prisma, "paydisini") : null,
+        nowpaymentsEnabled ? getPollHealth(prisma, "nowpayments") : null,
+      ]);
 
     return {
-      telegramBot: creds.botToken === null ? "red" : "green",
-      binance: binanceStatus,
-      bybit: "unmonitored",
-      tokopay: "unmonitored",
-      paydisini: "unmonitored",
-      nowpayments: "unmonitored",
+      telegramBot: {
+        status: creds.botToken === null ? "red" : "green",
+        detail: creds.botToken === null ? "No Telegram bot token is configured." : "Bot token is configured.",
+      },
+      binance: toEntry(evaluatePollHealth(binanceHealth, { enabled: binanceConfig.enabled })),
+      bybit: toEntry(evaluatePollHealth(bybitHealth, { enabled: bybitConfig.enabled })),
+      bybitBsc: toEntry(evaluatePollHealth(bybitBscHealth, { enabled: bybitBscConfig.enabled })),
+      // The three QRIS/IDR rails pass their own, much wider staleMs — same as
+      // tokopayPollWatchdog and its two twins (apps/order-bot/src/jobs/
+      // index.ts) — instead of evaluatePollHealth's 5-minute crypto-rail
+      // default. One reconcile cycle on these rails can legitimately make up
+      // to 50 sequential, individually-timed-out gateway calls, so a cycle
+      // that runs several minutes past the 5-minute mark is ordinary
+      // slowness, not a hang; using the default here would turn this card red
+      // while the watchdog stays correctly silent — the exact
+      // three-consumers-three-rules divergence this branch's P1 exists to
+      // prevent (Task 13 review follow-up). See
+      // packages/core/src/payments/reconcileCycleBudget.ts for the shared
+      // derivation both this endpoint and the watchdog read.
+      tokopay: toEntry(evaluatePollHealth(tokopayHealth, { enabled: tokopayEnabled, staleMs: TOKOPAY_POLL_STALE_MS })),
+      paydisini: toEntry(evaluatePollHealth(paydisiniHealth, { enabled: paydisiniEnabled, staleMs: PAYDISINI_POLL_STALE_MS })),
+      nowpayments: toEntry(evaluatePollHealth(nowpaymentsHealth, { enabled: nowpaymentsEnabled, staleMs: NOWPAYMENTS_POLL_STALE_MS })),
     };
   });
 

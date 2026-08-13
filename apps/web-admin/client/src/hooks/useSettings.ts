@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { HealthEntry } from "../api/types";
 
 export interface SettingsField {
   key: string;
@@ -15,22 +16,18 @@ export interface PayMethodState {
   configured: boolean;
 }
 
-export interface BybitPollHealth {
-  lastRun: string | null;
-  lastSuccessAt: string | null;
-  lastTxCount: number | null;
-  backoffUntil: string | null;
-  consecutiveRateLimitHits: number | null;
-  lastRateLimitAt: string | null;
-  consecutiveFailures: number | null;
-  lastError: string | null;
-}
-
 export interface SettingsData {
   fields: SettingsField[];
   payMethodState: Record<string, PayMethodState>;
-  bybitHealth: BybitPollHealth;
-  bybitBscHealth: BybitPollHealth;
+  /** Bybit Internal Transfer / Bybit BSC poller health, computed server-side
+   * by `evaluatePollHealth` (packages/core/src/payments/pollHealth.ts) —
+   * always a verdict, never the raw heartbeat, and never null: a disabled or
+   * never-run rail still gets an "unmonitored"/"red" verdict with a
+   * `detail` explaining why, rather than an absent field. The client only
+   * renders `status`/`detail`; it never re-derives its own rule from raw
+   * heartbeat fields. */
+  bybitHealth: HealthEntry;
+  bybitBscHealth: HealthEntry;
   isOwner: boolean;
   twoFaEnabled: boolean;
   twoFaPending: { secret: string; uri: string } | null;

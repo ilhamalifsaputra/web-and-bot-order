@@ -31,6 +31,7 @@ import type { Api } from "grammy";
 import { config } from "@app/core/config";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "@app/core/http";
 import {
   prisma,
   listTrackedBybitBscOrders,
@@ -43,6 +44,8 @@ import {
 import { renderBybitBscTrackingScreen } from "../util/format";
 import { bybitBscTrackingKb } from "../keyboards/customer";
 import { createBackoffGate } from "./pollBackoff";
+import { createPollLoop } from "./pollLoop";
+import { createRotatingCursor } from "./rotatingCursor";
 
 type TrackedOrder = Awaited<ReturnType<typeof listTrackedBybitBscOrders>>[number];
 
@@ -61,8 +64,19 @@ interface BscScanProxyResponse {
   error?: { code?: number; message?: string };
 }
 
-/** One BscScan "proxy" (Ethereum JSON-RPC passthrough) call. Throws
- * RateLimitedError on 429/403 or an in-body rate-limit error message. */
+/**
+ * One BscScan "proxy" (Ethereum JSON-RPC passthrough) call. Throws
+ * RateLimitedError on 429/403 or an in-body rate-limit error message.
+ *
+ * The optional BscScan API key (a free, read-only rate-limit-boost token —
+ * not a real secret) rides in the query string, same shape as TokoPay/
+ * PayDisini's merchant credentials. Routed through `fetchWithTimeoutSafe`
+ * (`@app/core/http`) for the same reason as every other credential-bearing
+ * client here: Node's fetch sometimes attaches the failed request — query
+ * string included — to a rejected error's `.cause`, and this keeps that from
+ * ever reaching `logger.error({ err })` in `pollOnce` below (Minor 5, Task 3
+ * review follow-up).
+ */
 async function bscscanRpc(
   action: string,
   params: Record<string, string>,
@@ -74,14 +88,31 @@ async function bscscanRpc(
     ...params,
     ...(cfg.apiKey ? { apikey: cfg.apiKey } : {}),
   }).toString();
-  const res = await fetch(`${cfg.apiBase}?${query}`);
+  const res = await fetchWithTimeoutSafe(
+    `${cfg.apiBase}?${query}`,
+    { timeoutMs: HTTP_TIMEOUT_MS.explorerRead },
+    `BscScan ${action} request`, // never log err — the query string carries the (low-severity) API key
+  );
   if (res.status === 429 || res.status === 403) {
     throw new RateLimitedError(`BscScan rate limited (HTTP ${res.status})`);
   }
   if (!res.ok) {
     throw new Error(`BscScan ${action} HTTP ${res.status}: ${await res.text().catch(() => "")}`);
   }
-  const body = (await res.json()) as BscScanProxyResponse;
+  let body: BscScanProxyResponse;
+  try {
+    body = (await res.json()) as BscScanProxyResponse;
+  } catch (err) {
+    // AbortSignal.timeout stays attached to the response body in undici, so a
+    // peer that sends headers and then stalls the body makes res.json()
+    // reject with this same TimeoutError shape (http.ts) — distinguish that
+    // from a genuinely malformed body so the tracker doesn't blame the
+    // explorer for sending garbage when it actually just hung.
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new Error(`BscScan ${action} response body read timed out`);
+    }
+    throw new Error(`BscScan ${action} returned an unparseable response`);
+  }
   if (body.error) {
     const msg = body.error.message ?? "";
     if (/rate limit/i.test(msg)) throw new RateLimitedError(`BscScan ${action} rate limited: ${msg}`);
@@ -159,17 +190,80 @@ async function pushTrackingUpdate(
 // Poll cycle
 // ---------------------------------------------------------------------------
 
+// ── Important #3 (Task 3 review follow-up) ──────────────────────────────────
+// pollOnce calls fetchConfirmations PER TRACKED ORDER, each making 2 BscScan
+// RPCs now individually bounded at HTTP_TIMEOUT_MS.explorerRead (8s). Sized
+// conservatively at 2 × 8s = 16s worst case per order — fetchConfirmations
+// actually fires both RPCs concurrently via Promise.all (so the tight bound
+// is closer to 8s/order today), but the sum is kept as the sizing basis so
+// this stays correct even if a future edit ever makes the two calls
+// sequential. Against a black-holing explorer that's 16s × N per cycle with
+// NO cap: at N=4 tracked orders (a plain order backlog, not an unusual
+// outage) that's already 64s — past the 60s default cycleTimeoutMs — and
+// growing unboundedly with N, so no single fixed deadline could ever cover
+// an unbounded backlog. The real fix is bounding the WORK per cycle, not
+// just moving the deadline: cap how many orders one cycle inspects, then
+// size cycleTimeoutMs to comfortably cover that fixed cap.
+//
+// MAX_ORDERS_PER_CYCLE=8 covers a generous real-world backlog of
+// simultaneously-confirming BSC deposits in one cycle; cycleTimeoutMs below
+// is sized off it (8 × 16s = 128s) with a margin. Orders beyond the cap are
+// simply left for a later cycle — `cycleCursor` rotates the starting point
+// each cycle so every tracked order gets covered in ceil(orders.length /
+// MAX_ORDERS_PER_CYCLE) cycles, not just the same head-of-list orders every
+// time. This is safe to defer: this module is display-only (see the file's
+// own doc-comment) — it never calls approveOrder/deliverPaidBybitBscOrder,
+// so an order waiting an extra cycle or two only delays how fresh its LIVE
+// confirmation-count UI looks, never its actual delivery, which stays
+// exclusively gated by bybitBscDeposit.ts's own poller reading Bybit's own
+// status-3 report.
+export const MAX_ORDERS_PER_CYCLE = 8;
+const PER_ORDER_WORST_CASE_MS = 2 * HTTP_TIMEOUT_MS.explorerRead; // 16_000 — see derivation above
+const CYCLE_TIMEOUT_MARGIN_MS = 22_000; // headroom above the raw worst case, same spirit as Binance's own margin
+/** MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS + margin = 150_000 — passed
+ * to `createPollLoop` below as this rail's `cycleTimeoutMs`. */
+export const TRACKER_CYCLE_TIMEOUT_MS = MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
+
+// rotatingSlice/cycleCursor used to be hand-rolled here (Task 3 review
+// follow-up) and were duplicated by hand into the three QRIS/IDR reconcile
+// pollers (followup-review-fixes-2) — extracted to ./rotatingCursor.ts so all
+// four callers share one implementation. That extraction also fixed a bug
+// this file's own cursor had: `cycleCursor += MAX_ORDERS_PER_CYCLE` used to
+// run BEFORE the batch below was iterated, so a mid-batch early return (the
+// rate-limit branch) still advanced the cursor past the WHOLE window even
+// though only some of it was actually attempted — the untouched remainder
+// was skipped for a full rotation instead of being retried next cycle. See
+// `advance()`'s own doc-comment in rotatingCursor.ts for the fix.
 const backoff = createBackoffGate();
 const lookupFailureCounts = new Map<number, number>();
+const cursor = createRotatingCursor();
 
 export async function pollOnce(api: Api): Promise<void> {
   if (backoff.shouldSkip()) return;
 
   const cfg = await resolveBybitBscTrackerConfig(prisma);
   const orders = await listTrackedBybitBscOrders(prisma);
+
+  // An order can leave the tracked set (delivered/cancelled/expired/etc.)
+  // without ever hitting the success or escalation branches below, both of
+  // which are the only other places this map is cleaned up — prune those
+  // stale entries here so a re-tracked order (same id, later re-detected)
+  // starts its grace period over rather than inheriting a stale count.
+  const trackedOrderIds = new Set(orders.map((order) => order.id));
+  for (const orderId of lookupFailureCounts.keys()) {
+    if (!trackedOrderIds.has(orderId)) lookupFailureCounts.delete(orderId);
+  }
+
   if (!orders.length) return;
 
-  for (const order of orders) {
+  const batch = cursor.next(orders, MAX_ORDERS_PER_CYCLE);
+  // Advanced by however many orders THIS cycle actually attempted (see the
+  // rotatingCursor.ts doc-comment) — normally the full batch, but only as far
+  // as `attempted` reaches on the rate-limit early return below.
+  let attempted = 0;
+
+  for (const order of batch) {
+    attempted++;
     if (!order.bybitTxid) continue; // defensive — listTrackedBybitBscOrders already filters this
 
     let confirmations: number | null;
@@ -180,6 +274,7 @@ export async function pollOnce(api: Api): Promise<void> {
       if (err instanceof RateLimitedError) {
         const { hitCount, delayMs } = backoff.recordRateLimit();
         logger.warn(`Bybit BSC confirmation tracker rate-limited (hit #${hitCount}) — backing off ${delayMs}ms, rest of this cycle skipped`);
+        cursor.advance(attempted);
         return; // the remaining orders this cycle would likely hit the same limit
       }
       logger.error(
@@ -222,6 +317,7 @@ export async function pollOnce(api: Api): Promise<void> {
       await pushTrackingUpdate(api, order, newStatus, confirmations, cfg.requiredConfirmations);
     }
   }
+  cursor.advance(attempted);
 }
 
 // ---------------------------------------------------------------------------
@@ -229,46 +325,57 @@ export async function pollOnce(api: Api): Promise<void> {
 // bybitBscDeposit.ts's own shape exactly.
 // ---------------------------------------------------------------------------
 
-let timer: ReturnType<typeof setTimeout> | undefined;
-let isRunning = false;
-let stopped = false;
+// Set by startPolling()/triggerImmediatePoll() before the loop's `run` ever
+// fires — the loop itself starts `stopped`, so `run` can never be invoked
+// while this is still undefined.
+let boundApi: Api | undefined;
+
+// No `onCycleTimeout` here, unlike the three crypto deposit pollers above:
+// this tracker has a backoff gate but no poll-health heartbeat row of its
+// own to mark as failed (display-only module — see the module doc-comment).
+// Inventing a bespoke DB write for that here would be scope creep beyond
+// this task's pure scheduler-wiring change; a real tracker heartbeat is a
+// gap left for a later hardening task. (The three QRIS reconcilers already
+// got their own heartbeats + watchdogs in Task 11/12 of this branch — this
+// tracker's own missing heartbeat is now the one deliberately-out-of-scope
+// gap left, for the reason given above.)
+//
+// cycleTimeoutMs is TRACKER_CYCLE_TIMEOUT_MS, sized off MAX_ORDERS_PER_CYCLE's
+// own worst case (see its derivation above `pollOnce`) — 150s (Important #3,
+// Task 3 review follow-up). Without the explicit value here the default
+// `max(3 * intervalMs, 60_000)` = 60s would abandon a cycle mid-batch even at
+// the now-bounded worst case.
+// `run` deliberately does not thread through pollLoop.ts's `isCurrent()`
+// (Task 11 review follow-up, Important #1 / Finding A): this tracker writes
+// no poll-health heartbeat at all (display-only module, see the file's own
+// doc-comment above), so there is nothing here a stale post-abandon write
+// could retroactively mark healthy — `isCurrent()` exists to guard exactly
+// that write, and this rail has none. A rail's `run` ignoring the parameter
+// is explicitly safe per pollLoop.ts's own contract.
+const loop = createPollLoop({
+  name: "Bybit BSC confirmation tracker",
+  intervalMs: config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS * 1000,
+  cycleTimeoutMs: TRACKER_CYCLE_TIMEOUT_MS,
+  run: () => pollOnce(boundApi!),
+});
 
 export function startPolling(api: Api): void {
-  stopped = false;
-  const intervalMs = config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS * 1000;
-  const tick = async () => {
-    if (stopped) return;
-    if (!isRunning) {
-      isRunning = true;
-      try {
-        await pollOnce(api);
-      } catch (err) {
-        logger.error({ err }, "Bybit BSC confirmation tracker poll cycle threw an unhandled error — the cycle was aborted, polling resumes on the next tick");
-      } finally {
-        isRunning = false;
-      }
-    }
-    if (!stopped) timer = setTimeout(tick, intervalMs);
-  };
+  boundApi = api;
   logger.info(`Bybit BSC confirmation tracker poller active (every ${config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS}s)`);
-  timer = setTimeout(tick, intervalMs);
+  loop.start();
 }
 
 export function stopPolling(): void {
-  stopped = true;
-  if (timer) clearTimeout(timer);
-  timer = undefined;
+  loop.stop();
 }
 
 /** Fire an extra poll cycle right now, on top of the normal timer — shares
- * the timer loop's `isRunning` guard so it can't race a tick already in
- * flight. Fire-and-forget by design (never awaited, never throws). */
+ * the loop's overlap guard so it can't race a cycle already in flight.
+ * Fire-and-forget by design (never awaited, never throws). A no-op before
+ * startPolling() has run (the loop starts stopped) — the only callers
+ * (checkout.ts) are reachable only after main.ts's boot has already called
+ * startPolling() synchronously. */
 export function triggerImmediatePoll(api: Api): void {
-  if (isRunning || stopped) return;
-  isRunning = true;
-  void pollOnce(api)
-    .catch((err) => logger.error({ err }, "Bybit BSC confirmation tracker immediate poll threw an unhandled error — the regular timer will retry on its next tick"))
-    .finally(() => {
-      isRunning = false;
-    });
+  boundApi = api;
+  loop.triggerNow();
 }

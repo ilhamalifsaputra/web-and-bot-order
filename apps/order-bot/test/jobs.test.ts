@@ -15,7 +15,15 @@ import {
   BINANCE_API_KEY_KEY,
   BINANCE_API_SECRET_KEY,
   BINANCE_POLL_HEALTH_KEY,
+  POLL_HEALTH_KEYS,
 } from "@app/db";
+import { TOKOPAY_MERCHANT_KEY, TOKOPAY_SECRET_KEY } from "@app/core/payments/tokopay";
+import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
+import { NOWPAYMENTS_API_KEY_KEY, NOWPAYMENTS_IPN_SECRET_KEY } from "@app/core/payments/nowpayments";
+import {
+  pollOnce as tokopayPollOnce,
+  RECONCILE_CYCLE_TIMEOUT_MS as TOKOPAY_CYCLE_TIMEOUT_MS,
+} from "../src/payments/tokopayReconcile";
 /**
  * Lets a single test make the drainer's mid-flight progress flush fail — the
  * SQLITE_BUSY-past-busy_timeout case — without disturbing any other DB write.
@@ -39,7 +47,19 @@ import { GrammyError, type Api } from "grammy";
 import { OrderStatus, OrderCurrency, TicketStatus } from "@app/core/enums";
 import { logger } from "@app/core/logger";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { autoCancelExpiredOrders, autoCloseStaleTickets, scheduleJobs, drainBroadcasts, announceStartedFlashSales, binancePollWatchdog } from "../src/jobs";
+import {
+  autoCancelExpiredOrders,
+  autoCloseStaleTickets,
+  scheduleJobs,
+  drainBroadcasts,
+  announceStartedFlashSales,
+  binancePollWatchdog,
+  tokopayPollWatchdog,
+  paydisiniPollWatchdog,
+  nowpaymentsPollWatchdog,
+  TOKOPAY_POLL_STALE_MS,
+  NOWPAYMENTS_POLL_STALE_MS,
+} from "../src/jobs";
 import { NotificationEvent } from "@app/core/enums";
 
 let sample: SampleData;
@@ -861,15 +881,16 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
   it("registers autoCancelExpiredOrders and autoCloseStaleTickets with protect:true", () => {
     // Indices match scheduleJobs' literal array order in src/jobs/index.ts:
     // [autoCancelExpiredOrders, autoCloseStaleTickets, reconcileFinancesJob,
-    //  binancePollWatchdog, bybitPollWatchdog, bybitBscPollWatchdog, drainBroadcasts,
-    //  announceStartedFlashSales, storageCleanupJob].
+    //  binancePollWatchdog, bybitPollWatchdog, bybitBscPollWatchdog,
+    //  tokopayPollWatchdog, paydisiniPollWatchdog, nowpaymentsPollWatchdog,
+    //  drainBroadcasts, announceStartedFlashSales, storageCleanupJob].
     const crons = scheduleJobs(fakeApi());
     try {
       expect(crons[0]!.getPattern()).toBe("*/1 * * * *"); // autoCancelExpiredOrders
       expect(crons[0]!.options.protect).toBe(true);
       expect(crons[1]!.getPattern()).toBe("0 * * * *"); // autoCloseStaleTickets
       expect(crons[1]!.options.protect).toBe(true);
-      // reconcileFinancesJob + the three poller watchdogs (M-26 fix, backend
+      // reconcileFinancesJob + the six poller watchdogs (M-26 fix, backend
       // audit 2026-07-31): these were the one group in this list missing
       // protect:true, letting a slow Telegram call overlap the next tick and
       // double-page admins on the same incident.
@@ -881,23 +902,33 @@ describe("scheduleJobs cron registration (Bot-5 fix)", () => {
       expect(crons[4]!.options.protect).toBe(true);
       expect(crons[5]!.getPattern()).toBe("*/2 * * * *"); // bybitBscPollWatchdog
       expect(crons[5]!.options.protect).toBe(true);
+      // The three QRIS/IDR watchdogs (Task 12) — each on its own second
+      // (:15/:17/:19) of every even minute, so none of them shares a
+      // SQLite write-lock instant with the crypto three above (implicitly
+      // second 0) or with each other.
+      expect(crons[6]!.getPattern()).toBe("15 */2 * * * *"); // tokopayPollWatchdog
+      expect(crons[6]!.options.protect).toBe(true);
+      expect(crons[7]!.getPattern()).toBe("17 */2 * * * *"); // paydisiniPollWatchdog
+      expect(crons[7]!.options.protect).toBe(true);
+      expect(crons[8]!.getPattern()).toBe("19 */2 * * * *"); // nowpaymentsPollWatchdog
+      expect(crons[8]!.options.protect).toBe(true);
       // drainBroadcasts — four ticks a minute so a queued broadcast starts
       // within ~15s instead of up to a full minute, on seconds that dodge both
       // second 0 (autoCancelExpiredOrders and the hourly/6-hourly jobs) and
       // second 40 (announceStartedFlashSales) so they never contend for
       // SQLite's single write-lock in the same instant; still protected.
       // "*/15" is deliberately NOT used — it would put a tick back on second 0.
-      expect(crons[6]!.getPattern()).toBe("5,20,35,50 * * * * *");
-      expect(crons[6]!.options.protect).toBe(true);
+      expect(crons[9]!.getPattern()).toBe("5,20,35,50 * * * * *");
+      expect(crons[9]!.options.protect).toBe(true);
       // announceStartedFlashSales — offset to :40 past the minute for the same
       // reason, protected so an overlapping tick can't race the
       // flashAnnouncedAt stamp.
-      expect(crons[7]!.getPattern()).toBe("40 * * * * *");
-      expect(crons[7]!.options.protect).toBe(true);
+      expect(crons[10]!.getPattern()).toBe("40 * * * * *");
+      expect(crons[10]!.options.protect).toBe(true);
       // storageCleanupJob — once daily, off-peak (03:15), well clear of every
       // other job's minutely/hourly ticks.
-      expect(crons[8]!.getPattern()).toBe("30 15 3 * * *");
-      expect(crons[8]!.options.protect).toBe(true);
+      expect(crons[11]!.getPattern()).toBe("30 15 3 * * *");
+      expect(crons[11]!.options.protect).toBe(true);
 
       // The write-lock collision guard itself, rather than just the literal
       // patterns above: no second-resolution job may share a firing second
@@ -1009,5 +1040,313 @@ describe("binancePollWatchdog alert-flag ordering (M-26 fix)", () => {
     const secondRunApi = fakeApi();
     await binancePollWatchdog(secondRunApi);
     expect(secondRunApi.sendMessage).not.toHaveBeenCalled();
+  });
+});
+
+// Task 5 (payment-health-hardening): pollWatchdogDecision is now derived from
+// evaluatePollHealth (packages/core/src/payments/pollHealth.ts), whose
+// "yellow" status treats a single failed cycle as a warning the ops UI
+// surfaces, not an outage — the poller is still running on schedule. This
+// pins that the watchdog (the consumer that actually pages admins) still
+// stays silent for that same case after the rebase.
+describe("binancePollWatchdog does not page for a single failed cycle (Task 5)", () => {
+  it("the watchdog does not page for a single failed cycle, which the ops UI shows as a warning", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "12345");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "test-key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "test-secret");
+    await setSetting(
+      prisma,
+      BINANCE_POLL_HEALTH_KEY,
+      JSON.stringify({ lastRun: new Date().toISOString(), backoffUntil: null, consecutiveFailures: 1 }),
+    );
+    const api = fakeApi();
+
+    await binancePollWatchdog(api);
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(await getSetting(prisma, "binance_poll_alert_sent")).not.toBe("1");
+  });
+});
+
+// Important #1 (Task 12 review follow-up): Binance's poller IS its only
+// auto-confirm path, so its DM correctly keeps the original "Auto-confirm is
+// paused" tail — pinned here as a regression guard alongside the TokoPay test
+// above (Task 12), which proves the QRIS rails now say something different
+// and true instead.
+describe("binancePollWatchdog admin DM wording (Important #1 regression guard)", () => {
+  it("still tells admins auto-confirm is paused — Binance's poller is its only auto-confirm path", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "12345");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "test-key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "test-secret");
+    await setSetting(
+      prisma,
+      BINANCE_POLL_HEALTH_KEY,
+      JSON.stringify({ lastRun: new Date(Date.now() - 20 * 60_000).toISOString(), backoffUntil: null, consecutiveFailures: 0 }),
+    );
+    const api = fakeApi();
+
+    await binancePollWatchdog(api);
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    const dm = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string;
+    expect(dm).toContain("Auto-confirm is paused — check the order-bot process.");
+  });
+});
+
+// Task 12 (payment-health-hardening): TokoPay/PayDisini/NOWPayments are the
+// three QRIS/IDR "safety net" reconcile pollers Task 11 gave heartbeats to —
+// until now nothing read them, so a rail whose webhook callback was never
+// reachable AND whose reconcile poller had also died left orders piling up
+// PENDING_PAYMENT with no one paged (docs/TROUBLESHOOTING.md's "webhook
+// gateway tidak pernah sampai" scenario). These pollers make up to 50
+// sequential gateway calls per cycle, so their own cycleTimeoutMs
+// (~820s TokoPay/PayDisini, ~780s NOWPayments) is already well past the
+// crypto rails' 5-minute staleness default — a legitimately slow (not
+// hung) cycle must not trip a watchdog sized for the crypto rails' much
+// lighter cadence.
+describe("tokopayPollWatchdog (Task 12)", () => {
+  async function setTokopayCreds() {
+    await setSetting(prisma, TOKOPAY_MERCHANT_KEY, "merchant-1");
+    await setSetting(prisma, TOKOPAY_SECRET_KEY, "secret-1");
+  }
+
+  async function stampTokopayHealth(ageMs: number, overrides: Partial<{ consecutiveFailures: number; backoffUntil: string | null }> = {}) {
+    const at = new Date(Date.now() - ageMs).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.tokopay,
+      JSON.stringify({
+        lastRun: at,
+        lastSuccessAt: at,
+        lastTxCount: 0,
+        backoffUntil: overrides.backoffUntil ?? null,
+        consecutiveRateLimitHits: 0,
+        lastRateLimitAt: null,
+        consecutiveFailures: overrides.consecutiveFailures ?? 0,
+        lastError: null,
+      }),
+    );
+  }
+
+  it("pages admins once when the TokoPay reconcile poller has not completed a cycle in over five minutes", async () => {
+    await setTokopayCreds();
+    // 20 minutes — comfortably stale under any reasonable threshold,
+    // including TokoPay's own widened one (see the next test).
+    await stampTokopayHealth(20 * 60_000);
+    const api = fakeApi();
+
+    await tokopayPollWatchdog(api);
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(2); // both admins paged once
+    expect(await getSetting(prisma, "tokopay_poll_alert_sent")).toBe("1");
+    // Important #1 (Task 12 review follow-up): the DM used to end with the
+    // crypto rails' "Auto-confirm is paused" line, which is FALSE for TokoPay
+    // — the storefront webhook is its primary delivery path and keeps
+    // delivering independently of this poller. The DM must say so, and must
+    // NOT claim auto-confirm is paused.
+    const dm = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string;
+    expect(dm).toContain("Auto-confirm is NOT paused");
+    expect(dm).toContain("gateway's webhook");
+    expect(dm).not.toContain("Auto-confirm is paused —");
+  });
+
+  it("does not page for a cycle older than 5 minutes but still within TokoPay's own wider staleness window", async () => {
+    // TokoPay's cycleTimeoutMs is ~820s (~13m40s) because one cycle can make
+    // up to 50 sequential gateway calls — a cycle that finishes at, say, 10
+    // minutes is unremarkable, not a hang. Using the crypto rails' flat
+    // 5-minute threshold here would page admins on ordinary slowness.
+    await setTokopayCreds();
+    await stampTokopayHealth(10 * 60_000);
+    const api = fakeApi();
+
+    await tokopayPollWatchdog(api);
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(await getSetting(prisma, "tokopay_poll_alert_sent")).not.toBe("1");
+  });
+
+  // Minor #4 (Task 12 review follow-up): the two staleness tests above sit
+  // 4m40s below and 5m20s above TokoPay's actual widened boundary
+  // (TOKOPAY_POLL_STALE_MS) — comfortably wide of it, so a wrong-signed
+  // margin, an omitted margin, or a copy-pasted NOWPayments threshold would
+  // all still pass both unchanged. These two pin the boundary itself: the
+  // "just inside" age sits strictly between the raw cycleTimeoutMs
+  // (TOKOPAY_CYCLE_TIMEOUT_MS) and the real widened threshold
+  // (TOKOPAY_POLL_STALE_MS) — any of those three bugs collapses the
+  // effective threshold back down to at or below cycleTimeoutMs, which would
+  // flip this from "no page" to "page".
+  it("does not page for a cycle just inside TokoPay's widened staleness margin (boundary pin)", async () => {
+    await setTokopayCreds();
+    const margin = TOKOPAY_POLL_STALE_MS - TOKOPAY_CYCLE_TIMEOUT_MS;
+    await stampTokopayHealth(TOKOPAY_POLL_STALE_MS - Math.floor(margin / 2));
+    const api = fakeApi();
+
+    await tokopayPollWatchdog(api);
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(await getSetting(prisma, "tokopay_poll_alert_sent")).not.toBe("1");
+  });
+
+  it("pages once a cycle is older than TokoPay's own widened staleness threshold (boundary pin)", async () => {
+    await setTokopayCreds();
+    await stampTokopayHealth(TOKOPAY_POLL_STALE_MS + 5_000);
+    const api = fakeApi();
+
+    await tokopayPollWatchdog(api);
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    expect(await getSetting(prisma, "tokopay_poll_alert_sent")).toBe("1");
+  });
+
+  it("clears the TokoPay alert state on recovery", async () => {
+    await setTokopayCreds();
+    await setSetting(prisma, "tokopay_poll_alert_sent", "1");
+    await stampTokopayHealth(0); // fresh/healthy
+    const api = fakeApi();
+
+    await tokopayPollWatchdog(api);
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(await getSetting(prisma, "tokopay_poll_alert_sent")).toBe("0");
+  });
+
+  it("stays silent while TokoPay has no credentials configured", async () => {
+    // No TOKOPAY_MERCHANT_KEY/TOKOPAY_SECRET_KEY set at all — even a
+    // fabricated, badly-stale heartbeat must not page.
+    await stampTokopayHealth(60 * 60_000);
+    const api = fakeApi();
+
+    await tokopayPollWatchdog(api);
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(await getSetting(prisma, "tokopay_poll_alert_sent")).not.toBe("1");
+  });
+
+  // Minor #5 (Task 12 review follow-up): this used to hand-write a fresh
+  // heartbeat via stampTokopayHealth(0) and never call pollOnce at all — so it
+  // proved only that the watchdog reads a healthy heartbeat as healthy
+  // (already covered elsewhere), not that the no-pending-orders path in
+  // tokopayReconcile.ts's pollOnce actually WRITES that heartbeat. Driving it
+  // through the real pollOnce (empty pending list — no orders exist in this
+  // test's DB at all) closes that gap.
+  it("stays silent for a quiet, healthy shop — credentials configured, no pending orders", async () => {
+    await setTokopayCreds();
+    await tokopayPollOnce(fakeApi());
+    const api = fakeApi();
+
+    await tokopayPollWatchdog(api);
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(await getSetting(prisma, "tokopay_poll_alert_sent")).not.toBe("1");
+  });
+});
+
+// PayDisini/NOWPayments wiring — same generic pollWatchdog as TokoPay above
+// (Task 12), so these prove the credential gate and alert-key are wired to
+// the right rail rather than re-testing the shared decision logic.
+describe("paydisiniPollWatchdog / nowpaymentsPollWatchdog wiring (Task 12)", () => {
+  it("pages admins once when the PayDisini reconcile poller has not completed a cycle in over its staleness window", async () => {
+    await setSetting(prisma, PAYDISINI_USERKEY_KEY, "userkey-1");
+    await setSetting(prisma, PAYDISINI_APIKEY_KEY, "apikey-1");
+    const at = new Date(Date.now() - 20 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.paydisini,
+      JSON.stringify({
+        lastRun: at,
+        lastSuccessAt: at,
+        lastTxCount: 0,
+        backoffUntil: null,
+        consecutiveRateLimitHits: 0,
+        lastRateLimitAt: null,
+        consecutiveFailures: 0,
+        lastError: null,
+      }),
+    );
+    const api = fakeApi();
+
+    await paydisiniPollWatchdog(api);
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    expect(await getSetting(prisma, "paydisini_poll_alert_sent")).toBe("1");
+  });
+
+  it("stays silent while PayDisini has no credentials configured", async () => {
+    const api = fakeApi();
+
+    await paydisiniPollWatchdog(api);
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("pages admins once when the NOWPayments reconcile poller has not completed a cycle in over its staleness window", async () => {
+    await setSetting(prisma, NOWPAYMENTS_API_KEY_KEY, "apikey-1");
+    await setSetting(prisma, NOWPAYMENTS_IPN_SECRET_KEY, "ipnsecret-1");
+    const at = new Date(Date.now() - 20 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.nowpayments,
+      JSON.stringify({
+        lastRun: at,
+        lastSuccessAt: at,
+        lastTxCount: 0,
+        backoffUntil: null,
+        consecutiveRateLimitHits: 0,
+        lastRateLimitAt: null,
+        consecutiveFailures: 0,
+        lastError: null,
+      }),
+    );
+    const api = fakeApi();
+
+    await nowpaymentsPollWatchdog(api);
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    expect(await getSetting(prisma, "nowpayments_poll_alert_sent")).toBe("1");
+  });
+
+  it("stays silent while NOWPayments has no credentials configured", async () => {
+    const api = fakeApi();
+
+    await nowpaymentsPollWatchdog(api);
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  // Minor #4 (Task 12 review follow-up): NOWPayments' own threshold
+  // (NOWPAYMENTS_POLL_STALE_MS, ~780s cycleTimeoutMs + margin) is narrower
+  // than TokoPay's (TOKOPAY_POLL_STALE_MS, ~820s cycleTimeoutMs + the same
+  // margin) — both rails share the same flat QRIS_STALE_MARGIN_MS, so the gap
+  // between the two is exactly their cycleTimeoutMs difference. This age sits
+  // strictly between the two thresholds: NOWPayments' own (correct, lower)
+  // threshold must page here, but a copy-pasted TokoPay threshold in the
+  // NOWPayments wrapper would read this same age as still healthy and stay
+  // silent — so the two rails' thresholds cannot be conflated without this
+  // test catching it.
+  it("pages using NOWPayments' own narrower staleness threshold, not TokoPay's wider one", async () => {
+    await setSetting(prisma, NOWPAYMENTS_API_KEY_KEY, "apikey-1");
+    await setSetting(prisma, NOWPAYMENTS_IPN_SECRET_KEY, "ipnsecret-1");
+    const ageMs = NOWPAYMENTS_POLL_STALE_MS + Math.floor((TOKOPAY_POLL_STALE_MS - NOWPAYMENTS_POLL_STALE_MS) / 2);
+    const at = new Date(Date.now() - ageMs).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.nowpayments,
+      JSON.stringify({
+        lastRun: at,
+        lastSuccessAt: at,
+        lastTxCount: 0,
+        backoffUntil: null,
+        consecutiveRateLimitHits: 0,
+        lastRateLimitAt: null,
+        consecutiveFailures: 0,
+        lastError: null,
+      }),
+    );
+    const api = fakeApi();
+
+    await nowpaymentsPollWatchdog(api);
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    expect(await getSetting(prisma, "nowpayments_poll_alert_sent")).toBe("1");
   });
 });

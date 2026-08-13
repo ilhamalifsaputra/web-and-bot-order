@@ -20,7 +20,7 @@
     "./flash": "./src/flash.ts",
     "./media": "./src/media.ts",
     "./bulk": "./src/bulk.ts",
-    "./bulk": "./src/bulk.ts",
+    "./http": "./src/http.ts",
     "./password": "./src/password.ts",
     "./mailer": "./src/mailer.ts",
     "./email": "./src/email/index.ts",
@@ -29,6 +29,8 @@
     "./payments/tokopay": "./src/payments/tokopay.ts",
     "./payments/paydisini": "./src/payments/paydisini.ts",
     "./payments/nowpayments": "./src/payments/nowpayments.ts",
+    "./payments/pollHealth": "./src/payments/pollHealth.ts",
+    "./payments/reconcileCycleBudget": "./src/payments/reconcileCycleBudget.ts",
     "./nudge": "./src/nudge.ts"
   },
   "scripts": {

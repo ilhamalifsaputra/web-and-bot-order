@@ -6,6 +6,16 @@
  * gate — claiming a tx id is an atomic insert; a duplicate insert throws and is
  * treated as "already processed". Combined with SQLite's single-writer
  * serialization + busy_timeout, this prevents double-delivery without locks.
+ *
+ * A duplicate is not always terminal: an id stamped with an outcome from
+ * AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES delivered nothing and must stay
+ * re-claimable, so `deliverPaidInternalOrder` re-claims it with a
+ * compare-and-swap — a read followed by an `updateMany` gated on the values
+ * that read returned. Both halves stay single statements on purpose; see the
+ * comment there for why an interactive transaction would be less safe under
+ * WAL, not more. See that constant's own doc-comment below for why this
+ * rail's reclaimable set is narrower than the QRIS rails'
+ * (QRIS_RECLAIMABLE_OUTCOMES) — the two are NOT meant to be identical.
  */
 import { config } from "@app/core/config";
 import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod } from "@app/core/enums";
@@ -13,6 +23,7 @@ import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { ValidationError } from "@app/core/errors";
 import { startOfDayUtc } from "@app/core/datetime";
+import type { ProcessedBinanceTx } from "@prisma/client";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
@@ -32,6 +43,7 @@ import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
 import { enqueueAdminOverpaid } from "./notifications";
 import { settleWalletTopup } from "./wallet_topup";
+import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -153,8 +165,14 @@ export async function clearOrderPaymentMessage(db: Db, orderId: number): Promise
   await db.order.update({ where: { id: orderId }, data: { paymentMsgChatId: null, paymentMsgId: null } });
 }
 
-/** DELIVERED orders of `method` that still carry an un-edited payment-message anchor. */
-export function listDeliveredOrdersAwaitingEdit(db: Db, method: PaymentMethod) {
+/** DELIVERED orders of `method` that still carry an un-edited payment-message
+ * anchor, oldest first. `limit`, when given, caps how many rows come back —
+ * the QRIS reconcile pollers (TokoPay/PayDisini) pass a bound so one cycle's
+ * sweep of grammY edit calls stays bounded regardless of backlog size, the
+ * same reasoning as `listPendingTokopayOrders`' own `limit` (Task 11 review
+ * follow-up, Important #2); omitted, every other caller keeps today's
+ * unbounded behavior. */
+export function listDeliveredOrdersAwaitingEdit(db: Db, method: PaymentMethod, limit?: number) {
   return db.order.findMany({
     where: {
       status: OrderStatus.DELIVERED,
@@ -163,6 +181,8 @@ export function listDeliveredOrdersAwaitingEdit(db: Db, method: PaymentMethod) {
       paymentMsgId: { not: null },
     },
     include: { user: true },
+    orderBy: { createdAt: "asc" },
+    ...(limit != null ? { take: limit } : {}),
   });
 }
 
@@ -202,25 +222,54 @@ export async function deliverPaidInternalOrder(
   args: { orderId: number; binanceTxId: string; amount: Decimal.Value },
 ): Promise<DeliverResult> {
   // 1. Claim the tx id. A duplicate normally means another cycle already
-  //    handled it — UNLESS the prior claim's delivery transaction itself
-  //    failed (outcome "delivery_failed"): that claim never actually
-  //    delivered anything, so it must be re-claimable, or the buyer's payment
-  //    is silently lost forever behind a stuck idempotency row (H-3, backend
-  //    audit 2026-07-31). Re-claiming is a single atomic UPDATE gated on
-  //    outcome="delivery_failed" — SQLite serializes writers, so if two
-  //    retries race, exactly one `updateMany` sees count=1 and proceeds; the
-  //    other sees count=0 and correctly reports already_processed.
+  //    handled it — UNLESS the prior claim's outcome is in
+  //    AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES (today just "delivery_failed"):
+  //    that never actually delivered anything, so the tx id must stay
+  //    re-claimable, or the buyer's payment is silently lost forever behind a
+  //    stuck idempotency row (H-3, backend audit 2026-07-31). "unmatched" is
+  //    deliberately NOT in that set — see its doc-comment below for why this
+  //    rail's amount-only matching makes that different from the QRIS rails.
+  //    The reclaim is a compare-and-swap, not a transaction: read the row,
+  //    then gate a single `updateMany` on the exact values that read
+  //    returned. `count === 1` therefore PROVES the row was still in that
+  //    state at the instant of the write, so the captured prior values are
+  //    trustworthy; `count === 0` means a racer got there first and
+  //    already_processed is the right answer.
+  //
+  //    An interactive $transaction would be worse here, not better. This
+  //    database runs in WAL mode (see client.ts) and Prisma opens interactive
+  //    transactions with a deferred BEGIN, so two racing reclaims would both
+  //    read the same snapshot, both pass the outcome check, and the loser's
+  //    write would fail with SQLITE_BUSY_SNAPSHOT — the one busy case
+  //    busy_timeout cannot rescue, since waiting can never make a stale read
+  //    snapshot valid. That turns a graceful already_processed into a thrown
+  //    error, on a path that races across processes (the poller reclaims while
+  //    an admin clicks manual-match in web-admin). A single conditional
+  //    statement degrades gracefully instead (Task 15 re-review).
+  //
+  //    `reclaimedFrom` remembers exactly what the reclaim overwrote
+  //    (outcome/orderId/amount) so step 2 can put it back if this turns out to
+  //    be a stale match — unlike the three QRIS rails, one Binance transfer can
+  //    be re-tried against ANY pending order by amount, so a reclaim that turns
+  //    out stale here must not strand the row outside the manual-match queue
+  //    (Task 15 review, Important #1).
+  let reclaimedFrom: Pick<ProcessedBinanceTx, "outcome" | "orderId" | "amount"> | null = null;
   try {
     await db.processedBinanceTx.create({
       data: { binanceTxId: args.binanceTxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
   } catch (e) {
     if (!isUniqueViolation(e)) throw e;
+    const prior = await db.processedBinanceTx.findUnique({ where: { binanceTxId: args.binanceTxId } });
+    if (!prior || !(AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES as readonly string[]).includes(prior.outcome)) {
+      return { status: "already_processed" };
+    }
     const reclaimed = await db.processedBinanceTx.updateMany({
-      where: { binanceTxId: args.binanceTxId, outcome: "delivery_failed" },
+      where: { binanceTxId: args.binanceTxId, outcome: prior.outcome, orderId: prior.orderId },
       data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
     if (reclaimed.count === 0) return { status: "already_processed" };
+    reclaimedFrom = { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
   }
 
   // 2. Deliver. On failure, flag the ledger row so we don't silently retry
@@ -229,6 +278,29 @@ export async function deliverPaidInternalOrder(
     return await db.$transaction(async (tx: Tx) => {
       const order = await getOrder(tx, args.orderId);
       if (!order || order.status !== OrderStatus.PENDING_PAYMENT) {
+        // If step 1 re-claimed this row from a non-delivering outcome, undo
+        // that claim — restore the outcome/orderId/amount it overwrote —
+        // instead of leaving the row "matched" against an order that never
+        // got delivered. Left as "matched", the transfer would become
+        // permanently unreachable: "matched" is excluded from
+        // AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES (so it can never be re-claimed
+        // again), and
+        // both manualMatchTx and dismissUnmatchedTx refuse anything whose
+        // outcome isn't "unmatched" — an admin's own recovery tooling would
+        // refuse the very row their alert points at. A fresh claim
+        // (reclaimedFrom === null) has nothing to undo — that row simply
+        // stays "matched" against this now-stale order, the same pre-existing
+        // behavior as before Task 15 and out of scope here (see the "tx
+        // already delivered is never re-claimed" test).
+        if (reclaimedFrom) {
+          await tx.processedBinanceTx.update({
+            where: { binanceTxId: args.binanceTxId },
+            data: { outcome: reclaimedFrom.outcome, orderId: reclaimedFrom.orderId, amount: reclaimedFrom.amount },
+          });
+          logger.warn(
+            `Binance transfer ${args.binanceTxId} was amount-matched to order ${args.orderId}, but that order is no longer awaiting payment — the ledger row was returned to "${reclaimedFrom.outcome}" so it stays in the manual-match queue. This usually means the amount-matching heuristic picked the wrong order, or the order was delivered by another path first.`,
+          );
+        }
         return { status: "stale" as const };
       }
       if (order.kind === OrderKind.WALLET_TOPUP) {
@@ -292,33 +364,48 @@ export async function deliverPaidInternalOrder(
   }
 }
 
-/** Note matched but amount short: flag UNDERPAID for admin review (idempotent). */
+/**
+ * Note matched but amount short: flag UNDERPAID for admin review (idempotent).
+ *
+ * The ledger claim, the order.update, and the status transition run as one
+ * `$transaction` so a crash or thrown error between them can never leave a
+ * torn state — e.g. a ledger row claiming the transfer was handled while the
+ * order never actually moved to UNDERPAID (Task 18). The ledger claim itself
+ * stays a single atomic `create` inside the transaction (not preceded by a
+ * read): this database is WAL and Prisma opens interactive transactions with
+ * a deferred BEGIN, so a read-then-write here would let two racing claims
+ * both read the same snapshot and have the loser fail with
+ * SQLITE_BUSY_SNAPSHOT instead of gracefully returning false (see
+ * deliverPaidInternalOrder's comment above for the full reasoning).
+ */
 export async function markUnderpaid(
-  db: Db,
+  db: PrismaClient,
   args: { orderId: number; binanceTxId: string; amount: Decimal.Value },
 ): Promise<boolean> {
-  try {
-    await db.processedBinanceTx.create({
-      data: { binanceTxId: args.binanceTxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "underpaid" },
+  return db.$transaction(async (tx: Tx) => {
+    try {
+      await tx.processedBinanceTx.create({
+        data: { binanceTxId: args.binanceTxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "underpaid" },
+      });
+    } catch (e) {
+      if (isUniqueViolation(e)) return false;
+      throw e;
+    }
+    await tx.order.update({
+      where: { id: args.orderId },
+      data: {
+        binanceTxid: args.binanceTxId,
+        adminNote: `[underpaid] received ${new Decimal(args.amount).toString()} via tx ${args.binanceTxId}`,
+      },
     });
-  } catch (e) {
-    if (isUniqueViolation(e)) return false;
-    throw e;
-  }
-  await db.order.update({
-    where: { id: args.orderId },
-    data: {
-      binanceTxid: args.binanceTxId,
-      adminNote: `[underpaid] received ${new Decimal(args.amount).toString()} via tx ${args.binanceTxId}`,
-    },
-  });
-  await transitionOrderStatus(db, {
-    orderId: args.orderId,
-    from: OrderStatus.PENDING_PAYMENT,
-    to: OrderStatus.UNDERPAID,
-    meta: `binanceTxId=${args.binanceTxId}`,
-  });
-  return true;
+    await transitionOrderStatus(tx, {
+      orderId: args.orderId,
+      from: OrderStatus.PENDING_PAYMENT,
+      to: OrderStatus.UNDERPAID,
+      meta: `binanceTxId=${args.binanceTxId}`,
+    });
+    return true;
+  }, { timeout: 15000 });
 }
 
 /** A transfer that matched no PENDING order — record once for manual review. */
@@ -351,6 +438,112 @@ export const TX_OUTCOMES = [
   "dismissed",
 ] as const;
 export type TxOutcome = (typeof TX_OUTCOMES)[number];
+
+/**
+ * Two DIFFERENT reclaimable sets, not one — this asymmetry is deliberate,
+ * not an oversight, and it must stay that way even though it is tempting to
+ * "harmonize" them. Both name outcomes that never delivered anything, so the
+ * trx/tx id they're stamped on is safe to hand to a later callback/poller
+ * pass without risking a second delivery attempt racing a settlement that
+ * already happened. Where they differ is whether "unmatched" belongs in that
+ * safe set, and that difference tracks a real difference in how each group
+ * of rails decides what a transfer was FOR:
+ *
+ * - TokoPay/PayDisini/NOWPayments (QRIS_RECLAIMABLE_OUTCOMES) get a trxId
+ *   back from the gateway itself, scoped to one specific order
+ *   (`reconcileOrder` asks the gateway about `order.orderCode` and gets that
+ *   order's own trxId). "unmatched" on these rails can therefore only mean
+ *   "this trxId's order was temporarily un-matchable when the webhook/poll
+ *   first saw it" (wrong method/currency, a short payment later topped up)
+ *   — the money was always meant for that one order, so re-claiming it later
+ *   is recovering a real payment, never a guess (Task 15).
+ *
+ * - binance_internal.ts (deliverPaidInternalOrder), bybit_deposit.ts
+ *   (deliverPaidBybitOrder), and bybit_bsc_deposit.ts
+ *   (deliverPaidBybitBscOrder) — AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES — carry
+ *   NO memo or gateway-supplied order reference at all: `matchByAmount`
+ *   guesses which pending order a deposit belongs to purely from its total,
+ *   which is exactly why "unmatched" exists as an outcome in the first
+ *   place. On these rails "unmatched" means only "no PENDING order happened
+ *   to share this deposit's amount at the moment it was scanned" — it
+ *   carries no assertion the deposit was ever meant for whatever order it
+ *   might later get matched to.
+ *
+ *   Leaving "unmatched" re-claimable here — as an earlier version of this
+ *   branch did — opens a real money-loss path: `fetchRecentDeposits` looks
+ *   back up to 3 days (Bybit) / 1 hour (Binance), and
+ *   `processDeposits`/`processTransfers` never consult the ledger before
+ *   calling `matchByAmount` on every fetched deposit, every cycle. So an old
+ *   stray deposit sitting in the ledger as "unmatched" — the shop owner's
+ *   own top-up, a late payment for an order that has since expired — stays
+ *   free to auto-match and auto-deliver against a completely unrelated LATER
+ *   order that merely happens to share its total, the moment one exists.
+ *   Before any of these three rails had a reclaim at all, the *_tx_id UNIQUE
+ *   constraint was exactly what stopped that outcome; the fix here is to
+ *   restore that guard for "unmatched" specifically, while keeping the
+ *   reclaim these rails legitimately need for "delivery_failed". See
+ *   apps/order-bot/src/payments/amountMatching.ts's own M-14 comment for the
+ *   identical reasoning from the matcher's side: a stray transfer, an
+ *   owner's own top-up, or a late payment for an expired order must never
+ *   auto-deliver — an "unmatched" row is exactly that category of deposit.
+ *
+ *   Consequence: a buyer who pays BEFORE their order exists lands in
+ *   "unmatched" on these three rails and needs an admin to recover it. On
+ *   Binance that path already exists — `manualMatchTx` / `dismissUnmatchedTx`
+ *   below both already require outcome "unmatched", so nothing about their
+ *   contract changes. Bybit and Bybit BSC have no manual-match action at
+ *   all; that gap is real but pre-existing (see bybit_deposit.ts's and
+ *   bybit_bsc_deposit.ts's own module comments) and is not this fix's scope.
+ *
+ * "delivery_failed" stays reclaimable on EVERY rail (both sets) for a
+ * different reason than "unmatched": it never re-runs the amount-matching
+ * guess or re-derives which order a payment was for — it only retries
+ * delivery for the exact (order, amount) pairing a prior cycle already
+ * committed to, so re-claiming it repeats a decision that was already
+ * trusted once, not a fresh guess.
+ *
+ * Neither set includes "matched", "overpaid", or "stale" — those three are
+ * terminal on every rail. "matched"/"overpaid" mean a delivery actually
+ * ran, so re-claiming risks a second attempt racing a settlement that
+ * already happened; "stale" is terminal for a different reason — no
+ * delivery attempt ran, but the order is provably no longer claimable, so
+ * there is nothing left to re-claim it against. Neither set is exactly the
+ * complement of TX_OUTCOMES either: TX_OUTCOMES also lists "underpaid" and
+ * "credited_to_balance", equally terminal/non-re-claimable but out of this
+ * fix's scope (see the "underpaid" note below).
+ *
+ * "stale" is deliberately NOT a member of TX_OUTCOMES: it's a QRIS-only
+ * label — tokopay.ts/paydisini.ts/nowpayments.ts each stamp their ledger row
+ * "stale" (through `tx`, inside the $transaction) when the trxId's order is
+ * no longer PENDING_PAYMENT, because on those rails a trxId binds 1:1 to one
+ * order, so "stale" there just means that order already left
+ * PENDING_PAYMENT. deliverPaidInternalOrder never stamps "stale": it matches
+ * one transfer against ANY pending order by amount, so a stale outcome here
+ * can follow a genuine re-claim — instead of a generic terminal label, the
+ * stale branch restores the exact outcome/orderId/amount the re-claim
+ * overwrote, keeping the row in the manual-match queue rather than
+ * stranding it as an unreachable "matched" (Task 15 review, Important #1).
+ * bybit_deposit.ts and bybit_bsc_deposit.ts (Task 16) carry the same
+ * reclaimedFrom-and-revert logic for the same reason (a stale reclaim there
+ * is even more dangerous than here: Bybit has no manualMatchTx/
+ * dismissUnmatchedTx equivalent at all, so an unreverted stale reclaim would
+ * strand the ledger row with no recovery path, automatic or manual).
+ *
+ * "underpaid" (written by markUnderpaid below) was considered for either set
+ * and left out of both on purpose: nothing is delivered for it either, so by
+ * this fix's own logic that trxId is blocked the same way — but it already
+ * has its own admin recovery path (UNDERPAID order status → deliver-anyway
+ * or refund-to-wallet) that doesn't depend on the trxId ever being
+ * re-claimable, so it isn't the same money-loss shape this fix addresses.
+ */
+export const QRIS_RECLAIMABLE_OUTCOMES = ["unmatched", "delivery_failed"] as const;
+
+/** See the shared doc-comment above QRIS_RECLAIMABLE_OUTCOMES for the full
+ * reasoning — this is the narrower set for the three rails that match a
+ * deposit to an order purely by amount (no memo, no gateway-scoped trxId):
+ * binance_internal.ts, bybit_deposit.ts, bybit_bsc_deposit.ts.
+ * "unmatched" is excluded on purpose. */
+export const AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES = ["delivery_failed"] as const;
 
 type LinkedOrder = { id: number; orderCode: string; status: string; totalAmount: Decimal };
 
@@ -554,68 +747,26 @@ export async function dismissUnmatchedTx(db: Db, binanceTxId: string): Promise<v
 }
 
 // ---- Poller heartbeat (written by the order-bot poller, read by the web) ----
+// Delegates to the generic per-rail store (packages/db/src/crud/poll_health.ts,
+// Task 10) — see that module for the JSON-parse / sticky-field /
+// consecutive-failure rules this used to carry directly, including why a
+// rate-limit hit neither increments nor resets `consecutiveFailures`.
 
 /** Single settings key holding the poller's last-cycle heartbeat as JSON. */
-export const BINANCE_POLL_HEALTH_KEY = "binance_poll_health";
+export const BINANCE_POLL_HEALTH_KEY = POLL_HEALTH_KEYS.binance;
 
-export interface BinancePollHealth {
-  lastRun: string | null;
-  /** Last cycle that completed WITHOUT error (0 new transfers still counts). */
-  lastSuccessAt: string | null;
-  lastTxCount: number | null;
-  backoffUntil: string | null;
-  /** Current consecutive rate-limit hit streak (0 when healthy). */
-  consecutiveRateLimitHits: number | null;
-  /** Sticky — last time a rate-limit hit occurred, even after recovery. */
-  lastRateLimitAt: string | null;
-  /** Consecutive non-rate-limit failures (network/HTTP errors); 0 when
-   * healthy. Tracked separately from rate limits, which already have their
-   * own backoff/counter above — `lastRun` alone can't surface this, since it
-   * advances on every cycle whether that cycle succeeded or failed. */
-  consecutiveFailures: number | null;
-  /** Sticky — last error message seen (any failure type), for diagnostics. */
-  lastError: string | null;
-}
-
-const EMPTY_BINANCE_HEALTH: BinancePollHealth = {
-  lastRun: null,
-  lastSuccessAt: null,
-  lastTxCount: null,
-  backoffUntil: null,
-  consecutiveRateLimitHits: null,
-  lastRateLimitAt: null,
-  consecutiveFailures: null,
-  lastError: null,
-};
+/** Alias of the generic `PollHealth` shape — byte-identical to the old
+ * standalone interface, kept as a named type so existing imports resolve
+ * unchanged. */
+export type BinancePollHealth = PollHealth;
 
 /** Read the poller heartbeat; all-null when the poller has never run. */
-export async function getBinancePollHealth(db: Db): Promise<BinancePollHealth> {
-  const raw = await getSetting(db, BINANCE_POLL_HEALTH_KEY);
-  if (!raw) return EMPTY_BINANCE_HEALTH;
-  try {
-    const p = JSON.parse(raw) as Partial<BinancePollHealth>;
-    return {
-      lastRun: p.lastRun ?? null,
-      lastSuccessAt: p.lastSuccessAt ?? null,
-      lastTxCount: typeof p.lastTxCount === "number" ? p.lastTxCount : null,
-      backoffUntil: p.backoffUntil ?? null,
-      consecutiveRateLimitHits: typeof p.consecutiveRateLimitHits === "number" ? p.consecutiveRateLimitHits : null,
-      lastRateLimitAt: p.lastRateLimitAt ?? null,
-      consecutiveFailures: typeof p.consecutiveFailures === "number" ? p.consecutiveFailures : null,
-      lastError: p.lastError ?? null,
-    };
-  } catch {
-    return EMPTY_BINANCE_HEALTH;
-  }
+export function getBinancePollHealth(db: Db): Promise<BinancePollHealth> {
+  return getPollHealth(db, "binance");
 }
 
-/** Record one poll cycle's heartbeat. Called by the poller each tick.
- * `lastRateLimitAt`/`lastError` are sticky (carried forward from the prior
- * heartbeat) so a rare hit stays visible after the poller recovers.
- * `consecutiveFailures` counts non-rate-limit failures only — a rate-limit
- * hit neither increments nor resets it, since that streak already has its own
- * dedicated counter/backoff above. */
-export async function recordBinancePollHealth(
+/** Record one poll cycle's heartbeat. Called by the poller each tick. */
+export function recordBinancePollHealth(
   db: Db,
   args: {
     lastTxCount: number;
@@ -626,26 +777,5 @@ export async function recordBinancePollHealth(
     error?: string | null;
   },
 ): Promise<void> {
-  const prev = await getBinancePollHealth(db);
-  const lastRateLimitAt = args.rateLimited ? new Date().toISOString() : prev.lastRateLimitAt;
-  const consecutiveFailures = args.success
-    ? 0
-    : args.rateLimited
-      ? prev.consecutiveFailures ?? 0
-      : (prev.consecutiveFailures ?? 0) + 1;
-  const nowIso = new Date().toISOString();
-  await setSetting(
-    db,
-    BINANCE_POLL_HEALTH_KEY,
-    JSON.stringify({
-      lastRun: nowIso,
-      lastSuccessAt: args.success ? nowIso : prev.lastSuccessAt,
-      lastTxCount: args.lastTxCount,
-      backoffUntil: args.backoffUntil ? new Date(args.backoffUntil).toISOString() : null,
-      consecutiveRateLimitHits: args.consecutiveRateLimitHits ?? 0,
-      lastRateLimitAt,
-      consecutiveFailures,
-      lastError: args.success ? prev.lastError : (args.error ?? prev.lastError) ?? null,
-    } satisfies BinancePollHealth),
-  );
+  return recordPollHealth(db, "binance", args);
 }

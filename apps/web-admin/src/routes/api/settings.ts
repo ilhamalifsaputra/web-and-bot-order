@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { config } from "@app/core/config";
 import { logger } from "@app/core/logger";
 import { Decimal } from "@app/core/money";
+import { evaluatePollHealth, type PollHealthEvaluation } from "@app/core/payments/pollHealth";
 import {
   prisma,
   listAllSettings,
@@ -14,6 +15,8 @@ import {
   refreshUsdIdrRate,
   getBybitPollHealth,
   getBybitBscPollHealth,
+  resolveBybitConfig,
+  resolveBybitBscConfig,
   getSmtpCreds,
   OWNER_EMAIL_RE,
 } from "@app/db";
@@ -338,10 +341,21 @@ export default async function settingsApiRoutes(app: FastifyInstance): Promise<v
       };
     }
 
-    const [bybitHealth, bybitBscHealth] = await Promise.all([
+    // Same pattern as /api/dashboard/health (apps/web-admin/src/routes/api/
+    // dashboard.ts): map the raw heartbeat through the one shared rule before
+    // it reaches the client, using each rail's real configured/enabled state
+    // (not a hardcoded true) — a rail with no credentials and a rail that's
+    // configured but has never run are different verdicts, and
+    // evaluatePollHealth tells them apart.
+    const toHealthEntry = ({ status, detail }: PollHealthEvaluation) => ({ status, detail });
+    const [bybitHealthRaw, bybitBscHealthRaw, bybitConfig, bybitBscConfig] = await Promise.all([
       getBybitPollHealth(prisma),
       getBybitBscPollHealth(prisma),
+      resolveBybitConfig(prisma),
+      resolveBybitBscConfig(prisma),
     ]);
+    const bybitHealth = toHealthEntry(evaluatePollHealth(bybitHealthRaw, { enabled: bybitConfig.enabled }));
+    const bybitBscHealth = toHealthEntry(evaluatePollHealth(bybitBscHealthRaw, { enabled: bybitBscConfig.enabled }));
 
     const tg = req.admin!.telegramId;
     const twoFaEnabled = (await getSetting(prisma, twoFaSecretKey(tg))) !== null;

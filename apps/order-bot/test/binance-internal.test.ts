@@ -104,7 +104,7 @@ describe("normalizeTx (real pay/transactions payload shape)", () => {
   it("maps id/amount/currency and keeps note empty (no orderId leak)", () => {
     const tx = normalizeTx(real)!;
     expect(tx.txId).toBe("P_A226WCUE7FH71115");
-    expect(tx.amount).toBe(1);
+    expect(tx.amount.toString()).toBe("1");
     expect(tx.currency).toBe("USDT");
     expect(tx.note).toBe(""); // Binance's orderId must NOT leak into note
   });
@@ -114,10 +114,37 @@ describe("normalizeTx (real pay/transactions payload shape)", () => {
     expect(normalizeTx({ ...real, note: "  ", remark: "BCC1BDDE6F" })!.note).toBe("BCC1BDDE6F");
   });
 
+  // Task 14: normalizeTx used to do Number(raw.amount) — a plain IEEE-754
+  // double, which silently truncates any decimal string with more precision
+  // than a double can represent exactly. Binance/Bybit report amounts as
+  // decimal strings, and that string now flows straight into Decimal instead
+  // of round-tripping through Number() first.
+  it("preserves an amount with more precision than a double", () => {
+    const precise = "1234.00000000000001";
+    expect(Number(precise).toString()).not.toBe(precise); // proves Number() really does truncate this
+    expect(normalizeTx({ ...real, amount: precise })!.amount.toString()).toBe(precise);
+  });
+
   it("rejects non-received / malformed rows", () => {
     expect(normalizeTx({ ...real, amount: "0" })).toBeNull();
     expect(normalizeTx({ ...real, amount: "-5" })).toBeNull();
     expect(normalizeTx({ transactionId: "X" })).toBeNull(); // no amount
+  });
+
+  // Task 14 review hazard: `new Decimal("1,234.56")` THROWS (unlike the old
+  // Number() -> NaN round-trip, which the guard turned into a quiet skipped
+  // row). A malformed gateway amount must stay a skipped row, not become an
+  // exception escaping into the poll loop.
+  it("rejects a malformed amount string instead of throwing", () => {
+    expect(() => normalizeTx({ ...real, amount: "1,234.56" })).not.toThrow();
+    expect(normalizeTx({ ...real, amount: "1,234.56" })).toBeNull();
+  });
+
+  // The same review hazard in the other direction: Number(" 746.99") was
+  // whitespace-tolerant and new Decimal(" 746.99") is not, so a padded
+  // gateway amount would have gone from "matches" to "silently unmatched".
+  it("still accepts an amount padded with whitespace", () => {
+    expect(normalizeTx({ ...real, amount: " 746.99 " })?.amount.toString()).toBe("746.99");
   });
 });
 
@@ -181,6 +208,28 @@ describe("pollWatchdogDecision (poller stuck/recover logic)", () => {
       ),
     ).toBe("none");
   });
+
+  // Followup review fix (duplicate paging): a rail can be hard-down long
+  // enough to page admins (alreadyAlerted flips to true), and THEN start
+  // getting rate-limited, which writes a live backoffUntil. evaluatePollHealth
+  // correctly reports `paging: false` for a live backoff (Rule 2 — it's an
+  // intentional pause, not a failure), but that must not, on its own, read as
+  // "recovered": the rail is still down underneath the backoff, nothing was
+  // fixed, and clearing the alert flag here means the NEXT unhealthy tick
+  // (once the backoff expires and the rail is still down) pages every admin
+  // again for the exact same incident. The pre-rewrite body's unconditional
+  // `if (backoff > now) return "none"` — evaluated BEFORE the alerted
+  // comparison — is what stopped that; this pins the same "none" outcome
+  // through the evaluatePollHealth-derived path.
+  it("stays quiet (does not clear the alert flag / does not recover) when already alerted and a live backoff then appears", () => {
+    expect(
+      pollWatchdogDecision(
+        { lastRun: ago(5_000), backoffUntil: ago(-60_000), consecutiveFailures: 0 },
+        true,
+        now,
+      ),
+    ).toBe("none");
+  });
 });
 
 describe("matchByAmount (note-less fallback, best fit + capped overpayment)", () => {
@@ -211,7 +260,7 @@ describe("matchByAmount (note-less fallback, best fit + capped overpayment)", ()
   });
 
   // Overpayment (a buyer rounding up) is accepted, but only up to a cap — see
-  // `overpaymentCap` in binanceInternal.ts. A modest overpay of the best-fit
+  // `overpaymentCap` in amountMatching.ts. A modest overpay of the best-fit
   // (pricier) candidate still matches even with cheaper orders present.
   it("matches a modest overpay of the best-fit order, cheaper orders present", () => {
     expect(matchByAmount({ amount: 13 }, orders)?.id).toBe(3); // overpays order 3 by 0.66, well under its cap (~2.47)
@@ -248,6 +297,57 @@ describe("matchByAmount (note-less fallback, best fit + capped overpayment)", ()
   it("refuses on a collision (all candidates tied) rather than guessing", () => {
     const dup = [{ id: 1, totalAmount: "5.0000" }, { id: 2, totalAmount: "5.0000" }];
     expect(matchByAmount({ amount: 5.0 }, dup)).toBeNull();
+  });
+
+  // Task 13: the matcher's internals now run on Decimal, not IEEE-754 double
+  // arithmetic — this is the regression proof that a caller can pass the raw
+  // decimal STRING a gateway returns (rather than a pre-parsed float) and
+  // still get a clean match.
+  it("matches when the transfer amount is the exact decimal string the gateway returned", () => {
+    expect(matchByAmount({ amount: "7.5000" }, orders)?.id).toBe(2);
+  });
+
+  // Task 13: matchByAmount's tie-detection at :182 used to compare `total`s
+  // that were both put through `Decimal.toNumber()` with exact `===` on the
+  // resulting IEEE-754 doubles. Two DISTINCT decimal totals can round to the
+  // identical double — 0.1 + 0.2 !== 0.3 is the canonical example of the
+  // inverse failure (same value, different doubles); this is the same class
+  // of float representation risk from the other direction. Construct two
+  // totals that are decimal-distinct but which naive Number()/toNumber()
+  // conversion collapses onto the same double, and confirm the matcher does
+  // NOT declare a false tie (refuse) when Decimal.equals is used instead of
+  // double `===`.
+  it("does not declare a false tie between two totals that collapse to the same double", () => {
+    // "4.35" cannot be represented exactly in IEEE-754 double precision — its
+    // nearest double is shared by "4.3499999999999999" too (verified below),
+    // even though the two are decimal-distinct values. Under the old
+    // `Number.toNumber()` + `===` tie check both would collapse onto the
+    // exact same double and get refused as an ambiguous tie; `Decimal.equals`
+    // keeps them apart.
+    const collapsing = [
+      { id: 1, totalAmount: "4.3499999999999999" },
+      { id: 2, totalAmount: "4.35" },
+    ];
+    // Confirm the premise: both decimal strings really do collapse onto the
+    // very same double under plain Number() conversion.
+    expect(Number("4.3499999999999999")).toBe(Number("4.35"));
+    // A payment that exactly covers the larger (pricier, decimal-exact) of
+    // the two must match THAT one specifically, not be refused as an
+    // ambiguous tie just because both totals round to the same double.
+    expect(matchByAmount({ amount: "4.35" }, collapsing)?.id).toBe(2);
+  });
+
+  // Task 13: overpaymentCap's own doc-comment above states the cap is
+  // Math.max(fixed, percent * total) — pin an exact value so a future
+  // regression in the Decimal port (e.g. an off-by-a-rounding-step in the
+  // percent multiply) shows up here instead of only in the pass/refuse
+  // behavior of matchByAmount itself.
+  it("the overpayment cap is computed exactly", () => {
+    // order 3's total is 12.3400 — 20% of that is 2.468, which beats the 2
+    // USDT fixed floor, so the cap is exactly 2.468. Paying 12.3400 + 2.468 =
+    // 14.808 is AT the cap (still matches); one cent more blows it.
+    expect(matchByAmount({ amount: "14.8080" }, [orders[2]!])?.id).toBe(3);
+    expect(matchByAmount({ amount: "14.8081" }, [orders[2]!])).toBeNull();
   });
 });
 
@@ -435,15 +535,15 @@ describe("processTransfers (poll-loop wiring)", () => {
   }
 
   const pending = () => listPendingInternalOrders(prisma, new Date());
-  const txFor = (over: Partial<BinanceTx> & { txId: string; amount: number }): BinanceTx => ({
-    note: "", currency: "USDT", ...over,
+  const txFor = (over: { txId: string; amount: Decimal.Value } & Partial<Omit<BinanceTx, "amount">>): BinanceTx => ({
+    note: "", currency: "USDT", ...over, amount: new Decimal(over.amount),
   });
 
   it("flips the anchored payment bubble to the success message with paymentSuccessKb (§9.1)", async () => {
     const order = (await makeInternalOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T-FLIP", note: order.paymentRef!, amount: Number(order.totalAmount) })], await pending());
+    await processTransfers(api, [txFor({ txId: "T-FLIP", note: order.paymentRef!, amount: order.totalAmount })], await pending());
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
 
     expect(edits).toHaveLength(1);
@@ -459,7 +559,7 @@ describe("processTransfers (poll-loop wiring)", () => {
   it("delivers on a note match", async () => {
     const order = (await makeInternalOrder())!;
     const { api } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T1", note: order.paymentRef!, amount: Number(order.totalAmount) })], await pending());
+    await processTransfers(api, [txFor({ txId: "T1", note: order.paymentRef!, amount: order.totalAmount })], await pending());
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
     expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "T1" } }))!.outcome).toBe("matched");
   });
@@ -472,7 +572,7 @@ describe("processTransfers (poll-loop wiring)", () => {
     try {
       const order = (await makeInternalOrder())!;
       const { api } = fakeApi();
-      await processTransfers(api, [txFor({ txId: "T2", note: "", amount: Number(order.totalAmount) })], await pending());
+      await processTransfers(api, [txFor({ txId: "T2", note: "", amount: order.totalAmount })], await pending());
       expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
     } finally {
       config.USE_UNIQUE_CENTS = false;
@@ -482,7 +582,7 @@ describe("processTransfers (poll-loop wiring)", () => {
   it("never attempts the amount fallback when USE_UNIQUE_CENTS is off — unmatched, not delivered", async () => {
     const order = (await makeInternalOrder())!; // unique-cents off in tests → no memo, no unique total
     const { api } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T2B", note: "", amount: Number(order.totalAmount) })], await pending());
+    await processTransfers(api, [txFor({ txId: "T2B", note: "", amount: order.totalAmount })], await pending());
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "T2B" } }))!.outcome).toBe("unmatched");
   });
@@ -492,7 +592,7 @@ describe("processTransfers (poll-loop wiring)", () => {
     const b = (await makeInternalOrder())!; // unique-cents off in tests → equal totals
     expect(a.totalAmount).toEqual(b.totalAmount);
     const { api } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T3", note: "", amount: Number(a.totalAmount) })], await pending());
+    await processTransfers(api, [txFor({ txId: "T3", note: "", amount: a.totalAmount })], await pending());
     expect((await prisma.order.findUnique({ where: { id: a.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.order.findUnique({ where: { id: b.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "T3" } }))!.outcome).toBe("unmatched");
@@ -501,7 +601,7 @@ describe("processTransfers (poll-loop wiring)", () => {
   it("flags underpaid (note match, short amount) and alerts admins", async () => {
     const order = (await makeInternalOrder())!;
     const { api, sent } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T4", note: order.paymentRef!, amount: Number(order.totalAmount) - 1 })], await pending());
+    await processTransfers(api, [txFor({ txId: "T4", note: order.paymentRef!, amount: new Decimal(order.totalAmount).minus(1) })], await pending());
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.UNDERPAID);
     expect(sent.some((m) => /[Uu]nderpaid/.test(m.text))).toBe(true);
   });
@@ -537,8 +637,8 @@ describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", 
   }
 
   const pending = () => listPendingInternalOrders(prisma, new Date());
-  const txFor = (over: Partial<BinanceTx> & { txId: string; amount: number }): BinanceTx => ({
-    note: "", currency: "USDT", ...over,
+  const txFor = (over: { txId: string; amount: Decimal.Value } & Partial<Omit<BinanceTx, "amount">>): BinanceTx => ({
+    note: "", currency: "USDT", ...over, amount: new Decimal(over.amount),
   });
 
   const makeTopupOrder = (amount: string) =>
@@ -555,7 +655,7 @@ describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", 
   it("delivers, credits the wallet, and DMs the credited-amount + new-balance text — never the bare placeholder, never a credential file", async () => {
     const order = await makeTopupOrder("10");
     const { api, sent, sendDocumentCalls } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T-TOPUP-DM", note: order.paymentRef!, amount: Number(order.totalAmount) })], await pending());
+    await processTransfers(api, [txFor({ txId: "T-TOPUP-DM", note: order.paymentRef!, amount: order.totalAmount })], await pending());
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe(OrderStatus.DELIVERED);
@@ -581,7 +681,7 @@ describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", 
     const order = await makeTopupOrder("10");
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T-TOPUP-BUBBLE", note: order.paymentRef!, amount: Number(order.totalAmount) })], await pending());
+    await processTransfers(api, [txFor({ txId: "T-TOPUP-BUBBLE", note: order.paymentRef!, amount: order.totalAmount })], await pending());
 
     expect(edits).toHaveLength(1);
     expect(edits[0]!.chatId).toBe(555);
@@ -702,19 +802,138 @@ describe("fetchIncomingTransfers (connect-fallback escalation)", () => {
     expect(fetchMock.mock.calls[4]![0]).toContain("api2.binance.com");
   }, 15_000);
 
-  it("all bases exhausted (primary + every fallback) throws the primary's error", async () => {
+  // Important #1 (Task 3 review follow-up): requestIncomingTransfers now
+  // routes through fetchWithTimeoutSafe, the same credential-safe choke
+  // point Bybit/NOWPayments use — the primary's raw rejection ("always
+  // fails") is exactly the kind of thing that could carry the X-MBX-APIKEY
+  // header on err.cause in production, so it must NOT survive verbatim to
+  // this function's own caller/logger. The assertion below moved from
+  // pinning the raw message to pinning the sanitized one.
+  it("all bases exhausted (primary + every fallback) throws a sanitized error, never the raw rejection", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error("always fails"));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(fetchIncomingTransfers(baseCfg)).rejects.toThrow("always fails");
+    let caught: unknown;
+    try {
+      await fetchIncomingTransfers(baseCfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).not.toContain("always fails");
+    expect((caught as Error).message).toMatch(/network error/);
     expect(fetchMock).toHaveBeenCalledTimes(5); // 3 primary + 2 fallbacks (1 each)
   }, 15_000);
 
-  it("empty fallback list behaves exactly like today — no fallback attempted, same error", async () => {
+  it("empty fallback list behaves exactly like today — no fallback attempted, still a sanitized error", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error("connect refused"));
     vi.stubGlobal("fetch", fetchMock);
-    await expect(fetchIncomingTransfers({ ...baseCfg, apiBaseFallbacks: [] })).rejects.toThrow("connect refused");
+    let caught: unknown;
+    try {
+      await fetchIncomingTransfers({ ...baseCfg, apiBaseFallbacks: [] });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).not.toContain("connect refused");
+    expect((caught as Error).message).toMatch(/network error/);
     expect(fetchMock).toHaveBeenCalledTimes(3); // primary's retry budget only
   }, 15_000);
+
+  // Minor 10-style coverage for Important #1: prove the header credential
+  // never rides along via `.cause`, the same shape as the NOWPayments/Bybit
+  // tests, not just that the message text changed.
+  it("wraps a rejected request in a fresh, cause-free error instead of letting the header-bearing rejection escape", async () => {
+    const original = Object.assign(new Error("fetch failed"), {
+      cause: { request: { headers: { "X-MBX-APIKEY": "LEAKED-BINANCE-API-KEY" } } },
+    });
+    const fetchMock = vi.fn().mockRejectedValue(original);
+    vi.stubGlobal("fetch", fetchMock);
+    let caught: unknown;
+    try {
+      await fetchIncomingTransfers(baseCfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBe(original);
+    expect((caught as Error).cause).toBeUndefined();
+    expect((caught as Error).message).not.toContain("LEAKED-BINANCE-API-KEY");
+    expect((caught as Error).message).not.toBe("fetch failed");
+  }, 15_000);
+
+  it("distinguishes a timeout from a network error, both still cause-free", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" }));
+    vi.stubGlobal("fetch", fetchMock);
+    let caught: unknown;
+    try {
+      await fetchIncomingTransfers({ ...baseCfg, apiBaseFallbacks: [] });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).cause).toBeUndefined();
+    expect((caught as Error).message).toMatch(/timed out/);
+  }, 15_000);
+
+  // Task 3: the primary host previously relied on undici's implicit (much
+  // longer) default timeout — only the fallback-mirror path had an explicit
+  // deadline. A hung primary now gets the same gatewayRead budget so it
+  // can't stall the poll cycle past the loop's abandon deadline.
+  it("bounds the primary-host request with a real deadline, not just the fallback mirrors", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(okResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+    await fetchIncomingTransfers(baseCfg);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("a malformed Binance response body fails the cycle cleanly instead of throwing a raw SyntaxError", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new SyntaxError("Unexpected token < in JSON");
+      },
+    } as unknown as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    let caught: unknown;
+    try {
+      await fetchIncomingTransfers(baseCfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(SyntaxError);
+    expect((caught as Error).message).toMatch(/unparseable|malformed|invalid/i);
+  });
+
+  // AbortSignal.timeout stays attached to the response body in undici
+  // (http.ts), so a peer that sends headers and then stalls the body makes
+  // res.json() reject with this same TimeoutError shape — a DIFFERENT case
+  // from the fetch()-level timeout tested above (that one never gets a
+  // response at all). Must not be reported as "unparseable" — that would
+  // tell whoever reads lastError the gateway sent back garbage, when it
+  // actually just hung.
+  it("a body-read timeout on the Binance response is reported distinctly from a malformed body", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" });
+      },
+    } as unknown as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    let caught: unknown;
+    try {
+      await fetchIncomingTransfers(baseCfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/timed out/);
+    expect((caught as Error).message).not.toMatch(/unparseable|malformed|invalid/i);
+  });
 });
 
 describe("resolveBinanceInternalConfig — minAmount", () => {

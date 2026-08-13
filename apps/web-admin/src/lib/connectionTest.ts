@@ -15,6 +15,7 @@
  * three DO get a reliable ok/fail signal.
  */
 import { createHmac } from "node:crypto";
+import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "@app/core/http";
 import {
   prisma,
   resolveBybitConfig,
@@ -36,6 +37,19 @@ export interface ConnectionTestResult {
 // it can never collide with a live transaction.
 const SENTINEL_REF = "settings-connection-test";
 
+// Reads ONLY `.message`, never `.cause` — this is the single boundary where
+// every caught error in this file becomes admin-facing text, and it must
+// stay that way. Node's fetch sometimes attaches the failed request (headers
+// included, so an API key) to a rejected fetch's `err.cause`; every
+// credentialed call site in this file routes through `fetchWithTimeoutSafe`
+// (`@app/core/http`), which already rethrows a fresh, cause-free Error, but
+// that guarantee lives at each call site, not here. This function is the
+// backstop: it's what kept the two bare `fetch()` calls this file used to
+// have (Bybit/Binance, before they were routed through
+// `fetchWithTimeoutSafe`) from ever leaking a credential through
+// `ConnectionTestResult.detail`, and it protects any future call site added
+// here the same way. Do NOT "improve" this to also read `.cause` for extra
+// debugging detail — that would leak a credential into an admin-facing string.
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -115,14 +129,19 @@ async function bybitSignedGet(
   const ts = String(Date.now());
   const query = new URLSearchParams(params).toString();
   const sign = createHmac("sha256", cfg.apiSecret).update(ts + cfg.apiKey + recv + query).digest("hex");
-  const res = await fetch(`${cfg.apiBase}${path}?${query}`, {
-    headers: {
-      "X-BAPI-API-KEY": cfg.apiKey,
-      "X-BAPI-TIMESTAMP": ts,
-      "X-BAPI-RECV-WINDOW": recv,
-      "X-BAPI-SIGN": sign,
+  const res = await fetchWithTimeoutSafe(
+    `${cfg.apiBase}${path}?${query}`,
+    {
+      headers: {
+        "X-BAPI-API-KEY": cfg.apiKey,
+        "X-BAPI-TIMESTAMP": ts,
+        "X-BAPI-RECV-WINDOW": recv,
+        "X-BAPI-SIGN": sign,
+      },
+      timeoutMs: HTTP_TIMEOUT_MS.gatewayWrite, // a human admin is waiting synchronously on the Settings page — no next tick to retry for them
     },
-  });
+    "Bybit connection test", // never log err — it may carry the X-BAPI-API-KEY header
+  );
   const body = (await res.json().catch(() => ({}))) as { retCode?: number; retMsg?: string };
   return { httpOk: res.ok, httpStatus: res.status, retCode: body.retCode, retMsg: body.retMsg };
 }
@@ -162,9 +181,14 @@ export async function testBinanceInternal(): Promise<ConnectionTestResult> {
   try {
     const params = new URLSearchParams({ limit: "1", timestamp: String(Date.now()), recvWindow: "5000" });
     const qs = params.toString();
-    const res = await fetch(`${cfg.apiBase}/sapi/v1/pay/transactions?${qs}&signature=${binanceSign(qs, cfg.apiSecret)}`, {
-      headers: { "X-MBX-APIKEY": cfg.apiKey },
-    });
+    const res = await fetchWithTimeoutSafe(
+      `${cfg.apiBase}/sapi/v1/pay/transactions?${qs}&signature=${binanceSign(qs, cfg.apiSecret)}`,
+      {
+        headers: { "X-MBX-APIKEY": cfg.apiKey },
+        timeoutMs: HTTP_TIMEOUT_MS.gatewayWrite, // a human admin is waiting synchronously on the Settings page — no next tick to retry for them
+      },
+      "Binance connection test", // never log err — it may carry the X-MBX-APIKEY header
+    );
     if (res.ok) return { ok: true, detail: "Connected — Binance accepted the API key and returned transaction data." };
     const body = (await res.json().catch(() => ({}))) as { msg?: string };
     return { ok: false, detail: `Binance rejected the request${body.msg ? `: ${body.msg}` : ""} (HTTP ${res.status}).` };

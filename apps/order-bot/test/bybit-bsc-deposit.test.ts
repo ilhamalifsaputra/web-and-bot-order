@@ -1,7 +1,7 @@
 // setup-db MUST be first — temp DB + push before any @app import.
 import "./setup-db";
 
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   prisma,
   createBybitBscOrder,
@@ -13,6 +13,7 @@ import {
   recordUnmatchedBybitBscTx,
   listInFlightBybitBscOrders,
   resolveBybitBscConfig,
+  getBybitBscPollHealth,
   setSetting,
   getSetting,
   deleteSetting,
@@ -29,7 +30,7 @@ import { Decimal } from "@app/core/money";
 import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import { formatUsdt } from "../src/util/format";
-import { normalizeOnchainDeposit, processDeposits, pollOnce, type BybitBscDeposit } from "../src/payments/bybitBscDeposit";
+import { normalizeOnchainDeposit, processDeposits, pollOnce, fetchRecentDeposits, type BybitBscDeposit } from "../src/payments/bybitBscDeposit";
 
 let sample: SampleData;
 
@@ -77,7 +78,7 @@ describe("normalizeOnchainDeposit (Bybit on-chain deposit payload shape)", () =>
   it("maps a successful on-chain USDT deposit", () => {
     const d = normalizeOnchainDeposit(real, cfg)!;
     expect(d.txId).toBe(real.txID);
-    expect(d.amount).toBeCloseTo(746.99);
+    expect(d.amount.toString()).toBe("746.99");
   });
 
   // INTENTIONAL behavior change: status 1/2 used to be discarded entirely
@@ -119,6 +120,24 @@ describe("normalizeOnchainDeposit (Bybit on-chain deposit payload shape)", () =>
     expect(normalizeOnchainDeposit({ ...real, amount: "0" }, cfg)).toBeNull();
     expect(normalizeOnchainDeposit({ ...real, amount: "-5" }, cfg)).toBeNull();
     expect(normalizeOnchainDeposit({ coin: "USDT", status: 3, chain: "BSC" }, cfg)).toBeNull(); // no txID/amount
+  });
+
+  // Task 14: normalizeOnchainDeposit now parses the raw amount string
+  // directly with Decimal instead of Number(). `new Decimal("1,234.56")`
+  // THROWS (unlike the old Number() -> NaN round-trip the guard turned into
+  // a quiet skipped row) — a malformed gateway amount must stay a skipped
+  // row, not become an exception escaping into the poll loop.
+  it("rejects a malformed amount string instead of throwing", () => {
+    expect(() => normalizeOnchainDeposit({ ...real, amount: "1,234.56" }, cfg)).not.toThrow();
+    expect(normalizeOnchainDeposit({ ...real, amount: "1,234.56" }, cfg)).toBeNull();
+  });
+
+  // Task 14: preserves an amount with more precision than a double can
+  // represent exactly (the whole point of parsing the raw string directly).
+  it("preserves an amount with more precision than a double", () => {
+    const precise = "746.00000000000001";
+    expect(Number(precise).toString()).not.toBe(precise); // proves Number() really does truncate this
+    expect(normalizeOnchainDeposit({ ...real, amount: precise }, cfg)!.amount.toString()).toBe(precise);
   });
 });
 
@@ -315,16 +334,17 @@ describe("processDeposits (poll-loop wiring)", () => {
   // Default bybitStatus to Success (3) so every existing test below — written
   // before still-confirming tracking existed — keeps its original immediate-
   // delivery behavior unless a test explicitly overrides it.
-  const dep = (over: Partial<BybitBscDeposit> & { txId: string; amount: number }): BybitBscDeposit => ({
+  const dep = (over: { txId: string; amount: Decimal.Value } & Partial<Omit<BybitBscDeposit, "amount">>): BybitBscDeposit => ({
     bybitStatus: 3,
     ...over,
+    amount: new Decimal(over.amount),
   });
 
   it("flips the anchored payment bubble to the success message with paymentSuccessKb", async () => {
     const order = (await makeBybitBscOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
-    await processDeposits(api, [dep({ txId: "0x" + "f".repeat(64), amount: Number(order.totalAmount) })], await inFlight(), "BSC");
+    await processDeposits(api, [dep({ txId: "0x" + "f".repeat(64), amount: order.totalAmount })], await inFlight(), "BSC");
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
 
     expect(edits).toHaveLength(1);
@@ -341,7 +361,7 @@ describe("processDeposits (poll-loop wiring)", () => {
     const order = (await makeBybitBscOrder())!;
     const { api } = fakeApi();
     const txId = "0x" + "d".repeat(64);
-    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount) })], await inFlight(), "BSC");
+    await processDeposits(api, [dep({ txId, amount: order.totalAmount })], await inFlight(), "BSC");
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: txId } }))!.outcome).toBe("matched");
   });
@@ -352,7 +372,7 @@ describe("processDeposits (poll-loop wiring)", () => {
     expect(a.totalAmount).toEqual(b.totalAmount);
     const { api } = fakeApi();
     const txId = "0x" + "e".repeat(64);
-    await processDeposits(api, [dep({ txId, amount: Number(a.totalAmount) })], await inFlight(), "BSC");
+    await processDeposits(api, [dep({ txId, amount: a.totalAmount })], await inFlight(), "BSC");
     expect((await prisma.order.findUnique({ where: { id: a.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.order.findUnique({ where: { id: b.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: txId } }))!.outcome).toBe("unmatched");
@@ -492,7 +512,7 @@ describe("processDeposits (poll-loop wiring)", () => {
     const order = (await makeBybitBscOrder())!;
     const { api } = fakeApi();
     const txId = "0x" + "1".repeat(64);
-    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount), bybitStatus: 1 })], await inFlight(), "BSC");
+    await processDeposits(api, [dep({ txId, amount: order.totalAmount, bybitStatus: 1 })], await inFlight(), "BSC");
 
     const updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
     expect(updated.status).toBe(OrderStatus.PAYMENT_DETECTED);
@@ -508,20 +528,20 @@ describe("processDeposits (poll-loop wiring)", () => {
     const txId = "0x" + "2".repeat(64);
 
     // Cycle 1: first sighting, still toBeConfirmed.
-    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount), bybitStatus: 1 })], await inFlight(), "BSC");
+    await processDeposits(api, [dep({ txId, amount: order.totalAmount, bybitStatus: 1 })], await inFlight(), "BSC");
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PAYMENT_DETECTED);
 
     // Cycle 2: still not final (now "processing"). The order is no longer
     // PENDING_PAYMENT, so listInFlightBybitBscOrders is what makes it visible
     // at all here — must match by its own txid, not fall through to
     // "no candidate -> unmatched" for money that's already accounted for.
-    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount), bybitStatus: 2 })], await inFlight(), "BSC");
+    await processDeposits(api, [dep({ txId, amount: order.totalAmount, bybitStatus: 2 })], await inFlight(), "BSC");
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PAYMENT_DETECTED);
     expect(await prisma.processedBybitTx.count({ where: { bybitTxId: txId } })).toBe(0); // still not claimed
 
     // Cycle 3: Bybit finally reports Success — delivers exactly as the
     // existing status-3 path always has.
-    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount), bybitStatus: 3 })], await inFlight(), "BSC");
+    await processDeposits(api, [dep({ txId, amount: order.totalAmount, bybitStatus: 3 })], await inFlight(), "BSC");
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
     expect(await prisma.processedBybitTx.count({ where: { bybitTxId: txId } })).toBe(1);
   });
@@ -533,7 +553,7 @@ describe("processDeposits (poll-loop wiring)", () => {
     const txId = "0x" + "7".repeat(64);
 
     // Cycle 1: first sighting — pushes the tracking screen once.
-    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount), bybitStatus: 1 })], await inFlight(), "BSC");
+    await processDeposits(api, [dep({ txId, amount: order.totalAmount, bybitStatus: 1 })], await inFlight(), "BSC");
     expect(edits).toHaveLength(1);
     expect(edits[0]!.chatId).toBe(555);
     expect(edits[0]!.messageId).toBe(777);
@@ -542,7 +562,7 @@ describe("processDeposits (poll-loop wiring)", () => {
     // Cycle 2: same deposit, still not final — must NOT push again (already
     // detected; re-pushing here would stomp on whatever the confirmation
     // tracker has since rendered, e.g. an actual confirmation count).
-    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount), bybitStatus: 2 })], await inFlight(), "BSC");
+    await processDeposits(api, [dep({ txId, amount: order.totalAmount, bybitStatus: 2 })], await inFlight(), "BSC");
     expect(edits).toHaveLength(1);
   });
 
@@ -557,6 +577,30 @@ describe("processDeposits (poll-loop wiring)", () => {
       expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
     }
   });
+
+  // Finding #2 (followup-review-fixes-2): same fix/reasoning as
+  // bybit-deposit.test.ts's identical test — sendAccountFile used to be
+  // unbounded on this rail too. Real timers (not fake) — faking timers
+  // breaks Prisma's own I/O in this test harness.
+  it("a hung account-file upload is bounded by TELEGRAM_DOCUMENT_TIMEOUT_MS and falls through to the outbox-DM fallback", async () => {
+    const order = (await makeBybitBscOrder())!;
+    const txId = "0x" + "d".repeat(64);
+    const api = {
+      sendMessage: vi.fn().mockResolvedValue({ message_id: 1 }),
+      sendDocument: vi.fn(() => new Promise(() => {})), // hangs forever
+      editMessageText: vi.fn().mockResolvedValue({}),
+    } as unknown as Api;
+
+    await processDeposits(api, [dep({ txId, amount: order.totalAmount, bybitStatus: 3 })], await inFlight(), "BSC");
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe(OrderStatus.DELIVERED); // the DB delivery already happened before the DM attempt
+
+    const outboxRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: "ORDER_DELIVERED_DM" },
+    });
+    expect(outboxRows.length).toBeGreaterThan(0); // the same fallback a genuine sendAccountFile throw would enqueue
+  }, 15_000);
 });
 
 // ===========================================================================
@@ -588,9 +632,10 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
   }
 
   const inFlight = () => listInFlightBybitBscOrders(prisma, new Date());
-  const dep = (over: Partial<BybitBscDeposit> & { txId: string; amount: number }): BybitBscDeposit => ({
+  const dep = (over: { txId: string; amount: Decimal.Value } & Partial<Omit<BybitBscDeposit, "amount">>): BybitBscDeposit => ({
     bybitStatus: 3, // Success — deliver immediately, no confirmation-tracking detour
     ...over,
+    amount: new Decimal(over.amount),
   });
 
   const makeTopupOrder = (amount: string) =>
@@ -603,7 +648,7 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, sent, edits, sendDocumentCalls } = fakeApi();
     const txId = "0x" + "9".repeat(64);
-    await processDeposits(api, [dep({ txId, amount: Number(order.totalAmount) })], await inFlight(), "BSC");
+    await processDeposits(api, [dep({ txId, amount: order.totalAmount })], await inFlight(), "BSC");
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe(OrderStatus.DELIVERED);
@@ -707,6 +752,149 @@ describe("pollOnce — USE_UNIQUE_CENTS hard gate", () => {
     const fakeApi = {} as Api; // never called — pollOnce must return before touching it
     await pollOnce(fakeApi);
     expect(await getSetting(prisma, BYBIT_BSC_POLL_HEALTH_KEY)).toBeNull(); // never reached fetchRecentDeposits
+  });
+});
+
+// ===========================================================================
+// pollOnce — HTTP timeout bound + credential-leak safety (Task 3). Bybit
+// carries its API key in a header (X-BAPI-API-KEY), and until this task
+// nothing wrapped the raw fetch() call. These drive the deposit-query fetch
+// through the real poll cycle rather than calling bybitGet directly, since
+// it isn't exported.
+// ===========================================================================
+
+describe("pollOnce — HTTP timeout bound + credential-leak safety", () => {
+  beforeEach(async () => {
+    await setSetting(prisma, BYBIT_BSC_DEPOSIT_ADDRESS_KEY, DEPOSIT_ADDRESS);
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "k");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "s");
+  });
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+  });
+  afterAll(async () => {
+    await deleteSetting(prisma, BYBIT_BSC_DEPOSIT_ADDRESS_KEY);
+    await deleteSetting(prisma, BYBIT_API_KEY_KEY);
+    await deleteSetting(prisma, BYBIT_API_SECRET_KEY);
+  });
+
+  it("bounds the deposit-query request so a hung gateway cannot stall the poller forever", async () => {
+    const original = config.USE_UNIQUE_CENTS;
+    config.USE_UNIQUE_CENTS = true;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => ({ retCode: 0, result: { rows: [] } }),
+      text: async () => "",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await pollOnce({} as Api);
+    } finally {
+      config.USE_UNIQUE_CENTS = original;
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("wraps a rejected deposit-query request in a fresh, static-message error instead of the raw (header-bearing) rejection", async () => {
+    const original = config.USE_UNIQUE_CENTS;
+    config.USE_UNIQUE_CENTS = true;
+    const fetchMock = vi.fn().mockRejectedValue(
+      Object.assign(new Error("fetch failed"), { cause: { headers: { "X-BAPI-API-KEY": "LEAKED-API-KEY-VALUE" } } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await pollOnce({} as Api);
+    } finally {
+      config.USE_UNIQUE_CENTS = original;
+    }
+    const health = await getBybitBscPollHealth(prisma);
+    expect(health.lastError).not.toContain("LEAKED-API-KEY-VALUE");
+    expect(health.lastError).not.toBe("Error: fetch failed");
+    // "network error" (not "timed out") — a plain rejection, not a deadline —
+    // per fetchWithTimeoutSafe's shared wording (packages/core/src/http.ts).
+    expect(health.lastError).toMatch(/network error/);
+  });
+
+  // Calls fetchRecentDeposits directly (now exported) rather than only
+  // through pollOnce, so the test can inspect the actual thrown Error object
+  // — not just its message after pollOnce reduces it to a string for the DB
+  // health record — the same way tokopay/paydisini/nowpayments' own
+  // credential-leak tests do. This is what pollOnce's own DB-observed test
+  // above cannot catch: a future change that attached a `.cause` to the
+  // rethrown error would not show up in `String(err)` (health.lastError),
+  // but WOULD reach a logger via pino's cause serialization if this code
+  // ever changed to log `err` directly instead of routing through the DB
+  // heartbeat (Minor 10, Task 3 review follow-up).
+  it("fetchRecentDeposits rethrows a brand-new, cause-free Error instead of letting the header-bearing rejection escape", async () => {
+    const cfg = await resolveBybitBscConfig(prisma);
+    const original = Object.assign(new Error("fetch failed"), {
+      cause: { headers: { "X-BAPI-API-KEY": "LEAKED-API-KEY-VALUE" } },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(original));
+    let caught: unknown;
+    try {
+      await fetchRecentDeposits(cfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBe(original);
+    expect((caught as Error).cause).toBeUndefined();
+    expect((caught as Error).message).not.toContain("LEAKED-API-KEY-VALUE");
+    expect((caught as Error).message).not.toBe("fetch failed");
+    expect((caught as Error).message).toMatch(/network error/);
+  });
+
+  it("fetchRecentDeposits distinguishes a timeout from a network error, both still cause-free", async () => {
+    const cfg = await resolveBybitBscConfig(prisma);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" })),
+    );
+    let caught: unknown;
+    try {
+      await fetchRecentDeposits(cfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).cause).toBeUndefined();
+    expect((caught as Error).message).toMatch(/timed out/);
+  });
+
+  // AbortSignal.timeout stays attached to the response body in undici
+  // (http.ts), so a peer that sends headers and then stalls the body makes
+  // res.json() reject with this same TimeoutError shape — a DIFFERENT case
+  // from the fetch()-level timeout above (that one never gets a response at
+  // all). Must not be reported as "unparseable" — that would tell whoever
+  // reads lastError the gateway sent back garbage, when it actually just hung.
+  it("fetchRecentDeposits reports a response-body-read timeout distinctly from a genuinely unparseable response", async () => {
+    const cfg = await resolveBybitBscConfig(prisma);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => {
+          throw Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" });
+        },
+        text: async () => "",
+      }),
+    );
+    let caught: unknown;
+    try {
+      await fetchRecentDeposits(cfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/timed out/);
+    expect((caught as Error).message).not.toMatch(/unparseable/);
   });
 });
 

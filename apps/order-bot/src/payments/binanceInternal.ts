@@ -29,8 +29,9 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { langCode, NotificationEvent, OrderKind } from "@app/core/enums";
 import { logger } from "@app/core/logger";
-import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
+import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "@app/core/http";
+import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
   prisma,
   listPendingInternalOrders,
@@ -47,178 +48,35 @@ import {
 import { coreT } from "../util/i18n";
 import { esc } from "../util/format";
 import { createBackoffGate } from "./pollBackoff";
+import { createPollLoop } from "./pollLoop";
 import { paymentSuccessKb } from "../keyboards/customer";
 import { sendAccountFile, walletTopupSuccessText } from "../util/delivery";
+import {
+  AMOUNT_TOLERANCE,
+  noteMatches,
+  classifyTx,
+  matchByAmount,
+  matchUnderpaidByAmount,
+  overpaymentCap,
+  parsePositiveAmount,
+} from "./amountMatching";
 
-// Internal transfers are exact off-chain ledger moves (no on-chain
-// slippage/fees) — the only error source is Number() float parsing of a
-// decimal string, far smaller than this. Tight on purpose: it lets the M-9
-// unique-cents offset (see computeUniqueCents) shrink to a much smaller
-// surcharge while still disambiguating same-amount orders.
-const AMOUNT_TOLERANCE = 0.001; // USDT
-
-// ── M-14 (backend audit 2026-07-31) overpayment cap ─────────────────────────
-// matchByAmount's best-fit selection (see below) has NO ambiguity-guard
-// protection left once only one pending order exists — the everyday state for
-// a small shop overnight. Without a ceiling, ANY incoming amount (a stray
-// transfer, an owner's own unrelated top-up to the same UID/address, a late
-// payment for an already-expired order) would auto-match and auto-deliver
-// that single order, silently absorbing the difference with no flag. The cap
-// below draws the line between "this order, overpaid" (still auto-match) and
-// "unrelated money that happens to be enough to cover this order" (falls
-// through to unmatched for manual review, same as today).
-//
-// Chosen so ordinary "buyer rounds up" behavior still passes: a small fixed
-// allowance covers trivial rounding on cheap orders (e.g. paying 7 for a
-// 5.004 total), while a percentage covers proportionally larger — but still
-// plausible — rounding on pricier orders (e.g. paying 600 for a 500 total).
-// Whichever is larger wins, so cheap orders aren't over-strict and expensive
-// orders aren't trivially bypassed by a flat dollar figure.
-const OVERPAYMENT_CAP_FIXED = 2; // USDT
-const OVERPAYMENT_CAP_PERCENT = 0.2; // 20% of the order's total
-
-function overpaymentCap(total: number): number {
-  return Math.max(OVERPAYMENT_CAP_FIXED, OVERPAYMENT_CAP_PERCENT * total);
-}
-
-// ── M-14 underpaid floor ─────────────────────────────────────────────────
-// matchUnderpaidByAmount (below) has no memo to confirm which order a short
-// deposit was meant for — amount alone is the only signal. Without a floor,
-// a tiny, wholly unrelated stray deposit (dust, a test transfer, a few cents)
-// against the sole pending order would flip it PENDING_PAYMENT -> UNDERPAID,
-// which removes it from the matcher's own pending pool — so when the buyer's
-// REAL, full payment arrives minutes later it finds no candidate and is
-// itself recorded unmatched, orphaning a genuine payment because of an
-// unrelated stray deposit. Requiring the deposit to be at least half of what
-// was expected keeps "buyer genuinely paid less than they owe" flaggable
-// while refusing to attribute obviously-unrelated small amounts to a
-// pending order at all (those still fall through to plain "unmatched").
-const UNDERPAID_FLOOR_PERCENT = 0.5; // at least 50% of the order's total
+// Task 13: the pure amount-matching functions (noteMatches, classifyTx,
+// matchByAmount, matchUnderpaidByAmount, overpaymentCap, AMOUNT_TOLERANCE)
+// now live in ./amountMatching.ts, Decimal-based end to end, shared with
+// both Bybit rails. Re-exported here so this module's own existing import
+// path (`../src/payments/binanceInternal`, used by binance-internal.test.ts)
+// stays valid.
+export { AMOUNT_TOLERANCE, noteMatches, classifyTx, matchByAmount, matchUnderpaidByAmount, overpaymentCap };
 
 export interface BinanceTx {
   txId: string;
   note: string;
-  amount: number; // positive = received, in `currency`
+  amount: Decimal; // positive = received, in `currency`
   currency: string;
 }
 
 type PendingOrder = Awaited<ReturnType<typeof listPendingInternalOrders>>[number];
-
-// ---------------------------------------------------------------------------
-// Matching (pure — unit-tested)
-// ---------------------------------------------------------------------------
-
-/** Note equality: case-insensitive, trimmed. */
-export function noteMatches(tx: { note: string }, order: { paymentRef: string | null }): boolean {
-  if (!order.paymentRef) return false;
-  return tx.note.trim().toLowerCase() === order.paymentRef.trim().toLowerCase();
-}
-
-/**
- * Classify a transfer against an order:
- *  - "match": note matches AND received >= expected - tolerance (exact, within
- *    tolerance, or overpaid → deliver).
- *  - "underpaid": note matches but received is short beyond tolerance.
- *  - "none": note doesn't match.
- * (The task's rule is |received-expected| <= tolerance for a match; we also
- * deliver on overpayment, since refusing a buyer who paid more is worse.)
- */
-export function classifyTx(
-  tx: { note: string; amount: number },
-  order: { paymentRef: string | null; totalAmount: Decimal.Value },
-  tolerance = AMOUNT_TOLERANCE,
-): "match" | "underpaid" | "none" {
-  if (!noteMatches(tx, order)) return "none";
-  const expected = new Decimal(order.totalAmount).toNumber();
-  if (tx.amount - expected >= -tolerance) return "match";
-  return "underpaid";
-}
-
-/**
- * Amount fallback for when the note is missing/garbled (the live probe showed
- * `/sapi/v1/pay/transactions` returns an empty `note` for C2C transfers, so we
- * cannot rely on the memo alone).
- *
- * BEST FIT, not "any candidate below the amount": M-14 (backend audit
- * 2026-07-31) fixed an earlier version of this function that rejected any
- * overpayment outright (a buyer rounding up matched nothing). The first
- * attempt at that fix made EVERY order priced at or below the received
- * amount a "candidate" and refused whenever ≥2 qualified — but with
- * unique-cents enabled (every order's total distinct by design, see
- * computeUniqueCents), a payment for any order except the cheapest pending
- * one would also clear every cheaper order's threshold and get refused as
- * "ambiguous", which defeats the entire point of unique-cents disambiguation.
- *
- * Correct approach: among orders whose total the payment covers (within
- * `tolerance`), pick the one with the LARGEST total — the closest match to
- * what was actually paid. Only refuse when ≥2 candidates TIE at that same
- * largest qualifying total (which is essentially never, since unique-cents
- * makes totals distinct) — a real ambiguity safeguard again, not one that
- * fires on every multi-order state.
- *
- * Overpayment is still accepted (not rejected outright) but is now CAPPED
- * (`overpaymentCap`): once the best-fit candidate is chosen, an amount that
- * exceeds its total by more than the cap is treated as unrelated money, not
- * this order overpaid, and the whole call refuses (falls through to
- * "unmatched") rather than auto-delivering on a guess — see the cap's own
- * doc-comment above for why an unbounded ceiling is unsafe with just one
- * pending order.
- *
- * Returns the sole in-range, uncapped, untied candidate or null. A tx that's
- * short of EVERY candidate beyond tolerance yields no hits here — see
- * `matchUnderpaidByAmount` for the mirrored short-side search memo-less rails
- * use to flag underpaid instead of silently leaving it unmatched.
- */
-export function matchByAmount<T extends { totalAmount: Decimal.Value }>(
-  tx: { amount: number },
-  orders: readonly T[],
-  tolerance = AMOUNT_TOLERANCE,
-): T | null {
-  const candidates = orders
-    .map((order) => ({ order, total: new Decimal(order.totalAmount).toNumber() }))
-    .filter(({ total }) => total - tx.amount <= tolerance);
-  if (candidates.length === 0) return null;
-
-  const maxTotal = Math.max(...candidates.map((c) => c.total));
-  const atMax = candidates.filter((c) => c.total === maxTotal);
-  if (atMax.length !== 1) return null; // tie at the best-fit total — genuinely ambiguous
-
-  const best = atMax[0]!;
-  if (tx.amount - best.total > overpaymentCap(best.total)) return null; // too different — likely unrelated money
-
-  return best.order;
-}
-
-/**
- * Mirror of `matchByAmount` for the short side, used by the memo-less Bybit
- * rails (Internal Transfer, BSC) once `matchByAmount` itself finds no clean
- * match: a transfer maps to a "genuinely short" candidate ONLY when exactly
- * one pending order both (a) exceeds the received amount by MORE than
- * `tolerance` (a plain float-noise short-fall already matched above and never
- * reaches this function) and (b) the received amount is still at least
- * `UNDERPAID_FLOOR_PERCENT` of that order's total — a floor, not just an
- * upper bound, so a wholly unrelated tiny stray deposit against a large
- * pending order never gets attributed to it (see the floor's own
- * doc-comment above for why: flipping an order to UNDERPAID removes it from
- * the matcher's own pending pool, which would orphan the buyer's real
- * payment when it lands later). Same ambiguity guard as `matchByAmount` — ≥2
- * qualifying candidates refuses rather than guessing which order the buyer
- * meant to pay. Returns the sole candidate or null; the caller routes a hit
- * to that rail's `markUnderpaid` equivalent instead of recording the deposit
- * as unmatched.
- */
-export function matchUnderpaidByAmount<T extends { totalAmount: Decimal.Value }>(
-  tx: { amount: number },
-  orders: readonly T[],
-  tolerance = AMOUNT_TOLERANCE,
-): T | null {
-  const hits = orders.filter((o) => {
-    const total = new Decimal(o.totalAmount).toNumber();
-    const shortfall = total - tx.amount;
-    return shortfall > tolerance && tx.amount >= total * UNDERPAID_FLOOR_PERCENT;
-  });
-  return hits.length === 1 ? hits[0]! : null;
-}
 
 // ---------------------------------------------------------------------------
 // Signed Binance REST (read-only)
@@ -244,22 +102,26 @@ function firstNonEmpty(...vals: unknown[]): string {
  * Exported for the fixture test that pins the real Binance payload shape. */
 export function normalizeTx(raw: Record<string, unknown>): BinanceTx | null {
   const txId = raw.transactionId ?? raw.transactionGroupId ?? raw.id;
-  const amount = Number(raw.amount);
+  // Binance reports amount as a decimal STRING — parse it directly with
+  // Decimal instead of round-tripping through Number(), which loses
+  // precision. parsePositiveAmount also absorbs a malformed string (e.g. a
+  // thousands separator) as a skipped row instead of a thrown exception —
+  // see its doc-comment in amountMatching.ts.
+  const amount = parsePositiveAmount(raw.amount);
   const currency = String(raw.currency ?? raw.asset ?? "");
   // Buyer memo: try the known memo-carrying fields, skipping empty strings.
   // NB: `orderId` is Binance's OWN id (not our paymentRef) — never use it here.
   const note = firstNonEmpty(raw.note, raw.remark, raw.message);
-  if (txId == null || !Number.isFinite(amount) || amount <= 0) return null; // received only
+  if (txId == null || amount == null) return null; // received only
   return { txId: String(txId), note, amount, currency };
 }
 
 const CONNECT_RETRY_ATTEMPTS = 3;
 const CONNECT_RETRY_DELAY_MS = 1500;
-// Only applied to fallback-mirror attempts (see fallThroughMirrors) — the
-// primary host keeps relying on undici's implicit default, unchanged from
-// before fallback support existed. Bounds the worst case once there are
-// multiple mirrors to walk through: an unreachable host fails fast instead of
-// hanging on undici's longer implicit timeout per attempt.
+// Applied to fallback-mirror attempts (see fallThroughMirrors), shorter than
+// the primary host's own gatewayRead budget: bounds the worst case once
+// there are multiple mirrors to walk through, so an unreachable host fails
+// fast instead of eating a full gatewayRead-sized wait per mirror.
 const FALLBACK_CONNECT_TIMEOUT_MS = 8_000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -268,11 +130,26 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * out of fetchIncomingTransfers so each retry/fallback attempt gets a fresh
  * timestamp/signature (Binance rejects a stale timestamp outside recvWindow).
  * The signature covers only the query string, never the host, so calling this
- * against a mirror host is safe. `timeoutMs` is only set for fallback attempts
- * (see FALLBACK_CONNECT_TIMEOUT_MS) — omitted, the primary path behaves
- * exactly as it always has.
+ * against a mirror host is safe. `timeoutMs` defaults to `HTTP_TIMEOUT_MS.gatewayRead`
+ * for the primary host; fallback-mirror attempts (see fallThroughMirrors)
+ * pass the shorter `FALLBACK_CONNECT_TIMEOUT_MS` explicitly. Either way the
+ * call is now bounded — before this task the primary host relied on
+ * undici's implicit (much longer) default, unlike the mirror path.
+ *
+ * The credential rides in a header (X-MBX-APIKEY), not the query string —
+ * the same shape Bybit and NOWPayments have (Important #1, Task 3 review
+ * follow-up: Binance was the one header-credential client this task left
+ * unwrapped). Routed through `fetchWithTimeoutSafe` (`@app/core/http`) so a
+ * rejected fetch()'s `.cause` — which Node's fetch sometimes populates with
+ * the failed request, headers included — never reaches `requestWithRetries`'
+ * warn log or `fetchIncomingTransfers`' `logger.error({ err })` / poll-health
+ * heartbeat below.
  */
-async function requestIncomingTransfers(cfg: BinanceInternalConfig, apiBase: string, timeoutMs?: number): Promise<Response> {
+async function requestIncomingTransfers(
+  cfg: BinanceInternalConfig,
+  apiBase: string,
+  timeoutMs: number = HTTP_TIMEOUT_MS.gatewayRead,
+): Promise<Response> {
   const params = new URLSearchParams({
     startTime: String(Date.now() - 60 * 60 * 1000),
     limit: "100",
@@ -281,10 +158,11 @@ async function requestIncomingTransfers(cfg: BinanceInternalConfig, apiBase: str
   });
   const qs = params.toString();
   const url = `${apiBase}/sapi/v1/pay/transactions?${qs}&signature=${sign(qs, cfg.apiSecret)}`;
-  return fetch(url, {
-    headers: { "X-MBX-APIKEY": cfg.apiKey },
-    ...(timeoutMs != null ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
-  });
+  return fetchWithTimeoutSafe(
+    url,
+    { headers: { "X-MBX-APIKEY": cfg.apiKey }, timeoutMs },
+    "Binance pay/transactions request", // never log err — it may carry the X-MBX-APIKEY header
+  );
 }
 
 /** Up to CONNECT_RETRY_ATTEMPTS tries against ONE host, CONNECT_RETRY_DELAY_MS
@@ -355,7 +233,24 @@ export async function fetchIncomingTransfers(cfg: BinanceInternalConfig): Promis
   if (!res.ok) {
     throw new Error(`Binance pay/transactions HTTP ${res.status}: ${await res.text().catch(() => "")}`);
   }
-  const body = (await res.json()) as { data?: Record<string, unknown>[] };
+  let body: { data?: Record<string, unknown>[] };
+  try {
+    body = (await res.json()) as { data?: Record<string, unknown>[] };
+  } catch (err) {
+    // AbortSignal.timeout stays attached to the response body in undici, so a
+    // peer that sends headers and then stalls the body makes res.json()
+    // reject with this same TimeoutError shape (http.ts) — distinguish that
+    // from a genuinely malformed body so lastError doesn't blame the gateway
+    // for sending garbage when it actually just hung.
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new Error("Binance pay/transactions response body read timed out");
+    }
+    // A 200 with an unparseable body (HTML error page, truncated response, …)
+    // — turn the raw SyntaxError into a readable failure so this cycle fails
+    // cleanly (logged + a failed heartbeat, see pollOnce's catch) instead of
+    // an opaque "Unexpected token < in JSON" bubbling up.
+    throw new Error("Binance pay/transactions returned an unparseable response");
+  }
   const rows = body.data ?? [];
   return rows
     .map(normalizeTx)
@@ -472,7 +367,7 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
 
 const backoff = createBackoffGate();
 
-export async function pollOnce(api: Api): Promise<void> {
+export async function pollOnce(api: Api, isCurrent: () => boolean = () => true): Promise<void> {
   const cfg = await resolveBinanceInternalConfig(prisma);
   if (!cfg.enabled) return;
   if (backoff.shouldSkip()) return;
@@ -488,15 +383,26 @@ export async function pollOnce(api: Api): Promise<void> {
     } else {
       logger.error({ err }, "Failed to fetch incoming Binance transfers — this poll cycle is skipped, pending orders stay unmatched until the next cycle");
     }
-    // Heartbeat so the web ops panel shows the poller is alive (and backing off).
-    await recordBinancePollHealth(prisma, {
-      lastTxCount: 0,
-      backoffUntil: backoff.backoffUntil || null,
-      consecutiveRateLimitHits: backoff.hitCount,
-      rateLimited,
-      success: false,
-      error: String(err).slice(0, 300),
-    }).catch(() => undefined);
+    // Guarded by isCurrent() (Task 11 review follow-up, Minor #3 — the same
+    // rule bybitDeposit.ts and bybitBscDeposit.ts already apply to their own
+    // identically-shaped failure branch): a stale write from an abandoned
+    // cycle is stale evidence either way — even this `success: false` write
+    // would double-count the SAME underlying failure the abandon heartbeat
+    // already recorded (once as the abandon, once here) — so the abandoned
+    // cycle's own view of this cycle's outcome is retired the moment it's
+    // abandoned, not just its optimistic half.
+    if (isCurrent()) {
+      await recordBinancePollHealth(prisma, {
+        lastTxCount: 0,
+        backoffUntil: backoff.backoffUntil || null,
+        consecutiveRateLimitHits: backoff.hitCount,
+        rateLimited,
+        success: false,
+        error: String(err).slice(0, 300),
+      }).catch(() => undefined);
+    } else {
+      logger.warn("Binance poll cycle finished after its own deadline had already abandoned it — skipping the failure heartbeat write so it can't double-count the abandon-failure heartbeat already recorded");
+    }
     return;
   }
 
@@ -504,7 +410,18 @@ export async function pollOnce(api: Api): Promise<void> {
   const now = new Date();
   const orders = await listPendingInternalOrders(prisma, now);
   if (txs.length) logger.info(`Binance poll fetched ${txs.length} transfer(s) against ${orders.length} pending order(s)`);
-  await recordBinancePollHealth(prisma, { lastTxCount: txs.length, backoffUntil: null, success: true }).catch(() => undefined);
+  // Task 11 review follow-up, Important #1 (Finding A): a cycle abandoned by
+  // pollLoop.ts's deadline keeps running in the background and can still
+  // reach this write minutes later — writing `success: true` then would
+  // overwrite the abandon-failure heartbeat the deadline already recorded
+  // and reset consecutiveFailures, making a hung poller read healthy.
+  // isCurrent() is false once this cycle has been abandoned, so the write is
+  // skipped instead.
+  if (isCurrent()) {
+    await recordBinancePollHealth(prisma, { lastTxCount: txs.length, backoffUntil: null, success: true }).catch(() => undefined);
+  } else {
+    logger.warn("Binance poll cycle finished after its own deadline had already abandoned it — skipping the success heartbeat write so it can't overwrite the abandon-failure heartbeat already recorded");
+  }
 
   await processTransfers(api, txs, orders);
 }
@@ -536,7 +453,7 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
     const order = byNote ?? (config.USE_UNIQUE_CENTS ? matchByAmount(tx, orders) : undefined);
     if (!order) {
       if (await recordUnmatchedTx(prisma, { binanceTxId: tx.txId, amount: tx.amount })) {
-        logger.info(`No pending order matched Binance transfer ${tx.txId} (note: "${tx.note}", amount: ${tx.amount}) — left for manual review`);
+        logger.info(`No pending order matched Binance transfer ${tx.txId} (note: "${tx.note}", amount: ${tx.amount.toString()}) — left for manual review`);
       }
       continue;
     }
@@ -545,10 +462,10 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
     const cls = byNote ? classifyTx(tx, order) : "match";
     if (cls === "underpaid") {
       if (await markUnderpaid(prisma, { orderId: order.id, binanceTxId: tx.txId, amount: tx.amount })) {
-        logger.warn(`Order ${order.orderCode} underpaid — received ${tx.amount}, expected ${order.totalAmount}, left PENDING for manual review`);
+        logger.warn(`Order ${order.orderCode} underpaid — received ${tx.amount.toString()}, expected ${order.totalAmount.toString()}, left PENDING for manual review`);
         await alertAdmins(
           api,
-          `⚠️ Underpaid order <code>${order.orderCode}</code>\nReceived <b>${tx.amount}</b>, expected <b>${order.totalAmount}</b> (tx ${esc(tx.txId)}).`,
+          `⚠️ Underpaid order <code>${order.orderCode}</code>\nReceived <b>${tx.amount.toString()}</b>, expected <b>${order.totalAmount.toString()}</b> (tx ${esc(tx.txId)}).`,
         );
       }
       continue;
@@ -580,27 +497,61 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
 // Self-scheduling loop (guards against overlapping runs)
 // ---------------------------------------------------------------------------
 
-let timer: ReturnType<typeof setTimeout> | undefined;
-let isRunning = false;
-let stopped = false;
+// Set by startPolling()/triggerImmediatePoll() before the loop's `run` ever
+// fires — the loop itself starts `stopped`, so `run` can never be invoked
+// while this is still undefined.
+let boundApi: Api | undefined;
+
+// ── Important #2 (Task 3 review follow-up) ──────────────────────────────────
+// Worst-case failover-to-mirror-k arithmetic: the primary host's own retry
+// budget (requestWithRetries, unchanged by this task) is
+// CONNECT_RETRY_ATTEMPTS(3) × HTTP_TIMEOUT_MS.gatewayRead(10s) +
+// 2 × CONNECT_RETRY_DELAY_MS(1.5s) sleeps between attempts = 33s. Each
+// subsequent fallback-mirror attempt (fallThroughMirrors) is bounded at
+// FALLBACK_CONNECT_TIMEOUT_MS(8s), one attempt per mirror, no sleep between.
+// BINANCE_API_BASE_FALLBACKS defaults to FIVE mirrors (config.ts), so the
+// worst case — primary exhausted, every mirror also unreachable/slow — is
+// 33s + 5 × 8s = 73s. The default cycleTimeoutMs (`max(3 * intervalMs,
+// 60_000)` = 60s at the default 10s POLL_INTERVAL_SECONDS) is BELOW that
+// worst case: a cycle could be abandoned mid-failover on a mirror attempt
+// that would have succeeded seconds later, and the abandon heartbeat would
+// carry only the generic "did not finish within 60000ms" message instead of
+// the real "all Binance hosts unreachable" error. 90_000 gives ~17s of
+// margin above the 73s worst case so the cycle always has time to either
+// succeed via a mirror or genuinely exhaust every host and report why.
+export const BINANCE_CYCLE_TIMEOUT_MS = 90_000;
+
+const loop = createPollLoop({
+  name: "Binance Internal Transfer",
+  intervalMs: config.POLL_INTERVAL_SECONDS * 1000,
+  cycleTimeoutMs: BINANCE_CYCLE_TIMEOUT_MS,
+  run: (isCurrent) => pollOnce(boundApi!, isCurrent),
+  // A hung cycle abandoned past its deadline must still show up as a failed
+  // heartbeat on the ops panel, not silence — the existing failure branch in
+  // pollOnce() already writes the same shape on a fetch/HTTP error.
+  onCycleTimeout: (elapsedMs) =>
+    recordBinancePollHealth(prisma, {
+      lastTxCount: 0,
+      // Read the same module-level backoff gate the failure branch above
+      // reads, so an abandoned cycle doesn't erase a live "backing off, N
+      // rate-limit hits" state the panel is currently showing — the gate is
+      // untouched by the timeout itself, only this heartbeat write is new.
+      backoffUntil: backoff.backoffUntil || null,
+      consecutiveRateLimitHits: backoff.hitCount,
+      // Not a rate-limit event: this cycle timed out (hung), it wasn't told
+      // by the gateway to back off. rateLimited stays false so the abandon
+      // (a) doesn't stamp lastRateLimitAt with a rate-limit that didn't
+      // happen, and (b) still increments consecutiveFailures — a hang is a
+      // genuine failure, unlike a rate-limit hit, which deliberately leaves
+      // that counter alone.
+      rateLimited: false,
+      success: false,
+      error: `Poll cycle abandoned after ${elapsedMs}ms without finishing`,
+    }).catch(() => undefined),
+});
 
 export function startPolling(api: Api): void {
-  stopped = false;
-  const intervalMs = config.POLL_INTERVAL_SECONDS * 1000;
-  const tick = async () => {
-    if (stopped) return;
-    if (!isRunning) {
-      isRunning = true;
-      try {
-        await pollOnce(api);
-      } catch (err) {
-        logger.error({ err }, "Binance poll cycle threw an unhandled error — the cycle was aborted, polling resumes on the next tick");
-      } finally {
-        isRunning = false;
-      }
-    }
-    if (!stopped) timer = setTimeout(tick, intervalMs);
-  };
+  boundApi = api;
   // The loop always runs and self-gates each cycle on
   // resolveBinanceInternalConfig().enabled, so enabling Binance Internal in
   // web-admin Settings takes effect without a restart. The boot log just
@@ -623,13 +574,11 @@ export function startPolling(api: Api): void {
     }
     logger.info(`Binance Internal Transfer poller active (every ${config.POLL_INTERVAL_SECONDS}s)`);
   });
-  timer = setTimeout(tick, intervalMs);
+  loop.start();
 }
 
 export function stopPolling(): void {
-  stopped = true;
-  if (timer) clearTimeout(timer);
-  timer = undefined;
+  loop.stop();
 }
 
 /**
@@ -638,15 +587,12 @@ export function stopPolling(): void {
  * up to POLL_INTERVAL_SECONDS for the next scheduled tick. Pure latency
  * optimization: never lowers the confirmation bar, just shrinks the window
  * before the first check happens. Fire-and-forget by design (never awaited,
- * never throws) and shares the timer loop's `isRunning` guard so it can't
- * race a tick already in flight.
+ * never throws) and shares the loop's overlap guard so it can't race a cycle
+ * already in flight. A no-op before startPolling() has run (the loop starts
+ * stopped) — the only callers (checkout.ts, walletTopup.ts) are reachable
+ * only after main.ts's boot has already called startPolling() synchronously.
  */
 export function triggerImmediatePoll(api: Api): void {
-  if (isRunning || stopped) return;
-  isRunning = true;
-  void pollOnce(api)
-    .catch((err) => logger.error({ err }, "Binance immediate poll (triggered right after order creation) threw an unhandled error — the regular timer will retry on its next tick"))
-    .finally(() => {
-      isRunning = false;
-    });
+  boundApi = api;
+  loop.triggerNow();
 }

@@ -27,8 +27,11 @@ const SETTINGS_DATA = {
   payMethodState: {
     tokopay: { enabled: true, configured: true },
   },
-  bybitHealth: null,
-  bybitBscHealth: null,
+  // Non-nullable verdict shape from evaluatePollHealth (packages/core/src/
+  // payments/pollHealth.ts) — the server always returns a verdict, even when
+  // the rail is disabled or has never run, so there is no null case here.
+  bybitHealth: { status: "unmonitored", detail: "Health monitoring is disabled for this poller." },
+  bybitBscHealth: { status: "unmonitored", detail: "Health monitoring is disabled for this poller." },
   isOwner: false,
   twoFaEnabled: false,
   twoFaPending: null,
@@ -523,6 +526,29 @@ describe("SettingsPage", () => {
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
 
     expect(await screen.findByText("Saved successfully")).toBeInTheDocument();
+  });
+
+  it("shows the Bybit poller health that the settings endpoint already returns", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...SETTINGS_DATA,
+          payMethodState: {
+            ...SETTINGS_DATA.payMethodState,
+            bybit: { enabled: true, configured: true },
+            bybit_bsc: { enabled: true, configured: true },
+          },
+          bybitHealth: { status: "green", detail: "Cycles are completing normally; last run 2 minute(s) ago." },
+          bybitBscHealth: { status: "red", detail: "The poller has never completed a cycle." },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(<SettingsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Shop name")).toBeInTheDocument());
+
+    expect(screen.getByText("Cycles are completing normally; last run 2 minute(s) ago.")).toBeInTheDocument();
+    expect(screen.getByText("The poller has never completed a cycle.")).toBeInTheDocument();
   });
 
   it("Export Configuration downloads the exported fields", async () => {

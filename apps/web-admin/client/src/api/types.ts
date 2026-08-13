@@ -95,13 +95,25 @@ export interface RecentOrderRow {
 
 export type HealthLevel = "green" | "yellow" | "red" | "unmonitored";
 
+/** One rail's health verdict, computed server-side by `evaluatePollHealth`
+ * (packages/core/src/payments/pollHealth.ts) — the client only renders it, it
+ * never re-derives `status` from raw heartbeat fields itself. `detail` is the
+ * human-readable reason behind `status` (e.g. why a rail reads
+ * "unmonitored" — disabled vs. no heartbeat recorded yet vs. never
+ * configured). */
+export interface HealthEntry {
+  status: HealthLevel;
+  detail: string;
+}
+
 export interface HealthStatus {
-  telegramBot: HealthLevel;
-  binance: HealthLevel;
-  bybit: HealthLevel;
-  tokopay: HealthLevel;
-  paydisini: HealthLevel;
-  nowpayments: HealthLevel;
+  telegramBot: HealthEntry;
+  binance: HealthEntry;
+  bybit: HealthEntry;
+  bybitBsc: HealthEntry;
+  tokopay: HealthEntry;
+  paydisini: HealthEntry;
+  nowpayments: HealthEntry;
 }
 
 export interface TopProductRow {

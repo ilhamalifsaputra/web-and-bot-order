@@ -23,6 +23,7 @@ import { config } from "@app/core/config";
 import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
+import type { ProcessedBybitTx } from "@prisma/client";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
@@ -34,6 +35,8 @@ import { finalizeOrderPayment } from "./pricing";
 import { BYBIT_API_KEY_KEY, BYBIT_API_SECRET_KEY } from "./bybit_deposit";
 import { parseMinAmount } from "./_minAmount";
 import { settleWalletTopup } from "./wallet_topup";
+import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
+import { AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -388,14 +391,56 @@ export async function deliverPaidBybitBscOrder(
   db: PrismaClient,
   args: { orderId: number; bybitTxId: string; amount: Decimal.Value },
 ): Promise<BybitBscDeliverResult> {
-  // 1. Claim the tx id. A duplicate means another cycle already handled it.
+  // 1. Claim the tx id. A duplicate normally means another cycle already
+  //    handled it — UNLESS the prior claim's outcome is in
+  //    AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES (today just "delivery_failed"):
+  //    that never actually delivered anything, so the tx id must stay
+  //    re-claimable, or the buyer's payment is silently lost forever behind a
+  //    stuck idempotency row (Task 16 — this rail previously had NO re-claim
+  //    at all, the only deliverPaid*Order that didn't). "unmatched" is
+  //    deliberately NOT re-claimable on this rail: this deposit is matched to
+  //    a pending order purely by amount, with no memo — see
+  //    AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES's doc-comment
+  //    (binance_internal.ts) for the money-loss scenario that excluding it
+  //    fixes (an old stray "unmatched" deposit auto-matching a later,
+  //    unrelated order that happens to share its total). The reclaim is a
+  //    compare-and-swap, not a transaction: read the row, then gate a single
+  //    `updateMany` on the exact values that read returned. `count === 1`
+  //    therefore PROVES the row was still in that state at the instant of
+  //    the write, so the captured prior values are trustworthy;
+  //    `count === 0` means a racer got there first and already_processed is
+  //    the right answer.
+  //
+  //    An interactive $transaction would be worse here, not better — see
+  //    deliverPaidInternalOrder (binance_internal.ts) step 1 for the full
+  //    reasoning (WAL + Prisma's deferred-BEGIN interactive transactions make
+  //    two racing reclaims collide with SQLITE_BUSY_SNAPSHOT instead of
+  //    degrading gracefully).
+  //
+  //    `reclaimedFrom` remembers exactly what the reclaim overwrote
+  //    (outcome/orderId/amount) so step 2 can put it back if this turns out
+  //    to be a stale match — this rail's amount-matching means a reclaim can
+  //    land on the WRONG order, and unlike Binance there is no
+  //    manualMatchTx/dismissUnmatchedTx equivalent for Bybit at all, so an
+  //    unreverted stale reclaim would strand the row with no recovery path,
+  //    automatic or manual.
+  let reclaimedFrom: Pick<ProcessedBybitTx, "outcome" | "orderId" | "amount"> | null = null;
   try {
     await db.processedBybitTx.create({
       data: { bybitTxId: args.bybitTxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
   } catch (e) {
-    if (isUniqueViolation(e)) return { status: "already_processed" };
-    throw e;
+    if (!isUniqueViolation(e)) throw e;
+    const prior = await db.processedBybitTx.findUnique({ where: { bybitTxId: args.bybitTxId } });
+    if (!prior || !(AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES as readonly string[]).includes(prior.outcome)) {
+      return { status: "already_processed" };
+    }
+    const reclaimed = await db.processedBybitTx.updateMany({
+      where: { bybitTxId: args.bybitTxId, outcome: prior.outcome, orderId: prior.orderId },
+      data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
+    });
+    if (reclaimed.count === 0) return { status: "already_processed" };
+    reclaimedFrom = { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
   }
 
   // 2. Deliver. On failure, flag the ledger row so we don't silently retry
@@ -404,6 +449,26 @@ export async function deliverPaidBybitBscOrder(
     return await db.$transaction(async (tx: Tx) => {
       const order = await getOrder(tx, args.orderId);
       if (!order || !PRE_DELIVERY_STATUSES.includes(order.status)) {
+        // If step 1 re-claimed this row from a non-delivering outcome, undo
+        // that claim — restore the outcome/orderId/amount it overwrote —
+        // instead of leaving the row "matched" against an order that never
+        // got delivered. Left as "matched", the deposit would become
+        // permanently unreachable: "matched" is excluded from
+        // AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES, so it can never be re-claimed
+        // again, and
+        // there is no manual-match tool for Bybit either. A fresh claim
+        // (reclaimedFrom === null) has nothing to undo — that row simply
+        // stays "matched" against this now-stale order, the same
+        // pre-existing behavior as before this fix.
+        if (reclaimedFrom) {
+          await tx.processedBybitTx.update({
+            where: { bybitTxId: args.bybitTxId },
+            data: { outcome: reclaimedFrom.outcome, orderId: reclaimedFrom.orderId, amount: reclaimedFrom.amount },
+          });
+          logger.warn(
+            `Bybit BSC deposit ${args.bybitTxId} was amount-matched to order ${args.orderId}, but that order is no longer awaiting payment — the ledger row was returned to "${reclaimedFrom.outcome}" so a later poller pass can still re-claim it. This usually means the amount-matching heuristic picked the wrong order, or the order was delivered/expired/failed by another path first.`,
+          );
+        }
         return { status: "stale" as const };
       }
       if (order.kind === OrderKind.WALLET_TOPUP) {
@@ -451,7 +516,7 @@ export async function deliverPaidBybitBscOrder(
       }
       logger.info(`Bybit BSC order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.bybitTxId})`);
       return { status: "processing" as const, order: result.order };
-    });
+    }, { timeout: 15000 });
   } catch (e) {
     await db.processedBybitTx
       .update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "delivery_failed" } })
@@ -461,9 +526,14 @@ export async function deliverPaidBybitBscOrder(
     // attempt) and alert admins durably via the outbox — this crud layer has
     // no Bot API handle for a direct send, and a FAILED transition needs a
     // retryable alert regardless of which caller's context it originated
-    // from. Only enqueues once: a retry on the SAME bybitTxId never reaches
-    // this catch again (the ledger claim above already failed it as
-    // "already_processed" before this transaction even starts).
+    // from. Once per delivery ATTEMPT, not once per deposit: before Task 16
+    // a retry on the same bybitTxId could never reach this catch again,
+    // because the ledger claim rejected it as "already_processed" first. Now
+    // that a "delivery_failed" row is re-claimable, a later cycle can match
+    // the same deposit to a DIFFERENT pending order and fail again — so one
+    // deposit can produce more than one alert over time. That is intended:
+    // each alert names the order it actually failed against, and an admin
+    // needs to see each one.
     const order = await getOrder(db, args.orderId).catch(() => null);
     if (order) {
       const moved = await tryTransitionOrderStatus(db, {
@@ -537,7 +607,7 @@ export async function markUnderpaidBybitBsc(
         to: OrderStatus.UNDERPAID,
         meta: `bybitTxId=${args.bybitTxId}`,
       });
-    });
+    }, { timeout: 15000 });
   } catch (e) {
     await db.processedBybitTx
       .update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "underpaid_flag_failed" } })
@@ -562,69 +632,27 @@ export async function recordUnmatchedBybitBscTx(db: Db, args: { bybitTxId: strin
 // ---- Poller heartbeat (written by the order-bot poller, read by the web) ----
 // Independent from Internal Transfer's heartbeat so the two pollers' health
 // is diagnosable separately — they can fail for unrelated reasons (on-chain
-// network congestion vs. an API outage).
+// network congestion vs. an API outage). Delegates to the generic per-rail
+// store (packages/db/src/crud/poll_health.ts, Task 10) — see that module for
+// the JSON-parse / sticky-field / consecutive-failure rules this used to
+// carry directly, including why a rate-limit hit neither increments nor
+// resets `consecutiveFailures`.
 
 /** Single settings key holding the Bybit BSC poller's last-cycle heartbeat as JSON. */
-export const BYBIT_BSC_POLL_HEALTH_KEY = "bybit_bsc_poll_health";
+export const BYBIT_BSC_POLL_HEALTH_KEY = POLL_HEALTH_KEYS.bybitBsc;
 
-export interface BybitBscPollHealth {
-  lastRun: string | null;
-  /** Last cycle that completed WITHOUT error (0 new deposits still counts). */
-  lastSuccessAt: string | null;
-  lastTxCount: number | null;
-  backoffUntil: string | null;
-  /** Current consecutive rate-limit hit streak (0 when healthy). */
-  consecutiveRateLimitHits: number | null;
-  /** Sticky — last time a rate-limit hit occurred, even after recovery. */
-  lastRateLimitAt: string | null;
-  /** Consecutive non-rate-limit failures (network/HTTP errors); 0 when
-   * healthy. Tracked separately from rate limits, which already have their
-   * own backoff/counter above — `lastRun` alone can't surface this, since it
-   * advances on every cycle whether that cycle succeeded or failed. */
-  consecutiveFailures: number | null;
-  /** Sticky — last error message seen (any failure type), for diagnostics. */
-  lastError: string | null;
-}
-
-const EMPTY_BYBIT_BSC_HEALTH: BybitBscPollHealth = {
-  lastRun: null,
-  lastSuccessAt: null,
-  lastTxCount: null,
-  backoffUntil: null,
-  consecutiveRateLimitHits: null,
-  lastRateLimitAt: null,
-  consecutiveFailures: null,
-  lastError: null,
-};
+/** Alias of the generic `PollHealth` shape — byte-identical to the old
+ * standalone interface, kept as a named type so existing imports resolve
+ * unchanged. */
+export type BybitBscPollHealth = PollHealth;
 
 /** Read the Bybit BSC poller heartbeat; all-null when it has never run. */
-export async function getBybitBscPollHealth(db: Db): Promise<BybitBscPollHealth> {
-  const raw = await getSetting(db, BYBIT_BSC_POLL_HEALTH_KEY);
-  if (!raw) return EMPTY_BYBIT_BSC_HEALTH;
-  try {
-    const p = JSON.parse(raw) as Partial<BybitBscPollHealth>;
-    return {
-      lastRun: p.lastRun ?? null,
-      lastSuccessAt: p.lastSuccessAt ?? null,
-      lastTxCount: typeof p.lastTxCount === "number" ? p.lastTxCount : null,
-      backoffUntil: p.backoffUntil ?? null,
-      consecutiveRateLimitHits: typeof p.consecutiveRateLimitHits === "number" ? p.consecutiveRateLimitHits : null,
-      lastRateLimitAt: p.lastRateLimitAt ?? null,
-      consecutiveFailures: typeof p.consecutiveFailures === "number" ? p.consecutiveFailures : null,
-      lastError: p.lastError ?? null,
-    };
-  } catch {
-    return EMPTY_BYBIT_BSC_HEALTH;
-  }
+export function getBybitBscPollHealth(db: Db): Promise<BybitBscPollHealth> {
+  return getPollHealth(db, "bybitBsc");
 }
 
-/** Record one Bybit BSC poll cycle's heartbeat. Called by the poller each tick.
- * `lastRateLimitAt`/`lastError` are sticky (carried forward from the prior
- * heartbeat) so a rare hit stays visible after the poller recovers.
- * `consecutiveFailures` counts non-rate-limit failures only — a rate-limit
- * hit neither increments nor resets it, since that streak already has its own
- * dedicated counter/backoff above. */
-export async function recordBybitBscPollHealth(
+/** Record one Bybit BSC poll cycle's heartbeat. Called by the poller each tick. */
+export function recordBybitBscPollHealth(
   db: Db,
   args: {
     lastTxCount: number;
@@ -635,26 +663,5 @@ export async function recordBybitBscPollHealth(
     error?: string | null;
   },
 ): Promise<void> {
-  const prev = await getBybitBscPollHealth(db);
-  const lastRateLimitAt = args.rateLimited ? new Date().toISOString() : prev.lastRateLimitAt;
-  const consecutiveFailures = args.success
-    ? 0
-    : args.rateLimited
-      ? prev.consecutiveFailures ?? 0
-      : (prev.consecutiveFailures ?? 0) + 1;
-  const nowIso = new Date().toISOString();
-  await setSetting(
-    db,
-    BYBIT_BSC_POLL_HEALTH_KEY,
-    JSON.stringify({
-      lastRun: nowIso,
-      lastSuccessAt: args.success ? nowIso : prev.lastSuccessAt,
-      lastTxCount: args.lastTxCount,
-      backoffUntil: args.backoffUntil ? new Date(args.backoffUntil).toISOString() : null,
-      consecutiveRateLimitHits: args.consecutiveRateLimitHits ?? 0,
-      lastRateLimitAt,
-      consecutiveFailures,
-      lastError: args.success ? prev.lastError : (args.error ?? prev.lastError) ?? null,
-    } satisfies BybitBscPollHealth),
-  );
+  return recordPollHealth(db, "bybitBsc", args);
 }

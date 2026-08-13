@@ -151,6 +151,75 @@ describe("checkTransaction", () => {
     expect(message).toMatch(/unparseable/);
     expect(message).not.toContain(FULL_CREDS.apiKey);
   });
+
+  // AbortSignal.timeout stays attached to the response body in undici
+  // (http.ts), so a peer that sends headers and then stalls the body makes
+  // res.json() reject with this same TimeoutError shape — a DIFFERENT case
+  // from the fetch()-level rejection tested above (that one never gets a
+  // response at all). Must not be reported as "unparseable" — that would
+  // tell the reconcile poller the gateway sent back garbage, when it
+  // actually just hung.
+  it("reports a response-body-read timeout distinctly from a genuinely unparseable response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" });
+        },
+      }),
+    );
+    let caught: unknown;
+    try {
+      await checkTransaction(FULL_CREDS, { refId: "ORD-7B", amountIdr: 1000 });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/timed out/);
+    expect(message).not.toMatch(/unparseable/);
+    expect(message).not.toContain(FULL_CREDS.apiKey);
+  });
+
+  it("checkTransaction bounds the request so a hung gateway cannot stall the reconcile poller forever", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, data: { status: "Paid", unique_code: "TRX-8" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await checkTransaction(FULL_CREDS, { refId: "ORD-8", amountIdr: 1000 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("never leaks the api-key-bearing query string when the request times out", async () => {
+    // Simulate what AbortSignal.timeout produces: fetch() rejects with a
+    // DOMException named "TimeoutError" once the deadline elapses.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" })),
+    );
+    let caught: unknown;
+    try {
+      await checkTransaction(FULL_CREDS, { refId: "ORD-9", amountIdr: 1000 });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    // Tightened to pin the HttpTimeoutError branch actually running, not just
+    // that the message happens to be credential-free either way (Minor 9,
+    // Task 3 review follow-up): the old `/timed out|network error/`
+    // alternation would still pass if the timeout branch silently stopped
+    // firing and this fell through to the generic network-error message.
+    expect(message).toMatch(/timed out/);
+    expect(message).not.toContain(FULL_CREDS.apiKey);
+    expect(message).not.toContain("http");
+  });
 });
 
 describe("createTransaction", () => {
@@ -204,5 +273,18 @@ describe("createTransaction", () => {
     expect(message).toMatch(/network error/);
     expect(message).not.toContain(FULL_CREDS.apiKey);
     expect(message).not.toContain("http");
+  });
+
+  it("bounds the request so a hung gateway cannot stall checkout forever", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, data: { unique_code: "TRX-14" } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await createTransaction(FULL_CREDS, { refId: "ORD-14", amountIdr: 1000 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
   });
 });

@@ -20,6 +20,7 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Decimal } from "../money";
 import { logger } from "../logger";
+import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "../http";
 
 export const NOWPAYMENTS_API_KEY_KEY = "nowpayments_api_key";
 export const NOWPAYMENTS_IPN_SECRET_KEY = "nowpayments_ipn_secret";
@@ -39,7 +40,19 @@ export interface NowpaymentsInvoice {
   invoiceUrl: string;
 }
 
-/** Create a hosted invoice for an order. Never log the request body or the api-key header. */
+/**
+ * Create a hosted invoice for an order. Never log the request body or the
+ * api-key header. `fetch()` goes through `fetchWithTimeoutSafe`
+ * (`@app/core/http`), not a bare call, because Node's fetch sometimes
+ * attaches the failed request — headers included, one of which carries the
+ * api-key credential — to a rejected error's `.cause`. `fetchWithTimeoutSafe`
+ * catches any rejection (a genuine network failure or the `timeoutMs`
+ * deadline elapsing) and rethrows a fresh, static, credential-free Error
+ * before the original can escape, so a naive `logger.error({ err })`
+ * downstream never sees the header. It also bounds the call so a gateway
+ * that accepts the connection and never answers (or stalls the body) can't
+ * stall checkout.
+ */
 export async function createInvoice(
   creds: NowpaymentsCreds,
   args: {
@@ -50,26 +63,44 @@ export async function createInvoice(
     cancelUrl?: string;
   },
 ): Promise<NowpaymentsInvoice> {
-  const res = await fetch(`${API_BASE}/v1/invoice`, {
-    method: "POST",
-    headers: {
-      "x-api-key": creds.apiKey,
-      "Content-Type": "application/json",
+  const res = await fetchWithTimeoutSafe(
+    `${API_BASE}/v1/invoice`,
+    {
+      method: "POST",
+      headers: {
+        "x-api-key": creds.apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        price_amount: new Decimal(args.amountUsd).toFixed(2),
+        price_currency: "usd",
+        pay_currency: creds.payCurrency,
+        order_id: args.orderId,
+        ipn_callback_url: args.ipnCallbackUrl,
+        success_url: args.successUrl,
+        cancel_url: args.cancelUrl,
+      }),
+      timeoutMs: HTTP_TIMEOUT_MS.gatewayWrite, // a human is waiting at checkout for this to resolve
     },
-    body: JSON.stringify({
-      price_amount: new Decimal(args.amountUsd).toFixed(2),
-      price_currency: "usd",
-      pay_currency: creds.payCurrency,
-      order_id: args.orderId,
-      ipn_callback_url: args.ipnCallbackUrl,
-      success_url: args.successUrl,
-      cancel_url: args.cancelUrl,
-    }),
-  });
+    "NOWPayments invoice request", // never log err — it may carry the api-key header
+  );
   if (!res.ok) {
     throw new Error(`NOWPayments invoice HTTP ${res.status}`); // never log the body — header carries the api key
   }
-  const body = (await res.json()) as { id?: unknown; invoice_url?: unknown };
+  let body: { id?: unknown; invoice_url?: unknown };
+  try {
+    body = (await res.json()) as { id?: unknown; invoice_url?: unknown };
+  } catch (err) {
+    // AbortSignal.timeout stays attached to the response body in undici, so a
+    // peer that sends headers and then stalls the body makes res.json()
+    // reject with this same TimeoutError shape (http.ts) — distinguish that
+    // from a genuinely malformed body so the caller isn't told the gateway
+    // sent garbage when it actually just hung.
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new Error("NOWPayments invoice response body read timed out"); // never log the body — header carries the api key
+    }
+    throw new Error("NOWPayments invoice response is unparseable"); // never log the body — header carries the api key
+  }
   if (typeof body.id !== "string" && typeof body.id !== "number") {
     throw new Error("NOWPayments invoice response missing id");
   }
@@ -99,13 +130,31 @@ export async function getPaymentStatus(
   creds: NowpaymentsCreds,
   args: { invoiceId: string },
 ): Promise<NowpaymentsStatus> {
-  const res = await fetch(`${API_BASE}/v1/invoice/${encodeURIComponent(args.invoiceId)}`, {
-    headers: { "x-api-key": creds.apiKey },
-  });
+  const res = await fetchWithTimeoutSafe(
+    `${API_BASE}/v1/invoice/${encodeURIComponent(args.invoiceId)}`,
+    {
+      headers: { "x-api-key": creds.apiKey },
+      timeoutMs: HTTP_TIMEOUT_MS.gatewayRead, // reconcile poller — the next tick retries if this is slow
+    },
+    "NOWPayments status request", // never log err — it may carry the api-key header
+  );
   if (!res.ok) {
     throw new Error(`NOWPayments status HTTP ${res.status}`);
   }
-  const body = (await res.json()) as Record<string, unknown>;
+  let body: Record<string, unknown>;
+  try {
+    body = (await res.json()) as Record<string, unknown>;
+  } catch (err) {
+    // AbortSignal.timeout stays attached to the response body in undici, so a
+    // peer that sends headers and then stalls the body makes res.json()
+    // reject with this same TimeoutError shape (http.ts) — distinguish that
+    // from a genuinely malformed body so the caller isn't told the gateway
+    // sent garbage when it actually just hung.
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new Error("NOWPayments status response body read timed out");
+    }
+    throw new Error("NOWPayments status response is unparseable");
+  }
   const statusStr = String(body.payment_status ?? "").toLowerCase();
   const amountRaw = body.actually_paid ?? body.pay_amount ?? 0;
   let amount: Decimal;

@@ -11,7 +11,14 @@ import {
   createCatalogProduct,
   createDenomination,
   bulkAddStock,
+  BINANCE_UID_KEY,
+  BINANCE_API_KEY_KEY,
+  BINANCE_API_SECRET_KEY,
+  BINANCE_POLL_HEALTH_KEY,
+  POLL_HEALTH_KEYS,
 } from "@app/db";
+import { TOKOPAY_MERCHANT_KEY, TOKOPAY_SECRET_KEY } from "@app/core/payments/tokopay";
+import { TOKOPAY_POLL_STALE_MS } from "@app/core/payments/reconcileCycleBudget";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
 import { makeSession, newJti, sessionJtiKey } from "../src/auth";
@@ -185,11 +192,179 @@ describe("GET /api/dashboard/health", () => {
     // setup-env.ts sets BOT_TOKEN to a non-blank test value and resetDb()
     // clears any Settings-row override, so resolveBotCredentials() falls
     // through to that env token — "green", not "red" — in this test env.
-    expect(body.telegramBot).toBe("green");
-    expect(body.bybit).toBe("unmonitored");
-    expect(body.tokopay).toBe("unmonitored");
-    expect(body.paydisini).toBe("unmonitored");
-    expect(body.nowpayments).toBe("unmonitored");
+    expect(body.telegramBot.status).toBe("green");
+    expect(body.bybit.status).toBe("unmonitored");
+    expect(body.bybitBsc.status).toBe("unmonitored");
+    expect(body.tokopay.status).toBe("unmonitored");
+    expect(body.paydisini.status).toBe("unmonitored");
+    expect(body.nowpayments.status).toBe("unmonitored");
+  });
+
+  // The headline bug this task fixes: a poller that is enabled but has gone
+  // stale silently (lastRun hours old, consecutiveFailures still 0 because it
+  // never got to run again) read "green" on this endpoint while the watchdog
+  // was simultaneously paging admins about the same poller. Today this
+  // asserts "green" — evaluatePollHealth's staleness rule (Rule 5) is what
+  // must turn it "red".
+  it("reports an enabled poller whose last cycle is two hours old as red, not green", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "test-uid");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "test-key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "test-secret");
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      BINANCE_POLL_HEALTH_KEY,
+      JSON.stringify({ lastRun: twoHoursAgo, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.binance.status).toBe("red");
+  });
+
+  // Review finding on this task: the old endpoint tested `backoffUntil` for
+  // truthiness rather than expiry, so an expired backoff stamp still read
+  // yellow until the next successful cycle nulled it out. evaluatePollHealth's
+  // Rule 2 is expiry-aware (`backoffUntil > now`), so an expired stamp must
+  // fall through to the healthy rule instead.
+  //
+  // lastRun is set to "just now" so Rule 5 (staleness) cannot fire, and
+  // consecutiveFailures is 0 so neither Rule 4 (paging failure threshold) nor
+  // Rule 6 (yellow single-failure tier) can fire either — only Rule 2
+  // (backoff) is left able to produce anything other than green.
+  it("reports an enabled poller with an expired backoff stamp as green, not yellow", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "test-uid");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "test-key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "test-secret");
+    const justNow = new Date(Date.now() - 5_000).toISOString();
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      BINANCE_POLL_HEALTH_KEY,
+      JSON.stringify({ lastRun: justNow, backoffUntil: tenMinutesAgo, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.binance.status).toBe("green");
+  });
+
+  // Mirror case, pinned alongside the expired-backoff fix above since it's
+  // cheap: a backoff window still in the future is an intentional pause and
+  // must keep reading yellow, not fall through to green.
+  it("reports an enabled poller with a still-active backoff stamp as yellow", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "test-uid");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "test-key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "test-secret");
+    const justNow = new Date(Date.now() - 5_000).toISOString();
+    const tenMinutesFromNow = new Date(Date.now() + 10 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      BINANCE_POLL_HEALTH_KEY,
+      JSON.stringify({ lastRun: justNow, backoffUntil: tenMinutesFromNow, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.binance.status).toBe("yellow");
+  });
+
+  // Review finding on Task 12: this endpoint used to hardcode TokoPay/
+  // PayDisini/NOWPayments to evaluatePollHealth(null, { enabled: true }) —
+  // always "unmonitored", no matter how dead their reconcile poller actually
+  // was — because Task 6 wrote that hardcoding before Task 11 gave those
+  // three rails real heartbeats. This is the TokoPay equivalent of the
+  // Binance "two hours old" test above: it pins that the dashboard now reads
+  // the REAL heartbeat (getPollHealth(prisma, "tokopay")) instead of the old
+  // placeholder, so the Business Health card can actually turn this rail red
+  // like docs/TROUBLESHOOTING.md promises.
+  it("reports an enabled TokoPay poller whose last cycle is two hours old as red, not unmonitored", async () => {
+    await setSetting(prisma, TOKOPAY_MERCHANT_KEY, "merchant-1");
+    await setSetting(prisma, TOKOPAY_SECRET_KEY, "secret-1");
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.tokopay,
+      JSON.stringify({ lastRun: twoHoursAgo, lastSuccessAt: twoHoursAgo, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.tokopay.status).toBe("red");
+  });
+
+  // The other half of the same fix: `enabled` for the three QRIS rails must
+  // come from their own credentials (the same gate tokopayPollWatchdog uses),
+  // not a bare `true` — a rail the shop never configured must keep reading
+  // "unmonitored" even though a (stale, fabricated) heartbeat blob happens to
+  // sit in Settings, e.g. left over from a merchant ID that was later cleared.
+  it("reports TokoPay as unmonitored, not red, when no credentials are configured even if a stale heartbeat exists", async () => {
+    // No TOKOPAY_MERCHANT_KEY/TOKOPAY_SECRET_KEY set.
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.tokopay,
+      JSON.stringify({ lastRun: twoHoursAgo, lastSuccessAt: twoHoursAgo, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.tokopay.status).toBe("unmonitored");
+  });
+
+  // Whole-branch review finding (Task 13): this endpoint used to call
+  // evaluatePollHealth(tokopayHealth, { enabled: tokopayEnabled }) with no
+  // `staleMs`, so it applied the crypto rails' 5-minute default to TokoPay
+  // too — even though tokopayPollWatchdog (apps/order-bot/src/jobs/index.ts)
+  // uses a much wider ~866s threshold (TOKOPAY_POLL_STALE_MS) because one
+  // TokoPay reconcile cycle can legitimately make up to 50 sequential,
+  // individually-timed-out gateway calls. A webhook outage plus a slow
+  // gateway can make a genuinely healthy cycle take 8 minutes — past the
+  // 5-minute default, comfortably inside TokoPay's real threshold. Before
+  // the fix, the card read red ("the poller appears stuck or stopped")
+  // while the watchdog correctly stayed silent — the exact three-consumers-
+  // three-rules divergence this branch's P1 exists to prevent, reappearing
+  // at the seam between the watchdog task and this dashboard task.
+  it("reports an enabled TokoPay poller whose last cycle is 8 minutes old as healthy, not red, because that is within TokoPay's own wider staleness window", async () => {
+    await setSetting(prisma, TOKOPAY_MERCHANT_KEY, "merchant-1");
+    await setSetting(prisma, TOKOPAY_SECRET_KEY, "secret-1");
+    const eightMinutesAgo = new Date(Date.now() - 8 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.tokopay,
+      JSON.stringify({ lastRun: eightMinutesAgo, lastSuccessAt: eightMinutesAgo, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.tokopay.status).not.toBe("red");
+    expect(body.tokopay.status).toBe("green");
+  });
+
+  // Mirror of the test above: once a TokoPay cycle really is older than its
+  // OWN widened staleness threshold (not the crypto rails' 5-minute default),
+  // the card must still turn red — the fix must not silence a genuine hang,
+  // only stop paging on ordinary slowness.
+  it("reports an enabled TokoPay poller as red once its last cycle is older than its own widened staleness threshold", async () => {
+    await setSetting(prisma, TOKOPAY_MERCHANT_KEY, "merchant-1");
+    await setSetting(prisma, TOKOPAY_SECRET_KEY, "secret-1");
+    const staleAt = new Date(Date.now() - (TOKOPAY_POLL_STALE_MS + 5_000)).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.tokopay,
+      JSON.stringify({ lastRun: staleAt, lastSuccessAt: staleAt, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.tokopay.status).toBe("red");
   });
 });
 

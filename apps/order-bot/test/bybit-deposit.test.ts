@@ -1,7 +1,7 @@
 // setup-db MUST be first — temp DB + push before any @app import.
 import "./setup-db";
 
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   prisma,
   createBybitOrder,
@@ -11,6 +11,7 @@ import {
   recordUnmatchedBybitTx,
   listPendingBybitOrders,
   resolveBybitConfig,
+  getBybitPollHealth,
   setSetting,
   getSetting,
   deleteSetting,
@@ -26,7 +27,7 @@ import { config } from "@app/core/config";
 import { Decimal } from "@app/core/money";
 import { OrderStatus, PaymentMethod, StockStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
-import { normalizeInternalDeposit, processDeposits, pollOnce, type BybitDeposit } from "../src/payments/bybitDeposit";
+import { normalizeInternalDeposit, processDeposits, pollOnce, fetchRecentDeposits, type BybitDeposit } from "../src/payments/bybitDeposit";
 import { formatUsdt } from "../src/util/format";
 
 let sample: SampleData;
@@ -67,7 +68,7 @@ describe("normalizeInternalDeposit (Bybit internal-deposit payload shape)", () =
   it("maps a successful internal-transfer USDT deposit", () => {
     const d = normalizeInternalDeposit(real)!;
     expect(d.txId).toBe(real.txID);
-    expect(d.amount).toBeCloseTo(746.99);
+    expect(d.amount.toString()).toBe("746.99");
   });
 
   it("accepts status 2 (Success) and rejects 1 (Processing) and 3 (Failed)", () => {
@@ -92,6 +93,24 @@ describe("normalizeInternalDeposit (Bybit internal-deposit payload shape)", () =
     expect(normalizeInternalDeposit({ ...real, amount: "0" })).toBeNull();
     expect(normalizeInternalDeposit({ ...real, amount: "-5" })).toBeNull();
     expect(normalizeInternalDeposit({ coin: "USDT", status: 2 })).toBeNull(); // no txID/amount
+  });
+
+  // Task 14: normalizeInternalDeposit now parses the raw amount string
+  // directly with Decimal instead of Number(). `new Decimal("1,234.56")`
+  // THROWS (unlike the old Number() -> NaN round-trip the guard turned into
+  // a quiet skipped row) — a malformed gateway amount must stay a skipped
+  // row, not become an exception escaping into the poll loop.
+  it("rejects a malformed amount string instead of throwing", () => {
+    expect(() => normalizeInternalDeposit({ ...real, amount: "1,234.56" })).not.toThrow();
+    expect(normalizeInternalDeposit({ ...real, amount: "1,234.56" })).toBeNull();
+  });
+
+  // Task 14: preserves an amount with more precision than a double can
+  // represent exactly (the whole point of parsing the raw string directly).
+  it("preserves an amount with more precision than a double", () => {
+    const precise = "746.00000000000001";
+    expect(Number(precise).toString()).not.toBe(precise); // proves Number() really does truncate this
+    expect(normalizeInternalDeposit({ ...real, amount: precise })!.amount.toString()).toBe(precise);
   });
 });
 
@@ -253,15 +272,15 @@ describe("processDeposits (poll-loop wiring)", () => {
   }
 
   const pending = () => listPendingBybitOrders(prisma, new Date());
-  const dep = (over: Partial<BybitDeposit> & { txId: string; amount: number }): BybitDeposit => ({
-    ...over,
+  const dep = (over: { txId: string; amount: Decimal.Value } & Partial<Omit<BybitDeposit, "amount">>): BybitDeposit => ({
+    ...over, amount: new Decimal(over.amount),
   });
 
   it("flips the anchored payment bubble to the success message with paymentSuccessKb (§9.1)", async () => {
     const order = (await makeBybitOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
-    await processDeposits(api, [dep({ txId: "0xFLIP", amount: Number(order.totalAmount) })], await pending());
+    await processDeposits(api, [dep({ txId: "0xFLIP", amount: order.totalAmount })], await pending());
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
 
     expect(edits).toHaveLength(1);
@@ -277,7 +296,7 @@ describe("processDeposits (poll-loop wiring)", () => {
   it("delivers on a unique-amount match", async () => {
     const order = (await makeBybitOrder())!;
     const { api } = fakeApi();
-    await processDeposits(api, [dep({ txId: "0xT1", amount: Number(order.totalAmount) })], await pending());
+    await processDeposits(api, [dep({ txId: "0xT1", amount: order.totalAmount })], await pending());
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xT1" } }))!.outcome).toBe("matched");
   });
@@ -287,7 +306,7 @@ describe("processDeposits (poll-loop wiring)", () => {
     const b = (await makeBybitOrder())!; // unique-cents off in tests → equal totals
     expect(a.totalAmount).toEqual(b.totalAmount);
     const { api } = fakeApi();
-    await processDeposits(api, [dep({ txId: "0xT2", amount: Number(a.totalAmount) })], await pending());
+    await processDeposits(api, [dep({ txId: "0xT2", amount: a.totalAmount })], await pending());
     expect((await prisma.order.findUnique({ where: { id: a.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.order.findUnique({ where: { id: b.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xT2" } }))!.outcome).toBe("unmatched");
@@ -397,6 +416,36 @@ describe("processDeposits (poll-loop wiring)", () => {
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xDUST" } }))!.outcome).toBe("unmatched");
   });
+
+  // Finding #2 (followup-review-fixes-2): before this task, sendAccountFile
+  // (the account-file `sendDocument` upload) was unbounded — a hung upload
+  // would have blocked this whole cycle, potentially past cycleTimeoutMs,
+  // paging admins over a rail that was in fact delivering fine. Now it's
+  // bounded at TELEGRAM_DOCUMENT_TIMEOUT_MS: this test uses a `sendDocument`
+  // that never resolves and asserts (a) the order still ends up DELIVERED —
+  // the delivery itself already happened in the DB before this Telegram call
+  // — and (b) the existing outbox-fallback path still fires on the timeout,
+  // exactly as it already does for a genuine throw. Real timers (not fake) —
+  // faking timers breaks Prisma's own I/O in this test harness, same
+  // constraint tokopayReconcile's own sweep tests document.
+  it("a hung account-file upload is bounded by TELEGRAM_DOCUMENT_TIMEOUT_MS and falls through to the outbox-DM fallback", async () => {
+    const order = (await makeBybitOrder())!;
+    const api = {
+      sendMessage: vi.fn().mockResolvedValue({ message_id: 1 }),
+      sendDocument: vi.fn(() => new Promise(() => {})), // hangs forever
+      editMessageText: vi.fn().mockResolvedValue({}),
+    } as unknown as Api;
+
+    await processDeposits(api, [dep({ txId: "0xHANGDOC", amount: order.totalAmount })], await pending());
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe(OrderStatus.DELIVERED); // the DB delivery already happened before the DM attempt
+
+    const outboxRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: "ORDER_DELIVERED_DM" },
+    });
+    expect(outboxRows.length).toBeGreaterThan(0); // the same fallback a genuine sendAccountFile throw would enqueue
+  }, 15_000);
 });
 
 // ===========================================================================
@@ -428,7 +477,9 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
   }
 
   const pending = () => listPendingBybitOrders(prisma, new Date());
-  const dep = (over: Partial<BybitDeposit> & { txId: string; amount: number }): BybitDeposit => ({ ...over });
+  const dep = (over: { txId: string; amount: Decimal.Value } & Partial<Omit<BybitDeposit, "amount">>): BybitDeposit => ({
+    ...over, amount: new Decimal(over.amount),
+  });
 
   const makeTopupOrder = (amount: string) =>
     prisma.$transaction((tx) =>
@@ -439,7 +490,7 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
     const order = await makeTopupOrder("7");
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, sent, edits, sendDocumentCalls } = fakeApi();
-    await processDeposits(api, [dep({ txId: "0xTOPUP-1", amount: Number(order.totalAmount) })], await pending());
+    await processDeposits(api, [dep({ txId: "0xTOPUP-1", amount: order.totalAmount })], await pending());
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe(OrderStatus.DELIVERED);
@@ -530,6 +581,154 @@ describe("pollOnce — USE_UNIQUE_CENTS hard gate", () => {
     const fakeApi = {} as Api; // never called — pollOnce must return before touching it
     await pollOnce(fakeApi);
     expect(await getSetting(prisma, BYBIT_POLL_HEALTH_KEY)).toBeNull(); // never reached fetchRecentDeposits
+  });
+});
+
+// ===========================================================================
+// pollOnce — HTTP timeout bound + credential-leak safety (Task 3). Bybit
+// carries its API key in a header (X-BAPI-API-KEY), and until this task
+// nothing wrapped the raw fetch() call — a rejection's err.cause could carry
+// that header into a logger.error({ err }). These drive the deposit-query
+// fetch through the real poll cycle rather than calling bybitGet directly,
+// since it isn't exported.
+// ===========================================================================
+
+describe("pollOnce — HTTP timeout bound + credential-leak safety", () => {
+  beforeEach(async () => {
+    await setSetting(prisma, BYBIT_UID_KEY, "123456");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "k");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "s");
+  });
+  afterEach(async () => {
+    vi.unstubAllGlobals();
+  });
+  afterAll(async () => {
+    await deleteSetting(prisma, BYBIT_UID_KEY);
+    await deleteSetting(prisma, BYBIT_API_KEY_KEY);
+    await deleteSetting(prisma, BYBIT_API_SECRET_KEY);
+  });
+
+  it("bounds the deposit-query request so a hung gateway cannot stall the poller forever", async () => {
+    const original = config.USE_UNIQUE_CENTS;
+    config.USE_UNIQUE_CENTS = true;
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => ({ retCode: 0, result: { rows: [] } }),
+      text: async () => "",
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await pollOnce({} as Api);
+    } finally {
+      config.USE_UNIQUE_CENTS = original;
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const init = fetchMock.mock.calls[0]![1] as RequestInit | undefined;
+    expect(init?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("wraps a rejected deposit-query request in a fresh, static-message error instead of the raw (header-bearing) rejection", async () => {
+    const original = config.USE_UNIQUE_CENTS;
+    config.USE_UNIQUE_CENTS = true;
+    // Node's fetch sometimes attaches the failed request — headers included,
+    // one of which carries the X-BAPI-API-KEY credential — to a rejected
+    // error's .cause. bybitGet must catch that and rethrow a fresh, static
+    // Error before it can reach the poll-health heartbeat (or a logger).
+    const fetchMock = vi.fn().mockRejectedValue(
+      Object.assign(new Error("fetch failed"), { cause: { headers: { "X-BAPI-API-KEY": "LEAKED-API-KEY-VALUE" } } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await pollOnce({} as Api);
+    } finally {
+      config.USE_UNIQUE_CENTS = original;
+    }
+    const health = await getBybitPollHealth(prisma);
+    expect(health.lastError).not.toContain("LEAKED-API-KEY-VALUE");
+    expect(health.lastError).not.toBe("Error: fetch failed"); // proves the raw error was replaced, not just stringified
+    // "network error" (not "timed out") — a plain rejection, not a deadline —
+    // per fetchWithTimeoutSafe's shared wording (packages/core/src/http.ts).
+    expect(health.lastError).toMatch(/network error/);
+  });
+
+  // Calls fetchRecentDeposits directly (now exported) rather than only
+  // through pollOnce, so the test can inspect the actual thrown Error object
+  // — not just its message after pollOnce reduces it to a string for the DB
+  // health record — the same way tokopay/paydisini/nowpayments' own
+  // credential-leak tests do. This is what pollOnce's own DB-observed test
+  // above cannot catch: a future change that attached a `.cause` to the
+  // rethrown error would not show up in `String(err)` (health.lastError),
+  // but WOULD reach a logger via pino's cause serialization if this code
+  // ever changed to log `err` directly instead of routing through the DB
+  // heartbeat (Minor 10, Task 3 review follow-up).
+  it("fetchRecentDeposits rethrows a brand-new, cause-free Error instead of letting the header-bearing rejection escape", async () => {
+    const cfg = await resolveBybitConfig(prisma);
+    const original = Object.assign(new Error("fetch failed"), {
+      cause: { headers: { "X-BAPI-API-KEY": "LEAKED-API-KEY-VALUE" } },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(original));
+    let caught: unknown;
+    try {
+      await fetchRecentDeposits(cfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBe(original);
+    expect((caught as Error).cause).toBeUndefined();
+    expect((caught as Error).message).not.toContain("LEAKED-API-KEY-VALUE");
+    expect((caught as Error).message).not.toBe("fetch failed");
+    expect((caught as Error).message).toMatch(/network error/);
+  });
+
+  it("fetchRecentDeposits distinguishes a timeout from a network error, both still cause-free", async () => {
+    const cfg = await resolveBybitConfig(prisma);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" })),
+    );
+    let caught: unknown;
+    try {
+      await fetchRecentDeposits(cfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).cause).toBeUndefined();
+    expect((caught as Error).message).toMatch(/timed out/);
+  });
+
+  // AbortSignal.timeout stays attached to the response body in undici
+  // (http.ts), so a peer that sends headers and then stalls the body makes
+  // res.json() reject with this same TimeoutError shape — a DIFFERENT case
+  // from the fetch()-level timeout above (that one never gets a response at
+  // all). Must not be reported as "unparseable" — that would tell whoever
+  // reads lastError the gateway sent back garbage, when it actually just hung.
+  it("fetchRecentDeposits reports a response-body-read timeout distinctly from a genuinely unparseable response", async () => {
+    const cfg = await resolveBybitConfig(prisma);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => {
+          throw Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" });
+        },
+        text: async () => "",
+      }),
+    );
+    let caught: unknown;
+    try {
+      await fetchRecentDeposits(cfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/timed out/);
+    expect((caught as Error).message).not.toMatch(/unparseable/);
   });
 });
 

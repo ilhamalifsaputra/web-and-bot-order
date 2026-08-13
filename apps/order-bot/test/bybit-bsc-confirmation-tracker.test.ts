@@ -11,13 +11,14 @@ import {
   setSetting,
   deleteSetting,
 } from "@app/db";
-import { OrderStatus } from "@app/core/enums";
+import { OrderStatus, StockStatus } from "@app/core/enums";
 import { buildSampleData, resetDb, type SampleData } from "../../../tests/helpers/sampleData";
 import {
   computeConfirmations,
   fetchConfirmations,
   pollOnce,
   MAX_CONSECUTIVE_LOOKUP_FAILURES,
+  MAX_ORDERS_PER_CYCLE,
 } from "../src/payments/bybitBscConfirmationTracker";
 
 let sample: SampleData;
@@ -117,6 +118,76 @@ describe("fetchConfirmations", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 429, text: async () => "rate limited" } as Response);
     vi.stubGlobal("fetch", fetchMock);
     await expect(fetchConfirmations("0xabc", cfg)).rejects.toThrow(/rate limited/i);
+  });
+
+  it("bounds each BscScan RPC call so a hung explorer cannot stall the tracker forever", async () => {
+    const fetchMock = mockTwoCalls("0x70", { blockNumber: "0x65" });
+    await fetchConfirmations("0xabc", cfg);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // eth_blockNumber + eth_getTransactionByHash
+    for (const call of fetchMock.mock.calls) {
+      const init = (call as unknown[])[1] as RequestInit | undefined;
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+    }
+  });
+
+  // Minor 5 (Task 3 review follow-up): bscscanRpc previously had no try/catch
+  // at all, so a rejected fetch() reached pollOnce's `logger.error({ err })`
+  // raw — same M-15 shape as TokoPay/PayDisini's query-string credentials,
+  // just on the (low-severity, optional, read-only-rate-limit) BscScan key.
+  it("rethrows a brand-new, cause-free error instead of the raw (query-string-bearing) rejection", async () => {
+    const cfgWithKey = { apiBase: "https://api.bscscan.com/api", apiKey: "LEAKED-BSCSCAN-KEY" };
+    const original = Object.assign(new Error("fetch failed"), {
+      cause: { request: { url: "https://api.bscscan.com/api?...&apikey=LEAKED-BSCSCAN-KEY" } },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(original));
+    let caught: unknown;
+    try {
+      await fetchConfirmations("0xabc", cfgWithKey);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBe(original);
+    expect((caught as Error).cause).toBeUndefined();
+    expect((caught as Error).message).not.toContain("LEAKED-BSCSCAN-KEY");
+    expect((caught as Error).message).toMatch(/network error/);
+  });
+
+  it("distinguishes a timeout from a network error", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" })),
+    );
+    await expect(fetchConfirmations("0xabc", cfg)).rejects.toThrow(/timed out/);
+  });
+
+  // AbortSignal.timeout stays attached to the response body in undici
+  // (http.ts), so a peer that sends headers and then stalls the body makes
+  // res.json() reject with this same TimeoutError shape — a DIFFERENT case
+  // from the fetch()-level timeout above (that one never gets a response at
+  // all). Must not be reported as "unparseable" — that would tell the tracker
+  // the explorer sent back garbage, when it actually just hung.
+  it("reports a response-body-read timeout distinctly from a genuinely unparseable response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" });
+        },
+        text: async () => "",
+      }),
+    );
+    let caught: unknown;
+    try {
+      await fetchConfirmations("0xabc", cfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/timed out/);
+    expect((caught as Error).message).not.toMatch(/unparseable/);
   });
 });
 
@@ -269,11 +340,79 @@ describe("pollOnce (confirmation tracker poll loop)", () => {
     expect(delivered.status).toBe(OrderStatus.DELIVERED);
   });
 
+  it("forgets the lookup-failure count for an order that leaves the tracked set", async () => {
+    const order = await makeTrackedOrder("0x" + "a".repeat(64));
+    mockChain("0x65", null); // tx not found every cycle
+
+    // Accumulate failures right up to the edge of escalating, but stop short.
+    for (let i = 0; i < MAX_CONSECUTIVE_LOOKUP_FAILURES - 1; i++) await pollOnce(fakeApi);
+    let updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(updated.trackingStaleAt).toBeNull(); // not escalated yet
+
+    // Order leaves the tracked set through another path (delivered/cancelled/
+    // expired) — simulated by flipping its status away from
+    // PAYMENT_DETECTED/CONFIRMING while its bybitTxid stays set.
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.CANCELLED } });
+    await pollOnce(fakeApi); // this order is absent from listTrackedBybitBscOrders this cycle
+
+    // ...then it re-enters the tracked set (still has bybitTxid from before).
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.PAYMENT_DETECTED } });
+
+    // If the old failure count survived the gap, this single cycle would be
+    // the Nth consecutive failure and escalate immediately. It must not: a
+    // re-tracked order's grace period starts over from zero.
+    await pollOnce(fakeApi);
+    updated = await prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(updated.trackingStaleAt).toBeNull();
+    expect(updated.status).toBe(OrderStatus.PAYMENT_DETECTED);
+  });
+
   it("is a no-op with no tracked orders (no fetch call at all)", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     await pollOnce(fakeApi);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // Important #3 (Task 3 review follow-up): pollOnce now caps how many
+  // tracked orders one cycle inspects (MAX_ORDERS_PER_CYCLE), rotating the
+  // starting point each cycle so a backlog larger than the cap still gets
+  // full coverage over a few cycles instead of starving the same tail-end
+  // orders forever. cycleCursor is module state shared with every earlier
+  // test in this file, so this asserts the size of the covered set (true
+  // regardless of the cursor's leftover position from prior tests), not
+  // which specific orders land in the first batch.
+  it("caps one cycle at MAX_ORDERS_PER_CYCLE orders, then covers the rest on a later cycle", async () => {
+    const total = MAX_ORDERS_PER_CYCLE + 2;
+    // makeTrackedOrder consumes one stock unit per call — buildSampleData's
+    // default product only stocks enough for the other tests in this file,
+    // so top it up before creating `total` tracked orders in one test.
+    await prisma.stockItem.createMany({
+      data: Array.from({ length: total }, (_, i) => ({
+        productId: sample.product.id,
+        credentials: `bsc-tracker-cap-${i}@x.com:pw`,
+        status: StockStatus.AVAILABLE,
+      })),
+    });
+    for (let i = 0; i < total; i++) {
+      await makeTrackedOrder("0x" + String(i).padStart(64, "0"));
+    }
+    const seenTxHashes = new Set<string>();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        if (url.includes("eth_blockNumber")) return Promise.resolve(rpc("0x65"));
+        const match = /txhash=([^&]+)/.exec(url);
+        if (match?.[1]) seenTxHashes.add(decodeURIComponent(match[1]));
+        return Promise.resolve(rpc({ blockNumber: "0x65" }));
+      }),
+    );
+
+    await pollOnce(fakeApi);
+    expect(seenTxHashes.size).toBe(MAX_ORDERS_PER_CYCLE); // never all `total` in one cycle
+
+    await pollOnce(fakeApi); // the rotating window's next slice picks up the rest
+    expect(seenTxHashes.size).toBe(total); // full coverage within ceil(total / MAX_ORDERS_PER_CYCLE) = 2 cycles
   });
 
   // MUST run last in this file: a rate-limit hit arms the module-level

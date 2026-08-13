@@ -34,6 +34,8 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { langCode, OrderStatus, OrderKind, NotificationEvent } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { Decimal } from "@app/core/money";
+import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "@app/core/http";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
   prisma,
@@ -51,16 +53,19 @@ import {
 } from "@app/db";
 import { coreT } from "../util/i18n";
 import { esc, renderBybitBscTrackingScreen } from "../util/format";
-import { matchByAmount, matchUnderpaidByAmount } from "./binanceInternal";
+import { matchByAmount, matchUnderpaidByAmount, AMOUNT_TOLERANCE, parsePositiveAmount } from "./amountMatching";
 import { createBackoffGate } from "./pollBackoff";
+import { createPollLoop } from "./pollLoop";
+import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS, TELEGRAM_DOCUMENT_TIMEOUT_MS } from "./telegramTimeout";
 import { paymentSuccessKb, bybitBscTrackingKb } from "../keyboards/customer";
 import { sendAccountFile, walletTopupSuccessText } from "../util/delivery";
 
-// USDT itself has no on-chain "gas deducted from the sent amount" semantics
-// the way native-coin transfers do, so the same tight tolerance Internal
-// Transfer uses is appropriate here too. Revisit with real data if on-chain
-// deposits show wider variance in practice.
-const AMOUNT_TOLERANCE = 0.001; // USDT
+// AMOUNT_TOLERANCE (imported above, shared with amountMatching.ts): USDT has
+// no on-chain "gas deducted from the sent amount" semantics the way
+// native-coin transfers do, so the same tight tolerance Internal Transfer
+// uses is appropriate here too. Revisit with real data if on-chain deposits
+// show wider variance in practice.
+
 /** Bybit on-chain deposit status codes (per Bybit V5 docs — DIFFERS from the
  * internal-transfer ledger, where 2=success). This is now load-bearing for
  * PAYMENT_DETECTED/CONFIRMING tracking, not just an FYI — re-verify the full
@@ -79,7 +84,7 @@ const IN_FLIGHT_BYBIT_STATUSES: ReadonlySet<number> = new Set([
 
 export interface BybitBscDeposit {
   txId: string;
-  amount: number; // positive = received, in USDT
+  amount: Decimal; // positive = received, in USDT
   /** Raw Bybit V5 deposit status. Used to decide PAYMENT_DETECTED/CONFIRMING
    * (still confirming) vs. an actual delivery (status 3, "Success"). */
   bybitStatus: number;
@@ -93,7 +98,15 @@ type InFlightOrder = Awaited<ReturnType<typeof listInFlightBybitBscOrders>>[numb
 
 class RateLimitedError extends Error {}
 
-/** Bybit V5 GET auth: HMAC-SHA256(secret, timestamp + apiKey + recvWindow + queryString). */
+/**
+ * Bybit V5 GET auth: HMAC-SHA256(secret, timestamp + apiKey + recvWindow + queryString).
+ * The credential rides in a header (X-BAPI-API-KEY), not the query string —
+ * but Node's fetch sometimes attaches the failed request, headers included,
+ * to a rejected error's `.cause`. `fetchWithTimeoutSafe` (`@app/core/http`)
+ * catches any rejection (network failure OR the `timeoutMs` deadline
+ * elapsing) and rethrows a fresh, static-message Error before it can escape,
+ * so a naive `logger.error({ err })` downstream never sees the header.
+ */
 async function bybitGet(path: string, params: Record<string, string>, cfg: BybitBscConfig): Promise<Record<string, unknown>> {
   const key = cfg.apiKey;
   const secret = cfg.apiSecret;
@@ -101,14 +114,19 @@ async function bybitGet(path: string, params: Record<string, string>, cfg: Bybit
   const ts = String(Date.now());
   const query = new URLSearchParams(params).toString();
   const sign = createHmac("sha256", secret).update(ts + key + recv + query).digest("hex");
-  const res = await fetch(`${cfg.apiBase}${path}?${query}`, {
-    headers: {
-      "X-BAPI-API-KEY": key,
-      "X-BAPI-TIMESTAMP": ts,
-      "X-BAPI-RECV-WINDOW": recv,
-      "X-BAPI-SIGN": sign,
+  const res = await fetchWithTimeoutSafe(
+    `${cfg.apiBase}${path}?${query}`,
+    {
+      headers: {
+        "X-BAPI-API-KEY": key,
+        "X-BAPI-TIMESTAMP": ts,
+        "X-BAPI-RECV-WINDOW": recv,
+        "X-BAPI-SIGN": sign,
+      },
+      timeoutMs: HTTP_TIMEOUT_MS.gatewayRead, // poller — the next tick retries if this is slow
     },
-  });
+    `Bybit ${path} request`, // never log err — it may carry the X-BAPI-API-KEY header
+  );
   // Bybit returns its rate-limit budget on every response (not just 429s) —
   // logging it gives empirical data on real headroom instead of guessing.
   const limit = res.headers.get("X-Bapi-Limit");
@@ -125,7 +143,20 @@ async function bybitGet(path: string, params: Record<string, string>, cfg: Bybit
   if (!res.ok) {
     throw new Error(`Bybit ${path} HTTP ${res.status}: ${await res.text().catch(() => "")}`);
   }
-  const body = (await res.json()) as { retCode?: number; retMsg?: string; result?: Record<string, unknown> };
+  let body: { retCode?: number; retMsg?: string; result?: Record<string, unknown> };
+  try {
+    body = (await res.json()) as { retCode?: number; retMsg?: string; result?: Record<string, unknown> };
+  } catch (err) {
+    // AbortSignal.timeout stays attached to the response body in undici, so a
+    // peer that sends headers and then stalls the body makes res.json()
+    // reject with this same TimeoutError shape (http.ts) — distinguish that
+    // from a genuinely malformed body so lastError doesn't blame the gateway
+    // for sending garbage when it actually just hung.
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new Error(`Bybit ${path} response body read timed out`);
+    }
+    throw new Error(`Bybit ${path} returned an unparseable response`);
+  }
   if (body.retCode !== 0) {
     // 10006/10018 = rate limit on the V5 retCode layer.
     if (body.retCode === 10006 || body.retCode === 10018) throw new RateLimitedError(`Bybit retCode ${body.retCode}`);
@@ -147,12 +178,17 @@ async function bybitGet(path: string, params: Record<string, string>, cfg: Bybit
  * disambiguator). */
 export function normalizeOnchainDeposit(raw: Record<string, unknown>, cfg: Pick<BybitBscConfig, "chain" | "depositAddress">): BybitBscDeposit | null {
   const txId = raw.txID ?? raw.id;
-  const amount = Number(raw.amount);
+  // Bybit reports amount as a decimal STRING — parse it directly with
+  // Decimal instead of round-tripping through Number(), which loses
+  // precision. parsePositiveAmount also absorbs a malformed string as a
+  // skipped row instead of a thrown exception — see its doc-comment in
+  // amountMatching.ts.
+  const amount = parsePositiveAmount(raw.amount);
   const coin = String(raw.coin ?? "").toUpperCase();
   const status = Number(raw.status);
   const chain = String(raw.chain ?? "").toUpperCase();
   const address = raw.address != null ? String(raw.address) : null;
-  if (txId == null || !Number.isFinite(amount) || amount <= 0) return null; // received only
+  if (txId == null || amount == null) return null; // received only
   if (coin !== config.CURRENCY.toUpperCase()) return null;
   if (!IN_FLIGHT_BYBIT_STATUSES.has(status)) return null; // unknown/failed → nothing actionable yet
   if (chain !== cfg.chain.toUpperCase()) return null; // deposit on a different chain — never match
@@ -161,8 +197,13 @@ export function normalizeOnchainDeposit(raw: Record<string, unknown>, cfg: Pick<
 }
 
 /** Fetch recent successful on-chain USDT deposits (last 3 days).
- * Throws RateLimitedError on 429/403/retCode rate limits. */
-async function fetchRecentDeposits(cfg: BybitBscConfig): Promise<BybitBscDeposit[]> {
+ * Throws RateLimitedError on 429/403/retCode rate limits. Exported (in
+ * addition to being used by `pollOnce` below) so a test can call it directly
+ * against a rejected `fetch()` and assert on the thrown Error itself — e.g.
+ * that it carries no `.cause` — the same way the query-string-credential
+ * gateway clients' own tests do, rather than only observing the sanitized
+ * message after it's been reduced to a string in a DB health record. */
+export async function fetchRecentDeposits(cfg: BybitBscConfig): Promise<BybitBscDeposit[]> {
   const result = await bybitGet("/v5/asset/deposit/query-record", {
     coin: config.CURRENCY,
     startTime: String(Date.now() - 3 * 24 * 60 * 60 * 1000),
@@ -201,14 +242,24 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
         : freshUser.walletBalanceUsdt
       : order.totalAmount;
     topupSuccessText = walletTopupSuccessText(order, newBalance, lang);
+    // Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS (Finding #2, followup-review-
+    // fixes-2) — main.ts deliberately sets no bot-wide grammY client timeout
+    // (see telegramTimeout.ts's own doc-comment), so without this an
+    // un-awaited call falls back to grammY's 500s default and can
+    // singlehandedly consume most of a poll cycle.
     try {
-      await api.sendMessage(tgId, topupSuccessText, { parse_mode: "HTML" });
+      const outcome = await withTimeout(api.sendMessage(tgId, topupSuccessText, { parse_mode: "HTML" }), TELEGRAM_MESSAGE_TIMEOUT_MS);
+      if (outcome === "timeout") throw new Error(`sendMessage timed out after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms`);
     } catch (err) {
       logger.error({ err }, `Failed to DM the wallet top-up success message for order ${order.orderCode}`);
     }
   } else {
+    // Bounded at TELEGRAM_DOCUMENT_TIMEOUT_MS — a document upload is
+    // legitimately slower than a plain text call (see telegramTimeout.ts),
+    // but still must not fall back to grammY's 500s default.
     try {
-      await sendAccountFile(api, tgId, order, lang);
+      const outcome = await withTimeout(sendAccountFile(api, tgId, order, lang), TELEGRAM_DOCUMENT_TIMEOUT_MS);
+      if (outcome === "timeout") throw new Error(`Account file upload timed out after ${TELEGRAM_DOCUMENT_TIMEOUT_MS}ms`);
     } catch (err) {
       logger.error(
         { err },
@@ -226,14 +277,19 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   }
 
   // Turn the payment-instructions bubble into a success message in place.
+  // Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS — same reasoning as the DM above.
   if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
     try {
-      await api.editMessageText(
-        Number(order.paymentMsgChatId),
-        order.paymentMsgId,
-        topupSuccessText ?? coreT("checkout.bybit_bsc_paid", lang, { code: order.orderCode }),
-        { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
+      const outcome = await withTimeout(
+        api.editMessageText(
+          Number(order.paymentMsgChatId),
+          order.paymentMsgId,
+          topupSuccessText ?? coreT("checkout.bybit_bsc_paid", lang, { code: order.orderCode }),
+          { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
+        ),
+        TELEGRAM_MESSAGE_TIMEOUT_MS,
       );
+      if (outcome === "timeout") throw new Error(`editMessageText timed out after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms`);
     } catch {
       /* bubble may be gone/uneditable — the credential DM already informed the buyer */
     }
@@ -252,13 +308,19 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
   if (order.user.telegramId == null) return;
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
   const lang = langCode(order.user.language);
+  // Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS — see the identical bubble edit in
+  // onDelivered above for why.
   try {
-    await api.editMessageText(
-      Number(order.paymentMsgChatId),
-      order.paymentMsgId,
-      coreT("checkout.bybit_bsc_paid", lang, { code: order.orderCode }),
-      { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
+    const outcome = await withTimeout(
+      api.editMessageText(
+        Number(order.paymentMsgChatId),
+        order.paymentMsgId,
+        coreT("checkout.bybit_bsc_paid", lang, { code: order.orderCode }),
+        { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
+      ),
+      TELEGRAM_MESSAGE_TIMEOUT_MS,
     );
+    if (outcome === "timeout") throw new Error(`editMessageText timed out after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms`);
   } catch {
     /* bubble may be gone/uneditable — the ORDER_PROCESSING_DM already informed the buyer */
   }
@@ -273,22 +335,41 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
 async function onPaymentDetected(api: Api, order: InFlightOrder, network: string): Promise<void> {
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
   const lang = langCode(order.user.language);
+  // Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS — same reasoning as every other
+  // bubble edit in this file.
   try {
-    await api.editMessageText(
-      Number(order.paymentMsgChatId),
-      order.paymentMsgId,
-      renderBybitBscTrackingScreen(
-        { orderCode: order.orderCode, status: OrderStatus.PAYMENT_DETECTED, network, confirmations: null, requiredConfirmations: null },
-        lang,
+    const outcome = await withTimeout(
+      api.editMessageText(
+        Number(order.paymentMsgChatId),
+        order.paymentMsgId,
+        renderBybitBscTrackingScreen(
+          { orderCode: order.orderCode, status: OrderStatus.PAYMENT_DETECTED, network, confirmations: null, requiredConfirmations: null },
+          lang,
+        ),
+        { parse_mode: "HTML", reply_markup: bybitBscTrackingKb({ id: order.id, status: OrderStatus.PAYMENT_DETECTED }, lang) },
       ),
-      { parse_mode: "HTML", reply_markup: bybitBscTrackingKb({ id: order.id, status: OrderStatus.PAYMENT_DETECTED }, lang) },
+      TELEGRAM_MESSAGE_TIMEOUT_MS,
     );
+    if (outcome === "timeout") throw new Error(`editMessageText timed out after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms`);
   } catch {
     /* bubble may be gone/uneditable — the order is still reachable via My Orders */
   }
 }
 
+/** Send `text` to every configured admin, never throwing. Bounded as ONE
+ * composite operation at TELEGRAM_MESSAGE_TIMEOUT_MS regardless of how many
+ * admins are configured (same shape tokopayReconcile.ts's own alertAdmins
+ * call site uses) — a slow/hung admin can't block the rest of the cycle, at
+ * the accepted cost that some admins may not get notified if the whole loop
+ * doesn't finish inside the budget. */
 async function alertAdmins(api: Api, text: string): Promise<void> {
+  const outcome = await withTimeout(alertAdminsInner(api, text), TELEGRAM_MESSAGE_TIMEOUT_MS);
+  if (outcome === "timeout") {
+    logger.warn(`Bybit BSC deposit poller gave up waiting on an admin alert after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — some admins may not have been notified`);
+  }
+}
+
+async function alertAdminsInner(api: Api, text: string): Promise<void> {
   for (const adminId of adminIds()) {
     try {
       await api.sendMessage(adminId, text, { parse_mode: "HTML" });
@@ -304,7 +385,7 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
 
 const backoff = createBackoffGate();
 
-export async function pollOnce(api: Api): Promise<void> {
+export async function pollOnce(api: Api, isCurrent: () => boolean = () => true): Promise<void> {
   const cfg = await resolveBybitBscConfig(prisma);
   if (!cfg.enabled) return;
   // BEP20 carries no memo — amount is the ONLY disambiguator. Without
@@ -332,14 +413,26 @@ export async function pollOnce(api: Api): Promise<void> {
     } else {
       logger.error({ err }, "Failed to fetch recent Bybit BSC deposits — this poll cycle is skipped, pending orders stay unmatched until the next cycle");
     }
-    await recordBybitBscPollHealth(prisma, {
-      lastTxCount: 0,
-      backoffUntil: backoff.backoffUntil || null,
-      consecutiveRateLimitHits: backoff.hitCount,
-      rateLimited,
-      success: false,
-      error: String(err).slice(0, 300),
-    }).catch(() => undefined);
+    // Guarded by isCurrent() (Task 11 review follow-up, Minor #3 — the same
+    // rule the QRIS reconcile rails already apply to their combined write):
+    // a stale write from an abandoned cycle is stale evidence either way —
+    // even this `success: false` write would double-count the SAME
+    // underlying failure the abandon heartbeat already recorded (once as the
+    // abandon, once here) — so the abandoned cycle's own view of this
+    // cycle's outcome is retired the moment it's abandoned, not just its
+    // optimistic half.
+    if (isCurrent()) {
+      await recordBybitBscPollHealth(prisma, {
+        lastTxCount: 0,
+        backoffUntil: backoff.backoffUntil || null,
+        consecutiveRateLimitHits: backoff.hitCount,
+        rateLimited,
+        success: false,
+        error: String(err).slice(0, 300),
+      }).catch(() => undefined);
+    } else {
+      logger.warn("Bybit BSC poll cycle finished after its own deadline had already abandoned it — skipping the failure heartbeat write so it can't double-count the abandon-failure heartbeat already recorded");
+    }
     return;
   }
 
@@ -353,7 +446,18 @@ export async function pollOnce(api: Api): Promise<void> {
   // through to "no candidate -> unmatched" on every later cycle.
   const orders = await listInFlightBybitBscOrders(prisma, now);
   if (deposits.length) logger.info(`Bybit BSC poll fetched ${deposits.length} deposit(s) against ${orders.length} in-flight order(s)`);
-  await recordBybitBscPollHealth(prisma, { lastTxCount: deposits.length, backoffUntil: null, success: true }).catch(() => undefined);
+  // Task 11 review follow-up, Important #1 (Finding A): a cycle abandoned by
+  // pollLoop.ts's deadline keeps running in the background and can still
+  // reach this write minutes later — writing `success: true` then would
+  // overwrite the abandon-failure heartbeat the deadline already recorded
+  // and reset consecutiveFailures, making a hung poller read healthy.
+  // isCurrent() is false once this cycle has been abandoned, so the write is
+  // skipped instead.
+  if (isCurrent()) {
+    await recordBybitBscPollHealth(prisma, { lastTxCount: deposits.length, backoffUntil: null, success: true }).catch(() => undefined);
+  } else {
+    logger.warn("Bybit BSC poll cycle finished after its own deadline had already abandoned it — skipping the success heartbeat write so it can't overwrite the abandon-failure heartbeat already recorded");
+  }
 
   await processDeposits(api, deposits, orders, cfg.chain);
 }
@@ -400,16 +504,16 @@ export async function processDeposits(
         const underpaidOrder = matchUnderpaidByAmount({ amount: dep.amount }, pendingOnly, AMOUNT_TOLERANCE);
         if (underpaidOrder) {
           if (await markUnderpaidBybitBsc(prisma, { orderId: underpaidOrder.id, bybitTxId: dep.txId, amount: dep.amount })) {
-            logger.warn(`Bybit BSC order ${underpaidOrder.orderCode} underpaid — received ${dep.amount}, expected ${underpaidOrder.totalAmount}, flagged UNDERPAID for manual review`);
+            logger.warn(`Bybit BSC order ${underpaidOrder.orderCode} underpaid — received ${dep.amount.toString()}, expected ${underpaidOrder.totalAmount.toString()}, flagged UNDERPAID for manual review`);
             await alertAdmins(
               api,
-              `⚠️ Underpaid Bybit BSC order <code>${underpaidOrder.orderCode}</code>\nReceived <b>${dep.amount}</b>, expected <b>${underpaidOrder.totalAmount}</b> (tx ${esc(dep.txId)}).`,
+              `⚠️ Underpaid Bybit BSC order <code>${underpaidOrder.orderCode}</code>\nReceived <b>${dep.amount.toString()}</b>, expected <b>${underpaidOrder.totalAmount.toString()}</b> (tx ${esc(dep.txId)}).`,
             );
           }
           continue;
         }
         if (await recordUnmatchedBybitBscTx(prisma, { bybitTxId: dep.txId, amount: dep.amount })) {
-          logger.info(`No pending order matched Bybit BSC deposit ${dep.txId} (amount: ${dep.amount}) — left for manual review`);
+          logger.info(`No pending order matched Bybit BSC deposit ${dep.txId} (amount: ${dep.amount.toString()}) — left for manual review`);
         }
       }
       continue;
@@ -451,27 +555,62 @@ export async function processDeposits(
 // Self-scheduling loop (guards against overlapping runs)
 // ---------------------------------------------------------------------------
 
-let timer: ReturnType<typeof setTimeout> | undefined;
-let isRunning = false;
-let stopped = false;
+// Set by startPolling()/triggerImmediatePoll() before the loop's `run` ever
+// fires — the loop itself starts `stopped`, so `run` can never be invoked
+// while this is still undefined.
+let boundApi: Api | undefined;
+
+// ── Finding #2 (followup-review-fixes-2) ────────────────────────────────────
+// Same shape/derivation as bybitDeposit.ts's own BYBIT_CYCLE_TIMEOUT_MS (see
+// its comment there for the full reasoning) — fetchRecentDeposits also makes
+// exactly ONE bounded bybitGet call, and processDeposits' worst-case
+// per-deposit branch is the same doc-upload-then-bubble-edit sequence:
+//
+//   FETCH_TIMEOUT_MS (10s) + WORST_CASE_CONCURRENT_DELIVERIES (10) ×
+//   PER_DELIVERY_WORST_CASE_MS (15s) + CYCLE_TIMEOUT_MARGIN_MS (30s)
+//   = 10_000 + 10 * 15_000 + 30_000 = 190_000ms (190s, ~3m10s).
+//
+// Sanity check: BYBIT_BSC_PAYMENT_WINDOW_MINUTES defaults to 15 (900s) — the
+// SHORTEST payment window of any rail in this codebase, since it's the only
+// one with a real on-chain confirmation floor baked into checkout. 190s is
+// ~21% of that, still comfortably under half despite the tighter window.
+const FETCH_TIMEOUT_MS = HTTP_TIMEOUT_MS.gatewayRead;
+const WORST_CASE_CONCURRENT_DELIVERIES = 10;
+const PER_DELIVERY_WORST_CASE_MS = TELEGRAM_DOCUMENT_TIMEOUT_MS + TELEGRAM_MESSAGE_TIMEOUT_MS;
+export const BYBIT_BSC_CYCLE_TIMEOUT_MS =
+  FETCH_TIMEOUT_MS + WORST_CASE_CONCURRENT_DELIVERIES * PER_DELIVERY_WORST_CASE_MS + 30_000;
+
+const loop = createPollLoop({
+  name: "Bybit BSC deposit",
+  intervalMs: config.BYBIT_BSC_POLL_INTERVAL_SECONDS * 1000,
+  cycleTimeoutMs: BYBIT_BSC_CYCLE_TIMEOUT_MS,
+  run: (isCurrent) => pollOnce(boundApi!, isCurrent),
+  // A hung cycle abandoned past its deadline must still show up as a failed
+  // heartbeat on the ops panel, not silence — the existing failure branch in
+  // pollOnce() already writes the same shape on a fetch/HTTP error.
+  onCycleTimeout: (elapsedMs) =>
+    recordBybitBscPollHealth(prisma, {
+      lastTxCount: 0,
+      // Read the same module-level backoff gate the failure branch above
+      // reads, so an abandoned cycle doesn't erase a live "backing off, N
+      // rate-limit hits" state the panel is currently showing — the gate is
+      // untouched by the timeout itself, only this heartbeat write is new.
+      backoffUntil: backoff.backoffUntil || null,
+      consecutiveRateLimitHits: backoff.hitCount,
+      // Not a rate-limit event: this cycle timed out (hung), it wasn't told
+      // by the gateway to back off. rateLimited stays false so the abandon
+      // (a) doesn't stamp lastRateLimitAt with a rate-limit that didn't
+      // happen, and (b) still increments consecutiveFailures — a hang is a
+      // genuine failure, unlike a rate-limit hit, which deliberately leaves
+      // that counter alone.
+      rateLimited: false,
+      success: false,
+      error: `Poll cycle abandoned after ${elapsedMs}ms without finishing`,
+    }).catch(() => undefined),
+});
 
 export function startPolling(api: Api): void {
-  stopped = false;
-  const intervalMs = config.BYBIT_BSC_POLL_INTERVAL_SECONDS * 1000;
-  const tick = async () => {
-    if (stopped) return;
-    if (!isRunning) {
-      isRunning = true;
-      try {
-        await pollOnce(api);
-      } catch (err) {
-        logger.error({ err }, "Bybit BSC poll cycle threw an unhandled error — the cycle was aborted, polling resumes on the next tick");
-      } finally {
-        isRunning = false;
-      }
-    }
-    if (!stopped) timer = setTimeout(tick, intervalMs);
-  };
+  boundApi = api;
   // The loop always runs and self-gates each cycle on resolveBybitBscConfig().enabled,
   // so enabling Bybit BSC in web-admin Settings takes effect without a restart. The
   // boot log just reports the CURRENT state.
@@ -492,13 +631,11 @@ export function startPolling(api: Api): void {
     }
     logger.info(`Bybit BSC deposit poller active (every ${config.BYBIT_BSC_POLL_INTERVAL_SECONDS}s)`);
   });
-  timer = setTimeout(tick, intervalMs);
+  loop.start();
 }
 
 export function stopPolling(): void {
-  stopped = true;
-  if (timer) clearTimeout(timer);
-  timer = undefined;
+  loop.stop();
 }
 
 /**
@@ -509,14 +646,12 @@ export function stopPolling(): void {
  * confirmation Bybit itself requires (~1-2 min), which this cannot shrink —
  * it only removes the poll-interval delay layered on top of that floor.
  * Fire-and-forget by design (never awaited, never throws) and shares the
- * timer loop's `isRunning` guard so it can't race a tick already in flight.
+ * loop's overlap guard so it can't race a cycle already in flight. A no-op
+ * before startPolling() has run (the loop starts stopped) — the only callers
+ * (checkout.ts, walletTopup.ts) are reachable only after main.ts's boot has
+ * already called startPolling() synchronously.
  */
 export function triggerImmediatePoll(api: Api): void {
-  if (isRunning || stopped) return;
-  isRunning = true;
-  void pollOnce(api)
-    .catch((err) => logger.error({ err }, "Bybit BSC immediate poll (triggered right after order creation) threw an unhandled error — the regular timer will retry on its next tick"))
-    .finally(() => {
-      isRunning = false;
-    });
+  boundApi = api;
+  loop.triggerNow();
 }

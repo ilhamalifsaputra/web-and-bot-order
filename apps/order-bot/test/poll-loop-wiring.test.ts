@@ -431,15 +431,24 @@ describe("triggerImmediatePoll after startPolling runs a cycle immediately", () 
 // PAYMENT_WINDOW_MINUTES (default 30 — packages/core/src/config.ts) — so an
 // operator setting it to, say, 15 would silently put the deadline at 63% of
 // the window (worse than the 57% a review round already rejected) with
-// nothing to catch it. Enforced here against `config.PAYMENT_WINDOW_MINUTES`
-// itself, not a hardcoded copy, so it re-fails automatically if either side
-// of the ratio drifts.
+// nothing to catch it. Enforced here against the live config values
+// themselves, not hardcoded copies, so it re-fails automatically if either
+// side of the ratio drifts.
+//
+// Each rail is checked against the key that actually governs ITS order
+// expiry. NOWPayments has its own, independently tunable
+// NOWPAYMENTS_PAYMENT_WINDOW_MINUTES (packages/db/src/crud/pricing.ts,
+// wallet_topup.ts) — it merely happens to default to the same 30 minutes as
+// the shared PAYMENT_WINDOW_MINUTES the IDR rails use. Comparing it against
+// the shared key would pass today by coincidence and give false assurance the
+// moment an operator tuned the NOWPayments window down on its own — exactly
+// the silent misconfiguration this check exists to catch.
 describe("reconcile cycle timeouts stay well clear of the payment window (Task 11 review follow-up, Minor #4)", () => {
   it.each([
-    ["TokoPay", TOKOPAY_CYCLE_TIMEOUT_MS],
-    ["PayDisini", PAYDISINI_CYCLE_TIMEOUT_MS],
-    ["NOWPayments", NOWPAYMENTS_CYCLE_TIMEOUT_MS],
-  ])("%s's RECONCILE_CYCLE_TIMEOUT_MS is under half of PAYMENT_WINDOW_MINUTES", (_name, cycleTimeoutMs) => {
-    expect(cycleTimeoutMs).toBeLessThan((config.PAYMENT_WINDOW_MINUTES * 60_000) / 2);
+    ["TokoPay", TOKOPAY_CYCLE_TIMEOUT_MS, config.PAYMENT_WINDOW_MINUTES],
+    ["PayDisini", PAYDISINI_CYCLE_TIMEOUT_MS, config.PAYMENT_WINDOW_MINUTES],
+    ["NOWPayments", NOWPAYMENTS_CYCLE_TIMEOUT_MS, config.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES],
+  ])("%s's RECONCILE_CYCLE_TIMEOUT_MS is under half of its own payment window", (_name, cycleTimeoutMs, windowMinutes) => {
+    expect(cycleTimeoutMs).toBeLessThan((windowMinutes * 60_000) / 2);
   });
 });

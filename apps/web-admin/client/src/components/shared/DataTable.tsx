@@ -36,6 +36,8 @@ function useIsMobile(breakpoint = 768): boolean {
   return isMobile;
 }
 
+export type ColumnKind = "data" | "selection" | "actions";
+
 interface Column<T> {
   key: string;
   /** Plain string for the common case; a ReactNode when a column needs an
@@ -47,6 +49,18 @@ interface Column<T> {
   render: (row: T) => ReactNode;
   /** Optional class applied to each `<td>` in this column. */
   className?: string;
+  /** Semantic role, which drives the mobile card layout:
+   *  - "selection" → row checkbox at the top of the card; `header` (the
+   *    select-all) is rendered once above the stack, never inside a card.
+   *  - "actions"   → bottom-right action slot (the `⋮` menu).
+   *  - "data"      → a `label / value` row inside the card.
+   *  Defaults to "actions" when `header === ""`, otherwise "data". Selection
+   *  columns MUST set this explicitly — it is never inferred from the DOM. */
+  kind?: ColumnKind;
+}
+
+function resolveKind<T>(col: Column<T>): ColumnKind {
+  return col.kind ?? (col.header === "" ? "actions" : "data");
 }
 
 interface DataTableProps<T> {
@@ -82,15 +96,22 @@ export function DataTable<T>({
   const isMobile = useIsMobile();
   const emptyNode = empty ?? <EmptyState title="No results found." />
 
-  // Columns with a visible header label are data columns; empty-header
-  // columns (action buttons) are rendered in a footer row on mobile cards.
-  const dataColumns = columns.filter((col) => col.header !== "")
-  const actionColumns = columns.filter((col) => col.header === "")
+  const selectionColumn = columns.find((c) => resolveKind(c) === "selection") ?? null;
+  const dataColumns = columns.filter((c) => resolveKind(c) === "data")
+  const actionColumns = columns.filter((c) => resolveKind(c) === "actions")
 
   if (isMobile) {
     /* ── Mobile: card stack ──────────────────────────────────────────── */
     return (
       <div className="flex flex-col gap-3">
+        {selectionColumn && selectionColumn.header !== "" && !isLoading && data.length > 0 && (
+          <div className="flex items-center gap-2 px-1">
+            {selectionColumn.header}
+            <span className="text-xs font-medium text-ink-soft" aria-hidden="true">
+              Select all
+            </span>
+          </div>
+        )}
         {isLoading ? (
           Array.from({ length: skeletonRows }).map((_, i) => (
             <div
@@ -107,39 +128,47 @@ export function DataTable<T>({
             initial="initial"
             animate="animate"
           >
-            {data.map((row) => (
-              <MotionCardRow
-                key={keyExtractor(row)}
-                variants={staggerItem}
-                whileTap={onRowClick ? { scale: 0.98 } : undefined}
-                className={cn(
-                  "rounded-lg border border-line bg-card p-4",
-                  onRowClick && "cursor-pointer active:bg-sand"
-                )}
-                onClick={onRowClick ? () => onRowClick(row) : undefined}
-              >
-                {dataColumns.map((col) => (
-                  <div
-                    key={col.key}
-                    className="flex items-start justify-between gap-3 py-1.5 border-b border-line last:border-0"
-                  >
-                    <span className="text-xs font-medium text-ink-soft shrink-0 pt-0.5">
-                      {col.header}
-                    </span>
-                    <div className="text-sm text-ink text-right min-w-0">
-                      {col.render(row)}
+            {data.map((row) => {
+              const selectionNode = selectionColumn?.render(row);
+              return (
+                <MotionCardRow
+                  key={keyExtractor(row)}
+                  variants={staggerItem}
+                  whileTap={onRowClick ? { scale: 0.98 } : undefined}
+                  className={cn(
+                    "rounded-lg border border-line bg-card p-4",
+                    onRowClick && "cursor-pointer active:bg-sand"
+                  )}
+                  onClick={onRowClick ? () => onRowClick(row) : undefined}
+                >
+                  {selectionNode ? (
+                    <div className="pb-2" onClick={(e) => e.stopPropagation()}>
+                      {selectionNode}
                     </div>
-                  </div>
-                ))}
-                {actionColumns.length > 0 && (
-                  <div className="flex justify-end gap-2 pt-2">
-                    {actionColumns.map((col) => (
-                      <div key={col.key}>{col.render(row)}</div>
-                    ))}
-                  </div>
-                )}
-              </MotionCardRow>
-            ))}
+                  ) : null}
+                  {dataColumns.map((col) => (
+                    <div
+                      key={col.key}
+                      className="flex items-start justify-between gap-3 py-1.5 border-b border-line last:border-0"
+                    >
+                      <span className="text-xs font-medium text-ink-soft shrink-0 pt-0.5">
+                        {col.header}
+                      </span>
+                      <div className="text-sm text-ink text-right min-w-0">
+                        {col.render(row)}
+                      </div>
+                    </div>
+                  ))}
+                  {actionColumns.length > 0 && (
+                    <div className="flex justify-end gap-2 pt-2">
+                      {actionColumns.map((col) => (
+                        <div key={col.key}>{col.render(row)}</div>
+                      ))}
+                    </div>
+                  )}
+                </MotionCardRow>
+              );
+            })}
           </motion.div>
         )}
       </div>

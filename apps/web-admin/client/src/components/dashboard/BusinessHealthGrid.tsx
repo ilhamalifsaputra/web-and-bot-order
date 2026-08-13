@@ -7,6 +7,7 @@ const SERVICES: Array<{ key: keyof HealthStatus; label: string }> = [
   { key: "telegramBot", label: "Telegram Bot" },
   { key: "binance", label: "Binance" },
   { key: "bybit", label: "Bybit" },
+  { key: "bybitBsc", label: "Bybit BSC" },
   { key: "tokopay", label: "TokoPay" },
   { key: "paydisini", label: "PayDisini" },
   { key: "nowpayments", label: "NOWPayments" },
@@ -40,13 +41,13 @@ export function BusinessHealthGrid() {
         {data && (
           <ul className="flex flex-col divide-y divide-line">
             {SERVICES.map((s) => {
-              const level = data[s.key];
+              const { status, detail } = data[s.key];
               return (
                 <li key={s.key} className="flex items-center justify-between py-2">
                   <span className="text-sm text-ink">{s.label}</span>
-                  <span className="inline-flex items-center gap-1.5 text-xs text-ink-soft">
-                    <UrgencyDot level={DOT[level]} />
-                    {LABEL[level]}
+                  <span className="inline-flex items-center gap-1.5 text-xs text-ink-soft" title={detail}>
+                    <UrgencyDot level={DOT[status]} />
+                    {LABEL[status]}
                   </span>
                 </li>
               );

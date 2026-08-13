@@ -8,6 +8,7 @@ import type { FastifyInstance } from "fastify";
 import { startOfDayUtc, addDays } from "@app/core/datetime";
 import { Decimal } from "@app/core/money";
 import { config } from "@app/core/config";
+import { evaluatePollHealth, type PollHealthEvaluation } from "@app/core/payments/pollHealth";
 import { displayDateTime } from "../../dateDisplay";
 import {
   prisma,
@@ -30,7 +31,11 @@ import {
   combinedRevenueByDay,
   resolveBotCredentials,
   resolveBinanceInternalConfig,
+  resolveBybitConfig,
+  resolveBybitBscConfig,
   getBinancePollHealth,
+  getBybitPollHealth,
+  getBybitBscPollHealth,
 } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
 
@@ -150,25 +155,42 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
   });
 
   app.get("/api/dashboard/health", { preHandler: currentAdmin }, async () => {
-    const creds = await resolveBotCredentials(prisma);
-    const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
-    const binanceHealth = binanceEnabled ? await getBinancePollHealth(prisma) : null;
+    const toEntry = ({ status, detail }: PollHealthEvaluation) => ({ status, detail });
 
-    const binanceStatus = !binanceEnabled
-      ? "unmonitored"
-      : (binanceHealth!.consecutiveFailures ?? 0) > 0
-        ? "red"
-        : binanceHealth!.backoffUntil
-          ? "yellow"
-          : "green";
+    const [creds, binanceConfig, bybitConfig, bybitBscConfig] = await Promise.all([
+      resolveBotCredentials(prisma),
+      resolveBinanceInternalConfig(prisma),
+      resolveBybitConfig(prisma),
+      resolveBybitBscConfig(prisma),
+    ]);
+
+    const [binanceHealth, bybitHealth, bybitBscHealth] = await Promise.all([
+      binanceConfig.enabled ? getBinancePollHealth(prisma) : null,
+      bybitConfig.enabled ? getBybitPollHealth(prisma) : null,
+      bybitBscConfig.enabled ? getBybitBscPollHealth(prisma) : null,
+    ]);
+
+    // TokoPay, PayDisini, and NOWPayments have no heartbeat tracking yet
+    // (that's Task 11, still ahead) — there is no getPollHealth for them and
+    // none should be invented here. Routing a null heartbeat through the same
+    // shared rule (instead of a bare hardcoded "unmonitored" string) means the
+    // "unmonitored" verdict here carries a real, rule-derived `detail`
+    // ("No heartbeat has been recorded for this poller yet.") rather than a
+    // constant with no explanation — a reader can tell these apart from a
+    // genuinely-disabled rail by that detail text.
+    const noHeartbeatYet = evaluatePollHealth(null, { enabled: true });
 
     return {
-      telegramBot: creds.botToken === null ? "red" : "green",
-      binance: binanceStatus,
-      bybit: "unmonitored",
-      tokopay: "unmonitored",
-      paydisini: "unmonitored",
-      nowpayments: "unmonitored",
+      telegramBot: {
+        status: creds.botToken === null ? "red" : "green",
+        detail: creds.botToken === null ? "No Telegram bot token is configured." : "Bot token is configured.",
+      },
+      binance: toEntry(evaluatePollHealth(binanceHealth, { enabled: binanceConfig.enabled })),
+      bybit: toEntry(evaluatePollHealth(bybitHealth, { enabled: bybitConfig.enabled })),
+      bybitBsc: toEntry(evaluatePollHealth(bybitBscHealth, { enabled: bybitBscConfig.enabled })),
+      tokopay: toEntry(noHeartbeatYet),
+      paydisini: toEntry(noHeartbeatYet),
+      nowpayments: toEntry(noHeartbeatYet),
     };
   });
 

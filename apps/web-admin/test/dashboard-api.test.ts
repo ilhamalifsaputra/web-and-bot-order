@@ -11,6 +11,10 @@ import {
   createCatalogProduct,
   createDenomination,
   bulkAddStock,
+  BINANCE_UID_KEY,
+  BINANCE_API_KEY_KEY,
+  BINANCE_API_SECRET_KEY,
+  BINANCE_POLL_HEALTH_KEY,
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
@@ -185,11 +189,35 @@ describe("GET /api/dashboard/health", () => {
     // setup-env.ts sets BOT_TOKEN to a non-blank test value and resetDb()
     // clears any Settings-row override, so resolveBotCredentials() falls
     // through to that env token — "green", not "red" — in this test env.
-    expect(body.telegramBot).toBe("green");
-    expect(body.bybit).toBe("unmonitored");
-    expect(body.tokopay).toBe("unmonitored");
-    expect(body.paydisini).toBe("unmonitored");
-    expect(body.nowpayments).toBe("unmonitored");
+    expect(body.telegramBot.status).toBe("green");
+    expect(body.bybit.status).toBe("unmonitored");
+    expect(body.bybitBsc.status).toBe("unmonitored");
+    expect(body.tokopay.status).toBe("unmonitored");
+    expect(body.paydisini.status).toBe("unmonitored");
+    expect(body.nowpayments.status).toBe("unmonitored");
+  });
+
+  // The headline bug this task fixes: a poller that is enabled but has gone
+  // stale silently (lastRun hours old, consecutiveFailures still 0 because it
+  // never got to run again) read "green" on this endpoint while the watchdog
+  // was simultaneously paging admins about the same poller. Today this
+  // asserts "green" — evaluatePollHealth's staleness rule (Rule 5) is what
+  // must turn it "red".
+  it("reports an enabled poller whose last cycle is two hours old as red, not green", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "test-uid");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "test-key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "test-secret");
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      BINANCE_POLL_HEALTH_KEY,
+      JSON.stringify({ lastRun: twoHoursAgo, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.binance.status).toBe("red");
   });
 });
 

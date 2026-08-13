@@ -42,6 +42,12 @@ services:
     # published ports reach the app.
     environment:
       WEB_HOST: "0.0.0.0"
+      # The entrypoint applies pending schema changes (after a verified backup)
+      # before the app starts, so a deploy can never run new code against an old
+      # schema. Set AUTO_MIGRATE=0 in .env to take that over manually — see
+      # docs/MIGRATIONS.md. deploy/backup/restore.sh pauses it via a sentinel
+      # file instead, so a rollback is not migrated forward again.
+      AUTO_MIGRATE: "${AUTO_MIGRATE:-1}"
     volumes:
       - ./data:/app/data
     # Publish to the host loopback ONLY — nginx terminates TLS and proxies in.

@@ -11,12 +11,29 @@ Solusi: `sqlite3 ".backup"` (online backup API) yang mengambil snapshot
 
 ## Prasyarat (host VPS)
 
-`sqlite3` tidak ada di image runtime Docker (hanya openssl/tini/gosu). Skrip ini
-berjalan **di host**, tempat `./data` di-bind-mount. Pasang sekali:
+Skrip ini berjalan **di host**, tempat `./data` di-bind-mount. Pasang `sqlite3`
+sekali:
 
 ```bash
 sudo apt-get update && sudo apt-get install -y sqlite3
 ```
+
+`sqlite3` **juga** ada di image runtime Docker (lihat `Dockerfile`), karena
+`docker-entrypoint.sh` memanggil `backup.sh` di dalam container untuk mengambil
+snapshot wajib sebelum menerapkan perubahan skema. Kalau paket itu hilang dari
+image, entrypoint **menolak** mengubah skema (tidak ada perubahan skema tanpa
+jalur rollback) — jadi jangan hapus dari `Dockerfile`.
+
+## Backup otomatis sebelum perubahan skema
+
+Selain cron di bawah, `backup.sh` dipanggil otomatis oleh
+`docker-entrypoint.sh` **hanya ketika** skema DB berbeda dari `schema.prisma` —
+tepat sebelum `prisma db push`. Hasilnya masuk ke `data/backups/` yang sama,
+jadi `restore.sh` bisa langsung memakainya sebagai titik rollback migrasi.
+
+Boot yang skemanya sudah cocok tidak mengambil snapshot apa pun, jadi
+`docker compose restart` berulang (atau crash-loop) tidak menggerus retensi.
+Detail lengkap: [../../docs/MIGRATIONS.md](../../docs/MIGRATIONS.md).
 
 ## Backup
 
@@ -56,12 +73,28 @@ deploy/backup/restore.sh ./data/backups/bot-2026-06-18-1200.db.gz   # .gz juga b
 Langkah (otomatis di skrip):
 1. `integrity_check` pada **backup** dulu — abort sebelum menyentuh DB live bila rusak.
 2. `docker compose stop server` (hentikan proses penulis DB).
-3. Simpan DB saat ini ke `bot.db.pre-restore-<stamp>` (restore pun reversibel).
-4. Salin backup → `bot.db`; **hapus `bot.db-wal`/`bot.db-shm` basi** (milik DB lama
+3. Tulis `data/SKIP_AUTO_MIGRATE` — **menjeda auto-migrasi entrypoint**. Tanpa ini
+   container akan mendeteksi backup lama itu "beda dari `schema.prisma`" lalu
+   memigrasinya maju lagi saat start, sehingga rollback Anda batal.
+4. Simpan DB saat ini ke `bot.db.pre-restore-<stamp>` (restore pun reversibel).
+5. Salin backup → `bot.db`; **hapus `bot.db-wal`/`bot.db-shm` basi** (milik DB lama
    — bila dibiarkan akan merusak hasil restore).
-5. `chown app:app` (samakan dgn user runtime container).
-6. `integrity_check` pada DB hasil restore.
-7. `docker compose start …` lalu smoke `GET /healthz` sampai 200.
+6. `chown app:app` (samakan dgn user runtime container).
+7. `integrity_check` pada DB hasil restore.
+8. `docker compose start …` lalu smoke `GET /healthz` sampai 200.
+
+### Setelah restore: lepas jedanya
+
+Selama `data/SKIP_AUTO_MIGRATE` ada, **tidak ada** perubahan skema yang
+diterapkan otomatis — termasuk pada deploy berikutnya. Itu disengaja (melindungi
+rollback), tapi kalau dibiarkan Anda kembali ke masalah `P2022` yang justru
+ingin dicegah. `restore.sh` mencetak pengingat, dan entrypoint menampilkan isi
+file itu di log setiap start. Begitu kode yang jalan sudah cocok dengan skema DB:
+
+```bash
+rm ./data/SKIP_AUTO_MIGRATE
+docker compose restart server
+```
 
 ## RTO / RPO
 

@@ -62,11 +62,17 @@ ini, `@prisma/client` tidak punya kode yang digenerate dan setiap import dari
 
 ```bash
 pnpm exec prisma db push    # non-Docker
-docker compose run --rm server pnpm exec prisma db push   # Docker
+docker compose run --rm server pnpm exec prisma db push   # Docker (jarang perlu)
 ```
 
-Detail kapan harus `db push` vs `migrate deploy`, dan cara menutup gap kolom
-yang hilang (`P2022`), ada di [MIGRATIONS.md](MIGRATIONS.md).
+**Di Docker ini otomatis:** `docker-entrypoint.sh` menyelaraskan skema sebelum
+app start — snapshot terverifikasi ke `data/backups/` dulu, lalu `db push`, dan
+hanya bila skema memang berbeda. Jadi `docker compose up -d --build` sudah cukup;
+matikan dengan `AUTO_MIGRATE=0` bila ingin menerapkannya manual.
+
+Detail kapan harus `db push` vs `migrate deploy`, cara menutup gap kolom
+yang hilang (`P2022`), dan alur lengkap entrypoint ada di
+[MIGRATIONS.md](MIGRATIONS.md).
 
 ### Seed database
 

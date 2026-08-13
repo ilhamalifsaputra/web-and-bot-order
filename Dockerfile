@@ -5,6 +5,10 @@
 # The apps run via tsx (no compile step), so the runtime image ships the source
 # + node_modules + the generated Prisma client. The default CMD runs the combined
 # server (`pnpm start`); docker-compose uses the same command.
+#
+# Before that command runs, docker-entrypoint.sh brings the database schema up to
+# date (taking a verified snapshot first), so a deploy cannot leave new code
+# running against an old schema. See docs/MIGRATIONS.md.
 
 # ---- Stage 1: builder ----
 FROM node:20-slim AS builder
@@ -48,8 +52,11 @@ ENV NODE_ENV=production \
 WORKDIR /app
 
 # gosu drops privileges from root → app in the entrypoint (after it has fixed
-# ownership of the bind-mounted data dir).
-RUN apt-get update && apt-get install -y --no-install-recommends openssl tini gosu \
+# ownership of the bind-mounted data dir). sqlite3 is what deploy/backup/backup.sh
+# uses for its WAL-safe ".backup" snapshot, which the entrypoint takes before it
+# applies a schema change — without it that snapshot, and therefore the whole
+# automatic schema update, refuses to run.
+RUN apt-get update && apt-get install -y --no-install-recommends openssl tini gosu sqlite3 \
     && rm -rf /var/lib/apt/lists/* \
     && corepack enable && corepack prepare pnpm@9.15.9 --activate \
     && groupadd -r app && useradd -r -g app -m -d /home/app app

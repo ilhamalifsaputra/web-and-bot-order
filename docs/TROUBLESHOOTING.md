@@ -176,6 +176,18 @@ di dashboard masing-masing (NOWPayments otomatis, tidak perlu manual).
 Reconcile poller (`POLL_INTERVAL_SECONDS`) tetap jadi fallback selama
 jendela bayar belum habis — lihat [PAYMENT_GATEWAY.md](PAYMENT_GATEWAY.md).
 
+**Sejak Task 12:** kalau reconcile poller-nya sendiri juga berhenti (bukan
+cuma webhook-nya) — bukan lagi silent sampai order menumpuk lalu
+auto-cancel. Ketiga rail QRIS/IDR (TokoPay, PayDisini, NOWPayments) sekarang
+punya watchdog sendiri (`tokopayPollWatchdog`/`paydisiniPollWatchdog`/
+`nowpaymentsPollWatchdog` di `apps/order-bot/src/jobs/index.ts`): begitu satu
+siklus tidak selesai dalam jendela stale rail tersebut (~14–15 menit —
+lebih lebar dari 5 menit milik rail crypto, karena satu siklus QRIS bisa
+sampai 50 panggilan gateway berurutan), admin di-DM Telegram sekali per
+insiden dan rail-nya tampil merah di kartu Business Health panel admin.
+Watchdog hanya aktif kalau kredensial rail terkait sudah diisi di Settings —
+rail yang memang belum dipakai toko tidak akan pernah memicu alert.
+
 ## Notifikasi (outbox)
 
 ### Baris `notification_outbox` stuck `SENDING`

@@ -25,9 +25,13 @@ import {
   getBinancePollHealth,
   getBybitPollHealth,
   getBybitBscPollHealth,
+  getPollHealth,
   resolveBinanceInternalConfig,
   resolveBybitConfig,
   resolveBybitBscConfig,
+  getTokopayCreds,
+  getPaydisiniCreds,
+  getNowpaymentsCreds,
   getSetting,
   setSetting,
   claimNextDueBroadcast,
@@ -46,11 +50,14 @@ import {
 import { flashPrice } from "@app/core/flash";
 import { formatIdr } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
-import { evaluatePollHealth } from "@app/core/payments/pollHealth";
+import { evaluatePollHealth, type PollHeartbeat } from "@app/core/payments/pollHealth";
 import { coreT } from "../util/i18n";
 import { notificationKb } from "../keyboards/customer";
 import { esc } from "../util/format";
 import { broadcastPhotoArg, cacheBroadcastPhotoFileId } from "../util/broadcastPhoto";
+import { RECONCILE_CYCLE_TIMEOUT_MS as TOKOPAY_CYCLE_TIMEOUT_MS } from "../payments/tokopayReconcile";
+import { RECONCILE_CYCLE_TIMEOUT_MS as PAYDISINI_CYCLE_TIMEOUT_MS } from "../payments/paydisiniReconcile";
+import { RECONCILE_CYCLE_TIMEOUT_MS as NOWPAYMENTS_CYCLE_TIMEOUT_MS } from "../payments/nowpaymentsReconcile";
 
 /**
  * Flip the anchored payment-instructions bubble (if any) to the auto-cancelled
@@ -173,13 +180,63 @@ export async function reconcileFinancesJob(api: Api): Promise<void> {
   }
 }
 
-// Watchdog: how long without a completed poll cycle counts as "stuck".
+// Watchdog: how long without a completed poll cycle counts as "stuck" for
+// the three crypto rails (Binance / Bybit / Bybit BSC). Their poll interval
+// is ~10s and one cycle does a single bounded lookup, so 5 minutes without a
+// completed cycle is already a generous multiple of their normal cadence — a
+// cycle that slow IS a hang.
 const POLL_STALE_MINUTES = 5;
 // A poller that keeps cycling but fails every time (e.g. the destination is
 // network-blocked) refreshes `lastRun` forever and never trips the staleness
 // check above — this catches that case too.
 const FAILURE_STREAK_ALERT_THRESHOLD = 3;
 const POLL_ALERT_KEY = "binance_poll_alert_sent";
+const BYBIT_POLL_ALERT_KEY = "bybit_poll_alert_sent";
+const BYBIT_BSC_POLL_ALERT_KEY = "bybit_bsc_poll_alert_sent";
+const TOKOPAY_POLL_ALERT_KEY = "tokopay_poll_alert_sent";
+const PAYDISINI_POLL_ALERT_KEY = "paydisini_poll_alert_sent";
+const NOWPAYMENTS_POLL_ALERT_KEY = "nowpayments_poll_alert_sent";
+
+/**
+ * QRIS/IDR rails' own staleness threshold (Task 12).
+ *
+ * TokoPay/PayDisini/NOWPayments are NOT like the three crypto rails above:
+ * one cycle makes up to MAX_ORDERS_PER_CYCLE (50) sequential,
+ * individually-timed-out gateway calls, so each rail's own `cycleTimeoutMs`
+ * — the point at which pollLoop.ts gives up on a hung cycle and writes an
+ * abandon-failure heartbeat — is already ~820s for TokoPay/PayDisini and
+ * ~780s for NOWPayments (imported from each reconcile module rather than
+ * copied here, so this can't silently drift from the real value). Both are
+ * already well past the crypto rails' 5-minute default.
+ *
+ * A rail's heartbeat is written exactly once per cycle — at the end
+ * (success or failure) or, for a hung cycle, at its own cycleTimeoutMs
+ * abandon point — never mid-cycle. So a single legitimately slow cycle (a
+ * large backlog, a briefly slow gateway) can run for several minutes past
+ * the 5-minute mark and write NOTHING in the meantime, not because it's
+ * stuck, but because there is nothing to write until it finishes. Watching
+ * these three rails with the crypto rails' 5-minute threshold would page
+ * admins on ordinary slowness, not just a genuine hang — exactly the
+ * spurious page this task must not ship.
+ *
+ * Fix: each QRIS rail's own staleMs is its own cycleTimeoutMs plus a flat
+ * margin. The margin only needs to cover the abandon-heartbeat write itself
+ * and ordinary tick-timing jitter (the loop's next cycle can start up to one
+ * POLL_INTERVAL_SECONDS — 10s by default — after the previous heartbeat) —
+ * it does NOT need to re-add cycleTimeoutMs's own safety margin, since
+ * cycleTimeoutMs already IS the point past which a cycle is abandoned and a
+ * heartbeat is guaranteed to be written. 60s comfortably covers both at the
+ * default poll interval.
+ *
+ * This only widens the STALENESS rule (evaluatePollHealth's rule 5) — the
+ * "failing every cycle" rule (consecutiveFailures ≥ failureThreshold) still
+ * pages within a few cycles of a real gateway outage regardless of this
+ * value, since failures don't wait for staleness at all.
+ */
+const QRIS_STALE_MARGIN_MS = 60_000;
+const TOKOPAY_POLL_STALE_MS = TOKOPAY_CYCLE_TIMEOUT_MS + QRIS_STALE_MARGIN_MS;
+const PAYDISINI_POLL_STALE_MS = PAYDISINI_CYCLE_TIMEOUT_MS + QRIS_STALE_MARGIN_MS;
+const NOWPAYMENTS_POLL_STALE_MS = NOWPAYMENTS_CYCLE_TIMEOUT_MS + QRIS_STALE_MARGIN_MS;
 
 /**
  * Pure decision for the poller watchdog (unit-tested without DB/env):
@@ -221,28 +278,57 @@ export function pollWatchdogDecision(
   return "none";
 }
 
+/** What differs between one rail's watchdog and another's — everything else
+ * (the alert/recover decision, the DM loop, the M-26 flag-write ordering) is
+ * identical and lives once in `pollWatchdog` below (Task 12). */
+interface PollWatchdogRail {
+  /** Used verbatim in the "looks unhealthy" / "recovered" log lines and the
+   * admin DM title, e.g. "Binance poller", "TokoPay reconcile poller". */
+  label: string;
+  /** Settings key holding "1" while this rail's current unhealthy episode
+   * has already paged admins (cleared back to "0" on recovery). */
+  alertKey: string;
+  /** Whether this rail is turned on at all — the watchdog returns early
+   * (no read, no page) while it's not, exactly like each original
+   * per-rail watchdog did. */
+  isEnabled: () => Promise<boolean>;
+  readHealth: () => Promise<PollHeartbeat>;
+  /** Defaults to POLL_STALE_MINUTES * 60_000. The QRIS rails pass their own,
+   * wider value — see QRIS_STALE_MARGIN_MS above for why. */
+  staleMs?: number;
+}
+
 /**
- * Alert admins if the Binance poller looks unhealthy — either no completed
- * cycle in POLL_STALE_MINUTES, or a live cycle that's failing every single
- * time (consecutiveFailures past the threshold) — while NOT intentionally
- * backing off (rate-limit). Fires once per unhealthy episode (state in a
- * setting) and re-arms on recovery, so admins aren't spammed every tick.
+ * Alert admins if a payment poller looks unhealthy — either no completed
+ * cycle within its staleness window, or a live cycle that's failing every
+ * single time (consecutiveFailures past the threshold) — while NOT
+ * intentionally backing off (rate-limit). Fires once per unhealthy episode
+ * (state in the setting named by `rail.alertKey`) and re-arms on recovery,
+ * so admins aren't spammed every tick.
+ *
+ * Shared by all six rails (Task 12) — `binancePollWatchdog`,
+ * `bybitPollWatchdog`, `bybitBscPollWatchdog`, `tokopayPollWatchdog`,
+ * `paydisiniPollWatchdog` and `nowpaymentsPollWatchdog` below are thin
+ * wrappers that supply what differs (see `PollWatchdogRail` above) and are
+ * kept as separate named exports so the cron registrations and existing
+ * tests keep compiling unchanged.
  */
-export async function binancePollWatchdog(api: Api): Promise<void> {
-  if (!(await resolveBinanceInternalConfig(prisma)).enabled) return;
-  const health = await getBinancePollHealth(prisma);
-  const alerted = (await getSetting(prisma, POLL_ALERT_KEY)) === "1";
+async function pollWatchdog(api: Api, rail: PollWatchdogRail): Promise<void> {
+  if (!(await rail.isEnabled())) return;
+  const health = await rail.readHealth();
+  const alerted = (await getSetting(prisma, rail.alertKey)) === "1";
   const now = Date.now();
-  const decision = pollWatchdogDecision(health, alerted, now);
+  const staleMs = rail.staleMs ?? POLL_STALE_MINUTES * 60_000;
+  const decision = pollWatchdogDecision(health, alerted, now, staleMs);
 
   if (decision === "alert") {
     const { detail } = evaluatePollHealth(health, {
       enabled: true,
       now,
-      staleMs: POLL_STALE_MINUTES * 60_000,
+      staleMs,
       failureThreshold: FAILURE_STREAK_ALERT_THRESHOLD,
     });
-    logger.error(`Binance poller looks unhealthy: ${detail} Alerting admins and pausing auto-confirm.`);
+    logger.error(`${rail.label} looks unhealthy: ${detail} Alerting admins and pausing auto-confirm.`);
     // Flag flips BEFORE the DM loop, not after (M-26 fix, backend audit
     // 2026-07-31): the loop below awaits Telegram per admin, so writing the
     // flag only once every DM was sent left a window where a crash mid-loop
@@ -253,106 +339,103 @@ export async function binancePollWatchdog(api: Api): Promise<void> {
     // unpaged for this incident instead of everyone being paged repeatedly —
     // each DM failure below is still caught and logged individually, so a
     // single blocked/deactivated admin never aborts the rest of the loop.
-    await setSetting(prisma, POLL_ALERT_KEY, "1");
+    await setSetting(prisma, rail.alertKey, "1");
     for (const adminId of adminIds()) {
       try {
         await api.sendMessage(
           adminId,
-          `⚠️ <b>Binance poller looks unhealthy</b>\n${esc(detail)} ` +
+          `⚠️ <b>${rail.label} looks unhealthy</b>\n${esc(detail)} ` +
             `Auto-confirm is paused — check the order-bot process.`,
           { parse_mode: "HTML" },
         );
       } catch (err) {
-        logger.error({ err }, `Failed to DM admin ${adminId} about the unhealthy Binance poller`);
+        logger.error({ err }, `Failed to DM admin ${adminId} about the unhealthy ${rail.label}`);
       }
     }
   } else if (decision === "recover") {
-    await setSetting(prisma, POLL_ALERT_KEY, "0");
-    logger.info("Binance poller recovered — back to completing cycles normally, alert state cleared");
+    await setSetting(prisma, rail.alertKey, "0");
+    logger.info(`${rail.label} recovered — back to completing cycles normally, alert state cleared`);
   }
 }
 
-const BYBIT_POLL_ALERT_KEY = "bybit_poll_alert_sent";
+/** Alert admins if the Binance poller looks unhealthy — see `pollWatchdog`
+ * above for the actual stale/failing/recover logic. */
+export function binancePollWatchdog(api: Api): Promise<void> {
+  return pollWatchdog(api, {
+    label: "Binance poller",
+    alertKey: POLL_ALERT_KEY,
+    isEnabled: async () => (await resolveBinanceInternalConfig(prisma)).enabled,
+    readHealth: () => getBinancePollHealth(prisma),
+  });
+}
 
 /** Bybit-deposit twin of binancePollWatchdog — same stale/recover logic on the
  * Bybit poller heartbeat, with its own alert-state key so the two pollers'
  * alerts never clobber each other. */
-export async function bybitPollWatchdog(api: Api): Promise<void> {
-  if (!(await resolveBybitConfig(prisma)).enabled) return;
-  const health = await getBybitPollHealth(prisma);
-  const alerted = (await getSetting(prisma, BYBIT_POLL_ALERT_KEY)) === "1";
-  const now = Date.now();
-  const decision = pollWatchdogDecision(health, alerted, now);
-
-  if (decision === "alert") {
-    const { detail } = evaluatePollHealth(health, {
-      enabled: true,
-      now,
-      staleMs: POLL_STALE_MINUTES * 60_000,
-      failureThreshold: FAILURE_STREAK_ALERT_THRESHOLD,
-    });
-    logger.error(`Bybit deposit poller looks unhealthy: ${detail} Alerting admins and pausing auto-confirm.`);
-    // Flag flips before the DM loop — same reasoning as binancePollWatchdog
-    // above (M-26 fix, backend audit 2026-07-31).
-    await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "1");
-    for (const adminId of adminIds()) {
-      try {
-        await api.sendMessage(
-          adminId,
-          `⚠️ <b>Bybit deposit poller looks unhealthy</b>\n${esc(detail)} ` +
-            `Auto-confirm is paused — check the order-bot process.`,
-          { parse_mode: "HTML" },
-        );
-      } catch (err) {
-        logger.error({ err }, `Failed to DM admin ${adminId} about the unhealthy Bybit deposit poller`);
-      }
-    }
-  } else if (decision === "recover") {
-    await setSetting(prisma, BYBIT_POLL_ALERT_KEY, "0");
-    logger.info("Bybit deposit poller recovered — back to completing cycles normally, alert state cleared");
-  }
+export function bybitPollWatchdog(api: Api): Promise<void> {
+  return pollWatchdog(api, {
+    label: "Bybit deposit poller",
+    alertKey: BYBIT_POLL_ALERT_KEY,
+    isEnabled: async () => (await resolveBybitConfig(prisma)).enabled,
+    readHealth: () => getBybitPollHealth(prisma),
+  });
 }
-
-const BYBIT_BSC_POLL_ALERT_KEY = "bybit_bsc_poll_alert_sent";
 
 /** Bybit-BSC twin of bybitPollWatchdog — same stale/recover logic on the
  * Bybit BSC on-chain poller's own heartbeat, with its own alert-state key so
  * the two Bybit pollers' alerts never clobber each other (they can fail for
  * unrelated reasons — on-chain network congestion vs. an API outage). */
-export async function bybitBscPollWatchdog(api: Api): Promise<void> {
-  if (!(await resolveBybitBscConfig(prisma)).enabled) return;
-  const health = await getBybitBscPollHealth(prisma);
-  const alerted = (await getSetting(prisma, BYBIT_BSC_POLL_ALERT_KEY)) === "1";
-  const now = Date.now();
-  const decision = pollWatchdogDecision(health, alerted, now);
+export function bybitBscPollWatchdog(api: Api): Promise<void> {
+  return pollWatchdog(api, {
+    label: "Bybit BSC deposit poller",
+    alertKey: BYBIT_BSC_POLL_ALERT_KEY,
+    isEnabled: async () => (await resolveBybitBscConfig(prisma)).enabled,
+    readHealth: () => getBybitBscPollHealth(prisma),
+  });
+}
 
-  if (decision === "alert") {
-    const { detail } = evaluatePollHealth(health, {
-      enabled: true,
-      now,
-      staleMs: POLL_STALE_MINUTES * 60_000,
-      failureThreshold: FAILURE_STREAK_ALERT_THRESHOLD,
-    });
-    logger.error(`Bybit BSC deposit poller looks unhealthy: ${detail} Alerting admins and pausing auto-confirm.`);
-    // Flag flips before the DM loop — same reasoning as binancePollWatchdog
-    // above (M-26 fix, backend audit 2026-07-31).
-    await setSetting(prisma, BYBIT_BSC_POLL_ALERT_KEY, "1");
-    for (const adminId of adminIds()) {
-      try {
-        await api.sendMessage(
-          adminId,
-          `⚠️ <b>Bybit BSC deposit poller looks unhealthy</b>\n${esc(detail)} ` +
-            `Auto-confirm is paused — check the order-bot process.`,
-          { parse_mode: "HTML" },
-        );
-      } catch (err) {
-        logger.error({ err }, `Failed to DM admin ${adminId} about the unhealthy Bybit BSC deposit poller`);
-      }
-    }
-  } else if (decision === "recover") {
-    await setSetting(prisma, BYBIT_BSC_POLL_ALERT_KEY, "0");
-    logger.info("Bybit BSC deposit poller recovered — back to completing cycles normally, alert state cleared");
-  }
+/**
+ * TokoPay twin (Task 12) — same stale/failing/recover logic over the TokoPay
+ * reconcile poller's heartbeat (docs/TROUBLESHOOTING.md's "webhook gateway
+ * tidak pernah sampai" scenario: this is what pages admins and turns
+ * Business Health red when that happens). Gated on TokoPay credentials being
+ * configured — the same gate tokopayReconcile.ts's own poller uses — so a
+ * shop that has never turned TokoPay on never gets paged for it. Uses a
+ * wider staleMs than the crypto rails; see QRIS_STALE_MARGIN_MS above for
+ * why a legitimately slow (not hung) cycle must not trip this.
+ */
+export function tokopayPollWatchdog(api: Api): Promise<void> {
+  return pollWatchdog(api, {
+    label: "TokoPay reconcile poller",
+    alertKey: TOKOPAY_POLL_ALERT_KEY,
+    isEnabled: async () => (await getTokopayCreds(prisma)) !== null,
+    readHealth: () => getPollHealth(prisma, "tokopay"),
+    staleMs: TOKOPAY_POLL_STALE_MS,
+  });
+}
+
+/** PayDisini twin of tokopayPollWatchdog — same reasoning, its own
+ * credential gate and alert-state key. */
+export function paydisiniPollWatchdog(api: Api): Promise<void> {
+  return pollWatchdog(api, {
+    label: "PayDisini reconcile poller",
+    alertKey: PAYDISINI_POLL_ALERT_KEY,
+    isEnabled: async () => (await getPaydisiniCreds(prisma)) !== null,
+    readHealth: () => getPollHealth(prisma, "paydisini"),
+    staleMs: PAYDISINI_POLL_STALE_MS,
+  });
+}
+
+/** NOWPayments twin of tokopayPollWatchdog — same reasoning, its own
+ * credential gate and alert-state key. */
+export function nowpaymentsPollWatchdog(api: Api): Promise<void> {
+  return pollWatchdog(api, {
+    label: "NOWPayments reconcile poller",
+    alertKey: NOWPAYMENTS_POLL_ALERT_KEY,
+    isEnabled: async () => (await getNowpaymentsCreds(prisma)) !== null,
+    readHealth: () => getPollHealth(prisma, "nowpayments"),
+    staleMs: NOWPAYMENTS_POLL_STALE_MS,
+  });
 }
 
 // Throttle between broadcast DMs — stays under Telegram's ~30 msg/s bulk limit.
@@ -793,16 +876,28 @@ export function scheduleJobs(api: Api): Cron[] {
     new Cron("*/1 * * * *", { protect: true }, wrap("autoCancelExpiredOrders", autoCancelExpiredOrders)),
     new Cron("0 * * * *", { protect: true }, wrap("autoCloseStaleTickets", autoCloseStaleTickets)),
     new Cron("0 */6 * * *", { protect: true }, wrap("reconcileFinancesJob", reconcileFinancesJob)),
-    // { protect: true } (M-26 fix, backend audit 2026-07-31): these three
-    // watchdogs were the one group of jobs in this list missing it. A slow
-    // Telegram API call during the admin DM loop below can let a tick overlap
-    // with the next one; without protect, the overlapping run reads the same
+    // { protect: true } (M-26 fix, backend audit 2026-07-31): these watchdogs
+    // were the one group of jobs in this list missing it. A slow Telegram API
+    // call during the admin DM loop below can let a tick overlap with the
+    // next one; without protect, the overlapping run reads the same
     // still-unset alert flag and every admin gets paged twice for the same
-    // incident. See the flag-write reordering inside each watchdog function
-    // for the other half of this fix.
+    // incident. See the flag-write reordering inside pollWatchdog (shared by
+    // all six of these) for the other half of this fix.
     new Cron("*/2 * * * *", { protect: true }, wrap("binancePollWatchdog", binancePollWatchdog)),
     new Cron("*/2 * * * *", { protect: true }, wrap("bybitPollWatchdog", bybitPollWatchdog)),
     new Cron("*/2 * * * *", { protect: true }, wrap("bybitBscPollWatchdog", bybitBscPollWatchdog)),
+    // The three QRIS/IDR watchdogs (Task 12) are offset onto their own
+    // seconds (:15/:17/:19 of every even minute) rather than sharing the
+    // crypto three's implicit second 0 — six watchdogs all reading settings
+    // (and, on a transition, writing them) in the same SQLite write-lock
+    // instant is exactly the kind of collision that caused P1008/P2028 in
+    // production (2026-07-20; see the seconds-collision comment below). Each
+    // gets its OWN second (not all three sharing one) so no two of these six
+    // watchdogs — nor any other second-resolution job in this list — can
+    // still contend with each other.
+    new Cron("15 */2 * * * *", { protect: true }, wrap("tokopayPollWatchdog", tokopayPollWatchdog)),
+    new Cron("17 */2 * * * *", { protect: true }, wrap("paydisiniPollWatchdog", paydisiniPollWatchdog)),
+    new Cron("19 */2 * * * *", { protect: true }, wrap("nowpaymentsPollWatchdog", nowpaymentsPollWatchdog)),
     // Both offset off second 0 (croner's optional leading seconds field) so
     // neither fires in the same SQLite write-lock instant as
     // autoCancelExpiredOrders and the hourly/6-hourly jobs above — they all

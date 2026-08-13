@@ -17,9 +17,12 @@
 import { Decimal } from "@app/core/money";
 
 // Internal transfers are exact off-chain ledger moves (no on-chain
-// slippage/fees) — the only error source is Number() float parsing of a
-// decimal string, far smaller than this. Tight on purpose: it lets the M-9
-// unique-cents offset (see computeUniqueCents) shrink to a much smaller
+// slippage/fees), so the residual error is whatever rounding the gateway
+// itself applies when reporting the amount — far smaller than this. (Until
+// Task 14 the dominant error source was our own Number() parse of the
+// gateway's decimal string; parsePositiveAmount below removed it, so this
+// tolerance now covers only the gateway side.) Tight on purpose: it lets the
+// M-9 unique-cents offset (see computeUniqueCents) shrink to a much smaller
 // surcharge while still disambiguating same-amount orders.
 export const AMOUNT_TOLERANCE = 0.001; // USDT
 
@@ -77,9 +80,14 @@ const UNDERPAID_FLOOR_PERCENT = 0.5; // at least 50% of the order's total
 // is caught and treated as absent, never an exception escaping into the poll
 // loop.
 export function parsePositiveAmount(raw: unknown): Decimal | null {
+  // Trimmed first because Number(" 746.99") was whitespace-tolerant and
+  // new Decimal(" 746.99") is not — without this, a padded gateway amount
+  // would stop matching and silently become an unmatched payment. Numbers
+  // stringify losslessly here, and undefined/null still land in the catch.
+  const raw_ = typeof raw === "string" ? raw.trim() : raw;
   let amount: Decimal;
   try {
-    amount = new Decimal(raw as Decimal.Value);
+    amount = new Decimal(raw_ as Decimal.Value);
   } catch {
     return null; // malformed (e.g. "1,234.56") or missing — skip this row, don't throw
   }

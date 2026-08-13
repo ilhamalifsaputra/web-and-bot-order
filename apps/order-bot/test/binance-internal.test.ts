@@ -139,6 +139,13 @@ describe("normalizeTx (real pay/transactions payload shape)", () => {
     expect(() => normalizeTx({ ...real, amount: "1,234.56" })).not.toThrow();
     expect(normalizeTx({ ...real, amount: "1,234.56" })).toBeNull();
   });
+
+  // The same review hazard in the other direction: Number(" 746.99") was
+  // whitespace-tolerant and new Decimal(" 746.99") is not, so a padded
+  // gateway amount would have gone from "matches" to "silently unmatched".
+  it("still accepts an amount padded with whitespace", () => {
+    expect(normalizeTx({ ...real, amount: " 746.99 " })?.amount.toString()).toBe("746.99");
+  });
 });
 
 describe("pollWatchdogDecision (poller stuck/recover logic)", () => {

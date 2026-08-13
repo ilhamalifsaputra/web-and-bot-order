@@ -24,6 +24,7 @@ import {
   deliverPaidNowpaymentsOrder,
   recordUnmatchedNowpaymentsTx,
   getNowpaymentsCreds,
+  listPendingNowpaymentsOrders,
   setSetting,
   deleteSetting,
   createCategory,
@@ -31,6 +32,7 @@ import {
   createDenomination,
   createWalletTopupOrder,
   upsertUser,
+  bulkAddStock,
 } from "@app/db";
 import { OrderStatus, OrderKind, PaymentMethod, NotificationEvent, StockStatus, DeliveryType } from "@app/core/enums";
 import { Decimal } from "@app/core/money";
@@ -408,5 +410,36 @@ describe("getNowpaymentsCreds — minAmount", () => {
     expect((await getNowpaymentsCreds(prisma))!.minAmount).toBeNull();
     await setSetting(prisma, "nowpayments_min_amount", "-3");
     expect((await getNowpaymentsCreds(prisma))!.minAmount).toBeNull();
+  });
+});
+
+// Task 11 review follow-up, Minor #4: apps/order-bot/test/nowpayments-reconcile.test.ts's
+// "checks at most MAX_ORDERS_PER_CYCLE orders in one cycle" only asserts
+// `fetch` was called 50 times — that passes identically whether the cap is
+// enforced in the query (`take: limit`) or bolted on after the fact
+// (`.slice(0, 50)`). This crud-level test instead proves the cap lives in the
+// query AND pins the oldest-first ordering the reconcile poller's whole
+// "closest to auto-cancelling gets checked first" justification depends on.
+describe("listPendingNowpaymentsOrders — the query-level cap returns the oldest rows first", () => {
+  it("returns exactly `limit` rows, and they are the `limit` oldest by createdAt", async () => {
+    const extraCreds = Array.from({ length: 53 }, (_, i) => `cap-test-${i}@example.com:pwd`);
+    await bulkAddStock(prisma, sample.product.id, extraCreds);
+
+    const created: { id: number; createdAt: Date }[] = [];
+    for (let i = 0; i < 53; i++) {
+      const order = await makePendingNowpaymentsOrder();
+      // Stagger createdAt explicitly — a tight creation loop can tie at
+      // whatever resolution SQLite/JS Date store, which would make "the 50
+      // oldest" ambiguous and the assertion below vacuous.
+      const createdAt = new Date(Date.now() - (53 - i) * 1000);
+      await prisma.order.update({ where: { id: order.id }, data: { createdAt } });
+      created.push({ id: order.id, createdAt });
+    }
+    const oldest50Ids = [...created].sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).slice(0, 50).map((o) => o.id);
+
+    const result = await listPendingNowpaymentsOrders(prisma, new Date(), 50);
+
+    expect(result).toHaveLength(50);
+    expect(result.map((o) => o.id)).toEqual(oldest50Ids);
   });
 });

@@ -81,6 +81,9 @@ import * as bybitBscConfirmationTracker from "../src/payments/bybitBscConfirmati
 import * as tokopayReconcile from "../src/payments/tokopayReconcile";
 import * as paydisiniReconcile from "../src/payments/paydisiniReconcile";
 import * as nowpaymentsReconcile from "../src/payments/nowpaymentsReconcile";
+import { RECONCILE_CYCLE_TIMEOUT_MS as TOKOPAY_CYCLE_TIMEOUT_MS } from "../src/payments/tokopayReconcile";
+import { RECONCILE_CYCLE_TIMEOUT_MS as PAYDISINI_CYCLE_TIMEOUT_MS } from "../src/payments/paydisiniReconcile";
+import { RECONCILE_CYCLE_TIMEOUT_MS as NOWPAYMENTS_CYCLE_TIMEOUT_MS } from "../src/payments/nowpaymentsReconcile";
 
 const fakeApi = {} as Api;
 
@@ -104,26 +107,31 @@ const RAILS: Array<{
   hangFn: keyof typeof dbMock;
   intervalMs: number;
   /**
-   * Only the three crypto deposit rails wire onCycleTimeout to a poll-health
-   * heartbeat write. The three QRIS reconcilers now write a real heartbeat
-   * too (Task 11), but only on the normal pollOnce path — wiring the same
-   * write into the abandon branch is deferred to Task 12 alongside the
-   * watchdog that reads it (see the "onCycleTimeout is intentionally still
-   * omitted" comments in those files); the BSC confirmation tracker has no
-   * heartbeat at all (display-only, see its own module doc-comment). Set for
-   * the three crypto deposit rails so the self-heal test below can also
-   * assert the abandon heartbeat's payload, not just that a fresh cycle
-   * started.
+   * Every rail with a poll-health heartbeat wires onCycleTimeout to it, so
+   * the self-heal test below can also assert the abandon heartbeat's
+   * payload, not just that a fresh cycle started. The three crypto deposit
+   * rails each have their own dedicated recordXPollHealth (2-arg: db, args).
+   * The three QRIS reconcilers share the generic `recordPollHealth` (3-arg:
+   * db, rail, args — Task 11 review follow-up, Important #3) — `healthRail`
+   * below distinguishes the two call shapes for the assertion. The BSC
+   * confirmation tracker has no heartbeat at all (display-only, see its own
+   * module doc-comment), so it's the only rail with neither field set.
    */
   healthMockKey?: keyof typeof dbMock;
+  /** Set only for the three QRIS reconcilers, whose shared `recordPollHealth`
+   * mock is called as (db, rail, args) instead of (db, args). */
+  healthRail?: string;
   /**
    * Rails whose `createPollLoop` call passes an explicit `cycleTimeoutMs`
    * instead of relying on the default `max(3 * intervalMs, 60_000)`: Binance
    * and the BSC confirmation tracker (Task 3 review follow-up fixes), and
    * the three QRIS reconcilers (Task 11, sized off their own
    * MAX_ORDERS_PER_CYCLE × HTTP_TIMEOUT_MS.gatewayRead + margin — see the
-   * derivation comment above each rail's own `pollOnce`). Omitted for every
-   * other rail, which still uses that default.
+   * derivation comment above each rail's own `pollOnce`). Imported from each
+   * rail's own exported `RECONCILE_CYCLE_TIMEOUT_MS` (Task 11 review
+   * follow-up, Minor #5) rather than hardcoded, so lowering the real
+   * constant in source can't silently stop failing this test. Omitted for
+   * every other rail, which still uses the default.
    */
   cycleTimeoutMs?: number;
 }> = [
@@ -131,9 +139,9 @@ const RAILS: Array<{
   { name: "Bybit Internal Transfer deposit", mod: bybitDeposit, hangFn: "resolveBybitConfig", intervalMs: config.BYBIT_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitPollHealth" },
   { name: "Bybit BSC deposit", mod: bybitBscDeposit, hangFn: "resolveBybitBscConfig", intervalMs: config.BYBIT_BSC_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitBscPollHealth" },
   { name: "Bybit BSC confirmation tracker", mod: bybitBscConfirmationTracker, hangFn: "resolveBybitBscTrackerConfig", intervalMs: config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS * 1000, cycleTimeoutMs: 150_000 },
-  { name: "TokoPay reconcile", mod: tokopayReconcile, hangFn: "getTokopayCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, cycleTimeoutMs: 530_000 },
-  { name: "PayDisini reconcile", mod: paydisiniReconcile, hangFn: "getPaydisiniCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, cycleTimeoutMs: 530_000 },
-  { name: "NOWPayments reconcile", mod: nowpaymentsReconcile, hangFn: "getNowpaymentsCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, cycleTimeoutMs: 530_000 },
+  { name: "TokoPay reconcile", mod: tokopayReconcile, hangFn: "getTokopayCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordPollHealth", healthRail: "tokopay", cycleTimeoutMs: TOKOPAY_CYCLE_TIMEOUT_MS },
+  { name: "PayDisini reconcile", mod: paydisiniReconcile, hangFn: "getPaydisiniCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordPollHealth", healthRail: "paydisini", cycleTimeoutMs: PAYDISINI_CYCLE_TIMEOUT_MS },
+  { name: "NOWPayments reconcile", mod: nowpaymentsReconcile, hangFn: "getNowpaymentsCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordPollHealth", healthRail: "nowpayments", cycleTimeoutMs: NOWPAYMENTS_CYCLE_TIMEOUT_MS },
 ];
 
 // Only the four rails with triggerImmediatePoll — the three QRIS
@@ -199,7 +207,7 @@ describe("payment pollers self-heal from a hung cycle via createPollLoop", () =>
     vi.restoreAllMocks();
   });
 
-  describe.each(RAILS)("$name", ({ mod, hangFn, intervalMs, healthMockKey, cycleTimeoutMs: railCycleTimeoutMs }) => {
+  describe.each(RAILS)("$name", ({ mod, hangFn, intervalMs, healthMockKey, healthRail, cycleTimeoutMs: railCycleTimeoutMs }) => {
     it("re-arms the schedule and starts a fresh cycle instead of dying when a cycle hangs forever", async () => {
       const hangMock = vi.mocked(dbMock[hangFn] as unknown as (...a: unknown[]) => Promise<unknown>);
       hangMock.mockReset();
@@ -231,34 +239,53 @@ describe("payment pollers self-heal from a hung cycle via createPollLoop", () =>
       await vi.advanceTimersByTimeAsync(cycleTimeoutMs + intervalMs);
       expect(hangMock).toHaveBeenCalledTimes(2);
 
-      // The three crypto rails also fire a poll-health heartbeat write when
-      // cycle 1 is abandoned. Assert the exact abandon-branch payload —
-      // `backoffUntil`/`consecutiveRateLimitHits` must be read from the live
-      // backoff gate (here at its untouched, never-rate-limited default of
-      // 0/null — no rate limit was simulated in this test), not hardcoded to
-      // null/omitted the way the pre-fix hook did. `consecutiveRateLimitHits`
-      // being present at all (rather than `undefined`) is exactly what the
-      // pre-fix hook got wrong: it omitted the key, so recordXPollHealth's
-      // `args.consecutiveRateLimitHits ?? 0` still wrote 0 in this idle
-      // state, but `objectContaining` below distinguishes "key present with
-      // value 0" from "key missing" and would fail red against that
-      // omission. `rateLimited: false` because an abandoned cycle is a hang,
-      // not a rate-limit response — it must still count toward
-      // consecutiveFailures, which a true rate-limit hit deliberately does
-      // not.
+      // Every rail with a heartbeat also fires a poll-health write when
+      // cycle 1 is abandoned (Task 11 review follow-up, Important #3, for
+      // the three QRIS reconcilers). Assert the exact abandon-branch payload.
       if (healthMock) {
         expect(healthMock).toHaveBeenCalledTimes(1);
-        expect(healthMock).toHaveBeenCalledWith(
-          expect.anything(),
-          expect.objectContaining({
-            lastTxCount: 0,
-            backoffUntil: null,
-            consecutiveRateLimitHits: 0,
-            rateLimited: false,
-            success: false,
-            error: expect.stringContaining("Poll cycle abandoned after"),
-          }),
-        );
+        if (healthRail) {
+          // The three QRIS reconcilers share the generic `recordPollHealth`
+          // (db, rail, args) — no backoff gate/rate-limit counter exists for
+          // these rails, so the abandon payload is just the bare failure
+          // shape (see each rail's own onCycleTimeout comment).
+          expect(healthMock).toHaveBeenCalledWith(
+            expect.anything(),
+            healthRail,
+            expect.objectContaining({
+              lastTxCount: 0,
+              success: false,
+              error: expect.stringContaining("Poll cycle abandoned after"),
+            }),
+          );
+        } else {
+          // The three crypto rails' own recordXPollHealth (db, args).
+          // `backoffUntil`/`consecutiveRateLimitHits` must be read from the
+          // live backoff gate (here at its untouched, never-rate-limited
+          // default of 0/null — no rate limit was simulated in this test),
+          // not hardcoded to null/omitted the way the pre-fix hook did.
+          // `consecutiveRateLimitHits` being present at all (rather than
+          // `undefined`) is exactly what the pre-fix hook got wrong: it
+          // omitted the key, so recordXPollHealth's
+          // `args.consecutiveRateLimitHits ?? 0` still wrote 0 in this idle
+          // state, but `objectContaining` below distinguishes "key present
+          // with value 0" from "key missing" and would fail red against
+          // that omission. `rateLimited: false` because an abandoned cycle
+          // is a hang, not a rate-limit response — it must still count
+          // toward consecutiveFailures, which a true rate-limit hit
+          // deliberately does not.
+          expect(healthMock).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.objectContaining({
+              lastTxCount: 0,
+              backoffUntil: null,
+              consecutiveRateLimitHits: 0,
+              rateLimited: false,
+              success: false,
+              error: expect.stringContaining("Poll cycle abandoned after"),
+            }),
+          );
+        }
       }
     });
   });

@@ -91,17 +91,20 @@ function extractInvoiceId(paymentRef: string | null): string | null {
  * `getPaymentStatus` stubbed.
  *
  * Returns `"gateway_error"` only when the `getPaymentStatus` call itself
- * failed (network/HTTP/parse) — every other outcome, including "no invoice
- * yet" (no gateway call was even made) and a delivery-side throw, is `"ok"`:
- * neither is evidence the gateway is unreachable. `pollOnce` uses this to
- * tell "one flaky order" from "the gateway didn't answer a single call"
- * (Task 11).
+ * failed (network/HTTP/parse) — every other outcome, including a
+ * delivery-side throw, is `"ok"`: not evidence the gateway is unreachable.
+ * Returns `"skipped"` when NO gateway call was made at all — no invoice
+ * created yet (paymentRef still null/unparseable) — which is neither ok nor
+ * an error; `pollOnce` must exclude it from both the numerator and
+ * denominator of its outage check, or a batch of invoice-less orders can
+ * dilute a genuine all-calls-failed outage into a false "healthy" (Task 11
+ * review follow-up, Critical #1).
  */
-export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof getNowpaymentsCreds>>, order: PendingOrder): Promise<"ok" | "gateway_error"> {
-  if (!creds) return "ok";
+export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof getNowpaymentsCreds>>, order: PendingOrder): Promise<"ok" | "skipped" | "gateway_error"> {
+  if (!creds) return "skipped";
 
   const invoiceId = extractInvoiceId(order.paymentRef);
-  if (!invoiceId) return "ok"; // no hosted invoice yet — nothing to reconcile
+  if (!invoiceId) return "skipped"; // no hosted invoice yet — nothing to reconcile, no gateway call made
 
   let status: Awaited<ReturnType<typeof getPaymentStatus>>;
   try {
@@ -167,8 +170,10 @@ export const MAX_ORDERS_PER_CYCLE = 50;
 const PER_ORDER_WORST_CASE_MS = HTTP_TIMEOUT_MS.gatewayRead;
 const CYCLE_TIMEOUT_MARGIN_MS = 30_000;
 /** MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS + margin = 530_000 —
- * passed to `createPollLoop` below as this rail's `cycleTimeoutMs`. */
-const RECONCILE_CYCLE_TIMEOUT_MS = MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
+ * passed to `createPollLoop` below as this rail's `cycleTimeoutMs`. Exported
+ * (Task 11 review follow-up, Minor #5) so the wiring test imports the real
+ * value instead of a hardcoded copy that could silently drift from it. */
+export const RECONCILE_CYCLE_TIMEOUT_MS = MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
 
 export async function pollOnce(api: Api): Promise<void> {
   const creds = await getNowpaymentsCreds(prisma);
@@ -185,21 +190,33 @@ export async function pollOnce(api: Api): Promise<void> {
   }
   logger.info(`NOWPayments reconcile checking ${orders.length} pending order(s) against the gateway`);
 
+  let gatewayCalls = 0;
   let gatewayErrors = 0;
   for (const order of orders) {
     const outcome = await reconcileOrder(api, creds, order);
+    if (outcome === "skipped") continue; // no gateway call made — an invoice-less order, not evidence either way
+    gatewayCalls++;
     if (outcome === "gateway_error") gatewayErrors++;
   }
 
   // A cycle counts as failed only when EVERY gateway call in it failed — one
   // flaky order is normal noise; a gateway that answered zero of N calls is
-  // an outage worth surfacing.
-  const allFailed = gatewayErrors === orders.length;
+  // an outage worth surfacing. The denominator is gatewayCalls, NOT
+  // orders.length: an order with no hosted invoice yet never reaches the
+  // gateway (reconcileOrder returns "skipped"), so counting it toward the
+  // denominator let invoice-less orders dilute a real outage into a false
+  // "healthy" cycle — precisely when the gateway being down also stops new
+  // invoices from being created, so a mix of pre-outage (all-failed) and
+  // invoice-less (skipped) orders is the EXPECTED shape of an outage, not a
+  // corner case (Task 11 review follow-up, Critical #1). `gatewayCalls > 0`
+  // keeps an all-skipped cycle correctly successful — there's no call to
+  // have failed.
+  const allFailed = gatewayCalls > 0 && gatewayErrors === gatewayCalls;
   await recordPollHealth(prisma, "nowpayments", {
     lastTxCount: orders.length,
     success: !allFailed,
     error: allFailed
-      ? `NOWPayments gateway unreachable — all ${orders.length} pending order status check(s) failed this cycle`
+      ? `NOWPayments gateway unreachable — all ${gatewayCalls} pending order status check(s) failed this cycle`
       : null,
   }).catch(() => undefined);
 }
@@ -221,19 +238,27 @@ let boundApi: Api | undefined;
 // POLL_INTERVAL_SECONDS) would abandon a cycle mid-batch long before a full
 // MAX_ORDERS_PER_CYCLE sweep of a slow-but-not-hung gateway could finish.
 //
-// `onCycleTimeout` is intentionally still omitted: this rail now writes a
-// real poll-health heartbeat on every normal-path cycle (`recordPollHealth`
-// in pollOnce above, Task 11), but wiring that same write into the abandon
-// branch too is Task 12's job, alongside the watchdog that reads this
-// heartbeat. A hung cycle is not silent in the meantime — pollOnce's own
-// heartbeat simply stops advancing, so `lastRun` goes stale past the
-// interval, which is exactly the staleness signal a heartbeat-reading
-// watchdog checks for.
+// `onCycleTimeout` writes the same shape of failed heartbeat the normal-path
+// error branch above does (Task 11 review follow-up, Important #3): without
+// it, an abandoned cycle recorded NOTHING, so a hung NOWPayments poller was
+// indistinguishable from a healthy-but-quiet one until Task 12's watchdog
+// (not yet landed) started comparing `lastRun` against the interval. Unlike
+// binanceInternal.ts's abandon heartbeat, this rail has no backoff gate or
+// rate-limit counter to preserve, so the payload is just the bare failure
+// shape — `lastTxCount: 0` (never the success branch's `orders.length`; the
+// cycle was abandoned mid-flight, so how many orders it actually finished
+// checking is unknown).
 const loop = createPollLoop({
   name: "NOWPayments reconcile",
   intervalMs: config.POLL_INTERVAL_SECONDS * 1000,
   cycleTimeoutMs: RECONCILE_CYCLE_TIMEOUT_MS,
   run: () => pollOnce(boundApi!),
+  onCycleTimeout: (elapsedMs) =>
+    recordPollHealth(prisma, "nowpayments", {
+      lastTxCount: 0,
+      success: false,
+      error: `Poll cycle abandoned after ${elapsedMs}ms without finishing`,
+    }).catch(() => undefined),
 });
 
 export function startPolling(api: Api): void {

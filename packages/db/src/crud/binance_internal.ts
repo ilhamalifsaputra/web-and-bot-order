@@ -154,8 +154,14 @@ export async function clearOrderPaymentMessage(db: Db, orderId: number): Promise
   await db.order.update({ where: { id: orderId }, data: { paymentMsgChatId: null, paymentMsgId: null } });
 }
 
-/** DELIVERED orders of `method` that still carry an un-edited payment-message anchor. */
-export function listDeliveredOrdersAwaitingEdit(db: Db, method: PaymentMethod) {
+/** DELIVERED orders of `method` that still carry an un-edited payment-message
+ * anchor, oldest first. `limit`, when given, caps how many rows come back —
+ * the QRIS reconcile pollers (TokoPay/PayDisini) pass a bound so one cycle's
+ * sweep of grammY edit calls stays bounded regardless of backlog size, the
+ * same reasoning as `listPendingTokopayOrders`' own `limit` (Task 11 review
+ * follow-up, Important #2); omitted, every other caller keeps today's
+ * unbounded behavior. */
+export function listDeliveredOrdersAwaitingEdit(db: Db, method: PaymentMethod, limit?: number) {
   return db.order.findMany({
     where: {
       status: OrderStatus.DELIVERED,
@@ -164,6 +170,8 @@ export function listDeliveredOrdersAwaitingEdit(db: Db, method: PaymentMethod) {
       paymentMsgId: { not: null },
     },
     include: { user: true },
+    orderBy: { createdAt: "asc" },
+    ...(limit != null ? { take: limit } : {}),
   });
 }
 

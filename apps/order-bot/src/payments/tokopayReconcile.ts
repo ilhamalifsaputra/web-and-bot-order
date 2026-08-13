@@ -70,15 +70,58 @@ async function editBubbleToSuccess(api: Api, order: AnchoredOrder): Promise<void
   }
 }
 
+/** Per-order budget for waiting on a sweep bubble edit (Task 11 review
+ * follow-up, Important #2). grammY's Api client has no built-in per-call
+ * timeout the way this codebase's own gateway fetch clients do (see
+ * @app/core/http), so an unbounded sweep loop could hang on a single
+ * black-holed `editMessageCaption`/`editMessageText` call forever — the most
+ * plausible remaining way a reconcile cycle hangs, now that every gateway
+ * call is itself bounded at HTTP_TIMEOUT_MS.gatewayRead. 10s mirrors that
+ * same budget for consistency. */
+const SWEEP_EDIT_TIMEOUT_MS = 10_000;
+
+/** Race `promise` against `timeoutMs`; resolves `"timeout"` if the deadline
+ * wins. The underlying grammY call isn't cancelled when this loses the race —
+ * it may still complete in the background, the same accepted trade-off
+ * pollLoop.ts's own cycle-abandon deadline makes for a hung `run()` — so this
+ * only bounds how long the SWEEP waits on it, not the call itself. */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | "timeout"> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    timer.unref?.();
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 /**
  * Sweep DELIVERED TokoPay orders whose bubble hasn't been flipped yet (catches
  * webhook deliveries). Idempotent: clears the anchor after editing so a re-run
- * is a no-op.
+ * is a no-op. Bounded two ways (Task 11 review follow-up, Important #2): the
+ * list itself is capped at MAX_ORDERS_PER_CYCLE, and each order's edit gets at
+ * most SWEEP_EDIT_TIMEOUT_MS before the sweep gives up on it and moves on —
+ * without both, this loop was uncapped and its grammY calls unbounded, so the
+ * 530s `cycleTimeoutMs` (sized only off the 50 gateway calls) didn't actually
+ * bound the whole cycle. A timed-out edit leaves the anchor in place so the
+ * next cycle retries it — clearing only happens once an edit genuinely
+ * completes (not necessarily succeeds; editBubbleToSuccess never throws).
  */
 export async function sweepDeliveredAwaitingEdit(api: Api): Promise<void> {
-  const orders = await listDeliveredOrdersAwaitingEdit(prisma, PaymentMethod.TOKOPAY);
+  const orders = await listDeliveredOrdersAwaitingEdit(prisma, PaymentMethod.TOKOPAY, MAX_ORDERS_PER_CYCLE);
   for (const order of orders) {
-    await editBubbleToSuccess(api, order);
+    const outcome = await withTimeout(editBubbleToSuccess(api, order), SWEEP_EDIT_TIMEOUT_MS);
+    if (outcome === "timeout") {
+      logger.warn(`TokoPay sweep gave up waiting on the bubble edit for order ${order.orderCode} after ${SWEEP_EDIT_TIMEOUT_MS}ms — anchor left in place so the next cycle retries`);
+      continue;
+    }
     await clearOrderPaymentMessage(prisma, order.id);
   }
 }
@@ -103,9 +146,14 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
  * delivered, a delivery-side throw) is `"ok"`: the gateway answered, so it's
  * not evidence the gateway is unreachable. `pollOnce` uses this to tell "one
  * flaky order" from "the gateway didn't answer a single call" (Task 11).
+ * Returns `"skipped"` when no gateway call was made at all (defensive —
+ * `pollOnce` never calls this without creds already resolved, but this keeps
+ * the same three-way shape as nowpaymentsReconcile.ts's `reconcileOrder`, the
+ * one rail that DOES have a real skip path, so the two can't drift back apart
+ * (Task 11 review follow-up, Critical #1)).
  */
-export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof getTokopayCreds>>, order: PendingOrder): Promise<"ok" | "gateway_error"> {
-  if (!creds) return "ok";
+export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof getTokopayCreds>>, order: PendingOrder): Promise<"ok" | "skipped" | "gateway_error"> {
+  if (!creds) return "skipped";
   const expectedCharge = qrisChargeAmount(order.totalAmount);
   let status: Awaited<ReturnType<typeof checkTransaction>>;
   try {
@@ -166,14 +214,23 @@ export const MAX_ORDERS_PER_CYCLE = 50;
 // precedent this mirrors): one cycle makes at most MAX_ORDERS_PER_CYCLE
 // sequential checkTransaction calls, each individually bounded at
 // HTTP_TIMEOUT_MS.gatewayRead (10s) — so MAX_ORDERS_PER_CYCLE ×
-// HTTP_TIMEOUT_MS.gatewayRead is the raw worst case (500_000ms at today's
-// cap/timeout). +30s margin covers the DB list/deliver work and
-// sweepDeliveredAwaitingEdit that run alongside the gateway calls each cycle.
+// HTTP_TIMEOUT_MS.gatewayRead is the raw worst case for the reconcile loop
+// (500_000ms at today's cap/timeout). sweepDeliveredAwaitingEdit runs
+// alongside it and used to be unaccounted-for margin — Task 11 review
+// follow-up, Important #2 found it was actually uncapped/untimed, so the
+// derivation now folds in its OWN worst case the same way: at most
+// MAX_ORDERS_PER_CYCLE edits (the sweep's own `limit`), each bounded at
+// SWEEP_EDIT_TIMEOUT_MS (another 500_000ms). +30s margin covers the
+// remaining DB list/deliver work around both loops.
 const PER_ORDER_WORST_CASE_MS = HTTP_TIMEOUT_MS.gatewayRead;
 const CYCLE_TIMEOUT_MARGIN_MS = 30_000;
-/** MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS + margin = 530_000 —
- * passed to `createPollLoop` below as this rail's `cycleTimeoutMs`. */
-const RECONCILE_CYCLE_TIMEOUT_MS = MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
+/** MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS (reconcile) +
+ * MAX_ORDERS_PER_CYCLE × SWEEP_EDIT_TIMEOUT_MS (sweep) + margin = 1_030_000 —
+ * passed to `createPollLoop` below as this rail's `cycleTimeoutMs`. Exported
+ * (Task 11 review follow-up, Minor #5) so the wiring test imports the real
+ * value instead of a hardcoded copy that could silently drift from it. */
+export const RECONCILE_CYCLE_TIMEOUT_MS =
+  MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + MAX_ORDERS_PER_CYCLE * SWEEP_EDIT_TIMEOUT_MS + CYCLE_TIMEOUT_MARGIN_MS;
 
 export async function pollOnce(api: Api): Promise<void> {
   const creds = await getTokopayCreds(prisma);
@@ -190,21 +247,28 @@ export async function pollOnce(api: Api): Promise<void> {
   }
   logger.info(`TokoPay reconcile checking ${orders.length} pending order(s) against the gateway`);
 
+  let gatewayCalls = 0;
   let gatewayErrors = 0;
   for (const order of orders) {
     const outcome = await reconcileOrder(api, creds, order);
+    if (outcome === "skipped") continue; // no gateway call made — not evidence either way
+    gatewayCalls++;
     if (outcome === "gateway_error") gatewayErrors++;
   }
 
   // A cycle counts as failed only when EVERY gateway call in it failed — one
   // flaky order is normal noise; a gateway that answered zero of N calls is
-  // an outage worth surfacing.
-  const allFailed = gatewayErrors === orders.length;
+  // an outage worth surfacing. Denominator is gatewayCalls, not orders.length
+  // (Task 11 review follow-up, Critical #1 — this rail's reconcileOrder never
+  // actually skips today, but the shape is shared with nowpaymentsReconcile.ts,
+  // where it does, so both stay correct even if this rail ever grows a skip
+  // path). `gatewayCalls > 0` keeps an all-skipped cycle correctly successful.
+  const allFailed = gatewayCalls > 0 && gatewayErrors === gatewayCalls;
   await recordPollHealth(prisma, "tokopay", {
     lastTxCount: orders.length,
     success: !allFailed,
     error: allFailed
-      ? `TokoPay gateway unreachable — all ${orders.length} pending order status check(s) failed this cycle`
+      ? `TokoPay gateway unreachable — all ${gatewayCalls} pending order status check(s) failed this cycle`
       : null,
   }).catch(() => undefined);
 
@@ -225,24 +289,33 @@ export async function pollOnce(api: Api): Promise<void> {
 let boundApi: Api | undefined;
 
 // cycleTimeoutMs is RECONCILE_CYCLE_TIMEOUT_MS, sized off MAX_ORDERS_PER_CYCLE's
-// own worst case (see the derivation comment above pollOnce) — 530s. Without
-// this the default `max(3 * intervalMs, 60_000)` (60s at the default
-// POLL_INTERVAL_SECONDS) would abandon a cycle mid-batch long before a full
-// MAX_ORDERS_PER_CYCLE sweep of a slow-but-not-hung gateway could finish.
+// own worst case for BOTH the reconcile loop and the sweep (see the
+// derivation comment above pollOnce) — 1_030s. Without this the default
+// `max(3 * intervalMs, 60_000)` (60s at the default POLL_INTERVAL_SECONDS)
+// would abandon a cycle mid-batch long before a full MAX_ORDERS_PER_CYCLE
+// sweep of a slow-but-not-hung gateway could finish.
 //
-// `onCycleTimeout` is intentionally still omitted: this rail now writes a
-// real poll-health heartbeat on every normal-path cycle (`recordPollHealth`
-// in pollOnce above, Task 11), but wiring that same write into the abandon
-// branch too is Task 12's job, alongside the watchdog that reads this
-// heartbeat. A hung cycle is not silent in the meantime — pollOnce's own
-// heartbeat simply stops advancing, so `lastRun` goes stale past the
-// interval, which is exactly the staleness signal a heartbeat-reading
-// watchdog checks for.
+// `onCycleTimeout` writes the same shape of failed heartbeat the normal-path
+// error branch above does (Task 11 review follow-up, Important #3): without
+// it, an abandoned cycle recorded NOTHING, so a hung TokoPay poller was
+// indistinguishable from a healthy-but-quiet one until Task 12's watchdog
+// (not yet landed) started comparing `lastRun` against the interval. Unlike
+// binanceInternal.ts's abandon heartbeat, this rail has no backoff gate or
+// rate-limit counter to preserve, so the payload is just the bare failure
+// shape — `lastTxCount: 0` (never the success branch's `orders.length`; the
+// cycle was abandoned mid-flight, so how many orders it actually finished
+// checking is unknown).
 const loop = createPollLoop({
   name: "TokoPay reconcile",
   intervalMs: config.POLL_INTERVAL_SECONDS * 1000,
   cycleTimeoutMs: RECONCILE_CYCLE_TIMEOUT_MS,
   run: () => pollOnce(boundApi!),
+  onCycleTimeout: (elapsedMs) =>
+    recordPollHealth(prisma, "tokopay", {
+      lastTxCount: 0,
+      success: false,
+      error: `Poll cycle abandoned after ${elapsedMs}ms without finishing`,
+    }).catch(() => undefined),
 });
 
 export function startPolling(api: Api): void {

@@ -68,6 +68,28 @@ async function makeNowpaymentsOrder(invoiceId = "INV-1") {
   return created!;
 }
 
+/** A pending NOWPAYMENTS order that never got a hosted invoice created —
+ * `paymentRef` stays whatever finalizeOrderPayment left it (null/unrelated),
+ * so `extractInvoiceId` returns null and `reconcileOrder` skips it without a
+ * gateway call. Mirrors the checkout.ts outage shape (module doc-comment
+ * `INVOICE ID` section): a buyer who checks out WHILE the gateway is down
+ * never gets an invoice cached at all. */
+async function makeNowpaymentsOrderWithoutInvoice() {
+  const created = await prisma.$transaction(async (tx) => {
+    const o = await createOrderDirect(tx, {
+      user: { id: sample.user.id, role: sample.user.role },
+      productId: sample.product.id,
+      quantity: 1,
+    });
+    return finalizeOrderPayment(tx, o!.id, {
+      currency: OrderCurrency.USDT,
+      rate: "16000",
+      method: PaymentMethod.NOWPAYMENTS,
+    });
+  });
+  return created!;
+}
+
 describe("reconcileOrder (NOWPayments poller safety net)", () => {
   it('delivers a pending NOWPAYMENTS order when the gateway reports "finished"', async () => {
     const created = await makeNowpaymentsOrder();
@@ -141,6 +163,29 @@ describe("pollOnce (heartbeat + bounded cycle — Task 11)", () => {
 
   it("records a failed heartbeat when every gateway status call in the cycle fails", async () => {
     await seedNowpaymentsCreds();
+    await makeNowpaymentsOrder("INV-1");
+    await makeNowpaymentsOrder("INV-2");
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+
+    await pollOnce(fakeApi());
+
+    const health = await getPollHealth(prisma, "nowpayments");
+    expect(health.lastSuccessAt).toBeNull();
+    expect(health.consecutiveFailures).toBe(1);
+    expect(health.lastError).toBeTruthy();
+  });
+
+  // Task 11 review follow-up, Critical #1: reconcileOrder returns "ok" (not
+  // "gateway_error") for an invoice-less order — no gateway call was even
+  // made. Before the fix, pollOnce's outage check divided by orders.length,
+  // so this invoice-less order inflated the denominator and the cycle read
+  // as healthy even though every ACTUAL gateway call failed — exactly the
+  // outage-during-checkout shape the module doc-comment describes: an
+  // outage stops both invoice creation (new orders arrive invoice-less) and
+  // existing invoices' status checks (those fail) at the same time.
+  it("an invoice-less order must not dilute the all-failed outage check — the cycle stays unhealthy", async () => {
+    await seedNowpaymentsCreds();
+    await makeNowpaymentsOrderWithoutInvoice(); // no gateway call possible for this one
     await makeNowpaymentsOrder("INV-1");
     await makeNowpaymentsOrder("INV-2");
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));

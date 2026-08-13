@@ -703,6 +703,7 @@ export function VouchersPage() {
         columns={[
           {
             key: "select",
+            kind: "selection",
             header: (
               <Checkbox
                 checked={allSelected}

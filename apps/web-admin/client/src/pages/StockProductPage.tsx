@@ -259,6 +259,7 @@ export function StockProductPage() {
           columns={[
             {
               key: "select",
+              kind: "selection",
               header: (
                 <Checkbox
                   checked={tabItems.length > 0 && tabItems.every((i) => selected.has(i.id))}

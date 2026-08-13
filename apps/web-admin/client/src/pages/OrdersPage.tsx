@@ -485,6 +485,7 @@ export function OrdersPage() {
         columns={[
           {
             key: "select",
+            kind: "selection",
             header: (
               <Checkbox
                 checked={allOnPageSelected}

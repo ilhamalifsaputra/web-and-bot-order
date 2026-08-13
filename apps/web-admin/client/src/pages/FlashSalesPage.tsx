@@ -440,6 +440,7 @@ export function FlashSalesPage() {
         columns={[
           {
             key: "select",
+            kind: "selection",
             header: (
               <Checkbox
                 checked={allFilteredSelected}

@@ -292,9 +292,42 @@ dengan `db push` (bukan `migrate deploy`) seperti langkah berikutnya.
 # Non-Docker
 pnpm exec prisma db push
 
-# Docker
+# Docker — biasanya TIDAK perlu: entrypoint sudah melakukannya saat container
+# start (lihat bagian berikut). Perintah ini tetap valid & idempoten, mis. saat
+# AUTO_MIGRATE=0 atau untuk menerapkan skema tanpa restart.
 docker compose run --rm server pnpm exec prisma db push
 ```
+
+### Docker: otomatis lewat entrypoint
+
+`docker-entrypoint.sh` menyelaraskan skema **sebelum** `pnpm start` dijalankan,
+jadi "urutan wajib" di bawah dipenuhi secara struktural — tidak bisa lupa.
+Alurnya tiap start:
+
+1. `AUTO_MIGRATE=0`? → berhenti di sini, skema tak disentuh.
+2. Ada `data/SKIP_AUTO_MIGRATE`? → berhenti (jeda pasca-rollback, ditulis
+   `restore.sh`); isi file dicetak ke log.
+3. File DB belum ada → fresh install, `db push` langsung (tak ada yang perlu
+   di-backup).
+4. `prisma migrate diff --exit-code` membandingkan DB vs `schema.prisma`:
+   - exit **0** (sama) → tidak ada backup, tidak ada push. Jadi `restart`
+     berulang/crash-loop tidak menggerus retensi backup.
+   - exit **2** (beda) → `deploy/backup/backup.sh` **dulu**, lalu `db push`.
+   - exit **1** (gagal membandingkan) → **container menolak start**, supaya
+     masalahnya terlihat sekarang alih-alih muncul sebagai `P2022` di setiap
+     query order.
+5. Kalau snapshot tak bisa diambil (mis. `sqlite3` hilang dari image, atau
+   `backup.sh` gagal) → **menolak mengubah skema**. Tidak ada perubahan skema
+   tanpa jalur rollback.
+
+Kenapa di entrypoint dan bukan service `migrate` + `depends_on`:
+`depends_on` hanya dievaluasi saat `up`, sehingga
+`docker compose restart server` akan melewatinya — sedangkan entrypoint dilewati
+oleh **semua** jalur start (`up`, `restart`, dan restart otomatis setelah crash).
+
+> Konsekuensi: `docker compose run --rm server <apa pun>` juga melewati
+> entrypoint, jadi perintah one-off ikut menyelaraskan skema lebih dulu.
+> Umumnya justru yang diinginkan; kalau tidak, awali dengan `AUTO_MIGRATE=0`.
 
 **Expected output (sukses, tanpa data loss):**
 ```
@@ -311,7 +344,9 @@ baru jadikan non-null di push kedua (lihat "Disiplin migrasi aman" di
 **Urutan wajib (CLAUDE.md):** `db push` **dulu**, restart proses **kedua**,
 baru kode baru benar-benar jalan. Kebalikannya (kode dulu, push belakangan)
 menghasilkan `P2022 column ... does not exist` — lihat
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md). Di Docker urutan ini dijamin oleh
+entrypoint; yang perlu Anda jaga manual hanyalah jalur non-Docker
+(`pnpm start`, dev).
 
 ## Cara rollback migrasi
 
@@ -344,10 +379,9 @@ uji coba) — tapi tetap disiplin commit `schema.prisma` + folder migrasi SQL
 ### Staging
 
 ```bash
-deploy/backup/backup.sh                 # snapshot dulu meski staging
-docker compose run --rm server pnpm exec prisma db push
-docker compose restart server
-curl -I http://127.0.0.1:8000/healthz   # smoke test
+docker compose up -d --build             # entrypoint: snapshot → db push → app
+docker compose logs -f server            # cek baris "entrypoint: ..."
+curl -I http://127.0.0.1:8000/healthz    # smoke test
 ```
 Staging adalah tempat **menguji prosedur rollback** sebelum dipraktikkan di
 produksi (lihat "Uji end-to-end" di `deploy/backup/README.md`).
@@ -355,12 +389,21 @@ produksi (lihat "Uji end-to-end" di `deploy/backup/README.md`).
 ### Production
 
 ```bash
-deploy/backup/backup.sh                                          # 1. backup dulu, SELALU
-docker compose run --rm server pnpm exec prisma db push           # 2. terapkan skema
-docker compose restart server                                     # 3. restart SEBELUM trafik baru
-curl -I https://admin.contoh.com/healthz                          # 4. smoke test
+deploy/backup/backup.sh                                  # 1. backup manual, SELALU (lihat catatan)
+docker compose up -d --build                             # 2. entrypoint: snapshot → db push → app
+docker compose logs --since 5m server | grep entrypoint  # 3. pastikan skema diselaraskan
+curl -I https://admin.contoh.com/healthz                 # 4. smoke test
 ```
-Jangan skip langkah 1 — lihat insiden nyata di bagian berikut.
+
+Langkah 2 sudah mengambil snapshot pra-migrasi sendiri, jadi secara teknis
+langkah 1 redundan untuk kasus migrasi. Tetap jalankan: snapshot entrypoint
+hanya melindungi dari *perubahan skema*, sedangkan langkah 1 melindungi dari
+segala hal lain yang bisa salah pada sebuah deploy — dan ia berjalan **sebelum**
+image baru menyentuh apa pun. Insiden nyata di bagian berikut terjadi persis
+karena backup dilewati.
+
+Kalau skema tidak berubah, langkah 2 tidak mengambil snapshot dan tidak
+menyentuh DB — log akan bilang `schema already matches`.
 
 ## Kegagalan umum & pemulihan
 

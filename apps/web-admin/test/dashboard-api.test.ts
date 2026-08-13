@@ -219,6 +219,55 @@ describe("GET /api/dashboard/health", () => {
     const body = res.json();
     expect(body.binance.status).toBe("red");
   });
+
+  // Review finding on this task: the old endpoint tested `backoffUntil` for
+  // truthiness rather than expiry, so an expired backoff stamp still read
+  // yellow until the next successful cycle nulled it out. evaluatePollHealth's
+  // Rule 2 is expiry-aware (`backoffUntil > now`), so an expired stamp must
+  // fall through to the healthy rule instead.
+  //
+  // lastRun is set to "just now" so Rule 5 (staleness) cannot fire, and
+  // consecutiveFailures is 0 so neither Rule 4 (paging failure threshold) nor
+  // Rule 6 (yellow single-failure tier) can fire either — only Rule 2
+  // (backoff) is left able to produce anything other than green.
+  it("reports an enabled poller with an expired backoff stamp as green, not yellow", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "test-uid");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "test-key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "test-secret");
+    const justNow = new Date(Date.now() - 5_000).toISOString();
+    const tenMinutesAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      BINANCE_POLL_HEALTH_KEY,
+      JSON.stringify({ lastRun: justNow, backoffUntil: tenMinutesAgo, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.binance.status).toBe("green");
+  });
+
+  // Mirror case, pinned alongside the expired-backoff fix above since it's
+  // cheap: a backoff window still in the future is an intentional pause and
+  // must keep reading yellow, not fall through to green.
+  it("reports an enabled poller with a still-active backoff stamp as yellow", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "test-uid");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "test-key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "test-secret");
+    const justNow = new Date(Date.now() - 5_000).toISOString();
+    const tenMinutesFromNow = new Date(Date.now() + 10 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      BINANCE_POLL_HEALTH_KEY,
+      JSON.stringify({ lastRun: justNow, backoffUntil: tenMinutesFromNow, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.binance.status).toBe("yellow");
+  });
 });
 
 describe("GET /api/dashboard/top-products", () => {

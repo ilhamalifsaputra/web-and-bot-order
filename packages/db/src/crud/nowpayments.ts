@@ -51,8 +51,13 @@ export async function getNowpaymentsCreds(db: Db): Promise<(NowpaymentsCreds & {
   };
 }
 
-/** PENDING, not-yet-expired NOWPayments orders the reconcile poller should check. */
-export function listPendingNowpaymentsOrders(db: Db, now: Date) {
+/** PENDING, not-yet-expired NOWPayments orders the reconcile poller should
+ * check, oldest first (closest to auto-cancelling). `limit`, when given,
+ * caps how many rows come back — the reconcile poller passes
+ * MAX_ORDERS_PER_CYCLE so one cycle's gateway round-trips stay bounded
+ * regardless of backlog size (Task 11); omitted, every other caller keeps
+ * today's unbounded behavior. */
+export function listPendingNowpaymentsOrders(db: Db, now: Date, limit?: number) {
   return db.order.findMany({
     where: {
       status: OrderStatus.PENDING_PAYMENT,
@@ -60,6 +65,8 @@ export function listPendingNowpaymentsOrders(db: Db, now: Date) {
       expiresAt: { gt: now },
     },
     include: { user: true },
+    orderBy: { createdAt: "asc" },
+    ...(limit != null ? { take: limit } : {}),
   });
 }
 

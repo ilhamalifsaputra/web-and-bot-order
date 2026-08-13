@@ -25,6 +25,7 @@ import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
 import { t as coreT } from "@app/core/i18n";
+import { HTTP_TIMEOUT_MS } from "@app/core/http";
 import { checkTransaction } from "@app/core/payments/paydisini";
 import {
   prisma,
@@ -33,6 +34,7 @@ import {
   deliverPaidPaydisiniOrder,
   listDeliveredOrdersAwaitingEdit,
   clearOrderPaymentMessage,
+  recordPollHealth,
 } from "@app/db";
 import { esc } from "../util/format";
 import { paymentSuccessKb } from "../keyboards/customer";
@@ -96,22 +98,28 @@ async function alertAdmins(api: Api, text: string): Promise<void> {
  * Reconcile one pending order against the gateway. Confirms (delivers) when the
  * gateway reports it paid for at least the order total. Extracted from the loop
  * so it can be unit-tested with `checkTransaction` stubbed.
+ *
+ * Returns `"gateway_error"` only when the `checkTransaction` call itself
+ * failed (network/HTTP/parse) — every other outcome (unpaid, underpaid,
+ * delivered, a delivery-side throw) is `"ok"`: the gateway answered, so it's
+ * not evidence the gateway is unreachable. `pollOnce` uses this to tell "one
+ * flaky order" from "the gateway didn't answer a single call" (Task 11).
  */
-export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof getPaydisiniCreds>>, order: PendingOrder): Promise<void> {
-  if (!creds) return;
+export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof getPaydisiniCreds>>, order: PendingOrder): Promise<"ok" | "gateway_error"> {
+  if (!creds) return "ok";
   let status: Awaited<ReturnType<typeof checkTransaction>>;
   try {
     status = await checkTransaction(creds, { refId: order.orderCode, amountIdr: order.totalAmount });
   } catch (err) {
     logger.warn({ err }, `Failed to check PayDisini status for order ${order.orderCode} — will retry on the next reconcile cycle`);
-    return;
+    return "gateway_error";
   }
-  if (!status.paid) return;
+  if (!status.paid) return "ok";
 
   // Paid but short — never deliver on an underpayment; leave for manual review.
   if (status.amount.lessThan(new Decimal(order.totalAmount))) {
     logger.warn(`Order ${order.orderCode} underpaid — PayDisini reports ${status.amount}, expected ${order.totalAmount}, left PENDING for manual review`);
-    return;
+    return "ok";
   }
 
   try {
@@ -139,19 +147,66 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
     logger.error({ err }, `Order ${order.orderCode} was paid (PayDisini) but delivery threw — admin alerted for manual action`);
     await alertAdmins(api, `⚠️ PayDisini paid but delivery FAILED for <code>${esc(order.orderCode)}</code> — ${esc(String(err).slice(0, 200))}. Manual action needed.`);
   }
+  return "ok";
 }
+
+/** Cap on how many pending orders one reconcile cycle checks against the
+ * gateway, oldest first (closest to auto-cancelling, so a large backlog
+ * still gets its most time-sensitive orders checked every cycle instead of
+ * one unbounded sequential sweep). Orders beyond the cap simply wait for the
+ * next cycle, `POLL_INTERVAL_SECONDS` later: the storefront webhook is still
+ * the PRIMARY delivery path (see the module doc-comment) — this poller only
+ * fills the gap when the webhook can't reach the app, so a capped order
+ * waiting one extra cycle only delays the safety net catching it, never the
+ * normal delivery path. (Task 11.) */
+export const MAX_ORDERS_PER_CYCLE = 50;
+
+// cycleTimeoutMs derivation (Task 3 review follow-up shape — see
+// bybitBscConfirmationTracker.ts's TRACKER_CYCLE_TIMEOUT_MS for the worked
+// precedent this mirrors): one cycle makes at most MAX_ORDERS_PER_CYCLE
+// sequential checkTransaction calls, each individually bounded at
+// HTTP_TIMEOUT_MS.gatewayRead (10s) — so MAX_ORDERS_PER_CYCLE ×
+// HTTP_TIMEOUT_MS.gatewayRead is the raw worst case (500_000ms at today's
+// cap/timeout). +30s margin covers the DB list/deliver work and
+// sweepDeliveredAwaitingEdit that run alongside the gateway calls each cycle.
+const PER_ORDER_WORST_CASE_MS = HTTP_TIMEOUT_MS.gatewayRead;
+const CYCLE_TIMEOUT_MARGIN_MS = 30_000;
+/** MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS + margin = 530_000 —
+ * passed to `createPollLoop` below as this rail's `cycleTimeoutMs`. */
+const RECONCILE_CYCLE_TIMEOUT_MS = MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
 
 export async function pollOnce(api: Api): Promise<void> {
   const creds = await getPaydisiniCreds(prisma);
-  if (!creds) return;
+  if (!creds) return; // rail genuinely off — no heartbeat; its watchdog is gated on credentials too
 
-  const orders = await listPendingPaydisiniOrders(prisma, new Date());
-  if (!orders.length) return;
+  const orders = await listPendingPaydisiniOrders(prisma, new Date(), MAX_ORDERS_PER_CYCLE);
+  if (!orders.length) {
+    // An empty pending list is a successful cycle, not a skipped one — a
+    // healthy shop that's simply quiet must still advance the heartbeat, or
+    // it reads as stale after 5 minutes and the Task 12 watchdog pages
+    // admins over nothing (Task 11 brief).
+    await recordPollHealth(prisma, "paydisini", { lastTxCount: 0, success: true }).catch(() => undefined);
+    return;
+  }
   logger.info(`PayDisini reconcile checking ${orders.length} pending order(s) against the gateway`);
 
+  let gatewayErrors = 0;
   for (const order of orders) {
-    await reconcileOrder(api, creds, order);
+    const outcome = await reconcileOrder(api, creds, order);
+    if (outcome === "gateway_error") gatewayErrors++;
   }
+
+  // A cycle counts as failed only when EVERY gateway call in it failed — one
+  // flaky order is normal noise; a gateway that answered zero of N calls is
+  // an outage worth surfacing.
+  const allFailed = gatewayErrors === orders.length;
+  await recordPollHealth(prisma, "paydisini", {
+    lastTxCount: orders.length,
+    success: !allFailed,
+    error: allFailed
+      ? `PayDisini gateway unreachable — all ${orders.length} pending order status check(s) failed this cycle`
+      : null,
+  }).catch(() => undefined);
 
   // Catches orders the storefront webhook delivered (the bubble flip never
   // happens on the web — CLAUDE.md "never send Telegram from the web").
@@ -169,13 +224,24 @@ export async function pollOnce(api: Api): Promise<void> {
 // still undefined.
 let boundApi: Api | undefined;
 
-// No `onCycleTimeout`: TokoPay/PayDisini/NOWPayments have no poll-health
-// heartbeat row yet (that's a later hardening task) — wiring one here for
-// only this rail's abandon path, ahead of the normal error path having one
-// too, would invent a shape rather than reuse an existing one.
+// cycleTimeoutMs is RECONCILE_CYCLE_TIMEOUT_MS, sized off MAX_ORDERS_PER_CYCLE's
+// own worst case (see the derivation comment above pollOnce) — 530s. Without
+// this the default `max(3 * intervalMs, 60_000)` (60s at the default
+// POLL_INTERVAL_SECONDS) would abandon a cycle mid-batch long before a full
+// MAX_ORDERS_PER_CYCLE sweep of a slow-but-not-hung gateway could finish.
+//
+// `onCycleTimeout` is intentionally still omitted: this rail now writes a
+// real poll-health heartbeat on every normal-path cycle (`recordPollHealth`
+// in pollOnce above, Task 11), but wiring that same write into the abandon
+// branch too is Task 12's job, alongside the watchdog that reads this
+// heartbeat. A hung cycle is not silent in the meantime — pollOnce's own
+// heartbeat simply stops advancing, so `lastRun` goes stale past the
+// interval, which is exactly the staleness signal a heartbeat-reading
+// watchdog checks for.
 const loop = createPollLoop({
   name: "PayDisini reconcile",
   intervalMs: config.POLL_INTERVAL_SECONDS * 1000,
+  cycleTimeoutMs: RECONCILE_CYCLE_TIMEOUT_MS,
   run: () => pollOnce(boundApi!),
 });
 

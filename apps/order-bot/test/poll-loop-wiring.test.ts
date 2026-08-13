@@ -66,6 +66,11 @@ vi.mock("@app/db", () => ({
   getNowpaymentsCreds: vi.fn(),
   listPendingNowpaymentsOrders: vi.fn(),
   deliverPaidNowpaymentsOrder: vi.fn(),
+  // tokopayReconcile.ts / paydisiniReconcile.ts / nowpaymentsReconcile.ts
+  // heartbeat (Task 11) — resolved (not a bare vi.fn()) for the same reason
+  // as recordBinancePollHealth above: pollOnce's normal-path writes call
+  // `.catch()` on this call's return value.
+  recordPollHealth: vi.fn().mockResolvedValue(undefined),
 }));
 
 import * as dbMock from "@app/db";
@@ -100,18 +105,25 @@ const RAILS: Array<{
   intervalMs: number;
   /**
    * Only the three crypto deposit rails wire onCycleTimeout to a poll-health
-   * heartbeat write (the QRIS reconcilers and the BSC confirmation tracker
-   * don't have one yet — see the "No `onCycleTimeout`" comments in those
-   * files). Set for those three so the self-heal test below can also assert
-   * the abandon heartbeat's payload, not just that a fresh cycle started.
+   * heartbeat write. The three QRIS reconcilers now write a real heartbeat
+   * too (Task 11), but only on the normal pollOnce path — wiring the same
+   * write into the abandon branch is deferred to Task 12 alongside the
+   * watchdog that reads it (see the "onCycleTimeout is intentionally still
+   * omitted" comments in those files); the BSC confirmation tracker has no
+   * heartbeat at all (display-only, see its own module doc-comment). Set for
+   * the three crypto deposit rails so the self-heal test below can also
+   * assert the abandon heartbeat's payload, not just that a fresh cycle
+   * started.
    */
   healthMockKey?: keyof typeof dbMock;
   /**
    * Rails whose `createPollLoop` call passes an explicit `cycleTimeoutMs`
-   * (Binance and the BSC confirmation tracker, both Task 3 review follow-up
-   * fixes — see the derivation comments next to each `createPollLoop` call)
-   * instead of relying on the default `max(3 * intervalMs, 60_000)`. Omitted
-   * for every other rail, which still uses that default.
+   * instead of relying on the default `max(3 * intervalMs, 60_000)`: Binance
+   * and the BSC confirmation tracker (Task 3 review follow-up fixes), and
+   * the three QRIS reconcilers (Task 11, sized off their own
+   * MAX_ORDERS_PER_CYCLE × HTTP_TIMEOUT_MS.gatewayRead + margin — see the
+   * derivation comment above each rail's own `pollOnce`). Omitted for every
+   * other rail, which still uses that default.
    */
   cycleTimeoutMs?: number;
 }> = [
@@ -119,9 +131,9 @@ const RAILS: Array<{
   { name: "Bybit Internal Transfer deposit", mod: bybitDeposit, hangFn: "resolveBybitConfig", intervalMs: config.BYBIT_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitPollHealth" },
   { name: "Bybit BSC deposit", mod: bybitBscDeposit, hangFn: "resolveBybitBscConfig", intervalMs: config.BYBIT_BSC_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitBscPollHealth" },
   { name: "Bybit BSC confirmation tracker", mod: bybitBscConfirmationTracker, hangFn: "resolveBybitBscTrackerConfig", intervalMs: config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS * 1000, cycleTimeoutMs: 150_000 },
-  { name: "TokoPay reconcile", mod: tokopayReconcile, hangFn: "getTokopayCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000 },
-  { name: "PayDisini reconcile", mod: paydisiniReconcile, hangFn: "getPaydisiniCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000 },
-  { name: "NOWPayments reconcile", mod: nowpaymentsReconcile, hangFn: "getNowpaymentsCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000 },
+  { name: "TokoPay reconcile", mod: tokopayReconcile, hangFn: "getTokopayCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, cycleTimeoutMs: 530_000 },
+  { name: "PayDisini reconcile", mod: paydisiniReconcile, hangFn: "getPaydisiniCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, cycleTimeoutMs: 530_000 },
+  { name: "NOWPayments reconcile", mod: nowpaymentsReconcile, hangFn: "getNowpaymentsCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, cycleTimeoutMs: 530_000 },
 ];
 
 // Only the four rails with triggerImmediatePoll — the three QRIS

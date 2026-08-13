@@ -233,4 +233,35 @@ describe("pollOnce (heartbeat + bounded cycle — Task 11)", () => {
     const health = await getPollHealth(prisma, "nowpayments");
     expect(health.lastTxCount).toBe(MAX_ORDERS_PER_CYCLE);
   });
+
+  // followup-review-fixes-2: MAX_ORDERS_PER_CYCLE used to always cap the same
+  // oldest-first slice (listPendingNowpaymentsOrders' own ordering) — a
+  // backlog over the cap left orders 51+ unchecked by this safety net until
+  // enough older ones expired out. The rotating cursor (rotatingCursor.ts)
+  // instead rotates which slice gets checked, so the SAME backlog gets full
+  // coverage across a couple of cycles instead of the tail starving
+  // indefinitely.
+  it("rotates which orders are checked across cycles, covering the whole backlog instead of always the same oldest N", async () => {
+    await seedNowpaymentsCreds();
+    const total = MAX_ORDERS_PER_CYCLE + 3;
+    const extraCreds = Array.from({ length: total + 2 }, (_, i) => `stock-extra-rot-${i}`);
+    await bulkAddStock(prisma, sample.product.id, extraCreds);
+    for (let i = 0; i < total; i++) await makeNowpaymentsOrder(`INV-ROT-${i}`);
+
+    const seenInvoiceIds = new Set<string>();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) => {
+        const match = /\/v1\/invoice\/([^/?]+)/.exec(url);
+        if (match?.[1]) seenInvoiceIds.add(decodeURIComponent(match[1]));
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ payment_status: "waiting" }) });
+      }),
+    );
+
+    await pollOnce(fakeApi());
+    expect(seenInvoiceIds.size).toBe(MAX_ORDERS_PER_CYCLE); // never all `total` in one cycle
+
+    await pollOnce(fakeApi()); // the rotating window's next slice picks up the rest
+    expect(seenInvoiceIds.size).toBe(total); // full coverage within 2 cycles, no starved tail
+  });
 });

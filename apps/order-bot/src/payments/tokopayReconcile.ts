@@ -44,6 +44,7 @@ import {
 import { esc } from "../util/format";
 import { paymentSuccessKb } from "../keyboards/customer";
 import { createPollLoop } from "./pollLoop";
+import { createRotatingCursor } from "./rotatingCursor";
 
 type PendingOrder = Awaited<ReturnType<typeof listPendingTokopayOrders>>[number];
 
@@ -280,12 +281,21 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
 // jobs/index.ts) keep working unchanged.
 export const RECONCILE_CYCLE_TIMEOUT_MS = TOKOPAY_RECONCILE_CYCLE_TIMEOUT_MS;
 
+// MAX_ORDERS_PER_CYCLE caps how many of the pending backlog one cycle checks
+// against the gateway — listPendingTokopayOrders orders oldest-first, so
+// without rotation a backlog over the cap would starve orders 51+ until
+// enough older ones expire out (followup-review-fixes-2). `cursor` rotates
+// WHICH slice of that oldest-first list gets checked each cycle instead —
+// same fix bybitBscConfirmationTracker.ts already applies to its own capped
+// scan, reused here via rotatingCursor.ts rather than re-implemented.
+const cursor = createRotatingCursor();
+
 export async function pollOnce(api: Api, isCurrent: () => boolean = () => true): Promise<void> {
   const creds = await getTokopayCreds(prisma);
   if (!creds) return; // rail genuinely off — no heartbeat; its watchdog is gated on credentials too
 
-  const orders = await listPendingTokopayOrders(prisma, new Date(), MAX_ORDERS_PER_CYCLE);
-  if (!orders.length) {
+  const allPending = await listPendingTokopayOrders(prisma, new Date());
+  if (!allPending.length) {
     // An empty pending list is a successful cycle, not a skipped one — a
     // healthy shop that's simply quiet must still advance the heartbeat, or
     // it reads as stale after 5 minutes and the Task 12 watchdog pages
@@ -304,7 +314,13 @@ export async function pollOnce(api: Api, isCurrent: () => boolean = () => true):
     }
     return;
   }
-  logger.info(`TokoPay reconcile checking ${orders.length} pending order(s) against the gateway`);
+
+  const orders = cursor.next(allPending, MAX_ORDERS_PER_CYCLE);
+  logger.info(
+    orders.length < allPending.length
+      ? `TokoPay reconcile checking ${orders.length} of ${allPending.length} pending order(s) against the gateway (rotating window — the rest are covered over the next few cycles)`
+      : `TokoPay reconcile checking ${orders.length} pending order(s) against the gateway`,
+  );
 
   let gatewayCalls = 0;
   let gatewayErrors = 0;
@@ -314,6 +330,7 @@ export async function pollOnce(api: Api, isCurrent: () => boolean = () => true):
     gatewayCalls++;
     if (outcome === "gateway_error") gatewayErrors++;
   }
+  cursor.advance(orders.length);
 
   // A cycle counts as failed only when EVERY gateway call in it failed — one
   // flaky order is normal noise; a gateway that answered zero of N calls is

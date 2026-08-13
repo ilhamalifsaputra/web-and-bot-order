@@ -26,15 +26,24 @@ import { HTTP_TIMEOUT_MS } from "../http";
 
 /**
  * Cap on how many pending orders one reconcile cycle checks against the
- * gateway, oldest first (closest to auto-cancelling, so a large backlog
- * still gets its most time-sensitive orders checked every cycle instead of
- * one unbounded sequential sweep). Orders beyond the cap simply wait for the
- * next cycle, `POLL_INTERVAL_SECONDS` later — each rail's own webhook/IPN
- * callback is still its PRIMARY delivery path (see that rail's reconcile
- * module doc-comment); this poller only fills the gap when that callback
- * can't reach the app, so a capped order waiting one extra cycle only delays
- * the safety net catching it, never the normal delivery path. Shared by all
- * three rails — they all cap the same way. (Task 11.)
+ * gateway, bounding one cycle's worth of gateway round-trips regardless of
+ * backlog size. Each rail's own webhook/IPN callback is still its PRIMARY
+ * delivery path (see that rail's reconcile module doc-comment); this poller
+ * only fills the gap when that callback can't reach the app.
+ *
+ * Each rail lists its pending backlog oldest-first (closest to
+ * auto-cancelling), but does NOT always check the same oldest N orders —
+ * `createRotatingCursor` (apps/order-bot/src/payments/rotatingCursor.ts)
+ * rotates WHICH slice of that list this cap covers each cycle, so a backlog
+ * over the cap still gets full coverage within
+ * `ceil(backlog / MAX_ORDERS_PER_CYCLE)` cycles instead of orders beyond the
+ * cap being starved indefinitely — with more than MAX_ORDERS_PER_CYCLE
+ * concurrently-pending orders, an always-oldest-first scan would leave the
+ * webhook/IPN fallback effectively off for the newer ones for up to a whole
+ * payment window (followup-review-fixes-2; the same head-of-list starvation
+ * bybitBscConfirmationTracker.ts's own MAX_ORDERS_PER_CYCLE already guards
+ * against via the identical rotation). Shared by all three rails — they all
+ * cap and rotate the same way. (Task 11; rotation: followup-review-fixes-2.)
  */
 export const MAX_ORDERS_PER_CYCLE = 50;
 

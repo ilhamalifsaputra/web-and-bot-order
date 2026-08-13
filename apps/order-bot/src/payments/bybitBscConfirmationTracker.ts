@@ -45,6 +45,7 @@ import { renderBybitBscTrackingScreen } from "../util/format";
 import { bybitBscTrackingKb } from "../keyboards/customer";
 import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
+import { createRotatingCursor } from "./rotatingCursor";
 
 type TrackedOrder = Awaited<ReturnType<typeof listTrackedBybitBscOrders>>[number];
 
@@ -223,21 +224,19 @@ const CYCLE_TIMEOUT_MARGIN_MS = 22_000; // headroom above the raw worst case, sa
  * to `createPollLoop` below as this rail's `cycleTimeoutMs`. */
 export const TRACKER_CYCLE_TIMEOUT_MS = MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
 
-/** Return up to `count` items from `items`, starting at `start` and wrapping
- * around — a simple round-robin window so a capped-per-cycle scan still
- * covers every item over successive calls instead of always favoring the
- * same head-of-list entries. */
-function rotatingSlice<T>(items: readonly T[], start: number, count: number): T[] {
-  if (items.length <= count) return [...items];
-  const offset = ((start % items.length) + items.length) % items.length;
-  const result: T[] = [];
-  for (let i = 0; i < count; i++) result.push(items[(offset + i) % items.length]!);
-  return result;
-}
-
+// rotatingSlice/cycleCursor used to be hand-rolled here (Task 3 review
+// follow-up) and were duplicated by hand into the three QRIS/IDR reconcile
+// pollers (followup-review-fixes-2) — extracted to ./rotatingCursor.ts so all
+// four callers share one implementation. That extraction also fixed a bug
+// this file's own cursor had: `cycleCursor += MAX_ORDERS_PER_CYCLE` used to
+// run BEFORE the batch below was iterated, so a mid-batch early return (the
+// rate-limit branch) still advanced the cursor past the WHOLE window even
+// though only some of it was actually attempted — the untouched remainder
+// was skipped for a full rotation instead of being retried next cycle. See
+// `advance()`'s own doc-comment in rotatingCursor.ts for the fix.
 const backoff = createBackoffGate();
 const lookupFailureCounts = new Map<number, number>();
-let cycleCursor = 0;
+const cursor = createRotatingCursor();
 
 export async function pollOnce(api: Api): Promise<void> {
   if (backoff.shouldSkip()) return;
@@ -257,10 +256,14 @@ export async function pollOnce(api: Api): Promise<void> {
 
   if (!orders.length) return;
 
-  const batch = rotatingSlice(orders, cycleCursor, MAX_ORDERS_PER_CYCLE);
-  cycleCursor += MAX_ORDERS_PER_CYCLE;
+  const batch = cursor.next(orders, MAX_ORDERS_PER_CYCLE);
+  // Advanced by however many orders THIS cycle actually attempted (see the
+  // rotatingCursor.ts doc-comment) — normally the full batch, but only as far
+  // as `attempted` reaches on the rate-limit early return below.
+  let attempted = 0;
 
   for (const order of batch) {
+    attempted++;
     if (!order.bybitTxid) continue; // defensive — listTrackedBybitBscOrders already filters this
 
     let confirmations: number | null;
@@ -271,6 +274,7 @@ export async function pollOnce(api: Api): Promise<void> {
       if (err instanceof RateLimitedError) {
         const { hitCount, delayMs } = backoff.recordRateLimit();
         logger.warn(`Bybit BSC confirmation tracker rate-limited (hit #${hitCount}) — backing off ${delayMs}ms, rest of this cycle skipped`);
+        cursor.advance(attempted);
         return; // the remaining orders this cycle would likely hit the same limit
       }
       logger.error(
@@ -313,6 +317,7 @@ export async function pollOnce(api: Api): Promise<void> {
       await pushTrackingUpdate(api, order, newStatus, confirmations, cfg.requiredConfirmations);
     }
   }
+  cursor.advance(attempted);
 }
 
 // ---------------------------------------------------------------------------

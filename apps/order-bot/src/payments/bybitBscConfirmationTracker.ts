@@ -221,7 +221,7 @@ const PER_ORDER_WORST_CASE_MS = 2 * HTTP_TIMEOUT_MS.explorerRead; // 16_000 — 
 const CYCLE_TIMEOUT_MARGIN_MS = 22_000; // headroom above the raw worst case, same spirit as Binance's own margin
 /** MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS + margin = 150_000 — passed
  * to `createPollLoop` below as this rail's `cycleTimeoutMs`. */
-const TRACKER_CYCLE_TIMEOUT_MS = MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
+export const TRACKER_CYCLE_TIMEOUT_MS = MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
 
 /** Return up to `count` items from `items`, starting at `start` and wrapping
  * around — a simple round-robin window so a capped-per-cycle scan still

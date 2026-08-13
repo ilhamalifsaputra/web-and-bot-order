@@ -84,6 +84,8 @@ import * as nowpaymentsReconcile from "../src/payments/nowpaymentsReconcile";
 import { RECONCILE_CYCLE_TIMEOUT_MS as TOKOPAY_CYCLE_TIMEOUT_MS } from "../src/payments/tokopayReconcile";
 import { RECONCILE_CYCLE_TIMEOUT_MS as PAYDISINI_CYCLE_TIMEOUT_MS } from "../src/payments/paydisiniReconcile";
 import { RECONCILE_CYCLE_TIMEOUT_MS as NOWPAYMENTS_CYCLE_TIMEOUT_MS } from "../src/payments/nowpaymentsReconcile";
+import { BINANCE_CYCLE_TIMEOUT_MS } from "../src/payments/binanceInternal";
+import { TRACKER_CYCLE_TIMEOUT_MS } from "../src/payments/bybitBscConfirmationTracker";
 
 const fakeApi = {} as Api;
 
@@ -128,17 +130,19 @@ const RAILS: Array<{
    * the three QRIS reconcilers (Task 11, sized off their own
    * MAX_ORDERS_PER_CYCLE × HTTP_TIMEOUT_MS.gatewayRead + margin — see the
    * derivation comment above each rail's own `pollOnce`). Imported from each
-   * rail's own exported `RECONCILE_CYCLE_TIMEOUT_MS` (Task 11 review
-   * follow-up, Minor #5) rather than hardcoded, so lowering the real
+   * rail's own exported cycle-timeout constant (`RECONCILE_CYCLE_TIMEOUT_MS`
+   * for the QRIS reconcilers; `BINANCE_CYCLE_TIMEOUT_MS` /
+   * `TRACKER_CYCLE_TIMEOUT_MS` for Binance and the BSC tracker — Task 11
+   * review follow-up, Minor #5) rather than hardcoded, so lowering the real
    * constant in source can't silently stop failing this test. Omitted for
    * every other rail, which still uses the default.
    */
   cycleTimeoutMs?: number;
 }> = [
-  { name: "Binance Internal Transfer", mod: binanceInternal, hangFn: "resolveBinanceInternalConfig", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBinancePollHealth", cycleTimeoutMs: 90_000 },
+  { name: "Binance Internal Transfer", mod: binanceInternal, hangFn: "resolveBinanceInternalConfig", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBinancePollHealth", cycleTimeoutMs: BINANCE_CYCLE_TIMEOUT_MS },
   { name: "Bybit Internal Transfer deposit", mod: bybitDeposit, hangFn: "resolveBybitConfig", intervalMs: config.BYBIT_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitPollHealth" },
   { name: "Bybit BSC deposit", mod: bybitBscDeposit, hangFn: "resolveBybitBscConfig", intervalMs: config.BYBIT_BSC_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitBscPollHealth" },
-  { name: "Bybit BSC confirmation tracker", mod: bybitBscConfirmationTracker, hangFn: "resolveBybitBscTrackerConfig", intervalMs: config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS * 1000, cycleTimeoutMs: 150_000 },
+  { name: "Bybit BSC confirmation tracker", mod: bybitBscConfirmationTracker, hangFn: "resolveBybitBscTrackerConfig", intervalMs: config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS * 1000, cycleTimeoutMs: TRACKER_CYCLE_TIMEOUT_MS },
   { name: "TokoPay reconcile", mod: tokopayReconcile, hangFn: "getTokopayCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordPollHealth", healthRail: "tokopay", cycleTimeoutMs: TOKOPAY_CYCLE_TIMEOUT_MS },
   { name: "PayDisini reconcile", mod: paydisiniReconcile, hangFn: "getPaydisiniCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordPollHealth", healthRail: "paydisini", cycleTimeoutMs: PAYDISINI_CYCLE_TIMEOUT_MS },
   { name: "NOWPayments reconcile", mod: nowpaymentsReconcile, hangFn: "getNowpaymentsCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordPollHealth", healthRail: "nowpayments", cycleTimeoutMs: NOWPAYMENTS_CYCLE_TIMEOUT_MS },

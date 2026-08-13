@@ -452,4 +452,34 @@ describe("createPollLoop", () => {
     loop.stop();
     hangResolve?.();
   });
+
+  it("defaults cycleTimeoutMs to 3 * intervalMs once that exceeds the 60_000 floor", async () => {
+    vi.useFakeTimers();
+    let hangResolve: (() => void) | undefined;
+    const run = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          hangResolve = resolve;
+        }),
+    );
+    const onCycleTimeout = vi.fn();
+    // intervalMs=30_000 -> 3*intervalMs=90_000, above the 60_000 floor, so
+    // the multiplier branch (not the floor) must be exercised.
+    const loop = createPollLoop({ name: "Test", intervalMs: 30_000, run, onCycleTimeout });
+
+    loop.start();
+    await vi.advanceTimersByTimeAsync(30_000); // cycle 1 starts
+
+    // Just under the 90_000 multiplier deadline — must not be abandoned yet.
+    await vi.advanceTimersByTimeAsync(89_000);
+    expect(onCycleTimeout).not.toHaveBeenCalled();
+    expect(loop.running).toBe(true);
+
+    // Crosses 90_000ms after the cycle started.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(onCycleTimeout).toHaveBeenCalledTimes(1);
+
+    loop.stop();
+    hangResolve?.();
+  });
 });

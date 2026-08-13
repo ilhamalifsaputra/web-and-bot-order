@@ -508,7 +508,7 @@ let boundApi: Api | undefined;
 // the real "all Binance hosts unreachable" error. 90_000 gives ~17s of
 // margin above the 73s worst case so the cycle always has time to either
 // succeed via a mirror or genuinely exhaust every host and report why.
-const BINANCE_CYCLE_TIMEOUT_MS = 90_000;
+export const BINANCE_CYCLE_TIMEOUT_MS = 90_000;
 
 const loop = createPollLoop({
   name: "Binance Internal Transfer",

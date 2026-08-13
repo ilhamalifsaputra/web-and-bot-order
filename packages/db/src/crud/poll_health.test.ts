@@ -182,4 +182,19 @@ describe("Generic poll health — multi-rail isolation and backward compatibilit
     const viaGenericReader = await getPollHealth(db, "binance");
     expect(viaGenericReader).toEqual(viaOldReader);
   });
+
+  it("degrades a corrupt (non-JSON) heartbeat blob to the same all-null shape as never-run, instead of throwing", async () => {
+    const db = mutableStubDb({ [POLL_HEALTH_KEYS.tokopay]: "{not valid json" });
+    const health = await getPollHealth(db, "tokopay");
+    expect(health).toEqual({
+      lastRun: null,
+      lastSuccessAt: null,
+      lastTxCount: null,
+      backoffUntil: null,
+      consecutiveRateLimitHits: null,
+      lastRateLimitAt: null,
+      consecutiveFailures: null,
+      lastError: null,
+    });
+  });
 });

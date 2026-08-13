@@ -58,21 +58,30 @@ export function buildBot(token?: string): Bot<MyContext> {
   if (!resolvedToken) {
     throw new Error("Bot token is not configured (set it in web-admin Settings or BOT_TOKEN env)");
   }
-  // Task 11 review follow-up, Important #2 (Finding B, "the wider lever"):
-  // grammY's Api client already has a built-in per-call timeout
-  // (`ApiClientOptions.timeoutSeconds`), but its DEFAULT is 500s — so every
-  // bare Telegram call in this app (editMessageCaption/editMessageText in a
-  // reconcile poller's delivery path, alertAdmins' sendMessage loop, a
-  // handler's ctx.reply, sendDocument for a credential file, etc.) was, until
-  // now, bounded only by that generous default. A single hung call at 500s
-  // can already outweigh a poll cycle's own budget (see
-  // tokopayReconcile.ts/paydisiniReconcile.ts's RECONCILE_CYCLE_TIMEOUT_MS
-  // derivation), so tightening this ONE knob bounds every such call across
-  // the whole bot at once. 30s is generous for every real call shape here
-  // (small text messages, a small .txt credential file, a QR/product photo)
-  // while staying far below any poll cycle's own budget, so a hung Telegram
-  // call can no longer quietly consume the majority of a cycle.
-  const bot = new Bot<MyContext>(resolvedToken, { client: { timeoutSeconds: 30 } });
+  // Task 11 review follow-up, Critical #1: an earlier fix here set
+  // `client: { timeoutSeconds: 30 }` bot-wide on the theory that grammY's Api
+  // client applies this per-call deadline uniformly and would therefore bound
+  // every Telegram call in the app at once. It does apply uniformly — that's
+  // the bug: grammY's client (`core/client.js`) arms this same abort timer on
+  // EVERY method with no exemption for `getUpdates`, and @grammyjs/runner's
+  // `run()` issues `getUpdates` as a long poll Telegram holds open for up to
+  // `fetch.timeout` (defaults to 30s, unset here — see the `run()` call
+  // below). The client's abort timer starts before that long poll is even
+  // dispatched, so on every idle window the 30s client deadline fires first,
+  // structurally, not occasionally — aborting a call Telegram was about to
+  // legitimately let run long. The bot doesn't die (the runner retries;
+  // Telegram redelivers, since the offset only advances on success) but each
+  // idle cycle raw-`console.error`s twice straight to stderr, bypassing pino
+  // entirely — thousands of unstructured lines a day on an idle bot. grammY's
+  // own 500s client default exists precisely so it always sits comfortably
+  // above any poll's own hold time; there is no bot-wide override safe here
+  // without also raising @grammyjs/runner's `fetch.timeout` to match it,
+  // which just re-creates the same coupling. The actual problem that fix was
+  // chasing — an unbounded Telegram call able to stall a bounded reconcile
+  // cycle — is now bounded at the call site instead: see
+  // editBubbleToSuccess/alertAdmins in tokopayReconcile.ts and
+  // paydisiniReconcile.ts, wrapped in `withTimeout`.
+  const bot = new Bot<MyContext>(resolvedToken);
 
   // Global send defaults (replaces PTB Defaults(parse_mode=HTML, no link preview))
   // plus the custom-emoji upgrade — see util/apiDefaults.ts.

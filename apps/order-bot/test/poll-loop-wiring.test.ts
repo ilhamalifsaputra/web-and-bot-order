@@ -422,3 +422,24 @@ describe("triggerImmediatePoll after startPolling runs a cycle immediately", () 
     });
   });
 });
+
+// Task 11 review follow-up, Minor #4: RECONCILE_CYCLE_TIMEOUT_MS's own
+// doc-comment in each QRIS/NOWPayments reconcile module narrates a sanity
+// check against PAYMENT_WINDOW_MINUTES ("a cycle deadline shouldn't eat more
+// than half an order's payment window") but hardcoded the 30-minute default
+// into the narration instead of reading the live, operator-configurable
+// PAYMENT_WINDOW_MINUTES (default 30 — packages/core/src/config.ts) — so an
+// operator setting it to, say, 15 would silently put the deadline at 63% of
+// the window (worse than the 57% a review round already rejected) with
+// nothing to catch it. Enforced here against `config.PAYMENT_WINDOW_MINUTES`
+// itself, not a hardcoded copy, so it re-fails automatically if either side
+// of the ratio drifts.
+describe("reconcile cycle timeouts stay well clear of the payment window (Task 11 review follow-up, Minor #4)", () => {
+  it.each([
+    ["TokoPay", TOKOPAY_CYCLE_TIMEOUT_MS],
+    ["PayDisini", PAYDISINI_CYCLE_TIMEOUT_MS],
+    ["NOWPayments", NOWPAYMENTS_CYCLE_TIMEOUT_MS],
+  ])("%s's RECONCILE_CYCLE_TIMEOUT_MS is under half of PAYMENT_WINDOW_MINUTES", (_name, cycleTimeoutMs) => {
+    expect(cycleTimeoutMs).toBeLessThan((config.PAYMENT_WINDOW_MINUTES * 60_000) / 2);
+  });
+});

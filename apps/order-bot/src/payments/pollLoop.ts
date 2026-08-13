@@ -43,6 +43,15 @@
  * heartbeat with a retroactive success. A rail that ignores `isCurrent()`
  * keeps today's exact (buggy, pre-Task-11-review-follow-up) behavior — this
  * mechanism only ever makes a heartbeat MORE accurate, never less.
+ *
+ * `isCurrent()` narrows the race, it does not close it: every call site is
+ * `if (isCurrent()) { await recordPollHealth(...) }` — a synchronous check
+ * followed by an await — so a deadline that fires between the check and the
+ * write's completion still lets a now-stale write land. That is an accepted
+ * trade-off, not a bug: it shrinks the vulnerable window from "however long
+ * the cycle keeps running in the background after being abandoned" (minutes,
+ * unbounded) down to "the duration of one DB write" (milliseconds), which is
+ * the improvement this mechanism actually claims.
  */
 import { logger } from "@app/core/logger";
 

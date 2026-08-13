@@ -75,19 +75,22 @@ async function editBubbleToSuccess(api: Api, order: AnchoredOrder): Promise<void
  * follow-up, Important #2). grammY's Api client DOES have a built-in
  * per-call timeout (`ApiClientOptions.timeoutSeconds`, verified against
  * grammy@1.43.0's `core/client.js` — an `AbortController`-backed deadline,
- * defaulting to 500s) — an earlier version of this comment claimed
- * otherwise, which is what let the cycle-timeout derivation below balloon to
- * ~17 minutes (Task 11 review follow-up, Important #3: it charged this
- * cosmetic bubble-flip sweep the same 10s-per-row budget as a money-bearing
- * gateway call, then multiplied by the full MAX_ORDERS_PER_CYCLE cap). The
- * client's own 500s default is still far too generous for a bounded reconcile
- * cycle to rely on alone — main.ts's `buildBot()` now sets it to 30s bot-wide
- * (Task 11 review follow-up, Important #2's "wider lever") — and
- * SWEEP_EDIT_TIMEOUT_MS stays as an extra, tighter per-row valve specific to
- * this sweep so the whole-sweep budget below (`SWEEP_TOTAL_BUDGET_MS`) can
- * actually be enforced by checking it between rows. Exported (same reasoning
- * as MAX_ORDERS_PER_CYCLE/RECONCILE_CYCLE_TIMEOUT_MS below) so tests import
- * the real value instead of a hardcoded copy that could silently drift. */
+ * defaulting to 500s). An earlier version of this comment claimed the
+ * opposite (no built-in timeout at all), which is what let the cycle-timeout
+ * derivation below balloon to ~17 minutes (Task 11 review follow-up,
+ * Important #3: it charged this cosmetic bubble-flip sweep the same
+ * 10s-per-row budget as a money-bearing gateway call, then multiplied by the
+ * full MAX_ORDERS_PER_CYCLE cap). A LATER fix then swung the other way and
+ * set `client: { timeoutSeconds: 30 }` bot-wide in main.ts on the theory that
+ * one knob could bound every Telegram call at once — that broke the bot's
+ * own long-poll update loop (grammY applies the client timeout to
+ * `getUpdates` too, with no exemption) and was reverted (Task 11 review
+ * follow-up, Critical #1). There is no bot-wide bound today: this constant is
+ * the ONLY thing standing between the sweep's edit calls and grammY's 500s
+ * per-call default, and it does that job on its own via `withTimeout` below.
+ * Exported (same reasoning as MAX_ORDERS_PER_CYCLE/RECONCILE_CYCLE_TIMEOUT_MS
+ * below) so tests import the real value instead of a hardcoded copy that
+ * could silently drift. */
 export const SWEEP_EDIT_TIMEOUT_MS = 10_000;
 
 /** Whole-sweep wall-clock budget (Task 11 review follow-up, Important #3):
@@ -139,22 +142,68 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | "ti
  * A timed-out or budget-cut-off edit leaves the anchor in place so the next
  * cycle retries it — clearing only happens once an edit genuinely completes
  * (not necessarily succeeds; editBubbleToSuccess never throws).
+ *
+ * `opts` defaults to the exported SWEEP_EDIT_TIMEOUT_MS/SWEEP_TOTAL_BUDGET_MS
+ * constants — production callers never pass it. It exists so the black-holed
+ * -bubble tests can exercise the identical give-up/budget-break logic against
+ * millisecond-scale values instead of the real ~10s/30s ones, with real
+ * timers and real Prisma throughout (Task 11 review follow-up, Important #2:
+ * the previous version of these tests genuinely slept 10s + 30s each,
+ * because faking timers breaks Prisma's own I/O in this harness — the bounds
+ * being tested are relative to each other, not absolute, so shrinking both
+ * proportionally proves the same behavior in well under a second).
  */
-export async function sweepDeliveredAwaitingEdit(api: Api): Promise<void> {
+export async function sweepDeliveredAwaitingEdit(
+  api: Api,
+  opts?: { editTimeoutMs?: number; totalBudgetMs?: number },
+): Promise<void> {
+  const editTimeoutMs = opts?.editTimeoutMs ?? SWEEP_EDIT_TIMEOUT_MS;
+  const totalBudgetMs = opts?.totalBudgetMs ?? SWEEP_TOTAL_BUDGET_MS;
   const orders = await listDeliveredOrdersAwaitingEdit(prisma, PaymentMethod.PAYDISINI, MAX_ORDERS_PER_CYCLE);
   const sweepStartedAt = Date.now();
   for (const [i, order] of orders.entries()) {
-    if (Date.now() - sweepStartedAt > SWEEP_TOTAL_BUDGET_MS) {
-      logger.warn(`PayDisini sweep hit its ${SWEEP_TOTAL_BUDGET_MS}ms whole-sweep budget with ${orders.length - i} order(s) left unedited this cycle — their anchors are left in place so the next cycle retries them`);
+    if (Date.now() - sweepStartedAt > totalBudgetMs) {
+      logger.warn(`PayDisini sweep hit its ${totalBudgetMs}ms whole-sweep budget with ${orders.length - i} order(s) left unedited this cycle — their anchors are left in place so the next cycle retries them`);
       break;
     }
-    const outcome = await withTimeout(editBubbleToSuccess(api, order), SWEEP_EDIT_TIMEOUT_MS);
+    const outcome = await withTimeout(editBubbleToSuccess(api, order), editTimeoutMs);
     if (outcome === "timeout") {
-      logger.warn(`PayDisini sweep gave up waiting on the bubble edit for order ${order.orderCode} after ${SWEEP_EDIT_TIMEOUT_MS}ms — anchor left in place so the next cycle retries`);
+      logger.warn(`PayDisini sweep gave up waiting on the bubble edit for order ${order.orderCode} after ${editTimeoutMs}ms — anchor left in place so the next cycle retries`);
       continue;
     }
     await clearOrderPaymentMessage(prisma, order.id);
   }
+}
+
+/** Bound for the two Telegram calls reconcileOrder makes directly on the
+ * payment path — editBubbleToSuccess and alertAdmins — once a gateway call
+ * has already reported an order paid (Task 11 review follow-up, Critical
+ * #1). main.ts no longer sets a bot-wide client timeout (that "wider lever"
+ * was itself the regression it introduced — see buildBot() there), so
+ * without an explicit bound here these calls fall back to grammY's 500s
+ * per-call default and a single hung one could singlehandedly consume most
+ * of a cycle's budget. Deliberately tighter than SWEEP_EDIT_TIMEOUT_MS: both
+ * wrap the same kind of call, but this one sits inside the PRIMARY per-order
+ * loop, whose worst case is multiplied by MAX_ORDERS_PER_CYCLE below — the
+ * sweep's own bound only ever contributes its flat SWEEP_TOTAL_BUDGET_MS
+ * regardless of how many orders it touches. A pure-text edit/message (no
+ * media, unlike a fresh checkout's QR photo) reliably finishes in well under
+ * a second in the normal case, so 5s stays generous while keeping the
+ * cycle-timeout arithmetic well clear of PAYMENT_WINDOW_MINUTES (see
+ * RECONCILE_CYCLE_TIMEOUT_MS below). */
+export const RECONCILE_TELEGRAM_TIMEOUT_MS = 5_000;
+
+/** Wait at most RECONCILE_TELEGRAM_TIMEOUT_MS for the success-bubble edit,
+ * then clear the anchor only once the edit genuinely completed — a timed-out
+ * edit leaves the anchor in place so the next cycle's sweep retries it, the
+ * same trade-off sweepDeliveredAwaitingEdit already makes for its own edits. */
+async function editBubbleAndClear(api: Api, order: AnchoredOrder): Promise<void> {
+  const outcome = await withTimeout(editBubbleToSuccess(api, order), RECONCILE_TELEGRAM_TIMEOUT_MS);
+  if (outcome === "timeout") {
+    logger.warn(`PayDisini reconcile gave up waiting on the bubble edit for order ${order.orderCode} after ${RECONCILE_TELEGRAM_TIMEOUT_MS}ms — anchor left in place so the next sweep retries`);
+    return;
+  }
+  await clearOrderPaymentMessage(prisma, order.id);
 }
 
 async function alertAdmins(api: Api, text: string): Promise<void> {
@@ -210,20 +259,24 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
     if (r.status === "delivered") {
       logger.info(`PayDisini reconcile delivered order ${order.orderCode} — nudging notifier to DM the account file immediately`);
       nudgeOutboxDispatcher();
-      await editBubbleToSuccess(api, r.order);
-      await clearOrderPaymentMessage(prisma, r.order.id);
+      await editBubbleAndClear(api, r.order);
     } else if (r.status === "processing") {
       logger.info(`PayDisini reconcile order ${order.orderCode} paid — queued for manual fulfilment`);
       nudgeOutboxDispatcher();
-      await editBubbleToSuccess(api, r.order);
-      await clearOrderPaymentMessage(prisma, r.order.id);
+      await editBubbleAndClear(api, r.order);
     } else if (r.status === "stale") {
       logger.warn(`Order ${order.orderCode} was paid but is no longer PENDING — likely already delivered by the webhook, no action needed`);
     }
     // "already_processed" → another cycle/webhook handled it; nothing to do.
   } catch (err) {
     logger.error({ err }, `Order ${order.orderCode} was paid (PayDisini) but delivery threw — admin alerted for manual action`);
-    await alertAdmins(api, `⚠️ PayDisini paid but delivery FAILED for <code>${esc(order.orderCode)}</code> — ${esc(String(err).slice(0, 200))}. Manual action needed.`);
+    const alertOutcome = await withTimeout(
+      alertAdmins(api, `⚠️ PayDisini paid but delivery FAILED for <code>${esc(order.orderCode)}</code> — ${esc(String(err).slice(0, 200))}. Manual action needed.`),
+      RECONCILE_TELEGRAM_TIMEOUT_MS,
+    );
+    if (alertOutcome === "timeout") {
+      logger.warn(`PayDisini reconcile gave up waiting on the admin alert for order ${order.orderCode} after ${RECONCILE_TELEGRAM_TIMEOUT_MS}ms — some admins may not have been notified`);
+    }
   }
   return "ok";
 }
@@ -243,40 +296,49 @@ export const MAX_ORDERS_PER_CYCLE = 50;
 // bybitBscConfirmationTracker.ts's TRACKER_CYCLE_TIMEOUT_MS for the worked
 // precedent this mirrors): one cycle makes at most MAX_ORDERS_PER_CYCLE
 // sequential checkTransaction calls, each individually bounded at
-// HTTP_TIMEOUT_MS.gatewayRead (10s) — so MAX_ORDERS_PER_CYCLE ×
-// HTTP_TIMEOUT_MS.gatewayRead is the raw worst case for the reconcile loop
-// (500_000ms at today's cap/timeout).
+// HTTP_TIMEOUT_MS.gatewayRead (10s). An order that comes back paid can then
+// make ONE more bounded Telegram call inline — editBubbleToSuccess or
+// alertAdmins, mutually exclusive per order (see editBubbleAndClear /
+// RECONCILE_TELEGRAM_TIMEOUT_MS above), both wrapped in withTimeout at 5s
+// since Task 11 review follow-up, Critical #1 removed main.ts's bot-wide
+// client timeout. So PER_ORDER_WORST_CASE_MS is their sum (15s), and
+// MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS is the raw worst case for
+// the reconcile loop (750_000ms at today's cap/timeouts — pessimistically
+// assuming every order in the batch turns out freshly paid).
 //
 // sweepDeliveredAwaitingEdit runs alongside it — Task 11 review follow-up,
 // Important #3 corrected an earlier version of this derivation that charged
 // the sweep `MAX_ORDERS_PER_CYCLE × SWEEP_EDIT_TIMEOUT_MS` (another
-// 500_000ms, on top of the reconcile loop's own 500_000ms — a false premise:
-// see SWEEP_EDIT_TIMEOUT_MS's own doc-comment for why "grammY has no built-in
-// timeout" was wrong, and why treating a cosmetic bubble-flip sweep as
-// deserving a money-bearing gateway call's budget was the real bug). The
-// sweep now contributes its OWN flat worst case instead:
-// SWEEP_TOTAL_BUDGET_MS + one more in-flight SWEEP_EDIT_TIMEOUT_MS (the
-// budget is only checked BETWEEN rows, so the row in flight when the budget
-// is crossed still gets to finish) = 40_000ms.
+// 500_000ms, on top of the reconcile loop's own worst case — a false
+// premise: see SWEEP_EDIT_TIMEOUT_MS's own doc-comment for why treating a
+// cosmetic bubble-flip sweep as deserving a money-bearing gateway call's
+// budget was the real bug). The sweep now contributes its OWN flat worst
+// case instead: SWEEP_TOTAL_BUDGET_MS + one more in-flight
+// SWEEP_EDIT_TIMEOUT_MS (the budget is only checked BETWEEN rows, so the row
+// in flight when the budget is crossed still gets to finish) = 40_000ms.
 //
 // +30s margin covers the remaining DB list/deliver work around both loops.
-const PER_ORDER_WORST_CASE_MS = HTTP_TIMEOUT_MS.gatewayRead;
+const PER_ORDER_WORST_CASE_MS = HTTP_TIMEOUT_MS.gatewayRead + RECONCILE_TELEGRAM_TIMEOUT_MS;
 const SWEEP_WORST_CASE_MS = SWEEP_TOTAL_BUDGET_MS + SWEEP_EDIT_TIMEOUT_MS;
 const CYCLE_TIMEOUT_MARGIN_MS = 30_000;
-/** MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS (reconcile, 500_000) +
- * SWEEP_WORST_CASE_MS (sweep, 40_000) + margin (30_000) = 570_000 (~9m30s) —
+/** MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS (reconcile, 750_000) +
+ * SWEEP_WORST_CASE_MS (sweep, 40_000) + margin (30_000) = 820_000 (~13m40s) —
  * passed to `createPollLoop` below as this rail's `cycleTimeoutMs`. Exported
  * (Task 11 review follow-up, Minor #5) so the wiring test imports the real
  * value instead of a hardcoded copy that could silently drift from it.
  *
  * Sanity check against PAYMENT_WINDOW_MINUTES (Task 11 review follow-up,
- * Important #3): a cycle deadline eating more than half an order's payment
- * window means a single hung cycle can, on its own, do ZERO reconciliation
- * for most of that order's life with the safety net switched off — the
- * signal the arithmetic above has left reality (this is exactly how the
- * previous ~17m10s value was found: 1_030_000ms is 57% of the default 30-minute
- * window). At 570_000ms against the same default 30-minute (1_800_000ms)
- * window, this is ~32% — comfortably under that line. */
+ * Important #3, enforced as a test rather than just narrated here per Minor
+ * #4 — see poll-loop-wiring.test.ts): a cycle deadline eating more than half
+ * an order's payment window means a single hung cycle can, on its own, do
+ * ZERO reconciliation for most of that order's life with the safety net
+ * switched off — the signal the arithmetic above has left reality (this is
+ * exactly how the previous ~17m10s value was found: 1_030_000ms is 57% of
+ * the default 30-minute window). At 820_000ms against the same default
+ * 30-minute (1_800_000ms) window, this is ~46% — still comfortably under
+ * that line, though closer to it than the pre-Critical-#1 570_000ms (~32%)
+ * was: bounding the payment-path Telegram calls costs real cycle-timeout
+ * budget, it doesn't eliminate the need for one. */
 export const RECONCILE_CYCLE_TIMEOUT_MS =
   MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + SWEEP_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
 
@@ -365,7 +427,7 @@ let boundApi: Api | undefined;
 
 // cycleTimeoutMs is RECONCILE_CYCLE_TIMEOUT_MS, sized off MAX_ORDERS_PER_CYCLE's
 // own worst case for BOTH the reconcile loop and the sweep (see the
-// derivation comment above pollOnce) — 570s. Without this the default
+// derivation comment above pollOnce) — 820s. Without this the default
 // `max(3 * intervalMs, 60_000)` (60s at the default POLL_INTERVAL_SECONDS)
 // would abandon a cycle mid-batch long before a full MAX_ORDERS_PER_CYCLE
 // sweep of a slow-but-not-hung gateway could finish.

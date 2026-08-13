@@ -43,6 +43,7 @@ import {
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
+import type { HealthLevel } from "../api/types";
 
 /** Which payment rail a ledger row came from. "bybit" covers BOTH Bybit
  *  sub-rails (off-chain Internal Transfer and on-chain BSC deposit) — they
@@ -95,6 +96,14 @@ interface PendingInternalOrderRow {
   expiresAtDisplay: string | null;
   user: OrderPartyRow | null;
 }
+/** The raw heartbeat fields plus the server-computed verdict (`status`/
+ * `detail`/`staleMs`, from `evaluatePollHealth` — packages/core/src/payments/
+ * pollHealth.ts). The client renders `status`/`detail` as-is; it must not
+ * re-derive its own pill from the raw fields (lastRun, consecutiveFailures,
+ * etc.) — that was the bug this type/route change fixes: `lastRun` advances
+ * on every cycle whether it succeeded or failed, so a rule based on it alone
+ * can read "Synced" for a poller that hasn't had a successful cycle in
+ * hours. */
 interface PaymentsHealth {
   lastRun: string | null;
   lastSuccessAt: string | null;
@@ -104,6 +113,9 @@ interface PaymentsHealth {
   lastRateLimitAt: string | null;
   consecutiveFailures: number | null;
   lastError: string | null;
+  status: HealthLevel;
+  detail: string;
+  staleMs: number | null;
 }
 interface PaymentsData {
   enabled: boolean;
@@ -176,28 +188,16 @@ function useOrderCodeSuggest(orderCode: string) {
   return { suggestion, searched, loading };
 }
 
-function relativeTime(iso: string): string {
-  const ms = new Date(iso).getTime();
-  const seconds = Math.max(0, Math.round((Date.now() - ms) / 1000));
-  if (seconds < 60) return "just now";
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.round(minutes / 60);
-  return `${hours}h ago`;
-}
-
-function healthPill(health: PaymentsHealth): { level: "ok" | "warn" | "critical" | "idle"; text: string } {
-  if ((health.consecutiveFailures ?? 0) > 0) {
-    return { level: "critical", text: `${health.consecutiveFailures} consecutive failures` };
-  }
-  if (health.backoffUntil && new Date(health.backoffUntil).getTime() > Date.now()) {
-    return { level: "warn", text: `Rate-limited, retrying at ${new Date(health.backoffUntil).toLocaleTimeString()}` };
-  }
-  if (!health.lastRun) {
-    return { level: "idle", text: "Not yet synced" };
-  }
-  return { level: "ok", text: `Synced ${relativeTime(health.lastRun)}` };
-}
+/** Maps the server's verdict status to `UrgencyDot`'s level — the pill's
+ * only remaining local rule. All the actual health logic (staleness,
+ * consecutive-failure thresholds, backoff windows) lives server-side in
+ * `evaluatePollHealth`; see the `PaymentsHealth` doc comment above. */
+const HEALTH_DOT: Record<HealthLevel, "ok" | "warn" | "critical" | "idle"> = {
+  green: "ok",
+  yellow: "warn",
+  red: "critical",
+  unmonitored: "idle",
+};
 
 export function PaymentsPage() {
   const qc = useQueryClient();
@@ -340,15 +340,12 @@ export function PaymentsPage() {
     <PageLayout title="Payments">
       <PageHeader title="Payments" description="Match transfers to orders and resolve payment issues." />
 
-      {data?.enabled && data?.health && (() => {
-        const pill = healthPill(data.health);
-        return (
-          <div className="mb-4 flex items-center gap-2 text-xs text-ink-soft">
-            <UrgencyDot level={pill.level} />
-            {pill.text}
-          </div>
-        );
-      })()}
+      {data?.enabled && data?.health && (
+        <div className="mb-4 flex items-center gap-2 text-xs text-ink-soft">
+          <UrgencyDot level={HEALTH_DOT[data.health.status]} />
+          {data.health.detail}
+        </div>
+      )}
 
       <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <StatCard

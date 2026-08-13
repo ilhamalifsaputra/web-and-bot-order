@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { OrderStatus } from "@app/core/enums";
 import { ValidationError } from "@app/core/errors";
 import { logger } from "@app/core/logger";
+import { evaluatePollHealth } from "@app/core/payments/pollHealth";
 import {
   prisma,
   resolveBinanceInternalConfig,
@@ -47,6 +48,10 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       listPendingInternalOrders(prisma, new Date()),
     ]);
     const binanceEnabled = (await resolveBinanceInternalConfig(prisma)).enabled;
+    // The single shared rule (packages/core/src/payments/pollHealth.ts) —
+    // the client renders this verdict as-is instead of re-deriving its own
+    // pill from the raw heartbeat fields (that divergence was Task 7's bug).
+    const healthVerdict = evaluatePollHealth(health, { enabled: binanceEnabled });
 
     // Ledger rows are named createdAt in the DB/crud layer, but the client
     // reads `processedAt` (an existing "invalid date" bug — the field never
@@ -71,7 +76,12 @@ export default async function paymentsApiRoutes(app: FastifyInstance): Promise<v
       hasNext: offset + ledger.length < total,
       outcomes: TX_OUTCOMES,
       counts,
-      health,
+      health: {
+        ...health,
+        status: healthVerdict.status,
+        detail: healthVerdict.detail,
+        staleMs: healthVerdict.staleMs,
+      },
       underpaid: underpaidWithDisplay,
       pendingInternal: pendingInternalWithDisplay,
     });

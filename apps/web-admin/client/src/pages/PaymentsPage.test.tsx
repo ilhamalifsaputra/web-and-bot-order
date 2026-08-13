@@ -268,6 +268,10 @@ describe("PaymentsPage", () => {
     );
   });
 
+  // The server computes the verdict via evaluatePollHealth (packages/core/src/
+  // payments/pollHealth.ts) and ships it as status/detail/staleMs alongside
+  // the raw heartbeat — the client only renders it, it does not re-derive a
+  // pill from consecutiveFailures/lastRun/backoffUntil itself.
   it("shows a health pill with consecutive failures when the poller is unhealthy", async () => {
     mockPaymentsFetch({
       enabled: true,
@@ -278,11 +282,25 @@ describe("PaymentsPage", () => {
       hasNext: false,
       outcomes: [],
       counts: {},
-      health: { lastRun: "2026-07-24T09:00:00.000Z", lastSuccessAt: null, lastTxCount: null, backoffUntil: null, consecutiveRateLimitHits: null, lastRateLimitAt: null, consecutiveFailures: 4, lastError: "timeout" },
+      health: {
+        lastRun: "2026-07-24T09:00:00.000Z",
+        lastSuccessAt: null,
+        lastTxCount: null,
+        backoffUntil: null,
+        consecutiveRateLimitHits: null,
+        lastRateLimitAt: null,
+        consecutiveFailures: 4,
+        lastError: "timeout",
+        status: "red",
+        detail: "Cycles are completing but 4 consecutive cycles failed (last error: timeout).",
+        staleMs: 60_000,
+      },
     });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
-    expect(screen.getByText(/4 consecutive failures/i)).toBeInTheDocument();
+    const pill = screen.getByText(/4 consecutive cycles failed/i);
+    expect(pill).toBeInTheDocument();
+    expect(pill.closest("div")!.querySelector(".bg-rust")).not.toBeNull();
   });
 
   it("shows a synced-recently health pill on a healthy poller", async () => {
@@ -295,11 +313,67 @@ describe("PaymentsPage", () => {
       hasNext: false,
       outcomes: [],
       counts: {},
-      health: { lastRun: new Date().toISOString(), lastSuccessAt: new Date().toISOString(), lastTxCount: 3, backoffUntil: null, consecutiveRateLimitHits: null, lastRateLimitAt: null, consecutiveFailures: 0, lastError: null },
+      health: {
+        lastRun: new Date().toISOString(),
+        lastSuccessAt: new Date().toISOString(),
+        lastTxCount: 3,
+        backoffUntil: null,
+        consecutiveRateLimitHits: null,
+        lastRateLimitAt: null,
+        consecutiveFailures: 0,
+        lastError: null,
+        status: "green",
+        detail: "Cycles are completing normally; last run 0 minute(s) ago.",
+        staleMs: 0,
+      },
     });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
-    expect(screen.getByText(/synced/i)).toBeInTheDocument();
+    const pill = screen.getByText(/cycles are completing normally/i);
+    expect(pill).toBeInTheDocument();
+    expect(pill.closest("div")!.querySelector(".bg-grass")).not.toBeNull();
+  });
+
+  // RED test for this task: today the client derives its own pill from
+  // consecutiveFailures/lastRun (healthPill in PaymentsPage.tsx), so a poller
+  // whose lastRun keeps advancing on failed cycles but hasn't had a
+  // *successful* cycle in hours still reads "Synced 2h ago" at level "ok" as
+  // long as consecutiveFailures happens to be 0 (e.g. the failures were rate
+  // limits, tracked separately). The server's evaluatePollHealth rule catches
+  // this via staleness against lastRun regardless of consecutiveFailures —
+  // the client must render that verdict (status/detail), not recompute one.
+  it("shows a critical pill for a poller that has not completed a cycle in hours", async () => {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    mockPaymentsFetch({
+      enabled: true,
+      ledger: [],
+      total: 0,
+      todayCount: 0,
+      page: 1,
+      hasNext: false,
+      outcomes: [],
+      counts: {},
+      health: {
+        lastRun: twoHoursAgo,
+        lastSuccessAt: twoHoursAgo,
+        lastTxCount: null,
+        backoffUntil: null,
+        consecutiveRateLimitHits: null,
+        lastRateLimitAt: null,
+        consecutiveFailures: 0,
+        lastError: null,
+        status: "red",
+        detail: "No cycle has completed in 120 minute(s); the poller appears stuck or stopped.",
+        staleMs: 2 * 60 * 60 * 1000,
+      },
+    });
+    render(<PaymentsPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
+
+    const pill = screen.getByText(/poller appears stuck or stopped/i);
+    expect(pill).toBeInTheDocument();
+    expect(pill.closest("div")!.querySelector(".bg-rust")).not.toBeNull();
+    expect(screen.queryByText(/synced/i)).not.toBeInTheDocument();
   });
 
   it("shows no health pill when Binance internal is disabled", async () => {
@@ -312,11 +386,23 @@ describe("PaymentsPage", () => {
       hasNext: false,
       outcomes: [],
       counts: {},
-      health: { lastRun: null, lastSuccessAt: null, lastTxCount: null, backoffUntil: null, consecutiveRateLimitHits: null, lastRateLimitAt: null, consecutiveFailures: null, lastError: null },
+      health: {
+        lastRun: null,
+        lastSuccessAt: null,
+        lastTxCount: null,
+        backoffUntil: null,
+        consecutiveRateLimitHits: null,
+        lastRateLimitAt: null,
+        consecutiveFailures: null,
+        lastError: null,
+        status: "unmonitored",
+        detail: "Health monitoring is disabled for this poller.",
+        staleMs: null,
+      },
     });
     render(<PaymentsPage />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText(/no transactions/i)).toBeInTheDocument());
-    expect(screen.queryByText(/synced|consecutive failures|not yet synced|retrying/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/synced|consecutive|not yet synced|retrying|disabled for this poller/i)).not.toBeInTheDocument();
   });
 
   it("debounces Ledger search into the query params", async () => {

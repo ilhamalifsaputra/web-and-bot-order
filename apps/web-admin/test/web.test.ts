@@ -41,6 +41,10 @@ import {
   listAuditLogs,
   setUserRole,
   setUserBanned,
+  BINANCE_UID_KEY,
+  BINANCE_API_KEY_KEY,
+  BINANCE_API_SECRET_KEY,
+  BINANCE_POLL_HEALTH_KEY,
   __clearSettingsCacheForTests,
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
@@ -4521,6 +4525,32 @@ describe("payments", () => {
     expect(res.statusCode).toBe(200);
     const data = JSON.parse(res.body) as { ledger: Array<{ reference: string }> };
     expect(data.ledger.some((tx) => tx.reference === "RENDTX")).toBe(true);
+  });
+
+  // Route-level counterpart to dashboard-api.test.ts's staleness case. The
+  // PaymentsPage pill now renders whatever `health.status`/`health.detail` the
+  // server sends, so the client test can only prove the client renders what it
+  // is given — the wiring from the stored heartbeat through evaluatePollHealth
+  // into the response is pinned here or nowhere.
+  //
+  // lastRun is two hours old and consecutiveFailures is 0, which is exactly the
+  // shape the deleted client-side rule mis-read as "Synced 2h ago" at level ok.
+  it("GET /api/payments reports a poller whose last cycle is two hours old as red", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "test-uid");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "test-key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "test-secret");
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      BINANCE_POLL_HEALTH_KEY,
+      JSON.stringify({ lastRun: twoHoursAgo, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/payments", seed.cookie);
+    expect(res.statusCode).toBe(200);
+    const data = JSON.parse(res.body) as { health: { status: string; detail: string } };
+    expect(data.health.status).toBe("red");
+    expect(data.health.detail).toMatch(/No cycle has completed/);
   });
 
   it("GET /api/payments returns todayCount and honors the q search param", async () => {

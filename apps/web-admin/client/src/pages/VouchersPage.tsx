@@ -337,12 +337,11 @@ export function VouchersPage() {
   }
   function toggleSelectAll() {
     setSelected(prev => {
+      // Drops everything rather than pruning visible ids: a refetch can remove a row
+      // with no filter/page change, and pruning would strand its id in the selection.
+      if (allSelected) return new Set();
       const next = new Set(prev);
-      if (allSelected) {
-        vouchers.forEach(v => next.delete(v.id));
-      } else {
-        vouchers.forEach(v => next.add(v.id));
-      }
+      vouchers.forEach(v => next.add(v.id));
       return next;
     });
   }

@@ -307,12 +307,12 @@ export function PaymentsPage() {
   }
   function toggleSelectAllEligible() {
     setSelected(prev => {
+      // Drops everything rather than pruning visible ids: a refetch can remove a row
+      // (or make it no longer eligible) with no filter/page change, and pruning would
+      // strand its id in the selection.
+      if (allEligibleSelected) return new Set();
       const next = new Set(prev);
-      if (allEligibleSelected) {
-        eligibleRows.forEach(tx => next.delete(tx.id));
-      } else {
-        eligibleRows.forEach(tx => next.add(tx.id));
-      }
+      eligibleRows.forEach(tx => next.add(tx.id));
       return next;
     });
   }

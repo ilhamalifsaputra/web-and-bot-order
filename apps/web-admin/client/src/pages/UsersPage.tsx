@@ -275,12 +275,11 @@ export function UsersPage() {
   const allOnPageSelected = pageUsers.length > 0 && pageUsers.every((u) => selected.has(u.id));
   function toggleSelectAllOnPage() {
     setSelected((prev) => {
+      // Drops everything rather than pruning visible ids: a refetch can remove a row
+      // with no filter/page change, and pruning would strand its id in the selection.
+      if (allOnPageSelected) return new Set();
       const next = new Set(prev);
-      if (allOnPageSelected) {
-        pageUsers.forEach((u) => next.delete(u.id));
-      } else {
-        pageUsers.forEach((u) => next.add(u.id));
-      }
+      pageUsers.forEach((u) => next.add(u.id));
       return next;
     });
   }

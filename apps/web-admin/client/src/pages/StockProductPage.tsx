@@ -167,13 +167,12 @@ export function StockProductPage() {
 
   function toggleSelectAllInTab(items: StockItem[]) {
     setSelected((prev) => {
+      // Drops everything rather than pruning visible ids: a refetch can remove a row
+      // with no tab change, and pruning would strand its id in the selection.
+      const allSelected = items.length > 0 && items.every((i) => prev.has(i.id));
+      if (allSelected) return new Set();
       const next = new Set(prev);
-      const allSelected = items.length > 0 && items.every((i) => next.has(i.id));
-      if (allSelected) {
-        items.forEach((i) => next.delete(i.id));
-      } else {
-        items.forEach((i) => next.add(i.id));
-      }
+      items.forEach((i) => next.add(i.id));
       return next;
     });
   }

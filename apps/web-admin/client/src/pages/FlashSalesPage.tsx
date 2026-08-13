@@ -196,12 +196,11 @@ export function FlashSalesPage() {
   const allFilteredSelected = filtered.length > 0 && filtered.every((d) => selected.has(d.id));
   function toggleSelectAllFiltered() {
     setSelected((prev) => {
+      // Drops everything rather than pruning visible ids: a refetch can remove a row
+      // with no filter change, and pruning would strand its id in the selection.
+      if (allFilteredSelected) return new Set();
       const next = new Set(prev);
-      if (allFilteredSelected) {
-        filtered.forEach((d) => next.delete(d.id));
-      } else {
-        filtered.forEach((d) => next.add(d.id));
-      }
+      filtered.forEach((d) => next.add(d.id));
       return next;
     });
   }

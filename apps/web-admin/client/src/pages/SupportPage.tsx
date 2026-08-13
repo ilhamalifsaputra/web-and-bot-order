@@ -373,9 +373,12 @@ export function SupportPage() {
   }
   function toggleSelectAllOnPage() {
     setSelected((prev) => {
+      // Drops everything rather than pruning visible ids: the 30s poll can remove a
+      // row with no filter/page change, and pruning would strand its id in the
+      // selection where the bulk actions could still reach it.
+      if (allOnPageSelected) return new Set();
       const next = new Set(prev);
-      if (allOnPageSelected) items.forEach((t) => next.delete(t.id));
-      else items.forEach((t) => next.add(t.id));
+      items.forEach((t) => next.add(t.id));
       return next;
     });
   }

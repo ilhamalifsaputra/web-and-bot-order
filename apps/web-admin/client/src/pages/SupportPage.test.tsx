@@ -610,6 +610,35 @@ describe("SupportPage", () => {
     expect(screen.getByText(/New ticket #3 from Sari/)).toBeInTheDocument();
   });
 
+  // A ticket can leave the result set with no filter or page change at all —
+  // the 30s poll is enough. Deselecting must not strand its id, or the bulk bar
+  // keeps counting a ticket the admin cannot see and the bulk handlers, which
+  // act on Array.from(selected), would reach it.
+  it("select-all deselect drops ids for tickets a poll removed from the page", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockFetchRouter({ support: supportData([TICKET_OPEN, TICKET_REPLIED]) });
+    render(<SupportPage />, { wrapper: makeWrapper(qc) });
+    await waitFor(() => expect(screen.getByText(/Order tidak sampai/)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all tickets on this page" }));
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+
+    // Poll surfaces ticket #2 leaving the result set (another admin acted on it).
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if ((init?.method ?? "GET") === "POST") return jsonResponse({ ok: true });
+      if (url.startsWith("/api/admins")) return jsonResponse({ admins: [ADMIN_ROW] });
+      return jsonResponse(supportData([TICKET_OPEN]));
+    });
+    await qc.invalidateQueries({ queryKey: ["support"] });
+    await waitFor(() => expect(screen.queryByText("Refund request")).not.toBeInTheDocument());
+
+    // Every still-visible ticket is selected, so select-all now deselects.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Select all tickets on this page" }));
+
+    expect(screen.queryByText(/\d+ selected/)).not.toBeInTheDocument();
+  });
+
   it("shows the ticket's category label in its own column, or Uncategorized when unset", async () => {
     mockFetchRouter();
     render(<SupportPage />, { wrapper: Wrapper });

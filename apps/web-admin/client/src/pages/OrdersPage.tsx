@@ -309,12 +309,11 @@ export function OrdersPage() {
   const allOnPageSelected = pageOrders.length > 0 && pageOrders.every((o) => selected.has(o.id));
   function toggleSelectAllOnPage() {
     setSelected((prev) => {
+      // Drops everything rather than pruning visible ids: a refetch can remove a row
+      // with no filter/page change, and pruning would strand its id in the selection.
+      if (allOnPageSelected) return new Set();
       const next = new Set(prev);
-      if (allOnPageSelected) {
-        pageOrders.forEach((o) => next.delete(o.id));
-      } else {
-        pageOrders.forEach((o) => next.add(o.id));
-      }
+      pageOrders.forEach((o) => next.add(o.id));
       return next;
     });
   }

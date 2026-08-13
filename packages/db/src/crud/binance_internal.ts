@@ -211,12 +211,13 @@ export async function deliverPaidInternalOrder(
   args: { orderId: number; binanceTxId: string; amount: Decimal.Value },
 ): Promise<DeliverResult> {
   // 1. Claim the tx id. A duplicate normally means another cycle already
-  //    handled it — UNLESS the prior claim's delivery transaction itself
-  //    failed (outcome "delivery_failed"): that claim never actually
-  //    delivered anything, so it must be re-claimable, or the buyer's payment
-  //    is silently lost forever behind a stuck idempotency row (H-3, backend
-  //    audit 2026-07-31). Re-claiming is a single atomic UPDATE gated on
-  //    outcome="delivery_failed" — SQLite serializes writers, so if two
+  //    handled it — UNLESS the prior claim's outcome is one of
+  //    NON_DELIVERING_OUTCOMES ("delivery_failed" or "unmatched"): neither of
+  //    those ever actually delivered anything, so the tx id must stay
+  //    re-claimable, or the buyer's payment is silently lost forever behind a
+  //    stuck idempotency row (delivery_failed: H-3, backend audit
+  //    2026-07-31; unmatched: Task 15). Re-claiming is a single atomic UPDATE
+  //    gated on that outcome set — SQLite serializes writers, so if two
   //    retries race, exactly one `updateMany` sees count=1 and proceeds; the
   //    other sees count=0 and correctly reports already_processed.
   try {
@@ -226,7 +227,7 @@ export async function deliverPaidInternalOrder(
   } catch (e) {
     if (!isUniqueViolation(e)) throw e;
     const reclaimed = await db.processedBinanceTx.updateMany({
-      where: { binanceTxId: args.binanceTxId, outcome: "delivery_failed" },
+      where: { binanceTxId: args.binanceTxId, outcome: { in: [...NON_DELIVERING_OUTCOMES] } },
       data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
     if (reclaimed.count === 0) return { status: "already_processed" };
@@ -360,6 +361,18 @@ export const TX_OUTCOMES = [
   "dismissed",
 ] as const;
 export type TxOutcome = (typeof TX_OUTCOMES)[number];
+
+/** Outcomes that never delivered anything, so the trx/tx id they're stamped
+ * on must stay re-claimable by a later callback/poller pass — otherwise a
+ * real payment that merely arrived while its order was temporarily
+ * un-matchable (wrong method/currency, a short payment later topped up) gets
+ * permanently stuck behind the trxId UNIQUE gate (Task 15). The complement —
+ * "matched" | "overpaid" | "stale" — is the terminal set and must NEVER be
+ * re-claimable: each of those means a delivery attempt actually ran (and,
+ * for "stale", the surrounding $transaction re-checked the order was still
+ * PENDING_PAYMENT before returning), so re-claiming one risks a second
+ * delivery attempt racing/duplicating a settlement that already happened. */
+export const NON_DELIVERING_OUTCOMES = ["unmatched", "delivery_failed"] as const;
 
 type LinkedOrder = { id: number; orderCode: string; status: string; totalAmount: Decimal };
 

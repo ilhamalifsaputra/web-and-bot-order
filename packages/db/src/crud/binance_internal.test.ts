@@ -21,6 +21,7 @@ import { buildSampleData, resetDb, type SampleData } from "../../../../tests/hel
 import {
   createOrderDirect,
   deliverPaidInternalOrder,
+  recordUnmatchedTx,
   createCategory,
   createCatalogProduct,
   createDenomination,
@@ -231,6 +232,133 @@ describe("deliverPaidInternalOrder", () => {
       where: { orderId: order.id, event: NotificationEvent.ORDER_PROCESSING_DM },
     });
     expect(processingDm).not.toBeNull();
+  });
+});
+
+// Task 15: an `unmatched` ledger row (a transfer that matched no PENDING
+// order) must not permanently block the SAME Binance tx id from ever being
+// delivered by a later, legitimate poller pass. Only the terminal outcomes
+// ("matched" | "overpaid" | "stale") may stay unclaimable forever;
+// "unmatched" and "delivery_failed" never delivered anything, so they must
+// stay re-claimable.
+describe("deliverPaidInternalOrder — re-claiming a tx id across non-delivering outcomes", () => {
+  it("a tx first recorded as unmatched by the poller can still be delivered by a later poller pass", async () => {
+    const order = await makePendingInternalOrder();
+    const binanceTxId = "tx-unmatched-reclaim-1";
+
+    const recorded = await recordUnmatchedTx(prisma, { binanceTxId, amount: new Decimal("5") });
+    expect(recorded).toBe(true);
+    const unmatchedRow = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId } });
+    expect(unmatchedRow?.outcome).toBe("unmatched");
+
+    const result = await deliverPaidInternalOrder(prisma, {
+      orderId: order.id,
+      binanceTxId,
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+
+    const ledgerRow = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId } });
+    expect(ledgerRow?.outcome).toBe("matched");
+    expect(ledgerRow?.orderId).toBe(order.id);
+
+    const rows = await prisma.processedBinanceTx.findMany({ where: { binanceTxId } });
+    expect(rows.length).toBe(1);
+  });
+
+  it("a tx already delivered is never re-claimed", async () => {
+    // This test claims 5 stock-consuming orders — sampleData's product only
+    // ships with 5, so top it up first for headroom.
+    await bulkAddStock(
+      prisma,
+      sample.product.id,
+      Array.from({ length: 10 }, (_, i) => `terminal-reclaim-${i}@example.com:pwd`),
+    );
+
+    // Terminal outcome 1: matched (an ordinary successful delivery).
+    const matchedOrder = await makePendingInternalOrder();
+    const matchedTxId = "tx-terminal-matched-1";
+    const delivered = await deliverPaidInternalOrder(prisma, {
+      orderId: matchedOrder.id,
+      binanceTxId: matchedTxId,
+      amount: matchedOrder.totalAmount,
+    });
+    expect(delivered.status).toBe("delivered");
+
+    const otherOrderForMatched = await makePendingInternalOrder();
+    const reclaimAttempt1 = await deliverPaidInternalOrder(prisma, {
+      orderId: otherOrderForMatched.id,
+      binanceTxId: matchedTxId,
+      amount: otherOrderForMatched.totalAmount,
+    });
+    expect(reclaimAttempt1.status).toBe("already_processed");
+    const matchedLedger = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: matchedTxId } });
+    expect(matchedLedger?.outcome).toBe("matched");
+    expect(matchedLedger?.orderId).toBe(matchedOrder.id);
+    expect((await prisma.order.findUnique({ where: { id: otherOrderForMatched.id } }))!.status).toBe(
+      OrderStatus.PENDING_PAYMENT,
+    );
+
+    // Terminal outcome 2: overpaid (still a real delivery, just flagged).
+    const overpaidOrder = await makePendingInternalOrder();
+    const overpaidTxId = "tx-terminal-overpaid-1";
+    const overpaidAmount = new Decimal(overpaidOrder.totalAmount).plus("3");
+    const overpaidResult = await deliverPaidInternalOrder(prisma, {
+      orderId: overpaidOrder.id,
+      binanceTxId: overpaidTxId,
+      amount: overpaidAmount,
+    });
+    expect(overpaidResult.status).toBe("delivered");
+    const overpaidLedgerBefore = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: overpaidTxId } });
+    expect(overpaidLedgerBefore?.outcome).toBe("overpaid");
+
+    const otherOrderForOverpaid = await makePendingInternalOrder();
+    const reclaimAttempt2 = await deliverPaidInternalOrder(prisma, {
+      orderId: otherOrderForOverpaid.id,
+      binanceTxId: overpaidTxId,
+      amount: otherOrderForOverpaid.totalAmount,
+    });
+    expect(reclaimAttempt2.status).toBe("already_processed");
+    const overpaidLedgerAfter = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: overpaidTxId } });
+    expect(overpaidLedgerAfter?.outcome).toBe("overpaid");
+    expect(overpaidLedgerAfter?.orderId).toBe(overpaidOrder.id);
+
+    // Terminal outcome 3: stale (the order moved on — e.g. cancelled — before
+    // the poller matched it). Unlike TokoPay/PayDisini/NOWPayments,
+    // deliverPaidInternalOrder's stale branch does not flip the ledger
+    // outcome to "stale" — the row it already claimed as "matched" in step 1
+    // (before the order-status check) simply stays "matched". That is a
+    // pre-existing quirk of this rail, out of scope for Task 15, but it means
+    // the terminal set is enforced here too: "matched" is excluded from
+    // NON_DELIVERING_OUTCOMES, so this trx id is correctly never reclaimable
+    // either way.
+    const staleOrder = await makePendingInternalOrder();
+    const staleTxId = "tx-terminal-stale-1";
+    await prisma.order.update({ where: { id: staleOrder.id }, data: { status: OrderStatus.CANCELLED } });
+    const staleResult = await deliverPaidInternalOrder(prisma, {
+      orderId: staleOrder.id,
+      binanceTxId: staleTxId,
+      amount: staleOrder.totalAmount,
+    });
+    expect(staleResult.status).toBe("stale");
+    const staleLedgerBefore = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: staleTxId } });
+    expect(staleLedgerBefore?.outcome).toBe("matched"); // not flipped to "stale" on this rail — see comment above
+    expect(staleLedgerBefore?.orderId).toBe(staleOrder.id);
+
+    const otherOrderForStale = await makePendingInternalOrder();
+    const reclaimAttempt3 = await deliverPaidInternalOrder(prisma, {
+      orderId: otherOrderForStale.id,
+      binanceTxId: staleTxId,
+      amount: otherOrderForStale.totalAmount,
+    });
+    expect(reclaimAttempt3.status).toBe("already_processed");
+    const staleLedgerAfter = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: staleTxId } });
+    expect(staleLedgerAfter?.orderId).toBe(staleOrder.id);
+    expect((await prisma.order.findUnique({ where: { id: otherOrderForStale.id } }))!.status).toBe(
+      OrderStatus.PENDING_PAYMENT,
+    );
   });
 });
 

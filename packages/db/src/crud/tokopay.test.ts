@@ -382,6 +382,129 @@ describe("recordUnmatchedTokopayTx", () => {
   });
 });
 
+// Task 15: an `unmatched` ledger row (webhook callback that arrived while the
+// order wasn't currently payable — wrong method/currency, a short payment
+// later topped up) must not permanently block the SAME trxId from ever being
+// delivered by a later, legitimate callback/reconcile-poller pass. Only the
+// terminal outcomes ("matched" | "overpaid" | "stale") may stay unclaimable
+// forever; "unmatched" and "delivery_failed" never delivered anything, so
+// they must stay re-claimable.
+describe("deliverPaidTokopayOrder — re-claiming a trxId across non-delivering outcomes", () => {
+  it("a trx first recorded as unmatched by the webhook can still be delivered by the reconcile poller", async () => {
+    const order = await makePendingTokopayOrder();
+    const trxId = "trx-unmatched-reclaim-1";
+
+    const recorded = await recordUnmatchedTokopayTx(prisma, { trxId, amount: new Decimal("5000") });
+    expect(recorded).toBe(true);
+    const unmatchedRow = await prisma.processedTokopayTx.findUnique({ where: { trxId } });
+    expect(unmatchedRow?.outcome).toBe("unmatched");
+
+    const result = await deliverPaidTokopayOrder(prisma, {
+      orderId: order.id,
+      trxId,
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+
+    const ledgerRow = await prisma.processedTokopayTx.findUnique({ where: { trxId } });
+    expect(ledgerRow?.outcome).toBe("matched");
+    expect(ledgerRow?.orderId).toBe(order.id);
+
+    // Reclaimed in place, not duplicated.
+    const rows = await prisma.processedTokopayTx.findMany({ where: { trxId } });
+    expect(rows.length).toBe(1);
+  });
+
+  it("a trx already delivered is never re-claimed", async () => {
+    // This test claims 6 stock-consuming orders — sampleData's product only
+    // ships with 5, so top it up first.
+    await bulkAddStock(
+      prisma,
+      sample.product.id,
+      Array.from({ length: 10 }, (_, i) => `terminal-reclaim-${i}@example.com:pwd`),
+    );
+
+    // Terminal outcome 1: matched (an ordinary successful delivery).
+    const matchedOrder = await makePendingTokopayOrder();
+    const matchedTrxId = "trx-terminal-matched-1";
+    const delivered = await deliverPaidTokopayOrder(prisma, {
+      orderId: matchedOrder.id,
+      trxId: matchedTrxId,
+      amount: matchedOrder.totalAmount,
+    });
+    expect(delivered.status).toBe("delivered");
+
+    const otherOrderForMatched = await makePendingTokopayOrder();
+    const reclaimAttempt1 = await deliverPaidTokopayOrder(prisma, {
+      orderId: otherOrderForMatched.id,
+      trxId: matchedTrxId,
+      amount: otherOrderForMatched.totalAmount,
+    });
+    expect(reclaimAttempt1.status).toBe("already_processed");
+    const matchedLedger = await prisma.processedTokopayTx.findUnique({ where: { trxId: matchedTrxId } });
+    expect(matchedLedger?.outcome).toBe("matched");
+    expect(matchedLedger?.orderId).toBe(matchedOrder.id);
+    expect((await prisma.order.findUnique({ where: { id: otherOrderForMatched.id } }))!.status).toBe(
+      OrderStatus.PENDING_PAYMENT,
+    );
+
+    // Terminal outcome 2: overpaid (still a real delivery, just flagged).
+    const overpaidOrder = await makePendingTokopayOrder();
+    const overpaidTrxId = "trx-terminal-overpaid-1";
+    const overpaidCharge = qrisChargeAmount(overpaidOrder.totalAmount).plus("5");
+    const overpaidResult = await deliverPaidTokopayOrder(prisma, {
+      orderId: overpaidOrder.id,
+      trxId: overpaidTrxId,
+      amount: overpaidCharge,
+    });
+    expect(overpaidResult.status).toBe("delivered");
+    const overpaidLedgerBefore = await prisma.processedTokopayTx.findUnique({ where: { trxId: overpaidTrxId } });
+    expect(overpaidLedgerBefore?.outcome).toBe("overpaid");
+
+    const otherOrderForOverpaid = await makePendingTokopayOrder();
+    const reclaimAttempt2 = await deliverPaidTokopayOrder(prisma, {
+      orderId: otherOrderForOverpaid.id,
+      trxId: overpaidTrxId,
+      amount: otherOrderForOverpaid.totalAmount,
+    });
+    expect(reclaimAttempt2.status).toBe("already_processed");
+    const overpaidLedgerAfter = await prisma.processedTokopayTx.findUnique({ where: { trxId: overpaidTrxId } });
+    expect(overpaidLedgerAfter?.outcome).toBe("overpaid");
+    expect(overpaidLedgerAfter?.orderId).toBe(overpaidOrder.id);
+
+    // Terminal outcome 3: stale (the order moved on — e.g. cancelled — before
+    // the callback landed). A trxId that lands on a stale order must not
+    // become reclaimable either, or a later retry could land on a DIFFERENT
+    // order than the one the money was actually meant for.
+    const staleOrder = await makePendingTokopayOrder();
+    const staleTrxId = "trx-terminal-stale-1";
+    await prisma.order.update({ where: { id: staleOrder.id }, data: { status: OrderStatus.CANCELLED } });
+    const staleResult = await deliverPaidTokopayOrder(prisma, {
+      orderId: staleOrder.id,
+      trxId: staleTrxId,
+      amount: staleOrder.totalAmount,
+    });
+    expect(staleResult.status).toBe("stale");
+    const staleLedgerBefore = await prisma.processedTokopayTx.findUnique({ where: { trxId: staleTrxId } });
+    expect(staleLedgerBefore?.outcome).toBe("stale");
+
+    const otherOrderForStale = await makePendingTokopayOrder();
+    const reclaimAttempt3 = await deliverPaidTokopayOrder(prisma, {
+      orderId: otherOrderForStale.id,
+      trxId: staleTrxId,
+      amount: otherOrderForStale.totalAmount,
+    });
+    expect(reclaimAttempt3.status).toBe("already_processed");
+    const staleLedgerAfter = await prisma.processedTokopayTx.findUnique({ where: { trxId: staleTrxId } });
+    expect(staleLedgerAfter?.outcome).toBe("stale");
+    expect((await prisma.order.findUnique({ where: { id: otherOrderForStale.id } }))!.status).toBe(
+      OrderStatus.PENDING_PAYMENT,
+    );
+  });
+});
+
 describe("getTokopayCreds — minAmount", () => {
   beforeEach(async () => {
     await setSetting(prisma, "tokopay_merchant_id", "M");

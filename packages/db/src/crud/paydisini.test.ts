@@ -478,6 +478,127 @@ describe("recordUnmatchedPaydisiniTx", () => {
   });
 });
 
+// Task 15: an `unmatched` ledger row (webhook callback that arrived while the
+// order wasn't currently payable) must not permanently block the SAME trxId
+// from ever being delivered by a later, legitimate callback/reconcile-poller
+// pass. Only the terminal outcomes ("matched" | "overpaid" | "stale") may
+// stay unclaimable forever; "unmatched" and "delivery_failed" never delivered
+// anything, so they must stay re-claimable.
+describe("deliverPaidPaydisiniOrder — re-claiming a trxId across non-delivering outcomes", () => {
+  it("a trx first recorded as unmatched by the webhook can still be delivered by the reconcile poller", async () => {
+    const order = await makePendingPaydisiniOrder();
+    const trxId = "trx-unmatched-reclaim-1";
+
+    const recorded = await recordUnmatchedPaydisiniTx(prisma, { trxId, amount: new Decimal("5000") });
+    expect(recorded).toBe(true);
+    const unmatchedRow = await prisma.processedPaydisiniTx.findUnique({ where: { trxId } });
+    expect(unmatchedRow?.outcome).toBe("unmatched");
+
+    const result = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: order.id,
+      trxId,
+      amount: order.totalAmount,
+    });
+    expect(result.status).toBe("delivered");
+    if (result.status !== "delivered") throw new Error("expected delivered");
+    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+
+    const ledgerRow = await prisma.processedPaydisiniTx.findUnique({ where: { trxId } });
+    expect(ledgerRow?.outcome).toBe("matched");
+    expect(ledgerRow?.orderId).toBe(order.id);
+
+    const rows = await prisma.processedPaydisiniTx.findMany({ where: { trxId } });
+    expect(rows.length).toBe(1);
+  });
+
+  it("a trx already delivered is never re-claimed", async () => {
+    // This test claims 6 stock-consuming orders — sampleData's product only
+    // ships with 5, so top it up first.
+    await bulkAddStock(
+      prisma,
+      sample.product.id,
+      Array.from({ length: 10 }, (_, i) => `terminal-reclaim-${i}@example.com:pwd`),
+    );
+
+    // Terminal outcome 1: matched (an ordinary successful delivery).
+    const matchedOrder = await makePendingPaydisiniOrder();
+    const matchedTrxId = "trx-terminal-matched-1";
+    const delivered = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: matchedOrder.id,
+      trxId: matchedTrxId,
+      amount: matchedOrder.totalAmount,
+    });
+    expect(delivered.status).toBe("delivered");
+
+    const otherOrderForMatched = await makePendingPaydisiniOrder();
+    const reclaimAttempt1 = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: otherOrderForMatched.id,
+      trxId: matchedTrxId,
+      amount: otherOrderForMatched.totalAmount,
+    });
+    expect(reclaimAttempt1.status).toBe("already_processed");
+    const matchedLedger = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: matchedTrxId } });
+    expect(matchedLedger?.outcome).toBe("matched");
+    expect(matchedLedger?.orderId).toBe(matchedOrder.id);
+    expect((await prisma.order.findUnique({ where: { id: otherOrderForMatched.id } }))!.status).toBe(
+      OrderStatus.PENDING_PAYMENT,
+    );
+
+    // Terminal outcome 2: overpaid (still a real delivery, just flagged).
+    const overpaidOrder = await makePendingPaydisiniOrder();
+    const overpaidTrxId = "trx-terminal-overpaid-1";
+    const overpaidAmount = new Decimal(overpaidOrder.totalAmount).plus("5");
+    const overpaidResult = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: overpaidOrder.id,
+      trxId: overpaidTrxId,
+      amount: overpaidAmount,
+    });
+    expect(overpaidResult.status).toBe("delivered");
+    const overpaidLedgerBefore = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: overpaidTrxId } });
+    expect(overpaidLedgerBefore?.outcome).toBe("overpaid");
+
+    const otherOrderForOverpaid = await makePendingPaydisiniOrder();
+    const reclaimAttempt2 = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: otherOrderForOverpaid.id,
+      trxId: overpaidTrxId,
+      amount: otherOrderForOverpaid.totalAmount,
+    });
+    expect(reclaimAttempt2.status).toBe("already_processed");
+    const overpaidLedgerAfter = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: overpaidTrxId } });
+    expect(overpaidLedgerAfter?.outcome).toBe("overpaid");
+    expect(overpaidLedgerAfter?.orderId).toBe(overpaidOrder.id);
+
+    // Terminal outcome 3: stale (the order moved on — e.g. cancelled — before
+    // the callback landed). A trxId that lands on a stale order must not
+    // become reclaimable either, or a later retry could land on a DIFFERENT
+    // order than the one the money was actually meant for.
+    const staleOrder = await makePendingPaydisiniOrder();
+    const staleTrxId = "trx-terminal-stale-1";
+    await prisma.order.update({ where: { id: staleOrder.id }, data: { status: OrderStatus.CANCELLED } });
+    const staleResult = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: staleOrder.id,
+      trxId: staleTrxId,
+      amount: staleOrder.totalAmount,
+    });
+    expect(staleResult.status).toBe("stale");
+    const staleLedgerBefore = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: staleTrxId } });
+    expect(staleLedgerBefore?.outcome).toBe("stale");
+
+    const otherOrderForStale = await makePendingPaydisiniOrder();
+    const reclaimAttempt3 = await deliverPaidPaydisiniOrder(prisma, {
+      orderId: otherOrderForStale.id,
+      trxId: staleTrxId,
+      amount: otherOrderForStale.totalAmount,
+    });
+    expect(reclaimAttempt3.status).toBe("already_processed");
+    const staleLedgerAfter = await prisma.processedPaydisiniTx.findUnique({ where: { trxId: staleTrxId } });
+    expect(staleLedgerAfter?.outcome).toBe("stale");
+    expect((await prisma.order.findUnique({ where: { id: otherOrderForStale.id } }))!.status).toBe(
+      OrderStatus.PENDING_PAYMENT,
+    );
+  });
+});
+
 describe("getPaydisiniCreds — minAmount", () => {
   beforeEach(async () => {
     await setSetting(prisma, "paydisini_userkey", "uk");

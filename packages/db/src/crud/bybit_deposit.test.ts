@@ -363,11 +363,18 @@ describe("deliverPaidBybitOrder — processing branch (manual SKU)", () => {
 // Bybit Internal Transfer matches a deposit against ANY pending order by
 // amount (same shape as Binance Internal, unlike the 1:1 QRIS trxId), so a
 // re-claim can turn out stale — the fix must revert the ledger row to its
-// prior outcome instead of stranding it as an unreachable "matched". There is
-// no manualMatchTx/dismissUnmatchedTx equivalent for Bybit at all (checked:
-// no route in apps/web-admin references processedBybitTx), so an unreverted
-// stale reclaim would be WORSE than Binance's case — not just invisible to
-// admin tooling, but with no recovery path whatsoever, automatic or manual.
+// prior outcome instead of stranding it as an unreachable "matched".
+//
+// Bybit's ledger IS visible to admins — reports.ts's listCombinedLedger puts
+// both rails' rows in the Payments page table, and manualMatchQueueCounts
+// counts their "unmatched"/"delivery_failed" rows into the dashboard cards.
+// What Bybit lacks is the ACTION side: no manualMatchTx/dismissUnmatchedTx
+// equivalent. So an unreverted stale reclaim does two things, not one: it
+// leaves the row unreachable by the poller (as on Binance), AND — because
+// those queue counts filter on exactly those two outcomes — it silently
+// decrements the ops dashboard's open-problem count and drops out of the
+// ledger's outcome filter. The row stops looking like a problem at the same
+// moment it becomes unrecoverable.
 //
 // This rail has no "overpaid" outcome (unlike Binance/TokoPay/PayDisini/
 // NOWPayments — see the module doc-comment), so its full outcome set is:

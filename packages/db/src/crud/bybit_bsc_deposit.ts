@@ -522,9 +522,14 @@ export async function deliverPaidBybitBscOrder(
     // attempt) and alert admins durably via the outbox — this crud layer has
     // no Bot API handle for a direct send, and a FAILED transition needs a
     // retryable alert regardless of which caller's context it originated
-    // from. Only enqueues once: a retry on the SAME bybitTxId never reaches
-    // this catch again (the ledger claim above already failed it as
-    // "already_processed" before this transaction even starts).
+    // from. Once per delivery ATTEMPT, not once per deposit: before Task 16
+    // a retry on the same bybitTxId could never reach this catch again,
+    // because the ledger claim rejected it as "already_processed" first. Now
+    // that a "delivery_failed" row is re-claimable, a later cycle can match
+    // the same deposit to a DIFFERENT pending order and fail again — so one
+    // deposit can produce more than one alert over time. That is intended:
+    // each alert names the order it actually failed against, and an admin
+    // needs to see each one.
     const order = await getOrder(db, args.orderId).catch(() => null);
     if (order) {
       const moved = await tryTransitionOrderStatus(db, {

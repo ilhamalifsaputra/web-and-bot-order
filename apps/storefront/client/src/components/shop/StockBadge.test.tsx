@@ -11,7 +11,7 @@ describe("StockBadge", () => {
   it("renders the in-stock state above the low threshold", () => {
     render(<StockBadge available={10} lowThreshold={5} />);
     const badge = screen.getByText("Available");
-    expect(badge).toHaveClass("bg-grass-tint", "text-grass-dark");
+    expect(badge).toHaveClass("bg-grass-tint", "text-[#157e3b]");
   });
 
   it("renders the low-stock state with the remaining count", () => {
@@ -30,6 +30,6 @@ describe("StockBadge", () => {
     render(<StockBadge available={0} lowThreshold={5} allNonAuto />);
     expect(screen.queryByText("Out of stock")).not.toBeInTheDocument();
     const badge = screen.getByText("Available");
-    expect(badge).toHaveClass("bg-grass-tint", "text-grass-dark");
+    expect(badge).toHaveClass("bg-grass-tint", "text-[#157e3b]");
   });
 });

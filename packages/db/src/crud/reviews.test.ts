@@ -3,6 +3,7 @@ import type { PrismaClient } from "@prisma/client";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import {
   productRating,
+  productRatingSummaries,
   listReviews,
   countReviews,
   setReviewHidden,
@@ -162,6 +163,30 @@ describe("productRating (hidden reviews excluded)", () => {
     const after = await productRating(prisma, productId);
     expect(after.count).toBe(1);
     expect(after.avg).toBeCloseTo(5.0);
+  });
+});
+
+describe("productRating / productRatingSummaries — true total, not capped", () => {
+  // Motivates the storefront product page's aggregate rating (Task 9): the
+  // page's own review LIST is capped at 10 fetched rows (pageData.ts), but
+  // the rating summary must report every non-hidden review, not just the
+  // fetched page — otherwise a product with 200 reviews looks identical to
+  // one with 10 fetched, which the fix requires to be wrong.
+  it("productRating counts every non-hidden review, well past a 10-row page size", async () => {
+    const ratings = Array.from({ length: 15 }, () => ({ rating: 4 }));
+    const productId = await seed(ratings);
+    const r = await productRating(prisma, productId);
+    expect(r.count).toBe(15);
+    expect(r.avg).toBeCloseTo(4.0);
+  });
+
+  it("productRatingSummaries also reports the true total for a heavily-reviewed denomination", async () => {
+    await prisma.review.deleteMany({});
+    const ratings = Array.from({ length: 12 }, (_, i) => ({ rating: (i % 5) + 1 }));
+    const productId = await seed(ratings);
+    const summaries = await productRatingSummaries(prisma);
+    const summary = summaries.find((s) => s.productId === productId);
+    expect(summary?.count).toBe(12);
   });
 });
 

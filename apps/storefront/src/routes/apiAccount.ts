@@ -45,6 +45,7 @@ import {
   getDenominationWithProduct,
   setLoginCredentials,
   LOGIN_USERNAME_RE,
+  getReferralSummary,
 } from "@app/db";
 import {
   newJti,
@@ -196,9 +197,16 @@ const apiAccountRoutes: FastifyPluginAsync = async (app) => {
     if (!customer) return;
     const code = customer.user.referralCode;
     const username = await resolveBotUsername();
+    // Same aggregate the bot's viewReferral handler reads (packages/db/src/crud/referrals.ts
+    // getReferralSummary, mirroring apps/order-bot/src/handlers/customer.ts) — the web and
+    // the bot must never disagree about a buyer's commission balance.
+    const summary = await getReferralSummary(prisma, customer.userId);
     return reply.send({
       referral_code: code,
       referral_link: username ? `https://t.me/${username}?start=ref_${code}` : null,
+      referred_count: summary.referredCount,
+      earned_usdt: summary.earnedUsdt.toString(),
+      commission_percent: config.REFERRAL_COMMISSION_PERCENT,
     });
   });
 

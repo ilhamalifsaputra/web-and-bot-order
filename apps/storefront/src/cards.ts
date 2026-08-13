@@ -57,6 +57,36 @@ type RatingMap = Map<number, { avg: number | null; count: number }>;
 type BulkMap = Record<number, { minQuantity: number; discountPercent: string }>;
 
 /**
+ * Weighted average rating + true count across a set of denomination ids. A
+ * review is left against the specific plan bought, not the parent Product, so
+ * a product's honest rating combines every plan's summary rather than only
+ * its cheapest/lead one — count-weighted so a plan with many reviews isn't
+ * diluted to the same voice as one with a single review. `ratings` come from
+ * `productRatingSummaries` (packages/db/src/crud/reviews.ts), which groups
+ * over EVERY non-hidden review in the DB — never capped by a page's fetch
+ * limit — so `count` here is always the true total.
+ *
+ * Shared by `shapeProducts` (grid/related-product cards) and
+ * `pageData.ts`'s `productPageData` (the detail page's own aggregate), so the
+ * two can never compute this differently.
+ */
+export function aggregateRating(
+  denominationIds: number[],
+  ratings: RatingMap,
+): { avg: number | null; count: number } {
+  let count = 0;
+  let weightedSum = 0;
+  for (const id of denominationIds) {
+    const r = ratings.get(id);
+    if (r && r.count > 0 && r.avg != null) {
+      count += r.count;
+      weightedSum += r.avg * r.count;
+    }
+  }
+  return { avg: count > 0 ? weightedSum / count : null, count };
+}
+
+/**
  * Shape a `CatalogProduct[]` (Product + its active denominations, price asc)
  * into product cards. Stock/rating/bulk maps are keyed by denomination id, so
  * each product aggregates across its denominations: stock = sum, rating =
@@ -123,15 +153,10 @@ export function shapeProducts(
     // Weighted average rating across every denomination (a review is left
     // against the specific plan bought, not the product), so the card's star
     // rating reflects the WHOLE product, never just its cheapest plan.
-    let ratingCount = 0;
-    let weightedSum = 0;
-    for (const d of denoms) {
-      const r = ratings.get(d.id);
-      if (r && r.count > 0 && r.avg != null) {
-        ratingCount += r.count;
-        weightedSum += r.avg * r.count;
-      }
-    }
+    const { avg: rating, count: ratingCount } = aggregateRating(
+      denoms.map((d) => d.id),
+      ratings,
+    );
     cards.push({
       slug: p.slug,
       name: p.name,
@@ -141,7 +166,7 @@ export function shapeProducts(
       image: p.webImageUrl ?? productImage(p, p.category.name),
       image_srcset: webpSrcset(p.webImageUrl, PRODUCT_VARIANT_WIDTHS),
       available,
-      rating: ratingCount > 0 ? weightedSum / ratingCount : null,
+      rating,
       rating_count: ratingCount,
       bulk_discount: bulkDiscount,
       bulk_min_qty: bulkMinQty,

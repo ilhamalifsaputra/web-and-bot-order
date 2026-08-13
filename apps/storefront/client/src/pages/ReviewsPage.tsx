@@ -8,14 +8,17 @@
  * `!w-20` → `w-20!`.
  */
 import { useEffect, useState, type FormEvent } from "react";
-import { Link } from "react-router-dom";
+import { Star } from "lucide-react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiGet, apiPost } from "../api/client";
 import type { AccountReview, PendingReview, ReviewsData } from "../api/types";
+import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import Stars from "../components/shop/Stars";
 import Spinner from "../components/shop/Spinner";
 import Skeleton from "../components/shop/Skeleton";
+import EmptyState from "../components/shop/EmptyState";
 
 interface ReviewSubmission {
   order_id: number;
@@ -87,18 +90,24 @@ function ReviewCard({ review }: { review: AccountReview }) {
         <div className="font-semibold text-sm">{review.product_name}</div>
         <Stars rating={review.rating} />
       </div>
-      {review.comment && <p className="text-sm text-ink-soft mt-2">{review.comment}</p>}
+      {review.comment && (
+        <p className="text-sm text-ink-soft mt-2 whitespace-pre-line break-words">{review.comment}</p>
+      )}
       <div className="text-xs text-ink-faint mt-2">{review.created_at_display}</div>
     </div>
   );
 }
 
 export default function ReviewsPage() {
+  const { data: ctx } = useShopContext();
   const { data, error, refetch } = useQuery({
     queryKey: ["account-reviews"],
     queryFn: () => apiGet<ReviewsData>("/api/v1/account/reviews"),
     retry: false,
   });
+  // Fetched only once it's known there are no reviews yet — never delays the
+  // empty-state card itself, which paints from `data` alone.
+  const { data: suggested } = useSuggestedProducts(!!data && data.reviews.length === 0);
 
   useEffect(() => {
     if ((error as (Error & { status?: number }) | null)?.status === 401) {
@@ -144,22 +153,21 @@ export default function ReviewsPage() {
       )}
 
       <section>
-        <h2 className="section-title mb-3">{t("web.account_reviews")}</h2>
         {data.reviews.length > 0 ? (
-          <div className="grid sm:grid-cols-2 gap-4">
+          <div className="grid sm:grid-cols-2 gap-4 items-start">
             {data.reviews.map((r, idx) => (
               <ReviewCard key={idx} review={r} />
             ))}
           </div>
         ) : (
-          <div className="card card-pad text-center py-10">
-            <p className="text-ink-faint">{t("web.reviews_none")}</p>
-            {/* STO-016: same rationale as OrdersPage's empty state — give a
-                first-time visitor a forward action instead of a dead end. */}
-            <Link to="/" className="btn btn-soft mt-4">
-              {t("web.continue_shopping")}
-            </Link>
-          </div>
+          /* STO-016 / E1: was a hand-rolled div; now the shared EmptyState so
+             this matches every other "nothing here yet" screen in the shop. */
+          <EmptyState
+            icon={Star}
+            title={t("web.reviews_none")}
+            action={{ label: t("web.continue_shopping"), to: "/" }}
+            suggestions={suggested ? { products: suggested.products, fx: ctx?.fx, lowThreshold: suggested.low_threshold } : undefined}
+          />
         )}
       </section>
     </>

@@ -5,7 +5,7 @@
  * card advertises an original price no plan was ever sold at.
  */
 import { describe, it, expect } from "vitest";
-import { shapeProducts } from "./cards";
+import { aggregateRating, shapeProducts } from "./cards";
 import type { CatalogProduct } from "@app/db";
 
 const HOUR = 3_600_000;
@@ -127,5 +127,63 @@ describe("shapeProducts — flash sales", () => {
     );
     expect(over!.from_price).toBe("100000");
     expect(over!.flash_discount).toBeNull();
+  });
+});
+
+// aggregateRating is the single weighted-average implementation shared by
+// shapeProducts (grid/related-product cards) and productPageData (the
+// product detail page's own aggregate, apps/storefront/src/pageData.ts) —
+// this locks its contract down directly so the two callers can't quietly
+// diverge.
+describe("aggregateRating", () => {
+  it("count-weights the average across denominations rather than treating each plan equally", () => {
+    // Plan A: 5.0 avg over 8 reviews. Plan B: 1.0 avg over 2 reviews.
+    // A simple (unweighted) mean of the two averages would be 3.0; the
+    // count-weighted true average is (5*8 + 1*2) / 10 = 4.2.
+    const ratings = new Map([
+      [1, { avg: 5.0, count: 8 }],
+      [2, { avg: 1.0, count: 2 }],
+    ]);
+    const result = aggregateRating([1, 2], ratings);
+    expect(result.count).toBe(10);
+    expect(result.avg).toBeCloseTo(4.2);
+  });
+
+  it("returns null avg and zero count when no denomination has any reviews", () => {
+    const result = aggregateRating([1, 2], new Map());
+    expect(result.avg).toBeNull();
+    expect(result.count).toBe(0);
+  });
+
+  it("skips a denomination with a zero count even if present in the map", () => {
+    const ratings = new Map([
+      [1, { avg: 4.0, count: 3 }],
+      [2, { avg: null, count: 0 }],
+    ]);
+    const result = aggregateRating([1, 2], ratings);
+    expect(result.count).toBe(3);
+    expect(result.avg).toBeCloseTo(4.0);
+  });
+
+  it("ignores denomination ids absent from the ratings map (no reviews at all)", () => {
+    const ratings = new Map([[1, { avg: 4.0, count: 3 }]]);
+    const result = aggregateRating([1, 999], ratings);
+    expect(result.count).toBe(3);
+    expect(result.avg).toBeCloseTo(4.0);
+  });
+});
+
+describe("shapeProducts — rating aggregation reuses aggregateRating", () => {
+  it("combines every denomination's rating summary, not just the cheapest plan's", () => {
+    const cheap = denom({ price: "10000" });
+    const pricey = denom({ price: "50000" });
+    const ratings = new Map([
+      [cheap.id, { avg: 5.0, count: 1 }],
+      [pricey.id, { avg: 3.0, count: 3 }],
+    ]);
+    const [card] = shapeProducts([productWith([cheap, pricey])], {}, ratings);
+    // (5*1 + 3*3) / 4 = 3.5 — the cheapest plan's 5.0 alone would be wrong.
+    expect(card!.rating).toBeCloseTo(3.5);
+    expect(card!.rating_count).toBe(4);
   });
 });

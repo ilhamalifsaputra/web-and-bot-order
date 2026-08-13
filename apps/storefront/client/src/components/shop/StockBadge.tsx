@@ -17,14 +17,18 @@ export interface StockBadgeProps {
 export default function StockBadge({ available, lowThreshold, allNonAuto }: StockBadgeProps) {
   if (allNonAuto) {
     return (
-      <span className="rounded-full bg-grass-tint px-2.5 py-1 text-xs font-medium text-grass-dark">
+      // text-[#157e3b]: grass-dark (#15803d) measures 4.49:1 on grass-tint,
+      // 0.01 short of WCAG AA. This is a one-off nudge scoped to this badge's
+      // foreground only — the shared --color-grass-dark token (used by
+      // StatusBadge, ProductCard, etc.) is untouched.
+      <span className="rounded-full bg-grass-tint px-2.5 py-1 text-xs font-medium text-[#157e3b]">
         {t("web.stock_available")}
       </span>
     );
   }
   if (available > lowThreshold) {
     return (
-      <span className="rounded-full bg-grass-tint px-2.5 py-1 text-xs font-medium text-grass-dark">
+      <span className="rounded-full bg-grass-tint px-2.5 py-1 text-xs font-medium text-[#157e3b]">
         {t("web.stock_available")}
       </span>
     );

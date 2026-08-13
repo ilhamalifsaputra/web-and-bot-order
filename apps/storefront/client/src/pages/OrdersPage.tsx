@@ -14,6 +14,7 @@ import type { AccountOrderSummary, AccountOrdersData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { useIsDesktop } from "../lib/useMediaQuery";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import EmptyState from "../components/shop/EmptyState";
 import Price from "../components/shop/Price";
 import Skeleton from "../components/shop/Skeleton";
@@ -52,6 +53,9 @@ export default function OrdersPage() {
     queryFn: () => apiGet<AccountOrdersData>("/api/v1/account/orders"),
     retry: false,
   });
+  // Fetched only once it's known there are no orders — never delays the
+  // empty-state card itself, which paints from `data` alone.
+  const { data: suggested } = useSuggestedProducts(!!data && data.orders.length === 0);
 
   useEffect(() => {
     if ((error as (Error & { status?: number }) | null)?.status === 401) {
@@ -94,6 +98,7 @@ export default function OrdersPage() {
           description={t("web.no_orders_desc")}
           action={{ label: t("web.nav_products"), to: "/products" }}
           secondaryAction={{ label: t("web.continue_shopping"), to: "/" }}
+          suggestions={suggested ? { products: suggested.products, fx: ctx?.fx, lowThreshold: suggested.low_threshold } : undefined}
         />
       ) : isDesktop ? (
         /* Desktop keeps the table: the columns fit, and comparing many orders

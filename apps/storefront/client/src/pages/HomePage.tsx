@@ -48,6 +48,7 @@ import { hoverLift, staggerContainer, staggerItem } from "../lib/motion";
 import type { HomePageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import Callout from "../components/shop/Callout";
 import ProductCard from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
@@ -97,6 +98,11 @@ export default function HomePage() {
     queryKey: ["home"],
     queryFn: () => apiGet<HomePageData>("/api/v1/pages/home"),
   });
+  // Newest-products is already this page's own "products" — if that list is
+  // empty the whole catalog has zero products, so a suggestions fetch would
+  // just return the same empty list. Wired up anyway for consistency with
+  // every other empty state; it simply never has anything to show here.
+  const { data: suggested } = useSuggestedProducts(!!data && data.products.length === 0);
   // Section reveal on scroll — port of home.njk's inline <script>: the same
   // document-wide querySelectorAll, same threshold/class toggling, same
   // no-IntersectionObserver / reduced-motion fallback (immediately visible,
@@ -213,7 +219,7 @@ export default function HomePage() {
           <p className="mt-4 text-lg text-ink-faint">{t("web.hero_sub")}</p>
           <div className="mt-7 flex flex-wrap gap-3">
             <motion.a
-              href="#produk"
+              href="#products"
               {...hoverLift}
               className="focus-on-dark inline-flex items-center gap-2 rounded-xl bg-pine px-5 py-3 font-semibold text-white hover:bg-pine-dark transition-colors shadow-soft hover:shadow-lift"
             >
@@ -221,7 +227,7 @@ export default function HomePage() {
               {t("web.hero_cta")}
             </motion.a>
             <a
-              href="#kontak"
+              href="#contact"
               className="focus-on-dark inline-flex items-center gap-2 rounded-xl border border-white/20 px-5 py-3 font-semibold text-white hover:bg-white/15 transition-colors"
             >
               <MessageCircle className="h-5 w-5" />
@@ -267,15 +273,29 @@ export default function HomePage() {
                   <Link to={`/p/${p.slug}`} className="focus-on-dark flex items-center gap-3">
                     <span className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-xl bg-white/10">
                       {p.image ? (
-                        <img
-                          src={p.image}
-                          alt=""
-                          aria-hidden="true"
-                          loading="lazy"
-                          width={44}
-                          height={44}
-                          className="h-full w-full object-cover"
-                        />
+                        <picture className="block h-full w-full">
+                          {/* block + full size: <picture> is inline by default,
+                              which would drop the h-full/w-full the <img> relies
+                              on in this fixed 44px well (see ProductCard). */}
+                          {p.image_srcset && (
+                            <source type="image/webp" srcSet={p.image_srcset} sizes="44px" />
+                          )}
+                          <img
+                            src={p.image}
+                            alt=""
+                            aria-hidden="true"
+                            // Eager on purpose: these three cards sit beside the
+                            // hero heading inside the fold on desktop (lg:block),
+                            // so lazy-loading them only delays what's already
+                            // visible on first paint instead of deferring
+                            // anything actually offscreen.
+                            loading="eager"
+                            decoding="async"
+                            width={44}
+                            height={44}
+                            className="h-full w-full object-cover"
+                          />
+                        </picture>
                       ) : (
                         <Package className="h-5 w-5 text-white/70" aria-hidden="true" />
                       )}
@@ -356,7 +376,7 @@ export default function HomePage() {
 
       {/* 3. Kategori */}
       {categories.length > 0 && (
-        <section className="mt-16 reveal" id="kategori">
+        <section className="mt-16 reveal" id="categories">
           <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.categories")}</p>
           <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.categories_title")}</h2>
 
@@ -384,14 +404,14 @@ export default function HomePage() {
       )}
 
       {/* 4. Produk unggulan */}
-      <section id="produk" className="mt-16 reveal">
+      <section id="products" className="mt-16 reveal">
         <div className="flex items-end justify-between">
           <div>
             <p className="text-sm font-semibold uppercase tracking-wide text-pine">{t("web.featured_kicker")}</p>
             <h2 className="mt-1 font-display text-2xl font-bold text-ink">{t("web.new_arrivals")}</h2>
           </div>
           {categories.length > 0 && (
-            <a href="#kategori" className="inline-flex items-center gap-1 group text-sm font-medium text-pine hover:text-pine-dark">
+            <a href="#categories" className="inline-flex items-center gap-1 group text-sm font-medium text-pine hover:text-pine-dark">
               {t("web.view_by_category")} <ChevronRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
             </a>
           )}
@@ -414,6 +434,7 @@ export default function HomePage() {
               title={t("web.catalog_empty")}
               description={t("web.catalog_empty_desc")}
               action={{ label: t("web.nav_categories"), to: "/categories" }}
+              suggestions={suggested ? { products: suggested.products, fx, lowThreshold: suggested.low_threshold } : undefined}
             />
           </div>
         )}
@@ -592,7 +613,7 @@ export default function HomePage() {
       </section>
 
       {/* 8. Kontak */}
-      <section className="mt-16 reveal" id="kontak">
+      <section className="mt-16 reveal" id="contact">
         <p className="text-center text-sm font-semibold uppercase tracking-wide text-pine">{t("web.contact_kicker")}</p>
         <h2 className="mt-1 text-center font-display text-3xl font-bold text-ink">{t("web.contact_title")}</h2>
         <p className="mt-2 text-center text-ink-soft">{t("web.contact_sub")}</p>

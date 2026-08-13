@@ -11,8 +11,10 @@ import { motion } from "framer-motion";
 import { apiGet } from "../api/client";
 import { SORT_KEYS, type CategoryPageData, type SortKey } from "../api/types";
 import { useShopContext } from "../components/Layout";
+import { useDocumentTitle } from "../lib/useDocumentTitle";
 import { t } from "../lib/i18n";
 import { staggerContainer, staggerItem } from "../lib/motion";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import ProductCard from "../components/shop/ProductCard";
 import ProductCardSkeleton from "../components/shop/ProductCardSkeleton";
 import Skeleton from "../components/shop/Skeleton";
@@ -33,6 +35,16 @@ export default function CategoryPage() {
     queryFn: () => apiGet<CategoryPageData>(`/api/v1/pages/category/${slug}?sort=${sort}`),
     retry: false,
   });
+  // Fetched only once this category is known to have no products — never
+  // delays the empty-state card itself, which paints from `data` alone.
+  const { data: suggested } = useSuggestedProducts(!!data && data.products.length === 0);
+
+  // T2: not covered by routeTitle.ts (RouteEffects.tsx) — the category name
+  // isn't known until this fetch resolves. Called unconditionally, before
+  // the early returns below, per the rules of hooks.
+  useDocumentTitle(
+    data && ctx?.shop_name ? `${data.category.name} — ${ctx.shop_name}` : undefined,
+  );
 
   if (error) {
     if ((error as Error & { status?: number }).status === 404) return <ErrorPage />;
@@ -126,6 +138,7 @@ export default function CategoryPage() {
           title={t("web.catalog_empty")}
           description={t("web.catalog_empty_desc")}
           action={{ label: t("web.nav_products"), to: "/products" }}
+          suggestions={suggested ? { products: suggested.products, fx, lowThreshold: suggested.low_threshold } : undefined}
         />
       )}
     </>

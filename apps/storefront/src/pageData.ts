@@ -30,7 +30,7 @@ import {
 } from "@app/db";
 import { PRODUCT_VARIANT_WIDTHS, categoryImage, productImage, webpSrcset } from "./images";
 import { resolveBotUsername } from "./shop";
-import { shapeProducts, sortProductCards, type SortKey } from "./cards";
+import { aggregateRating, shapeProducts, sortProductCards, type SortKey } from "./cards";
 
 /**
  * A privacy-safe display name for a public testimonial: prefer the buyer's full
@@ -213,6 +213,17 @@ export async function productPageData(rawSlug: string, isReseller = false) {
     bulkRules,
     isReseller,
   ).slice(0, RELATED_PRODUCTS_LIMIT);
+  // Same weighted-average-across-denominations logic ProductCard's rating
+  // comes from (shapeProducts, above) — reused via aggregateRating rather
+  // than a second calculation, so the detail page's summary can never
+  // disagree with the card that linked here. `count` is the TRUE total of
+  // non-hidden reviews across every denomination (productRatingSummaries
+  // groups the whole table), not `reviews.length` below, which is capped
+  // at 10 fetched rows.
+  const { avg: productRatingAvg, count: productRatingCount } = aggregateRating(
+    product.denominations.map((d) => d.id),
+    ratingByDenom,
+  );
 
   return {
     product: {
@@ -226,6 +237,8 @@ export async function productPageData(rawSlug: string, isReseller = false) {
       category_slug: product.category.slug,
       image: product.webImageUrl ?? productImage(product, catName),
       image_srcset: webpSrcset(product.webImageUrl, PRODUCT_VARIANT_WIDTHS),
+      rating: productRatingAvg,
+      rating_count: productRatingCount,
     },
     denominations,
     default_restock_denomination_id: defaultRestockDenominationId,
@@ -281,6 +294,21 @@ async function shelfFrom(products: CatalogProduct[], sort: SortKey) {
 /** Every purchasable product — the "Browse products" shelf (GET /api/v1/pages/products). */
 export async function allProductsPageData(sort: SortKey = "default") {
   return shelfFrom(await listCatalogProducts(prisma), sort);
+}
+
+/**
+ * Task 10 (E4): the small "you might like" shelf EmptyState.tsx renders below
+ * its card on pages where shopping is genuinely the next step (an empty cart,
+ * no orders yet, a search with no results — see the client's
+ * lib/useSuggestedProducts.ts for the full list of callers). The shop's
+ * newest products, same as the home page's own shelf but capped much smaller
+ * since this is a secondary element, not the page's main content — and shaped
+ * by the same shelfFrom() every other grid uses, so a suggested card can never
+ * disagree with the "real" grid it's standing in for.
+ */
+const SUGGESTED_PRODUCTS_LIMIT = 4;
+export async function suggestionsPageData() {
+  return shelfFrom(await listNewestCatalogProducts(prisma, SUGGESTED_PRODUCTS_LIMIT), "default");
 }
 
 /** Products with a flash sale running right now (GET /api/v1/pages/flash). An

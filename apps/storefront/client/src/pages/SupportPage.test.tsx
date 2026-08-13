@@ -110,6 +110,16 @@ describe("SupportPage", () => {
     expect(await screen.findByText("No support tickets yet.")).toBeInTheDocument();
   });
 
+  // Task 10 (E4): the user was explicit that a support empty state stays
+  // shelf-free — the visitor is asking for help, not shopping. Locked down so
+  // a later change to EmptyState's defaults can't quietly reintroduce it.
+  it("never shows a product shelf on the empty-tickets state", async () => {
+    renderSupport(() => ({ tickets: [] }));
+    await screen.findByText("No support tickets yet.");
+    expect(screen.queryByText("You might also like")).not.toBeInTheDocument();
+    expect(document.querySelector('a[href^="/p/"]')).toBeNull();
+  });
+
   it("stops showing the loading skeleton when the fetch fails", async () => {
     renderSupport(() => {
       const err = new Error("server_error") as Error & { status?: number };

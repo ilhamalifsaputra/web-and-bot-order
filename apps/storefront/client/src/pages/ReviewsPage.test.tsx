@@ -65,8 +65,11 @@ describe("ReviewsPage", () => {
         comment: "Decent",
       }),
     );
-    // Refetch after a successful submit.
-    await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(2));
+    // Refetch after a successful submit. 3 = initial reviews fetch + the shop
+    // context ReviewsPage now also reads for the suggestions shelf's fx rate
+    // (Task 10 / E4; in the real app Layout already holds that query, so this
+    // is normally a cache hit, not a second request) + the post-submit refetch.
+    await waitFor(() => expect(apiGet).toHaveBeenCalledTimes(3));
   });
 
   // STO-016: the empty state used to be a dead end — it now offers a way
@@ -75,5 +78,23 @@ describe("ReviewsPage", () => {
     renderReviews(() => ({ pending: [], reviews: [] }));
     expect(await screen.findByText("You haven't reviewed anything yet.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Continue shopping" })).toHaveAttribute("href", "/");
+  });
+
+  // R1/R2 (Task 1): same defect as ProductPage's reviews grid -- an
+  // unbroken "proof" URL could overflow the card, and blank-line-separated
+  // comment text collapsed into one run-on sentence under `white-space: normal`.
+  it("gives the review comment paragraph break-words and whitespace-pre-line so long tokens wrap and blank lines survive", async () => {
+    const longToken = "https://proof.example.com/" + "a".repeat(80);
+    const multilineComment = `Barang sesuai deskripsi.\n\nPengiriman cepat, admin ramah.\n\n${longToken}`;
+    renderReviews(() => ({
+      pending: [],
+      reviews: [{ product_name: "Spotify", rating: 4, comment: multilineComment, created_at_display: "2026-07-01" }],
+    }));
+    await screen.findByText("Spotify");
+    const commentParagraph = document.querySelector("p.text-sm.text-ink-soft.mt-2");
+    expect(commentParagraph).not.toBeNull();
+    expect(commentParagraph?.textContent).toBe(multilineComment);
+    expect(commentParagraph).toHaveClass("whitespace-pre-line");
+    expect(commentParagraph).toHaveClass("break-words");
   });
 });

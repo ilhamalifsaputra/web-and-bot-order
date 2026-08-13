@@ -18,6 +18,30 @@ import type { Db } from "./_types";
 import { adjustWallet } from "./users";
 import { getUsdIdrRate } from "./pricing";
 
+/** Referral earnings for one referrer — same aggregate the bot's
+ * viewReferral handler (apps/order-bot/src/handlers/customer.ts) reads, so
+ * the web and the bot can never disagree about a buyer's commission. `count`
+ * is the number of distinct referred users who have generated a commission
+ * (Referral.refereeId is unique per referee — see maybePayReferralCommission
+ * above), not a count of orders. Zero referrals aggregates to a null sum;
+ * that's normalized to Decimal(0) rather than surfacing null to callers. */
+export interface ReferralSummary {
+  referredCount: number;
+  earnedUsdt: Decimal;
+}
+
+export async function getReferralSummary(db: Db, referrerId: number): Promise<ReferralSummary> {
+  const agg = await db.referral.aggregate({
+    where: { referrerId },
+    _count: { id: true },
+    _sum: { commission: true },
+  });
+  return {
+    referredCount: agg._count.id,
+    earnedUsdt: new Decimal(agg._sum.commission ?? 0),
+  };
+}
+
 export async function maybePayReferralCommission(
   db: Db,
   order: {

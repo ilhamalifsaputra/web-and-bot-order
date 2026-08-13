@@ -19,9 +19,26 @@
    latin-ext — which bloats this render-blocking stylesheet with @font-face
    rules and copies dozens of woff2 files into the build output that an
    Indonesian/English shop never requests. Latin covers both languages.
-   If the shop ever needs another script, add that subset back here. */
-@import "@fontsource/outfit/latin-400.css";
-@import "@fontsource/outfit/latin-500.css";
+   If the shop ever needs another script, add that subset back here.
+
+   Weights are pinned to what the app actually renders, not what @fontsource
+   offers by default — every other weight is a download nothing displays.
+   Audited by grepping every `font-display`/`font-mono` usage in this
+   package's TSX plus the raw h1-h3/`.page-title`/`.section-title`/
+   `.stat-value` selectors in ../../static/app.css:
+     - Outfit (--font-display): every `font-display` className in the SPA is
+       paired with `font-semibold` or `font-bold` — weight 400/500 never
+       renders in the hydrated app. (The pre-hydration `#seo-shell`'s bare
+       `<h1>`/`<h2>` tags DO paint at inherited weight 400 in the crawler-
+       visible flash before main.tsx removes them — see spaShell.ts — but
+       that is not this app's typography design, just an SEO fallback, so
+       it is not worth a whole extra file.)
+     - Manrope (--font-sans, the default body font): 400/500/600/700 are all
+       used standalone (e.g. Layout.tsx nav labels, Toast.tsx, badge counts).
+     - JetBrains Mono (--font-mono, order/voucher/referral codes): every
+       `font-mono` usage is either unweighted (400) or paired with
+       `font-semibold` (600) — 500 is imported today but never referenced by
+       any `font-mono` element, so 600 replaces it instead of adding a file. */
 @import "@fontsource/outfit/latin-600.css";
 @import "@fontsource/outfit/latin-700.css";
 @import "@fontsource/manrope/latin-400.css";
@@ -29,7 +46,7 @@
 @import "@fontsource/manrope/latin-600.css";
 @import "@fontsource/manrope/latin-700.css";
 @import "@fontsource/jetbrains-mono/latin-400.css";
-@import "@fontsource/jetbrains-mono/latin-500.css";
+@import "@fontsource/jetbrains-mono/latin-600.css";
 
 @import "../../static/app.css";
 
@@ -42,7 +59,7 @@
   --color-line: #e3e8ef;
   --color-ink: #1b2330;
   --color-ink-soft: #5a6473;
-  --color-ink-faint: #97a1b1;
+  --color-ink-faint: #677288;
   --color-pine: #2563eb;
   --color-pine-dark: #1d4ed8;
   --color-pine-tint: #e6effe;

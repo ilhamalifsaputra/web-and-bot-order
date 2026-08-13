@@ -5,6 +5,12 @@
  * (see LoginPage.tsx for the shared rationale). Markup/classes copied
  * verbatim apart from the mechanical Tailwind v3→v4 renames
  * (docs/REACT_STOREFRONT_MIGRATION.md).
+ *
+ * Task 16: shares its <main> with <AuthBrandPanel/> — see AuthBrandPanel.tsx
+ * for why it sits after the card in the JSX despite rendering to its left on
+ * desktop. Note this page also has its own inline Terms/Privacy links in the
+ * consent notice below the password fields (T11) — those are independent of
+ * the panel's policy links and intentionally duplicate them.
  */
 import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -12,6 +18,7 @@ import { useMutation } from "@tanstack/react-query";
 import { UserPlus } from "lucide-react";
 import { publicPost } from "../api/client";
 import { t } from "../lib/i18n";
+import AuthBrandPanel from "../components/AuthBrandPanel";
 import Flash from "../components/shop/Flash";
 import PasswordInput from "../components/shop/PasswordInput";
 import Spinner from "../components/shop/Spinner";
@@ -39,8 +46,17 @@ export default function RegisterPage() {
       publicPost<RegisterResponse>("/api/v1/auth/register", { ...vars, ref, next }),
     // Full page load (not navigate()) — the shell must re-serve with the
     // fresh CSRF token now that a session cookie exists.
+    //
+    // T5: a bare `data.redirect` landed the new customer on their
+    // destination with zero acknowledgement that anything happened — the
+    // "Masuk" → "Akun" header swap was the only (easy-to-miss) signal. Since
+    // this is a full page load, no in-memory Toast state survives it — the
+    // `welcome=1` marker rides on the redirect URL instead (same pattern as
+    // /login?reset=1 below) and Layout.tsx reads it once on mount to show the
+    // confirmation, then strips it from the URL.
     onSuccess: (data) => {
-      window.location.assign(data.redirect);
+      const separator = data.redirect.includes("?") ? "&" : "?";
+      window.location.assign(`${data.redirect}${separator}welcome=1`);
     },
   });
 
@@ -59,8 +75,11 @@ export default function RegisterPage() {
   const error = registerMutation.error ? t((registerMutation.error as Error).message) : null;
 
   return (
-    <main className="max-w-6xl mx-auto px-4 py-8 lg:px-6 flex-1">
-      <div className="min-h-[100svh] flex items-center justify-center -my-8">
+    // tabIndex=-1: RouteEffects.tsx moves focus here on client-side
+    // navigation (T15) — these auth routes sit outside <Layout/>, so each
+    // needs its own focusable <main>.
+    <main className="max-w-6xl mx-auto px-4 py-8 lg:px-6 flex-1" tabIndex={-1}>
+      <div className="min-h-[100svh] flex flex-col items-center justify-center gap-8 -my-8 lg:flex-row lg:items-center lg:justify-center lg:gap-16">
         <div className="w-full max-w-md card card-pad">
           <Link to="/" className="text-center block">
             <UserPlus className="w-8 h-8 text-pine mx-auto" />
@@ -139,6 +158,10 @@ export default function RegisterPage() {
                 required
                 minLength={8}
               />
+              {/* T10: the 8-character minimum used to only surface as the
+                  browser's native validation bubble after a failed submit —
+                  same hint style/position as the username field's above. */}
+              <p className="text-xs text-ink-faint mt-1">{t("web.register_password_help")}</p>
             </div>
             <div>
               <label className="text-sm font-semibold" htmlFor="password2">
@@ -153,6 +176,20 @@ export default function RegisterPage() {
                 minLength={8}
               />
             </div>
+            {/* T11: a passive notice, not a blocking consent checkbox — signup
+                stays a single required step, this just makes sure the two
+                policies are reachable from the form that binds you to them. */}
+            <p className="text-center text-xs text-ink-faint">
+              {t("web.register_terms_prefix")}{" "}
+              <Link to="/terms" className="text-pine hover:underline">
+                {t("web.terms_title")}
+              </Link>{" "}
+              {t("web.register_terms_and")}{" "}
+              <Link to="/privacy" className="text-pine hover:underline">
+                {t("web.privacy_title")}
+              </Link>
+              .
+            </p>
             <button type="submit" className="btn btn-primary w-full" disabled={registerMutation.isPending}>
               {registerMutation.isPending && <Spinner />}
               {t("web.register_submit")}
@@ -164,6 +201,8 @@ export default function RegisterPage() {
             </div>
           </form>
         </div>
+
+        <AuthBrandPanel className="max-w-md" />
       </div>
     </main>
   );

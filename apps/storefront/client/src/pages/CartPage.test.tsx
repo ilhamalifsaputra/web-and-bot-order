@@ -5,7 +5,8 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import CartPage from "./CartPage";
 import { apiGet, apiPost } from "../api/client";
-import type { CartPageData, ShopContext } from "../api/types";
+import type { CartPageData, ShelfPageData, ShopContext } from "../api/types";
+import type { ProductCardData } from "../components/shop/ProductCard";
 
 vi.mock("../api/client", () => ({
   apiGet: vi.fn(),
@@ -147,6 +148,72 @@ describe("CartPage", () => {
     renderCart(() => ({ items: [], subtotal: "0" }));
     expect(await screen.findByText("Your cart is empty — browse the products.")).toBeInTheDocument();
     expect(screen.queryByText("Summary")).not.toBeInTheDocument();
+  });
+
+  // E3: a stepper reading "1 · Cart → 2 · Payment → 3 · Done" above an empty
+  // state implies a checkout in progress when there's nothing to check out.
+  it("hides the checkout stepper when the cart is empty", async () => {
+    renderCart(() => ({ items: [], subtotal: "0" }));
+    await screen.findByText("Your cart is empty — browse the products.");
+    expect(screen.queryByRole("listitem", { name: "1 · Cart" })).not.toBeInTheDocument();
+  });
+
+  it("shows the checkout stepper on step 1 while the cart has items", async () => {
+    renderCart(() => cartData);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    expect(screen.getByRole("listitem", { name: "1 · Cart" })).toHaveAttribute("aria-current", "step");
+  });
+
+  it("hides the stepper once the last line is removed", async () => {
+    renderCart(() => cartData);
+    await screen.findByRole("heading", { name: "Cart (4)" });
+    expect(screen.getByRole("listitem", { name: "1 · Cart" })).toBeInTheDocument();
+    (apiPost as Mock).mockResolvedValue({ items: [], subtotal: "0" });
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await screen.findByText("Your cart is empty — browse the products.");
+    expect(screen.queryByRole("listitem", { name: "1 · Cart" })).not.toBeInTheDocument();
+  });
+
+  // Task 10 (E4): an empty cart is one of the pages where shopping IS the
+  // next step, so the shelf fetch fires (unlike SupportPage/the checkout
+  // error state, which stay shelf-free on purpose).
+  it("shows a suggested-products shelf once it loads, without delaying the empty-cart card", async () => {
+    const suggestedProduct: ProductCardData = {
+      slug: "spotify-premium",
+      name: "Spotify Premium",
+      category_name: "Streaming",
+      from_price: "45000",
+      variant_count: 1,
+      image: "",
+      available: 3,
+      rating: null,
+      rating_count: 0,
+      bulk_discount: null,
+      bulk_min_qty: null,
+      all_non_auto: false,
+    };
+    const shelf: ShelfPageData = { products: [suggestedProduct], low_threshold: 5 };
+    (apiGet as Mock).mockImplementation(async (path: string) => {
+      if (path === "/api/v1/pages/context") return context;
+      if (path === "/api/v1/pages/suggestions") return shelf;
+      return { items: [], subtotal: "0" };
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/cart"]}>
+          <Routes>
+            <Route path="/cart" element={<CartPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    // The empty-cart card is there before the shelf even could be — same
+    // request wave, but the card renders off `cart`, not off `suggested`.
+    expect(await screen.findByText("Your cart is empty — browse the products.")).toBeInTheDocument();
+    expect(await screen.findByText("You might also like")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Spotify Premium/ })).toHaveAttribute("href", "/p/spotify-premium");
   });
 
   it("shows the login-to-checkout hint for a guest without singling out Telegram (STO-009)", async () => {

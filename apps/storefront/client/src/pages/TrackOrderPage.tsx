@@ -45,7 +45,7 @@ import Spinner from "../components/shop/Spinner";
  *    link to. It rides on GET /api/v1/pages/context, which `optionalCustomer`
  *    serves to anonymous visitors (apiPages.ts) and which Layout has already
  *    fetched, so this costs no extra request and needs no new endpoint.
- *  - `/#kontak` — the home page's contact section, for a shop with no bot
+ *  - `/#contact` — the home page's contact section, for a shop with no bot
  *    configured. A real navigation (`href`, not `to`) so the browser honours
  *    the anchor. The home page is public and its contact section always
  *    renders, so this is never a dead link.
@@ -55,7 +55,7 @@ function useContactAction(): EmptyStateAction {
   const botUsername = ctx?.bot_username ?? "";
   return botUsername
     ? { label: t("web.ticket_help_telegram"), href: `https://t.me/${botUsername}` }
-    : { label: t("web.track_contact_shop"), href: "/#kontak" };
+    : { label: t("web.track_contact_shop"), href: "/#contact" };
 }
 
 /** Which "it didn't work" screen a failed lookup earns. `not_found` covers

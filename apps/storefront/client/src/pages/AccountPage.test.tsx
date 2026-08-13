@@ -69,17 +69,17 @@ describe("AccountPage", () => {
     if (originalLocation) Object.defineProperty(window, "location", originalLocation);
   });
 
-  it("renders the name, order count and both wallet balances", async () => {
+  it("renders the name, order count and both wallet balances exactly once", async () => {
     renderAccount();
     expect(await screen.findByRole("heading", { name: "My account" })).toBeInTheDocument();
     expect(screen.getByText("Alice")).toBeInTheDocument();
     expect(screen.getByText("4")).toBeInTheDocument();
-    // Referral code and both wallet balances now also appear in the
-    // (CSS-hidden below `lg`) desktop dashboard widgets, so each can match
-    // twice in the DOM — assert presence rather than a single match.
-    expect(screen.getAllByText("ALICE01").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Rp50.000").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("1.5 USDT").length).toBeGreaterThan(0);
+    // Task 11: the desktop-only "Ringkasan saldo" and Referral panels that
+    // used to restate these values were removed, so each now renders exactly
+    // once (in the summary grid) — getByText throws on more than one match.
+    expect(screen.getByText("ALICE01")).toBeInTheDocument();
+    expect(screen.getByText("Rp50.000")).toBeInTheDocument();
+    expect(screen.getByText("1.5 USDT")).toBeInTheDocument();
   });
 
   it("logout posts to /api/v1/auth/logout then assigns / on success", async () => {
@@ -96,16 +96,17 @@ describe("AccountPage", () => {
   it("renders the account-menu links", async () => {
     renderAccount();
     await screen.findByRole("heading", { name: "My account" });
-    // Reviews/Settings/Support each appear twice now — once as a Quick
-    // Actions shortcut, once in the grouped menu below — so assert at least
-    // one accessible link per destination points at the right href, rather
-    // than requiring exactly one match.
+    // Orders is deliberately reachable two ways — the top summary card (which
+    // also shows the order count) and the grouped-menu row — so keep the
+    // tolerant "some" check for it. Task 11 removed the Quick Actions row,
+    // which used to duplicate Reviews/Settings/Support against the same
+    // grouped-menu rows, so those three now resolve to exactly one link each.
     const hasLinkTo = (name: RegExp, href: string) =>
       screen.getAllByRole("link", { name }).some((el) => el.getAttribute("href") === href);
     expect(hasLinkTo(/My orders/, "/account/orders")).toBe(true);
-    expect(hasLinkTo(/My reviews/, "/account/reviews")).toBe(true);
-    expect(hasLinkTo(/Help & support/, "/account/support")).toBe(true);
-    expect(hasLinkTo(/Settings/, "/account/settings")).toBe(true);
+    expect(screen.getByRole("link", { name: /My reviews/ })).toHaveAttribute("href", "/account/reviews");
+    expect(screen.getByRole("link", { name: /Help & support/ })).toHaveAttribute("href", "/account/support");
+    expect(screen.getByRole("link", { name: /Settings/ })).toHaveAttribute("href", "/account/settings");
   });
 
   it("renders the referral summary card as a copy button alongside the grouped menu link", async () => {
@@ -151,6 +152,55 @@ describe("AccountPage", () => {
     renderAccount(() => ({ ...account, name: "🐉 Dragon" }));
     await screen.findByRole("heading", { name: "My account" });
     expect(screen.getByText("🐉")).toBeInTheDocument();
+  });
+
+  // E2 (Task 6): this panel's empty state used to render title + action only,
+  // while OrdersPage's "no orders yet" empty state also has a description —
+  // same underlying state, two different renderings. `bare` still applies
+  // (this panel already has its own card chrome) but the description now
+  // matches OrdersPage's.
+  describe("recent orders panel (desktop dashboard)", () => {
+    // The panel only fetches/renders at the `lg` split; jsdom has no
+    // matchMedia by default, so stub it to force the desktop arm.
+    beforeEach(() => {
+      vi.stubGlobal("matchMedia", (query: string) => ({
+        matches: true,
+        media: query,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      }));
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("shows the no-orders description alongside the title in the empty recent-orders panel", async () => {
+      (apiGet as Mock).mockImplementation(async (path: string) => {
+        if (path === "/api/v1/account/orders") return { orders: [] };
+        if (path === "/api/v1/pages/context") {
+          return { lang: "en", fx: null, customer: { username: "alice", email: null, telegram_linked: false } };
+        }
+        return account;
+      });
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={["/account"]}>
+            <Routes>
+              <Route path="/account" element={<AccountPage />} />
+            </Routes>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      await screen.findByRole("heading", { name: "My account" });
+      expect(await screen.findByText("No orders yet — your purchases will show up here.")).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "Once you buy something it lands here, with its delivery status and your credentials.",
+        ),
+      ).toBeInTheDocument();
+    });
   });
 
   describe("guest account", () => {

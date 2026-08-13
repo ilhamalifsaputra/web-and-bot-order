@@ -10,6 +10,7 @@ import {
   linkTelegram,
   createPasswordResetToken,
   consumePasswordResetToken,
+  isPasswordResetTokenValid,
 } from "./webauth";
 
 let db: TestDb;
@@ -240,5 +241,28 @@ describe("password reset tokens", () => {
     const { token } = await createPasswordResetToken(prisma, u.id, -1); // already expired
     expect(await consumePasswordResetToken(prisma, token)).toBeNull();
     expect(await consumePasswordResetToken(prisma, "bogus-token")).toBeNull();
+  });
+});
+
+describe("isPasswordResetTokenValid", () => {
+  it("reports a freshly issued token as valid without consuming it", async () => {
+    const u = await createWebUser(prisma, { loginUsername: "checkme", email: "c@c.c", passwordHash: "x", fullName: "Check Me" });
+    const { token } = await createPasswordResetToken(prisma, u.id);
+    expect(await isPasswordResetTokenValid(prisma, token)).toBe(true);
+    // Still unconsumed — the actual reset can still go through afterwards.
+    expect(await isPasswordResetTokenValid(prisma, token)).toBe(true);
+    const hit = await consumePasswordResetToken(prisma, token);
+    expect(hit?.id).toBe(u.id);
+  });
+
+  it("reports unknown, expired, and already-used tokens as invalid", async () => {
+    const u = await createWebUser(prisma, { loginUsername: "checkexp", email: "ce@ce.ce", passwordHash: "x", fullName: "Check Exp" });
+    const { token: expired } = await createPasswordResetToken(prisma, u.id, -1);
+    expect(await isPasswordResetTokenValid(prisma, expired)).toBe(false);
+    expect(await isPasswordResetTokenValid(prisma, "bogus-token")).toBe(false);
+
+    const { token: used } = await createPasswordResetToken(prisma, u.id);
+    await consumePasswordResetToken(prisma, used);
+    expect(await isPasswordResetTokenValid(prisma, used)).toBe(false);
   });
 });

@@ -5,6 +5,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content="__CSRF_TOKEN__" />
     <title>__TITLE__</title>
+    <!--
+      #seo-shell (injected below into <body>, see spaShell.ts/spaFallback.ts's
+      seoShell()) carries real crawler/no-JS content and must stay in normal
+      document flow (not display:none/visibility:hidden — either would make
+      search engines discount it). This inline rule is what keeps it off
+      screen from FIRST PAINT: it has to land in this same HTML response,
+      because the client bundle's own stylesheet (index.css) is exactly what
+      hasn't arrived yet during the pre-hydration window this fixes. Standard
+      visually-hidden/clip pattern. main.tsx removes the element outright once
+      React mounts, so this rule stops mattering a few hundred ms later.
+    -->
+    <style>#seo-shell{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}</style>
     <!--__HEAD_META__-->
   </head>
   <body>

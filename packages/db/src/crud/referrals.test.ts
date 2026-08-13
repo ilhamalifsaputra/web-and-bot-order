@@ -5,7 +5,7 @@ import { OrderCurrency } from "@app/core/enums";
 import { makeTestDb, type TestDb } from "../../../../tests/helpers/testdb";
 import { buildSampleData, resetDb, type SampleData } from "../../../../tests/helpers/sampleData";
 import { upsertUser, setSetting } from "@app/db";
-import { maybePayReferralCommission } from "./referrals";
+import { maybePayReferralCommission, getReferralSummary } from "./referrals";
 
 let db: TestDb;
 let prisma: PrismaClient;
@@ -173,5 +173,70 @@ describe("maybePayReferralCommission", () => {
     expect(referral).toBeNull();
     const after = await freshUser(referrer.id);
     expect(new Decimal(after.walletBalanceUsdt).equals(0)).toBe(true);
+  });
+});
+
+describe("getReferralSummary", () => {
+  it("no referrals: zero count and Decimal(0), not null/NaN", async () => {
+    const user = await upsertUser(prisma, { telegramId: 601, username: "solo", fullName: "Solo" });
+
+    const summary = await getReferralSummary(prisma, user.id);
+
+    expect(summary.referredCount).toBe(0);
+    expect(summary.earnedUsdt).toBeInstanceOf(Decimal);
+    expect(summary.earnedUsdt.equals(0)).toBe(true);
+  });
+
+  it("one paid referral: reflects the same commission maybePayReferralCommission credited", async () => {
+    const { referrer, referee } = await makeReferrerAndReferee();
+    const order = await makeDeliveredOrder({
+      userId: referee.id,
+      orderCode: "ORD-8",
+      totalAmount: "100",
+      currency: OrderCurrency.USDT,
+    });
+    await maybePayReferralCommission(prisma, { ...order, userId: referee.id });
+    const referralRow = await prisma.referral.findUniqueOrThrow({ where: { refereeId: referee.id } });
+
+    const summary = await getReferralSummary(prisma, referrer.id);
+
+    expect(summary.referredCount).toBe(1);
+    expect(summary.earnedUsdt.equals(new Decimal(referralRow.commission))).toBe(true);
+  });
+
+  it("two referees who both bought: sums commission across referrals, counts distinct referees", async () => {
+    const referrer = await upsertUser(prisma, { telegramId: 604, username: "ref2", fullName: "Ref2" });
+    const refereeA = await upsertUser(prisma, {
+      telegramId: 605,
+      username: "refA",
+      fullName: "RefA",
+      referredByCode: referrer.referralCode,
+    });
+    const refereeB = await upsertUser(prisma, {
+      telegramId: 606,
+      username: "refB",
+      fullName: "RefB",
+      referredByCode: referrer.referralCode,
+    });
+    const orderA = await makeDeliveredOrder({
+      userId: refereeA.id,
+      orderCode: "ORD-9",
+      totalAmount: "100",
+      currency: OrderCurrency.USDT,
+    });
+    const orderB = await makeDeliveredOrder({
+      userId: refereeB.id,
+      orderCode: "ORD-10",
+      totalAmount: "50",
+      currency: OrderCurrency.USDT,
+    });
+    await maybePayReferralCommission(prisma, { ...orderA, userId: refereeA.id });
+    await maybePayReferralCommission(prisma, { ...orderB, userId: refereeB.id });
+
+    const summary = await getReferralSummary(prisma, referrer.id);
+
+    expect(summary.referredCount).toBe(2);
+    const after = await freshUser(referrer.id);
+    expect(summary.earnedUsdt.equals(new Decimal(after.walletBalanceUsdt))).toBe(true);
   });
 });

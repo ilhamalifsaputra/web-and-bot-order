@@ -251,3 +251,22 @@ export async function consumePasswordResetToken(db: Db, token: string) {
   });
   return row?.user ?? null;
 }
+
+/**
+ * Read-only twin of `consumePasswordResetToken` — same
+ * unknown/expired/already-used criteria, but never marks the row `usedAt` and
+ * never returns anything about the user behind it. Exists so the reset page
+ * (apps/storefront/client/src/pages/ResetPage.tsx) can tell an unusable link
+ * apart from a usable one *before* the visitor fills in a form that can never
+ * succeed, without spending the token's one legitimate use just to look at
+ * it. The boolean result is deliberately the only thing this returns — the
+ * caller (GET /api/v1/auth/reset/:token/check) must not be able to leak
+ * whether an email/account exists, only whether "this link is usable / not
+ * usable", matching the enumeration-safety posture of /auth/forgot above.
+ */
+export async function isPasswordResetTokenValid(db: Db, token: string): Promise<boolean> {
+  const now = new Date();
+  const hash = sha256hex(token);
+  const row = await db.passwordResetToken.findUnique({ where: { tokenHash: hash } });
+  return row !== null && row.usedAt === null && row.expiresAt > now;
+}

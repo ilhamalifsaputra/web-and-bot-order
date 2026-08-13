@@ -1,12 +1,15 @@
 import "@testing-library/jest-dom";
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, within, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import RegisterPage from "./RegisterPage";
 import { publicPost } from "../api/client";
 
+// apiGet backs AuthBrandPanel's useShopContext() (Task 16) — its response
+// shape doesn't matter to this page's own behavior, only that it resolves.
 vi.mock("../api/client", () => ({
+  apiGet: vi.fn().mockResolvedValue({}),
   publicPost: vi.fn(),
 }));
 
@@ -24,7 +27,7 @@ function renderRegister(initialEntry = "/register") {
 }
 
 function fillForm() {
-  fireEvent.change(screen.getByLabelText("Full Name"), { target: { value: "Alice Wonderland" } });
+  fireEvent.change(screen.getByLabelText("Full name"), { target: { value: "Alice Wonderland" } });
   fireEvent.change(screen.getByLabelText("Username"), { target: { value: "alice" } });
   fireEvent.change(screen.getByLabelText("Email"), { target: { value: "alice@example.com" } });
   fireEvent.change(screen.getByLabelText("Password"), { target: { value: "supersecret" } });
@@ -39,7 +42,7 @@ describe("RegisterPage", () => {
 
   it("renders fullName/username/email/password/password2 fields", () => {
     renderRegister();
-    expect(screen.getByLabelText("Full Name")).toBeInTheDocument();
+    expect(screen.getByLabelText("Full name")).toBeInTheDocument();
     expect(screen.getByLabelText("Username")).toBeInTheDocument();
     expect(screen.getByLabelText("Email")).toBeInTheDocument();
     expect(screen.getByLabelText("Password")).toBeInTheDocument();
@@ -48,7 +51,7 @@ describe("RegisterPage", () => {
 
   it("requires the fullName field — the form won't submit without it", () => {
     renderRegister();
-    const fullNameInput = screen.getByLabelText("Full Name") as HTMLInputElement;
+    const fullNameInput = screen.getByLabelText("Full name") as HTMLInputElement;
     expect(fullNameInput.required).toBe(true);
     expect(fullNameInput.minLength).toBe(2);
     fireEvent.change(screen.getByLabelText("Username"), { target: { value: "alice" } });
@@ -71,7 +74,7 @@ describe("RegisterPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("calls window.location.assign with the redirect on success", async () => {
+  it("calls window.location.assign with the redirect, marked so the landing page can confirm success (T5)", async () => {
     const assign = vi.fn();
     Object.defineProperty(window, "location", {
       configurable: true,
@@ -82,7 +85,21 @@ describe("RegisterPage", () => {
     (publicPost as Mock).mockResolvedValue({ redirect: "/account" });
     fillForm();
     fireEvent.click(screen.getByRole("button", { name: "Create account" }));
-    await waitFor(() => expect(assign).toHaveBeenCalledWith("/account"));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/account?welcome=1"));
+  });
+
+  it("appends the welcome marker with & when the redirect already carries a query string", async () => {
+    const assign = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      writable: true,
+      value: { assign },
+    });
+    renderRegister();
+    (publicPost as Mock).mockResolvedValue({ redirect: "/cart?promo=1" });
+    fillForm();
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("/cart?promo=1&welcome=1"));
   });
 
   it("preserves ref/next from the URL into the POST body", async () => {
@@ -101,5 +118,35 @@ describe("RegisterPage", () => {
         next: "/cart",
       }),
     );
+  });
+
+  it("shows the 8-character password hint, matching the username hint's style/position (T10)", () => {
+    renderRegister();
+    const hint = screen.getByText("At least 8 characters.");
+    expect(hint).toHaveClass("text-xs", "text-ink-faint");
+  });
+
+  it("links Terms and Privacy near the submit button without a required checkbox (T11)", () => {
+    renderRegister();
+    // Scoped to the <form>: Task 16's AuthBrandPanel also links Terms &
+    // Privacy (its policy-link row), so an unscoped query would now match
+    // two elements with the same accessible name.
+    const form = screen.getByRole("button", { name: "Create account" }).closest("form")!;
+    expect(within(form).getByRole("link", { name: "Terms & Conditions" })).toHaveAttribute("href", "/terms");
+    expect(within(form).getByRole("link", { name: "Privacy Policy" })).toHaveAttribute("href", "/privacy");
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  });
+
+  // Task 16: the page now shares its <main> with AuthBrandPanel — no longer
+  // a bare card floating on an empty background. The panel's Terms/Privacy
+  // links intentionally duplicate the inline consent notice above (T11);
+  // Refund is new to this page.
+  it("renders the brand panel's trust strip and policy links", () => {
+    renderRegister();
+    expect(screen.getByText("Instant delivery")).toBeInTheDocument();
+    expect(screen.getByText("QRIS & USDT")).toBeInTheDocument();
+    expect(screen.getByText("Warranty included")).toBeInTheDocument();
+    expect(screen.getByText("24/7 support")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Refund Policy" })).toHaveAttribute("href", "/refund");
   });
 });

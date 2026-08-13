@@ -17,6 +17,7 @@ import type { CartLineView, CartPageData } from "../api/types";
 import { useShopContext } from "../components/Layout";
 import { t } from "../lib/i18n";
 import { useIsDesktop } from "../lib/useMediaQuery";
+import { useSuggestedProducts } from "../lib/useSuggestedProducts";
 import FlashBadge, { FlashWasPrice } from "../components/shop/FlashBadge";
 import EmptyState from "../components/shop/EmptyState";
 import Price from "../components/shop/Price";
@@ -171,6 +172,9 @@ export default function CartPage() {
   useEffect(() => {
     if (data) setCart(data);
   }, [data]);
+  // Fetched only once the cart is known to be empty — never delays the
+  // empty-cart card itself, which paints from `cart` alone.
+  const { data: suggested } = useSuggestedProducts(!!cart && cart.items.length === 0);
 
   function handleMutated(next: CartPageData): void {
     setCart(next);
@@ -205,7 +209,10 @@ export default function CartPage() {
 
   return (
     <>
-      <Stepper step={1} />
+      {/* E3: an empty cart has nothing to check out, so showing "1 · Cart →
+          2 · Payment → 3 · Done" above the empty state implied a checkout in
+          progress. Only render the stepper once there's something in it. */}
+      {items.length > 0 && <Stepper step={1} />}
       <h1 className="page-title text-2xl! mb-5">
         {t("web.cart_title")}
         {cartCount > 0 ? ` (${cartCount})` : ""}
@@ -278,6 +285,7 @@ export default function CartPage() {
           title={t("web.cart_empty")}
           description={t("web.cart_empty_desc")}
           action={{ label: t("web.hero_cta"), to: "/products" }}
+          suggestions={suggested ? { products: suggested.products, fx, lowThreshold: suggested.low_threshold } : undefined}
         />
       )}
     </>

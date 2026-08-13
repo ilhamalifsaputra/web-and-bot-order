@@ -136,7 +136,7 @@ auto_migrate() {
 
   # A snapshot is mandatory before the schema is touched, so every prerequisite
   # for taking one is a hard failure rather than something to skip past.
-  if [ ! -x "$BACKUP" ]; then
+  if [ ! -f "$BACKUP" ]; then
     log "ERROR: no backup script at $BACKUP, so the required pre-migration snapshot cannot be taken. Refusing to change the schema. Restore the script, or set AUTO_MIGRATE=0 and migrate manually after your own backup." >&2
     exit 1
   fi
@@ -147,9 +147,13 @@ auto_migrate() {
 
   # backup.sh uses the SQLite online-backup API, so the snapshot folds in the
   # un-checkpointed -wal contents and is verified with PRAGMA integrity_check.
+  #
+  # Invoked through `bash` rather than executed directly: a Windows git checkout
+  # does not preserve the +x bit (the same reason the Dockerfile chmods the
+  # entrypoint), and the script is bash-specific anyway — it uses mapfile.
   # shellcheck disable=SC2086 # RUN_AS is an intentional word-split prefix
   if ! DB="$db_path" DEST="$DATA_DIR/backups" RETENTION="${BACKUP_RETENTION:-28}" \
-    $RUN_AS "$BACKUP"; then
+    $RUN_AS bash "$BACKUP"; then
     log "ERROR: the pre-migration snapshot failed, so the schema was left untouched — a schema change without a usable backup has no rollback path. Fix the backup failure above and start again." >&2
     exit 1
   fi

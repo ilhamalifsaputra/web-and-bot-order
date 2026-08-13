@@ -20,6 +20,10 @@ import {
 import { TOKOPAY_MERCHANT_KEY, TOKOPAY_SECRET_KEY } from "@app/core/payments/tokopay";
 import { PAYDISINI_USERKEY_KEY, PAYDISINI_APIKEY_KEY } from "@app/core/payments/paydisini";
 import { NOWPAYMENTS_API_KEY_KEY, NOWPAYMENTS_IPN_SECRET_KEY } from "@app/core/payments/nowpayments";
+import {
+  pollOnce as tokopayPollOnce,
+  RECONCILE_CYCLE_TIMEOUT_MS as TOKOPAY_CYCLE_TIMEOUT_MS,
+} from "../src/payments/tokopayReconcile";
 /**
  * Lets a single test make the drainer's mid-flight progress flush fail — the
  * SQLITE_BUSY-past-busy_timeout case — without disturbing any other DB write.
@@ -53,6 +57,8 @@ import {
   tokopayPollWatchdog,
   paydisiniPollWatchdog,
   nowpaymentsPollWatchdog,
+  TOKOPAY_POLL_STALE_MS,
+  NOWPAYMENTS_POLL_STALE_MS,
 } from "../src/jobs";
 import { NotificationEvent } from "@app/core/enums";
 
@@ -1062,6 +1068,31 @@ describe("binancePollWatchdog does not page for a single failed cycle (Task 5)",
   });
 });
 
+// Important #1 (Task 12 review follow-up): Binance's poller IS its only
+// auto-confirm path, so its DM correctly keeps the original "Auto-confirm is
+// paused" tail — pinned here as a regression guard alongside the TokoPay test
+// above (Task 12), which proves the QRIS rails now say something different
+// and true instead.
+describe("binancePollWatchdog admin DM wording (Important #1 regression guard)", () => {
+  it("still tells admins auto-confirm is paused — Binance's poller is its only auto-confirm path", async () => {
+    await setSetting(prisma, BINANCE_UID_KEY, "12345");
+    await setSetting(prisma, BINANCE_API_KEY_KEY, "test-key");
+    await setSetting(prisma, BINANCE_API_SECRET_KEY, "test-secret");
+    await setSetting(
+      prisma,
+      BINANCE_POLL_HEALTH_KEY,
+      JSON.stringify({ lastRun: new Date(Date.now() - 20 * 60_000).toISOString(), backoffUntil: null, consecutiveFailures: 0 }),
+    );
+    const api = fakeApi();
+
+    await binancePollWatchdog(api);
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    const dm = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string;
+    expect(dm).toContain("Auto-confirm is paused — check the order-bot process.");
+  });
+});
+
 // Task 12 (payment-health-hardening): TokoPay/PayDisini/NOWPayments are the
 // three QRIS/IDR "safety net" reconcile pollers Task 11 gave heartbeats to —
 // until now nothing read them, so a rail whose webhook callback was never
@@ -1108,6 +1139,15 @@ describe("tokopayPollWatchdog (Task 12)", () => {
 
     expect(api.sendMessage).toHaveBeenCalledTimes(2); // both admins paged once
     expect(await getSetting(prisma, "tokopay_poll_alert_sent")).toBe("1");
+    // Important #1 (Task 12 review follow-up): the DM used to end with the
+    // crypto rails' "Auto-confirm is paused" line, which is FALSE for TokoPay
+    // — the storefront webhook is its primary delivery path and keeps
+    // delivering independently of this poller. The DM must say so, and must
+    // NOT claim auto-confirm is paused.
+    const dm = (api.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string;
+    expect(dm).toContain("Auto-confirm is NOT paused");
+    expect(dm).toContain("gateway's webhook");
+    expect(dm).not.toContain("Auto-confirm is paused —");
   });
 
   it("does not page for a cycle older than 5 minutes but still within TokoPay's own wider staleness window", async () => {
@@ -1123,6 +1163,39 @@ describe("tokopayPollWatchdog (Task 12)", () => {
 
     expect(api.sendMessage).not.toHaveBeenCalled();
     expect(await getSetting(prisma, "tokopay_poll_alert_sent")).not.toBe("1");
+  });
+
+  // Minor #4 (Task 12 review follow-up): the two staleness tests above sit
+  // 4m40s below and 5m20s above TokoPay's actual widened boundary
+  // (TOKOPAY_POLL_STALE_MS) — comfortably wide of it, so a wrong-signed
+  // margin, an omitted margin, or a copy-pasted NOWPayments threshold would
+  // all still pass both unchanged. These two pin the boundary itself: the
+  // "just inside" age sits strictly between the raw cycleTimeoutMs
+  // (TOKOPAY_CYCLE_TIMEOUT_MS) and the real widened threshold
+  // (TOKOPAY_POLL_STALE_MS) — any of those three bugs collapses the
+  // effective threshold back down to at or below cycleTimeoutMs, which would
+  // flip this from "no page" to "page".
+  it("does not page for a cycle just inside TokoPay's widened staleness margin (boundary pin)", async () => {
+    await setTokopayCreds();
+    const margin = TOKOPAY_POLL_STALE_MS - TOKOPAY_CYCLE_TIMEOUT_MS;
+    await stampTokopayHealth(TOKOPAY_POLL_STALE_MS - Math.floor(margin / 2));
+    const api = fakeApi();
+
+    await tokopayPollWatchdog(api);
+
+    expect(api.sendMessage).not.toHaveBeenCalled();
+    expect(await getSetting(prisma, "tokopay_poll_alert_sent")).not.toBe("1");
+  });
+
+  it("pages once a cycle is older than TokoPay's own widened staleness threshold (boundary pin)", async () => {
+    await setTokopayCreds();
+    await stampTokopayHealth(TOKOPAY_POLL_STALE_MS + 5_000);
+    const api = fakeApi();
+
+    await tokopayPollWatchdog(api);
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    expect(await getSetting(prisma, "tokopay_poll_alert_sent")).toBe("1");
   });
 
   it("clears the TokoPay alert state on recovery", async () => {
@@ -1149,12 +1222,16 @@ describe("tokopayPollWatchdog (Task 12)", () => {
     expect(await getSetting(prisma, "tokopay_poll_alert_sent")).not.toBe("1");
   });
 
+  // Minor #5 (Task 12 review follow-up): this used to hand-write a fresh
+  // heartbeat via stampTokopayHealth(0) and never call pollOnce at all — so it
+  // proved only that the watchdog reads a healthy heartbeat as healthy
+  // (already covered elsewhere), not that the no-pending-orders path in
+  // tokopayReconcile.ts's pollOnce actually WRITES that heartbeat. Driving it
+  // through the real pollOnce (empty pending list — no orders exist in this
+  // test's DB at all) closes that gap.
   it("stays silent for a quiet, healthy shop — credentials configured, no pending orders", async () => {
     await setTokopayCreds();
-    // Mirrors the heartbeat pollOnce actually writes on the no-pending-orders
-    // path (Task 11): success:true, lastTxCount:0, fresh lastRun — a quiet
-    // shop must read as healthy, not stale.
-    await stampTokopayHealth(0);
+    await tokopayPollOnce(fakeApi());
     const api = fakeApi();
 
     await tokopayPollWatchdog(api);
@@ -1234,5 +1311,42 @@ describe("paydisiniPollWatchdog / nowpaymentsPollWatchdog wiring (Task 12)", () 
     await nowpaymentsPollWatchdog(api);
 
     expect(api.sendMessage).not.toHaveBeenCalled();
+  });
+
+  // Minor #4 (Task 12 review follow-up): NOWPayments' own threshold
+  // (NOWPAYMENTS_POLL_STALE_MS, ~780s cycleTimeoutMs + margin) is narrower
+  // than TokoPay's (TOKOPAY_POLL_STALE_MS, ~820s cycleTimeoutMs + the same
+  // margin) — both rails share the same flat QRIS_STALE_MARGIN_MS, so the gap
+  // between the two is exactly their cycleTimeoutMs difference. This age sits
+  // strictly between the two thresholds: NOWPayments' own (correct, lower)
+  // threshold must page here, but a copy-pasted TokoPay threshold in the
+  // NOWPayments wrapper would read this same age as still healthy and stay
+  // silent — so the two rails' thresholds cannot be conflated without this
+  // test catching it.
+  it("pages using NOWPayments' own narrower staleness threshold, not TokoPay's wider one", async () => {
+    await setSetting(prisma, NOWPAYMENTS_API_KEY_KEY, "apikey-1");
+    await setSetting(prisma, NOWPAYMENTS_IPN_SECRET_KEY, "ipnsecret-1");
+    const ageMs = NOWPAYMENTS_POLL_STALE_MS + Math.floor((TOKOPAY_POLL_STALE_MS - NOWPAYMENTS_POLL_STALE_MS) / 2);
+    const at = new Date(Date.now() - ageMs).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.nowpayments,
+      JSON.stringify({
+        lastRun: at,
+        lastSuccessAt: at,
+        lastTxCount: 0,
+        backoffUntil: null,
+        consecutiveRateLimitHits: 0,
+        lastRateLimitAt: null,
+        consecutiveFailures: 0,
+        lastError: null,
+      }),
+    );
+    const api = fakeApi();
+
+    await nowpaymentsPollWatchdog(api);
+
+    expect(api.sendMessage).toHaveBeenCalledTimes(2);
+    expect(await getSetting(prisma, "nowpayments_poll_alert_sent")).toBe("1");
   });
 });

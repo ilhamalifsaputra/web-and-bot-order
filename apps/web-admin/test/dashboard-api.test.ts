@@ -15,7 +15,9 @@ import {
   BINANCE_API_KEY_KEY,
   BINANCE_API_SECRET_KEY,
   BINANCE_POLL_HEALTH_KEY,
+  POLL_HEALTH_KEYS,
 } from "@app/db";
+import { TOKOPAY_MERCHANT_KEY, TOKOPAY_SECRET_KEY } from "@app/core/payments/tokopay";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
 import { makeSession, newJti, sessionJtiKey } from "../src/auth";
@@ -267,6 +269,51 @@ describe("GET /api/dashboard/health", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.binance.status).toBe("yellow");
+  });
+
+  // Review finding on Task 12: this endpoint used to hardcode TokoPay/
+  // PayDisini/NOWPayments to evaluatePollHealth(null, { enabled: true }) —
+  // always "unmonitored", no matter how dead their reconcile poller actually
+  // was — because Task 6 wrote that hardcoding before Task 11 gave those
+  // three rails real heartbeats. This is the TokoPay equivalent of the
+  // Binance "two hours old" test above: it pins that the dashboard now reads
+  // the REAL heartbeat (getPollHealth(prisma, "tokopay")) instead of the old
+  // placeholder, so the Business Health card can actually turn this rail red
+  // like docs/TROUBLESHOOTING.md promises.
+  it("reports an enabled TokoPay poller whose last cycle is two hours old as red, not unmonitored", async () => {
+    await setSetting(prisma, TOKOPAY_MERCHANT_KEY, "merchant-1");
+    await setSetting(prisma, TOKOPAY_SECRET_KEY, "secret-1");
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.tokopay,
+      JSON.stringify({ lastRun: twoHoursAgo, lastSuccessAt: twoHoursAgo, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.tokopay.status).toBe("red");
+  });
+
+  // The other half of the same fix: `enabled` for the three QRIS rails must
+  // come from their own credentials (the same gate tokopayPollWatchdog uses),
+  // not a bare `true` — a rail the shop never configured must keep reading
+  // "unmonitored" even though a (stale, fabricated) heartbeat blob happens to
+  // sit in Settings, e.g. left over from a merchant ID that was later cleared.
+  it("reports TokoPay as unmonitored, not red, when no credentials are configured even if a stale heartbeat exists", async () => {
+    // No TOKOPAY_MERCHANT_KEY/TOKOPAY_SECRET_KEY set.
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.tokopay,
+      JSON.stringify({ lastRun: twoHoursAgo, lastSuccessAt: twoHoursAgo, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.tokopay.status).toBe("unmonitored");
   });
 });
 

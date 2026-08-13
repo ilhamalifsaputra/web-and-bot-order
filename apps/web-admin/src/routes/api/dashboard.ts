@@ -36,6 +36,10 @@ import {
   getBinancePollHealth,
   getBybitPollHealth,
   getBybitBscPollHealth,
+  getPollHealth,
+  getTokopayCreds,
+  getPaydisiniCreds,
+  getNowpaymentsCreds,
 } from "@app/db";
 import { currentAdmin } from "../../plugins/auth";
 
@@ -157,28 +161,32 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
   app.get("/api/dashboard/health", { preHandler: currentAdmin }, async () => {
     const toEntry = ({ status, detail }: PollHealthEvaluation) => ({ status, detail });
 
-    const [creds, binanceConfig, bybitConfig, bybitBscConfig] = await Promise.all([
-      resolveBotCredentials(prisma),
-      resolveBinanceInternalConfig(prisma),
-      resolveBybitConfig(prisma),
-      resolveBybitBscConfig(prisma),
-    ]);
+    const [creds, binanceConfig, bybitConfig, bybitBscConfig, tokopayCreds, paydisiniCreds, nowpaymentsCreds] =
+      await Promise.all([
+        resolveBotCredentials(prisma),
+        resolveBinanceInternalConfig(prisma),
+        resolveBybitConfig(prisma),
+        resolveBybitBscConfig(prisma),
+        getTokopayCreds(prisma),
+        getPaydisiniCreds(prisma),
+        getNowpaymentsCreds(prisma),
+      ]);
+    // Same credential gate the QRIS watchdogs use (tokopayPollWatchdog and its
+    // two twins, apps/order-bot/src/jobs/index.ts) — a rail the shop has never
+    // turned on must read "unmonitored", not red, same as a disabled crypto rail.
+    const tokopayEnabled = tokopayCreds !== null;
+    const paydisiniEnabled = paydisiniCreds !== null;
+    const nowpaymentsEnabled = nowpaymentsCreds !== null;
 
-    const [binanceHealth, bybitHealth, bybitBscHealth] = await Promise.all([
-      binanceConfig.enabled ? getBinancePollHealth(prisma) : null,
-      bybitConfig.enabled ? getBybitPollHealth(prisma) : null,
-      bybitBscConfig.enabled ? getBybitBscPollHealth(prisma) : null,
-    ]);
-
-    // TokoPay, PayDisini, and NOWPayments have no heartbeat tracking yet
-    // (that's Task 11, still ahead) — there is no getPollHealth for them and
-    // none should be invented here. Routing a null heartbeat through the same
-    // shared rule (instead of a bare hardcoded "unmonitored" string) means the
-    // "unmonitored" verdict here carries a real, rule-derived `detail`
-    // ("No heartbeat has been recorded for this poller yet.") rather than a
-    // constant with no explanation — a reader can tell these apart from a
-    // genuinely-disabled rail by that detail text.
-    const noHeartbeatYet = evaluatePollHealth(null, { enabled: true });
+    const [binanceHealth, bybitHealth, bybitBscHealth, tokopayHealth, paydisiniHealth, nowpaymentsHealth] =
+      await Promise.all([
+        binanceConfig.enabled ? getBinancePollHealth(prisma) : null,
+        bybitConfig.enabled ? getBybitPollHealth(prisma) : null,
+        bybitBscConfig.enabled ? getBybitBscPollHealth(prisma) : null,
+        tokopayEnabled ? getPollHealth(prisma, "tokopay") : null,
+        paydisiniEnabled ? getPollHealth(prisma, "paydisini") : null,
+        nowpaymentsEnabled ? getPollHealth(prisma, "nowpayments") : null,
+      ]);
 
     return {
       telegramBot: {
@@ -188,9 +196,9 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
       binance: toEntry(evaluatePollHealth(binanceHealth, { enabled: binanceConfig.enabled })),
       bybit: toEntry(evaluatePollHealth(bybitHealth, { enabled: bybitConfig.enabled })),
       bybitBsc: toEntry(evaluatePollHealth(bybitBscHealth, { enabled: bybitBscConfig.enabled })),
-      tokopay: toEntry(noHeartbeatYet),
-      paydisini: toEntry(noHeartbeatYet),
-      nowpayments: toEntry(noHeartbeatYet),
+      tokopay: toEntry(evaluatePollHealth(tokopayHealth, { enabled: tokopayEnabled })),
+      paydisini: toEntry(evaluatePollHealth(paydisiniHealth, { enabled: paydisiniEnabled })),
+      nowpayments: toEntry(evaluatePollHealth(nowpaymentsHealth, { enabled: nowpaymentsEnabled })),
     };
   });
 

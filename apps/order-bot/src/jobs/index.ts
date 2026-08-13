@@ -13,6 +13,7 @@ import { GrammyError, type Api } from "grammy";
 import { adminIds } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { config } from "@app/core/config";
 import {
   prisma,
   listExpiredPendingOrders,
@@ -222,21 +223,31 @@ const NOWPAYMENTS_POLL_ALERT_KEY = "nowpayments_poll_alert_sent";
  * Fix: each QRIS rail's own staleMs is its own cycleTimeoutMs plus a flat
  * margin. The margin only needs to cover the abandon-heartbeat write itself
  * and ordinary tick-timing jitter (the loop's next cycle can start up to one
- * POLL_INTERVAL_SECONDS — 10s by default — after the previous heartbeat) —
- * it does NOT need to re-add cycleTimeoutMs's own safety margin, since
- * cycleTimeoutMs already IS the point past which a cycle is abandoned and a
- * heartbeat is guaranteed to be written. 60s comfortably covers both at the
- * default poll interval.
+ * POLL_INTERVAL_SECONDS after the previous heartbeat) — it does NOT need to
+ * re-add cycleTimeoutMs's own safety margin, since cycleTimeoutMs already IS
+ * the point past which a cycle is abandoned and a heartbeat is guaranteed to
+ * be written.
+ *
+ * `POLL_INTERVAL_SECONDS` is operator-settable (packages/core/src/config.ts,
+ * default 10) — the margin is derived FROM it, not hardcoded past it, so
+ * raising the interval widens the margin along with the jitter it exists to
+ * absorb instead of silently eating the slack this comment promises (a
+ * hardcoded margin sized for the 10s default would have exactly zero slack
+ * left at a 60s interval, and page on ordinary near-deadline cycles above
+ * that). The flat 30s on top covers the abandon-heartbeat write itself.
  *
  * This only widens the STALENESS rule (evaluatePollHealth's rule 5) — the
  * "failing every cycle" rule (consecutiveFailures ≥ failureThreshold) still
  * pages within a few cycles of a real gateway outage regardless of this
  * value, since failures don't wait for staleness at all.
  */
-const QRIS_STALE_MARGIN_MS = 60_000;
-const TOKOPAY_POLL_STALE_MS = TOKOPAY_CYCLE_TIMEOUT_MS + QRIS_STALE_MARGIN_MS;
-const PAYDISINI_POLL_STALE_MS = PAYDISINI_CYCLE_TIMEOUT_MS + QRIS_STALE_MARGIN_MS;
-const NOWPAYMENTS_POLL_STALE_MS = NOWPAYMENTS_CYCLE_TIMEOUT_MS + QRIS_STALE_MARGIN_MS;
+const QRIS_STALE_MARGIN_MS = config.POLL_INTERVAL_SECONDS * 1000 + 30_000;
+// Exported (not just module-local) so tests can pin against the real,
+// currently-computed thresholds instead of a copied-by-hand literal that
+// could silently drift once QRIS_STALE_MARGIN_MS started tracking config.
+export const TOKOPAY_POLL_STALE_MS = TOKOPAY_CYCLE_TIMEOUT_MS + QRIS_STALE_MARGIN_MS;
+export const PAYDISINI_POLL_STALE_MS = PAYDISINI_CYCLE_TIMEOUT_MS + QRIS_STALE_MARGIN_MS;
+export const NOWPAYMENTS_POLL_STALE_MS = NOWPAYMENTS_CYCLE_TIMEOUT_MS + QRIS_STALE_MARGIN_MS;
 
 /**
  * Pure decision for the poller watchdog (unit-tested without DB/env):
@@ -296,7 +307,31 @@ interface PollWatchdogRail {
   /** Defaults to POLL_STALE_MINUTES * 60_000. The QRIS rails pass their own,
    * wider value — see QRIS_STALE_MARGIN_MS above for why. */
   staleMs?: number;
+  /** Admin-facing sentence appended to both the DM and the developer log line
+   * describing what this rail's poller dying actually means operationally.
+   * Defaults to DEFAULT_POLLER_IMPACT below, which is only true for the three
+   * crypto rails: their poller IS the sole auto-confirm path, so its death
+   * really does pause auto-confirm. That default is FALSE for the three QRIS
+   * rails — the storefront webhook is their primary delivery path and keeps
+   * running independently of this poller (tokopayReconcile.ts's module doc
+   * comment) — so tokopayPollWatchdog and its two twins below override this
+   * with QRIS_POLLER_IMPACT instead. Telling a QRIS admin "auto-confirm is
+   * paused" here would be false and could send them off manually
+   * confirming/refunding orders the webhook is already delivering fine. */
+  impact?: string;
 }
+
+/** Default `impact` — true for the three crypto rails only (Binance, Bybit,
+ * Bybit BSC): each one's poller is the ONLY auto-confirm path, so it dying
+ * really does pause auto-confirm. See `PollWatchdogRail.impact` above. */
+const DEFAULT_POLLER_IMPACT = "Auto-confirm is paused — check the order-bot process.";
+
+/** `impact` override for the three QRIS/IDR rails (TokoPay, PayDisini,
+ * NOWPayments) — see `PollWatchdogRail.impact` above for why the crypto
+ * default would be false here. */
+const QRIS_POLLER_IMPACT =
+  "Auto-confirm is NOT paused — payments are still being delivered via the payment gateway's webhook as usual. " +
+  "This backup checker has stopped though, so check the order-bot process when you can.";
 
 /**
  * Alert admins if a payment poller looks unhealthy — either no completed
@@ -328,7 +363,8 @@ async function pollWatchdog(api: Api, rail: PollWatchdogRail): Promise<void> {
       staleMs,
       failureThreshold: FAILURE_STREAK_ALERT_THRESHOLD,
     });
-    logger.error(`${rail.label} looks unhealthy: ${detail} Alerting admins and pausing auto-confirm.`);
+    const impact = rail.impact ?? DEFAULT_POLLER_IMPACT;
+    logger.error(`${rail.label} looks unhealthy: ${detail} Alerting admins. ${impact}`);
     // Flag flips BEFORE the DM loop, not after (M-26 fix, backend audit
     // 2026-07-31): the loop below awaits Telegram per admin, so writing the
     // flag only once every DM was sent left a window where a crash mid-loop
@@ -344,8 +380,7 @@ async function pollWatchdog(api: Api, rail: PollWatchdogRail): Promise<void> {
       try {
         await api.sendMessage(
           adminId,
-          `⚠️ <b>${rail.label} looks unhealthy</b>\n${esc(detail)} ` +
-            `Auto-confirm is paused — check the order-bot process.`,
+          `⚠️ <b>${rail.label} looks unhealthy</b>\n${esc(detail)} ${esc(impact)}`,
           { parse_mode: "HTML" },
         );
       } catch (err) {
@@ -411,6 +446,7 @@ export function tokopayPollWatchdog(api: Api): Promise<void> {
     isEnabled: async () => (await getTokopayCreds(prisma)) !== null,
     readHealth: () => getPollHealth(prisma, "tokopay"),
     staleMs: TOKOPAY_POLL_STALE_MS,
+    impact: QRIS_POLLER_IMPACT,
   });
 }
 
@@ -423,6 +459,7 @@ export function paydisiniPollWatchdog(api: Api): Promise<void> {
     isEnabled: async () => (await getPaydisiniCreds(prisma)) !== null,
     readHealth: () => getPollHealth(prisma, "paydisini"),
     staleMs: PAYDISINI_POLL_STALE_MS,
+    impact: QRIS_POLLER_IMPACT,
   });
 }
 
@@ -435,6 +472,7 @@ export function nowpaymentsPollWatchdog(api: Api): Promise<void> {
     isEnabled: async () => (await getNowpaymentsCreds(prisma)) !== null,
     readHealth: () => getPollHealth(prisma, "nowpayments"),
     staleMs: NOWPAYMENTS_POLL_STALE_MS,
+    impact: QRIS_POLLER_IMPACT,
   });
 }
 

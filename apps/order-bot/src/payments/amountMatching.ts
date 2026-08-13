@@ -61,6 +61,31 @@ export function overpaymentCap(total: Decimal): Decimal {
 // pending order at all (those still fall through to plain "unmatched").
 const UNDERPAID_FLOOR_PERCENT = 0.5; // at least 50% of the order's total
 
+// ── Task 14: Decimal at the gateway normalizer boundary ─────────────────────
+// Binance/Bybit report amounts as decimal STRINGS. The three gateway
+// normalizers (binanceInternal.ts's normalizeTx, bybitDeposit.ts's
+// normalizeInternalDeposit, bybitBscDeposit.ts's normalizeOnchainDeposit)
+// used to do `Number(raw.amount)` — a pure precision loss with no upside,
+// since the very next stop for that value is a Decimal ledger write. Parsing
+// the raw string directly with `new Decimal(...)` keeps full precision, but
+// `new Decimal(...)` THROWS on anything it can't parse (e.g. a
+// thousands-separated "1,234.56", or `undefined`/`null` when the field is
+// missing) — where `Number(...)` would have quietly produced `NaN`. The old
+// guard (`Number.isFinite(amount) && amount > 0`) relied on that NaN to turn
+// a malformed row into a skipped `null` return. This helper reproduces that
+// same "skip, don't throw" contract for Decimal: a malformed/missing amount
+// is caught and treated as absent, never an exception escaping into the poll
+// loop.
+export function parsePositiveAmount(raw: unknown): Decimal | null {
+  let amount: Decimal;
+  try {
+    amount = new Decimal(raw as Decimal.Value);
+  } catch {
+    return null; // malformed (e.g. "1,234.56") or missing — skip this row, don't throw
+  }
+  return amount.isFinite() && amount.greaterThan(0) ? amount : null;
+}
+
 // ---------------------------------------------------------------------------
 // Matching (pure — unit-tested)
 // ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { langCode, NotificationEvent, OrderKind } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { Decimal } from "@app/core/money";
 import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "@app/core/http";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
@@ -57,6 +58,7 @@ import {
   matchByAmount,
   matchUnderpaidByAmount,
   overpaymentCap,
+  parsePositiveAmount,
 } from "./amountMatching";
 
 // Task 13: the pure amount-matching functions (noteMatches, classifyTx,
@@ -70,7 +72,7 @@ export { AMOUNT_TOLERANCE, noteMatches, classifyTx, matchByAmount, matchUnderpai
 export interface BinanceTx {
   txId: string;
   note: string;
-  amount: number; // positive = received, in `currency`
+  amount: Decimal; // positive = received, in `currency`
   currency: string;
 }
 
@@ -100,12 +102,17 @@ function firstNonEmpty(...vals: unknown[]): string {
  * Exported for the fixture test that pins the real Binance payload shape. */
 export function normalizeTx(raw: Record<string, unknown>): BinanceTx | null {
   const txId = raw.transactionId ?? raw.transactionGroupId ?? raw.id;
-  const amount = Number(raw.amount);
+  // Binance reports amount as a decimal STRING — parse it directly with
+  // Decimal instead of round-tripping through Number(), which loses
+  // precision. parsePositiveAmount also absorbs a malformed string (e.g. a
+  // thousands separator) as a skipped row instead of a thrown exception —
+  // see its doc-comment in amountMatching.ts.
+  const amount = parsePositiveAmount(raw.amount);
   const currency = String(raw.currency ?? raw.asset ?? "");
   // Buyer memo: try the known memo-carrying fields, skipping empty strings.
   // NB: `orderId` is Binance's OWN id (not our paymentRef) — never use it here.
   const note = firstNonEmpty(raw.note, raw.remark, raw.message);
-  if (txId == null || !Number.isFinite(amount) || amount <= 0) return null; // received only
+  if (txId == null || amount == null) return null; // received only
   return { txId: String(txId), note, amount, currency };
 }
 
@@ -427,7 +434,7 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
     const order = byNote ?? (config.USE_UNIQUE_CENTS ? matchByAmount(tx, orders) : undefined);
     if (!order) {
       if (await recordUnmatchedTx(prisma, { binanceTxId: tx.txId, amount: tx.amount })) {
-        logger.info(`No pending order matched Binance transfer ${tx.txId} (note: "${tx.note}", amount: ${tx.amount}) — left for manual review`);
+        logger.info(`No pending order matched Binance transfer ${tx.txId} (note: "${tx.note}", amount: ${tx.amount.toString()}) — left for manual review`);
       }
       continue;
     }
@@ -436,10 +443,10 @@ export async function processTransfers(api: Api, txs: BinanceTx[], orders: Pendi
     const cls = byNote ? classifyTx(tx, order) : "match";
     if (cls === "underpaid") {
       if (await markUnderpaid(prisma, { orderId: order.id, binanceTxId: tx.txId, amount: tx.amount })) {
-        logger.warn(`Order ${order.orderCode} underpaid — received ${tx.amount}, expected ${order.totalAmount}, left PENDING for manual review`);
+        logger.warn(`Order ${order.orderCode} underpaid — received ${tx.amount.toString()}, expected ${order.totalAmount.toString()}, left PENDING for manual review`);
         await alertAdmins(
           api,
-          `⚠️ Underpaid order <code>${order.orderCode}</code>\nReceived <b>${tx.amount}</b>, expected <b>${order.totalAmount}</b> (tx ${esc(tx.txId)}).`,
+          `⚠️ Underpaid order <code>${order.orderCode}</code>\nReceived <b>${tx.amount.toString()}</b>, expected <b>${order.totalAmount.toString()}</b> (tx ${esc(tx.txId)}).`,
         );
       }
       continue;

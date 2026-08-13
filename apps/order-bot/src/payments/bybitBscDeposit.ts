@@ -34,6 +34,7 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { langCode, OrderStatus, OrderKind, NotificationEvent } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { Decimal } from "@app/core/money";
 import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "@app/core/http";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
@@ -52,7 +53,7 @@ import {
 } from "@app/db";
 import { coreT } from "../util/i18n";
 import { esc, renderBybitBscTrackingScreen } from "../util/format";
-import { matchByAmount, matchUnderpaidByAmount, AMOUNT_TOLERANCE } from "./amountMatching";
+import { matchByAmount, matchUnderpaidByAmount, AMOUNT_TOLERANCE, parsePositiveAmount } from "./amountMatching";
 import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
 import { paymentSuccessKb, bybitBscTrackingKb } from "../keyboards/customer";
@@ -82,7 +83,7 @@ const IN_FLIGHT_BYBIT_STATUSES: ReadonlySet<number> = new Set([
 
 export interface BybitBscDeposit {
   txId: string;
-  amount: number; // positive = received, in USDT
+  amount: Decimal; // positive = received, in USDT
   /** Raw Bybit V5 deposit status. Used to decide PAYMENT_DETECTED/CONFIRMING
    * (still confirming) vs. an actual delivery (status 3, "Success"). */
   bybitStatus: number;
@@ -168,12 +169,17 @@ async function bybitGet(path: string, params: Record<string, string>, cfg: Bybit
  * disambiguator). */
 export function normalizeOnchainDeposit(raw: Record<string, unknown>, cfg: Pick<BybitBscConfig, "chain" | "depositAddress">): BybitBscDeposit | null {
   const txId = raw.txID ?? raw.id;
-  const amount = Number(raw.amount);
+  // Bybit reports amount as a decimal STRING — parse it directly with
+  // Decimal instead of round-tripping through Number(), which loses
+  // precision. parsePositiveAmount also absorbs a malformed string as a
+  // skipped row instead of a thrown exception — see its doc-comment in
+  // amountMatching.ts.
+  const amount = parsePositiveAmount(raw.amount);
   const coin = String(raw.coin ?? "").toUpperCase();
   const status = Number(raw.status);
   const chain = String(raw.chain ?? "").toUpperCase();
   const address = raw.address != null ? String(raw.address) : null;
-  if (txId == null || !Number.isFinite(amount) || amount <= 0) return null; // received only
+  if (txId == null || amount == null) return null; // received only
   if (coin !== config.CURRENCY.toUpperCase()) return null;
   if (!IN_FLIGHT_BYBIT_STATUSES.has(status)) return null; // unknown/failed → nothing actionable yet
   if (chain !== cfg.chain.toUpperCase()) return null; // deposit on a different chain — never match
@@ -449,16 +455,16 @@ export async function processDeposits(
         const underpaidOrder = matchUnderpaidByAmount({ amount: dep.amount }, pendingOnly, AMOUNT_TOLERANCE);
         if (underpaidOrder) {
           if (await markUnderpaidBybitBsc(prisma, { orderId: underpaidOrder.id, bybitTxId: dep.txId, amount: dep.amount })) {
-            logger.warn(`Bybit BSC order ${underpaidOrder.orderCode} underpaid — received ${dep.amount}, expected ${underpaidOrder.totalAmount}, flagged UNDERPAID for manual review`);
+            logger.warn(`Bybit BSC order ${underpaidOrder.orderCode} underpaid — received ${dep.amount.toString()}, expected ${underpaidOrder.totalAmount.toString()}, flagged UNDERPAID for manual review`);
             await alertAdmins(
               api,
-              `⚠️ Underpaid Bybit BSC order <code>${underpaidOrder.orderCode}</code>\nReceived <b>${dep.amount}</b>, expected <b>${underpaidOrder.totalAmount}</b> (tx ${esc(dep.txId)}).`,
+              `⚠️ Underpaid Bybit BSC order <code>${underpaidOrder.orderCode}</code>\nReceived <b>${dep.amount.toString()}</b>, expected <b>${underpaidOrder.totalAmount.toString()}</b> (tx ${esc(dep.txId)}).`,
             );
           }
           continue;
         }
         if (await recordUnmatchedBybitBscTx(prisma, { bybitTxId: dep.txId, amount: dep.amount })) {
-          logger.info(`No pending order matched Bybit BSC deposit ${dep.txId} (amount: ${dep.amount}) — left for manual review`);
+          logger.info(`No pending order matched Bybit BSC deposit ${dep.txId} (amount: ${dep.amount.toString()}) — left for manual review`);
         }
       }
       continue;

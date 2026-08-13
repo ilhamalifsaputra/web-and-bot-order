@@ -32,6 +32,7 @@ import { config } from "@app/core/config";
 import { adminIds } from "@app/core/runtime";
 import { langCode, NotificationEvent, OrderKind } from "@app/core/enums";
 import { logger } from "@app/core/logger";
+import { Decimal } from "@app/core/money";
 import { fetchWithTimeoutSafe, HTTP_TIMEOUT_MS } from "@app/core/http";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import {
@@ -49,7 +50,7 @@ import {
 } from "@app/db";
 import { coreT } from "../util/i18n";
 import { esc } from "../util/format";
-import { matchByAmount, matchUnderpaidByAmount, AMOUNT_TOLERANCE } from "./amountMatching";
+import { matchByAmount, matchUnderpaidByAmount, AMOUNT_TOLERANCE, parsePositiveAmount } from "./amountMatching";
 import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
 import { paymentSuccessKb } from "../keyboards/customer";
@@ -62,7 +63,7 @@ const STATUS_SUCCESS = 2;
 
 export interface BybitDeposit {
   txId: string;
-  amount: number; // positive = received, in USDT
+  amount: Decimal; // positive = received, in USDT
 }
 
 type PendingOrder = Awaited<ReturnType<typeof listPendingBybitOrders>>[number];
@@ -138,10 +139,15 @@ async function bybitGet(path: string, params: Record<string, string>, cfg: Bybit
  * is no chain parameter or chain filter here (matching is amount-only). */
 export function normalizeInternalDeposit(raw: Record<string, unknown>): BybitDeposit | null {
   const txId = raw.txID ?? raw.id;
-  const amount = Number(raw.amount);
+  // Bybit reports amount as a decimal STRING — parse it directly with
+  // Decimal instead of round-tripping through Number(), which loses
+  // precision. parsePositiveAmount also absorbs a malformed string as a
+  // skipped row instead of a thrown exception — see its doc-comment in
+  // amountMatching.ts.
+  const amount = parsePositiveAmount(raw.amount);
   const coin = String(raw.coin ?? "").toUpperCase();
   const status = Number(raw.status);
-  if (txId == null || !Number.isFinite(amount) || amount <= 0) return null; // received only
+  if (txId == null || amount == null) return null; // received only
   if (coin !== config.CURRENCY.toUpperCase()) return null;
   if (status !== STATUS_SUCCESS) return null; // processing/failed → skip until credited
   return { txId: String(txId), amount };
@@ -368,16 +374,16 @@ export async function processDeposits(api: Api, deposits: BybitDeposit[], orders
       const underpaidOrder = matchUnderpaidByAmount({ amount: dep.amount }, orders, AMOUNT_TOLERANCE);
       if (underpaidOrder) {
         if (await markUnderpaidBybit(prisma, { orderId: underpaidOrder.id, bybitTxId: dep.txId, amount: dep.amount })) {
-          logger.warn(`Bybit order ${underpaidOrder.orderCode} underpaid — received ${dep.amount}, expected ${underpaidOrder.totalAmount}, flagged UNDERPAID for manual review`);
+          logger.warn(`Bybit order ${underpaidOrder.orderCode} underpaid — received ${dep.amount.toString()}, expected ${underpaidOrder.totalAmount.toString()}, flagged UNDERPAID for manual review`);
           await alertAdmins(
             api,
-            `⚠️ Underpaid Bybit order <code>${underpaidOrder.orderCode}</code>\nReceived <b>${dep.amount}</b>, expected <b>${underpaidOrder.totalAmount}</b> (tx ${esc(dep.txId)}).`,
+            `⚠️ Underpaid Bybit order <code>${underpaidOrder.orderCode}</code>\nReceived <b>${dep.amount.toString()}</b>, expected <b>${underpaidOrder.totalAmount.toString()}</b> (tx ${esc(dep.txId)}).`,
           );
         }
         continue;
       }
       if (await recordUnmatchedBybitTx(prisma, { bybitTxId: dep.txId, amount: dep.amount })) {
-        logger.info(`No pending order matched Bybit deposit ${dep.txId} (amount: ${dep.amount}) — left for manual review`);
+        logger.info(`No pending order matched Bybit deposit ${dep.txId} (amount: ${dep.amount.toString()}) — left for manual review`);
       }
       continue;
     }

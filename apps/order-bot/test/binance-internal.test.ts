@@ -104,7 +104,7 @@ describe("normalizeTx (real pay/transactions payload shape)", () => {
   it("maps id/amount/currency and keeps note empty (no orderId leak)", () => {
     const tx = normalizeTx(real)!;
     expect(tx.txId).toBe("P_A226WCUE7FH71115");
-    expect(tx.amount).toBe(1);
+    expect(tx.amount.toString()).toBe("1");
     expect(tx.currency).toBe("USDT");
     expect(tx.note).toBe(""); // Binance's orderId must NOT leak into note
   });
@@ -114,10 +114,30 @@ describe("normalizeTx (real pay/transactions payload shape)", () => {
     expect(normalizeTx({ ...real, note: "  ", remark: "BCC1BDDE6F" })!.note).toBe("BCC1BDDE6F");
   });
 
+  // Task 14: normalizeTx used to do Number(raw.amount) — a plain IEEE-754
+  // double, which silently truncates any decimal string with more precision
+  // than a double can represent exactly. Binance/Bybit report amounts as
+  // decimal strings, and that string now flows straight into Decimal instead
+  // of round-tripping through Number() first.
+  it("preserves an amount with more precision than a double", () => {
+    const precise = "1234.00000000000001";
+    expect(Number(precise).toString()).not.toBe(precise); // proves Number() really does truncate this
+    expect(normalizeTx({ ...real, amount: precise })!.amount.toString()).toBe(precise);
+  });
+
   it("rejects non-received / malformed rows", () => {
     expect(normalizeTx({ ...real, amount: "0" })).toBeNull();
     expect(normalizeTx({ ...real, amount: "-5" })).toBeNull();
     expect(normalizeTx({ transactionId: "X" })).toBeNull(); // no amount
+  });
+
+  // Task 14 review hazard: `new Decimal("1,234.56")` THROWS (unlike the old
+  // Number() -> NaN round-trip, which the guard turned into a quiet skipped
+  // row). A malformed gateway amount must stay a skipped row, not become an
+  // exception escaping into the poll loop.
+  it("rejects a malformed amount string instead of throwing", () => {
+    expect(() => normalizeTx({ ...real, amount: "1,234.56" })).not.toThrow();
+    expect(normalizeTx({ ...real, amount: "1,234.56" })).toBeNull();
   });
 });
 
@@ -486,15 +506,15 @@ describe("processTransfers (poll-loop wiring)", () => {
   }
 
   const pending = () => listPendingInternalOrders(prisma, new Date());
-  const txFor = (over: Partial<BinanceTx> & { txId: string; amount: number }): BinanceTx => ({
-    note: "", currency: "USDT", ...over,
+  const txFor = (over: { txId: string; amount: Decimal.Value } & Partial<Omit<BinanceTx, "amount">>): BinanceTx => ({
+    note: "", currency: "USDT", ...over, amount: new Decimal(over.amount),
   });
 
   it("flips the anchored payment bubble to the success message with paymentSuccessKb (§9.1)", async () => {
     const order = (await makeInternalOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T-FLIP", note: order.paymentRef!, amount: Number(order.totalAmount) })], await pending());
+    await processTransfers(api, [txFor({ txId: "T-FLIP", note: order.paymentRef!, amount: order.totalAmount })], await pending());
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
 
     expect(edits).toHaveLength(1);
@@ -510,7 +530,7 @@ describe("processTransfers (poll-loop wiring)", () => {
   it("delivers on a note match", async () => {
     const order = (await makeInternalOrder())!;
     const { api } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T1", note: order.paymentRef!, amount: Number(order.totalAmount) })], await pending());
+    await processTransfers(api, [txFor({ txId: "T1", note: order.paymentRef!, amount: order.totalAmount })], await pending());
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
     expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "T1" } }))!.outcome).toBe("matched");
   });
@@ -523,7 +543,7 @@ describe("processTransfers (poll-loop wiring)", () => {
     try {
       const order = (await makeInternalOrder())!;
       const { api } = fakeApi();
-      await processTransfers(api, [txFor({ txId: "T2", note: "", amount: Number(order.totalAmount) })], await pending());
+      await processTransfers(api, [txFor({ txId: "T2", note: "", amount: order.totalAmount })], await pending());
       expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
     } finally {
       config.USE_UNIQUE_CENTS = false;
@@ -533,7 +553,7 @@ describe("processTransfers (poll-loop wiring)", () => {
   it("never attempts the amount fallback when USE_UNIQUE_CENTS is off — unmatched, not delivered", async () => {
     const order = (await makeInternalOrder())!; // unique-cents off in tests → no memo, no unique total
     const { api } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T2B", note: "", amount: Number(order.totalAmount) })], await pending());
+    await processTransfers(api, [txFor({ txId: "T2B", note: "", amount: order.totalAmount })], await pending());
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "T2B" } }))!.outcome).toBe("unmatched");
   });
@@ -543,7 +563,7 @@ describe("processTransfers (poll-loop wiring)", () => {
     const b = (await makeInternalOrder())!; // unique-cents off in tests → equal totals
     expect(a.totalAmount).toEqual(b.totalAmount);
     const { api } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T3", note: "", amount: Number(a.totalAmount) })], await pending());
+    await processTransfers(api, [txFor({ txId: "T3", note: "", amount: a.totalAmount })], await pending());
     expect((await prisma.order.findUnique({ where: { id: a.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.order.findUnique({ where: { id: b.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "T3" } }))!.outcome).toBe("unmatched");
@@ -552,7 +572,7 @@ describe("processTransfers (poll-loop wiring)", () => {
   it("flags underpaid (note match, short amount) and alerts admins", async () => {
     const order = (await makeInternalOrder())!;
     const { api, sent } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T4", note: order.paymentRef!, amount: Number(order.totalAmount) - 1 })], await pending());
+    await processTransfers(api, [txFor({ txId: "T4", note: order.paymentRef!, amount: new Decimal(order.totalAmount).minus(1) })], await pending());
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.UNDERPAID);
     expect(sent.some((m) => /[Uu]nderpaid/.test(m.text))).toBe(true);
   });
@@ -588,8 +608,8 @@ describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", 
   }
 
   const pending = () => listPendingInternalOrders(prisma, new Date());
-  const txFor = (over: Partial<BinanceTx> & { txId: string; amount: number }): BinanceTx => ({
-    note: "", currency: "USDT", ...over,
+  const txFor = (over: { txId: string; amount: Decimal.Value } & Partial<Omit<BinanceTx, "amount">>): BinanceTx => ({
+    note: "", currency: "USDT", ...over, amount: new Decimal(over.amount),
   });
 
   const makeTopupOrder = (amount: string) =>
@@ -606,7 +626,7 @@ describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", 
   it("delivers, credits the wallet, and DMs the credited-amount + new-balance text — never the bare placeholder, never a credential file", async () => {
     const order = await makeTopupOrder("10");
     const { api, sent, sendDocumentCalls } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T-TOPUP-DM", note: order.paymentRef!, amount: Number(order.totalAmount) })], await pending());
+    await processTransfers(api, [txFor({ txId: "T-TOPUP-DM", note: order.paymentRef!, amount: order.totalAmount })], await pending());
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe(OrderStatus.DELIVERED);
@@ -632,7 +652,7 @@ describe("processTransfers — WALLET_TOPUP delivery (onDelivered success UI)", 
     const order = await makeTopupOrder("10");
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
-    await processTransfers(api, [txFor({ txId: "T-TOPUP-BUBBLE", note: order.paymentRef!, amount: Number(order.totalAmount) })], await pending());
+    await processTransfers(api, [txFor({ txId: "T-TOPUP-BUBBLE", note: order.paymentRef!, amount: order.totalAmount })], await pending());
 
     expect(edits).toHaveLength(1);
     expect(edits[0]!.chatId).toBe(555);

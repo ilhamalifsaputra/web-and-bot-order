@@ -68,7 +68,7 @@ describe("normalizeInternalDeposit (Bybit internal-deposit payload shape)", () =
   it("maps a successful internal-transfer USDT deposit", () => {
     const d = normalizeInternalDeposit(real)!;
     expect(d.txId).toBe(real.txID);
-    expect(d.amount).toBeCloseTo(746.99);
+    expect(d.amount.toString()).toBe("746.99");
   });
 
   it("accepts status 2 (Success) and rejects 1 (Processing) and 3 (Failed)", () => {
@@ -93,6 +93,24 @@ describe("normalizeInternalDeposit (Bybit internal-deposit payload shape)", () =
     expect(normalizeInternalDeposit({ ...real, amount: "0" })).toBeNull();
     expect(normalizeInternalDeposit({ ...real, amount: "-5" })).toBeNull();
     expect(normalizeInternalDeposit({ coin: "USDT", status: 2 })).toBeNull(); // no txID/amount
+  });
+
+  // Task 14: normalizeInternalDeposit now parses the raw amount string
+  // directly with Decimal instead of Number(). `new Decimal("1,234.56")`
+  // THROWS (unlike the old Number() -> NaN round-trip the guard turned into
+  // a quiet skipped row) — a malformed gateway amount must stay a skipped
+  // row, not become an exception escaping into the poll loop.
+  it("rejects a malformed amount string instead of throwing", () => {
+    expect(() => normalizeInternalDeposit({ ...real, amount: "1,234.56" })).not.toThrow();
+    expect(normalizeInternalDeposit({ ...real, amount: "1,234.56" })).toBeNull();
+  });
+
+  // Task 14: preserves an amount with more precision than a double can
+  // represent exactly (the whole point of parsing the raw string directly).
+  it("preserves an amount with more precision than a double", () => {
+    const precise = "746.00000000000001";
+    expect(Number(precise).toString()).not.toBe(precise); // proves Number() really does truncate this
+    expect(normalizeInternalDeposit({ ...real, amount: precise })!.amount.toString()).toBe(precise);
   });
 });
 
@@ -254,15 +272,15 @@ describe("processDeposits (poll-loop wiring)", () => {
   }
 
   const pending = () => listPendingBybitOrders(prisma, new Date());
-  const dep = (over: Partial<BybitDeposit> & { txId: string; amount: number }): BybitDeposit => ({
-    ...over,
+  const dep = (over: { txId: string; amount: Decimal.Value } & Partial<Omit<BybitDeposit, "amount">>): BybitDeposit => ({
+    ...over, amount: new Decimal(over.amount),
   });
 
   it("flips the anchored payment bubble to the success message with paymentSuccessKb (§9.1)", async () => {
     const order = (await makeBybitOrder())!;
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, edits } = fakeApi();
-    await processDeposits(api, [dep({ txId: "0xFLIP", amount: Number(order.totalAmount) })], await pending());
+    await processDeposits(api, [dep({ txId: "0xFLIP", amount: order.totalAmount })], await pending());
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
 
     expect(edits).toHaveLength(1);
@@ -278,7 +296,7 @@ describe("processDeposits (poll-loop wiring)", () => {
   it("delivers on a unique-amount match", async () => {
     const order = (await makeBybitOrder())!;
     const { api } = fakeApi();
-    await processDeposits(api, [dep({ txId: "0xT1", amount: Number(order.totalAmount) })], await pending());
+    await processDeposits(api, [dep({ txId: "0xT1", amount: order.totalAmount })], await pending());
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xT1" } }))!.outcome).toBe("matched");
   });
@@ -288,7 +306,7 @@ describe("processDeposits (poll-loop wiring)", () => {
     const b = (await makeBybitOrder())!; // unique-cents off in tests → equal totals
     expect(a.totalAmount).toEqual(b.totalAmount);
     const { api } = fakeApi();
-    await processDeposits(api, [dep({ txId: "0xT2", amount: Number(a.totalAmount) })], await pending());
+    await processDeposits(api, [dep({ txId: "0xT2", amount: a.totalAmount })], await pending());
     expect((await prisma.order.findUnique({ where: { id: a.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.order.findUnique({ where: { id: b.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xT2" } }))!.outcome).toBe("unmatched");
@@ -429,7 +447,9 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
   }
 
   const pending = () => listPendingBybitOrders(prisma, new Date());
-  const dep = (over: Partial<BybitDeposit> & { txId: string; amount: number }): BybitDeposit => ({ ...over });
+  const dep = (over: { txId: string; amount: Decimal.Value } & Partial<Omit<BybitDeposit, "amount">>): BybitDeposit => ({
+    ...over, amount: new Decimal(over.amount),
+  });
 
   const makeTopupOrder = (amount: string) =>
     prisma.$transaction((tx) =>
@@ -440,7 +460,7 @@ describe("processDeposits — WALLET_TOPUP delivery (onDelivered success UI)", (
     const order = await makeTopupOrder("7");
     await setOrderPaymentMessage(prisma, order.id, 555, 777);
     const { api, sent, edits, sendDocumentCalls } = fakeApi();
-    await processDeposits(api, [dep({ txId: "0xTOPUP-1", amount: Number(order.totalAmount) })], await pending());
+    await processDeposits(api, [dep({ txId: "0xTOPUP-1", amount: order.totalAmount })], await pending());
 
     const updated = await prisma.order.findUnique({ where: { id: order.id } });
     expect(updated!.status).toBe(OrderStatus.DELIVERED);

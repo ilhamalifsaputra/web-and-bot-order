@@ -53,6 +53,7 @@ import { esc } from "../util/format";
 import { matchByAmount, matchUnderpaidByAmount, AMOUNT_TOLERANCE, parsePositiveAmount } from "./amountMatching";
 import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
+import { withTimeout, TELEGRAM_MESSAGE_TIMEOUT_MS, TELEGRAM_DOCUMENT_TIMEOUT_MS } from "./telegramTimeout";
 import { paymentSuccessKb } from "../keyboards/customer";
 import { sendAccountFile, walletTopupSuccessText } from "../util/delivery";
 
@@ -208,15 +209,25 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
         : freshUser.walletBalanceUsdt
       : order.totalAmount;
     topupSuccessText = walletTopupSuccessText(order, newBalance, lang);
+    // Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS (Finding #2, followup-review-
+    // fixes-2) — main.ts deliberately sets no bot-wide grammY client timeout
+    // (see telegramTimeout.ts's own doc-comment), so without this an
+    // un-awaited call falls back to grammY's 500s default and can
+    // singlehandedly consume most of a poll cycle.
     try {
-      await api.sendMessage(tgId, topupSuccessText, { parse_mode: "HTML" });
+      const outcome = await withTimeout(api.sendMessage(tgId, topupSuccessText, { parse_mode: "HTML" }), TELEGRAM_MESSAGE_TIMEOUT_MS);
+      if (outcome === "timeout") throw new Error(`sendMessage timed out after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms`);
     } catch (err) {
       logger.error({ err }, `Failed to DM the wallet top-up success message for order ${order.orderCode}`);
     }
   } else {
-    // Delivery is instant: send the account file straight away.
+    // Delivery is instant: send the account file straight away. Bounded at
+    // TELEGRAM_DOCUMENT_TIMEOUT_MS — a document upload is legitimately
+    // slower than a plain text call (see telegramTimeout.ts), but still must
+    // not fall back to grammY's 500s default.
     try {
-      await sendAccountFile(api, tgId, order, lang);
+      const outcome = await withTimeout(sendAccountFile(api, tgId, order, lang), TELEGRAM_DOCUMENT_TIMEOUT_MS);
+      if (outcome === "timeout") throw new Error(`Account file upload timed out after ${TELEGRAM_DOCUMENT_TIMEOUT_MS}ms`);
     } catch (err) {
       logger.error(
         { err },
@@ -234,14 +245,19 @@ async function onDelivered(api: Api, order: DeliveredOrder): Promise<void> {
   }
 
   // Turn the payment-instructions bubble into a success message in place.
+  // Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS — same reasoning as the DM above.
   if (order.paymentMsgChatId != null && order.paymentMsgId != null) {
     try {
-      await api.editMessageText(
-        Number(order.paymentMsgChatId),
-        order.paymentMsgId,
-        topupSuccessText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
-        { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
+      const outcome = await withTimeout(
+        api.editMessageText(
+          Number(order.paymentMsgChatId),
+          order.paymentMsgId,
+          topupSuccessText ?? coreT("checkout.internal_paid", lang, { code: order.orderCode }),
+          { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
+        ),
+        TELEGRAM_MESSAGE_TIMEOUT_MS,
       );
+      if (outcome === "timeout") throw new Error(`editMessageText timed out after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms`);
     } catch {
       /* bubble may be gone/uneditable — the credential DM already informed the buyer */
     }
@@ -260,19 +276,38 @@ async function editBubbleToProcessing(api: Api, order: DeliveredOrder): Promise<
   if (order.user.telegramId == null) return;
   if (order.paymentMsgChatId == null || order.paymentMsgId == null) return;
   const lang = langCode(order.user.language);
+  // Bounded at TELEGRAM_MESSAGE_TIMEOUT_MS — see the identical bubble edit in
+  // onDelivered above for why.
   try {
-    await api.editMessageText(
-      Number(order.paymentMsgChatId),
-      order.paymentMsgId,
-      coreT("checkout.internal_paid", lang, { code: order.orderCode }),
-      { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
+    const outcome = await withTimeout(
+      api.editMessageText(
+        Number(order.paymentMsgChatId),
+        order.paymentMsgId,
+        coreT("checkout.internal_paid", lang, { code: order.orderCode }),
+        { parse_mode: "HTML", reply_markup: paymentSuccessKb(lang) },
+      ),
+      TELEGRAM_MESSAGE_TIMEOUT_MS,
     );
+    if (outcome === "timeout") throw new Error(`editMessageText timed out after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms`);
   } catch {
     /* bubble may be gone/uneditable — the ORDER_PROCESSING_DM already informed the buyer */
   }
 }
 
+/** Send `text` to every configured admin, never throwing. Bounded as ONE
+ * composite operation at TELEGRAM_MESSAGE_TIMEOUT_MS regardless of how many
+ * admins are configured (same shape tokopayReconcile.ts's own alertAdmins
+ * call site uses) — a slow/hung admin can't block the rest of the cycle, at
+ * the accepted cost that some admins may not get notified if the whole loop
+ * doesn't finish inside the budget. */
 async function alertAdmins(api: Api, text: string): Promise<void> {
+  const outcome = await withTimeout(alertAdminsInner(api, text), TELEGRAM_MESSAGE_TIMEOUT_MS);
+  if (outcome === "timeout") {
+    logger.warn(`Bybit deposit poller gave up waiting on an admin alert after ${TELEGRAM_MESSAGE_TIMEOUT_MS}ms — some admins may not have been notified`);
+  }
+}
+
+async function alertAdminsInner(api: Api, text: string): Promise<void> {
   for (const adminId of adminIds()) {
     try {
       await api.sendMessage(adminId, text, { parse_mode: "HTML" });
@@ -425,9 +460,53 @@ export async function processDeposits(api: Api, deposits: BybitDeposit[], orders
 // while this is still undefined.
 let boundApi: Api | undefined;
 
+// ── Finding #2 (followup-review-fixes-2) ────────────────────────────────────
+// This rail used to pass no explicit cycleTimeoutMs, falling back to
+// createPollLoop's default `max(3 * intervalMs, 60_000)` = 60s at the 5s
+// default BYBIT_POLL_INTERVAL_SECONDS. That was never actually safe: before
+// this task, processDeposits' Telegram calls (sendAccountFile, alertAdmins,
+// the bubble edits) were all UNBOUNDED, so one slow call could hang past ANY
+// deadline. Now that every one of them is bounded (see telegramTimeout.ts and
+// onDelivered/editBubbleToProcessing/alertAdmins above), an explicit deadline
+// derived from real arithmetic replaces the default:
+//
+//   FETCH_TIMEOUT_MS (10s) — fetchRecentDeposits makes exactly ONE signed
+//     bybitGet call (no retries/fallback-mirror walk, unlike Binance),
+//     bounded at HTTP_TIMEOUT_MS.gatewayRead.
+//   + WORST_CASE_CONCURRENT_DELIVERIES (10) × PER_DELIVERY_WORST_CASE_MS (15s)
+//     — processDeposits loops over every fetched deposit; the single most
+//     expensive branch per deposit is a fresh non-topup delivery: one
+//     TELEGRAM_DOCUMENT_TIMEOUT_MS (10s) sendAccountFile upload, THEN one
+//     TELEGRAM_MESSAGE_TIMEOUT_MS (5s) bubble edit = 15s. `10` is a
+//     deliberately generous "real-world simultaneous-delivery backlog"
+//     assumption, the same style bybitBscConfirmationTracker.ts's own
+//     MAX_ORDERS_PER_CYCLE=8 uses (see its derivation comment) — NOT the raw
+//     `limit: "50"` fetchRecentDeposits asks Bybit for. Multiplying by 50
+//     would produce a ~790s deadline that blows past HALF of Bybit BSC's own
+//     15-minute payment window (see bybitBscDeposit.ts's identical
+//     derivation) for no real safety benefit: `pollLoop.ts`'s own abandon
+//     deadline doesn't stop a cycle's real work — an abandoned cycle "may
+//     still complete in the background" (see its module doc-comment) — it
+//     only decides how fast a genuine hang gets NOTICED. A smaller, still-
+//     generous deadline catches a real hang sooner without costing anything
+//     on the (dominant) healthy path.
+//   + CYCLE_TIMEOUT_MARGIN_MS (30s) — covers the remaining DB list/deliver
+//     work each cycle, same flat margin the QRIS reconcile rails use.
+//   = 10_000 + 10 * 15_000 + 30_000 = 190_000ms (190s, ~3m10s).
+//
+// Sanity check (poll-loop-wiring.test.ts pins this the same way it does for
+// the QRIS rails): BYBIT_PAYMENT_WINDOW_MINUTES defaults to 30 (1800s); 190s
+// is ~11% of that, comfortably under half.
+const FETCH_TIMEOUT_MS = HTTP_TIMEOUT_MS.gatewayRead;
+const WORST_CASE_CONCURRENT_DELIVERIES = 10;
+const PER_DELIVERY_WORST_CASE_MS = TELEGRAM_DOCUMENT_TIMEOUT_MS + TELEGRAM_MESSAGE_TIMEOUT_MS;
+export const BYBIT_CYCLE_TIMEOUT_MS =
+  FETCH_TIMEOUT_MS + WORST_CASE_CONCURRENT_DELIVERIES * PER_DELIVERY_WORST_CASE_MS + 30_000;
+
 const loop = createPollLoop({
   name: "Bybit Internal Transfer deposit",
   intervalMs: config.BYBIT_POLL_INTERVAL_SECONDS * 1000,
+  cycleTimeoutMs: BYBIT_CYCLE_TIMEOUT_MS,
   run: (isCurrent) => pollOnce(boundApi!, isCurrent),
   // A hung cycle abandoned past its deadline must still show up as a failed
   // heartbeat on the ops panel, not silence — the existing failure branch in

@@ -416,6 +416,36 @@ describe("processDeposits (poll-loop wiring)", () => {
     expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
     expect((await prisma.processedBybitTx.findUnique({ where: { bybitTxId: "0xDUST" } }))!.outcome).toBe("unmatched");
   });
+
+  // Finding #2 (followup-review-fixes-2): before this task, sendAccountFile
+  // (the account-file `sendDocument` upload) was unbounded — a hung upload
+  // would have blocked this whole cycle, potentially past cycleTimeoutMs,
+  // paging admins over a rail that was in fact delivering fine. Now it's
+  // bounded at TELEGRAM_DOCUMENT_TIMEOUT_MS: this test uses a `sendDocument`
+  // that never resolves and asserts (a) the order still ends up DELIVERED —
+  // the delivery itself already happened in the DB before this Telegram call
+  // — and (b) the existing outbox-fallback path still fires on the timeout,
+  // exactly as it already does for a genuine throw. Real timers (not fake) —
+  // faking timers breaks Prisma's own I/O in this test harness, same
+  // constraint tokopayReconcile's own sweep tests document.
+  it("a hung account-file upload is bounded by TELEGRAM_DOCUMENT_TIMEOUT_MS and falls through to the outbox-DM fallback", async () => {
+    const order = (await makeBybitOrder())!;
+    const api = {
+      sendMessage: vi.fn().mockResolvedValue({ message_id: 1 }),
+      sendDocument: vi.fn(() => new Promise(() => {})), // hangs forever
+      editMessageText: vi.fn().mockResolvedValue({}),
+    } as unknown as Api;
+
+    await processDeposits(api, [dep({ txId: "0xHANGDOC", amount: order.totalAmount })], await pending());
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe(OrderStatus.DELIVERED); // the DB delivery already happened before the DM attempt
+
+    const outboxRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: "ORDER_DELIVERED_DM" },
+    });
+    expect(outboxRows.length).toBeGreaterThan(0); // the same fallback a genuine sendAccountFile throw would enqueue
+  }, 15_000);
 });
 
 // ===========================================================================

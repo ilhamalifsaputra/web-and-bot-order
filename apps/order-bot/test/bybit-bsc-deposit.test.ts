@@ -577,6 +577,30 @@ describe("processDeposits (poll-loop wiring)", () => {
       expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.DELIVERED);
     }
   });
+
+  // Finding #2 (followup-review-fixes-2): same fix/reasoning as
+  // bybit-deposit.test.ts's identical test — sendAccountFile used to be
+  // unbounded on this rail too. Real timers (not fake) — faking timers
+  // breaks Prisma's own I/O in this test harness.
+  it("a hung account-file upload is bounded by TELEGRAM_DOCUMENT_TIMEOUT_MS and falls through to the outbox-DM fallback", async () => {
+    const order = (await makeBybitBscOrder())!;
+    const txId = "0x" + "d".repeat(64);
+    const api = {
+      sendMessage: vi.fn().mockResolvedValue({ message_id: 1 }),
+      sendDocument: vi.fn(() => new Promise(() => {})), // hangs forever
+      editMessageText: vi.fn().mockResolvedValue({}),
+    } as unknown as Api;
+
+    await processDeposits(api, [dep({ txId, amount: order.totalAmount, bybitStatus: 3 })], await inFlight(), "BSC");
+
+    const updated = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(updated!.status).toBe(OrderStatus.DELIVERED); // the DB delivery already happened before the DM attempt
+
+    const outboxRows = await prisma.notificationOutbox.findMany({
+      where: { orderId: order.id, event: "ORDER_DELIVERED_DM" },
+    });
+    expect(outboxRows.length).toBeGreaterThan(0); // the same fallback a genuine sendAccountFile throw would enqueue
+  }, 15_000);
 });
 
 // ===========================================================================

@@ -86,6 +86,8 @@ import { RECONCILE_CYCLE_TIMEOUT_MS as PAYDISINI_CYCLE_TIMEOUT_MS } from "../src
 import { RECONCILE_CYCLE_TIMEOUT_MS as NOWPAYMENTS_CYCLE_TIMEOUT_MS } from "../src/payments/nowpaymentsReconcile";
 import { BINANCE_CYCLE_TIMEOUT_MS } from "../src/payments/binanceInternal";
 import { TRACKER_CYCLE_TIMEOUT_MS } from "../src/payments/bybitBscConfirmationTracker";
+import { BYBIT_CYCLE_TIMEOUT_MS } from "../src/payments/bybitDeposit";
+import { BYBIT_BSC_CYCLE_TIMEOUT_MS } from "../src/payments/bybitBscDeposit";
 
 const fakeApi = {} as Api;
 
@@ -140,8 +142,8 @@ const RAILS: Array<{
   cycleTimeoutMs?: number;
 }> = [
   { name: "Binance Internal Transfer", mod: binanceInternal, hangFn: "resolveBinanceInternalConfig", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBinancePollHealth", cycleTimeoutMs: BINANCE_CYCLE_TIMEOUT_MS },
-  { name: "Bybit Internal Transfer deposit", mod: bybitDeposit, hangFn: "resolveBybitConfig", intervalMs: config.BYBIT_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitPollHealth" },
-  { name: "Bybit BSC deposit", mod: bybitBscDeposit, hangFn: "resolveBybitBscConfig", intervalMs: config.BYBIT_BSC_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitBscPollHealth" },
+  { name: "Bybit Internal Transfer deposit", mod: bybitDeposit, hangFn: "resolveBybitConfig", intervalMs: config.BYBIT_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitPollHealth", cycleTimeoutMs: BYBIT_CYCLE_TIMEOUT_MS },
+  { name: "Bybit BSC deposit", mod: bybitBscDeposit, hangFn: "resolveBybitBscConfig", intervalMs: config.BYBIT_BSC_POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordBybitBscPollHealth", cycleTimeoutMs: BYBIT_BSC_CYCLE_TIMEOUT_MS },
   { name: "Bybit BSC confirmation tracker", mod: bybitBscConfirmationTracker, hangFn: "resolveBybitBscTrackerConfig", intervalMs: config.BYBIT_BSC_TRACKER_POLL_INTERVAL_SECONDS * 1000, cycleTimeoutMs: TRACKER_CYCLE_TIMEOUT_MS },
   { name: "TokoPay reconcile", mod: tokopayReconcile, hangFn: "getTokopayCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordPollHealth", healthRail: "tokopay", cycleTimeoutMs: TOKOPAY_CYCLE_TIMEOUT_MS },
   { name: "PayDisini reconcile", mod: paydisiniReconcile, hangFn: "getPaydisiniCreds", intervalMs: config.POLL_INTERVAL_SECONDS * 1000, healthMockKey: "recordPollHealth", healthRail: "paydisini", cycleTimeoutMs: PAYDISINI_CYCLE_TIMEOUT_MS },
@@ -382,6 +384,109 @@ describe("a rail's success heartbeat no-ops once its own cycle has been abandone
   });
 });
 
+// Followup review fix #1: Binance's failure branch (fetchIncomingTransfers
+// rejects) was the only one of the six deposit-poller failure/success
+// branches NOT guarded by isCurrent() — Bybit Internal Transfer and Bybit BSC
+// both guard their own identically-shaped failure branch (see their own
+// pollOnce). Mirrors the "Finding A" success-branch pin above, but drives
+// Binance's FAILURE path instead: fetchIncomingTransfers hangs (via a global
+// `fetch` stub whose promise this test controls) until after the cycle's own
+// deadline abandons it, then is walked through its real connect-retry budget
+// (CONNECT_RETRY_ATTEMPTS=3, CONNECT_RETRY_DELAY_MS=1500ms apart) until it
+// finally rejects — proving the stale rejection can no longer double-count
+// the SAME failure the abandon heartbeat already recorded.
+describe("Binance's failure-branch heartbeat no-ops once its own cycle has been abandoned (Finding #1 regression pin)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.spyOn(logger, "error").mockImplementation(() => undefined as never);
+    vi.spyOn(logger, "warn").mockImplementation(() => undefined as never);
+    vi.spyOn(logger, "info").mockImplementation(() => undefined as never);
+  });
+
+  afterEach(() => {
+    binanceInternal.stopPolling();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("a fetch failure that resolves after the cycle's deadline does not double-count the abandon-failure heartbeat", async () => {
+    const cfgMock = vi.mocked(dbMock.resolveBinanceInternalConfig);
+    cfgMock.mockReset();
+    cfgMock.mockResolvedValue({
+      enabled: true,
+      receiveUid: "u",
+      apiKey: "k",
+      apiSecret: "s",
+      apiBase: "https://api.binance.com",
+      apiBaseFallbacks: [], // no fallback walk — isolates the primary host's own retry budget
+      currency: "USDT",
+      pollIntervalSeconds: 10,
+      windowMinutes: 15,
+      minAmount: null,
+    });
+
+    // Every fetch() call returns its own never-auto-settling promise; the
+    // test drives each one explicitly via the captured reject function,
+    // re-captured after every advance so it always refers to the attempt
+    // that JUST fired (cycle 2 also calls fetch() once its own cycle starts —
+    // see the snapshot-before-advancing note below, same pattern the
+    // Finding A success-branch pin above uses for its own DB mock).
+    let currentReject: ((err: unknown) => void) | undefined;
+    const fetchMock = vi.fn(() => new Promise((_resolve, reject) => { currentReject = reject; }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const healthMock = vi.mocked(dbMock.recordBinancePollHealth);
+    healthMock.mockClear();
+
+    binanceInternal.startPolling(fakeApi);
+
+    const intervalMs = config.POLL_INTERVAL_SECONDS * 1000;
+
+    // Cycle 1's first (and, since it never settles, only) connect attempt.
+    await vi.advanceTimersByTimeAsync(intervalMs);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const cycle1Attempt1Reject = currentReject; // snapshot before cycle 2 can steal `currentReject`
+    expect(cycle1Attempt1Reject).toBeDefined();
+
+    // Past BINANCE_CYCLE_TIMEOUT_MS, cycle 1 is abandoned — the abandon
+    // heartbeat fires exactly once. (Cycle 2 may also start here and hang on
+    // its own fresh fetch() call; it's inert for the rest of this test and
+    // cleaned up by afterEach's stopPolling().)
+    await vi.advanceTimersByTimeAsync(BINANCE_CYCLE_TIMEOUT_MS);
+    expect(healthMock).toHaveBeenCalledTimes(1);
+    expect(healthMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ success: false, error: expect.stringContaining("Poll cycle abandoned after") }),
+    );
+    healthMock.mockClear();
+
+    // Walk cycle 1's own (now-stale) fetchIncomingTransfers through its real
+    // connect-retry budget until it finally rejects.
+    cycle1Attempt1Reject?.(new Error("connect refused 1"));
+    await vi.advanceTimersByTimeAsync(1500); // CONNECT_RETRY_DELAY_MS sleep -> attempt 2
+    const cycle1Attempt2Reject = currentReject;
+    cycle1Attempt2Reject?.(new Error("connect refused 2"));
+    await vi.advanceTimersByTimeAsync(1500); // sleep -> attempt 3
+    const cycle1Attempt3Reject = currentReject;
+    cycle1Attempt3Reject?.(new Error("connect refused 3"));
+    // apiBaseFallbacks is empty, so fallThroughMirrors rethrows immediately —
+    // fetchIncomingTransfers' own promise settles on this same microtask tick.
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Before the Finding #1 fix, this would be called once more with
+    // `success: false` and the real connect error — silently double-counting
+    // the SAME underlying failure the abandon heartbeat above already
+    // recorded, and resetting backoffUntil/consecutiveRateLimitHits from
+    // stale in-memory state.
+    expect(healthMock).not.toHaveBeenCalled();
+  }, 15_000);
+});
+
 // This suite runs after the self-heal suite above, so every rail's loop has
 // already been through at least one start()/stop() cycle — startPolling()
 // here is a genuine restart, not first boot. That's fine: the assertion only
@@ -453,6 +558,20 @@ describe("reconcile cycle timeouts stay well clear of the payment window (Task 1
     ["PayDisini", PAYDISINI_CYCLE_TIMEOUT_MS, config.PAYMENT_WINDOW_MINUTES],
     ["NOWPayments", NOWPAYMENTS_CYCLE_TIMEOUT_MS, config.NOWPAYMENTS_PAYMENT_WINDOW_MINUTES],
   ])("%s's RECONCILE_CYCLE_TIMEOUT_MS is under half of its own payment window", (_name, cycleTimeoutMs, windowMinutes) => {
+    expect(cycleTimeoutMs).toBeLessThan((windowMinutes * 60_000) / 2);
+  });
+});
+
+// Finding #2 (followup-review-fixes-2): the same sanity check as above,
+// pinned against the two Bybit deposit rails' own new explicit cycleTimeoutMs
+// (see each rail's own derivation comment above its createPollLoop call).
+// BYBIT_BSC_PAYMENT_WINDOW_MINUTES (15 minutes) is the shortest payment
+// window of any rail in this codebase — the tightest real check of the two.
+describe("Bybit deposit rails' cycle timeouts stay well clear of their own payment window (followup-review-fixes-2, Finding #2)", () => {
+  it.each([
+    ["Bybit Internal Transfer", BYBIT_CYCLE_TIMEOUT_MS, config.BYBIT_PAYMENT_WINDOW_MINUTES],
+    ["Bybit BSC", BYBIT_BSC_CYCLE_TIMEOUT_MS, config.BYBIT_BSC_PAYMENT_WINDOW_MINUTES],
+  ])("%s's cycleTimeoutMs is under half of its own payment window", (_name, cycleTimeoutMs, windowMinutes) => {
     expect(cycleTimeoutMs).toBeLessThan((windowMinutes * 60_000) / 2);
   });
 });

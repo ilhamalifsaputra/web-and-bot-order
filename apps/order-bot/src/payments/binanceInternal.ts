@@ -383,15 +383,26 @@ export async function pollOnce(api: Api, isCurrent: () => boolean = () => true):
     } else {
       logger.error({ err }, "Failed to fetch incoming Binance transfers — this poll cycle is skipped, pending orders stay unmatched until the next cycle");
     }
-    // Heartbeat so the web ops panel shows the poller is alive (and backing off).
-    await recordBinancePollHealth(prisma, {
-      lastTxCount: 0,
-      backoffUntil: backoff.backoffUntil || null,
-      consecutiveRateLimitHits: backoff.hitCount,
-      rateLimited,
-      success: false,
-      error: String(err).slice(0, 300),
-    }).catch(() => undefined);
+    // Guarded by isCurrent() (Task 11 review follow-up, Minor #3 — the same
+    // rule bybitDeposit.ts and bybitBscDeposit.ts already apply to their own
+    // identically-shaped failure branch): a stale write from an abandoned
+    // cycle is stale evidence either way — even this `success: false` write
+    // would double-count the SAME underlying failure the abandon heartbeat
+    // already recorded (once as the abandon, once here) — so the abandoned
+    // cycle's own view of this cycle's outcome is retired the moment it's
+    // abandoned, not just its optimistic half.
+    if (isCurrent()) {
+      await recordBinancePollHealth(prisma, {
+        lastTxCount: 0,
+        backoffUntil: backoff.backoffUntil || null,
+        consecutiveRateLimitHits: backoff.hitCount,
+        rateLimited,
+        success: false,
+        error: String(err).slice(0, 300),
+      }).catch(() => undefined);
+    } else {
+      logger.warn("Binance poll cycle finished after its own deadline had already abandoned it — skipping the failure heartbeat write so it can't double-count the abandon-failure heartbeat already recorded");
+    }
     return;
   }
 

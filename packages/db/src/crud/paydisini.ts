@@ -27,7 +27,7 @@ import { enqueueNotification, enqueueAdminOverpaid, enqueueWalletTopupCreditedDm
 import { getSetting } from "./settings";
 import { parseMinAmount } from "./_minAmount";
 import { settleWalletTopup } from "./wallet_topup";
-import { NON_DELIVERING_OUTCOMES } from "./binance_internal";
+import { QRIS_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 
 /** Minimum-payment-amount note shown at checkout (IDR) — blank = no note. */
 export const PAYDISINI_MIN_AMOUNT_KEY = "paydisini_min_amount";
@@ -88,16 +88,19 @@ export async function deliverPaidPaydisiniOrder(
 ): Promise<PaydisiniDeliverResult> {
   // 1. Claim the trx id. A duplicate normally means another callback already
   //    handled it — UNLESS the prior claim's outcome is one of
-  //    NON_DELIVERING_OUTCOMES ("delivery_failed" or "unmatched"): neither of
-  //    those ever actually delivered anything, so the trx id must stay
+  //    QRIS_RECLAIMABLE_OUTCOMES ("delivery_failed" or "unmatched"): neither
+  //    of those ever actually delivered anything, so the trx id must stay
   //    re-claimable, or the buyer's payment is silently lost forever behind a
   //    stuck idempotency row (delivery_failed: H-3, backend audit
-  //    2026-07-31; unmatched: Task 15 — a callback that arrived while the
-  //    order was temporarily un-matchable must not permanently block a later,
-  //    legitimate callback/reconcile-poller delivery). Re-claiming is a
-  //    single atomic UPDATE gated on that outcome set — SQLite serializes
-  //    writers, so if two retries race, exactly one `updateMany` sees
-  //    count=1 and proceeds; the other sees count=0 and correctly reports
+  //    2026-07-31; unmatched: Task 15 — PayDisini hands back a trxId scoped
+  //    to THIS order's orderCode, so "unmatched" here can only mean this
+  //    trxId's own order was temporarily un-matchable, never a guess at some
+  //    other order — see QRIS_RECLAIMABLE_OUTCOMES's doc-comment in
+  //    binance_internal.ts for why that is NOT true on the amount-matched
+  //    crypto rails, which use a narrower set). Re-claiming is a single
+  //    atomic UPDATE gated on that outcome set — SQLite serializes writers,
+  //    so if two retries race, exactly one `updateMany` sees count=1 and
+  //    proceeds; the other sees count=0 and correctly reports
   //    already_processed.
   try {
     await db.processedPaydisiniTx.create({
@@ -106,7 +109,7 @@ export async function deliverPaidPaydisiniOrder(
   } catch (e) {
     if (!isUniqueViolation(e)) throw e;
     const reclaimed = await db.processedPaydisiniTx.updateMany({
-      where: { trxId: args.trxId, outcome: { in: [...NON_DELIVERING_OUTCOMES] } },
+      where: { trxId: args.trxId, outcome: { in: [...QRIS_RECLAIMABLE_OUTCOMES] } },
       data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
     if (reclaimed.count === 0) return { status: "already_processed" };

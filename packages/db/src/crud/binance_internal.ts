@@ -7,12 +7,15 @@
  * treated as "already processed". Combined with SQLite's single-writer
  * serialization + busy_timeout, this prevents double-delivery without locks.
  *
- * A duplicate is not always terminal: an id stamped with one of
- * NON_DELIVERING_OUTCOMES delivered nothing and must stay re-claimable, so
- * `deliverPaidInternalOrder` re-claims it with a compare-and-swap — a read
- * followed by an `updateMany` gated on the values that read returned. Both
- * halves stay single statements on purpose; see the comment there for why an
- * interactive transaction would be less safe under WAL, not more.
+ * A duplicate is not always terminal: an id stamped with an outcome from
+ * AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES delivered nothing and must stay
+ * re-claimable, so `deliverPaidInternalOrder` re-claims it with a
+ * compare-and-swap — a read followed by an `updateMany` gated on the values
+ * that read returned. Both halves stay single statements on purpose; see the
+ * comment there for why an interactive transaction would be less safe under
+ * WAL, not more. See that constant's own doc-comment below for why this
+ * rail's reclaimable set is narrower than the QRIS rails'
+ * (QRIS_RECLAIMABLE_OUTCOMES) — the two are NOT meant to be identical.
  */
 import { config } from "@app/core/config";
 import { OrderStatus, OrderCurrency, OrderKind, PaymentMethod } from "@app/core/enums";
@@ -219,17 +222,19 @@ export async function deliverPaidInternalOrder(
   args: { orderId: number; binanceTxId: string; amount: Decimal.Value },
 ): Promise<DeliverResult> {
   // 1. Claim the tx id. A duplicate normally means another cycle already
-  //    handled it — UNLESS the prior claim's outcome is one of
-  //    NON_DELIVERING_OUTCOMES ("delivery_failed" or "unmatched"): neither of
-  //    those ever actually delivered anything, so the tx id must stay
+  //    handled it — UNLESS the prior claim's outcome is in
+  //    AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES (today just "delivery_failed"):
+  //    that never actually delivered anything, so the tx id must stay
   //    re-claimable, or the buyer's payment is silently lost forever behind a
-  //    stuck idempotency row (delivery_failed: H-3, backend audit
-  //    2026-07-31; unmatched: Task 15). The reclaim is a compare-and-swap, not
-  //    a transaction: read the row, then gate a single `updateMany` on the
-  //    exact values that read returned. `count === 1` therefore PROVES the row
-  //    was still in that state at the instant of the write, so the captured
-  //    prior values are trustworthy; `count === 0` means a racer got there
-  //    first and already_processed is the right answer.
+  //    stuck idempotency row (H-3, backend audit 2026-07-31). "unmatched" is
+  //    deliberately NOT in that set — see its doc-comment below for why this
+  //    rail's amount-only matching makes that different from the QRIS rails.
+  //    The reclaim is a compare-and-swap, not a transaction: read the row,
+  //    then gate a single `updateMany` on the exact values that read
+  //    returned. `count === 1` therefore PROVES the row was still in that
+  //    state at the instant of the write, so the captured prior values are
+  //    trustworthy; `count === 0` means a racer got there first and
+  //    already_processed is the right answer.
   //
   //    An interactive $transaction would be worse here, not better. This
   //    database runs in WAL mode (see client.ts) and Prisma opens interactive
@@ -256,7 +261,7 @@ export async function deliverPaidInternalOrder(
   } catch (e) {
     if (!isUniqueViolation(e)) throw e;
     const prior = await db.processedBinanceTx.findUnique({ where: { binanceTxId: args.binanceTxId } });
-    if (!prior || !(NON_DELIVERING_OUTCOMES as readonly string[]).includes(prior.outcome)) {
+    if (!prior || !(AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES as readonly string[]).includes(prior.outcome)) {
       return { status: "already_processed" };
     }
     const reclaimed = await db.processedBinanceTx.updateMany({
@@ -278,7 +283,8 @@ export async function deliverPaidInternalOrder(
         // instead of leaving the row "matched" against an order that never
         // got delivered. Left as "matched", the transfer would become
         // permanently unreachable: "matched" is excluded from
-        // NON_DELIVERING_OUTCOMES (so it can never be re-claimed again), and
+        // AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES (so it can never be re-claimed
+        // again), and
         // both manualMatchTx and dismissUnmatchedTx refuse anything whose
         // outcome isn't "unmatched" — an admin's own recovery tooling would
         // refuse the very row their alert points at. A fresh claim
@@ -433,19 +439,77 @@ export const TX_OUTCOMES = [
 ] as const;
 export type TxOutcome = (typeof TX_OUTCOMES)[number];
 
-/** Outcomes that never delivered anything, so the trx/tx id they're stamped
- * on must stay re-claimable by a later callback/poller pass — otherwise a
- * real payment that merely arrived while its order was temporarily
- * un-matchable (wrong method/currency, a short payment later topped up) gets
- * permanently stuck behind the trxId UNIQUE gate (Task 15). The terminal set
- * that must NEVER be re-claimable *includes* "matched", "overpaid", and
- * "stale". "matched"/"overpaid" mean a delivery actually ran, so re-claiming
- * risks a second attempt racing a settlement that already happened; "stale"
- * is terminal for a different reason — no attempt ran, but the order is
- * provably no longer claimable, so there is nothing to re-claim it against —
- * but it is not exactly the complement of NON_DELIVERING_OUTCOMES:
- * TX_OUTCOMES below also lists "underpaid", "credited_to_balance", and
- * "dismissed", which are equally terminal/non-re-claimable but out of this
+/**
+ * Two DIFFERENT reclaimable sets, not one — this asymmetry is deliberate,
+ * not an oversight, and it must stay that way even though it is tempting to
+ * "harmonize" them. Both name outcomes that never delivered anything, so the
+ * trx/tx id they're stamped on is safe to hand to a later callback/poller
+ * pass without risking a second delivery attempt racing a settlement that
+ * already happened. Where they differ is whether "unmatched" belongs in that
+ * safe set, and that difference tracks a real difference in how each group
+ * of rails decides what a transfer was FOR:
+ *
+ * - TokoPay/PayDisini/NOWPayments (QRIS_RECLAIMABLE_OUTCOMES) get a trxId
+ *   back from the gateway itself, scoped to one specific order
+ *   (`reconcileOrder` asks the gateway about `order.orderCode` and gets that
+ *   order's own trxId). "unmatched" on these rails can therefore only mean
+ *   "this trxId's order was temporarily un-matchable when the webhook/poll
+ *   first saw it" (wrong method/currency, a short payment later topped up)
+ *   — the money was always meant for that one order, so re-claiming it later
+ *   is recovering a real payment, never a guess (Task 15).
+ *
+ * - binance_internal.ts (deliverPaidInternalOrder), bybit_deposit.ts
+ *   (deliverPaidBybitOrder), and bybit_bsc_deposit.ts
+ *   (deliverPaidBybitBscOrder) — AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES — carry
+ *   NO memo or gateway-supplied order reference at all: `matchByAmount`
+ *   guesses which pending order a deposit belongs to purely from its total,
+ *   which is exactly why "unmatched" exists as an outcome in the first
+ *   place. On these rails "unmatched" means only "no PENDING order happened
+ *   to share this deposit's amount at the moment it was scanned" — it
+ *   carries no assertion the deposit was ever meant for whatever order it
+ *   might later get matched to.
+ *
+ *   Leaving "unmatched" re-claimable here — as an earlier version of this
+ *   branch did — opens a real money-loss path: `fetchRecentDeposits` looks
+ *   back up to 3 days (Bybit) / 1 hour (Binance), and
+ *   `processDeposits`/`processTransfers` never consult the ledger before
+ *   calling `matchByAmount` on every fetched deposit, every cycle. So an old
+ *   stray deposit sitting in the ledger as "unmatched" — the shop owner's
+ *   own top-up, a late payment for an order that has since expired — stays
+ *   free to auto-match and auto-deliver against a completely unrelated LATER
+ *   order that merely happens to share its total, the moment one exists.
+ *   Before any of these three rails had a reclaim at all, the *_tx_id UNIQUE
+ *   constraint was exactly what stopped that outcome; the fix here is to
+ *   restore that guard for "unmatched" specifically, while keeping the
+ *   reclaim these rails legitimately need for "delivery_failed". See
+ *   apps/order-bot/src/payments/amountMatching.ts's own M-14 comment for the
+ *   identical reasoning from the matcher's side: a stray transfer, an
+ *   owner's own top-up, or a late payment for an expired order must never
+ *   auto-deliver — an "unmatched" row is exactly that category of deposit.
+ *
+ *   Consequence: a buyer who pays BEFORE their order exists lands in
+ *   "unmatched" on these three rails and needs an admin to recover it. On
+ *   Binance that path already exists — `manualMatchTx` / `dismissUnmatchedTx`
+ *   below both already require outcome "unmatched", so nothing about their
+ *   contract changes. Bybit and Bybit BSC have no manual-match action at
+ *   all; that gap is real but pre-existing (see bybit_deposit.ts's and
+ *   bybit_bsc_deposit.ts's own module comments) and is not this fix's scope.
+ *
+ * "delivery_failed" stays reclaimable on EVERY rail (both sets) for a
+ * different reason than "unmatched": it never re-runs the amount-matching
+ * guess or re-derives which order a payment was for — it only retries
+ * delivery for the exact (order, amount) pairing a prior cycle already
+ * committed to, so re-claiming it repeats a decision that was already
+ * trusted once, not a fresh guess.
+ *
+ * Neither set includes "matched", "overpaid", or "stale" — those three are
+ * terminal on every rail. "matched"/"overpaid" mean a delivery actually
+ * ran, so re-claiming risks a second attempt racing a settlement that
+ * already happened; "stale" is terminal for a different reason — no
+ * delivery attempt ran, but the order is provably no longer claimable, so
+ * there is nothing left to re-claim it against. Neither set is exactly the
+ * complement of TX_OUTCOMES either: TX_OUTCOMES also lists "underpaid" and
+ * "credited_to_balance", equally terminal/non-re-claimable but out of this
  * fix's scope (see the "underpaid" note below).
  *
  * "stale" is deliberately NOT a member of TX_OUTCOMES: it's a QRIS-only
@@ -459,22 +523,27 @@ export type TxOutcome = (typeof TX_OUTCOMES)[number];
  * stale branch restores the exact outcome/orderId/amount the re-claim
  * overwrote, keeping the row in the manual-match queue rather than
  * stranding it as an unreachable "matched" (Task 15 review, Important #1).
+ * bybit_deposit.ts and bybit_bsc_deposit.ts (Task 16) carry the same
+ * reclaimedFrom-and-revert logic for the same reason (a stale reclaim there
+ * is even more dangerous than here: Bybit has no manualMatchTx/
+ * dismissUnmatchedTx equivalent at all, so an unreverted stale reclaim would
+ * strand the ledger row with no recovery path, automatic or manual).
  *
- * bybit_deposit.ts and bybit_bsc_deposit.ts (Task 16) also import this set.
- * Both match a deposit against ANY pending order by amount — the same shape
- * as this rail, NOT the QRIS rails' 1:1 trxId binding — so both also carry
- * their own reclaimedFrom-and-revert logic (a stale reclaim there is even
- * more dangerous than here: Bybit has no manualMatchTx/dismissUnmatchedTx
- * equivalent at all, so an unreverted stale reclaim would strand the ledger
- * row with no recovery path, automatic or manual).
- *
- * "underpaid" (written by markUnderpaid below) was considered and left out
- * on purpose: nothing is delivered for it either, so by this fix's own logic
- * that trxId is blocked the same way — but it already has its own admin
- * recovery path (UNDERPAID order status → deliver-anyway or refund-to-wallet)
- * that doesn't depend on the trxId ever being re-claimable, so it isn't the
- * same money-loss shape this fix addresses. */
-export const NON_DELIVERING_OUTCOMES = ["unmatched", "delivery_failed"] as const;
+ * "underpaid" (written by markUnderpaid below) was considered for either set
+ * and left out of both on purpose: nothing is delivered for it either, so by
+ * this fix's own logic that trxId is blocked the same way — but it already
+ * has its own admin recovery path (UNDERPAID order status → deliver-anyway
+ * or refund-to-wallet) that doesn't depend on the trxId ever being
+ * re-claimable, so it isn't the same money-loss shape this fix addresses.
+ */
+export const QRIS_RECLAIMABLE_OUTCOMES = ["unmatched", "delivery_failed"] as const;
+
+/** See the shared doc-comment above QRIS_RECLAIMABLE_OUTCOMES for the full
+ * reasoning — this is the narrower set for the three rails that match a
+ * deposit to an order purely by amount (no memo, no gateway-scoped trxId):
+ * binance_internal.ts, bybit_deposit.ts, bybit_bsc_deposit.ts.
+ * "unmatched" is excluded on purpose. */
+export const AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES = ["delivery_failed"] as const;
 
 type LinkedOrder = { id: number; orderCode: string; status: string; totalAmount: Decimal };
 

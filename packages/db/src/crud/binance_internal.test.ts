@@ -23,7 +23,6 @@ import {
   deliverPaidInternalOrder,
   markUnderpaid,
   recordUnmatchedTx,
-  manualMatchTx,
   createCategory,
   createCatalogProduct,
   createDenomination,
@@ -237,14 +236,26 @@ describe("deliverPaidInternalOrder", () => {
   });
 });
 
-// Task 15: an `unmatched` ledger row (a transfer that matched no PENDING
-// order) must not permanently block the SAME Binance tx id from ever being
-// delivered by a later, legitimate poller pass. Only the terminal outcomes
-// ("matched" | "overpaid" | "stale") may stay unclaimable forever;
-// "unmatched" and "delivery_failed" never delivered anything, so they must
-// stay re-claimable.
+// Followup review fix (2026-08): Task 15 originally widened the reclaimable
+// set to include "unmatched" on THIS rail too, copying the QRIS rails'
+// 1:1-trxId reasoning onto a rail that matches by amount against ANY pending
+// order — a real money-loss bug, since re-claiming "unmatched" here means an
+// old stray deposit (an owner's own top-up, a late payment for an expired
+// order) can auto-match and auto-deliver a completely unrelated LATER order
+// that merely happens to share its total. The fix restores the pre-Task-15
+// behavior for "unmatched" specifically: it is terminal again on this rail,
+// recoverable only through `manualMatchTx`/`dismissUnmatchedTx`.
+// "delivery_failed" is unaffected — it never re-runs the amount guess, only
+// retries delivery for the SAME (order, amount) pairing already chosen, so
+// it stays re-claimable (see the "delivery failed is retryable" test below
+// and AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES's doc-comment in this file).
 describe("deliverPaidInternalOrder — re-claiming a tx id across non-delivering outcomes", () => {
-  it("a tx first recorded as unmatched by the poller can still be delivered by a later poller pass", async () => {
+  // Inverted from "a tx first recorded as unmatched by the poller can still
+  // be delivered by a later poller pass" (Task 15's now-wrong assertion) —
+  // see the module-level fix note above. "unmatched" must stay terminal on
+  // this amount-matched rail, so a later poller pass claiming the same tx id
+  // is just another duplicate, not a delivery.
+  it("a tx first recorded as unmatched stays terminal — a later poller pass reports already_processed, not delivered", async () => {
     const order = await makePendingInternalOrder();
     const binanceTxId = "tx-unmatched-reclaim-1";
 
@@ -258,9 +269,73 @@ describe("deliverPaidInternalOrder — re-claiming a tx id across non-delivering
       binanceTxId,
       amount: order.totalAmount,
     });
-    expect(result.status).toBe("delivered");
-    if (result.status !== "delivered") throw new Error("expected delivered");
-    expect(result.order.status).toBe(OrderStatus.DELIVERED);
+    expect(result.status).toBe("already_processed");
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+
+    const ledgerRow = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId } });
+    expect(ledgerRow?.outcome).toBe("unmatched");
+    expect(ledgerRow?.orderId).toBeNull();
+  });
+
+  // The actual money-loss scenario the review caught: an "unmatched" deposit
+  // sits in the ledger (e.g. the shop owner's own top-up, or a late payment
+  // for an order that has since expired), and LATER an unrelated order is
+  // created whose total happens to equal that same amount. Without this fix,
+  // the next poller cycle would amount-match and auto-deliver goods for
+  // money that was never paid for them.
+  it("an unmatched deposit does not auto-deliver a later, unrelated order that happens to share its amount", async () => {
+    const binanceTxId = "tx-unmatched-stray-deposit-1";
+    const recorded = await recordUnmatchedTx(prisma, { binanceTxId, amount: new Decimal("5") });
+    expect(recorded).toBe(true);
+
+    // A genuinely unrelated order is created afterwards, priced to exactly
+    // match the stray deposit — the scenario a poller's amount-matching
+    // would otherwise treat as a hit.
+    const laterOrder = await makePendingInternalOrder();
+    await prisma.order.update({ where: { id: laterOrder.id }, data: { totalAmount: new Decimal("5") } });
+
+    const result = await deliverPaidInternalOrder(prisma, {
+      orderId: laterOrder.id,
+      binanceTxId,
+      amount: new Decimal("5"),
+    });
+
+    expect(result.status).toBe("already_processed");
+    expect((await prisma.order.findUnique({ where: { id: laterOrder.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+    const ledgerRow = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId } });
+    expect(ledgerRow?.outcome).toBe("unmatched");
+    expect(ledgerRow?.orderId).toBeNull();
+  });
+
+  // H-3-shaped (mirrors tokopay.test.ts's "a claim whose delivery failed is
+  // retryable"): wipe stock so approveOrder's out-of-stock guard throws
+  // INSIDE the delivery $transaction, rolling it back and tagging the ledger
+  // row delivery_failed instead of leaving the payment stuck as unclaimable.
+  // Unlike "unmatched" above, "delivery_failed" stays re-claimable on this
+  // rail — it repeats a delivery for the SAME (order, amount) pairing a
+  // prior cycle already committed to, not a fresh amount guess.
+  it("a tx whose delivery failed is retryable — a later call with the same id succeeds instead of already_processed", async () => {
+    const order = await makePendingInternalOrder();
+    const binanceTxId = "tx-delivery-failed-retry-1";
+
+    await prisma.stockItem.updateMany({ where: { productId: sample.product.id }, data: { status: StockStatus.DEAD } });
+
+    await expect(
+      deliverPaidInternalOrder(prisma, { orderId: order.id, binanceTxId, amount: order.totalAmount }),
+    ).rejects.toThrow();
+
+    const failedLedger = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId } });
+    expect(failedLedger?.outcome).toBe("delivery_failed");
+    expect((await prisma.order.findUnique({ where: { id: order.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+
+    await prisma.stockItem.create({
+      data: { productId: sample.product.id, credentials: "retry-cred-binance-1@example.com:pwd", status: StockStatus.AVAILABLE },
+    });
+
+    const retry = await deliverPaidInternalOrder(prisma, { orderId: order.id, binanceTxId, amount: order.totalAmount });
+    expect(retry.status).toBe("delivered");
+    if (retry.status !== "delivered") throw new Error("expected delivered");
+    expect(retry.order.status).toBe(OrderStatus.DELIVERED);
 
     const ledgerRow = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId } });
     expect(ledgerRow?.outcome).toBe("matched");
@@ -334,8 +409,8 @@ describe("deliverPaidInternalOrder — re-claiming a tx id across non-delivering
     // (before the order-status check) simply stays "matched". That is a
     // pre-existing quirk of this rail, out of scope for Task 15, but it means
     // the terminal set is enforced here too: "matched" is excluded from
-    // NON_DELIVERING_OUTCOMES, so this trx id is correctly never reclaimable
-    // either way.
+    // AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES, so this trx id is correctly never
+    // reclaimable either way.
     const staleOrder = await makePendingInternalOrder();
     const staleTxId = "tx-terminal-stale-1";
     await prisma.order.update({ where: { id: staleOrder.id }, data: { status: OrderStatus.CANCELLED } });
@@ -390,24 +465,33 @@ describe("deliverPaidInternalOrder — re-claiming a tx id across non-delivering
     expect((await prisma.order.findUnique({ where: { id: otherOrder.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
   });
 
-  // Task 15 review, Important #1: widening the re-claim gate to "unmatched"
-  // introduced a new failure mode this rail is uniquely exposed to (its
-  // trxId matches by amount against ANY pending order, unlike the QRIS
-  // rails' 1:1 binding). Sequence: a transfer is recorded "unmatched" in one
-  // cycle; a later cycle matches it by amount to a DIFFERENT order that has
-  // since left PENDING_PAYMENT (expired, or delivered another way). The
-  // re-claim flips the row unmatched -> matched before the order-status
-  // check runs, so without the fix the row is stranded "matched" pointing at
-  // an order that received nothing — invisible to manualMatchTx and
-  // dismissUnmatchedTx, both of which require outcome "unmatched". The fix
-  // must revert the row to its pre-reclaim state so it stays manually
-  // matchable.
-  it("a re-claimed tx whose order turns out stale is reverted to unmatched, not stranded as matched", async () => {
-    const binanceTxId = "tx-unmatched-then-stale-1";
-    const recorded = await recordUnmatchedTx(prisma, { binanceTxId, amount: new Decimal("5") });
-    expect(recorded).toBe(true);
-
+  // Adapted from "a re-claimed tx whose order turns out stale is reverted to
+  // unmatched, not stranded as matched" (Task 15 review, Important #1): that
+  // test seeded the reclaim from "unmatched", which can no longer happen on
+  // this rail — "unmatched" is terminal again (see the module-fix note
+  // above), so a reclaim attempt against it now short-circuits to
+  // already_processed before ever touching the order (pinned by the
+  // money-loss regression test above). The revert-on-stale logic itself is
+  // still real and still needed for "delivery_failed", the one outcome that
+  // remains reclaimable on this rail — this test now seeds from that instead.
+  it("a re-claimed tx whose order turns out stale is reverted to delivery_failed, not stranded as matched", async () => {
+    const originalOrder = await makePendingInternalOrder();
+    // Created BEFORE stock is wiped below — createOrderDirect requires
+    // available stock at creation time even though this order's own status
+    // check (not stock) is what the test cares about.
     const staleOrder = await makePendingInternalOrder();
+    const binanceTxId = "tx-delivery-failed-then-stale-1";
+
+    await prisma.stockItem.updateMany({ where: { productId: sample.product.id }, data: { status: StockStatus.DEAD } });
+    await expect(
+      deliverPaidInternalOrder(prisma, { orderId: originalOrder.id, binanceTxId, amount: originalOrder.totalAmount }),
+    ).rejects.toThrow();
+    const failedLedger = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId } });
+    expect(failedLedger?.outcome).toBe("delivery_failed");
+    expect(failedLedger?.orderId).toBe(originalOrder.id);
+
+    // A later poller cycle re-claims the SAME tx id against a DIFFERENT
+    // order that has since left PENDING_PAYMENT (e.g. cancelled).
     await prisma.order.update({ where: { id: staleOrder.id }, data: { status: OrderStatus.CANCELLED } });
 
     const result = await deliverPaidInternalOrder(prisma, {
@@ -418,17 +502,21 @@ describe("deliverPaidInternalOrder — re-claiming a tx id across non-delivering
     expect(result.status).toBe("stale");
 
     const ledgerAfter = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId } });
-    expect(ledgerAfter?.outcome).toBe("unmatched");
-    expect(ledgerAfter?.orderId).toBeNull();
+    expect(ledgerAfter?.outcome).toBe("delivery_failed");
+    expect(ledgerAfter?.orderId).toBe(originalOrder.id);
 
-    // Still manually matchable: an admin's own recovery path must accept it.
-    const manuallyMatchableOrder = await makePendingInternalOrder();
-    await expect(
-      manualMatchTx(prisma, { binanceTxId, orderId: manuallyMatchableOrder.id, adminId: 1 }),
-    ).resolves.not.toThrow();
-    const finalLedger = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId } });
-    expect(finalLedger?.outcome).toBe("matched");
-    expect(finalLedger?.orderId).toBe(manuallyMatchableOrder.id);
+    // Still re-claimable — a later, legitimate poller pass can still deliver
+    // it (delivery_failed has no manual-match tool; recovery is automatic).
+    await prisma.stockItem.create({
+      data: { productId: sample.product.id, credentials: "retry-cred-binance-2@example.com:pwd", status: StockStatus.AVAILABLE },
+    });
+    const recoveryOrder = await makePendingInternalOrder();
+    const recovered = await deliverPaidInternalOrder(prisma, {
+      orderId: recoveryOrder.id,
+      binanceTxId,
+      amount: recoveryOrder.totalAmount,
+    });
+    expect(recovered.status).toBe("delivered");
   });
 });
 

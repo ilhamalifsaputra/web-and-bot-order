@@ -29,7 +29,7 @@ import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
 import { settleWalletTopup } from "./wallet_topup";
 import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
-import { NON_DELIVERING_OUTCOMES } from "./binance_internal";
+import { AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES } from "./binance_internal";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -158,20 +158,23 @@ export async function deliverPaidBybitOrder(
   args: { orderId: number; bybitTxId: string; amount: Decimal.Value },
 ): Promise<BybitDeliverResult> {
   // 1. Claim the tx id. A duplicate normally means another cycle already
-  //    handled it — UNLESS the prior claim's outcome is one of
-  //    NON_DELIVERING_OUTCOMES ("delivery_failed" or "unmatched"): neither of
-  //    those ever actually delivered anything, so the tx id must stay
+  //    handled it — UNLESS the prior claim's outcome is in
+  //    AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES (today just "delivery_failed"):
+  //    that never actually delivered anything, so the tx id must stay
   //    re-claimable, or the buyer's payment is silently lost forever behind a
-  //    stuck idempotency row (delivery_failed: H-3, backend audit
-  //    2026-07-31; unmatched: Task 15/16 — this rail matches by amount
-  //    against ANY pending order, the same shape as Binance Internal, so a
-  //    deposit that arrived while its true order was temporarily un-matchable
-  //    must not be lost forever). The reclaim is a compare-and-swap, not a
-  //    transaction: read the row, then gate a single `updateMany` on the
-  //    exact values that read returned. `count === 1` therefore PROVES the
-  //    row was still in that state at the instant of the write, so the
-  //    captured prior values are trustworthy; `count === 0` means a racer got
-  //    there first and already_processed is the right answer.
+  //    stuck idempotency row (H-3, backend audit 2026-07-31). "unmatched" is
+  //    deliberately NOT re-claimable on this rail: this deposit is matched to
+  //    a pending order purely by amount, with no memo — see
+  //    AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES's doc-comment
+  //    (binance_internal.ts) for the money-loss scenario that excluding it
+  //    fixes (an old stray "unmatched" deposit auto-matching a later,
+  //    unrelated order that happens to share its total). The reclaim is a
+  //    compare-and-swap, not a transaction: read the row, then gate a single
+  //    `updateMany` on the exact values that read returned. `count === 1`
+  //    therefore PROVES the row was still in that state at the instant of
+  //    the write, so the captured prior values are trustworthy; `count === 0`
+  //    means a racer got there first and already_processed is the right
+  //    answer.
   //
   //    An interactive $transaction would be worse here, not better — see
   //    deliverPaidInternalOrder (binance_internal.ts) step 1 for the full
@@ -194,7 +197,7 @@ export async function deliverPaidBybitOrder(
   } catch (e) {
     if (!isUniqueViolation(e)) throw e;
     const prior = await db.processedBybitTx.findUnique({ where: { bybitTxId: args.bybitTxId } });
-    if (!prior || !(NON_DELIVERING_OUTCOMES as readonly string[]).includes(prior.outcome)) {
+    if (!prior || !(AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES as readonly string[]).includes(prior.outcome)) {
       return { status: "already_processed" };
     }
     const reclaimed = await db.processedBybitTx.updateMany({
@@ -216,7 +219,8 @@ export async function deliverPaidBybitOrder(
         // instead of leaving the row "matched" against an order that never
         // got delivered. Left as "matched", the deposit would become
         // permanently unreachable: "matched" is excluded from
-        // NON_DELIVERING_OUTCOMES, so it can never be re-claimed again, and
+        // AMOUNT_MATCHED_RECLAIMABLE_OUTCOMES, so it can never be re-claimed
+        // again, and
         // there is no manual-match tool for Bybit either. A fresh claim
         // (reclaimedFrom === null) has nothing to undo — that row simply
         // stays "matched" against this now-stale order, the same

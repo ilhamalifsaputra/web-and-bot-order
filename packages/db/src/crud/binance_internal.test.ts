@@ -22,6 +22,7 @@ import {
   createOrderDirect,
   deliverPaidInternalOrder,
   recordUnmatchedTx,
+  manualMatchTx,
   createCategory,
   createCatalogProduct,
   createDenomination,
@@ -359,6 +360,74 @@ describe("deliverPaidInternalOrder — re-claiming a tx id across non-delivering
     expect((await prisma.order.findUnique({ where: { id: otherOrderForStale.id } }))!.status).toBe(
       OrderStatus.PENDING_PAYMENT,
     );
+  });
+
+  // Task 15 review, Minor #3: this rail's own code never writes outcome
+  // "stale" (see the comment above), so the "Terminal outcome 3" case just
+  // above is really a second "matched" case wearing a stale label — it does
+  // not exercise a row whose outcome column actually reads "stale". Seed one
+  // directly (the way the three QRIS ledgers write it) and confirm the
+  // negative pin holds for a genuine "stale" row too.
+  it("a directly-seeded 'stale'-outcome row (as the QRIS rails write it) is never re-claimed", async () => {
+    const seedOrder = await makePendingInternalOrder();
+    const staleTxId = "tx-seeded-stale-1";
+    await prisma.processedBinanceTx.create({
+      data: { binanceTxId: staleTxId, orderId: seedOrder.id, amount: new Decimal("5"), outcome: "stale" },
+    });
+
+    const otherOrder = await makePendingInternalOrder();
+    const result = await deliverPaidInternalOrder(prisma, {
+      orderId: otherOrder.id,
+      binanceTxId: staleTxId,
+      amount: otherOrder.totalAmount,
+    });
+
+    expect(result.status).toBe("already_processed");
+    const ledgerAfter = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: staleTxId } });
+    expect(ledgerAfter?.outcome).toBe("stale");
+    expect(ledgerAfter?.orderId).toBe(seedOrder.id);
+    expect((await prisma.order.findUnique({ where: { id: otherOrder.id } }))!.status).toBe(OrderStatus.PENDING_PAYMENT);
+  });
+
+  // Task 15 review, Important #1: widening the re-claim gate to "unmatched"
+  // introduced a new failure mode this rail is uniquely exposed to (its
+  // trxId matches by amount against ANY pending order, unlike the QRIS
+  // rails' 1:1 binding). Sequence: a transfer is recorded "unmatched" in one
+  // cycle; a later cycle matches it by amount to a DIFFERENT order that has
+  // since left PENDING_PAYMENT (expired, or delivered another way). The
+  // re-claim flips the row unmatched -> matched before the order-status
+  // check runs, so without the fix the row is stranded "matched" pointing at
+  // an order that received nothing — invisible to manualMatchTx and
+  // dismissUnmatchedTx, both of which require outcome "unmatched". The fix
+  // must revert the row to its pre-reclaim state so it stays manually
+  // matchable.
+  it("a re-claimed tx whose order turns out stale is reverted to unmatched, not stranded as matched", async () => {
+    const binanceTxId = "tx-unmatched-then-stale-1";
+    const recorded = await recordUnmatchedTx(prisma, { binanceTxId, amount: new Decimal("5") });
+    expect(recorded).toBe(true);
+
+    const staleOrder = await makePendingInternalOrder();
+    await prisma.order.update({ where: { id: staleOrder.id }, data: { status: OrderStatus.CANCELLED } });
+
+    const result = await deliverPaidInternalOrder(prisma, {
+      orderId: staleOrder.id,
+      binanceTxId,
+      amount: staleOrder.totalAmount,
+    });
+    expect(result.status).toBe("stale");
+
+    const ledgerAfter = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId } });
+    expect(ledgerAfter?.outcome).toBe("unmatched");
+    expect(ledgerAfter?.orderId).toBeNull();
+
+    // Still manually matchable: an admin's own recovery path must accept it.
+    const manuallyMatchableOrder = await makePendingInternalOrder();
+    await expect(
+      manualMatchTx(prisma, { binanceTxId, orderId: manuallyMatchableOrder.id, adminId: 1 }),
+    ).resolves.not.toThrow();
+    const finalLedger = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId } });
+    expect(finalLedger?.outcome).toBe("matched");
+    expect(finalLedger?.orderId).toBe(manuallyMatchableOrder.id);
   });
 });
 

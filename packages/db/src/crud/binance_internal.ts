@@ -13,6 +13,7 @@ import { Decimal } from "@app/core/money";
 import { logger } from "@app/core/logger";
 import { ValidationError } from "@app/core/errors";
 import { startOfDayUtc } from "@app/core/datetime";
+import type { ProcessedBinanceTx } from "@prisma/client";
 import type { PrismaClient, Tx } from "../client";
 import type { Db } from "./_types";
 import { isUniqueViolation } from "./_types";
@@ -216,21 +217,33 @@ export async function deliverPaidInternalOrder(
   //    those ever actually delivered anything, so the tx id must stay
   //    re-claimable, or the buyer's payment is silently lost forever behind a
   //    stuck idempotency row (delivery_failed: H-3, backend audit
-  //    2026-07-31; unmatched: Task 15). Re-claiming is a single atomic UPDATE
-  //    gated on that outcome set — SQLite serializes writers, so if two
-  //    retries race, exactly one `updateMany` sees count=1 and proceeds; the
-  //    other sees count=0 and correctly reports already_processed.
+  //    2026-07-31; unmatched: Task 15). The read-then-update runs inside its
+  //    own short $transaction so SQLite serializes the pair atomically: if
+  //    two retries race, exactly one transaction sees a still-matching
+  //    outcome and reclaims it; the other sees none and correctly reports
+  //    already_processed. `reclaimedFrom` remembers exactly what the reclaim
+  //    overwrote (outcome/orderId/amount) so step 2 can put it back if this
+  //    turns out to be a stale match — unlike the three QRIS rails, one
+  //    Binance transfer can be re-tried against ANY pending order by amount,
+  //    so a reclaim that turns out stale here must not strand the row
+  //    outside the manual-match queue (Task 15 review, Important #1).
+  let reclaimedFrom: Pick<ProcessedBinanceTx, "outcome" | "orderId" | "amount"> | null = null;
   try {
     await db.processedBinanceTx.create({
       data: { binanceTxId: args.binanceTxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
     });
   } catch (e) {
     if (!isUniqueViolation(e)) throw e;
-    const reclaimed = await db.processedBinanceTx.updateMany({
-      where: { binanceTxId: args.binanceTxId, outcome: { in: [...NON_DELIVERING_OUTCOMES] } },
-      data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
+    reclaimedFrom = await db.$transaction(async (tx: Tx) => {
+      const prior = await tx.processedBinanceTx.findUnique({ where: { binanceTxId: args.binanceTxId } });
+      if (!prior || !(NON_DELIVERING_OUTCOMES as readonly string[]).includes(prior.outcome)) return null;
+      await tx.processedBinanceTx.update({
+        where: { binanceTxId: args.binanceTxId },
+        data: { orderId: args.orderId, amount: new Decimal(args.amount), outcome: "matched" },
+      });
+      return { outcome: prior.outcome, orderId: prior.orderId, amount: prior.amount };
     });
-    if (reclaimed.count === 0) return { status: "already_processed" };
+    if (!reclaimedFrom) return { status: "already_processed" };
   }
 
   // 2. Deliver. On failure, flag the ledger row so we don't silently retry
@@ -239,6 +252,25 @@ export async function deliverPaidInternalOrder(
     return await db.$transaction(async (tx: Tx) => {
       const order = await getOrder(tx, args.orderId);
       if (!order || order.status !== OrderStatus.PENDING_PAYMENT) {
+        // If step 1 re-claimed this row from a non-delivering outcome, undo
+        // that claim — restore the outcome/orderId/amount it overwrote —
+        // instead of leaving the row "matched" against an order that never
+        // got delivered. Left as "matched", the transfer would become
+        // permanently unreachable: "matched" is excluded from
+        // NON_DELIVERING_OUTCOMES (so it can never be re-claimed again), and
+        // both manualMatchTx and dismissUnmatchedTx refuse anything whose
+        // outcome isn't "unmatched" — an admin's own recovery tooling would
+        // refuse the very row their alert points at. A fresh claim
+        // (reclaimedFrom === null) has nothing to undo — that row simply
+        // stays "matched" against this now-stale order, the same pre-existing
+        // behavior as before Task 15 and out of scope here (see the "tx
+        // already delivered is never re-claimed" test).
+        if (reclaimedFrom) {
+          await tx.processedBinanceTx.update({
+            where: { binanceTxId: args.binanceTxId },
+            data: { outcome: reclaimedFrom.outcome, orderId: reclaimedFrom.orderId, amount: reclaimedFrom.amount },
+          });
+        }
         return { status: "stale" as const };
       }
       if (order.kind === OrderKind.WALLET_TOPUP) {
@@ -366,12 +398,39 @@ export type TxOutcome = (typeof TX_OUTCOMES)[number];
  * on must stay re-claimable by a later callback/poller pass — otherwise a
  * real payment that merely arrived while its order was temporarily
  * un-matchable (wrong method/currency, a short payment later topped up) gets
- * permanently stuck behind the trxId UNIQUE gate (Task 15). The complement —
- * "matched" | "overpaid" | "stale" — is the terminal set and must NEVER be
- * re-claimable: each of those means a delivery attempt actually ran (and,
- * for "stale", the surrounding $transaction re-checked the order was still
- * PENDING_PAYMENT before returning), so re-claiming one risks a second
- * delivery attempt racing/duplicating a settlement that already happened. */
+ * permanently stuck behind the trxId UNIQUE gate (Task 15). The terminal set
+ * that must NEVER be re-claimable *includes* "matched", "overpaid", and
+ * "stale" (each means a delivery attempt actually ran, so re-claiming risks
+ * a second attempt racing/duplicating a settlement that already happened) —
+ * but it is not exactly the complement of NON_DELIVERING_OUTCOMES:
+ * TX_OUTCOMES below also lists "underpaid", "credited_to_balance", and
+ * "dismissed", which are equally terminal/non-re-claimable but out of this
+ * fix's scope (see the "underpaid" note below).
+ *
+ * "stale" is deliberately NOT a member of TX_OUTCOMES: it's a QRIS-only
+ * label — tokopay.ts/paydisini.ts/nowpayments.ts each stamp their ledger row
+ * "stale" (through `tx`, inside the $transaction) when the trxId's order is
+ * no longer PENDING_PAYMENT, because on those rails a trxId binds 1:1 to one
+ * order, so "stale" there just means that order already left
+ * PENDING_PAYMENT. deliverPaidInternalOrder never stamps "stale": it matches
+ * one transfer against ANY pending order by amount, so a stale outcome here
+ * can follow a genuine re-claim — instead of a generic terminal label, the
+ * stale branch restores the exact outcome/orderId/amount the re-claim
+ * overwrote, keeping the row in the manual-match queue rather than
+ * stranding it as an unreachable "matched" (Task 15 review, Important #1).
+ *
+ * bybit_deposit.ts and bybit_bsc_deposit.ts do NOT use this set yet — they
+ * still gate re-claim on the narrower `outcome: "delivery_failed"` alone.
+ * Their trxId binds 1:1 to one order like the QRIS rails, so the same
+ * widening applies there too; folding them into NON_DELIVERING_OUTCOMES is
+ * deliberately deferred to the next task, not an oversight here.
+ *
+ * "underpaid" (written by markUnderpaid below) was considered and left out
+ * on purpose: nothing is delivered for it either, so by this fix's own logic
+ * that trxId is blocked the same way — but it already has its own admin
+ * recovery path (UNDERPAID order status → deliver-anyway or refund-to-wallet)
+ * that doesn't depend on the trxId ever being re-claimable, so it isn't the
+ * same money-loss shape this fix addresses. */
 export const NON_DELIVERING_OUTCOMES = ["unmatched", "delivery_failed"] as const;
 
 type LinkedOrder = { id: number; orderCode: string; status: string; totalAmount: Decimal };

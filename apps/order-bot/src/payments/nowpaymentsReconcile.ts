@@ -41,8 +41,12 @@ import { adminIds } from "@app/core/runtime";
 import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
-import { HTTP_TIMEOUT_MS } from "@app/core/http";
 import { getPaymentStatus } from "@app/core/payments/nowpayments";
+import {
+  MAX_ORDERS_PER_CYCLE,
+  RECONCILE_TELEGRAM_TIMEOUT_MS,
+  NOWPAYMENTS_RECONCILE_CYCLE_TIMEOUT_MS,
+} from "@app/core/payments/reconcileCycleBudget";
 import {
   prisma,
   getNowpaymentsCreds,
@@ -55,11 +59,13 @@ import { createPollLoop } from "./pollLoop";
 
 type PendingOrder = Awaited<ReturnType<typeof listPendingNowpaymentsOrders>>[number];
 
-/** Wait at most this long for a Telegram call on the reconcile path. grammY's
- * own client default is 500s, which is longer than this rail's whole cycle
- * budget — so without this bound a single hung admin alert could eat nearly
- * the entire cycle. Mirrors TokoPay/PayDisini's constant of the same name. */
-export const RECONCILE_TELEGRAM_TIMEOUT_MS = 5_000;
+// RECONCILE_TELEGRAM_TIMEOUT_MS (wait-at-most for a Telegram call on the
+// reconcile path — grammY's own client default is 500s, longer than this
+// rail's whole cycle budget, so without this bound a single hung admin
+// alert could eat nearly the entire cycle) now lives in
+// packages/core/src/payments/reconcileCycleBudget.ts (Task 13 review
+// follow-up), shared with TokoPay/PayDisini's identical constant.
+export { MAX_ORDERS_PER_CYCLE, RECONCILE_TELEGRAM_TIMEOUT_MS };
 
 /** Race `promise` against `timeoutMs`; resolves `"timeout"` if the deadline
  * wins. The underlying grammY call isn't cancelled when this loses the race —
@@ -182,45 +188,20 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   return "ok";
 }
 
-/** Cap on how many pending orders one reconcile cycle checks against the
- * gateway, oldest first (closest to auto-cancelling, so a large backlog
- * still gets its most time-sensitive orders checked every cycle instead of
- * one unbounded sequential sweep). Orders beyond the cap simply wait for the
- * next cycle, `POLL_INTERVAL_SECONDS` later: the webhook (IPN) is still the
- * PRIMARY delivery path (see the module doc-comment) — this poller only
- * fills the gap when the webhook can't reach the app, so a capped order
- * waiting one extra cycle only delays the safety net catching it, never the
- * normal delivery path. (Task 11.) */
-export const MAX_ORDERS_PER_CYCLE = 50;
-
-// cycleTimeoutMs derivation (Task 3 review follow-up shape — see
-// bybitBscConfirmationTracker.ts's TRACKER_CYCLE_TIMEOUT_MS for the worked
-// precedent this mirrors): one cycle makes at most MAX_ORDERS_PER_CYCLE
-// sequential getPaymentStatus calls, each individually bounded at
-// HTTP_TIMEOUT_MS.gatewayRead (10s). An order whose delivery then throws also
-// sends an admin alert, bounded at RECONCILE_TELEGRAM_TIMEOUT_MS (5s) — that
-// term is charged per order because grammY's own client default is 500s,
-// longer than this whole cycle budget, so an unbounded alert could otherwise
-// consume it single-handedly. So PER_ORDER_WORST_CASE_MS is their sum (15s)
-// and the raw worst case is 750_000ms at today's cap/timeouts, pessimistically
-// assuming every order both answers slowly AND fails delivery. +30s margin
-// covers the DB list/deliver work around those calls each cycle.
-//
-// Unlike TokoPay/PayDisini there is no bubble-sweep term: this rail has no
-// anchored QR bubble to flip, so `pollOnce` ends after the order loop.
-const PER_ORDER_WORST_CASE_MS = HTTP_TIMEOUT_MS.gatewayRead + RECONCILE_TELEGRAM_TIMEOUT_MS;
-const CYCLE_TIMEOUT_MARGIN_MS = 30_000;
-/** MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS + margin = 780_000 —
- * passed to `createPollLoop` below as this rail's `cycleTimeoutMs`. Exported
- * (Task 11 review follow-up, Minor #5) so the wiring test imports the real
- * value instead of a hardcoded copy that could silently drift from it.
- *
- * Sanity check, enforced by a test rather than narrated here: this must stay
- * under half of NOWPAYMENTS_PAYMENT_WINDOW_MINUTES (the key that governs THIS
- * rail's order expiry — not the shared PAYMENT_WINDOW_MINUTES the IDR rails
- * use), or a hung cycle silences the safety net for most of the window an
- * order has to be paid in. */
-export const RECONCILE_CYCLE_TIMEOUT_MS = MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
+// MAX_ORDERS_PER_CYCLE (cap on pending orders checked per cycle, oldest
+// first — the webhook/IPN callback stays the PRIMARY delivery path, this
+// poller only fills the gap when it can't reach the app, Task 11) and
+// RECONCILE_CYCLE_TIMEOUT_MS (this rail's cycleTimeoutMs, passed to
+// createPollLoop below) both now live in
+// packages/core/src/payments/reconcileCycleBudget.ts as
+// NOWPAYMENTS_RECONCILE_CYCLE_TIMEOUT_MS (Task 13 review follow-up) — see
+// that module for the full derivation (unlike TokoPay/PayDisini there is no
+// bubble-sweep term: this rail has no anchored QR bubble to flip, so
+// `pollOnce` ends after the order loop), including the
+// NOWPAYMENTS_PAYMENT_WINDOW_MINUTES sanity check (enforced as a test in
+// poll-loop-wiring.test.ts). Re-exported under this file's original name so
+// existing imports (the wiring test, jobs/index.ts) keep working unchanged.
+export const RECONCILE_CYCLE_TIMEOUT_MS = NOWPAYMENTS_RECONCILE_CYCLE_TIMEOUT_MS;
 
 export async function pollOnce(api: Api, isCurrent: () => boolean = () => true): Promise<void> {
   const creds = await getNowpaymentsCreds(prisma);

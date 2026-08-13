@@ -9,6 +9,11 @@ import { startOfDayUtc, addDays } from "@app/core/datetime";
 import { Decimal } from "@app/core/money";
 import { config } from "@app/core/config";
 import { evaluatePollHealth, type PollHealthEvaluation } from "@app/core/payments/pollHealth";
+import {
+  TOKOPAY_POLL_STALE_MS,
+  PAYDISINI_POLL_STALE_MS,
+  NOWPAYMENTS_POLL_STALE_MS,
+} from "@app/core/payments/reconcileCycleBudget";
 import { displayDateTime } from "../../dateDisplay";
 import {
   prisma,
@@ -196,9 +201,21 @@ export default async function dashboardApiRoutes(app: FastifyInstance): Promise<
       binance: toEntry(evaluatePollHealth(binanceHealth, { enabled: binanceConfig.enabled })),
       bybit: toEntry(evaluatePollHealth(bybitHealth, { enabled: bybitConfig.enabled })),
       bybitBsc: toEntry(evaluatePollHealth(bybitBscHealth, { enabled: bybitBscConfig.enabled })),
-      tokopay: toEntry(evaluatePollHealth(tokopayHealth, { enabled: tokopayEnabled })),
-      paydisini: toEntry(evaluatePollHealth(paydisiniHealth, { enabled: paydisiniEnabled })),
-      nowpayments: toEntry(evaluatePollHealth(nowpaymentsHealth, { enabled: nowpaymentsEnabled })),
+      // The three QRIS/IDR rails pass their own, much wider staleMs — same as
+      // tokopayPollWatchdog and its two twins (apps/order-bot/src/jobs/
+      // index.ts) — instead of evaluatePollHealth's 5-minute crypto-rail
+      // default. One reconcile cycle on these rails can legitimately make up
+      // to 50 sequential, individually-timed-out gateway calls, so a cycle
+      // that runs several minutes past the 5-minute mark is ordinary
+      // slowness, not a hang; using the default here would turn this card red
+      // while the watchdog stays correctly silent — the exact
+      // three-consumers-three-rules divergence this branch's P1 exists to
+      // prevent (Task 13 review follow-up). See
+      // packages/core/src/payments/reconcileCycleBudget.ts for the shared
+      // derivation both this endpoint and the watchdog read.
+      tokopay: toEntry(evaluatePollHealth(tokopayHealth, { enabled: tokopayEnabled, staleMs: TOKOPAY_POLL_STALE_MS })),
+      paydisini: toEntry(evaluatePollHealth(paydisiniHealth, { enabled: paydisiniEnabled, staleMs: PAYDISINI_POLL_STALE_MS })),
+      nowpayments: toEntry(evaluatePollHealth(nowpaymentsHealth, { enabled: nowpaymentsEnabled, staleMs: NOWPAYMENTS_POLL_STALE_MS })),
     };
   });
 

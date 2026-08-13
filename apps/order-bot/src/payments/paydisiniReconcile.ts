@@ -25,8 +25,14 @@ import { logger } from "@app/core/logger";
 import { nudgeOutboxDispatcher } from "@app/core/nudge";
 import { Decimal } from "@app/core/money";
 import { t as coreT } from "@app/core/i18n";
-import { HTTP_TIMEOUT_MS } from "@app/core/http";
 import { checkTransaction } from "@app/core/payments/paydisini";
+import {
+  MAX_ORDERS_PER_CYCLE,
+  RECONCILE_TELEGRAM_TIMEOUT_MS,
+  SWEEP_EDIT_TIMEOUT_MS,
+  SWEEP_TOTAL_BUDGET_MS,
+  PAYDISINI_RECONCILE_CYCLE_TIMEOUT_MS,
+} from "@app/core/payments/reconcileCycleBudget";
 import {
   prisma,
   getPaydisiniCreds,
@@ -71,41 +77,15 @@ async function editBubbleToSuccess(api: Api, order: AnchoredOrder): Promise<void
   }
 }
 
-/** Per-order budget for waiting on a sweep bubble edit (Task 11 review
- * follow-up, Important #2). grammY's Api client DOES have a built-in
- * per-call timeout (`ApiClientOptions.timeoutSeconds`, verified against
- * grammy@1.43.0's `core/client.js` — an `AbortController`-backed deadline,
- * defaulting to 500s). An earlier version of this comment claimed the
- * opposite (no built-in timeout at all), which is what let the cycle-timeout
- * derivation below balloon to ~17 minutes (Task 11 review follow-up,
- * Important #3: it charged this cosmetic bubble-flip sweep the same
- * 10s-per-row budget as a money-bearing gateway call, then multiplied by the
- * full MAX_ORDERS_PER_CYCLE cap). A LATER fix then swung the other way and
- * set `client: { timeoutSeconds: 30 }` bot-wide in main.ts on the theory that
- * one knob could bound every Telegram call at once — that broke the bot's
- * own long-poll update loop (grammY applies the client timeout to
- * `getUpdates` too, with no exemption) and was reverted (Task 11 review
- * follow-up, Critical #1). There is no bot-wide bound today: this constant is
- * the ONLY thing standing between the sweep's edit calls and grammY's 500s
- * per-call default, and it does that job on its own via `withTimeout` below.
- * Exported (same reasoning as MAX_ORDERS_PER_CYCLE/RECONCILE_CYCLE_TIMEOUT_MS
- * below) so tests import the real value instead of a hardcoded copy that
- * could silently drift. */
-export const SWEEP_EDIT_TIMEOUT_MS = 10_000;
-
-/** Whole-sweep wall-clock budget (Task 11 review follow-up, Important #3):
- * this sweep is a cosmetic caption flip on orders already DELIVERED —
- * idempotent, retried next cycle, and normally an empty list — never a
- * money-bearing gateway call, so it does not deserve `cap × per-row worst
- * case` in the cycle-timeout derivation the way the reconcile loop's real
- * gateway calls do. `sweepDeliveredAwaitingEdit` checks this between rows and
- * gives up on the REST of the batch once it's exceeded, leaving their anchors
- * in place for the next cycle to retry (same accepted trade-off a per-row
- * timeout already makes). 30s is ample for a normally-empty or small sweep;
- * see RECONCILE_CYCLE_TIMEOUT_MS below for how this and SWEEP_EDIT_TIMEOUT_MS
- * combine into the cycle deadline. Exported for the same reason as
- * SWEEP_EDIT_TIMEOUT_MS above. */
-export const SWEEP_TOTAL_BUDGET_MS = 30_000;
+// SWEEP_EDIT_TIMEOUT_MS (per-edit budget) and SWEEP_TOTAL_BUDGET_MS
+// (whole-sweep wall-clock budget) — Task 11 review follow-up, Important #2
+// and #3 — now live in packages/core/src/payments/reconcileCycleBudget.ts
+// (Task 13 review follow-up), shared with TokoPay's identical sweep and with
+// the cycle-timeout/staleness-threshold derivations both the watchdog and
+// the web-admin dashboard read; see that module for the full reasoning
+// behind both values. Re-imported above so this file's own logic
+// (sweepDeliveredAwaitingEdit below) and RECONCILE_CYCLE_TIMEOUT_MS's
+// derivation still read from a single canonical source.
 
 /** Race `promise` against `timeoutMs`; resolves `"timeout"` if the deadline
  * wins. The underlying grammY call isn't cancelled when this loses the race —
@@ -190,8 +170,14 @@ export async function sweepDeliveredAwaitingEdit(
  * media, unlike a fresh checkout's QR photo) reliably finishes in well under
  * a second in the normal case, so 5s stays generous while keeping the
  * cycle-timeout arithmetic well clear of PAYMENT_WINDOW_MINUTES (see
- * RECONCILE_CYCLE_TIMEOUT_MS below). */
-export const RECONCILE_TELEGRAM_TIMEOUT_MS = 5_000;
+ * RECONCILE_CYCLE_TIMEOUT_MS below).
+ *
+ * RECONCILE_TELEGRAM_TIMEOUT_MS itself now lives in
+ * packages/core/src/payments/reconcileCycleBudget.ts (Task 13 review
+ * follow-up), shared with TokoPay/NOWPayments and re-imported above, so it,
+ * MAX_ORDERS_PER_CYCLE, and RECONCILE_CYCLE_TIMEOUT_MS below are all one
+ * canonical value the web-admin dashboard can also read. */
+export { MAX_ORDERS_PER_CYCLE, RECONCILE_TELEGRAM_TIMEOUT_MS, SWEEP_EDIT_TIMEOUT_MS, SWEEP_TOTAL_BUDGET_MS };
 
 /** Wait at most RECONCILE_TELEGRAM_TIMEOUT_MS for the success-bubble edit,
  * then clear the anchor only once the edit genuinely completed — a timed-out
@@ -281,66 +267,18 @@ export async function reconcileOrder(api: Api, creds: Awaited<ReturnType<typeof 
   return "ok";
 }
 
-/** Cap on how many pending orders one reconcile cycle checks against the
- * gateway, oldest first (closest to auto-cancelling, so a large backlog
- * still gets its most time-sensitive orders checked every cycle instead of
- * one unbounded sequential sweep). Orders beyond the cap simply wait for the
- * next cycle, `POLL_INTERVAL_SECONDS` later: the storefront webhook is still
- * the PRIMARY delivery path (see the module doc-comment) — this poller only
- * fills the gap when the webhook can't reach the app, so a capped order
- * waiting one extra cycle only delays the safety net catching it, never the
- * normal delivery path. (Task 11.) */
-export const MAX_ORDERS_PER_CYCLE = 50;
-
-// cycleTimeoutMs derivation (Task 3 review follow-up shape — see
-// bybitBscConfirmationTracker.ts's TRACKER_CYCLE_TIMEOUT_MS for the worked
-// precedent this mirrors): one cycle makes at most MAX_ORDERS_PER_CYCLE
-// sequential checkTransaction calls, each individually bounded at
-// HTTP_TIMEOUT_MS.gatewayRead (10s). An order that comes back paid can then
-// make ONE more bounded Telegram call inline — editBubbleToSuccess or
-// alertAdmins, mutually exclusive per order (see editBubbleAndClear /
-// RECONCILE_TELEGRAM_TIMEOUT_MS above), both wrapped in withTimeout at 5s
-// since Task 11 review follow-up, Critical #1 removed main.ts's bot-wide
-// client timeout. So PER_ORDER_WORST_CASE_MS is their sum (15s), and
-// MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS is the raw worst case for
-// the reconcile loop (750_000ms at today's cap/timeouts — pessimistically
-// assuming every order in the batch turns out freshly paid).
-//
-// sweepDeliveredAwaitingEdit runs alongside it — Task 11 review follow-up,
-// Important #3 corrected an earlier version of this derivation that charged
-// the sweep `MAX_ORDERS_PER_CYCLE × SWEEP_EDIT_TIMEOUT_MS` (another
-// 500_000ms, on top of the reconcile loop's own worst case — a false
-// premise: see SWEEP_EDIT_TIMEOUT_MS's own doc-comment for why treating a
-// cosmetic bubble-flip sweep as deserving a money-bearing gateway call's
-// budget was the real bug). The sweep now contributes its OWN flat worst
-// case instead: SWEEP_TOTAL_BUDGET_MS + one more in-flight
-// SWEEP_EDIT_TIMEOUT_MS (the budget is only checked BETWEEN rows, so the row
-// in flight when the budget is crossed still gets to finish) = 40_000ms.
-//
-// +30s margin covers the remaining DB list/deliver work around both loops.
-const PER_ORDER_WORST_CASE_MS = HTTP_TIMEOUT_MS.gatewayRead + RECONCILE_TELEGRAM_TIMEOUT_MS;
-const SWEEP_WORST_CASE_MS = SWEEP_TOTAL_BUDGET_MS + SWEEP_EDIT_TIMEOUT_MS;
-const CYCLE_TIMEOUT_MARGIN_MS = 30_000;
-/** MAX_ORDERS_PER_CYCLE × PER_ORDER_WORST_CASE_MS (reconcile, 750_000) +
- * SWEEP_WORST_CASE_MS (sweep, 40_000) + margin (30_000) = 820_000 (~13m40s) —
- * passed to `createPollLoop` below as this rail's `cycleTimeoutMs`. Exported
- * (Task 11 review follow-up, Minor #5) so the wiring test imports the real
- * value instead of a hardcoded copy that could silently drift from it.
- *
- * Sanity check against PAYMENT_WINDOW_MINUTES (Task 11 review follow-up,
- * Important #3, enforced as a test rather than just narrated here per Minor
- * #4 — see poll-loop-wiring.test.ts): a cycle deadline eating more than half
- * an order's payment window means a single hung cycle can, on its own, do
- * ZERO reconciliation for most of that order's life with the safety net
- * switched off — the signal the arithmetic above has left reality (this is
- * exactly how the previous ~17m10s value was found: 1_030_000ms is 57% of
- * the default 30-minute window). At 820_000ms against the same default
- * 30-minute (1_800_000ms) window, this is ~46% — still comfortably under
- * that line, though closer to it than the pre-Critical-#1 570_000ms (~32%)
- * was: bounding the payment-path Telegram calls costs real cycle-timeout
- * budget, it doesn't eliminate the need for one. */
-export const RECONCILE_CYCLE_TIMEOUT_MS =
-  MAX_ORDERS_PER_CYCLE * PER_ORDER_WORST_CASE_MS + SWEEP_WORST_CASE_MS + CYCLE_TIMEOUT_MARGIN_MS;
+// MAX_ORDERS_PER_CYCLE (cap on pending orders checked per cycle, oldest
+// first — the storefront webhook stays the PRIMARY delivery path, this
+// poller only fills the gap when it can't reach the app, Task 11) and
+// RECONCILE_CYCLE_TIMEOUT_MS (this rail's cycleTimeoutMs, passed to
+// createPollLoop below) both now live in
+// packages/core/src/payments/reconcileCycleBudget.ts as
+// PAYDISINI_RECONCILE_CYCLE_TIMEOUT_MS (Task 13 review follow-up) — see that
+// module for the full derivation, including the PAYMENT_WINDOW_MINUTES
+// sanity check (enforced as a test in poll-loop-wiring.test.ts). Re-exported
+// under this file's original name so existing imports (the wiring test,
+// jobs/index.ts) keep working unchanged.
+export const RECONCILE_CYCLE_TIMEOUT_MS = PAYDISINI_RECONCILE_CYCLE_TIMEOUT_MS;
 
 export async function pollOnce(api: Api, isCurrent: () => boolean = () => true): Promise<void> {
   const creds = await getPaydisiniCreds(prisma);

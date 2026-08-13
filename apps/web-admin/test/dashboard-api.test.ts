@@ -18,6 +18,7 @@ import {
   POLL_HEALTH_KEYS,
 } from "@app/db";
 import { TOKOPAY_MERCHANT_KEY, TOKOPAY_SECRET_KEY } from "@app/core/payments/tokopay";
+import { TOKOPAY_POLL_STALE_MS } from "@app/core/payments/reconcileCycleBudget";
 import { resetDb } from "../../../tests/helpers/sampleData";
 import { buildApp } from "../src/server";
 import { makeSession, newJti, sessionJtiKey } from "../src/auth";
@@ -314,6 +315,56 @@ describe("GET /api/dashboard/health", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.tokopay.status).toBe("unmonitored");
+  });
+
+  // Whole-branch review finding (Task 13): this endpoint used to call
+  // evaluatePollHealth(tokopayHealth, { enabled: tokopayEnabled }) with no
+  // `staleMs`, so it applied the crypto rails' 5-minute default to TokoPay
+  // too — even though tokopayPollWatchdog (apps/order-bot/src/jobs/index.ts)
+  // uses a much wider ~866s threshold (TOKOPAY_POLL_STALE_MS) because one
+  // TokoPay reconcile cycle can legitimately make up to 50 sequential,
+  // individually-timed-out gateway calls. A webhook outage plus a slow
+  // gateway can make a genuinely healthy cycle take 8 minutes — past the
+  // 5-minute default, comfortably inside TokoPay's real threshold. Before
+  // the fix, the card read red ("the poller appears stuck or stopped")
+  // while the watchdog correctly stayed silent — the exact three-consumers-
+  // three-rules divergence this branch's P1 exists to prevent, reappearing
+  // at the seam between the watchdog task and this dashboard task.
+  it("reports an enabled TokoPay poller whose last cycle is 8 minutes old as healthy, not red, because that is within TokoPay's own wider staleness window", async () => {
+    await setSetting(prisma, TOKOPAY_MERCHANT_KEY, "merchant-1");
+    await setSetting(prisma, TOKOPAY_SECRET_KEY, "secret-1");
+    const eightMinutesAgo = new Date(Date.now() - 8 * 60_000).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.tokopay,
+      JSON.stringify({ lastRun: eightMinutesAgo, lastSuccessAt: eightMinutesAgo, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.tokopay.status).not.toBe("red");
+    expect(body.tokopay.status).toBe("green");
+  });
+
+  // Mirror of the test above: once a TokoPay cycle really is older than its
+  // OWN widened staleness threshold (not the crypto rails' 5-minute default),
+  // the card must still turn red — the fix must not silence a genuine hang,
+  // only stop paging on ordinary slowness.
+  it("reports an enabled TokoPay poller as red once its last cycle is older than its own widened staleness threshold", async () => {
+    await setSetting(prisma, TOKOPAY_MERCHANT_KEY, "merchant-1");
+    await setSetting(prisma, TOKOPAY_SECRET_KEY, "secret-1");
+    const staleAt = new Date(Date.now() - (TOKOPAY_POLL_STALE_MS + 5_000)).toISOString();
+    await setSetting(
+      prisma,
+      POLL_HEALTH_KEYS.tokopay,
+      JSON.stringify({ lastRun: staleAt, lastSuccessAt: staleAt, consecutiveFailures: 0 }),
+    );
+
+    const res = await get("/api/dashboard/health", cookie);
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.tokopay.status).toBe("red");
   });
 });
 

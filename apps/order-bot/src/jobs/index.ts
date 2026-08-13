@@ -13,7 +13,6 @@ import { GrammyError, type Api } from "grammy";
 import { adminIds } from "@app/core/runtime";
 import { langCode } from "@app/core/enums";
 import { logger } from "@app/core/logger";
-import { config } from "@app/core/config";
 import {
   prisma,
   listExpiredPendingOrders,
@@ -52,13 +51,15 @@ import { flashPrice } from "@app/core/flash";
 import { formatIdr } from "@app/core/formatters";
 import { localize } from "@app/core/datetime";
 import { evaluatePollHealth, type PollHeartbeat } from "@app/core/payments/pollHealth";
+import {
+  TOKOPAY_POLL_STALE_MS,
+  PAYDISINI_POLL_STALE_MS,
+  NOWPAYMENTS_POLL_STALE_MS,
+} from "@app/core/payments/reconcileCycleBudget";
 import { coreT } from "../util/i18n";
 import { notificationKb } from "../keyboards/customer";
 import { esc } from "../util/format";
 import { broadcastPhotoArg, cacheBroadcastPhotoFileId } from "../util/broadcastPhoto";
-import { RECONCILE_CYCLE_TIMEOUT_MS as TOKOPAY_CYCLE_TIMEOUT_MS } from "../payments/tokopayReconcile";
-import { RECONCILE_CYCLE_TIMEOUT_MS as PAYDISINI_CYCLE_TIMEOUT_MS } from "../payments/paydisiniReconcile";
-import { RECONCILE_CYCLE_TIMEOUT_MS as NOWPAYMENTS_CYCLE_TIMEOUT_MS } from "../payments/nowpaymentsReconcile";
 
 /**
  * Flip the anchored payment-instructions bubble (if any) to the auto-cancelled
@@ -198,56 +199,22 @@ const TOKOPAY_POLL_ALERT_KEY = "tokopay_poll_alert_sent";
 const PAYDISINI_POLL_ALERT_KEY = "paydisini_poll_alert_sent";
 const NOWPAYMENTS_POLL_ALERT_KEY = "nowpayments_poll_alert_sent";
 
-/**
- * QRIS/IDR rails' own staleness threshold (Task 12).
- *
- * TokoPay/PayDisini/NOWPayments are NOT like the three crypto rails above:
- * one cycle makes up to MAX_ORDERS_PER_CYCLE (50) sequential,
- * individually-timed-out gateway calls, so each rail's own `cycleTimeoutMs`
- * — the point at which pollLoop.ts gives up on a hung cycle and writes an
- * abandon-failure heartbeat — is already ~820s for TokoPay/PayDisini and
- * ~780s for NOWPayments (imported from each reconcile module rather than
- * copied here, so this can't silently drift from the real value). Both are
- * already well past the crypto rails' 5-minute default.
- *
- * A rail's heartbeat is written exactly once per cycle — at the end
- * (success or failure) or, for a hung cycle, at its own cycleTimeoutMs
- * abandon point — never mid-cycle. So a single legitimately slow cycle (a
- * large backlog, a briefly slow gateway) can run for several minutes past
- * the 5-minute mark and write NOTHING in the meantime, not because it's
- * stuck, but because there is nothing to write until it finishes. Watching
- * these three rails with the crypto rails' 5-minute threshold would page
- * admins on ordinary slowness, not just a genuine hang — exactly the
- * spurious page this task must not ship.
- *
- * Fix: each QRIS rail's own staleMs is its own cycleTimeoutMs plus a flat
- * margin. The margin only needs to cover the abandon-heartbeat write itself
- * and ordinary tick-timing jitter (the loop's next cycle can start up to one
- * POLL_INTERVAL_SECONDS after the previous heartbeat) — it does NOT need to
- * re-add cycleTimeoutMs's own safety margin, since cycleTimeoutMs already IS
- * the point past which a cycle is abandoned and a heartbeat is guaranteed to
- * be written.
- *
- * `POLL_INTERVAL_SECONDS` is operator-settable (packages/core/src/config.ts,
- * default 10) — the margin is derived FROM it, not hardcoded past it, so
- * raising the interval widens the margin along with the jitter it exists to
- * absorb instead of silently eating the slack this comment promises (a
- * hardcoded margin sized for the 10s default would have exactly zero slack
- * left at a 60s interval, and page on ordinary near-deadline cycles above
- * that). The flat 30s on top covers the abandon-heartbeat write itself.
- *
- * This only widens the STALENESS rule (evaluatePollHealth's rule 5) — the
- * "failing every cycle" rule (consecutiveFailures ≥ failureThreshold) still
- * pages within a few cycles of a real gateway outage regardless of this
- * value, since failures don't wait for staleness at all.
- */
-const QRIS_STALE_MARGIN_MS = config.POLL_INTERVAL_SECONDS * 1000 + 30_000;
-// Exported (not just module-local) so tests can pin against the real,
-// currently-computed thresholds instead of a copied-by-hand literal that
-// could silently drift once QRIS_STALE_MARGIN_MS started tracking config.
-export const TOKOPAY_POLL_STALE_MS = TOKOPAY_CYCLE_TIMEOUT_MS + QRIS_STALE_MARGIN_MS;
-export const PAYDISINI_POLL_STALE_MS = PAYDISINI_CYCLE_TIMEOUT_MS + QRIS_STALE_MARGIN_MS;
-export const NOWPAYMENTS_POLL_STALE_MS = NOWPAYMENTS_CYCLE_TIMEOUT_MS + QRIS_STALE_MARGIN_MS;
+// QRIS/IDR rails' own staleness thresholds (Task 12) — TOKOPAY_POLL_STALE_MS,
+// PAYDISINI_POLL_STALE_MS, and NOWPAYMENTS_POLL_STALE_MS now live in
+// packages/core/src/payments/reconcileCycleBudget.ts (Task 13 review
+// follow-up: apps/web-admin cannot import from apps/order-bot, so as long as
+// these lived only here, the web-admin dashboard's Business Health card had
+// no way to read a QRIS rail's real staleness threshold and silently fell
+// back to evaluatePollHealth's 5-minute default meant for the crypto rails
+// below — the same "three consumers, three different rules" divergence this
+// branch's P1 fixed, reappearing at the seam between this watchdog and the
+// dashboard). Imported above so this file and
+// apps/web-admin/src/routes/api/dashboard.ts read the exact same numbers;
+// see that module for the full derivation (why the margin tracks
+// POLL_INTERVAL_SECONDS, why it does not re-add cycleTimeoutMs's own
+// margin). Re-exported under their original names so existing imports
+// (jobs.test.ts) keep working unchanged.
+export { TOKOPAY_POLL_STALE_MS, PAYDISINI_POLL_STALE_MS, NOWPAYMENTS_POLL_STALE_MS };
 
 /**
  * Pure decision for the poller watchdog (unit-tested without DB/env):

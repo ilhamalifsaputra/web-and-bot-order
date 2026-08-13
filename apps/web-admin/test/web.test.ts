@@ -45,6 +45,9 @@ import {
   BINANCE_API_KEY_KEY,
   BINANCE_API_SECRET_KEY,
   BINANCE_POLL_HEALTH_KEY,
+  BYBIT_UID_KEY,
+  BYBIT_API_KEY_KEY,
+  BYBIT_API_SECRET_KEY,
   __clearSettingsCacheForTests,
 } from "@app/db";
 import { resetDb } from "../../../tests/helpers/sampleData";
@@ -4144,6 +4147,31 @@ describe("settings", () => {
     const page = await get("/api/settings", seed.cookie);
     const apiData = JSON.parse(page.body) as { fields: Array<{ key: string; value: string }> };
     expect(apiData.fields.find((f) => f.key === "nowpayments_pay_currency")?.value).toBe("usdttrc20");
+  });
+
+  // The behavior change in Task 8 is server-side: settings.ts maps both Bybit
+  // heartbeats through evaluatePollHealth using the rail's REAL config state.
+  // The SettingsPage test stubs this endpoint's JSON, so it cannot catch a
+  // regression here (a hardcoded `enabled: true`, or the two configs swapped).
+  // These two cases pin the distinction the truthful `enabled` exists to make.
+  it("GET /api/settings reports an unconfigured Bybit rail as unmonitored", async () => {
+    const page = await get("/api/settings", seed.cookie);
+    expect(page.statusCode).toBe(200);
+    const data = JSON.parse(page.body) as { bybitHealth: { status: string; detail: string } };
+    expect(data.bybitHealth.status).toBe("unmonitored");
+  });
+
+  it("GET /api/settings reports a configured but never-polled Bybit rail as red", async () => {
+    await setSetting(prisma, BYBIT_UID_KEY, "bybit-uid");
+    await setSetting(prisma, BYBIT_API_KEY_KEY, "bybit-key");
+    await setSetting(prisma, BYBIT_API_SECRET_KEY, "bybit-secret");
+
+    const page = await get("/api/settings", seed.cookie);
+    expect(page.statusCode).toBe(200);
+    const data = JSON.parse(page.body) as { bybitHealth: { status: string; detail: string } };
+    expect(data.bybitHealth.status).toBe("red");
+    // Credentials must never be echoed back in the health payload.
+    expect(JSON.stringify(data.bybitHealth)).not.toContain("bybit-secret");
   });
 
   it("nowpayments_api_key / nowpayments_ipn_secret are write-only (blank keeps value, never echoed)", async () => {

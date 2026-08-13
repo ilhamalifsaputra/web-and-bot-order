@@ -72,6 +72,10 @@ RUN mkdir -p /app/data/logs && chown -R app:app /app/data
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+# Same +x caveat for the backup/restore scripts, which the entrypoint calls for
+# the pre-migration snapshot and an operator may run via `docker compose exec`.
+RUN chmod +x /app/deploy/backup/*.sh
+
 # NOTE: we deliberately stay root here. The entrypoint chowns the bind-mounted
 # /app/data (root-owned on a fresh host clone) and then drops to `app` via gosu.
 

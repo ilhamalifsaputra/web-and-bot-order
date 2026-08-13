@@ -24,6 +24,7 @@ import {
 import { toast } from "sonner";
 import { apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
+import { visibleSelection } from "../lib/selection";
 
 interface StockItem {
   id: number;
@@ -177,11 +178,14 @@ export function StockProductPage() {
     });
   }
 
-  async function bulkMarkDead() {
-    const count = selected.size;
+  // Takes an explicit `ids` argument rather than reading `selected` from
+  // closure: selection is per-tab, and only the caller inside renderStockTable
+  // knows which tab's items are on screen.
+  async function bulkMarkDead(ids: number[]) {
+    const count = ids.length;
     setBulkActing(true);
     try {
-      await apiPost(`/api/stock/${productId}/bulk-dead`, { ids: Array.from(selected) });
+      await apiPost(`/api/stock/${productId}/bulk-dead`, { ids });
       setSelected(new Set());
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
       toast.success(`${count} item(s) marked dead.`);
@@ -192,11 +196,11 @@ export function StockProductPage() {
     }
   }
 
-  async function bulkDelete() {
-    const count = selected.size;
+  async function bulkDelete(ids: number[]) {
+    const count = ids.length;
     setBulkActing(true);
     try {
-      await apiPost(`/api/stock/${productId}/bulk-delete`, { ids: Array.from(selected) });
+      await apiPost(`/api/stock/${productId}/bulk-delete`, { ids });
       setSelected(new Set());
       await qc.invalidateQueries({ queryKey: ["stock", productId] });
       toast.success(`${count} item(s) deleted.`);
@@ -229,24 +233,28 @@ export function StockProductPage() {
   }
 
   function renderStockTable(tabItems: StockItem[]) {
+    // Scoped to this tab's items: marking an item dead moves it out of the
+    // Available tab while it stays in `items`, so a selection made here must
+    // not keep counting it once it has gone.
+    const visibleSelected = visibleSelection(selected, tabItems, (i) => i.id);
     return (
       <>
-        {selected.size > 0 && (
+        {visibleSelected.size > 0 && (
           <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
-            <span className="text-ink-soft">{selected.size} selected</span>
+            <span className="text-ink-soft">{visibleSelected.size} selected</span>
             <ConfirmDialog
               trigger={<Button size="sm" variant="destructive" disabled={bulkActing}>Mark selected dead</Button>}
               title="Mark selected stock items dead?"
-              description={`Mark ${selected.size} stock item(s) dead. This removes them from availability.`}
+              description={`Mark ${visibleSelected.size} stock item(s) dead. This removes them from availability.`}
               confirmLabel="Mark Dead"
-              onConfirm={() => bulkMarkDead()}
+              onConfirm={() => bulkMarkDead(Array.from(visibleSelected))}
             />
             <ConfirmDialog
               trigger={<Button size="sm" variant="destructive" disabled={bulkActing}>Delete</Button>}
               title="Delete selected stock items?"
-              description={`Delete ${selected.size} stock item(s). Sold items or items tied to an order are skipped.`}
+              description={`Delete ${visibleSelected.size} stock item(s). Sold items or items tied to an order are skipped.`}
               confirmLabel="Delete"
-              onConfirm={() => bulkDelete()}
+              onConfirm={() => bulkDelete(Array.from(visibleSelected))}
             />
             <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
               Clear

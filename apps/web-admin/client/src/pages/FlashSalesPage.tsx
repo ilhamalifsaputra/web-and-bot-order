@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Zap, Plus, Clock, Ban, Tag, MoreVertical, Eye, Pencil, XCircle } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
+import { visibleSelection } from "../lib/selection";
 
 type FlashStatus = "live" | "scheduled" | "ended";
 
@@ -209,10 +210,14 @@ export function FlashSalesPage() {
   const percentIsValid =
     discountPercent.trim() !== "" && !Number.isNaN(percentNumber) && percentNumber > 0 && percentNumber <= 100;
   const canSubmit = percentIsValid && startsAt.trim() !== "" && endsAt.trim() !== "";
-  const alreadyScheduledCount = Array.from(selected).filter((id) => rows.find((r) => r.id === id)?.flash).length;
+  // What the bulk bar counts and the bulk actions act on. The clearing effect
+  // covers filter changes; this covers a SKU leaving `filtered` through a
+  // refetch, which no filter state records.
+  const visibleSelected = visibleSelection(selected, filtered, (d) => d.id);
+  const alreadyScheduledCount = Array.from(visibleSelected).filter((id) => rows.find((r) => r.id === id)?.flash).length;
 
   function openNewFlashSale() {
-    if (selected.size === 0) {
+    if (visibleSelected.size === 0) {
       toast("Select one or more SKUs below first.");
       return;
     }
@@ -240,7 +245,7 @@ export function FlashSalesPage() {
   const bulkApply = useMutation({
     mutationFn: () =>
       apiPost<{ ok: boolean; applied: number; overwritten: number; failed: number }>("/api/flash-sales/bulk-apply", {
-        denominationIds: Array.from(selected),
+        denominationIds: Array.from(visibleSelected),
         discountPercent: discountPercent.trim(),
         startsAt,
         endsAt,
@@ -266,7 +271,7 @@ export function FlashSalesPage() {
   // `selected` from closure: a row's "End Sale Now" action must end just that
   // row's schedule regardless of whatever else is multi-selected in the bulk
   // toolbar at the time. The bulk toolbar call site below now passes
-  // `Array.from(selected)` explicitly to preserve its existing behavior.
+  // `Array.from(visibleSelected)` explicitly to preserve its existing behavior.
   const bulkEnd = useMutation({
     mutationFn: (ids: number[]) =>
       apiPost<{ ok: boolean; cleared: number; skipped: number }>("/api/flash-sales/bulk-end", {
@@ -300,11 +305,11 @@ export function FlashSalesPage() {
             </Button>
             <DialogContent>
               <DialogHeader>
-                <DialogTitle>Set flash sale on {selected.size} SKU(s)</DialogTitle>
+                <DialogTitle>Set flash sale on {visibleSelected.size} SKU(s)</DialogTitle>
                 <DialogDescription>
                   Applies the same discount and window to every selected SKU.
                   {alreadyScheduledCount > 0 &&
-                    ` ${alreadyScheduledCount} of the ${selected.size} selected already have a schedule — this will replace it.`}
+                    ` ${alreadyScheduledCount} of the ${visibleSelected.size} selected already have a schedule — this will replace it.`}
                 </DialogDescription>
               </DialogHeader>
               <div className="flex flex-col gap-3">
@@ -412,9 +417,9 @@ export function FlashSalesPage() {
 
       {resultMsg && <p className="mb-3 text-sm text-ink-soft">{resultMsg}</p>}
 
-      {selected.size > 0 && (
+      {visibleSelected.size > 0 && (
         <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
-          <span className="text-ink-soft">{selected.size} selected</span>
+          <span className="text-ink-soft">{visibleSelected.size} selected</span>
           <Button size="sm" variant="outline" onClick={() => setDialogOpen(true)}>
             Set flash sale…
           </Button>
@@ -425,9 +430,9 @@ export function FlashSalesPage() {
               </Button>
             }
             title="End the flash sale on the selected SKUs?"
-            description={`Cancel the flash sale on ${selected.size} SKU(s). They'll revert to their base price immediately. SKUs with no active schedule are skipped.`}
+            description={`Cancel the flash sale on ${visibleSelected.size} SKU(s). They'll revert to their base price immediately. SKUs with no active schedule are skipped.`}
             confirmLabel="End now"
-            onConfirm={() => bulkEnd.mutate(Array.from(selected))}
+            onConfirm={() => bulkEnd.mutate(Array.from(visibleSelected))}
           />
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
             Clear

@@ -53,6 +53,7 @@ import {
 import { toast } from "sonner";
 import { apiGet, apiPost, apiPatch, apiDelete } from "../api/client";
 import { describeError } from "../lib/errorMessages";
+import { visibleSelection } from "../lib/selection";
 
 interface CategoryRow {
   id: number;
@@ -284,10 +285,10 @@ export function CatalogPage() {
   }
 
   async function bulkSetActive(active: boolean) {
-    const count = selected.size;
+    const count = visibleSelected.size;
     setBulkActing(true);
     try {
-      await apiPost("/api/catalog/products/bulk-active", { ids: Array.from(selected), active });
+      await apiPost("/api/catalog/products/bulk-active", { ids: Array.from(visibleSelected), active });
       setSelected(new Set());
       await invalidateCatalog();
       toast.success(`${count} product(s) ${active ? "activated" : "deactivated"}.`);
@@ -299,10 +300,10 @@ export function CatalogPage() {
   }
 
   async function bulkSetArchived(archived: boolean) {
-    const count = selected.size;
+    const count = visibleSelected.size;
     setBulkActing(true);
     try {
-      await apiPost("/api/catalog/products/bulk-archive", { ids: Array.from(selected), archived });
+      await apiPost("/api/catalog/products/bulk-archive", { ids: Array.from(visibleSelected), archived });
       setSelected(new Set());
       await invalidateCatalog();
       toast.success(`${count} product(s) ${archived ? "archived" : "unarchived"}.`);
@@ -396,6 +397,10 @@ export function CatalogPage() {
   // Catalog has no pagination, so the filtered list is the page: select-all
   // spans exactly the rows on screen.
   const allFilteredSelected = filtered.length > 0 && filtered.every((p) => selected.has(p.id));
+  // What the bulk bar counts and the bulk actions act on. The clearing effect
+  // above covers filter changes; this covers a product leaving `filtered`
+  // through a data change, which no filter state records.
+  const visibleSelected = visibleSelection(selected, filtered, (p) => p.id);
   function toggleSelectAllFiltered() {
     setSelected((prev) => {
       // Deselecting drops everything rather than pruning only the visible ids:
@@ -652,9 +657,9 @@ export function CatalogPage() {
         </Card>
       )}
 
-      {selected.size > 0 && (
+      {visibleSelected.size > 0 && (
         <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
-          <span className="text-ink-soft">{selected.size} selected</span>
+          <span className="text-ink-soft">{visibleSelected.size} selected</span>
           <Button size="sm" variant="outline" disabled={bulkActing} onClick={() => void bulkSetActive(true)}>
             Activate
           </Button>

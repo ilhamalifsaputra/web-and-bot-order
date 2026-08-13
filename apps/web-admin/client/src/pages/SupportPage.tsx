@@ -51,6 +51,7 @@ import { ticketStatusLabel } from "../lib/ticketStatus";
 import { ticketPriorityLabel } from "../lib/ticketPriority";
 import { apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
+import { visibleSelection } from "../lib/selection";
 
 interface TicketUser {
   id: number;
@@ -362,6 +363,9 @@ export function SupportPage() {
 
   const items = data?.items ?? [];
   const allOnPageSelected = items.length > 0 && items.every((t) => selected.has(t.id));
+  // What the bulk bar counts and the bulk actions act on — never an id whose
+  // ticket the 30s poll has already dropped from the page.
+  const visibleSelected = visibleSelection(selected, items, (t) => t.id);
 
   function toggleSelected(id: number) {
     setSelected((s) => {
@@ -582,14 +586,14 @@ export function SupportPage() {
         </div>
       </FilterBar>
 
-      {selected.size > 0 && (
+      {visibleSelected.size > 0 && (
         <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
-          <span className="text-ink-soft">{selected.size} selected</span>
+          <span className="text-ink-soft">{visibleSelected.size} selected</span>
 
           <Select
             onValueChange={(v) =>
               bulkAction.mutate({
-                ids: Array.from(selected),
+                ids: Array.from(visibleSelected),
                 action: "assign",
                 adminId: v === UNASSIGNED ? null : Number(v),
               })
@@ -610,7 +614,7 @@ export function SupportPage() {
 
           <Select
             onValueChange={(v) =>
-              bulkAction.mutate({ ids: Array.from(selected), action: "priority", priority: v })
+              bulkAction.mutate({ ids: Array.from(visibleSelected), action: "priority", priority: v })
             }
           >
             <SelectTrigger className="w-40" aria-label="Set priority for selected tickets">
@@ -629,7 +633,7 @@ export function SupportPage() {
             size="sm"
             variant="outline"
             disabled={bulkAction.isPending}
-            onClick={() => bulkAction.mutate({ ids: Array.from(selected), action: "resolve" })}
+            onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "resolve" })}
           >
             Resolve
           </Button>
@@ -637,13 +641,13 @@ export function SupportPage() {
           <ConfirmDialog
             trigger={
               <Button size="sm" variant="destructive" disabled={bulkAction.isPending}>
-                Close {selected.size} ticket{selected.size === 1 ? "" : "s"}
+                Close {visibleSelected.size} ticket{visibleSelected.size === 1 ? "" : "s"}
               </Button>
             }
-            title={`Close ${selected.size} ticket${selected.size === 1 ? "" : "s"}?`}
+            title={`Close ${visibleSelected.size} ticket${visibleSelected.size === 1 ? "" : "s"}?`}
             description="Customers will no longer be able to reply through these tickets."
             confirmLabel="Close"
-            onConfirm={() => bulkAction.mutate({ ids: Array.from(selected), action: "close" })}
+            onConfirm={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "close" })}
           />
 
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>

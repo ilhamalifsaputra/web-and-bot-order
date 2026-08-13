@@ -376,6 +376,39 @@ describe("PaymentsPage", () => {
     expect(screen.getByText("1 selected")).toBeInTheDocument();
   });
 
+  // Only unmatched Binance transfers get a checkbox, so a transfer the
+  // reconciler matches between refetches must drop out of the count — otherwise
+  // Dismiss would carry an id whose row no longer offers a checkbox at all.
+  it("stops counting a selected transfer once it is no longer eligible", async () => {
+    const user = userEvent.setup();
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    function LocalWrapper({ children }: { children: React.ReactNode }) {
+      return (
+        <MemoryRouter>
+          <QueryClientProvider client={qc}>
+            {children}
+            <Toaster />
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+    }
+    const stays = { id: 1, gateway: "binance", reference: "STAYS", amount: "1", currency: "IDR", outcome: "unmatched", memo: null, processedAt: "2026-06-26T10:00:00.000Z", processedAtDisplay: "2026-06-26 17:00" };
+    const getsMatched = { ...stays, id: 2, reference: "GETSMATCHED" };
+    const base = { enabled: true, total: 2, todayCount: 0, page: 1, hasNext: false, outcomes: ["unmatched", "matched"], counts: {} };
+
+    mockPaymentsFetch({ ...base, ledger: [stays, getsMatched] });
+    render(<PaymentsPage />, { wrapper: LocalWrapper });
+    await waitFor(() => expect(screen.getByText("STAYS")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("checkbox", { name: /select all eligible transfers/i }));
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+
+    mockPaymentsFetch({ ...base, ledger: [stays, { ...getsMatched, outcome: "matched" }] });
+    await qc.invalidateQueries({ queryKey: ["payments"] });
+
+    await waitFor(() => expect(screen.getByText("1 selected")).toBeInTheDocument());
+  });
+
   it("clears the bulk selection when navigating to the next page", async () => {
     const user = userEvent.setup();
     const pageOneLedger = [

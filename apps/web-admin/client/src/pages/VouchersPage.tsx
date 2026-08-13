@@ -53,6 +53,7 @@ import { StatusBadge } from "../components/shared/StatusBadge";
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
+import { visibleSelection } from "../lib/selection";
 
 interface VoucherProductRef {
   id: number;
@@ -326,6 +327,9 @@ export function VouchersPage() {
   useEffect(() => { setSelected(new Set()); }, [q, status, page]);
 
   const vouchers = data?.vouchers ?? [];
+  // What the bulk bar counts and the bulk actions act on — never an id whose
+  // voucher has already dropped off the page.
+  const visibleSelected = visibleSelection(selected, vouchers, (v) => v.id);
   const allSelected = vouchers.length > 0 && vouchers.every(v => selected.has(v.id));
 
   function toggleSelected(id: number) {
@@ -664,35 +668,35 @@ export function VouchersPage() {
         </div>
       </FilterBar>
 
-      {selected.size > 0 && (
+      {visibleSelected.size > 0 && (
         <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
-          <span className="text-ink-soft">{selected.size} selected</span>
+          <span className="text-ink-soft">{visibleSelected.size} selected</span>
           <Button
             size="sm"
             variant="outline"
             disabled={bulkAction.isPending}
-            onClick={() => bulkAction.mutate({ ids: Array.from(selected), action: "activate" })}
+            onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "activate" })}
           >
-            Activate {selected.size} voucher{selected.size === 1 ? "" : "s"}
+            Activate {visibleSelected.size} voucher{visibleSelected.size === 1 ? "" : "s"}
           </Button>
           <Button
             size="sm"
             variant="outline"
             disabled={bulkAction.isPending}
-            onClick={() => bulkAction.mutate({ ids: Array.from(selected), action: "deactivate" })}
+            onClick={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "deactivate" })}
           >
-            Deactivate {selected.size} voucher{selected.size === 1 ? "" : "s"}
+            Deactivate {visibleSelected.size} voucher{visibleSelected.size === 1 ? "" : "s"}
           </Button>
           <ConfirmDialog
             trigger={
               <Button size="sm" variant="destructive" disabled={bulkAction.isPending}>
-                Delete {selected.size} voucher{selected.size === 1 ? "" : "s"}
+                Delete {visibleSelected.size} voucher{visibleSelected.size === 1 ? "" : "s"}
               </Button>
             }
-            title={`Delete ${selected.size} voucher${selected.size === 1 ? "" : "s"}?`}
+            title={`Delete ${visibleSelected.size} voucher${visibleSelected.size === 1 ? "" : "s"}?`}
             description="Vouchers that have already been used are skipped, not deleted."
             confirmLabel="Delete"
-            onConfirm={() => bulkAction.mutate({ ids: Array.from(selected), action: "delete" })}
+            onConfirm={() => bulkAction.mutate({ ids: Array.from(visibleSelected), action: "delete" })}
           />
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
         </div>

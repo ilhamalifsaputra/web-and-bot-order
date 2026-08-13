@@ -30,6 +30,7 @@ import { Users, MoreVertical, Eye, ShoppingBag, Wallet, LifeBuoy, Copy, Ban, Cir
 import { formatRelativeTime } from "../lib/relativeTime";
 import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
+import { visibleSelection } from "../lib/selection";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 
 interface CustomerRow {
@@ -222,6 +223,9 @@ export function UsersPage() {
 
   const roles = data?.roles ?? [];
   const pageUsers = data?.users ?? [];
+  // What the bulk bar counts and the export link carries — never an id whose
+  // customer has already dropped off the page.
+  const visibleSelected = visibleSelection(selected, pageUsers, (u) => u.id);
 
   function applyFilters() {
     setFilters((f) => ({
@@ -405,10 +409,10 @@ export function UsersPage() {
         </div>
       </FilterBar>
 
-      {selected.size > 0 && (
+      {visibleSelected.size > 0 && (
         <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
-          <span className="text-ink-soft">{selected.size} selected</span>
-          <a href={`/api/users/export?ids=${Array.from(selected).join(",")}`}>
+          <span className="text-ink-soft">{visibleSelected.size} selected</span>
+          <a href={`/api/users/export?ids=${Array.from(visibleSelected).join(",")}`}>
             <Button size="sm" variant="ghost">Export</Button>
           </a>
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>

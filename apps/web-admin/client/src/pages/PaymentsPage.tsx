@@ -43,6 +43,7 @@ import {
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
+import { visibleSelection } from "../lib/selection";
 
 /** Which payment rail a ledger row came from. "bybit" covers BOTH Bybit
  *  sub-rails (off-chain Internal Transfer and on-chain BSC deposit) — they
@@ -297,6 +298,10 @@ export function PaymentsPage() {
   // reference ids.
   const eligibleRows = ledgerRows.filter(tx => tx.outcome === "unmatched" && tx.gateway === "binance");
   const allEligibleSelected = eligibleRows.length > 0 && eligibleRows.every(tx => selected.has(tx.id));
+  // Scoped to eligibleRows, not the whole ledger: only unmatched Binance
+  // transfers get a checkbox, so one that gets matched between refetches must
+  // drop out of the count and out of the dismiss payload.
+  const visibleSelected = visibleSelection(selected, eligibleRows, tx => tx.id);
 
   function toggleSelected(id: number) {
     setSelected(s => {
@@ -552,16 +557,16 @@ export function PaymentsPage() {
         {data && <span className="text-sm text-ink-soft self-end">{data.total} transactions</span>}
       </FilterBar>
 
-      {selected.size > 0 && (
+      {visibleSelected.size > 0 && (
         <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
-          <span className="text-ink-soft">{selected.size} selected</span>
+          <span className="text-ink-soft">{visibleSelected.size} selected</span>
           <Button
             size="sm"
             variant="destructive"
             disabled={bulkDismiss.isPending}
-            onClick={() => bulkDismiss.mutate(Array.from(selected))}
+            onClick={() => bulkDismiss.mutate(Array.from(visibleSelected))}
           >
-            Dismiss {selected.size} transfer{selected.size === 1 ? "" : "s"}
+            Dismiss {visibleSelected.size} transfer{visibleSelected.size === 1 ? "" : "s"}
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>Clear</Button>
         </div>

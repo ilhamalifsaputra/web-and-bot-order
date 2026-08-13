@@ -46,6 +46,7 @@ import { orderStatusLabel } from "../lib/orderStatus";
 import { PAYMENT_METHOD_LABELS, paymentMethodLabel } from "../lib/paymentMethod";
 import { apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
+import { visibleSelection } from "../lib/selection";
 
 interface OrderItemRow {
   id: number;
@@ -259,6 +260,10 @@ export function OrdersPage() {
 
   const statuses = data?.statuses ?? [];
   const pageOrders = data?.orders ?? [];
+  // What the bulk bar counts and the export link carries. The bulk actions
+  // already scope themselves through eligibleSelectedIds(), which filters
+  // pageOrders, so they were never exposed to a stale id.
+  const visibleSelected = visibleSelection(selected, pageOrders, (o) => o.id);
 
   function selectTab(tab: StatusTabKey) {
     setActiveTab(tab);
@@ -436,9 +441,9 @@ export function OrdersPage() {
         </div>
       </FilterBar>
 
-      {selected.size > 0 && (
+      {visibleSelected.size > 0 && (
         <div className="sticky bottom-4 z-10 mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-line bg-card px-3 py-2 text-sm shadow-lift transition-all duration-150">
-          <span className="text-ink-soft">{selected.size} selected</span>
+          <span className="text-ink-soft">{visibleSelected.size} selected</span>
           <Button
             size="sm"
             variant="outline"
@@ -470,7 +475,7 @@ export function OrdersPage() {
           >
             Cancel
           </Button>
-          <a href={`/api/orders/export?ids=${Array.from(selected).join(",")}`}>
+          <a href={`/api/orders/export?ids=${Array.from(visibleSelected).join(",")}`}>
             <Button size="sm" variant="ghost">Export</Button>
           </a>
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>

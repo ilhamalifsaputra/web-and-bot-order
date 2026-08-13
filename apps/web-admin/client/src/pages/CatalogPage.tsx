@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { PageLayout } from "../components/shared/PageLayout";
@@ -213,6 +213,14 @@ export function CatalogPage() {
   const [bulkActing, setBulkActing] = useState(false);
   const queryClient = useQueryClient();
 
+  // Catalog filters client-side, so a selection surviving a filter change would
+  // let a bulk action silently apply to products no longer on screen. `sortBy`
+  // is deliberately absent: it reorders the visible rows without changing which
+  // rows are visible, so clearing on a sort change would only surprise.
+  useEffect(() => {
+    setSelected(new Set());
+  }, [filter, categoryFilter, statusFilter]);
+
   const invalidateCatalog = () => queryClient.invalidateQueries({ queryKey: ["catalog"] });
 
   async function toggleProductActive(id: number, active: boolean) {
@@ -384,6 +392,18 @@ export function CatalogPage() {
       return true;
     })
     .sort((a, b) => compareProducts(a, b, sortBy));
+
+  // Catalog has no pagination, so the filtered list is the page: select-all
+  // spans exactly the rows on screen.
+  const allFilteredSelected = filtered.length > 0 && filtered.every((p) => selected.has(p.id));
+  function toggleSelectAllFiltered() {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allFilteredSelected) filtered.forEach((p) => next.delete(p.id));
+      else filtered.forEach((p) => next.add(p.id));
+      return next;
+    });
+  }
 
   return (
     <PageLayout title="Catalog">
@@ -649,7 +669,15 @@ export function CatalogPage() {
         columns={[
           {
             key: "select",
-            header: "",
+            kind: "selection",
+            header: (
+              <Checkbox
+                checked={allFilteredSelected}
+                onCheckedChange={toggleSelectAllFiltered}
+                disabled={filtered.length === 0}
+                aria-label="Select all products matching the current filters"
+              />
+            ),
             render: (row) => (
               <Checkbox
                 checked={selected.has(row.id)}

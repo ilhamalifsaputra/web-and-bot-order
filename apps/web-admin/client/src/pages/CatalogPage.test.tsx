@@ -269,6 +269,64 @@ describe("CatalogPage", () => {
     );
   });
 
+  it("select-all selects every product currently passing the filters", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({
+        categories: [CATEGORY],
+        products: [PRODUCT, { ...PRODUCT, id: 2, name: "VPN Yearly" }],
+      }),
+    );
+    render(<CatalogPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /select all products/i }));
+
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+  });
+
+  it("select-all deselects everything when every filtered product is already selected", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({
+        categories: [CATEGORY],
+        products: [PRODUCT, { ...PRODUCT, id: 2, name: "VPN Yearly" }],
+      }),
+    );
+    render(<CatalogPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro")).toBeInTheDocument());
+
+    const selectAll = screen.getByRole("checkbox", { name: /select all products/i });
+    fireEvent.click(selectAll);
+    expect(screen.getByText("2 selected")).toBeInTheDocument();
+
+    fireEvent.click(selectAll);
+
+    expect(screen.queryByText(/\d+ selected/)).not.toBeInTheDocument();
+  });
+
+  // Catalog filters client-side, so a selection surviving a filter change would
+  // leave the bulk Activate/Deactivate/Archive buttons acting on products the
+  // admin can no longer see.
+  it("clears the selection when a filter narrows the visible products", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      jsonResponse({
+        categories: [CATEGORY],
+        products: [PRODUCT, { ...PRODUCT, id: 2, name: "VPN Yearly" }],
+      }),
+    );
+    render(<CatalogPage />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("CapCut Pro")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /select capcut pro/i }));
+    expect(screen.getByText("1 selected")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/filter by product or category/i), {
+      target: { value: "vpn" },
+    });
+
+    await waitFor(() => expect(screen.queryByText("CapCut Pro")).not.toBeInTheDocument());
+    expect(screen.queryByText(/\d+ selected/)).not.toBeInTheDocument();
+  });
+
   it("renders a thumbnail image when webImageUrl is set", async () => {
     // Thumbnail <img> is decorative (alt=""), so its accessible role is
     // "presentation", not "img" — query the DOM directly instead of by role.

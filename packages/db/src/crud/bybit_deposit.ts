@@ -27,6 +27,7 @@ import { getSetting, setSetting } from "./settings";
 import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
 import { settleWalletTopup } from "./wallet_topup";
+import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -296,68 +297,26 @@ export async function recordUnmatchedBybitTx(db: Db, args: { bybitTxId: string; 
 }
 
 // ---- Poller heartbeat (written by the order-bot poller, read by the web) ----
+// Delegates to the generic per-rail store (packages/db/src/crud/poll_health.ts,
+// Task 10) — see that module for the JSON-parse / sticky-field /
+// consecutive-failure rules this used to carry directly, including why a
+// rate-limit hit neither increments nor resets `consecutiveFailures`.
 
 /** Single settings key holding the Bybit poller's last-cycle heartbeat as JSON. */
-export const BYBIT_POLL_HEALTH_KEY = "bybit_poll_health";
+export const BYBIT_POLL_HEALTH_KEY = POLL_HEALTH_KEYS.bybit;
 
-export interface BybitPollHealth {
-  lastRun: string | null;
-  /** Last cycle that completed WITHOUT error (0 new deposits still counts). */
-  lastSuccessAt: string | null;
-  lastTxCount: number | null;
-  backoffUntil: string | null;
-  /** Current consecutive rate-limit hit streak (0 when healthy). */
-  consecutiveRateLimitHits: number | null;
-  /** Sticky — last time a rate-limit hit occurred, even after recovery. */
-  lastRateLimitAt: string | null;
-  /** Consecutive non-rate-limit failures (network/HTTP errors); 0 when
-   * healthy. Tracked separately from rate limits, which already have their
-   * own backoff/counter above — `lastRun` alone can't surface this, since it
-   * advances on every cycle whether that cycle succeeded or failed. */
-  consecutiveFailures: number | null;
-  /** Sticky — last error message seen (any failure type), for diagnostics. */
-  lastError: string | null;
-}
-
-const EMPTY_BYBIT_HEALTH: BybitPollHealth = {
-  lastRun: null,
-  lastSuccessAt: null,
-  lastTxCount: null,
-  backoffUntil: null,
-  consecutiveRateLimitHits: null,
-  lastRateLimitAt: null,
-  consecutiveFailures: null,
-  lastError: null,
-};
+/** Alias of the generic `PollHealth` shape — byte-identical to the old
+ * standalone interface, kept as a named type so existing imports resolve
+ * unchanged. */
+export type BybitPollHealth = PollHealth;
 
 /** Read the Bybit poller heartbeat; all-null when it has never run. */
-export async function getBybitPollHealth(db: Db): Promise<BybitPollHealth> {
-  const raw = await getSetting(db, BYBIT_POLL_HEALTH_KEY);
-  if (!raw) return EMPTY_BYBIT_HEALTH;
-  try {
-    const p = JSON.parse(raw) as Partial<BybitPollHealth>;
-    return {
-      lastRun: p.lastRun ?? null,
-      lastSuccessAt: p.lastSuccessAt ?? null,
-      lastTxCount: typeof p.lastTxCount === "number" ? p.lastTxCount : null,
-      backoffUntil: p.backoffUntil ?? null,
-      consecutiveRateLimitHits: typeof p.consecutiveRateLimitHits === "number" ? p.consecutiveRateLimitHits : null,
-      lastRateLimitAt: p.lastRateLimitAt ?? null,
-      consecutiveFailures: typeof p.consecutiveFailures === "number" ? p.consecutiveFailures : null,
-      lastError: p.lastError ?? null,
-    };
-  } catch {
-    return EMPTY_BYBIT_HEALTH;
-  }
+export function getBybitPollHealth(db: Db): Promise<BybitPollHealth> {
+  return getPollHealth(db, "bybit");
 }
 
-/** Record one Bybit poll cycle's heartbeat. Called by the poller each tick.
- * `lastRateLimitAt`/`lastError` are sticky (carried forward from the prior
- * heartbeat) so a rare hit stays visible after the poller recovers.
- * `consecutiveFailures` counts non-rate-limit failures only — a rate-limit
- * hit neither increments nor resets it, since that streak already has its own
- * dedicated counter/backoff above. */
-export async function recordBybitPollHealth(
+/** Record one Bybit poll cycle's heartbeat. Called by the poller each tick. */
+export function recordBybitPollHealth(
   db: Db,
   args: {
     lastTxCount: number;
@@ -368,26 +327,5 @@ export async function recordBybitPollHealth(
     error?: string | null;
   },
 ): Promise<void> {
-  const prev = await getBybitPollHealth(db);
-  const lastRateLimitAt = args.rateLimited ? new Date().toISOString() : prev.lastRateLimitAt;
-  const consecutiveFailures = args.success
-    ? 0
-    : args.rateLimited
-      ? prev.consecutiveFailures ?? 0
-      : (prev.consecutiveFailures ?? 0) + 1;
-  const nowIso = new Date().toISOString();
-  await setSetting(
-    db,
-    BYBIT_POLL_HEALTH_KEY,
-    JSON.stringify({
-      lastRun: nowIso,
-      lastSuccessAt: args.success ? nowIso : prev.lastSuccessAt,
-      lastTxCount: args.lastTxCount,
-      backoffUntil: args.backoffUntil ? new Date(args.backoffUntil).toISOString() : null,
-      consecutiveRateLimitHits: args.consecutiveRateLimitHits ?? 0,
-      lastRateLimitAt,
-      consecutiveFailures,
-      lastError: args.success ? prev.lastError : (args.error ?? prev.lastError) ?? null,
-    } satisfies BybitPollHealth),
-  );
+  return recordPollHealth(db, "bybit", args);
 }

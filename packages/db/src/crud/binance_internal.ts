@@ -32,6 +32,7 @@ import { finalizeOrderPayment } from "./pricing";
 import { parseMinAmount } from "./_minAmount";
 import { enqueueAdminOverpaid } from "./notifications";
 import { settleWalletTopup } from "./wallet_topup";
+import { POLL_HEALTH_KEYS, getPollHealth, recordPollHealth, type PollHealth } from "./poll_health";
 
 // ---------------------------------------------------------------------------
 // Resolved config (web-admin Settings win; .env is the bootstrap/recovery
@@ -554,68 +555,26 @@ export async function dismissUnmatchedTx(db: Db, binanceTxId: string): Promise<v
 }
 
 // ---- Poller heartbeat (written by the order-bot poller, read by the web) ----
+// Delegates to the generic per-rail store (packages/db/src/crud/poll_health.ts,
+// Task 10) — see that module for the JSON-parse / sticky-field /
+// consecutive-failure rules this used to carry directly, including why a
+// rate-limit hit neither increments nor resets `consecutiveFailures`.
 
 /** Single settings key holding the poller's last-cycle heartbeat as JSON. */
-export const BINANCE_POLL_HEALTH_KEY = "binance_poll_health";
+export const BINANCE_POLL_HEALTH_KEY = POLL_HEALTH_KEYS.binance;
 
-export interface BinancePollHealth {
-  lastRun: string | null;
-  /** Last cycle that completed WITHOUT error (0 new transfers still counts). */
-  lastSuccessAt: string | null;
-  lastTxCount: number | null;
-  backoffUntil: string | null;
-  /** Current consecutive rate-limit hit streak (0 when healthy). */
-  consecutiveRateLimitHits: number | null;
-  /** Sticky — last time a rate-limit hit occurred, even after recovery. */
-  lastRateLimitAt: string | null;
-  /** Consecutive non-rate-limit failures (network/HTTP errors); 0 when
-   * healthy. Tracked separately from rate limits, which already have their
-   * own backoff/counter above — `lastRun` alone can't surface this, since it
-   * advances on every cycle whether that cycle succeeded or failed. */
-  consecutiveFailures: number | null;
-  /** Sticky — last error message seen (any failure type), for diagnostics. */
-  lastError: string | null;
-}
-
-const EMPTY_BINANCE_HEALTH: BinancePollHealth = {
-  lastRun: null,
-  lastSuccessAt: null,
-  lastTxCount: null,
-  backoffUntil: null,
-  consecutiveRateLimitHits: null,
-  lastRateLimitAt: null,
-  consecutiveFailures: null,
-  lastError: null,
-};
+/** Alias of the generic `PollHealth` shape — byte-identical to the old
+ * standalone interface, kept as a named type so existing imports resolve
+ * unchanged. */
+export type BinancePollHealth = PollHealth;
 
 /** Read the poller heartbeat; all-null when the poller has never run. */
-export async function getBinancePollHealth(db: Db): Promise<BinancePollHealth> {
-  const raw = await getSetting(db, BINANCE_POLL_HEALTH_KEY);
-  if (!raw) return EMPTY_BINANCE_HEALTH;
-  try {
-    const p = JSON.parse(raw) as Partial<BinancePollHealth>;
-    return {
-      lastRun: p.lastRun ?? null,
-      lastSuccessAt: p.lastSuccessAt ?? null,
-      lastTxCount: typeof p.lastTxCount === "number" ? p.lastTxCount : null,
-      backoffUntil: p.backoffUntil ?? null,
-      consecutiveRateLimitHits: typeof p.consecutiveRateLimitHits === "number" ? p.consecutiveRateLimitHits : null,
-      lastRateLimitAt: p.lastRateLimitAt ?? null,
-      consecutiveFailures: typeof p.consecutiveFailures === "number" ? p.consecutiveFailures : null,
-      lastError: p.lastError ?? null,
-    };
-  } catch {
-    return EMPTY_BINANCE_HEALTH;
-  }
+export function getBinancePollHealth(db: Db): Promise<BinancePollHealth> {
+  return getPollHealth(db, "binance");
 }
 
-/** Record one poll cycle's heartbeat. Called by the poller each tick.
- * `lastRateLimitAt`/`lastError` are sticky (carried forward from the prior
- * heartbeat) so a rare hit stays visible after the poller recovers.
- * `consecutiveFailures` counts non-rate-limit failures only — a rate-limit
- * hit neither increments nor resets it, since that streak already has its own
- * dedicated counter/backoff above. */
-export async function recordBinancePollHealth(
+/** Record one poll cycle's heartbeat. Called by the poller each tick. */
+export function recordBinancePollHealth(
   db: Db,
   args: {
     lastTxCount: number;
@@ -626,26 +585,5 @@ export async function recordBinancePollHealth(
     error?: string | null;
   },
 ): Promise<void> {
-  const prev = await getBinancePollHealth(db);
-  const lastRateLimitAt = args.rateLimited ? new Date().toISOString() : prev.lastRateLimitAt;
-  const consecutiveFailures = args.success
-    ? 0
-    : args.rateLimited
-      ? prev.consecutiveFailures ?? 0
-      : (prev.consecutiveFailures ?? 0) + 1;
-  const nowIso = new Date().toISOString();
-  await setSetting(
-    db,
-    BINANCE_POLL_HEALTH_KEY,
-    JSON.stringify({
-      lastRun: nowIso,
-      lastSuccessAt: args.success ? nowIso : prev.lastSuccessAt,
-      lastTxCount: args.lastTxCount,
-      backoffUntil: args.backoffUntil ? new Date(args.backoffUntil).toISOString() : null,
-      consecutiveRateLimitHits: args.consecutiveRateLimitHits ?? 0,
-      lastRateLimitAt,
-      consecutiveFailures,
-      lastError: args.success ? prev.lastError : (args.error ?? prev.lastError) ?? null,
-    } satisfies BinancePollHealth),
-  );
+  return recordPollHealth(db, "binance", args);
 }

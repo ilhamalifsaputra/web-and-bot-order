@@ -60,7 +60,15 @@ async function fetchTokopayJson(url: string, errorPrefix: string, timeoutMs: num
   }
   try {
     return (await res.json()) as Record<string, unknown>;
-  } catch {
+  } catch (err) {
+    // AbortSignal.timeout stays attached to the response body in undici, so a
+    // peer that sends headers and then stalls the body makes res.json()
+    // reject with this same TimeoutError shape (http.ts) — distinguish that
+    // from a genuinely malformed body so the caller isn't told the gateway
+    // sent garbage when it actually just hung.
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new Error(`${errorPrefix} response body read timed out`); // never log the query — it carries the secret
+    }
     throw new Error(`${errorPrefix} returned an unparseable response`); // never log the query — it carries the secret
   }
 }

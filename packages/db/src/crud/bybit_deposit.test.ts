@@ -655,3 +655,57 @@ describe("deliverPaidBybitOrder — WALLET_TOPUP routing", () => {
     expect(rows2).toHaveLength(0);
   });
 });
+
+// Task 17: this rail's delivery transaction previously opened with no options
+// object at all, so it ran on Prisma's 5-second default while the other five
+// gateway crud files (tokopay.ts, paydisini.ts, nowpayments.ts,
+// binance_internal.ts, and this rail's sibling bybit_bsc_deposit.ts) all pass
+// { timeout: 15000 }. On a single-writer SQLite database shared by three
+// processes, 5 seconds is tight under contention for a transaction doing real
+// work (status transition, stock allocation, outbox enqueue) on a path that
+// has already claimed the buyer's payment. Reproducing a real 5-second
+// timeout would be slow/flaky, so this spies on prisma.$transaction and
+// asserts its options argument instead — the honest pin for a Prisma option,
+// not the timeout behavior itself.
+describe("deliverPaidBybitOrder — delivery transaction timeout", () => {
+  let db: TestDb;
+  let prisma: PrismaClient;
+  let sample: SampleData;
+
+  beforeAll(async () => {
+    db = await makeTestDb();
+    prisma = db.prisma;
+  });
+  afterAll(async () => {
+    await db.cleanup();
+  });
+  beforeEach(async () => {
+    await resetDb(prisma);
+    sample = await buildSampleData(prisma);
+  });
+
+  async function makePendingBybitOrder() {
+    const order = (await createOrderDirect(prisma, { user: sample.user, productId: sample.product.id, quantity: 1 }))!;
+    await prisma.order.update({ where: { id: order.id }, data: { paymentMethod: PaymentMethod.BYBIT } });
+    return order;
+  }
+
+  it("opens the delivery $transaction with the same 15s timeout as the other five gateway rails", async () => {
+    const order = await makePendingBybitOrder();
+    const spy = vi.spyOn(prisma, "$transaction");
+
+    const result = await deliverPaidBybitOrder(prisma, {
+      orderId: order.id,
+      bybitTxId: "tx-timeout-1",
+      amount: order.totalAmount,
+    });
+
+    expect(result.status).toBe("delivered");
+    // deliverPaidBybitOrder calls db.$transaction exactly once (the delivery
+    // transaction) — asserting there's exactly one call, then checking its
+    // options, is what guarantees this pins the delivery transaction and not
+    // some other $transaction call in the same code path.
+    expect(spy.mock.calls).toHaveLength(1);
+    expect(spy.mock.calls[0]?.[1]).toEqual({ timeout: 15000 });
+  });
+});

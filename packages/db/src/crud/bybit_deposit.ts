@@ -260,7 +260,7 @@ export async function deliverPaidBybitOrder(
       }
       logger.info(`Bybit order ${result.order.orderCode} paid — queued for manual fulfilment (transaction ${args.bybitTxId})`);
       return { status: "processing" as const, order: result.order };
-    });
+    }, { timeout: 15000 });
   } catch (e) {
     await db.processedBybitTx
       .update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "delivery_failed" } })

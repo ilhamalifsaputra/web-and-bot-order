@@ -55,7 +55,9 @@ interface Column<T> {
    *  - "actions"   → bottom-right action slot (the `⋮` menu).
    *  - "data"      → a `label / value` row inside the card.
    *  Defaults to "actions" when `header === ""`, otherwise "data". Selection
-   *  columns MUST set this explicitly — it is never inferred from the DOM. */
+   *  columns MUST set this explicitly — it is never inferred from the DOM.
+   *  At most one column may be "selection"; any further ones are dropped from
+   *  the mobile layout. */
   kind?: ColumnKind;
 }
 

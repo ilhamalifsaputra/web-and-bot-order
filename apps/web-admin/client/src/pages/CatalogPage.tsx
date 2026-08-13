@@ -398,9 +398,14 @@ export function CatalogPage() {
   const allFilteredSelected = filtered.length > 0 && filtered.every((p) => selected.has(p.id));
   function toggleSelectAllFiltered() {
     setSelected((prev) => {
+      // Deselecting drops everything rather than pruning only the visible ids:
+      // identical in normal use (the clearing effect keeps the selection within
+      // `filtered`), but self-healing if a row left the filtered set through a
+      // data change instead of a filter change — pruning would strand its id
+      // and leave the bulk bar counting a product nobody can see.
+      if (allFilteredSelected) return new Set();
       const next = new Set(prev);
-      if (allFilteredSelected) filtered.forEach((p) => next.delete(p.id));
-      else filtered.forEach((p) => next.add(p.id));
+      filtered.forEach((p) => next.add(p.id));
       return next;
     });
   }

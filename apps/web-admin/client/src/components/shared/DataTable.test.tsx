@@ -106,9 +106,12 @@ describe("DataTable mobile card stack", () => {
     );
     const bar = screen.getByText("Select all");
     const [firstCard] = getCards(container);
-    expect(
-      bar.compareDocumentPosition(firstCard) & Node.DOCUMENT_POSITION_FOLLOWING
-    ).toBeTruthy();
+    // FOLLOWING alone is also true when the card is nested *inside* the bar, so
+    // rule containment out too — otherwise wrapping the whole stack in the bar
+    // would still pass.
+    const position = bar.compareDocumentPosition(firstCard);
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(position & Node.DOCUMENT_POSITION_CONTAINED_BY).toBeFalsy();
   });
 
   it("keeps a header:'' action column as an action slot, not a checkbox or label/value row", () => {

@@ -603,7 +603,7 @@ export async function markUnderpaidBybitBsc(
         to: OrderStatus.UNDERPAID,
         meta: `bybitTxId=${args.bybitTxId}`,
       });
-    });
+    }, { timeout: 15000 });
   } catch (e) {
     await db.processedBybitTx
       .update({ where: { bybitTxId: args.bybitTxId }, data: { outcome: "underpaid_flag_failed" } })

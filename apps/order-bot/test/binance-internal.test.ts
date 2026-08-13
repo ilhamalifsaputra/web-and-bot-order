@@ -885,6 +885,33 @@ describe("fetchIncomingTransfers (connect-fallback escalation)", () => {
     expect(caught).not.toBeInstanceOf(SyntaxError);
     expect((caught as Error).message).toMatch(/unparseable|malformed|invalid/i);
   });
+
+  // AbortSignal.timeout stays attached to the response body in undici
+  // (http.ts), so a peer that sends headers and then stalls the body makes
+  // res.json() reject with this same TimeoutError shape — a DIFFERENT case
+  // from the fetch()-level timeout tested above (that one never gets a
+  // response at all). Must not be reported as "unparseable" — that would
+  // tell whoever reads lastError the gateway sent back garbage, when it
+  // actually just hung.
+  it("a body-read timeout on the Binance response is reported distinctly from a malformed body", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" });
+      },
+    } as unknown as Response);
+    vi.stubGlobal("fetch", fetchMock);
+    let caught: unknown;
+    try {
+      await fetchIncomingTransfers(baseCfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/timed out/);
+    expect((caught as Error).message).not.toMatch(/unparseable|malformed|invalid/i);
+  });
 });
 
 describe("resolveBinanceInternalConfig — minAmount", () => {

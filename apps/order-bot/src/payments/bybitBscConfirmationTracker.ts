@@ -101,7 +101,15 @@ async function bscscanRpc(
   let body: BscScanProxyResponse;
   try {
     body = (await res.json()) as BscScanProxyResponse;
-  } catch {
+  } catch (err) {
+    // AbortSignal.timeout stays attached to the response body in undici, so a
+    // peer that sends headers and then stalls the body makes res.json()
+    // reject with this same TimeoutError shape (http.ts) — distinguish that
+    // from a genuinely malformed body so the tracker doesn't blame the
+    // explorer for sending garbage when it actually just hung.
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new Error(`BscScan ${action} response body read timed out`);
+    }
     throw new Error(`BscScan ${action} returned an unparseable response`);
   }
   if (body.error) {
@@ -322,7 +330,10 @@ let boundApi: Api | undefined;
 // own to mark as failed (display-only module — see the module doc-comment).
 // Inventing a bespoke DB write for that here would be scope creep beyond
 // this task's pure scheduler-wiring change; a real tracker heartbeat is a
-// gap left for a later hardening task, same as the QRIS reconcilers below.
+// gap left for a later hardening task. (The three QRIS reconcilers already
+// got their own heartbeats + watchdogs in Task 11/12 of this branch — this
+// tracker's own missing heartbeat is now the one deliberately-out-of-scope
+// gap left, for the reason given above.)
 //
 // cycleTimeoutMs is TRACKER_CYCLE_TIMEOUT_MS, sized off MAX_ORDERS_PER_CYCLE's
 // own worst case (see its derivation above `pollOnce`) — 150s (Important #3,

@@ -160,6 +160,35 @@ describe("fetchConfirmations", () => {
     );
     await expect(fetchConfirmations("0xabc", cfg)).rejects.toThrow(/timed out/);
   });
+
+  // AbortSignal.timeout stays attached to the response body in undici
+  // (http.ts), so a peer that sends headers and then stalls the body makes
+  // res.json() reject with this same TimeoutError shape — a DIFFERENT case
+  // from the fetch()-level timeout above (that one never gets a response at
+  // all). Must not be reported as "unparseable" — that would tell the tracker
+  // the explorer sent back garbage, when it actually just hung.
+  it("reports a response-body-read timeout distinctly from a genuinely unparseable response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" });
+        },
+        text: async () => "",
+      }),
+    );
+    let caught: unknown;
+    try {
+      await fetchConfirmations("0xabc", cfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/timed out/);
+    expect((caught as Error).message).not.toMatch(/unparseable/);
+  });
 });
 
 // ===========================================================================

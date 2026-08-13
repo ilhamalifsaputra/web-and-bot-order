@@ -90,7 +90,15 @@ export async function createInvoice(
   let body: { id?: unknown; invoice_url?: unknown };
   try {
     body = (await res.json()) as { id?: unknown; invoice_url?: unknown };
-  } catch {
+  } catch (err) {
+    // AbortSignal.timeout stays attached to the response body in undici, so a
+    // peer that sends headers and then stalls the body makes res.json()
+    // reject with this same TimeoutError shape (http.ts) — distinguish that
+    // from a genuinely malformed body so the caller isn't told the gateway
+    // sent garbage when it actually just hung.
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new Error("NOWPayments invoice response body read timed out"); // never log the body — header carries the api key
+    }
     throw new Error("NOWPayments invoice response is unparseable"); // never log the body — header carries the api key
   }
   if (typeof body.id !== "string" && typeof body.id !== "number") {
@@ -136,7 +144,15 @@ export async function getPaymentStatus(
   let body: Record<string, unknown>;
   try {
     body = (await res.json()) as Record<string, unknown>;
-  } catch {
+  } catch (err) {
+    // AbortSignal.timeout stays attached to the response body in undici, so a
+    // peer that sends headers and then stalls the body makes res.json()
+    // reject with this same TimeoutError shape (http.ts) — distinguish that
+    // from a genuinely malformed body so the caller isn't told the gateway
+    // sent garbage when it actually just hung.
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new Error("NOWPayments status response body read timed out");
+    }
     throw new Error("NOWPayments status response is unparseable");
   }
   const statusStr = String(body.payment_status ?? "").toLowerCase();

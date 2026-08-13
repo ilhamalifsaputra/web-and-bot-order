@@ -669,6 +669,37 @@ describe("pollOnce — HTTP timeout bound + credential-leak safety", () => {
     expect((caught as Error).cause).toBeUndefined();
     expect((caught as Error).message).toMatch(/timed out/);
   });
+
+  // AbortSignal.timeout stays attached to the response body in undici
+  // (http.ts), so a peer that sends headers and then stalls the body makes
+  // res.json() reject with this same TimeoutError shape — a DIFFERENT case
+  // from the fetch()-level timeout above (that one never gets a response at
+  // all). Must not be reported as "unparseable" — that would tell whoever
+  // reads lastError the gateway sent back garbage, when it actually just hung.
+  it("fetchRecentDeposits reports a response-body-read timeout distinctly from a genuinely unparseable response", async () => {
+    const cfg = await resolveBybitConfig(prisma);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => {
+          throw Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" });
+        },
+        text: async () => "",
+      }),
+    );
+    let caught: unknown;
+    try {
+      await fetchRecentDeposits(cfg);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/timed out/);
+    expect((caught as Error).message).not.toMatch(/unparseable/);
+  });
 });
 
 describe("recordUnmatchedBybitTx", () => {

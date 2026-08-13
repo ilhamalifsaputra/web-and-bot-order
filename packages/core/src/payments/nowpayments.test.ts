@@ -222,6 +222,34 @@ describe("createInvoice", () => {
     expect((caught as Error).message).not.toContain(FULL_CREDS.apiKey);
     expect((caught as Error).message).not.toBe("fetch failed");
   });
+
+  // AbortSignal.timeout stays attached to the response body in undici
+  // (http.ts), so a peer that sends headers and then stalls the body makes
+  // res.json() reject with this same TimeoutError shape — a DIFFERENT case
+  // from the fetch()-level rejection above (that one never gets a response
+  // at all). Must not be reported as "unparseable" — that would tell the
+  // caller the gateway sent back garbage, when it actually just hung.
+  it("reports a response-body-read timeout distinctly from a genuinely unparseable response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" });
+        },
+      }),
+    );
+    let caught: unknown;
+    try {
+      await createInvoice(FULL_CREDS, { orderId: "ORD-8", amountUsd: "1.00", ipnCallbackUrl: "https://example.com/ipn" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/timed out/);
+    expect((caught as Error).message).not.toMatch(/unparseable/);
+  });
 });
 
 describe("getPaymentStatus", () => {
@@ -275,5 +303,33 @@ describe("getPaymentStatus", () => {
     expect((caught as Error).cause).toBeUndefined();
     expect((caught as Error).message).not.toContain(FULL_CREDS.apiKey);
     expect((caught as Error).message).not.toBe("fetch failed");
+  });
+
+  // AbortSignal.timeout stays attached to the response body in undici
+  // (http.ts), so a peer that sends headers and then stalls the body makes
+  // res.json() reject with this same TimeoutError shape — a DIFFERENT case
+  // from the fetch()-level rejection above (that one never gets a response
+  // at all). Must not be reported as "unparseable" — that would tell the
+  // reconcile poller the gateway sent back garbage, when it actually just hung.
+  it("reports a response-body-read timeout distinctly from a genuinely unparseable response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw Object.assign(new Error("The operation was aborted"), { name: "TimeoutError" });
+        },
+      }),
+    );
+    let caught: unknown;
+    try {
+      await getPaymentStatus(FULL_CREDS, { invoiceId: "INV-6" });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/timed out/);
+    expect((caught as Error).message).not.toMatch(/unparseable/);
   });
 });

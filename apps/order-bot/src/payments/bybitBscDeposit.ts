@@ -145,7 +145,15 @@ async function bybitGet(path: string, params: Record<string, string>, cfg: Bybit
   let body: { retCode?: number; retMsg?: string; result?: Record<string, unknown> };
   try {
     body = (await res.json()) as { retCode?: number; retMsg?: string; result?: Record<string, unknown> };
-  } catch {
+  } catch (err) {
+    // AbortSignal.timeout stays attached to the response body in undici, so a
+    // peer that sends headers and then stalls the body makes res.json()
+    // reject with this same TimeoutError shape (http.ts) — distinguish that
+    // from a genuinely malformed body so lastError doesn't blame the gateway
+    // for sending garbage when it actually just hung.
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new Error(`Bybit ${path} response body read timed out`);
+    }
     throw new Error(`Bybit ${path} returned an unparseable response`);
   }
   if (body.retCode !== 0) {

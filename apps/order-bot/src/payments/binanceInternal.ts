@@ -236,7 +236,15 @@ export async function fetchIncomingTransfers(cfg: BinanceInternalConfig): Promis
   let body: { data?: Record<string, unknown>[] };
   try {
     body = (await res.json()) as { data?: Record<string, unknown>[] };
-  } catch {
+  } catch (err) {
+    // AbortSignal.timeout stays attached to the response body in undici, so a
+    // peer that sends headers and then stalls the body makes res.json()
+    // reject with this same TimeoutError shape (http.ts) — distinguish that
+    // from a genuinely malformed body so lastError doesn't blame the gateway
+    // for sending garbage when it actually just hung.
+    if (err instanceof Error && err.name === "TimeoutError") {
+      throw new Error("Binance pay/transactions response body read timed out");
+    }
     // A 200 with an unparseable body (HTML error page, truncated response, …)
     // — turn the raw SyntaxError into a readable failure so this cycle fails
     // cleanly (logged + a failed heartbeat, see pollOnce's catch) instead of

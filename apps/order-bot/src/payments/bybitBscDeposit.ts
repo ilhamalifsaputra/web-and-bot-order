@@ -52,17 +52,18 @@ import {
 } from "@app/db";
 import { coreT } from "../util/i18n";
 import { esc, renderBybitBscTrackingScreen } from "../util/format";
-import { matchByAmount, matchUnderpaidByAmount } from "./binanceInternal";
+import { matchByAmount, matchUnderpaidByAmount, AMOUNT_TOLERANCE } from "./amountMatching";
 import { createBackoffGate } from "./pollBackoff";
 import { createPollLoop } from "./pollLoop";
 import { paymentSuccessKb, bybitBscTrackingKb } from "../keyboards/customer";
 import { sendAccountFile, walletTopupSuccessText } from "../util/delivery";
 
-// USDT itself has no on-chain "gas deducted from the sent amount" semantics
-// the way native-coin transfers do, so the same tight tolerance Internal
-// Transfer uses is appropriate here too. Revisit with real data if on-chain
-// deposits show wider variance in practice.
-const AMOUNT_TOLERANCE = 0.001; // USDT
+// AMOUNT_TOLERANCE (imported above, shared with amountMatching.ts): USDT has
+// no on-chain "gas deducted from the sent amount" semantics the way
+// native-coin transfers do, so the same tight tolerance Internal Transfer
+// uses is appropriate here too. Revisit with real data if on-chain deposits
+// show wider variance in practice.
+
 /** Bybit on-chain deposit status codes (per Bybit V5 docs — DIFFERS from the
  * internal-transfer ledger, where 2=success). This is now load-bearing for
  * PAYMENT_DETECTED/CONFIRMING tracking, not just an FYI — re-verify the full

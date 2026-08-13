@@ -211,7 +211,7 @@ describe("matchByAmount (note-less fallback, best fit + capped overpayment)", ()
   });
 
   // Overpayment (a buyer rounding up) is accepted, but only up to a cap — see
-  // `overpaymentCap` in binanceInternal.ts. A modest overpay of the best-fit
+  // `overpaymentCap` in amountMatching.ts. A modest overpay of the best-fit
   // (pricier) candidate still matches even with cheaper orders present.
   it("matches a modest overpay of the best-fit order, cheaper orders present", () => {
     expect(matchByAmount({ amount: 13 }, orders)?.id).toBe(3); // overpays order 3 by 0.66, well under its cap (~2.47)
@@ -248,6 +248,57 @@ describe("matchByAmount (note-less fallback, best fit + capped overpayment)", ()
   it("refuses on a collision (all candidates tied) rather than guessing", () => {
     const dup = [{ id: 1, totalAmount: "5.0000" }, { id: 2, totalAmount: "5.0000" }];
     expect(matchByAmount({ amount: 5.0 }, dup)).toBeNull();
+  });
+
+  // Task 13: the matcher's internals now run on Decimal, not IEEE-754 double
+  // arithmetic — this is the regression proof that a caller can pass the raw
+  // decimal STRING a gateway returns (rather than a pre-parsed float) and
+  // still get a clean match.
+  it("matches when the transfer amount is the exact decimal string the gateway returned", () => {
+    expect(matchByAmount({ amount: "7.5000" }, orders)?.id).toBe(2);
+  });
+
+  // Task 13: matchByAmount's tie-detection at :182 used to compare `total`s
+  // that were both put through `Decimal.toNumber()` with exact `===` on the
+  // resulting IEEE-754 doubles. Two DISTINCT decimal totals can round to the
+  // identical double — 0.1 + 0.2 !== 0.3 is the canonical example of the
+  // inverse failure (same value, different doubles); this is the same class
+  // of float representation risk from the other direction. Construct two
+  // totals that are decimal-distinct but which naive Number()/toNumber()
+  // conversion collapses onto the same double, and confirm the matcher does
+  // NOT declare a false tie (refuse) when Decimal.equals is used instead of
+  // double `===`.
+  it("does not declare a false tie between two totals that collapse to the same double", () => {
+    // "4.35" cannot be represented exactly in IEEE-754 double precision — its
+    // nearest double is shared by "4.3499999999999999" too (verified below),
+    // even though the two are decimal-distinct values. Under the old
+    // `Number.toNumber()` + `===` tie check both would collapse onto the
+    // exact same double and get refused as an ambiguous tie; `Decimal.equals`
+    // keeps them apart.
+    const collapsing = [
+      { id: 1, totalAmount: "4.3499999999999999" },
+      { id: 2, totalAmount: "4.35" },
+    ];
+    // Confirm the premise: both decimal strings really do collapse onto the
+    // very same double under plain Number() conversion.
+    expect(Number("4.3499999999999999")).toBe(Number("4.35"));
+    // A payment that exactly covers the larger (pricier, decimal-exact) of
+    // the two must match THAT one specifically, not be refused as an
+    // ambiguous tie just because both totals round to the same double.
+    expect(matchByAmount({ amount: "4.35" }, collapsing)?.id).toBe(2);
+  });
+
+  // Task 13: overpaymentCap's own doc-comment above states the cap is
+  // Math.max(fixed, percent * total) — pin an exact value so a future
+  // regression in the Decimal port (e.g. an off-by-a-rounding-step in the
+  // percent multiply) shows up here instead of only in the pass/refuse
+  // behavior of matchByAmount itself.
+  it("the overpayment cap is computed exactly", () => {
+    // order 3's total is 12.3400 — 20% of that is 2.468, which beats the 2
+    // USDT fixed floor, so the cap is exactly 2.468. Paying 12.3400 + 2.468 =
+    // 14.808 is AT the cap (still matches); one cent more blows it.
+    expect(matchByAmount({ amount: "14.8080" }, [orders[2]!])?.id).toBe(3);
+    expect(matchByAmount({ amount: "14.8081" }, [orders[2]!])).toBeNull();
   });
 });
 

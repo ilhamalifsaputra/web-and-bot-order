@@ -358,33 +358,48 @@ export async function deliverPaidInternalOrder(
   }
 }
 
-/** Note matched but amount short: flag UNDERPAID for admin review (idempotent). */
+/**
+ * Note matched but amount short: flag UNDERPAID for admin review (idempotent).
+ *
+ * The ledger claim, the order.update, and the status transition run as one
+ * `$transaction` so a crash or thrown error between them can never leave a
+ * torn state — e.g. a ledger row claiming the transfer was handled while the
+ * order never actually moved to UNDERPAID (Task 18). The ledger claim itself
+ * stays a single atomic `create` inside the transaction (not preceded by a
+ * read): this database is WAL and Prisma opens interactive transactions with
+ * a deferred BEGIN, so a read-then-write here would let two racing claims
+ * both read the same snapshot and have the loser fail with
+ * SQLITE_BUSY_SNAPSHOT instead of gracefully returning false (see
+ * deliverPaidInternalOrder's comment above for the full reasoning).
+ */
 export async function markUnderpaid(
-  db: Db,
+  db: PrismaClient,
   args: { orderId: number; binanceTxId: string; amount: Decimal.Value },
 ): Promise<boolean> {
-  try {
-    await db.processedBinanceTx.create({
-      data: { binanceTxId: args.binanceTxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "underpaid" },
+  return db.$transaction(async (tx: Tx) => {
+    try {
+      await tx.processedBinanceTx.create({
+        data: { binanceTxId: args.binanceTxId, orderId: args.orderId, amount: new Decimal(args.amount), outcome: "underpaid" },
+      });
+    } catch (e) {
+      if (isUniqueViolation(e)) return false;
+      throw e;
+    }
+    await tx.order.update({
+      where: { id: args.orderId },
+      data: {
+        binanceTxid: args.binanceTxId,
+        adminNote: `[underpaid] received ${new Decimal(args.amount).toString()} via tx ${args.binanceTxId}`,
+      },
     });
-  } catch (e) {
-    if (isUniqueViolation(e)) return false;
-    throw e;
-  }
-  await db.order.update({
-    where: { id: args.orderId },
-    data: {
-      binanceTxid: args.binanceTxId,
-      adminNote: `[underpaid] received ${new Decimal(args.amount).toString()} via tx ${args.binanceTxId}`,
-    },
-  });
-  await transitionOrderStatus(db, {
-    orderId: args.orderId,
-    from: OrderStatus.PENDING_PAYMENT,
-    to: OrderStatus.UNDERPAID,
-    meta: `binanceTxId=${args.binanceTxId}`,
-  });
-  return true;
+    await transitionOrderStatus(tx, {
+      orderId: args.orderId,
+      from: OrderStatus.PENDING_PAYMENT,
+      to: OrderStatus.UNDERPAID,
+      meta: `binanceTxId=${args.binanceTxId}`,
+    });
+    return true;
+  }, { timeout: 15000 });
 }
 
 /** A transfer that matched no PENDING order — record once for manual review. */

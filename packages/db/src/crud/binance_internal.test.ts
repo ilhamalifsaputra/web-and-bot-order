@@ -21,6 +21,7 @@ import { buildSampleData, resetDb, type SampleData } from "../../../../tests/hel
 import {
   createOrderDirect,
   deliverPaidInternalOrder,
+  markUnderpaid,
   recordUnmatchedTx,
   manualMatchTx,
   createCategory,
@@ -503,6 +504,54 @@ describe("deliverPaidInternalOrder — WALLET_TOPUP routing", () => {
       where: { event: NotificationEvent.WALLET_TOPUP_CREDITED_DM, orderId: order.id },
     });
     expect(rows).toHaveLength(0);
+  });
+});
+
+// Task 18: markUnderpaid's ledger claim, order.update, and transitionOrderStatus
+// used to run as three separate statements outside any transaction — a crash
+// or error between them could leave the ledger claiming the transfer was
+// handled while the order never actually moved to UNDERPAID (or vice versa).
+// These pin the existing return values (must not change) and the new
+// all-or-nothing rollback behavior.
+describe("markUnderpaid — transactional (Task 18)", () => {
+  it("flags the order once (idempotent) — return values unchanged", async () => {
+    const order = await makePendingInternalOrder();
+
+    const first = await markUnderpaid(prisma, { orderId: order.id, binanceTxId: "tx-underpaid-1", amount: "1.00" });
+    expect(first).toBe(true);
+    const flagged = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(flagged!.status).toBe(OrderStatus.UNDERPAID);
+    expect(flagged!.adminNote).toBe("[underpaid] received 1 via tx tx-underpaid-1");
+
+    const second = await markUnderpaid(prisma, { orderId: order.id, binanceTxId: "tx-underpaid-1", amount: "1.00" });
+    expect(second).toBe(false);
+
+    const rows = await prisma.processedBinanceTx.findMany({ where: { binanceTxId: "tx-underpaid-1" } });
+    expect(rows).toHaveLength(1);
+  });
+
+  // The RED test for Task 18: before the fix, the ledger create and
+  // order.update ran as separate statements ahead of transitionOrderStatus,
+  // so forcing that last write to fail left a torn state — a claimed ledger
+  // row and a stamped adminNote on an order that never moved to UNDERPAID.
+  // Moving the order out of PENDING_PAYMENT before calling markUnderpaid
+  // makes transitionOrderStatus throw naturally (illegal transition), with
+  // no need to mock internals.
+  it("leaves the order untouched when the status transition fails partway", async () => {
+    const order = await makePendingInternalOrder();
+    await prisma.order.update({ where: { id: order.id }, data: { status: OrderStatus.CANCELLED } });
+
+    await expect(
+      markUnderpaid(prisma, { orderId: order.id, binanceTxId: "tx-underpaid-partial-1", amount: "1.00" }),
+    ).rejects.toThrow();
+
+    const ledgerRow = await prisma.processedBinanceTx.findUnique({ where: { binanceTxId: "tx-underpaid-partial-1" } });
+    expect(ledgerRow).toBeNull();
+
+    const refreshedOrder = await prisma.order.findUnique({ where: { id: order.id } });
+    expect(refreshedOrder!.status).toBe(OrderStatus.CANCELLED);
+    expect(refreshedOrder!.adminNote).toBeNull();
+    expect(refreshedOrder!.binanceTxid).toBeNull();
   });
 });
 

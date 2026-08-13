@@ -219,7 +219,7 @@ describe("Layout", () => {
   it("lists the footer nav links in order, including Track order", async () => {
     renderLayout();
     await waitFor(() => expect(apiGet).toHaveBeenCalled());
-    const footerNav = screen.getByRole("navigation", { name: "About us" });
+    const footerNav = screen.getByRole("navigation", { name: "Footer navigation" });
     const hrefs = within(footerNav)
       .getAllByRole("link")
       .map((link) => link.getAttribute("href"));

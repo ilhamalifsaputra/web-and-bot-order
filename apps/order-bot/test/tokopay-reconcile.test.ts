@@ -182,8 +182,16 @@ describe("sweepDeliveredAwaitingEdit is bounded against a black-holed bubble edi
   // the identical give-up/budget-break logic is proven in well under a
   // second, with real timers and real Prisma throughout. Production behavior
   // is unchanged — the defaults are still the exported constants.
-  const editTimeoutMs = 50;
-  const totalBudgetMs = 150;
+  //
+  // Why not shrink these further: the budget test below needs each hung row
+  // to burn between editTimeoutMs and totalBudgetMs/2 of wall clock, so the
+  // 4th row is the first one cut off. At 50/150 that window was only 25ms
+  // wide, and under a full-suite parallel run a 50ms timer routinely
+  // overshoots it — the sweep then broke a row early and the test flaked on
+  // "expected 3 calls, got 2". These values keep the same 1:3 ratio while
+  // widening the tolerance to 100ms of scheduler jitter per row.
+  const editTimeoutMs = 200;
+  const totalBudgetMs = 600;
 
   it("gives up waiting on a single hung bubble edit after its edit timeout, leaving the anchor in place", async () => {
     const created = await makeTokopayOrder();

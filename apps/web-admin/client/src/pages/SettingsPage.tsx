@@ -42,6 +42,9 @@ import {
 import { apiPost, apiGet } from "../api/client";
 import { useSettings, type SettingsField, type PayMethodState } from "@/hooks/useSettings";
 import { describeError } from "@/lib/errorMessages";
+import { HEALTH_DOT } from "@/lib/healthDot";
+import { UrgencyDot } from "@/components/shared/UrgencyDot";
+import type { HealthEntry } from "@/api/types";
 
 // Field groupings — must match the server-side EDITABLE keys exactly.
 const BRANDING_KEYS = new Set([
@@ -462,6 +465,11 @@ interface GatewayCardProps {
   onToggle: (methodKey: string, label: string, nextEnabled: boolean) => void;
   testResult: TestResult | undefined;
   onTest: (methodKey: string, label: string) => void;
+  /** Poller health verdict (packages/core/src/payments/pollHealth.ts, mapped
+   * server-side) — only set for the two Bybit rails, which have a heartbeat
+   * poller behind them; every other gateway is request/response and has no
+   * poller to report on, so this stays undefined for them and no row shows. */
+  health?: HealthEntry;
 }
 
 function GatewayCard({
@@ -476,6 +484,7 @@ function GatewayCard({
   onToggle,
   testResult,
   onTest,
+  health,
 }: GatewayCardProps) {
   return (
     <Card id={sectionId}>
@@ -487,6 +496,12 @@ function GatewayCard({
           </div>
           {testResult && (
             <p className={`text-xs ${testResult.ok ? "text-grass-dark" : "text-rust"}`}>{testResult.detail}</p>
+          )}
+          {health && (
+            <div className="flex items-center gap-1.5 text-xs text-ink-soft" title={health.detail}>
+              <UrgencyDot level={HEALTH_DOT[health.status]} />
+              {health.detail}
+            </div>
           )}
         </div>
         <label
@@ -1061,6 +1076,7 @@ export function SettingsPage() {
               onToggle={(methodKey, label, nextEnabled) => setPendingToggle({ methodKey, label, nextEnabled })}
               testResult={testResults[g.methodKey]}
               onTest={(methodKey, label) => setPendingTest({ methodKey, label })}
+              health={g.methodKey === "bybit" ? data.bybitHealth : g.methodKey === "bybit_bsc" ? data.bybitBscHealth : undefined}
             />
           ))}
 

@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { UrgencyDot } from "../shared/UrgencyDot";
 import { useHealth } from "../../hooks/useHealth";
+import { HEALTH_DOT } from "../../lib/healthDot";
 import type { HealthLevel, HealthStatus } from "../../api/types";
 
 const SERVICES: Array<{ key: keyof HealthStatus; label: string }> = [
@@ -12,13 +13,6 @@ const SERVICES: Array<{ key: keyof HealthStatus; label: string }> = [
   { key: "paydisini", label: "PayDisini" },
   { key: "nowpayments", label: "NOWPayments" },
 ];
-
-const DOT: Record<HealthLevel, "ok" | "warn" | "critical" | "idle"> = {
-  green: "ok",
-  yellow: "warn",
-  red: "critical",
-  unmonitored: "idle",
-};
 
 const LABEL: Record<HealthLevel, string> = {
   green: "Healthy",
@@ -46,7 +40,7 @@ export function BusinessHealthGrid() {
                 <li key={s.key} className="flex items-center justify-between py-2">
                   <span className="text-sm text-ink">{s.label}</span>
                   <span className="inline-flex items-center gap-1.5 text-xs text-ink-soft" title={detail}>
-                    <UrgencyDot level={DOT[status]} />
+                    <UrgencyDot level={HEALTH_DOT[status]} />
                     {LABEL[status]}
                   </span>
                 </li>

@@ -43,6 +43,7 @@ import {
 import { toast } from "sonner";
 import { apiGet, apiPost } from "../api/client";
 import { describeError } from "../lib/errorMessages";
+import { HEALTH_DOT } from "../lib/healthDot";
 import type { HealthLevel } from "../api/types";
 
 /** Which payment rail a ledger row came from. "bybit" covers BOTH Bybit
@@ -187,17 +188,6 @@ function useOrderCodeSuggest(orderCode: string) {
 
   return { suggestion, searched, loading };
 }
-
-/** Maps the server's verdict status to `UrgencyDot`'s level — the pill's
- * only remaining local rule. All the actual health logic (staleness,
- * consecutive-failure thresholds, backoff windows) lives server-side in
- * `evaluatePollHealth`; see the `PaymentsHealth` doc comment above. */
-const HEALTH_DOT: Record<HealthLevel, "ok" | "warn" | "critical" | "idle"> = {
-  green: "ok",
-  yellow: "warn",
-  red: "critical",
-  unmonitored: "idle",
-};
 
 export function PaymentsPage() {
   const qc = useQueryClient();

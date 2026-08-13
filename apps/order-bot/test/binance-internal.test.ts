@@ -208,6 +208,28 @@ describe("pollWatchdogDecision (poller stuck/recover logic)", () => {
       ),
     ).toBe("none");
   });
+
+  // Followup review fix (duplicate paging): a rail can be hard-down long
+  // enough to page admins (alreadyAlerted flips to true), and THEN start
+  // getting rate-limited, which writes a live backoffUntil. evaluatePollHealth
+  // correctly reports `paging: false` for a live backoff (Rule 2 — it's an
+  // intentional pause, not a failure), but that must not, on its own, read as
+  // "recovered": the rail is still down underneath the backoff, nothing was
+  // fixed, and clearing the alert flag here means the NEXT unhealthy tick
+  // (once the backoff expires and the rail is still down) pages every admin
+  // again for the exact same incident. The pre-rewrite body's unconditional
+  // `if (backoff > now) return "none"` — evaluated BEFORE the alerted
+  // comparison — is what stopped that; this pins the same "none" outcome
+  // through the evaluatePollHealth-derived path.
+  it("stays quiet (does not clear the alert flag / does not recover) when already alerted and a live backoff then appears", () => {
+    expect(
+      pollWatchdogDecision(
+        { lastRun: ago(5_000), backoffUntil: ago(-60_000), consecutiveFailures: 0 },
+        true,
+        now,
+      ),
+    ).toBe("none");
+  });
 });
 
 describe("matchByAmount (note-less fallback, best fit + capped overpayment)", () => {

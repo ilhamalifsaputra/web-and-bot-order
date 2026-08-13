@@ -218,7 +218,9 @@ export { TOKOPAY_POLL_STALE_MS, PAYDISINI_POLL_STALE_MS, NOWPAYMENTS_POLL_STALE_
 
 /**
  * Pure decision for the poller watchdog (unit-tested without DB/env):
- *  - "none"    — healthy, intentionally backing off, or already alerted & still unhealthy.
+ *  - "none"    — healthy, intentionally backing off (regardless of alert
+ *                state — see the backoff short-circuit below), or already
+ *                alerted & still unhealthy for a reason other than backoff.
  *  - "alert"   — stale (no cycle in staleMs) OR failing every cycle
  *                (consecutiveFailures ≥ failureThreshold), and not yet alerted this episode.
  *  - "recover" — back to healthy after having alerted (re-arm the alert).
@@ -227,11 +229,20 @@ export { TOKOPAY_POLL_STALE_MS, PAYDISINI_POLL_STALE_MS, NOWPAYMENTS_POLL_STALE_
  * it (e.g. Binance, currently) keep the original stale-only behavior unchanged.
  *
  * Delegates the actual unhealthy/healthy call to `evaluatePollHealth`
- * (packages/core/src/payments/pollHealth.ts) — its `paging` flag reproduces
- * this function's original stale/failing/backoff rule bit-for-bit, so admins
- * see exactly the same alert/recover transitions as before this was
- * rebased onto the shared rule. `enabled: true` is the truthful state here,
- * not a placeholder: every call site (binancePollWatchdog and its two twins)
+ * (packages/core/src/payments/pollHealth.ts) for the "alert" side of the
+ * decision — its `paging` flag reproduces this function's original
+ * stale/failing rule. The "recover" side needs one deliberate override on
+ * top of `paging`, below: `evaluatePollHealth`'s `paging: false` during a
+ * live backoff is correct for THAT module's consumers (the dashboard tile,
+ * PaymentsPage — a live backoff genuinely isn't a paging condition for them),
+ * but naively folding it into `!paging && alreadyAlerted` here would read a
+ * live backoff as "recovered" and clear an alert flag set by a real,
+ * still-ongoing outage (followup review fix — a rail that got hard-paged,
+ * then hit a rate limit while STILL down, must not have its alert silently
+ * cleared just because the rate limit is being backed off from on purpose;
+ * every admin would get DM'd again once the backoff window ends and the rail
+ * is still down). `enabled: true` is the truthful state here, not a
+ * placeholder: every call site (binancePollWatchdog and its two twins)
  * already returns early while its rail is disabled, so this function only
  * ever runs for a rail that is enabled.
  */
@@ -242,6 +253,15 @@ export function pollWatchdogDecision(
   staleMs = POLL_STALE_MINUTES * 60_000,
   failureThreshold = FAILURE_STREAK_ALERT_THRESHOLD,
 ): "none" | "alert" | "recover" {
+  // Unconditional, checked BEFORE the alerted comparison: a live (not yet
+  // expired) backoff always yields "none", regardless of alert state. This
+  // is the pre-rewrite body's original short-circuit (`if (backoff > now)
+  // return "none"`), restored here specifically because it must win over
+  // "already alerted" too — see the doc-comment above for the duplicate-
+  // paging regression this prevents.
+  const backoffUntil = health.backoffUntil ? Date.parse(health.backoffUntil) : NaN;
+  if (!Number.isNaN(backoffUntil) && backoffUntil > now) return "none";
+
   const { paging } = evaluatePollHealth(
     {
       lastRun: health.lastRun,

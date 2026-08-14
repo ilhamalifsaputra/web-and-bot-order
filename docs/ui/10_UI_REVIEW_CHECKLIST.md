@@ -45,6 +45,12 @@ doesn't need the Table Rules section) — but check the ones that do apply, hone
 - [ ] Sidebar/topbar responsive behavior wasn't touched/duplicated.
 - [ ] No horizontal scroll on the page body itself (only inside a table's own
       `overflow-x-auto` wrapper).
+- [ ] Long values (names, emails, notes, IDs, money) are truncated, clamped or
+      wrapped — they never widen a card, a grid track or a table column, and are
+      never silently clipped by `Card`'s `overflow-hidden`. Truncating table
+      cells carry an explicit `max-w-*` (without it `truncate` is inert in a
+      `<td>`); values the admin must read in full — emails, credentials, money —
+      wrap instead of truncating. See `03_COMPONENT_LIBRARY.md` §Text overflow.
 
 ## Accessibility (`08_UX_RULES.md` §8)
 
